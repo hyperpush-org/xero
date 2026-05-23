@@ -116,7 +116,7 @@ fi
 helper_names=(
   xero-harness-evals
   tool-harness
-  xero-tui
+  xero
 )
 codesign_timeout_seconds="${XERO_CODESIGN_TIMEOUT_SECONDS:-300}"
 

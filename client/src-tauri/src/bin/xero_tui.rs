@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     process,
@@ -13,21 +14,34 @@ use xero_cli::{CliError, TuiCommandAdapter};
 use xero_desktop_lib::{
     auth::now_timestamp,
     commands::{
-        project_runner, solana, CommandError, CommandErrorClass, ProviderModelThinkingEffortDto,
-        RuntimeAgentIdDto, RuntimeRunApprovalModeDto, RuntimeRunControlInputDto,
-        StagedAgentAttachmentDto, StartAgentTaskRequestDto,
+        project_runner, session_history, solana,
+        stage_agent_attachment::{
+            stage_agent_attachment_for_repo, stage_agent_attachment_path_for_repo,
+            StageAgentAttachmentInput,
+        },
+        CommandError, CommandErrorClass, ProviderModelThinkingEffortDto, RuntimeAgentIdDto,
+        RuntimeRunApprovalModeDto, RuntimeRunControlInputDto, StagedAgentAttachmentDto,
+        StartAgentTaskRequestDto,
     },
     db::{self, project_store},
     environment::service as environment_service,
     git::repository::resolve_repository,
     global_db::{open_global_database, GLOBAL_DATABASE_FILE_NAME},
-    provider_credentials::load_provider_credentials_view_or_default,
+    provider_credentials::{
+        load_provider_credentials_view_or_default, ProviderCredentialKind,
+        ProviderCredentialProfile,
+    },
+    provider_models::{
+        load_provider_model_catalog, ProviderModelRecord, ProviderModelThinkingCapability,
+        ProviderModelThinkingEffort,
+    },
     registry,
     runtime::{
-        discover_local_skill_directory, discover_plugin_roots, discover_project_skill_directory,
-        load_skill_source_settings_from_path, persist_skill_source_settings,
-        AutonomousAgentDefinitionAction, AutonomousAgentDefinitionRequest, AutonomousToolOutput,
-        AutonomousToolRuntime, XeroPluginRoot,
+        agent_core::DesktopAgentCoreRuntime, discover_local_skill_directory, discover_plugin_roots,
+        discover_project_skill_directory, load_skill_source_settings_from_path,
+        persist_skill_source_settings, AutonomousAgentDefinitionAction,
+        AutonomousAgentDefinitionRequest, AutonomousToolOutput, AutonomousToolRuntime,
+        XeroPluginRoot,
     },
     state::{DesktopState, AUTONOMOUS_SKILL_CACHE_DIRECTORY_NAME},
 };
@@ -53,22 +67,34 @@ impl TuiCommandAdapter for DesktopProjectStoreTuiAdapter {
             Some("agent-definition") | Some("agent-definitions") => {
                 Some(handle_agent_definition_command(state_dir, &args[1..]).map_err(cli_error))
             }
+            Some("provider") if args.get(1).map(String::as_str) == Some("list") => {
+                Some(handle_provider_command(state_dir, &args[1..]).map_err(cli_error))
+            }
             Some("code-history") | Some("code") => {
                 Some(handle_code_history_command(state_dir, &args[1..]).map_err(cli_error))
             }
             Some("conversation") if args.get(1).map(String::as_str) == Some("rewind") => {
                 Some(handle_conversation_rewind(state_dir, &args[2..]).map_err(cli_error))
             }
+            Some("conversation") if args.get(1).map(String::as_str) == Some("cancel") => {
+                Some(handle_conversation_cancel(state_dir, &args[2..]).map_err(cli_error))
+            }
+            Some("conversation") if args.get(1).map(String::as_str) == Some("list") => {
+                Some(handle_conversation_list(state_dir, &args[2..]).map_err(cli_error))
+            }
             Some("conversation") if args.get(1).map(String::as_str) == Some("show") => {
                 Some(handle_conversation_show(state_dir, &args[2..]).map_err(cli_error))
+            }
+            Some("session-context") | Some("context") => {
+                Some(handle_session_context_command(state_dir, &args[1..]).map_err(cli_error))
+            }
+            Some("operator-action") | Some("operator") => {
+                Some(handle_operator_action_command(state_dir, &args[1..]).map_err(cli_error))
             }
             Some("attachment") | Some("attachments") => {
                 Some(handle_attachment_command(state_dir, &args[1..]).map_err(cli_error))
             }
-            Some("agent")
-                if args.get(1).map(String::as_str) == Some("exec")
-                    && option_value(&args[2..], "--attachments-json").is_some() =>
-            {
+            Some("agent") if args.get(1).map(String::as_str) == Some("exec") => {
                 Some(handle_agent_exec_command(state_dir, &args[2..]).map_err(cli_error))
             }
             Some("terminal") | Some("pty") => {
@@ -402,6 +428,165 @@ fn handle_agent_definition_command(
                 "Unknown desktop-backed agent-definition command `{command}`. Use list, draft, validate, preview, save, update, clone, archive, or attachable-skills."
             ),
         )),
+    }
+}
+
+fn handle_provider_command(state_dir: &Path, args: &[String]) -> Result<JsonValue, CommandError> {
+    let command = args.first().map(String::as_str).unwrap_or("list");
+    match command {
+        "list" => handle_provider_list(state_dir, &args[1..]),
+        _ => Err(CommandError::user_fixable(
+            "xero_tui_provider_command_unknown",
+            format!("Unknown desktop-backed provider command `{command}`. Use list."),
+        )),
+    }
+}
+
+fn handle_provider_list(state_dir: &Path, args: &[String]) -> Result<JsonValue, CommandError> {
+    reject_unknown_provider_options(args)?;
+    let connection = open_global_database(&global_database_path_for_tui_state(state_dir))?;
+    let provider_profiles = load_provider_credentials_view_or_default(&connection)?;
+    let app = build_desktop_tui_app(state_dir)?;
+    let state = app.state::<DesktopState>();
+    let providers = provider_profiles
+        .profiles()
+        .iter()
+        .filter(|profile| profile.readiness().ready)
+        .map(|profile| desktop_provider_entry_json(app.handle(), state.inner(), profile))
+        .collect::<Result<Vec<_>, _>>()?;
+    let text = providers
+        .iter()
+        .map(|provider| {
+            format!(
+                "{:<26} {:<22} {:<18} {}",
+                string_field(provider, "providerId"),
+                string_field(provider, "catalogKind"),
+                string_field(provider, "headlessStatus"),
+                string_field(provider, "defaultModel")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(json!({
+        "kind": "providerList",
+        "providers": providers,
+        "text": text,
+        "backend": "desktop_provider_credentials",
+        "uiDeferred": false
+    }))
+}
+
+fn reject_unknown_provider_options(args: &[String]) -> Result<(), CommandError> {
+    if let Some(option) = args.iter().find(|arg| arg.starts_with('-')) {
+        return Err(CommandError::user_fixable(
+            "xero_tui_provider_option_unknown",
+            format!("Unknown provider option `{option}`."),
+        ));
+    }
+    Ok(())
+}
+
+fn desktop_provider_entry_json<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &DesktopState,
+    profile: &ProviderCredentialProfile,
+) -> Result<JsonValue, CommandError> {
+    let catalog = load_provider_model_catalog(app, state, &profile.profile_id, false)?;
+    let default_model = catalog.configured_model_id.trim();
+    let default_model = if default_model.is_empty() {
+        profile.model_id.as_str()
+    } else {
+        default_model
+    };
+    Ok(json!({
+        "providerId": profile.provider_id,
+        "label": profile.label,
+        "defaultModel": default_model,
+        "credentialKind": provider_credential_kind_for_profile(state, app, &profile.provider_id)?,
+        "headlessStatus": "configured",
+        "catalogKind": "model_provider",
+        "adapterKind": JsonValue::Null,
+        "profiles": [profile.profile_id],
+        "models": desktop_provider_model_payloads(&catalog.models, default_model),
+    }))
+}
+
+fn provider_credential_kind_for_profile<R: tauri::Runtime>(
+    state: &DesktopState,
+    app: &tauri::AppHandle<R>,
+    provider_id: &str,
+) -> Result<&'static str, CommandError> {
+    let connection = open_global_database(&state.global_db_path(app)?)?;
+    let provider_profiles = load_provider_credentials_view_or_default(&connection)?;
+    Ok(provider_profiles
+        .record_for_provider(provider_id)
+        .map(|record| match record.kind {
+            ProviderCredentialKind::OAuthSession => "app_session",
+            ProviderCredentialKind::ApiKey => "api_key",
+            ProviderCredentialKind::Local => "local",
+            ProviderCredentialKind::Ambient => "ambient",
+        })
+        .unwrap_or("unknown"))
+}
+
+fn desktop_provider_model_payloads(
+    models: &[ProviderModelRecord],
+    configured_model_id: &str,
+) -> Vec<JsonValue> {
+    let mut seen = BTreeSet::new();
+    let mut payloads = models
+        .iter()
+        .filter_map(|model| {
+            let model_id = model.model_id.trim();
+            if model_id.is_empty() || !seen.insert(model_id.to_owned()) {
+                return None;
+            }
+            Some(desktop_provider_model_payload(model))
+        })
+        .collect::<Vec<_>>();
+    let configured_model_id = configured_model_id.trim();
+    if !configured_model_id.is_empty() && seen.insert(configured_model_id.to_owned()) {
+        payloads.push(json!({
+            "modelId": configured_model_id,
+            "displayName": configured_model_id,
+            "thinkingSupported": false,
+            "thinkingEffortOptions": [],
+            "defaultThinkingEffort": JsonValue::Null,
+        }));
+    }
+    payloads
+}
+
+fn desktop_provider_model_payload(model: &ProviderModelRecord) -> JsonValue {
+    json!({
+        "modelId": model.model_id,
+        "displayName": model.display_name,
+        "thinkingSupported": model.thinking.supported,
+        "thinkingEffortOptions": thinking_effort_options_json(&model.thinking),
+        "defaultThinkingEffort": model
+            .thinking
+            .default_effort
+            .as_ref()
+            .map(provider_thinking_effort_wire_value),
+    })
+}
+
+fn thinking_effort_options_json(thinking: &ProviderModelThinkingCapability) -> Vec<&'static str> {
+    thinking
+        .effort_options
+        .iter()
+        .map(provider_thinking_effort_wire_value)
+        .collect()
+}
+
+fn provider_thinking_effort_wire_value(effort: &ProviderModelThinkingEffort) -> &'static str {
+    match effort {
+        ProviderModelThinkingEffort::None => "none",
+        ProviderModelThinkingEffort::Minimal => "minimal",
+        ProviderModelThinkingEffort::Low => "low",
+        ProviderModelThinkingEffort::Medium => "medium",
+        ProviderModelThinkingEffort::High => "high",
+        ProviderModelThinkingEffort::XHigh => "x_high",
     }
 }
 
@@ -807,27 +992,178 @@ fn handle_conversation_show(state_dir: &Path, args: &[String]) -> Result<JsonVal
     }))
 }
 
+fn handle_conversation_cancel(
+    state_dir: &Path,
+    args: &[String],
+) -> Result<JsonValue, CommandError> {
+    let project_id = required_option(args, "--project-id", "projectId")?;
+    let run_id = positional_or_option(args, "--run-id", "runId")?;
+    configure_project_store_paths(state_dir);
+    let repo_root = project_root(state_dir, &project_id)?;
+    let app = build_desktop_tui_app(state_dir)?;
+    let state = app.state::<DesktopState>();
+    let runtime = DesktopAgentCoreRuntime::new(state.inner().agent_run_supervisor().clone());
+    let snapshot = runtime.cancel_run(repo_root, project_id.clone(), run_id.clone())?;
+    Ok(json!({
+        "kind": "conversationCancel",
+        "schema": "xero.conversation_cancel_command.v1",
+        "projectId": project_id,
+        "runId": run_id,
+        "snapshot": agent_run_snapshot_json(snapshot),
+        "backend": "desktop_project_store_agent_runtime",
+        "uiDeferred": false
+    }))
+}
+
+fn handle_conversation_list(state_dir: &Path, args: &[String]) -> Result<JsonValue, CommandError> {
+    let project_id = required_option(args, "--project-id", "projectId")?;
+    configure_project_store_paths(state_dir);
+    let repo_root = project_root(state_dir, &project_id)?;
+    let mut runs = Vec::new();
+    for session in project_store::list_agent_sessions(&repo_root, &project_id, true)? {
+        runs.extend(project_store::list_agent_runs(
+            &repo_root,
+            &project_id,
+            &session.agent_session_id,
+        )?);
+    }
+    runs.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| right.started_at.cmp(&left.started_at))
+            .then_with(|| left.run_id.cmp(&right.run_id))
+    });
+    Ok(json!({
+        "kind": "conversationList",
+        "schema": "xero.conversation_list_command.v1",
+        "projectId": project_id,
+        "runs": runs.into_iter().map(agent_run_json).collect::<Vec<_>>(),
+        "backend": "desktop_project_store_agent_runtime",
+        "uiDeferred": false
+    }))
+}
+
+fn handle_session_context_command(
+    state_dir: &Path,
+    args: &[String],
+) -> Result<JsonValue, CommandError> {
+    let command = args.first().map(String::as_str).unwrap_or("snapshot");
+    match command {
+        "snapshot" | "show" => handle_session_context_snapshot(state_dir, &args[1..]),
+        _ => Err(CommandError::user_fixable(
+            "xero_tui_session_context_command_unknown",
+            format!("Unknown desktop-backed session context command `{command}`. Use snapshot."),
+        )),
+    }
+}
+
+fn handle_session_context_snapshot(
+    state_dir: &Path,
+    args: &[String],
+) -> Result<JsonValue, CommandError> {
+    let project_id = required_option(args, "--project-id", "projectId")?;
+    let agent_session_id = option_value(args, "--session-id")
+        .or_else(|| option_value(args, "--agent-session-id"))
+        .ok_or_else(|| CommandError::invalid_request("agentSessionId"))?;
+    configure_project_store_paths(state_dir);
+    let repo_root = project_root(state_dir, &project_id)?;
+    let snapshot = session_history::build_session_context_snapshot(
+        &repo_root,
+        &project_id,
+        &agent_session_id,
+        option_value(args, "--run-id").as_deref(),
+        option_value(args, "--provider-id").as_deref(),
+        option_value(args, "--model-id").as_deref(),
+        option_value(args, "--pending-prompt").as_deref(),
+    )?;
+    Ok(json!({
+        "kind": "sessionContextSnapshot",
+        "schema": "xero.session_context_snapshot_command.v1",
+        "projectId": project_id,
+        "agentSessionId": agent_session_id,
+        "contextSnapshot": snapshot,
+        "backend": "desktop_project_store_session_context",
+        "uiDeferred": false
+    }))
+}
+
+fn handle_operator_action_command(
+    state_dir: &Path,
+    args: &[String],
+) -> Result<JsonValue, CommandError> {
+    let command = args.first().map(String::as_str).unwrap_or("resolve");
+    match command {
+        "resolve" => handle_operator_action_resolve(state_dir, &args[1..]),
+        _ => Err(CommandError::user_fixable(
+            "xero_tui_operator_action_command_unknown",
+            format!("Unknown desktop-backed operator action command `{command}`. Use resolve."),
+        )),
+    }
+}
+
+fn handle_operator_action_resolve(
+    state_dir: &Path,
+    args: &[String],
+) -> Result<JsonValue, CommandError> {
+    let project_id = required_option(args, "--project-id", "projectId")?;
+    let action_id = required_option(args, "--action-id", "actionId")?;
+    let decision = required_option(args, "--decision", "decision")?;
+    let user_answer = option_value(args, "--user-answer");
+    configure_project_store_paths(state_dir);
+    let repo_root = project_root(state_dir, &project_id)?;
+    let resolved = project_store::resolve_operator_action(
+        &repo_root,
+        &project_id,
+        &action_id,
+        parse_operator_action_decision(&decision)?,
+        user_answer.as_deref(),
+    )?;
+    Ok(json!({
+        "kind": "operatorActionResolve",
+        "schema": "xero.operator_action_resolve_command.v1",
+        "projectId": project_id,
+        "actionId": action_id,
+        "response": {
+            "approvalRequest": resolved.approval_request,
+            "verificationRecord": resolved.verification_record,
+        },
+        "backend": "desktop_project_store_operator_action",
+        "uiDeferred": false
+    }))
+}
+
 fn handle_attachment_command(state_dir: &Path, args: &[String]) -> Result<JsonValue, CommandError> {
     let command = args.first().map(String::as_str).unwrap_or("stage");
     match command {
         "stage" | "add" => {
             let project_id = required_option(&args[1..], "--project-id", "projectId")?;
             let run_id = required_option(&args[1..], "--run-id", "runId")?;
-            let source = required_option(&args[1..], "--path", "path")?;
             configure_project_store_paths(state_dir);
             let repo_root = project_root(state_dir, &project_id)?;
-            let source_path = PathBuf::from(source);
-            let source_path = if source_path.is_absolute() {
-                source_path
-            } else {
-                repo_root.join(source_path)
-            };
-            let attachment =
-                xero_desktop_lib::commands::stage_agent_attachment::stage_agent_attachment_path_for_repo(
+            let attachment = if let Some(bytes_base64) = option_value(&args[1..], "--bytes-base64")
+            {
+                let original_name = required_option(&args[1..], "--original-name", "originalName")?;
+                let media_type = required_option(&args[1..], "--media-type", "mediaType")?;
+                stage_agent_attachment_for_repo(
                     &repo_root,
-                    run_id,
-                    &source_path,
-                )?;
+                    StageAgentAttachmentInput {
+                        run_id,
+                        original_name,
+                        media_type,
+                        bytes: decode_remote_attachment_bytes(&bytes_base64)?,
+                    },
+                )?
+            } else {
+                let source = required_option(&args[1..], "--path", "path")?;
+                let source_path = PathBuf::from(source);
+                let source_path = if source_path.is_absolute() {
+                    source_path
+                } else {
+                    repo_root.join(source_path)
+                };
+                stage_agent_attachment_path_for_repo(&repo_root, run_id, &source_path)?
+            };
             Ok(json!({
                 "kind": "attachmentStage",
                 "schema": "xero.tui_attachment_stage_command.v1",
@@ -976,6 +1312,33 @@ fn parse_staged_attachments(raw: &str) -> Result<Vec<StagedAgentAttachmentDto>, 
             format!("Could not parse --attachments-json: {error}"),
         )
     })
+}
+
+fn parse_operator_action_decision(
+    value: &str,
+) -> Result<project_store::OperatorApprovalDecision, CommandError> {
+    match value.trim() {
+        "approve" => Ok(project_store::OperatorApprovalDecision::Approved),
+        "reject" => Ok(project_store::OperatorApprovalDecision::Rejected),
+        other => Err(CommandError::user_fixable(
+            "operator_action_decision_unsupported",
+            format!(
+                "Xero does not support operator decision `{other}`. Allowed decisions: approve, reject."
+            ),
+        )),
+    }
+}
+
+fn decode_remote_attachment_bytes(value: &str) -> Result<Vec<u8>, CommandError> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(value.as_bytes())
+        .map_err(|error| {
+            CommandError::user_fixable(
+                "remote_attachment_invalid_bytes",
+                format!("Remote attachment bytes were not valid base64: {error}"),
+            )
+        })
 }
 
 fn resolve_provider_profile_id(

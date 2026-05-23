@@ -11,6 +11,7 @@ mod context;
 mod events;
 mod files;
 mod git;
+mod models;
 mod new;
 mod processes;
 mod providers;
@@ -213,7 +214,9 @@ pub(crate) fn category_for(id: &str) -> Category {
         "register" | "project" | "project-state" => Category::Project,
         "files" | "file" | "workspace" => Category::Workspace,
         "git" | "commit-message" => Category::Git,
-        "providers" | "provider" | "auth" | "login" | "logout" | "remote" => Category::Provider,
+        "model" | "models" | "providers" | "provider" | "auth" | "login" | "logout" | "remote" => {
+            Category::Provider
+        }
         "mcp" => Category::Mcp,
         "agents" | "agent" | "agent-definition" | "skills" | "plugins" => Category::Agent,
         "processes" | "process" => Category::Process,
@@ -230,6 +233,7 @@ pub(crate) fn category_for(id: &str) -> Category {
 const ESSENTIALS: &[&str] = &[
     "sessions",
     "new",
+    "model",
     "providers",
     "files",
     "git",
@@ -298,8 +302,14 @@ static COMMANDS: &[Command] = &[
     Command {
         id: "providers",
         title: "providers",
-        hint: "switch model",
+        hint: "switch provider",
         action: CommandAction::Open(providers::open),
+    },
+    Command {
+        id: "model",
+        title: "model",
+        hint: "switch active model",
+        action: CommandAction::Open(models::open),
     },
     Command {
         id: "auth",
@@ -1521,6 +1531,7 @@ fn dispatch_detail_key(
     match id {
         "sessions" => sessions::handle_key(app, detail, key, globals),
         "providers" => providers::handle_key(app, detail, key, globals),
+        "model" => models::handle_key(app, detail, key, globals),
         "auth" => auth::handle_key(app, detail, key, globals),
         "files" => files::handle_key(app, detail, key, globals),
         "git" => git::handle_key(app, detail, key, globals),
@@ -1692,6 +1703,10 @@ fn has_option(args: &[String], option: &str) -> bool {
 const VERTICAL_PAD_ROWS: u16 = 1;
 const PALETTE_LEFT_GUTTER: &str = "   ";
 const RIGHT_LABEL_PAD: usize = 2;
+const MIN_HEIGHT: u16 = 10;
+const BROWSE_PREFERRED_HEIGHT: u16 = 32;
+const MAX_HEIGHT_PERCENT: u16 = 70;
+const MIN_VERTICAL_MARGIN_ROWS: u16 = 2;
 
 /// Preferred overlay size for the current palette state. The caller centers
 /// a rect of this size inside the viewport. The returned dimensions include
@@ -1702,14 +1717,10 @@ pub fn desired_size(app: &App, viewport: Rect) -> (u16, u16) {
     let width = viewport.width.saturating_mul(60) / 100;
     let width = width.clamp(MIN_WIDTH.min(viewport.width), MAX_WIDTH);
 
-    let max_height = viewport.height.saturating_mul(85) / 100;
+    let max_height = max_palette_height(viewport.height);
+    let min_height = MIN_HEIGHT.min(viewport.height);
     let preferred_height = match app.palette.as_ref() {
-        Some(PaletteState::Browse(_)) => {
-            // Browse view: take as much vertical space as we can comfortably
-            // afford so longer lists need less scrolling. Floor at 22 rows
-            // so even short terminals keep the list, strip, and footer.
-            max_height.max(22)
-        }
+        Some(PaletteState::Browse(_)) => BROWSE_PREFERRED_HEIGHT,
         Some(PaletteState::Detail(detail)) => {
             let body = match &detail.data {
                 DetailData::Rows(rows) => rows
@@ -1724,8 +1735,19 @@ pub fn desired_size(app: &App, viewport: Rect) -> (u16, u16) {
         }
         None => 0,
     };
-    let height = preferred_height.min(max_height).max(10);
+    let height = preferred_height.min(max_height).max(min_height);
     (width, height)
+}
+
+fn max_palette_height(viewport_height: u16) -> u16 {
+    if viewport_height == 0 {
+        return 0;
+    }
+
+    let min_height = MIN_HEIGHT.min(viewport_height);
+    let ratio_cap = viewport_height.saturating_mul(MAX_HEIGHT_PERCENT) / 100;
+    let margin_cap = viewport_height.saturating_sub(MIN_VERTICAL_MARGIN_ROWS * 2);
+    ratio_cap.min(margin_cap).max(min_height)
 }
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -2728,6 +2750,40 @@ mod tests {
             count_row.contains("commands  "),
             "expected two cells after count label: `{count_row}`",
         );
+    }
+
+    #[test]
+    fn browse_desired_size_stays_short_on_tall_viewports() {
+        let mut app = super::super::app::test_only_empty_app();
+        app.palette = Some(open());
+
+        let (_, height) = desired_size(&app, Rect::new(0, 0, 120, 80));
+
+        assert_eq!(height, BROWSE_PREFERRED_HEIGHT);
+    }
+
+    #[test]
+    fn browse_desired_size_keeps_vertical_margins_when_space_allows() {
+        let mut app = super::super::app::test_only_empty_app();
+        app.palette = Some(open());
+        let viewport_height = 40;
+
+        let (_, height) = desired_size(&app, Rect::new(0, 0, 120, viewport_height));
+        let top = viewport_height.saturating_sub(height) / 2;
+        let bottom = viewport_height.saturating_sub(top + height);
+
+        assert!(top >= MIN_VERTICAL_MARGIN_ROWS);
+        assert!(bottom >= MIN_VERTICAL_MARGIN_ROWS);
+    }
+
+    #[test]
+    fn browse_desired_size_never_exceeds_tiny_viewport() {
+        let mut app = super::super::app::test_only_empty_app();
+        app.palette = Some(open());
+
+        let (_, height) = desired_size(&app, Rect::new(0, 0, 80, 8));
+
+        assert_eq!(height, 8);
     }
 
     #[test]

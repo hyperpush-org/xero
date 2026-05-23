@@ -45,6 +45,7 @@ interface SessionSnapshotPayload {
 		label?: string;
 		modelId?: string | null;
 		providerId?: string | null;
+		providerLabel?: string | null;
 		providerProfileId?: string | null;
 		thinkingSupported?: boolean | null;
 		thinkingEffortOptions?: ReadonlyArray<string | null> | null;
@@ -155,6 +156,7 @@ export function useSessionStream({
 						controls.modelId,
 						controls.rawModelId,
 						controls.providerId,
+						null,
 						controls.providerProfileId,
 					),
 					currentAgentId: controls.agentId,
@@ -559,7 +561,8 @@ function remoteEventControlSelection(
 	const schema = stringField(payload, "schema");
 	if (
 		schema !== "xero.remote_message_accepted.v1" &&
-		schema !== "xero.remote_session_started.v1"
+		schema !== "xero.remote_session_started.v1" &&
+		schema !== "xero.remote_session_controls_updated.v1"
 	) {
 		return null;
 	}
@@ -641,6 +644,7 @@ function ensureModelOption(
 	id: string | null,
 	modelId: string | null,
 	providerId: string | null,
+	providerLabel: string | null,
 	providerProfileId: string | null,
 ) {
 	if (!id || options.some((option) => option.id === id)) return [...options];
@@ -651,6 +655,7 @@ function ensureModelOption(
 			label: normalizedModelId,
 			modelId: normalizedModelId,
 			providerId,
+			providerLabel,
 			providerProfileId,
 			thinkingSupported: false,
 			thinkingEffortOptions: [],

@@ -117,6 +117,9 @@ jobs:
     name: Deploy Cloud
     needs: create-release
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloud
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -127,7 +130,7 @@ jobs:
       - name: Deploy cloud to Fly.io
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_CLOUD_TOKEN || secrets.FLY_API_TOKEN }}
-        run: flyctl deploy --remote-only --config fly.cloud.toml
+        run: flyctl deploy .. --remote-only --config fly.toml
 
   build-tui:
     name: Build TUI (${{ matrix.artifact_suffix }})
@@ -193,7 +196,7 @@ jobs:
           XERO_SKIP_COOKIE_IMPORTER: "1"
           XERO_SKIP_DICTATION_SHIM: "1"
           XERO_SKIP_SIDECAR_FETCH: "1"
-        run: cargo build --release --package xero-desktop --bin xero-tui --target ${{ matrix.target }}
+        run: cargo build --release --package xero-desktop --bin xero --target ${{ matrix.target }}
 
       - name: Package TUI archive
         if: matrix.platform != 'windows-latest'
@@ -203,17 +206,17 @@ jobs:
         run: |
           set -euo pipefail
 
-          asset="xero-tui-${TARGET}.tar.gz"
+          asset="xero-${TARGET}.tar.gz"
           out_dir="$RUNNER_TEMP/tui-dist"
-          staging="$RUNNER_TEMP/xero-tui-${TARGET}"
-          binary="client/src-tauri/target/${TARGET}/release/xero-tui"
+          staging="$RUNNER_TEMP/xero-${TARGET}"
+          binary="client/src-tauri/target/${TARGET}/release/xero"
 
           test -x "$binary"
           rm -rf "$out_dir" "$staging"
           mkdir -p "$out_dir" "$staging"
-          cp "$binary" "$staging/xero-tui"
-          chmod 0755 "$staging/xero-tui"
-          tar -C "$staging" -czf "$out_dir/$asset" xero-tui
+          cp "$binary" "$staging/xero"
+          chmod 0755 "$staging/xero"
+          tar -C "$staging" -czf "$out_dir/$asset" xero
 
           if command -v sha256sum >/dev/null 2>&1; then
             checksum="$(sha256sum "$out_dir/$asset" | awk '{print $1}')"
@@ -229,10 +232,10 @@ jobs:
           TARGET: ${{ matrix.target }}
           RUNNER_TEMP: ${{ runner.temp }}
         run: |
-          $asset = "xero-tui-$env:TARGET.zip"
+          $asset = "xero-$env:TARGET.zip"
           $outDir = Join-Path $env:RUNNER_TEMP "tui-dist"
-          $staging = Join-Path $env:RUNNER_TEMP "xero-tui-$env:TARGET"
-          $binary = "client/src-tauri/target/$env:TARGET/release/xero-tui.exe"
+          $staging = Join-Path $env:RUNNER_TEMP "xero-$env:TARGET"
+          $binary = "client/src-tauri/target/$env:TARGET/release/xero.exe"
 
           if (!(Test-Path $binary)) {
             Write-Error "Missing TUI binary at $binary"
@@ -241,8 +244,8 @@ jobs:
 
           Remove-Item -Recurse -Force $outDir, $staging -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $outDir, $staging | Out-Null
-          Copy-Item -Path $binary -Destination (Join-Path $staging "xero-tui.exe") -Force
-          Compress-Archive -Path (Join-Path $staging "xero-tui.exe") -DestinationPath (Join-Path $outDir $asset) -Force
+          Copy-Item -Path $binary -Destination (Join-Path $staging "xero.exe") -Force
+          Compress-Archive -Path (Join-Path $staging "xero.exe") -DestinationPath (Join-Path $outDir $asset) -Force
           $hash = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $outDir $asset)).Hash.ToLowerInvariant()
           "$hash  $asset" | Out-File -FilePath (Join-Path $outDir "$asset.sha256") -Encoding ascii
 

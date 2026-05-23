@@ -307,6 +307,7 @@ mod tests {
             ids.contains(&"providers"),
             "missing top-level providers command"
         );
+        assert!(ids.contains(&"model"), "missing top-level model command");
         assert!(
             !ids.contains(&"project list"),
             "root slash suggestions should hide project subcommands"

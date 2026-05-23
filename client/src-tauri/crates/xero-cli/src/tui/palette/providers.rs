@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use crate::GlobalOptions;
 
 use super::{
-    super::app::{invoke_json, App, ProviderRow},
+    super::app::{invoke_json, App},
     array_field, empty_detail, error_detail, rows_detail, string_field, DetailOutcome, DetailRow,
     DetailState, OpenOutcome,
 };
@@ -56,7 +56,7 @@ pub fn handle_key(
     app: &mut App,
     detail: &mut DetailState,
     key: KeyEvent,
-    _globals: &GlobalOptions,
+    globals: &GlobalOptions,
 ) -> DetailOutcome {
     if !matches!(key.code, KeyCode::Enter) {
         return DetailOutcome::Stay;
@@ -74,28 +74,14 @@ pub fn handle_key(
         return DetailOutcome::Stay;
     }
     if provider_id == "fake_provider" {
-        app.fake_provider_fixture = true;
+        app.select_provider_model("fake_provider", "fake-model", "");
+        super::super::app::sync_active_session_to_cloud_best_effort(globals, app);
         return DetailOutcome::Close {
             status: Some("Using fake provider for next run.".to_owned()),
         };
     }
-    app.fake_provider_fixture = false;
-    // Snap the providers list to match the selection so the composer agent
-    // line stays in sync.
-    if !app.providers.iter().any(|p| p.provider_id == provider_id) {
-        app.providers.push(ProviderRow {
-            provider_id: provider_id.clone(),
-            default_model: default_model.clone(),
-            credential_kind: credential_kind.clone(),
-        });
-    }
-    let index = app
-        .providers
-        .iter()
-        .filter(|p| p.provider_id != "fake_provider")
-        .position(|p| p.provider_id == provider_id)
-        .unwrap_or(0);
-    app.selected_provider = index;
+    app.select_provider_model(provider_id.clone(), default_model, credential_kind);
+    super::super::app::sync_active_session_to_cloud_best_effort(globals, app);
     DetailOutcome::Close {
         status: Some(format!("Active provider: {}", provider_id)),
     }

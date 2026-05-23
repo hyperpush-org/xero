@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 #
-# Build context must be the repo root (see fly.cloud.toml). The container
+# Build context must be the repo root (see fly.toml). The container
 # bundles the cloud web app along with the shared `@xero/ui` workspace.
 
 FROM node:24-slim AS base

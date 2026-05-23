@@ -17,6 +17,8 @@ use super::{
 };
 
 const TUI_SETTINGS_FILE: &str = "tui-settings.json";
+const DEFAULT_AGENT_SESSION_TITLE: &str = "New Chat";
+const MAX_SESSION_TITLE_CHARS: usize = 64;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -870,35 +872,96 @@ fn upsert_session(
 }
 
 fn title_from_session_id(session_id: &str) -> String {
-    let short = session_id
-        .trim()
-        .strip_prefix("session-")
-        .unwrap_or_else(|| session_id.trim())
-        .chars()
-        .take(18)
-        .collect::<String>();
-    if short.is_empty() {
-        "New Session".into()
-    } else {
-        format!("Session {short}")
-    }
+    let _ = session_id;
+    DEFAULT_AGENT_SESSION_TITLE.into()
 }
 
 fn title_from_prompt(prompt: &str) -> String {
-    let words = prompt
+    let cleaned = prompt
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("")
         .split_whitespace()
-        .filter(|word| !word.trim().is_empty())
-        .take(7)
-        .collect::<Vec<_>>();
-    if words.is_empty() {
-        return "New Session".into();
+        .collect::<Vec<_>>()
+        .join(" ");
+    let cleaned = cleaned
+        .trim_start_matches(|character: char| {
+            matches!(character, '#' | '-' | '*' | '>' | '"' | '\'' | '`')
+        })
+        .trim();
+    let title = truncate_session_title(
+        &trim_trailing_session_title_punctuation(cleaned),
+        MAX_SESSION_TITLE_CHARS,
+    );
+
+    if title.trim().is_empty() || is_generic_session_title(&title) {
+        DEFAULT_AGENT_SESSION_TITLE.into()
+    } else {
+        title
     }
-    let mut title = words.join(" ");
-    if title.chars().count() > 64 {
-        title = title.chars().take(63).collect::<String>();
-        title.push('~');
+}
+
+fn truncate_session_title(title: &str, max_chars: usize) -> String {
+    let trimmed = title.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_owned();
     }
-    title
+
+    let mut output = String::new();
+    for word in trimmed.split_whitespace() {
+        let next_len =
+            output.chars().count() + if output.is_empty() { 0 } else { 1 } + word.chars().count();
+        if next_len > max_chars {
+            break;
+        }
+        if !output.is_empty() {
+            output.push(' ');
+        }
+        output.push_str(word);
+    }
+
+    if output.is_empty() {
+        trimmed.chars().take(max_chars).collect()
+    } else {
+        output
+    }
+}
+
+fn trim_trailing_session_title_punctuation(value: &str) -> String {
+    value
+        .trim()
+        .trim_end_matches(|character: char| {
+            matches!(
+                character,
+                '.' | ',' | ':' | ';' | '!' | '?' | '-' | '_' | '"' | '\'' | '`'
+            )
+        })
+        .trim()
+        .to_owned()
+}
+
+fn is_generic_session_title(title: &str) -> bool {
+    let normalized = title
+        .trim()
+        .trim_matches(|character: char| matches!(character, '"' | '\'' | '`'))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "main"
+            | "new chat"
+            | "new session"
+            | "untitled"
+            | "untitled session"
+            | "chat"
+            | "session"
+            | "conversation"
+            | "developer conversation"
+            | "developer assistant conversation"
+    )
 }
 
 fn select_session(
@@ -1519,10 +1582,15 @@ mod tests {
             title_from_prompt("Implement the TUI session browser now please"),
             "Implement the TUI session browser now please"
         );
-        assert_eq!(title_from_prompt("   "), "New Session");
+        assert_eq!(
+            title_from_prompt("  - Fix cloud session naming!!!\nIgnore this line"),
+            "Fix cloud session naming"
+        );
+        assert_eq!(title_from_prompt("Session"), "New Chat");
+        assert_eq!(title_from_prompt("   "), "New Chat");
         assert_eq!(
             title_from_session_id("session-1234567890abcdef"),
-            "Session 1234567890abcdef"
+            "New Chat"
         );
     }
 }

@@ -1392,6 +1392,7 @@ fn remote_available_models<R: Runtime>(
                 "label": label,
                 "modelId": option.model_id,
                 "providerId": option.provider_id,
+                "providerLabel": option.provider_label,
                 "providerProfileId": option.provider_profile_id,
                 "thinkingSupported": option.thinking.supported,
                 "thinkingEffortOptions": effort_options,

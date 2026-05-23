@@ -10,12 +10,12 @@ use super::{
 };
 
 pub fn open(globals: &GlobalOptions, app: &mut App) -> OpenOutcome {
-    let Some(project_id) = app.project.project_id.as_deref() else {
+    let Some(project_id) = app.project.project_id.clone() else {
         return OpenOutcome::Closed {
             status: Some("No project bound — `register` this directory first.".to_owned()),
         };
     };
-    match invoke_json(globals, &["session", "create", "--project-id", project_id]) {
+    match invoke_json(globals, &["session", "create", "--project-id", &project_id]) {
         Ok(value) => {
             let session = value.get("session").cloned().unwrap_or(value);
             let session_id = string_field(&session, "agentSessionId");
@@ -28,6 +28,9 @@ pub fn open(globals: &GlobalOptions, app: &mut App) -> OpenOutcome {
                 };
             }
             app.reset_for_new_session((!session_id.is_empty()).then_some(session_id.clone()));
+            if !session_id.is_empty() {
+                super::super::app::sync_active_session_to_cloud_best_effort(globals, app);
+            }
             OpenOutcome::Closed {
                 status: Some(if session_id.is_empty() {
                     "New session.".to_owned()

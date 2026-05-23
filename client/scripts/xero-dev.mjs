@@ -24,6 +24,8 @@ const env = {
   ...rootEnv,
   CARGO_BUILD_JOBS: rootEnv.CARGO_BUILD_JOBS ?? '4',
   XERO_REMOTE_RELAY_URL: rootEnv.XERO_REMOTE_RELAY_URL ?? relayUrl,
+  XERO_SERVER_URL: rootEnv.XERO_SERVER_URL ?? relayUrl,
+  VITE_XERO_SERVER_URL: rootEnv.VITE_XERO_SERVER_URL ?? relayUrl,
 }
 
 main().catch((error) => {
@@ -37,7 +39,7 @@ async function main() {
   const command = process.platform === 'win32' ? 'cargo.exe' : 'cargo'
   const child = spawn(
     command,
-    ['run', '--package', 'xero-desktop', '--bin', 'xero-tui', '--', ...xeroTuiArgs],
+    ['run', '--package', 'xero-desktop', '--bin', 'xero', '--', ...xeroTuiArgs],
     {
       cwd: tauriDir,
       env,
@@ -79,6 +81,7 @@ async function main() {
 function resolveRelayUrl() {
   const raw =
     rootEnv.XERO_REMOTE_RELAY_URL ||
+    rootEnv.XERO_SERVER_URL ||
     rootEnv.VITE_XERO_SERVER_URL ||
     'http://127.0.0.1:4000'
   return raw.replace(/\/+$/, '')
@@ -96,7 +99,7 @@ async function ensureLocalRelay() {
   console.log(`[dev:tui] Local Xero relay is not running at ${relayUrl}; starting Phoenix...`)
   await runOnce(process.execPath, [preflightScript], { cwd: repoRoot, env })
 
-  const logPath = resolve(tmpdir(), `xero-tui-phoenix-${process.pid}.log`)
+  const logPath = resolve(tmpdir(), `xero-phoenix-${process.pid}.log`)
   const log = createWriteStream(logPath, { flags: 'a' })
   const serverEnv = {
     ...env,
@@ -121,9 +124,9 @@ async function ensureCloudApp() {
   if (!isLocalUrl(cloudUrl)) return null
 
   console.log(`[dev:tui] Cloud app is not running at ${cloudUrl}; starting TanStack Start...`)
-  const logPath = resolve(tmpdir(), `xero-tui-cloud-${process.pid}.log`)
+  const logPath = resolve(tmpdir(), `xero-cloud-${process.pid}.log`)
   const log = createWriteStream(logPath, { flags: 'a' })
-  const cloud = spawn(pnpmCommand(), ['run', 'dev:cloud'], {
+  const cloud = spawn(pnpmCommand(), cloudDevArgs(cloudUrl), {
     cwd: repoRoot,
     env,
     shell: process.platform === 'win32',
@@ -201,6 +204,18 @@ function pnpmCommand() {
   return process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
 }
 
+function cloudDevArgs(baseUrl) {
+  const fallback = ['--dir', './cloud', 'run', 'dev']
+  try {
+    const url = new URL(baseUrl)
+    const host = url.hostname.replace(/^\[/, '').replace(/\]$/, '')
+    const port = url.port || (url.protocol === 'https:' ? '443' : '80')
+    return [...fallback, '--', '--host', host, '--port', port]
+  } catch {
+    return fallback
+  }
+}
+
 function stopManagedProcess(managed) {
   if (managed?.process && !managed.process.killed) {
     managed.process.kill('SIGTERM')
@@ -242,9 +257,9 @@ function tailLog(path) {
     const contents = readFileSync(path, 'utf8')
     const lines = contents.trimEnd().split(/\r?\n/)
     const tail = lines.slice(-20).join('\n')
-    return tail ? `Last Phoenix log lines:\n${tail}` : `Phoenix log was empty: ${path}`
+    return tail ? `Last log lines:\n${tail}` : `Log was empty: ${path}`
   } catch {
-    return `Phoenix log unavailable: ${path}`
+    return `Log unavailable: ${path}`
   }
 }
 

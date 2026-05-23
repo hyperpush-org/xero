@@ -4,7 +4,7 @@ import { computeStepOrder } from '@/components/xero/onboarding/onboarding-flow'
 describe('computeStepOrder', () => {
   it('returns the base order without local-environment when launchMode is null', () => {
     const ids = computeStepOrder(null, false).map((step) => step.id)
-    expect(ids).toEqual(['welcome', 'providers', 'project', 'notifications', 'confirm'])
+    expect(ids).toEqual(['welcome', 'providers', 'project', 'notifications', 'confirm', 'beta'])
   })
 
   it('inserts local-environment after welcome and before providers when launchMode is local-source', () => {
@@ -16,6 +16,7 @@ describe('computeStepOrder', () => {
       'project',
       'notifications',
       'confirm',
+      'beta',
     ])
   })
 
@@ -33,6 +34,7 @@ describe('computeStepOrder', () => {
       'notifications',
       'environment-access',
       'confirm',
+      'beta',
     ])
   })
 
@@ -46,6 +48,7 @@ describe('computeStepOrder', () => {
       'notifications',
       'environment-access',
       'confirm',
+      'beta',
     ])
   })
 

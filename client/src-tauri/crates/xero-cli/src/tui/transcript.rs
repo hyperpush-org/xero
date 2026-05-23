@@ -26,13 +26,13 @@ use super::{
     theme,
 };
 
-/// Worst-case block row count for the welcome banner — logo + identity row +
+/// Worst-case block row count for the welcome banner — beta tag + logo + identity row +
 /// signed-out reminder row + version row. Callers use this to clamp
 /// `target_height` so the banner always fits, even on a tight terminal. The
 /// reminder row is only present when signed out; reserving it unconditionally
 /// just leaves one extra blank pad row when signed in, which is harmless.
 pub fn welcome_logo_height() -> u16 {
-    LOGO_ROWS.len() as u16 + 3
+    LOGO_ROWS.len() as u16 + 4
 }
 
 /// Reminder shown beneath the identity row when no GitHub account is linked,
@@ -40,15 +40,16 @@ pub fn welcome_logo_height() -> u16 {
 const SIGN_IN_REMINDER: &str = "Sign in to drive these sessions from the cloud app on any device.";
 
 /// Build the welcome-banner lines for the scrollback. The logo is centered
-/// horizontally inside `width` and vertically inside `target_height` rows
-/// so the first paint fills the terminal instead of dropping a sliver of
-/// logo into the cursor's current position.
+/// horizontally inside `width` and placed slightly below vertical center
+/// inside `target_height` rows so the first paint fills the terminal instead
+/// of dropping a sliver of logo into the cursor's current position.
 ///
 /// Rendered top-to-bottom:
-///   1. ASCII logo (gold)
-///   2. Identity row — `@handle` when signed in, dim `not signed in · /login`
+///   1. Beta tag, tucked above the `O`
+///   2. ASCII logo (gold)
+///   3. Identity row — `@handle` when signed in, dim `not signed in · /login`
 ///      otherwise
-///   3. Version label (dim) — centered under the identity row
+///   4. Version label (dim) — centered under the identity row
 pub fn welcome_banner_lines(
     width: u16,
     target_height: u16,
@@ -62,19 +63,26 @@ pub fn welcome_banner_lines(
         .unwrap_or(0);
     let logo_leading = (width as usize).saturating_sub(logo_width) / 2;
     let show_reminder = signed_in_handle.is_none();
-    // logo rows + identity row + version row, plus the reminder row when
+    // beta tag + logo rows + identity row + version row, plus the reminder row when
     // signed out.
-    let block_rows = LOGO_ROWS.len() as u16 + 2 + u16::from(show_reminder);
-    // Center vertically inside the target height; bias a hair high so the
-    // logo doesn't feel mashed against the composer below.
+    let block_rows = LOGO_ROWS.len() as u16 + 3 + u16::from(show_reminder);
+    // Center vertically inside the target height, then nudge down so the logo
+    // sits visually centered in the large empty field above the composer.
     let total = target_height.max(block_rows);
-    let top_pad = total.saturating_sub(block_rows) / 2;
+    let available_pad = total.saturating_sub(block_rows);
+    let centered_top_pad = available_pad / 2;
+    let top_pad =
+        centered_top_pad + WELCOME_BANNER_DOWNWARD_BIAS_ROWS.min(available_pad - centered_top_pad);
     let bottom_pad = total.saturating_sub(block_rows + top_pad);
 
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(total as usize);
     for _ in 0..top_pad {
         lines.push(Line::raw(""));
     }
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(logo_leading + BETA_TAG_LOGO_OFFSET)),
+        Span::styled(BETA_TAG, theme::accent()),
+    ]));
     for row in LOGO_ROWS {
         lines.push(Line::from(vec![
             Span::raw(" ".repeat(logo_leading)),
@@ -274,6 +282,10 @@ fn in_flight_pill_line(app: &App, elapsed: Duration) -> Option<Line<'static>> {
 // ---------------------------------------------------------------------------
 // Welcome logo
 // ---------------------------------------------------------------------------
+
+const BETA_TAG: &str = "[BETA]";
+const BETA_TAG_LOGO_OFFSET: usize = 28;
+const WELCOME_BANNER_DOWNWARD_BIAS_ROWS: u16 = 4;
 
 const LOGO_ROWS: &[&str] = &[
     "██╗  ██╗ ███████╗ ██████╗   ██████╗ ",
@@ -1100,6 +1112,18 @@ mod tests {
             .join("\n")
     }
 
+    fn banner_rows(lines: &[Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect()
+    }
+
     #[test]
     fn signed_out_banner_includes_cloud_reminder() {
         let lines = welcome_banner_lines(80, 20, "1.2.3", None);
@@ -1115,5 +1139,47 @@ mod tests {
         assert!(text.contains("octocat"));
         assert!(!text.contains("cloud app"));
         assert!(!text.contains("not signed in"));
+    }
+
+    #[test]
+    fn banner_places_beta_tag_above_o() {
+        let lines = welcome_banner_lines(80, 20, "1.2.3", Some("octocat"));
+        let rows = banner_rows(&lines);
+        let tag_row = rows
+            .iter()
+            .position(|row| row.contains(BETA_TAG))
+            .expect("beta tag row");
+        let logo_row = rows
+            .iter()
+            .position(|row| row.contains(LOGO_ROWS[0]))
+            .expect("first logo row");
+        let logo_start = rows[logo_row].find(LOGO_ROWS[0]).expect("logo start");
+        let tag_start = rows[tag_row].find(BETA_TAG).expect("tag start");
+
+        assert_eq!(tag_row + 1, logo_row, "beta tag should sit above logo");
+        assert_eq!(
+            logo_start + BETA_TAG_LOGO_OFFSET,
+            tag_start,
+            "beta tag should sit above the O"
+        );
+    }
+
+    #[test]
+    fn welcome_banner_sits_below_vertical_center() {
+        let target_height = 24;
+        let lines = welcome_banner_lines(80, target_height, "1.2.3", Some("octocat"));
+        let rows = banner_rows(&lines);
+        let logo_row = rows
+            .iter()
+            .position(|row| row.contains(LOGO_ROWS[0]))
+            .expect("first logo row");
+        let block_rows = LOGO_ROWS.len() as u16 + 3;
+        let centered_logo_row = (target_height.saturating_sub(block_rows) / 2) + 1;
+
+        assert_eq!(
+            logo_row as u16,
+            centered_logo_row + WELCOME_BANNER_DOWNWARD_BIAS_ROWS,
+            "welcome logo should be nudged below vertical center"
+        );
     }
 }

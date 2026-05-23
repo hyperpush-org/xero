@@ -20,6 +20,7 @@ export interface RemoteProjectSummary {
 }
 
 export type SessionThinkingEffort =
+	| "none"
 	| "minimal"
 	| "low"
 	| "medium"
@@ -31,6 +32,7 @@ export interface SessionModelOption {
 	label: string;
 	modelId: string;
 	providerId: string | null;
+	providerLabel: string | null;
 	providerProfileId: string | null;
 	thinkingSupported: boolean;
 	thinkingEffortOptions: SessionThinkingEffort[];
@@ -79,6 +81,7 @@ type RawSessionModelOption = Partial<
 		SessionModelOption,
 		| "modelId"
 		| "providerId"
+		| "providerLabel"
 		| "providerProfileId"
 		| "thinkingSupported"
 		| "thinkingEffortOptions"
@@ -87,6 +90,7 @@ type RawSessionModelOption = Partial<
 > & {
 	modelId?: string | null;
 	providerId?: string | null;
+	providerLabel?: string | null;
 	providerProfileId?: string | null;
 	thinkingSupported?: boolean | null;
 	thinkingEffortOptions?: ReadonlyArray<string | null> | null;
@@ -501,6 +505,7 @@ export const useSessionStore = create<SessionStoreState>((set) => ({
 							currentModelId ?? null,
 							controls.rawModelId ?? currentModelId ?? null,
 							controls.providerId ?? null,
+							null,
 							controls.providerProfileId ?? null,
 						),
 					},
@@ -586,6 +591,10 @@ export function normalizeModelOptions(
 				typeof option.providerId === "string" && option.providerId.trim()
 					? option.providerId.trim()
 					: null,
+			providerLabel:
+				typeof option.providerLabel === "string" && option.providerLabel.trim()
+					? option.providerLabel.trim()
+					: null,
 			providerProfileId:
 				typeof option.providerProfileId === "string" &&
 				option.providerProfileId.trim()
@@ -605,6 +614,7 @@ export function parseThinkingEffort(
 	if (typeof value !== "string") return null;
 	const trimmed = value.trim().toLowerCase();
 	switch (trimmed) {
+		case "none":
 		case "minimal":
 		case "low":
 		case "medium":
@@ -623,6 +633,7 @@ function ensureModelOption(
 	id: string | null,
 	modelId: string | null,
 	providerId: string | null,
+	providerLabel: string | null,
 	providerProfileId: string | null,
 ): SessionModelOption[] {
 	if (!id || options.some((option) => option.id === id)) {
@@ -635,6 +646,7 @@ function ensureModelOption(
 			label: normalizedModelId,
 			modelId: normalizedModelId,
 			providerId,
+			providerLabel,
 			providerProfileId,
 			thinkingSupported: false,
 			thinkingEffortOptions: [],

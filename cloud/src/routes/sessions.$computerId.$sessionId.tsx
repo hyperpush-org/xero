@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import {
 	Composer,
+	type ComposerSelectGroup,
 	type ComposerSelectOption,
 	WebComposerContextIndicator,
 	type WebComposerContextIndicatorStatus,
@@ -16,6 +17,7 @@ import {
 	requestSessionSnapshot,
 } from "#/lib/relay/relay-client";
 import {
+	type SessionModelOption,
 	type SessionThinkingEffort,
 	sessionKey,
 	useSessionStore,
@@ -28,6 +30,13 @@ import { useSessionStream } from "#/lib/relay/use-session-stream";
 export const Route = createFileRoute("/sessions/$computerId/$sessionId")({
 	component: SessionView,
 });
+
+interface ControlUpdateOverrides {
+	agentId?: string | null;
+	modelId?: string | null;
+	thinkingEffort?: SessionThinkingEffort | null;
+	autoCompactEnabled?: boolean | null;
+}
 
 function SessionView() {
 	const shell = useSessionsShell();
@@ -97,13 +106,28 @@ function SessionView() {
 	const resolvedProviderId = resolvedModelOption?.providerId ?? null;
 	const resolvedRawModelId = resolvedModelOption?.modelId ?? resolvedModelId;
 	const currentThinkingEffort = transcript?.currentThinkingEffort ?? null;
-	const thinkingOptionsForModel =
+	const currentControlsVersion = [
+		currentAgentId ?? "",
+		currentModelId ?? "",
+		currentThinkingEffort ?? "",
+		currentAutoCompactEnabled ? "1" : "0",
+	].join("\u0000");
+	const baseThinkingOptionsForModel =
 		resolvedModelOption?.thinkingEffortOptions ?? [];
 	const resolvedThinkingEffort =
 		selectedThinkingEffort ??
 		currentThinkingEffort ??
 		resolvedModelOption?.defaultThinkingEffort ??
-		(thinkingOptionsForModel.length > 0 ? thinkingOptionsForModel[0] : null);
+		(baseThinkingOptionsForModel.length > 0
+			? baseThinkingOptionsForModel[0]
+			: null);
+	const thinkingOptionsForModel = useMemo(() => {
+		if (!resolvedThinkingEffort) return baseThinkingOptionsForModel;
+		if (baseThinkingOptionsForModel.includes(resolvedThinkingEffort)) {
+			return baseThinkingOptionsForModel;
+		}
+		return [resolvedThinkingEffort, ...baseThinkingOptionsForModel];
+	}, [baseThinkingOptionsForModel, resolvedThinkingEffort]);
 	const thinkingComposerOptions = useMemo<ComposerSelectOption[]>(() => {
 		if (!resolvedModelOption?.thinkingSupported) return [];
 		return thinkingOptionsForModel.map((effort) => ({
@@ -111,6 +135,10 @@ function SessionView() {
 			label: formatThinkingEffortLabel(effort),
 		}));
 	}, [resolvedModelOption?.thinkingSupported, thinkingOptionsForModel]);
+	const modelGroups = useMemo<ComposerSelectGroup[]>(
+		() => buildComposerModelGroups(availableModels),
+		[availableModels],
+	);
 	const hasUserMessage = turns.some(
 		(turn) => turn.kind === "message" && turn.role === "user",
 	);
@@ -167,6 +195,28 @@ function SessionView() {
 		if (!joinRejected) return;
 		reportActiveTargetInvalid(key);
 	}, [joinRejected, key, reportActiveTargetInvalid]);
+
+	useEffect(() => {
+		setSelectedControls((current) => {
+			if (currentControlsVersion.length === 0) return current;
+			if (current.key !== key) return current;
+			if (
+				current.agentId === null &&
+				current.modelId === null &&
+				current.thinkingEffort === null &&
+				current.autoCompactEnabled === null
+			) {
+				return current;
+			}
+			return {
+				key,
+				agentId: null,
+				modelId: null,
+				thinkingEffort: null,
+				autoCompactEnabled: null,
+			};
+		});
+	}, [currentControlsVersion, key]);
 
 	useEffect(() => {
 		if (!channel || !session.deviceId || !currentSessionAvailable) return;
@@ -240,6 +290,57 @@ function SessionView() {
 		deviceId: session.deviceId,
 	});
 
+	const pushControlUpdate = useCallback(
+		(overrides: ControlUpdateOverrides = {}) => {
+			if (!channel || !session.deviceId) return;
+			const nextAgentId = overrides.agentId ?? resolvedAgentId;
+			const nextModelId = overrides.modelId ?? resolvedModelId;
+			if (!nextAgentId || !nextModelId) return;
+			const nextModelOption =
+				availableModels.find((option) => option.id === nextModelId) ??
+				resolvedModelOption;
+			const nextThinkingEffort =
+				overrides.thinkingEffort === undefined
+					? resolvedThinkingEffort
+					: overrides.thinkingEffort;
+			const payload: Record<string, unknown> = {
+				agent: nextAgentId,
+				modelId: nextModelOption?.modelId ?? nextModelId,
+				autoCompactEnabled: overrides.autoCompactEnabled ?? autoCompactEnabled,
+			};
+			if (nextModelOption?.providerId) {
+				payload.providerId = nextModelOption.providerId;
+			}
+			if (nextModelOption?.providerProfileId) {
+				payload.providerProfileId = nextModelOption.providerProfileId;
+			}
+			if (nextThinkingEffort) {
+				payload.thinkingEffort = nextThinkingEffort;
+			}
+			pushInboundCommand(channel, {
+				v: 1,
+				seq: Date.now(),
+				computer_id: computerId,
+				session_id: sessionId,
+				device_id: session.deviceId,
+				kind: "update_session_controls",
+				payload,
+			});
+		},
+		[
+			availableModels,
+			autoCompactEnabled,
+			channel,
+			computerId,
+			resolvedAgentId,
+			resolvedModelId,
+			resolvedModelOption,
+			resolvedThinkingEffort,
+			session.deviceId,
+			sessionId,
+		],
+	);
+
 	const dispatchSend = useCallback(
 		(submittedPrompt?: string) => {
 			const message = (submittedPrompt ?? draftPrompt).trim();
@@ -254,6 +355,9 @@ function SessionView() {
 			if (resolvedAgentId && resolvedModelId) {
 				payload.agent = resolvedAgentId;
 				payload.modelId = resolvedModelOption?.modelId ?? resolvedModelId;
+				if (resolvedModelOption?.providerId) {
+					payload.providerId = resolvedModelOption.providerId;
+				}
 				if (resolvedModelOption?.providerProfileId) {
 					payload.providerProfileId = resolvedModelOption.providerProfileId;
 				}
@@ -309,47 +413,61 @@ function SessionView() {
 				thinkingEffort: current.key === key ? current.thinkingEffort : null,
 				autoCompactEnabled: next,
 			}));
-			if (
-				!channel ||
-				!session.deviceId ||
-				!resolvedAgentId ||
-				!resolvedModelId
-			) {
-				return;
-			}
-			const payload: Record<string, unknown> = {
-				agent: resolvedAgentId,
-				modelId: resolvedModelOption?.modelId ?? resolvedModelId,
-				autoCompactEnabled: next,
-			};
-			if (resolvedModelOption?.providerProfileId) {
-				payload.providerProfileId = resolvedModelOption.providerProfileId;
-			}
-			if (resolvedThinkingEffort && resolvedModelOption?.thinkingSupported) {
-				payload.thinkingEffort = resolvedThinkingEffort;
-			}
-			const command: InboundCommand = {
-				v: 1,
-				seq: Date.now(),
-				computer_id: computerId,
-				session_id: sessionId,
-				device_id: session.deviceId,
-				kind: "update_session_controls",
-				payload,
-			};
-			pushInboundCommand(channel, command);
+			pushControlUpdate({ autoCompactEnabled: next });
 		},
-		[
-			channel,
-			computerId,
-			key,
-			resolvedAgentId,
-			resolvedModelId,
-			resolvedModelOption,
-			resolvedThinkingEffort,
-			session.deviceId,
-			sessionId,
-		],
+		[key, pushControlUpdate],
+	);
+
+	const handleAgentChange = useCallback(
+		(agentId: string) => {
+			setSelectedControls((current) => ({
+				key,
+				agentId,
+				modelId: current.key === key ? current.modelId : null,
+				thinkingEffort: current.key === key ? current.thinkingEffort : null,
+				autoCompactEnabled:
+					current.key === key ? current.autoCompactEnabled : null,
+			}));
+			pushControlUpdate({ agentId });
+		},
+		[key, pushControlUpdate],
+	);
+
+	const handleModelChange = useCallback(
+		(modelId: string) => {
+			const modelOption =
+				availableModels.find((option) => option.id === modelId) ?? null;
+			const nextThinkingEffort = defaultThinkingEffortForModel(modelOption);
+			setSelectedControls((current) => ({
+				key,
+				agentId: current.key === key ? current.agentId : null,
+				modelId,
+				thinkingEffort: nextThinkingEffort,
+				autoCompactEnabled:
+					current.key === key ? current.autoCompactEnabled : null,
+			}));
+			pushControlUpdate({
+				modelId,
+				thinkingEffort: nextThinkingEffort,
+			});
+		},
+		[availableModels, key, pushControlUpdate],
+	);
+
+	const handleThinkingChange = useCallback(
+		(value: string) => {
+			const thinkingEffort = value as SessionThinkingEffort;
+			setSelectedControls((current) => ({
+				key,
+				agentId: current.key === key ? current.agentId : null,
+				modelId: current.key === key ? current.modelId : null,
+				thinkingEffort,
+				autoCompactEnabled:
+					current.key === key ? current.autoCompactEnabled : null,
+			}));
+			pushControlUpdate({ thinkingEffort });
+		},
+		[key, pushControlUpdate],
 	);
 
 	const projectLabel = shell.activeProjectLabel;
@@ -405,41 +523,13 @@ function SessionView() {
 						onAutoCompactEnabledChange={handleAutoCompactEnabledChange}
 						agentGroups={[{ id: "agents", options: availableAgents }]}
 						selectedAgentId={resolvedAgentId}
-						onAgentChange={(agentId) =>
-							setSelectedControls((current) => ({
-								key,
-								agentId,
-								modelId: current.key === key ? current.modelId : null,
-								thinkingEffort:
-									current.key === key ? current.thinkingEffort : null,
-								autoCompactEnabled:
-									current.key === key ? current.autoCompactEnabled : null,
-							}))
-						}
-						modelGroups={[{ id: "models", options: availableModels }]}
+						onAgentChange={handleAgentChange}
+						modelGroups={modelGroups}
 						selectedModelId={resolvedModelId}
-						onModelChange={(modelId) =>
-							setSelectedControls((current) => ({
-								key,
-								agentId: current.key === key ? current.agentId : null,
-								modelId,
-								thinkingEffort: null,
-								autoCompactEnabled:
-									current.key === key ? current.autoCompactEnabled : null,
-							}))
-						}
+						onModelChange={handleModelChange}
 						thinkingOptions={thinkingComposerOptions}
 						selectedThinkingId={resolvedThinkingEffort}
-						onThinkingChange={(value) =>
-							setSelectedControls((current) => ({
-								key,
-								agentId: current.key === key ? current.agentId : null,
-								modelId: current.key === key ? current.modelId : null,
-								thinkingEffort: value as SessionThinkingEffort,
-								autoCompactEnabled:
-									current.key === key ? current.autoCompactEnabled : null,
-							}))
-						}
+						onThinkingChange={handleThinkingChange}
 						pendingAttachments={attachmentsHook.pendingAttachments}
 						onAddFiles={attachmentsHook.addFiles}
 						onRemoveAttachment={attachmentsHook.removeAttachment}
@@ -451,8 +541,113 @@ function SessionView() {
 	);
 }
 
+function buildComposerModelGroups(
+	options: readonly SessionModelOption[],
+): ComposerSelectGroup[] {
+	const groups = new Map<string, ComposerSelectGroup>();
+	for (const option of options) {
+		const providerLabel = modelProviderLabel(option);
+		const providerSlug =
+			providerLabel.toLowerCase().replace(/\s+/g, "-") || "models";
+		const groupId =
+			option.providerId ?? option.providerProfileId ?? providerSlug;
+		const modelLabel = modelDisplayLabel(option, providerLabel);
+		const existing = groups.get(groupId);
+		const nextOption = {
+			id: option.id,
+			label: modelLabel,
+		};
+		if (existing) {
+			groups.set(groupId, {
+				...existing,
+				options: [...existing.options, nextOption],
+			});
+			continue;
+		}
+		groups.set(groupId, {
+			id: groupId,
+			label: providerLabel,
+			options: [nextOption],
+		});
+	}
+	return Array.from(groups.values());
+}
+
+function modelDisplayLabel(
+	option: SessionModelOption,
+	providerLabel: string,
+): string {
+	const fallback = option.modelId.trim() || option.id;
+	let label = option.label.trim() || fallback;
+	const suffixes = [
+		providerLabel,
+		option.providerLabel,
+		option.providerId,
+		option.providerProfileId,
+	]
+		.filter((value): value is string => Boolean(value?.trim()))
+		.map((value) => ` · ${value.trim()}`);
+	for (const suffix of suffixes) {
+		if (label.endsWith(suffix)) {
+			label = label.slice(0, -suffix.length).trim();
+			break;
+		}
+	}
+	return label || fallback;
+}
+
+function modelProviderLabel(option: SessionModelOption): string {
+	if (option.providerLabel?.trim()) return option.providerLabel.trim();
+	return providerLabelForId(option.providerId) ?? "Current selection";
+}
+
+function defaultThinkingEffortForModel(
+	option: SessionModelOption | null,
+): SessionThinkingEffort | null {
+	if (!option?.thinkingSupported) return null;
+	return (
+		option.defaultThinkingEffort ??
+		(option.thinkingEffortOptions.length > 0
+			? option.thinkingEffortOptions[0]
+			: null)
+	);
+}
+
+function providerLabelForId(providerId: string | null): string | null {
+	switch (providerId) {
+		case "openai_codex":
+			return "OpenAI Codex";
+		case "openrouter":
+			return "OpenRouter";
+		case "anthropic":
+			return "Anthropic";
+		case "xai":
+			return "xAI / Grok";
+		case "github_models":
+			return "GitHub Models";
+		case "openai_api":
+			return "OpenAI-compatible";
+		case "deepseek":
+			return "DeepSeek";
+		case "ollama":
+			return "Ollama";
+		case "azure_openai":
+			return "Azure OpenAI";
+		case "gemini_ai_studio":
+			return "Gemini AI Studio";
+		case "bedrock":
+			return "Amazon Bedrock";
+		case "vertex":
+			return "Google Vertex AI";
+		default:
+			return providerId?.trim() || null;
+	}
+}
+
 function formatThinkingEffortLabel(effort: SessionThinkingEffort): string {
 	switch (effort) {
+		case "none":
+			return "None";
 		case "minimal":
 			return "Minimal";
 		case "low":

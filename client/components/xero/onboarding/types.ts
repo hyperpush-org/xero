@@ -6,6 +6,7 @@ export type OnboardingStepId =
   | "notifications"
   | "environment-access"
   | "confirm"
+  | "beta"
 
 export type ProviderId =
   | "openai_codex"

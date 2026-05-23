@@ -8,11 +8,11 @@ description = "Headless Xero CLI backed by xero-agent-core"
 doctest = false
 
 [[bin]]
-name = "xero"
+name = "xero-core"
 path = "src/main.rs"
 
 [[bin]]
-name = "xero-tui"
+name = "xero-core-tui"
 path = "src/bin/xero_tui.rs"
 
 [dependencies]

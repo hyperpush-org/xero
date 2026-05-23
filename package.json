@@ -14,7 +14,7 @@
     "dev:server": "cd server && mix phx.server",
     "dev:tauri": "pnpm --dir ./client run tauri:dev",
     "dev:tauri:ios-grpc": "pnpm --dir ./client run tauri:dev:ios-grpc",
-    "dev:tui": "node ./client/scripts/xero-tui-dev.mjs",
+    "dev:tui": "node ./client/scripts/xero-dev.mjs",
     "dev:landing": "pnpm --dir ./landing run dev --port 3001",
     "dev:cloud": "pnpm --dir ./cloud run dev",
     "stop:all": "node scripts/stop-all.mjs",

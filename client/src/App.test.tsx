@@ -2796,6 +2796,10 @@ describe('XeroApp current UI', () => {
 
     expect(await screen.findByRole('heading', { name: 'Review and finish' })).toBeVisible()
     expect(screen.queryByRole('heading', { name: 'Review environment access' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByRole('heading', { name: 'Early beta' })).toBeVisible()
+    expect(screen.getByText('Xero is still early. You may hit rough edges or unexpected issues.')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Enter Xero' })).toBeVisible()
     expect(getEnvironmentDiscoveryStatus).toHaveBeenCalledTimes(1)
     expect(startEnvironmentDiscovery).not.toHaveBeenCalled()
   })

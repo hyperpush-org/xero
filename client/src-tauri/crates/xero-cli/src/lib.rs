@@ -5485,12 +5485,8 @@ fn normalize_context_hash(value: &str) -> String {
 }
 
 fn session_title(agent_session_id: &str) -> String {
-    let trimmed = agent_session_id.trim();
-    if trimmed.is_empty() {
-        "CLI Session".into()
-    } else {
-        format!("CLI {trimmed}")
-    }
+    let _ = agent_session_id;
+    "New Chat".into()
 }
 
 #[derive(Debug, Clone)]

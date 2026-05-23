@@ -55,8 +55,10 @@ export function ComposerInlinePillSelect({
 	return (
 		<Select
 			disabled={disabled}
-			value={value ?? undefined}
-			onValueChange={onChange}
+			value={value ?? ""}
+			onValueChange={(nextValue) => {
+				if (nextValue) onChange(nextValue);
+			}}
 		>
 			{tooltip ? (
 				<Tooltip>

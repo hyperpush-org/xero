@@ -325,13 +325,15 @@ fn get_session_context_snapshot_blocking<R: Runtime>(
         request.model_id.as_deref(),
         request.pending_prompt.as_deref(),
     )?;
-    eprintln!(
-        "[runtime-latency] get_session_context_snapshot project_id={} agent_session_id={} run_id={} duration_ms={}",
-        request.project_id,
-        request.agent_session_id,
-        request.run_id.as_deref().unwrap_or("none"),
-        started.elapsed().as_millis()
-    );
+    if runtime_latency_logging_enabled() {
+        eprintln!(
+            "[runtime-latency] get_session_context_snapshot project_id={} agent_session_id={} run_id={} duration_ms={}",
+            request.project_id,
+            request.agent_session_id,
+            request.run_id.as_deref().unwrap_or("none"),
+            started.elapsed().as_millis()
+        );
+    }
     Ok(snapshot)
 }
 
@@ -1486,7 +1488,7 @@ fn context_history_mailbox_guidance(
     }
 }
 
-pub(crate) fn build_session_context_snapshot(
+pub fn build_session_context_snapshot(
     repo_root: &Path,
     project_id: &str,
     agent_session_id: &str,
@@ -3522,14 +3524,20 @@ fn build_project_code_map(repo_root: &Path) -> CommandResult<SessionContextCodeM
         symbols,
         redaction,
     };
-    eprintln!(
-        "[runtime-latency] session_context_project_code_map repo_root={} manifests={} symbols={} duration_ms={}",
-        repo_root.display(),
-        code_map.package_manifests.len(),
-        code_map.symbols.len(),
-        started.elapsed().as_millis()
-    );
+    if runtime_latency_logging_enabled() {
+        eprintln!(
+            "[runtime-latency] session_context_project_code_map repo_root={} manifests={} symbols={} duration_ms={}",
+            repo_root.display(),
+            code_map.package_manifests.len(),
+            code_map.symbols.len(),
+            started.elapsed().as_millis()
+        );
+    }
     Ok(code_map)
+}
+
+fn runtime_latency_logging_enabled() -> bool {
+    std::env::var_os("XERO_RUNTIME_LATENCY_LOG").is_some()
 }
 
 fn collect_project_code_map(

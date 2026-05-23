@@ -6,6 +6,7 @@ mod composer;
 mod footer;
 mod palette;
 mod project;
+pub(crate) mod remote;
 mod runtime;
 mod slash;
 mod text_edit;

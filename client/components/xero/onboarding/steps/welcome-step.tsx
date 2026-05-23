@@ -55,7 +55,7 @@ export function WelcomeStep({ onContinue, onSkipAll }: WelcomeStepProps) {
         </span>
       </h1>
       <p className="mt-3 max-w-sm text-[13px] leading-relaxed text-muted-foreground">
-        Three quick steps to set up your workspace. You can change anything later
+        A few quick steps to set up your workspace. You can change anything later
         from Settings.
       </p>
 

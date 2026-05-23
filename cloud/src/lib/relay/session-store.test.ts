@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
 	modelOptionId,
+	normalizeModelOptions,
+	parseThinkingEffort,
 	useSessionStore,
 	type VisibleSessionSummary,
 } from "./session-store";
@@ -619,5 +621,33 @@ describe("session store", () => {
 		);
 		expect(modelOptionId(null, "gpt-5.5")).toBe("gpt-5.5");
 		expect(modelOptionId("openai_codex-default", "   ")).toBeNull();
+	});
+
+	it("accepts disabled thinking as a synced control value", () => {
+		expect(parseThinkingEffort("none")).toBe("none");
+	});
+
+	it("preserves provider labels when normalizing cloud model options", () => {
+		expect(
+			normalizeModelOptions([
+				{
+					id: "openai_codex-default:gpt-5.5",
+					label: "GPT-5.5",
+					modelId: "gpt-5.5",
+					providerId: "openai_codex",
+					providerLabel: "OpenAI Codex",
+					providerProfileId: "openai_codex-default",
+				},
+			]),
+		).toEqual([
+			expect.objectContaining({
+				id: "openai_codex-default:gpt-5.5",
+				label: "GPT-5.5",
+				modelId: "gpt-5.5",
+				providerId: "openai_codex",
+				providerLabel: "OpenAI Codex",
+				providerProfileId: "openai_codex-default",
+			}),
+		]);
 	});
 });

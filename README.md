@@ -188,7 +188,7 @@ pnpm run db:reset
 pnpm run server:setup
 pnpm run dev:server   # Phoenix server on localhost:4000
 pnpm run dev:tauri    # Desktop app only (Tauri dev)
-pnpm run dev:tui      # Real Xero agent TUI terminal client + Cloud app
+pnpm run dev:tui      # Real Xero agent TUI terminal client + required relay/Cloud dev services
 pnpm run dev:landing  # Landing site on port 3001
 pnpm run dev:cloud    # Cloud app on port 3002
 ```
@@ -311,7 +311,7 @@ Xero's owned-agent harness should be compared with fixed-model, sandboxed benchm
 
 ## Xero Agent TUI And Tool Harness
 
-`pnpm run dev:tui` launches the real terminal-native Xero agent client (`xero-tui`). It is for owned-agent development workflows: selecting an app-data project, selecting or creating sessions, sending prompts through the shared headless runtime, inspecting runtime events/tool calls, and reaching project/git/provider/context command surfaces without opening a Tauri window. The development command runs the desktop-backed `xero-tui` binary so project records, memory review, and agent-definition authoring reuse existing desktop Rust services.
+`pnpm run dev:tui` launches the real terminal-native Xero agent client (`xero`). It also ensures the local Phoenix relay and Cloud app are available for TUI cloud-session development, starting missing local services after preflight. It is for owned-agent development workflows: selecting an app-data project, selecting or creating sessions, sending prompts through the shared headless runtime, inspecting runtime events/tool calls, and reaching project/git/provider/context command surfaces without opening a Tauri window. The development command runs the desktop-backed `xero` binary so project records, memory review, and agent-definition authoring reuse existing desktop Rust services.
 
 Terminal file actions are wrappers over the shared owned-agent Tool Registry V2 where available (`xero file list|read|write|patch|delete|move|replace|tools`), so policy, sandboxing, rollback metadata, and path protections stay aligned with real agent tool calls.
 
@@ -350,7 +350,7 @@ irm https://xeroshell.com/install.ps1 | iex
 ```
 
 The install scripts download from the Fly-hosted landing app at
-`/downloads/tui/latest/`, verify the archive checksum, and install `xero-tui`
+`/downloads/tui/latest/`, verify the archive checksum, and install `xero`
 locally. Set `XERO_INSTALL_DIR` to choose a different install directory.
 
 Headless launch verification:
@@ -364,9 +364,9 @@ Direct Cargo form:
 
 ```bash
 cd client/src-tauri
-cargo run --package xero-desktop --bin xero-tui
-cargo run --package xero-desktop --bin xero-tui -- --smoke
-cargo run --package xero-cli --bin xero -- tui --smoke # CLI-core smoke
+cargo run --package xero-desktop --bin xero
+cargo run --package xero-desktop --bin xero -- --smoke
+cargo run --package xero-cli --bin xero-core -- tui --smoke # CLI-core smoke
 ```
 
 The desktop developer tool harness remains available separately through the `tool-harness` binary. It is a developer/debug harness for cataloging and replaying individual backend tools; it is not the product TUI and does not own the `dev:tui` script.

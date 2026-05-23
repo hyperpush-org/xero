@@ -779,12 +779,14 @@ fn replay_owned_agent_events(
     let projected_count = replay_projection.projected_count;
     let last_event_id = replay_projection.last_event_id;
     let delivered_payload_count = send_runtime_stream_replay_payloads(channel, replay_projection)?;
-    eprintln!(
-        "[runtime-latency] subscribe_runtime_stream replay project_id={project_id} run_id={run_id} after_event_id={after_event_id} mode={replay_mode} incremental_limit={incremental_replay_limit} replayed_count={replayed_count} projected_count={} delivered_payload_count={delivered_payload_count} last_event_id={} duration_ms={}",
-        projected_count,
-        last_event_id,
-        started.elapsed().as_millis()
-    );
+    if std::env::var_os("XERO_RUNTIME_LATENCY_LOG").is_some() {
+        eprintln!(
+            "[runtime-latency] subscribe_runtime_stream replay project_id={project_id} run_id={run_id} after_event_id={after_event_id} mode={replay_mode} incremental_limit={incremental_replay_limit} replayed_count={replayed_count} projected_count={} delivered_payload_count={delivered_payload_count} last_event_id={} duration_ms={}",
+            projected_count,
+            last_event_id,
+            started.elapsed().as_millis()
+        );
+    }
     Ok((last_event_id, terminal))
 }
 

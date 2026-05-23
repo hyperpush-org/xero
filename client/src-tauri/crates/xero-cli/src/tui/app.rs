@@ -337,7 +337,7 @@ enum ScrollbackEntry {
 
 impl App {
     pub fn new(globals: &GlobalOptions, project: ResolvedProject) -> Self {
-        let providers = load_providers(globals).unwrap_or_default();
+        let mut providers = load_providers(globals).unwrap_or_default();
         let agents = load_agents(globals, project.project_id.as_deref())
             .unwrap_or_else(|_| default_agent_catalog());
         let preferences_path = preferences_path_for(&globals.state_dir);
@@ -362,6 +362,16 @@ impl App {
                     .position(|provider| provider.provider_id == id)
             })
             .unwrap_or(0);
+        if let Some(model_id) = stored
+            .model_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|model_id| !model_id.is_empty())
+        {
+            if let Some(index) = selected_provider_actual_index(&providers, selected_provider) {
+                providers[index].default_model = model_id.to_owned();
+            }
+        }
 
         let status = if !project.registered {
             Some(
@@ -500,6 +510,49 @@ impl App {
             .map(|provider| provider.default_model.as_str())
     }
 
+    pub(crate) fn select_provider_model(
+        &mut self,
+        provider_id: impl Into<String>,
+        model_id: impl Into<String>,
+        credential_kind: impl Into<String>,
+    ) -> bool {
+        let provider_id = provider_id.into().trim().to_owned();
+        let model_id = model_id.into().trim().to_owned();
+        if provider_id.is_empty() || model_id.is_empty() {
+            return false;
+        }
+        if provider_id == "fake_provider" {
+            self.fake_provider_fixture = true;
+            self.persist_preferences();
+            return true;
+        }
+
+        self.fake_provider_fixture = false;
+        let credential_kind = credential_kind.into();
+        if let Some((actual_index, selected_index)) =
+            provider_position_by_id(&self.providers, &provider_id)
+        {
+            self.providers[actual_index].default_model = model_id.clone();
+            if !credential_kind.trim().is_empty() {
+                self.providers[actual_index].credential_kind = credential_kind;
+            }
+            self.selected_provider = selected_index;
+        } else {
+            self.selected_provider = self
+                .providers
+                .iter()
+                .filter(|provider| provider.provider_id != "fake_provider")
+                .count();
+            self.providers.push(ProviderRow {
+                provider_id,
+                default_model: model_id,
+                credential_kind,
+            });
+        }
+        self.persist_preferences();
+        true
+    }
+
     /// Returns true if the active provider profile uses subscription-style
     /// credentials (Claude Max, OpenAI Codex login, etc).
     pub fn selected_is_paid_tier(&self) -> bool {
@@ -563,8 +616,35 @@ impl App {
     }
 }
 
+fn selected_provider_actual_index(
+    providers: &[ProviderRow],
+    selected_provider: usize,
+) -> Option<usize> {
+    providers
+        .iter()
+        .enumerate()
+        .filter(|(_, provider)| provider.provider_id != "fake_provider")
+        .nth(selected_provider)
+        .map(|(index, _)| index)
+}
+
+fn provider_position_by_id(providers: &[ProviderRow], provider_id: &str) -> Option<(usize, usize)> {
+    let mut selected_index = 0;
+    for (actual_index, provider) in providers.iter().enumerate() {
+        if provider.provider_id == "fake_provider" {
+            continue;
+        }
+        if provider.provider_id == provider_id {
+            return Some((actual_index, selected_index));
+        }
+        selected_index += 1;
+    }
+    None
+}
+
 struct PromptJob {
     project_id: Option<String>,
+    agent_session_id: String,
     run_id: String,
     clears_pending_attachments: bool,
     receiver: Receiver<Result<JsonValue, CliError>>,
@@ -580,12 +660,18 @@ pub fn run_interactive(globals: GlobalOptions) -> Result<CliResponse, CliError> 
     enable_raw_mode().map_err(tui_io_error)?;
     let keyboard_enhancement_pushed = push_keyboard_enhancements();
     let bracketed_paste_enabled = enable_bracketed_paste();
+    let _ = super::remote::ensure_started(&globals);
+    if let Err(error) = ensure_active_session_for_cloud(&globals, &mut app) {
+        app.status = Some(error.message);
+    }
     let result = run_terminal_session(&globals, &mut app);
 
     let bracketed_paste_result = disable_bracketed_paste(bracketed_paste_enabled);
     let keyboard_enhancement_result = pop_keyboard_enhancements(keyboard_enhancement_pushed);
-    disable_raw_mode().map_err(tui_io_error)?;
+    let raw_mode_result = disable_raw_mode().map_err(tui_io_error);
+    super::remote::shutdown();
 
+    raw_mode_result?;
     result?;
     bracketed_paste_result?;
     keyboard_enhancement_result?;
@@ -595,6 +681,82 @@ pub fn run_interactive(globals: GlobalOptions) -> Result<CliResponse, CliError> 
         json: json!({ "kind": "tui", "status": "closed" }),
         emit: false,
     })
+}
+
+fn ensure_active_session_for_cloud(globals: &GlobalOptions, app: &mut App) -> Result<(), CliError> {
+    let Some(project_id) = app.project.project_id.clone() else {
+        return Ok(());
+    };
+    if app.active_session_id.is_none() {
+        let created = invoke_json(
+            globals,
+            &[
+                "session",
+                "create",
+                "--project-id",
+                &project_id,
+                "--title",
+                "New Chat",
+            ],
+        )?;
+        let session = created.get("session").cloned().unwrap_or(created);
+        let session_id = string_field(&session, "agentSessionId");
+        if session_id.trim().is_empty() {
+            return Err(CliError::system_fault(
+                "xero_tui_startup_session_missing_id",
+                "Xero TUI created a session without an id.",
+            ));
+        }
+        app.active_session_id = Some(session_id);
+    }
+    sync_active_session_to_cloud(globals, app)
+}
+
+pub(crate) fn sync_active_session_to_cloud(
+    globals: &GlobalOptions,
+    app: &App,
+) -> Result<(), CliError> {
+    let Some(project_id) = app.project.project_id.as_deref() else {
+        return Ok(());
+    };
+    let Some(session_id) = app.active_session_id.as_deref() else {
+        return Ok(());
+    };
+    let Some(provider_id) = app.selected_provider_id() else {
+        return Ok(());
+    };
+    let Some(model_id) = app.selected_model_id() else {
+        return Ok(());
+    };
+    let runtime_agent_id = app.selected_agent_definition_id().unwrap_or("generalist");
+    let thinking_effort = app.thinking_effort.label();
+    super::remote::publish_session_added(globals, project_id, session_id)?;
+    super::remote::publish_session_controls(
+        globals,
+        project_id,
+        session_id,
+        provider_id,
+        model_id,
+        runtime_agent_id,
+        thinking_effort,
+    )
+}
+
+pub(crate) fn sync_active_session_to_cloud_best_effort(globals: &GlobalOptions, app: &App) {
+    let _ = sync_active_session_to_cloud(globals, app);
+}
+
+fn auto_name_session_best_effort(globals: &GlobalOptions, project_id: &str, session_id: &str) {
+    let _ = invoke_json(
+        globals,
+        &[
+            "session",
+            "auto-name",
+            "--project-id",
+            project_id,
+            session_id,
+        ],
+    );
 }
 
 fn run_terminal_session(globals: &GlobalOptions, app: &mut App) -> Result<(), CliError> {
@@ -759,8 +921,10 @@ fn event_loop(
 ) -> Result<(), CliError> {
     let mut active_run: Option<PromptJob> = None;
     let mut last_login_poll_at: Option<Instant> = None;
+    let mut remote_ui_events = super::remote::subscribe_ui_events();
     let mut terminal_size = current_terminal_size(terminal)?;
     loop {
+        poll_remote_ui_events(app, &mut remote_ui_events);
         poll_active_run(globals, app, &mut active_run);
         poll_pending_login(globals, app, &mut last_login_poll_at);
         if app.take_tui_reset_requested() {
@@ -815,7 +979,9 @@ fn fullscreen_event_loop(
 ) -> Result<(), CliError> {
     let mut active_run: Option<PromptJob> = None;
     let mut last_login_poll_at: Option<Instant> = None;
+    let mut remote_ui_events = super::remote::subscribe_ui_events();
     loop {
+        poll_remote_ui_events(app, &mut remote_ui_events);
         poll_active_run(globals, app, &mut active_run);
         poll_pending_login(globals, app, &mut last_login_poll_at);
         if app.take_tui_reset_requested() {
@@ -845,6 +1011,54 @@ fn fullscreen_event_loop(
     }
 }
 
+fn poll_remote_ui_events(
+    app: &mut App,
+    remote_ui_events: &mut Receiver<super::remote::RemoteUiEvent>,
+) {
+    loop {
+        match remote_ui_events.try_recv() {
+            Ok(super::remote::RemoteUiEvent::ControlsUpdated(update)) => {
+                apply_remote_controls_update(app, update);
+            }
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => {
+                *remote_ui_events = super::remote::subscribe_ui_events();
+                break;
+            }
+        }
+    }
+}
+
+fn apply_remote_controls_update(app: &mut App, update: super::remote::RemoteControlsUpdate) {
+    if app.active_session_id.as_deref() != Some(update.session_id.as_str()) {
+        return;
+    }
+    let credential_kind = app
+        .providers
+        .iter()
+        .find(|provider| provider.provider_id == update.provider_id)
+        .map(|provider| provider.credential_kind.clone())
+        .unwrap_or_default();
+    app.select_provider_model(update.provider_id, update.model_id, credential_kind);
+    if let Some(index) = app
+        .agents
+        .iter()
+        .position(|agent| agent.definition_id == update.runtime_agent_id)
+    {
+        app.selected_agent = index;
+    } else if !update.runtime_agent_id.trim().is_empty() {
+        app.agents.push(AgentEntry {
+            display_name: update.runtime_agent_id.clone(),
+            definition_id: update.runtime_agent_id,
+        });
+        app.selected_agent = app.agents.len().saturating_sub(1);
+    }
+    if let Some(thinking_effort) = ThinkingEffort::from_str(&update.thinking_effort) {
+        app.thinking_effort = thinking_effort;
+    }
+    app.persist_preferences();
+}
+
 fn poll_pending_login(
     globals: &GlobalOptions,
     app: &mut App,
@@ -865,6 +1079,8 @@ fn poll_pending_login(
             app.login_flow_id = None;
             *last_login_poll_at = None;
             app.refresh_signed_in_handle();
+            let _ = super::remote::ensure_started(globals);
+            sync_active_session_to_cloud_best_effort(globals, app);
             let title = signed_in_title(app);
             app.status = Some(title.clone());
             app.palette = Some(PaletteState::Detail(auth_detail_state(
@@ -1088,9 +1304,11 @@ fn handle_composer_key(
         }
         KeyCode::Tab => {
             app.cycle_agent();
+            sync_active_session_to_cloud_best_effort(globals, app);
         }
         KeyCode::BackTab => {
             app.cycle_thinking_effort();
+            sync_active_session_to_cloud_best_effort(globals, app);
         }
         KeyCode::Esc => {
             if !app.composer.is_empty() {
@@ -1972,6 +2190,14 @@ pub(crate) fn run_login_step(globals: &GlobalOptions, app: &mut App) -> palette:
     }
 
     match bridge.sign_in_with_github() {
+        Ok(status) if status.signed_in => {
+            app.login_flow_id = None;
+            app.refresh_signed_in_handle();
+            let _ = super::remote::ensure_started(globals);
+            sync_active_session_to_cloud_best_effort(globals, app);
+            let title = signed_in_title(app);
+            auth_detail("login", title, Vec::new())
+        }
         Ok(status) => {
             app.login_flow_id = status.flow_id.clone();
             let url = status.authorization_url.unwrap_or_default();
@@ -2023,6 +2249,7 @@ pub(crate) fn run_logout_step(globals: &GlobalOptions, app: &mut App) -> palette
     match bridge.sign_out() {
         Ok(()) => {
             app.login_flow_id = None;
+            super::remote::shutdown();
             app.refresh_signed_in_handle();
             auth_detail("logout", "Signed out of GitHub.".to_owned(), Vec::new())
         }
@@ -2108,6 +2335,7 @@ pub(crate) fn slash_dialog_alias(command: &str) -> Option<&'static str> {
     Some(match command {
         "session" | "sessions" => "sessions",
         "provider" | "providers" => "providers",
+        "model" | "models" => "model",
         "agent" | "agents" | "agent-definitions" => "agents",
         "skill" | "skills" | "plugin" | "plugins" => "skills",
         "process" | "processes" | "runner" => "processes",
@@ -2278,7 +2506,10 @@ fn start_prompt_job(
         .clone()
         .unwrap_or_else(|| generate_id("tui-run"));
     let project_id = app.project.project_id.clone();
-    let agent_session_id = app.active_session_id.clone();
+    let agent_session_id = app
+        .active_session_id
+        .clone()
+        .unwrap_or_else(|| generate_id("session"));
     let pending_attachments = app.pending_attachments.clone();
     let mut owned = vec![
         "agent".to_owned(),
@@ -2302,10 +2533,8 @@ fn start_prompt_job(
         owned.push("--project-id".into());
         owned.push(project_id.to_owned());
     }
-    if let Some(agent_session_id) = agent_session_id.as_deref() {
-        owned.push("--session-id".into());
-        owned.push(agent_session_id.to_owned());
-    }
+    owned.push("--session-id".into());
+    owned.push(agent_session_id.clone());
     if !pending_attachments.is_empty() {
         let attachments_json = serde_json::to_string(
             &pending_attachments
@@ -2326,6 +2555,7 @@ fn start_prompt_job(
     });
 
     app.status = None;
+    app.active_session_id = Some(agent_session_id.clone());
     let started_at = Instant::now();
     app.run_detail = Some(RunDetail {
         run_id: run_id.clone(),
@@ -2361,6 +2591,7 @@ fn start_prompt_job(
 
     Ok(PromptJob {
         project_id,
+        agent_session_id,
         run_id,
         clears_pending_attachments: !pending_attachments.is_empty(),
         receiver,
@@ -2384,6 +2615,28 @@ fn poll_active_run(globals: &GlobalOptions, app: &mut App, active_run: &mut Opti
             let mut detail = run_detail_from_snapshot(&snapshot);
             detail.started_at = started_at;
             app.run_detail = Some(detail);
+            let publish_project_id = snapshot
+                .get("projectId")
+                .and_then(JsonValue::as_str)
+                .filter(|project_id| !project_id.trim().is_empty())
+                .or(job.project_id.as_deref());
+            let publish_session_id = snapshot
+                .get("agentSessionId")
+                .and_then(JsonValue::as_str)
+                .filter(|session_id| !session_id.trim().is_empty())
+                .unwrap_or(&job.agent_session_id);
+            app.active_session_id = Some(publish_session_id.to_owned());
+            if let Some(project_id) = publish_project_id {
+                auto_name_session_best_effort(globals, project_id, publish_session_id);
+                let _ =
+                    super::remote::publish_session_added(globals, project_id, publish_session_id);
+                let _ = super::remote::publish_session_snapshot_with_run(
+                    globals,
+                    project_id,
+                    publish_session_id,
+                    Some(&snapshot),
+                );
+            }
             if job.clears_pending_attachments {
                 app.clear_sent_pending_attachments();
             }
@@ -2927,11 +3180,13 @@ fn fullscreen_history_lines(app: &App, width: u16, height: u16) -> Vec<Line<'sta
 fn palette_dialog_area(app: &App, root: Rect) -> Rect {
     let available = root;
     let (width, height) = palette::desired_size(app, available);
+    let width = width.min(available.width);
+    let height = height.min(available.height);
     Rect {
         x: available.x + available.width.saturating_sub(width) / 2,
         y: available.y + available.height.saturating_sub(height) / 2,
-        width: width.min(available.width),
-        height: height.min(available.height),
+        width,
+        height,
     }
 }
 
@@ -3526,6 +3781,47 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct ProviderListAdapter;
+
+    impl crate::TuiCommandAdapter for ProviderListAdapter {
+        fn invoke_json(
+            &self,
+            _state_dir: &Path,
+            args: &[String],
+        ) -> Option<Result<JsonValue, CliError>> {
+            match args {
+                [command, subcommand] if command == "provider" && subcommand == "list" => {
+                    Some(Ok(json!({
+                        "kind": "providerList",
+                        "providers": [
+                            {
+                                "providerId": "openai_codex",
+                                "label": "OpenAI Codex",
+                                "defaultModel": "gpt-5.2",
+                                "credentialKind": "app_session",
+                                "headlessStatus": "configured",
+                                "models": [
+                                    {
+                                        "modelId": "gpt-5.2",
+                                        "displayName": "GPT-5.2",
+                                        "thinkingSupported": true
+                                    },
+                                    {
+                                        "modelId": "gpt-5.3",
+                                        "displayName": "GPT-5.3 Codex",
+                                        "thinkingSupported": true
+                                    }
+                                ]
+                            }
+                        ]
+                    })))
+                }
+                _ => None,
+            }
+        }
+    }
+
+    #[derive(Default)]
     struct AttachmentStageAdapter {
         calls: Arc<Mutex<Vec<Vec<String>>>>,
     }
@@ -3942,6 +4238,62 @@ mod tests {
     }
 
     #[test]
+    fn slash_model_opens_current_provider_model_picker() {
+        let mut globals = test_only_globals();
+        globals.tui_adapter = Some(Arc::new(ProviderListAdapter));
+        let mut app = empty_app();
+        app.providers = vec![ProviderRow {
+            provider_id: "openai_codex".into(),
+            default_model: "gpt-5.2".into(),
+            credential_kind: "app_session".into(),
+        }];
+        app.replace_composer("/model");
+        let mut active_run = None;
+
+        let outcome = dispatch_key(&mut app, enter_key(), &mut active_run, &globals);
+
+        assert!(matches!(outcome, KeyOutcome::Continue));
+        match app.palette.as_ref().expect("model palette") {
+            PaletteState::Detail(detail) => {
+                assert_eq!(detail.command_id, "model");
+                let palette::DetailData::Rows(rows) = &detail.data else {
+                    panic!("expected model rows");
+                };
+                assert_eq!(rows[0].title, "GPT-5.2");
+                assert_eq!(rows[1].title, "GPT-5.3 Codex");
+            }
+            PaletteState::Browse(_) => panic!("expected model detail"),
+        }
+    }
+
+    #[test]
+    fn model_palette_selection_updates_active_model_without_changing_provider() {
+        let mut globals = test_only_globals();
+        globals.tui_adapter = Some(Arc::new(ProviderListAdapter));
+        let mut app = empty_app();
+        app.providers = vec![ProviderRow {
+            provider_id: "openai_codex".into(),
+            default_model: "gpt-5.2".into(),
+            credential_kind: "app_session".into(),
+        }];
+        app.replace_composer("/model");
+        let mut active_run = None;
+
+        dispatch_key(&mut app, enter_key(), &mut active_run, &globals);
+        dispatch_key(&mut app, key(KeyCode::Down), &mut active_run, &globals);
+        let outcome = dispatch_key(&mut app, enter_key(), &mut active_run, &globals);
+
+        assert!(matches!(outcome, KeyOutcome::Continue));
+        assert!(app.palette.is_none());
+        assert_eq!(app.selected_provider_id(), Some("openai_codex"));
+        assert_eq!(app.selected_model_id(), Some("gpt-5.3"));
+        assert_eq!(
+            app.status.as_deref(),
+            Some("Active model: GPT-5.3 Codex (OpenAI Codex)")
+        );
+    }
+
+    #[test]
     fn slash_cli_command_invokes_adapter_with_project_scope() {
         let adapter = RecordingAdapter::default();
         let calls = Arc::clone(&adapter.calls);
@@ -4086,6 +4438,16 @@ mod tests {
     }
 
     #[test]
+    fn slash_model_partial_enter_uses_model_picker() {
+        let mut app = empty_app();
+        app.replace_composer("/mod");
+
+        let selected = slash::selected_submission(&app, "/mod");
+
+        assert_eq!(selected.as_deref(), Some("/model"));
+    }
+
+    #[test]
     fn palette_open_grows_inline_viewport_to_terminal_height() {
         // Opening the palette (Ctrl+P or any slash command that lands in a
         // detail view) takes over the screen so the overlay centers and
@@ -4095,6 +4457,19 @@ mod tests {
         app.palette = Some(palette::open());
 
         assert_eq!(desired_inline_height(&app, 40), 40);
+    }
+
+    #[test]
+    fn palette_dialog_area_centers_short_palette() {
+        let mut app = empty_app();
+        app.palette = Some(palette::open());
+
+        let area = palette_dialog_area(&app, Rect::new(0, 0, 120, 80));
+
+        assert_eq!(area.width, 72);
+        assert_eq!(area.height, 32);
+        assert_eq!(area.x, 24);
+        assert_eq!(area.y, 24);
     }
 
     #[test]
@@ -4947,6 +5322,7 @@ mod tests {
             joined.contains('\u{2588}'),
             "welcome banner missing ASCII logo block glyphs"
         );
+        assert!(joined.contains("[BETA]"), "welcome banner missing beta tag");
         assert!(
             joined.contains("v9.8.7"),
             "welcome banner missing version label, got: {joined:?}"
@@ -5149,6 +5525,7 @@ mod tests {
             .expect("send prompt result");
         let mut active_run = Some(PromptJob {
             project_id: None,
+            agent_session_id: "session-test".into(),
             run_id: "tui-run-test".into(),
             clears_pending_attachments: false,
             receiver,
@@ -5166,6 +5543,53 @@ mod tests {
         assert!(
             !viewport.contains("Previous footer status"),
             "run completion should clear stale footer status"
+        );
+    }
+
+    #[test]
+    fn completed_project_prompt_auto_names_session_before_publish() {
+        let adapter = RecordingAdapter::default();
+        let calls = Arc::clone(&adapter.calls);
+        let mut globals = test_only_globals();
+        globals.tui_adapter = Some(Arc::new(adapter));
+        let mut app = empty_app();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(Ok(json!({
+                "snapshot": {
+                    "projectId": "project-1",
+                    "agentSessionId": "session-test",
+                    "runId": "tui-run-test",
+                    "status": "completed",
+                    "messages": [],
+                    "events": []
+                }
+            })))
+            .expect("send prompt result");
+        let mut active_run = Some(PromptJob {
+            project_id: Some("project-1".into()),
+            agent_session_id: "session-test".into(),
+            run_id: "tui-run-test".into(),
+            clears_pending_attachments: false,
+            receiver,
+        });
+
+        poll_active_run(&globals, &mut app, &mut active_run);
+
+        assert!(active_run.is_none());
+        let calls = calls.lock().expect("recorded calls");
+        assert!(
+            calls.iter().any(|args| {
+                args.iter().map(String::as_str).collect::<Vec<_>>()
+                    == vec![
+                        "session",
+                        "auto-name",
+                        "--project-id",
+                        "project-1",
+                        "session-test",
+                    ]
+            }),
+            "expected session auto-name call, got {calls:?}"
         );
     }
 

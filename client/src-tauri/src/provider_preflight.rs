@@ -113,13 +113,15 @@ pub(crate) fn run_selected_provider_preflight<R: Runtime>(
         live_snapshot.unwrap_or(catalog_snapshot),
     )?;
     persist_provider_preflight_snapshot(&state.global_db_path(app)?, &snapshot)?;
-    eprintln!(
-        "[runtime-latency] run_selected_provider_preflight profile_id={profile_id} provider_id={} model_id={} source={:?} duration_ms={}",
-        snapshot.provider_id,
-        snapshot.model_id,
-        snapshot.source,
-        started.elapsed().as_millis()
-    );
+    if std::env::var_os("XERO_RUNTIME_LATENCY_LOG").is_some() {
+        eprintln!(
+            "[runtime-latency] run_selected_provider_preflight profile_id={profile_id} provider_id={} model_id={} source={:?} duration_ms={}",
+            snapshot.provider_id,
+            snapshot.model_id,
+            snapshot.source,
+            started.elapsed().as_millis()
+        );
+    }
     Ok(snapshot)
 }
 

@@ -49,24 +49,6 @@ const FEATURES = [
 	},
 ] as const;
 
-const PREVIEW_SESSIONS = [
-	{
-		name: "Refactor auth middleware",
-		project: "xero-server",
-		state: "active" as const,
-	},
-	{
-		name: "Fix nav overflow on iPad",
-		project: "cloud",
-		state: "idle" as const,
-	},
-	{
-		name: "Add session export to JSON",
-		project: "client",
-		state: "idle" as const,
-	},
-];
-
 function rise(delay: number): CSSProperties {
 	return { "--cloud-rise-delay": `${delay}ms` } as CSSProperties;
 }
@@ -176,41 +158,6 @@ function LoginScreen() {
 					className="cloud-rise relative flex max-w-md flex-col gap-3"
 					style={rise(440)}
 				>
-					<div className="overflow-hidden rounded-lg border border-border/70 bg-card/70 shadow-[0_8px_30px_-12px_rgba(0,0,0,0.4)] backdrop-blur-sm">
-						<div className="flex items-center justify-between border-b border-border/60 px-3.5 py-2.5">
-							<div className="flex items-center gap-2">
-								<span className="cloud-glow-breathe h-1.5 w-1.5 rounded-full bg-primary shadow-[0_0_10px_var(--cloud-halo)]" />
-								<span className="text-cloud-meta text-foreground/85">
-									Sessions
-								</span>
-							</div>
-							<span className="font-display-italic text-[12px] text-muted-foreground">
-								three active
-							</span>
-						</div>
-						<ul className="divide-y divide-border/50">
-							{PREVIEW_SESSIONS.map((s) => (
-								<li
-									key={s.name}
-									className="flex items-center gap-3 px-3.5 py-2.5"
-								>
-									<span
-										className={
-											s.state === "active"
-												? "h-1.5 w-1.5 shrink-0 rounded-full bg-primary shadow-[0_0_8px_var(--cloud-halo)]"
-												: "h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/30"
-										}
-									/>
-									<span className="flex-1 truncate text-[12.5px] text-foreground/90">
-										{s.name}
-									</span>
-									<span className="text-cloud-meta text-muted-foreground/70">
-										{s.project}
-									</span>
-								</li>
-							))}
-						</ul>
-					</div>
 					<p className="font-display-italic pl-1 text-[12px] text-muted-foreground/80">
 						A live look at what awaits inside.
 					</p>
