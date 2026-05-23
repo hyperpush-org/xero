@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { WorkflowCanvasEmptyState } from '@/components/xero/workflow-canvas-empty-state'
@@ -159,5 +159,33 @@ describe('WorkflowCanvasEmptyState', () => {
 
     expect(screen.getByRole('button', { name: /New agent/ })).toBeInTheDocument()
     expect(screen.queryByText(/Templates open on the canvas/i)).toBeNull()
+  })
+
+  it('animates the run-existing-workflow action out when browsing workflows is unavailable', () => {
+    vi.useFakeTimers()
+    try {
+      const { container, rerender } = render(
+        <WorkflowCanvasEmptyState onCreateAgent={vi.fn()} onBrowseWorkflows={vi.fn()} />,
+      )
+
+      expect(screen.getByRole('button', { name: /Run an existing workflow/i })).toBeInTheDocument()
+
+      rerender(<WorkflowCanvasEmptyState onCreateAgent={vi.fn()} />)
+
+      const exitingRow = container.querySelector(
+        '[data-state="exiting"] button[aria-disabled="true"]',
+      )
+      expect(exitingRow).toHaveTextContent('Run an existing workflow')
+      expect(screen.queryByRole('button', { name: /Run an existing workflow/i })).toBeNull()
+
+      act(() => {
+        vi.advanceTimersByTime(180)
+      })
+
+      expect(container.querySelector('[data-state="exiting"]')).toBeNull()
+      expect(screen.queryByText('Run an existing workflow')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

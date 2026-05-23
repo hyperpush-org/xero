@@ -8,8 +8,12 @@ use crate::db::project_store::{
     AgentMessageRecord, AgentRunRecord, AgentRunSnapshotRecord, AgentToolCallRecord,
 };
 
-use super::runtime::{
-    RuntimeAgentIdDto, RuntimeRunControlInputDto, RuntimeRunDiagnosticDto, StagedAgentAttachmentDto,
+use super::{
+    runtime::{
+        ProviderModelThinkingEffortDto, RuntimeAgentIdDto, RuntimeRunControlInputDto,
+        RuntimeRunDiagnosticDto, StagedAgentAttachmentDto,
+    },
+    workflow_agents::AgentRefDto,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -619,6 +623,19 @@ pub enum AgentDefinitionBaseCapabilityProfileDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentDefaultModelDto {
+    pub provider_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_profile_id: Option<String>,
+    pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_effort: Option<ProviderModelThinkingEffortDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentDefinitionSummaryDto {
     pub definition_id: String,
     pub current_version: u32,
@@ -631,6 +648,8 @@ pub struct AgentDefinitionSummaryDto {
     pub created_at: String,
     pub updated_at: String,
     pub is_built_in: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<AgentDefaultModelDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -700,6 +719,22 @@ pub struct PreviewAgentDefinitionRequestDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub definition_id: Option<String>,
     pub definition: JsonValue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetAgentDefaultModelRequestDto {
+    pub project_id: String,
+    pub r#ref: AgentRefDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<AgentDefaultModelDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetAgentDefaultModelResponseDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<AgentDefaultModelDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -785,6 +820,7 @@ pub fn agent_definition_summary_dto(record: AgentDefinitionRecord) -> AgentDefin
         created_at: record.created_at,
         updated_at: record.updated_at,
         is_built_in,
+        default_model: None,
     }
 }
 

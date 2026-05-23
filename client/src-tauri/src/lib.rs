@@ -267,6 +267,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::agent_definition::preview_agent_definition,
             commands::agent_definition::save_agent_definition,
             commands::agent_definition::update_agent_definition,
+            commands::agent_default_models::set_agent_default_model,
             commands::agent_extensions::validate_agent_tool_extension_manifest,
             commands::workflow_agents::list_workflow_agents,
             commands::workflow_agents::get_workflow_agent_detail,

@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use rusqlite_migration::{Migrations, M};
 
-pub const GLOBAL_DATABASE_SCHEMA_VERSION: i64 = 12;
+pub const GLOBAL_DATABASE_SCHEMA_VERSION: i64 = 13;
 
 /// Migrations for the global SQLite database (`xero.db`).
 ///
@@ -26,10 +26,20 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(NOOP_SCHEMA_VERSION_MARKER_SQL),
             M::up(ADRENALINE_MODE_SETTINGS_SQL),
             M::up(CLOSED_LID_MODE_SETTINGS_SQL),
+            M::up(BUILTIN_AGENT_DEFAULT_MODELS_SQL),
         ])
     });
     &MIGRATIONS
 }
+
+const BUILTIN_AGENT_DEFAULT_MODELS_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS builtin_agent_default_models (
+        runtime_agent_id TEXT PRIMARY KEY CHECK (runtime_agent_id <> ''),
+        payload TEXT NOT NULL CHECK (payload <> '' AND json_valid(payload)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    ) STRICT;
+"#;
 
 const CLOSED_LID_MODE_SETTINGS_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS closed_lid_mode_settings (

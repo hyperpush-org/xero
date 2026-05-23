@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 use super::agent::{
-    AgentDefinitionBaseCapabilityProfileDto, AgentDefinitionLifecycleStateDto,
-    AgentDefinitionScopeDto,
+    AgentDefaultModelDto, AgentDefinitionBaseCapabilityProfileDto,
+    AgentDefinitionLifecycleStateDto, AgentDefinitionScopeDto,
 };
 use super::runtime::{
     RuntimeAgentIdDto, RuntimeAgentOutputContractDto, RuntimeAgentPromptPolicyDto,
@@ -44,6 +44,8 @@ pub struct WorkflowAgentSummaryDto {
     pub base_capability_profile: AgentDefinitionBaseCapabilityProfileDto,
     pub last_used_at: Option<String>,
     pub use_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<AgentDefaultModelDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

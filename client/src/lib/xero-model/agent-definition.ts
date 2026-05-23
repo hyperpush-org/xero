@@ -2,6 +2,7 @@ import { z } from 'zod'
 
 import { capabilityPermissionExplanationSchema } from './agent-reports'
 import { isoTimestampSchema } from '@xero/ui/model/shared'
+import { runtimeRunThinkingEffortSchema } from '@xero/ui/model/runtime'
 import {
   skillSourceKindSchema,
   skillSourceScopeSchema,
@@ -101,6 +102,17 @@ export const customAgentSubagentRoleSchema = z.enum([
 
 const nonEmptyTextSchema = z.string().trim().min(1)
 const trimmedTextArraySchema = z.array(nonEmptyTextSchema)
+
+export const agentDefaultModelSchema = z
+  .object({
+    providerId: nonEmptyTextSchema,
+    providerProfileId: nonEmptyTextSchema.nullable().optional(),
+    modelId: nonEmptyTextSchema,
+    selectionKey: nonEmptyTextSchema.optional(),
+    thinkingEffort: runtimeRunThinkingEffortSchema.nullable().optional(),
+  })
+  .strict()
+export type AgentDefaultModelDto = z.infer<typeof agentDefaultModelSchema>
 
 export const customAgentPromptSchema = z
   .object({
@@ -637,7 +649,7 @@ export const canonicalCustomAgentDefinitionBaseSchema = z
     memoryCandidatePolicy: customAgentMemoryPolicySchema.optional(),
     retrievalDefaults: customAgentRetrievalPolicySchema.optional(),
     handoffPolicy: customAgentHandoffPolicySchema.optional(),
-    defaultModel: z.unknown().optional(),
+    defaultModel: agentDefaultModelSchema.optional(),
     capabilities: z.unknown().optional(),
     safetyLimits: z.unknown().optional(),
   })
@@ -711,6 +723,7 @@ export const agentDefinitionSummarySchema = z
     createdAt: isoTimestampSchema,
     updatedAt: isoTimestampSchema,
     isBuiltIn: z.boolean(),
+    defaultModel: agentDefaultModelSchema.nullable().optional(),
   })
   .strict()
 export type AgentDefinitionSummaryDto = z.infer<typeof agentDefinitionSummarySchema>

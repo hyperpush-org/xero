@@ -2038,6 +2038,7 @@ function createAdapter(options?: {
     previewAgentDefinition: async () => {
       throw new Error('previewAgentDefinition not stubbed in test adapter')
     },
+    setAgentDefaultModel: async () => ({ defaultModel: null }),
     listWorkflowAgents: async () => ({ agents: [] }),
     getWorkflowAgentDetail: async () => {
       throw new Error('getWorkflowAgentDetail not stubbed in test adapter')

@@ -21,12 +21,12 @@ use crate::{
         agent_tooling_settings::resolve_agent_tool_application_style, default_runtime_agent_id,
         ensure_runtime_agent_available,
         get_runtime_settings::runtime_settings_snapshot_for_provider_profile,
-        provider_credentials::load_provider_credentials_view, CommandError, CommandResult,
-        RuntimeRunActiveControlSnapshotDto, RuntimeRunCheckpointDto, RuntimeRunCheckpointKindDto,
-        RuntimeRunControlInputDto, RuntimeRunControlStateDto, RuntimeRunDiagnosticDto,
-        RuntimeRunDto, RuntimeRunPendingControlSnapshotDto, RuntimeRunStatusDto,
-        RuntimeRunTransportDto, RuntimeRunTransportLivenessDto, RuntimeRunUpdatedPayloadDto,
-        RUNTIME_RUN_UPDATED_EVENT,
+        provider_credentials::load_provider_credentials_view, AgentDefaultModelDto, CommandError,
+        CommandResult, RuntimeRunActiveControlSnapshotDto, RuntimeRunCheckpointDto,
+        RuntimeRunCheckpointKindDto, RuntimeRunControlInputDto, RuntimeRunControlStateDto,
+        RuntimeRunDiagnosticDto, RuntimeRunDto, RuntimeRunPendingControlSnapshotDto,
+        RuntimeRunStatusDto, RuntimeRunTransportDto, RuntimeRunTransportLivenessDto,
+        RuntimeRunUpdatedPayloadDto, RUNTIME_RUN_UPDATED_EVENT,
     },
     db::project_store::{
         self, build_runtime_run_control_state_with_profile, RuntimeRunActiveControlSnapshotRecord,
@@ -267,8 +267,6 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
         });
     }
 
-    let active_profile =
-        resolve_owned_runtime_profile_selection(app, state, requested_controls.as_ref())?;
     let requested_agent_id = requested_controls
         .as_ref()
         .map(|controls| controls.runtime_agent_id)
@@ -291,10 +289,28 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
         project_id,
         definition_selection.runtime_agent_id,
     )?;
+    let builtin_default_model = if definition_selection.definition_id
+        == project_store::default_agent_definition_id_for_runtime_agent(
+            definition_selection.runtime_agent_id,
+        ) {
+        crate::commands::agent_default_models::load_builtin_agent_default_model(
+            &state.global_db_path(app)?,
+            definition_selection.runtime_agent_id,
+        )?
+    } else {
+        None
+    };
+    let effective_requested_controls = resolve_agent_default_model_controls(
+        requested_controls.as_ref(),
+        &definition_selection,
+        builtin_default_model.as_ref(),
+    );
+    let active_profile =
+        resolve_owned_runtime_profile_selection(app, state, effective_requested_controls.as_ref())?;
     let mut run_controls = resolve_owned_runtime_run_control_state(
         &active_profile,
         &definition_selection,
-        requested_controls.as_ref(),
+        effective_requested_controls.as_ref(),
         initial_prompt.as_deref(),
     )?;
     attach_queued_runtime_attachments(&mut run_controls, &initial_attachments);
@@ -1238,6 +1254,74 @@ fn resolve_owned_runtime_run_control_state(
     )
 }
 
+fn resolve_agent_default_model_controls(
+    requested_controls: Option<&RuntimeRunControlInputDto>,
+    definition_selection: &project_store::AgentDefinitionRunSelection,
+    builtin_default_model: Option<&AgentDefaultModelDto>,
+) -> Option<RuntimeRunControlInputDto> {
+    if requested_controls
+        .map(|controls| !controls.model_id.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return requested_controls.cloned();
+    }
+
+    let snapshot_default_model = definition_selection
+        .snapshot
+        .get("defaultModel")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<AgentDefaultModelDto>(value).ok());
+    let default_model = snapshot_default_model.as_ref().or(builtin_default_model);
+    let Some(default_model) = default_model else {
+        return requested_controls.cloned();
+    };
+    let model_id = default_model.model_id.trim();
+    if model_id.is_empty() {
+        return requested_controls.cloned();
+    }
+    let provider_profile_id = default_model
+        .provider_profile_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            requested_controls
+                .and_then(|controls| controls.provider_profile_id.as_deref())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+        });
+    let thinking_effort = default_model
+        .thinking_effort
+        .clone()
+        .or_else(|| requested_controls.and_then(|controls| controls.thinking_effort.clone()));
+    let approval_mode = requested_controls
+        .map(|controls| controls.approval_mode.clone())
+        .filter(|mode| {
+            definition_selection
+                .allowed_approval_modes
+                .iter()
+                .any(|allowed| allowed == mode)
+        })
+        .unwrap_or_else(|| definition_selection.default_approval_mode.clone());
+
+    Some(RuntimeRunControlInputDto {
+        runtime_agent_id: definition_selection.runtime_agent_id,
+        agent_definition_id: Some(definition_selection.definition_id.clone()),
+        provider_profile_id,
+        model_id: model_id.to_owned(),
+        thinking_effort,
+        approval_mode,
+        plan_mode_required: requested_controls
+            .map(|controls| controls.plan_mode_required)
+            .unwrap_or(false),
+        auto_compact_enabled: requested_controls
+            .map(|controls| controls.auto_compact_enabled)
+            .unwrap_or(true),
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn persist_owned_runtime_run(
     repo_root: &Path,
@@ -1876,6 +1960,7 @@ fn queued_runtime_attachments(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::RuntimeAgentIdDto;
     use xero_agent_core::{
         provider_capability_catalog, provider_preflight_cache_binding, provider_preflight_snapshot,
         ProviderCapabilityCatalogInput, ProviderPreflightInput, ProviderPreflightSource,
@@ -1892,6 +1977,91 @@ mod tests {
             expires_at,
             updated_at: "2026-04-29T18:14:27Z".into(),
         }
+    }
+
+    fn definition_selection(
+        snapshot: serde_json::Value,
+    ) -> project_store::AgentDefinitionRunSelection {
+        project_store::AgentDefinitionRunSelection {
+            definition_id: "custom_engineer".into(),
+            version: 1,
+            display_name: "Custom Engineer".into(),
+            base_capability_profile: "engineering".into(),
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            default_approval_mode: crate::commands::RuntimeRunApprovalModeDto::Suggest,
+            allowed_approval_modes: vec![
+                crate::commands::RuntimeRunApprovalModeDto::Suggest,
+                crate::commands::RuntimeRunApprovalModeDto::AutoEdit,
+            ],
+            snapshot,
+        }
+    }
+
+    #[test]
+    fn agent_default_model_controls_apply_when_requested_model_is_empty() {
+        let selection = definition_selection(serde_json::json!({
+            "defaultModel": {
+                "providerId": "anthropic",
+                "providerProfileId": "anthropic-work",
+                "modelId": "claude-sonnet-4-5",
+                "thinkingEffort": "high"
+            }
+        }));
+        let requested = RuntimeRunControlInputDto {
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: Some("custom_engineer".into()),
+            provider_profile_id: None,
+            model_id: String::new(),
+            thinking_effort: None,
+            approval_mode: crate::commands::RuntimeRunApprovalModeDto::AutoEdit,
+            plan_mode_required: true,
+            auto_compact_enabled: false,
+        };
+
+        let controls = resolve_agent_default_model_controls(Some(&requested), &selection, None)
+            .expect("default controls");
+
+        assert_eq!(
+            controls.provider_profile_id.as_deref(),
+            Some("anthropic-work")
+        );
+        assert_eq!(controls.model_id, "claude-sonnet-4-5");
+        assert_eq!(
+            controls.thinking_effort,
+            Some(crate::commands::ProviderModelThinkingEffortDto::High)
+        );
+        assert_eq!(
+            controls.approval_mode,
+            crate::commands::RuntimeRunApprovalModeDto::AutoEdit
+        );
+        assert!(!controls.auto_compact_enabled);
+    }
+
+    #[test]
+    fn explicit_requested_model_wins_over_agent_default() {
+        let selection = definition_selection(serde_json::json!({
+            "defaultModel": {
+                "providerId": "anthropic",
+                "providerProfileId": "anthropic-work",
+                "modelId": "claude-sonnet-4-5"
+            }
+        }));
+        let requested = RuntimeRunControlInputDto {
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: Some("custom_engineer".into()),
+            provider_profile_id: Some("openai-work".into()),
+            model_id: "gpt-5.5".into(),
+            thinking_effort: None,
+            approval_mode: crate::commands::RuntimeRunApprovalModeDto::Suggest,
+            plan_mode_required: false,
+            auto_compact_enabled: true,
+        };
+
+        let controls = resolve_agent_default_model_controls(Some(&requested), &selection, None)
+            .expect("requested controls");
+
+        assert_eq!(controls.provider_profile_id.as_deref(), Some("openai-work"));
+        assert_eq!(controls.model_id, "gpt-5.5");
     }
 
     #[test]

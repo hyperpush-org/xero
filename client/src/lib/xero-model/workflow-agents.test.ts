@@ -749,6 +749,63 @@ describe('workflow agent model contracts', () => {
     ).toThrow(/section ids/)
   })
 
+  it('parses the built-in Agent detail prompt policy', () => {
+    const detail = workflowAgentDetailSchema.parse({
+      ref: {
+        kind: 'built_in',
+        runtimeAgentId: 'generalist',
+        version: 1,
+      },
+      header: {
+        displayName: 'Agent',
+        shortLabel: 'Agent',
+        description: 'A do-anything agent.',
+        taskPurpose: 'Handle general work.',
+        scope: 'built_in',
+        lifecycleState: 'active',
+        baseCapabilityProfile: 'engineering',
+        defaultApprovalMode: 'suggest',
+        allowedApprovalModes: ['suggest', 'auto_edit', 'yolo'],
+        allowPlanGate: true,
+        allowVerificationGate: false,
+        allowAutoCompact: true,
+      },
+      promptPolicy: 'generalist',
+      toolPolicy: 'engineering',
+      toolPolicyDetails: null,
+      prompts: [
+        {
+          id: 'generalist_system',
+          label: 'Agent system prompt',
+          role: 'system',
+          policy: 'generalist',
+          source: 'runtime',
+          body: 'Handle broad agent work.',
+        },
+      ],
+      tools: [],
+      dbTouchpoints: {
+        reads: [],
+        writes: [],
+        encouraged: [],
+      },
+      output: {
+        contract: 'answer',
+        label: 'Answer',
+        description: 'Answer the user.',
+        sections: [],
+      },
+      consumes: [],
+      attachedSkills: [],
+      workflowStructure: null,
+      authoringGraph: null,
+      graphProjection: null,
+    })
+
+    expect(detail.promptPolicy).toBe('generalist')
+    expect(detail.prompts[0]?.policy).toBe('generalist')
+  })
+
   it('parses the backend-only tool-pack catalog contract', () => {
     const request = getAgentToolPackCatalogRequestSchema.parse({
       projectId: 'project-1',

@@ -15,7 +15,10 @@ import { AgentWorkspace } from '@/components/xero/agent-workspace'
 import { AgentSessionsSidebar } from '@/components/xero/agent-sessions-sidebar'
 import { AgentWorkspaceDndProvider } from '@/components/xero/agent-runtime/agent-workspace-dnd-provider'
 import { AgentCommandPalette } from '@/components/xero/agent-runtime/agent-command-palette'
-import { runtimeAgentIdForCustomBaseCapability } from '@/components/xero/agent-runtime/composer-helpers'
+import {
+  buildComposerAgentSelectionKey,
+  runtimeAgentIdForCustomBaseCapability,
+} from '@/components/xero/agent-runtime/composer-helpers'
 import { type View } from '@/components/xero/data'
 import { LoadingScreen } from '@/components/xero/loading-screen'
 import { NoProjectEmptyState } from '@/components/xero/no-project-empty-state'
@@ -55,6 +58,7 @@ import { XeroDesktopAdapter as DefaultXeroDesktopAdapter, type XeroDesktopAdapte
 import { mapAgentSession, type RuntimeAgentIdDto, type RuntimeRunControlInputDto } from '@/src/lib/xero-model/runtime'
 import {
   canonicalCustomAgentDefinitionSchema,
+  type AgentDefaultModelDto,
   type AgentDefinitionWriteResponseDto,
   type AgentDefinitionSummaryDto,
 } from '@/src/lib/xero-model/agent-definition'
@@ -1321,6 +1325,31 @@ export function XeroApp({ adapter }: XeroAppProps) {
       ),
     [agentWorkspacePanes],
   )
+  const agentDefaultModels = useMemo(() => {
+    const defaults: Record<string, AgentDefaultModelDto | null> = {}
+    for (const agent of workflowAgentInspector.agents) {
+      if (agent.ref.kind === 'built_in') {
+        defaults[buildComposerAgentSelectionKey(agent.ref.runtimeAgentId, null)] =
+          agent.defaultModel ?? null
+      } else {
+        defaults[
+          buildComposerAgentSelectionKey(
+            runtimeAgentIdForCustomBaseCapability(agent.baseCapabilityProfile),
+            agent.ref.definitionId,
+          )
+        ] = agent.defaultModel ?? null
+      }
+    }
+    for (const definition of customAgentDefinitions) {
+      defaults[
+        buildComposerAgentSelectionKey(
+          runtimeAgentIdForCustomBaseCapability(definition.baseCapabilityProfile),
+          definition.definitionId,
+        )
+      ] = definition.defaultModel ?? null
+    }
+    return defaults
+  }, [customAgentDefinitions, workflowAgentInspector.agents])
   const shouldRestoreExplorerFromAutoCollapseRef = useRef(false)
   const previousBrowserOpenRef = useRef<boolean>(browserOpen)
 
@@ -2723,6 +2752,22 @@ export function XeroApp({ adapter }: XeroAppProps) {
     ],
   )
 
+  const handleSetWorkflowAgentDefaultModel = useCallback(
+    async (agent: WorkflowAgentSummaryDto, defaultModel: AgentDefaultModelDto | null) => {
+      if (!activeProjectId) {
+        throw new Error('Select a project before setting an agent default model.')
+      }
+      await resolvedAdapter.setAgentDefaultModel({
+        projectId: activeProjectId,
+        ref: agent.ref,
+        defaultModel,
+      })
+      refreshCustomAgentDefinitions()
+      void workflowAgentInspector.refreshAgents()
+    },
+    [activeProjectId, refreshCustomAgentDefinitions, resolvedAdapter, workflowAgentInspector],
+  )
+
   const handlePhaseAuthoringSaved = useCallback(
     (response: AgentDefinitionWriteResponseDto) => {
       handleAgentAuthoringSaved()
@@ -3271,6 +3316,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 accountLogin={githubSession?.user.login ?? null}
                 toolCallGroupingPreference={toolCallGroupingPreference}
                 customAgentDefinitions={customAgentDefinitions}
+                agentDefaultModels={agentDefaultModels}
                 onOpenAgentManagement={handleOpenAgentManagement}
                 onCreateAgentByHand={handleStartAgentAuthoringCreate}
                 onStartWorkflowAgentCreate={handleStartWorkflowAgentCreate}
@@ -3624,9 +3670,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onCreateAgent={handleCreateAgent}
                 onCreateAgentByHand={handleStartAgentAuthoringCreate}
                 onEditAgent={(ref) => handleStartAgentAuthoringFromRef('edit', ref)}
-                onDuplicateAgent={(ref) => handleStartAgentAuthoringFromRef('duplicate', ref)}
                 onDeleteAgent={handleArchiveAgentDefinition}
                 onUseAgentInChat={handleUseWorkflowAgentInChat}
+                modelOptions={agentView?.composerModelOptions ?? []}
+                onSetAgentDefaultModel={handleSetWorkflowAgentDefaultModel}
               />
             </Suspense>
           </LazyPrerenderedSurface>
@@ -3691,6 +3738,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 accountLogin={githubSession?.user.login ?? null}
                 toolCallGroupingPreference={toolCallGroupingPreference}
                 customAgentDefinitions={customAgentDefinitions}
+                agentDefaultModels={agentDefaultModels}
                 onOpenAgentManagement={handleOpenAgentManagement}
                 onCreateAgentByHand={handleStartAgentAuthoringCreate}
                 onStartWorkflowAgentCreate={handleStartWorkflowAgentCreate}

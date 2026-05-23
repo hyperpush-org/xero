@@ -86,6 +86,7 @@ export interface AgentDockSidebarProps {
   onRetryStream?: AgentRuntimeProps["onRetryStream"]
   onCodeUndoApplied?: AgentRuntimeProps["onCodeUndoApplied"]
   agentCreateCanvasIncluded?: AgentRuntimeProps["agentCreateCanvasIncluded"]
+  agentDefaultModels?: AgentRuntimeProps["agentDefaultModels"]
   pendingInitialRuntimeAgentId?: AgentRuntimeProps["pendingInitialRuntimeAgentId"]
   pendingInitialAgentDefinitionId?: AgentRuntimeProps["pendingInitialAgentDefinitionId"]
   onPendingInitialRuntimeAgentIdConsumed?: AgentRuntimeProps["onPendingInitialRuntimeAgentIdConsumed"]

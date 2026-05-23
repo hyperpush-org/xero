@@ -1,5 +1,6 @@
 mod attached_skills;
 mod db_touchpoints;
+mod default_model;
 mod extends;
 mod handoff;
 mod identity;
@@ -36,6 +37,7 @@ pub(super) fn validate_definition_snapshot_with_registry(
     workflow::validate(snapshot, &mut diagnostics);
     output::validate(snapshot, &mut diagnostics);
     db_touchpoints::validate(snapshot, &mut diagnostics);
+    default_model::validate(snapshot.get("defaultModel"), &mut diagnostics);
     memory::validate(snapshot, &mut diagnostics);
     retrieval::validate(snapshot.get("retrievalDefaults"), &mut diagnostics);
     handoff::validate(snapshot, &mut diagnostics);

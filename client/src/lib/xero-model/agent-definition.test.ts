@@ -415,6 +415,41 @@ describe('agent definition contracts', () => {
     ).toThrow(/retrieval record kinds/)
   })
 
+  it('accepts typed default model selections and rejects malformed shapes', () => {
+    const parsed = canonicalCustomAgentDefinitionSchema.parse({
+      ...canonicalDefinition,
+      defaultModel: {
+        providerId: 'anthropic',
+        providerProfileId: 'anthropic-work',
+        modelId: 'claude-sonnet-4-5',
+        selectionKey: 'anthropic:claude-sonnet-4-5',
+        thinkingEffort: 'medium',
+      },
+    })
+
+    expect(parsed.defaultModel?.modelId).toBe('claude-sonnet-4-5')
+    expect(parsed.defaultModel?.thinkingEffort).toBe('medium')
+    expect(() =>
+      canonicalCustomAgentDefinitionSchema.parse({
+        ...canonicalDefinition,
+        defaultModel: {
+          providerId: 'anthropic',
+          modelId: '',
+        },
+      }),
+    ).toThrow()
+    expect(() =>
+      canonicalCustomAgentDefinitionSchema.parse({
+        ...canonicalDefinition,
+        defaultModel: {
+          providerId: 'anthropic',
+          modelId: 'claude-sonnet-4-5',
+          thinkingEffort: 'maximum',
+        },
+      }),
+    ).toThrow()
+  })
+
   it('accepts v3 built-in overlay references', () => {
     const parsed = canonicalCustomAgentDefinitionSchema.parse({
       ...canonicalDefinition,

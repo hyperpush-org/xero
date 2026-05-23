@@ -68,6 +68,8 @@ import {
   resolveAgentAuthoringSkillRequestSchema,
   searchAgentAuthoringSkillsRequestSchema,
   searchAgentAuthoringSkillsResponseSchema,
+  setAgentDefaultModelRequestSchema,
+  setAgentDefaultModelResponseSchema,
   agentAuthoringAttachableSkillSchema,
   workflowAgentGraphProjectionSchema,
   workflowAgentDetailSchema,
@@ -83,6 +85,8 @@ import {
   type ResolveAgentAuthoringSkillRequestDto,
   type SearchAgentAuthoringSkillsRequestDto,
   type SearchAgentAuthoringSkillsResponseDto,
+  type SetAgentDefaultModelRequestDto,
+  type SetAgentDefaultModelResponseDto,
   type WorkflowAgentDetailDto,
   type WorkflowAgentGraphProjectionDto,
 } from '@/src/lib/xero-model/workflow-agents'
@@ -630,6 +634,7 @@ const COMMANDS = {
   saveAgentDefinition: 'save_agent_definition',
   updateAgentDefinition: 'update_agent_definition',
   previewAgentDefinition: 'preview_agent_definition',
+  setAgentDefaultModel: 'set_agent_default_model',
   getAgentKnowledgeInspection: 'get_agent_knowledge_inspection',
   getAgentHandoffContextSummary: 'get_agent_handoff_context_summary',
   listWorkflowAgents: 'list_workflow_agents',
@@ -1126,6 +1131,9 @@ export interface XeroDesktopAdapter {
   previewAgentDefinition(
     request: PreviewAgentDefinitionRequestDto,
   ): Promise<AgentDefinitionPreviewResponseDto>
+  setAgentDefaultModel(
+    request: SetAgentDefaultModelRequestDto,
+  ): Promise<SetAgentDefaultModelResponseDto>
   getAgentKnowledgeInspection?(
     request: GetAgentKnowledgeInspectionRequestDto,
   ): Promise<AgentKnowledgeInspectionDto>
@@ -2631,6 +2639,13 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
         },
       },
     )
+  },
+
+  setAgentDefaultModel(request) {
+    const parsed = setAgentDefaultModelRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.setAgentDefaultModel, setAgentDefaultModelResponseSchema, {
+      request: parsed,
+    })
   },
 
   getAgentKnowledgeInspection(request) {

@@ -1,4 +1,5 @@
 pub mod adrenaline_mode;
+pub mod agent_default_models;
 pub mod agent_definition;
 pub mod agent_extensions;
 pub mod agent_reports;
@@ -92,6 +93,7 @@ pub use adrenaline_mode::{
     ClosedLidModeSettingsDto, ClosedLidModeState, UpsertAdrenalineModeSettingsRequestDto,
     UpsertClosedLidModeSettingsRequestDto,
 };
+pub use agent_default_models::set_agent_default_model;
 pub use agent_definition::{
     archive_agent_definition, get_agent_definition_version, get_agent_definition_version_diff,
     list_agent_definitions, preview_agent_definition, save_agent_definition,

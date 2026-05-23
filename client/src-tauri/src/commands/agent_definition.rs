@@ -37,9 +37,28 @@ pub fn list_agent_definitions<R: Runtime>(
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
     let definitions = project_store::list_agent_definitions(&repo_root, request.include_archived)?
         .into_iter()
-        .map(agent_definition_summary_dto)
-        .collect();
+        .map(|record| agent_definition_summary_with_default_model(&repo_root, record))
+        .collect::<CommandResult<Vec<_>>>()?;
     Ok(ListAgentDefinitionsResponseDto { definitions })
+}
+
+fn agent_definition_summary_with_default_model(
+    repo_root: &std::path::Path,
+    record: project_store::AgentDefinitionRecord,
+) -> CommandResult<AgentDefinitionSummaryDto> {
+    let mut summary = agent_definition_summary_dto(record.clone());
+    if let Some(version) = project_store::load_agent_definition_version(
+        repo_root,
+        &record.definition_id,
+        record.current_version,
+    )? {
+        summary.default_model = version
+            .snapshot
+            .get("defaultModel")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok());
+    }
+    Ok(summary)
 }
 
 #[tauri::command]
@@ -194,7 +213,7 @@ fn unwrap_agent_definition_output(
     }
 }
 
-fn write_response_from_output(
+pub(crate) fn write_response_from_output(
     repo_root: &std::path::Path,
     output: AutonomousAgentDefinitionOutput,
 ) -> CommandResult<AgentDefinitionWriteResponseDto> {
@@ -211,7 +230,8 @@ fn write_response_from_output(
             .map(|definition| definition.definition_id.clone())
         {
             project_store::load_agent_definition(repo_root, &saved)?
-                .map(agent_definition_summary_dto)
+                .map(|record| agent_definition_summary_with_default_model(repo_root, record))
+                .transpose()?
         } else {
             None
         }

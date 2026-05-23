@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { WorkflowAgentSummaryDto } from '@/src/lib/xero-model/workflow-agents'
@@ -103,6 +103,62 @@ describe('WorkflowsSidebar', () => {
       runtimeAgentId: 'ask',
       version: 1,
     })
+  })
+
+  it('saves a default model from the row action menu', async () => {
+    const onSetAgentDefaultModel = vi.fn(async () => undefined)
+    render(
+      <WorkflowsSidebar
+        open
+        agents={REAL_AGENTS}
+        onSetAgentDefaultModel={onSetAgentDefaultModel}
+      />,
+    )
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions for Engineer' }), {
+      button: 0,
+      ctrlKey: false,
+    })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Default model' }))
+
+    expect(await screen.findByRole('dialog')).toHaveTextContent('Engineer default model')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() =>
+      expect(onSetAgentDefaultModel).toHaveBeenCalledWith(REAL_AGENTS[0], null),
+    )
+  })
+
+  it('confirms before deleting a user-created agent', async () => {
+    const onDeleteAgent = vi.fn(async () => undefined)
+    render(
+      <WorkflowsSidebar
+        open
+        agents={REAL_AGENTS}
+        onDeleteAgent={onDeleteAgent}
+      />,
+    )
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions for Security Reviewer' }), {
+      button: 0,
+      ctrlKey: false,
+    })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }))
+
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog).toHaveTextContent('Delete Security Reviewer?')
+    expect(onDeleteAgent).not.toHaveBeenCalled()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }))
+
+    await waitFor(() =>
+      expect(onDeleteAgent).toHaveBeenCalledWith({
+        kind: 'custom',
+        definitionId: 'security_reviewer',
+        version: 1,
+      }),
+    )
   })
 
   it('marks the selected agent row as pressed', () => {

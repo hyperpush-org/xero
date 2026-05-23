@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Bot,
   Compass,
-  Copy,
   Hammer,
   MessageCircle,
   MoreHorizontal,
@@ -13,6 +12,7 @@ import {
   Plus,
   Search,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   Trash2,
   Wand2,
@@ -22,7 +22,26 @@ import {
 
 import { cn } from "@/lib/utils"
 import { useDeferredFilterQuery } from "@/lib/input-priority"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
+import { Button, buttonVariants } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -30,6 +49,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { createFrameCoalescer } from "@/lib/frame-governance"
 import { useSidebarOpenMotion, useSidebarWidthMotion } from "@/lib/sidebar-motion"
 import {
@@ -41,9 +70,12 @@ import {
 import {
   getAgentDefinitionBaseCapabilityLabel,
   getAgentDefinitionScopeLabel,
+  type AgentDefaultModelDto,
   type AgentDefinitionBaseCapabilityProfileDto,
   type AgentDefinitionScopeDto,
 } from "@/src/lib/xero-model/agent-definition"
+import type { ProviderModelThinkingEffortDto } from "@/src/lib/xero-model"
+import type { ComposerModelOptionView } from "@/src/features/xero/use-xero-desktop-state/runtime-provider"
 
 const MIN_WIDTH = 280
 const MAX_WIDTH = 1200
@@ -63,9 +95,13 @@ interface WorkflowsSidebarProps {
   onCreateAgent?: () => void
   onCreateAgentByHand?: () => void
   onEditAgent?: (ref: AgentRefDto) => void
-  onDuplicateAgent?: (ref: AgentRefDto) => void
-  onDeleteAgent?: (ref: AgentRefDto) => void
+  onDeleteAgent?: (ref: AgentRefDto) => Promise<void> | void
   onUseAgentInChat?: (ref: AgentRefDto) => void
+  modelOptions?: readonly ComposerModelOptionView[]
+  onSetAgentDefaultModel?: (
+    agent: WorkflowAgentSummaryDto,
+    defaultModel: AgentDefaultModelDto | null,
+  ) => Promise<void> | void
 }
 
 const AGENT_PROFILE_ICON: Record<AgentDefinitionBaseCapabilityProfileDto, typeof Bot> = {
@@ -93,9 +129,10 @@ export function WorkflowsSidebar({
   onCreateAgent,
   onCreateAgentByHand,
   onEditAgent,
-  onDuplicateAgent,
   onDeleteAgent,
   onUseAgentInChat,
+  modelOptions = [],
+  onSetAgentDefaultModel,
 }: WorkflowsSidebarProps) {
   const [tab, setTabState] = useState<LibraryTab>(() => readPersistedTab() ?? "workflows")
   const [query, setQuery] = useState("")
@@ -110,6 +147,9 @@ export function WorkflowsSidebar({
   const deferredQuery = useDeferredFilterQuery(query)
 
   const agents = useMemo(() => agentsProp ?? [], [agentsProp])
+  const [defaultModelTarget, setDefaultModelTarget] =
+    useState<WorkflowAgentSummaryDto | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<WorkflowAgentSummaryDto | null>(null)
 
   const setTab = useCallback((next: LibraryTab) => {
     setTabState((current) => {
@@ -255,12 +295,37 @@ export function WorkflowsSidebar({
             selectedAgentRef={selectedAgentRef}
             onSelectAgent={onSelectAgent}
             onEditAgent={onEditAgent}
-            onDuplicateAgent={onDuplicateAgent}
-            onDeleteAgent={onDeleteAgent}
+            onRequestDeleteAgent={setDeleteTarget}
             onUseAgentInChat={onUseAgentInChat}
+            onConfigureDefaultModel={setDefaultModelTarget}
           />
         </div>
       </div>
+      <AgentDefaultModelDialog
+        agent={defaultModelTarget}
+        modelOptions={modelOptions}
+        open={Boolean(defaultModelTarget)}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setDefaultModelTarget(null)
+        }}
+        onSave={async (defaultModel) => {
+          if (!defaultModelTarget || !onSetAgentDefaultModel) return
+          await onSetAgentDefaultModel(defaultModelTarget, defaultModel)
+          setDefaultModelTarget(null)
+        }}
+      />
+      <DeleteAgentConfirmationDialog
+        agent={deleteTarget}
+        open={Boolean(deleteTarget)}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setDeleteTarget(null)
+        }}
+        onDelete={async (agent) => {
+          if (!onDeleteAgent) return
+          await onDeleteAgent(agent.ref)
+          setDeleteTarget(null)
+        }}
+      />
     </aside>
   )
 }
@@ -441,9 +506,9 @@ function LibraryList({
   selectedAgentRef,
   onSelectAgent,
   onEditAgent,
-  onDuplicateAgent,
-  onDeleteAgent,
+  onRequestDeleteAgent,
   onUseAgentInChat,
+  onConfigureDefaultModel,
 }: {
   tab: LibraryTab
   agents: WorkflowAgentSummaryDto[]
@@ -455,9 +520,9 @@ function LibraryList({
   selectedAgentRef: AgentRefDto | null
   onSelectAgent?: (ref: AgentRefDto) => void
   onEditAgent?: (ref: AgentRefDto) => void
-  onDuplicateAgent?: (ref: AgentRefDto) => void
-  onDeleteAgent?: (ref: AgentRefDto) => void
+  onRequestDeleteAgent?: (agent: WorkflowAgentSummaryDto) => void
   onUseAgentInChat?: (ref: AgentRefDto) => void
+  onConfigureDefaultModel?: (agent: WorkflowAgentSummaryDto) => void
 }) {
   if (tab === "workflows") {
     return <WorkflowsComingSoon />
@@ -498,9 +563,9 @@ function LibraryList({
             }
             onSelect={onSelectAgent}
             onEdit={onEditAgent}
-            onDuplicate={onDuplicateAgent}
-            onDelete={onDeleteAgent}
+            onRequestDelete={onRequestDeleteAgent}
             onUseInChat={onUseAgentInChat}
+            onConfigureDefaultModel={onConfigureDefaultModel}
           />
         </li>
       ))}
@@ -535,17 +600,17 @@ function AgentRow({
   selected,
   onSelect,
   onEdit,
-  onDuplicate,
-  onDelete,
+  onRequestDelete,
   onUseInChat,
+  onConfigureDefaultModel,
 }: {
   agent: WorkflowAgentSummaryDto
   selected: boolean
   onSelect?: (ref: AgentRefDto) => void
   onEdit?: (ref: AgentRefDto) => void
-  onDuplicate?: (ref: AgentRefDto) => void
-  onDelete?: (ref: AgentRefDto) => void
+  onRequestDelete?: (agent: WorkflowAgentSummaryDto) => void
   onUseInChat?: (ref: AgentRefDto) => void
+  onConfigureDefaultModel?: (agent: WorkflowAgentSummaryDto) => void
 }) {
   const isBuiltIn = agent.scope === "built_in"
   const Icon = isBuiltIn ? (AGENT_PROFILE_ICON[agent.baseCapabilityProfile] ?? Bot) : Package
@@ -605,9 +670,11 @@ function AgentRow({
           showEdit={showEdit}
           deleteDisabled={isBuiltIn}
           onEdit={onEdit ? () => onEdit(agent.ref) : undefined}
-          onDuplicate={onDuplicate ? () => onDuplicate(agent.ref) : undefined}
-          onDelete={onDelete ? () => onDelete(agent.ref) : undefined}
+          onDelete={onRequestDelete ? () => onRequestDelete(agent) : undefined}
           onUseInChat={onUseInChat ? () => onUseInChat(agent.ref) : undefined}
+          onConfigureDefaultModel={
+            onConfigureDefaultModel ? () => onConfigureDefaultModel(agent) : undefined
+          }
         />
       </div>
     </div>
@@ -619,21 +686,21 @@ function RowMenu({
   showEdit,
   deleteDisabled,
   onEdit,
-  onDuplicate,
   onDelete,
   onUseInChat,
+  onConfigureDefaultModel,
 }: {
   name: string
   showEdit: boolean
   deleteDisabled: boolean
   onEdit?: () => void
-  onDuplicate?: () => void
   onDelete?: () => void
   onUseInChat?: () => void
+  onConfigureDefaultModel?: () => void
 }) {
   const useInChatEnabled = Boolean(onUseInChat)
   const editEnabled = showEdit && Boolean(onEdit)
-  const duplicateEnabled = Boolean(onDuplicate)
+  const defaultModelEnabled = Boolean(onConfigureDefaultModel)
   const deleteEnabled = !deleteDisabled && Boolean(onDelete)
   return (
     <DropdownMenu>
@@ -668,24 +735,296 @@ function RowMenu({
         ) : null}
         <DropdownMenuItem
           className="cursor-pointer text-[12px]"
-          disabled={!duplicateEnabled}
-          onSelect={duplicateEnabled ? onDuplicate : undefined}
+          disabled={!defaultModelEnabled}
+          onSelect={defaultModelEnabled ? onConfigureDefaultModel : undefined}
         >
-          <Copy className="mr-2 h-3.5 w-3.5" />
-          Duplicate
+          <SlidersHorizontal className="mr-2 h-3.5 w-3.5" />
+          Default model
         </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          className="cursor-pointer text-[12px] text-destructive focus:text-destructive"
-          disabled={!deleteEnabled}
-          onSelect={deleteEnabled ? onDelete : undefined}
-        >
-          <Trash2 className="mr-2 h-3.5 w-3.5" />
-          Delete
-        </DropdownMenuItem>
+        {deleteEnabled ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              className="cursor-pointer text-[12px] text-destructive focus:text-destructive"
+              onSelect={onDelete}
+            >
+              <Trash2 className="mr-2 h-3.5 w-3.5" />
+              Delete
+            </DropdownMenuItem>
+          </>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   )
+}
+
+const INHERIT_MODEL_VALUE = "__provider_default__"
+
+function DeleteAgentConfirmationDialog({
+  agent,
+  open,
+  onOpenChange,
+  onDelete,
+}: {
+  agent: WorkflowAgentSummaryDto | null
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onDelete: (agent: WorkflowAgentSummaryDto) => Promise<void>
+}) {
+  const [deleting, setDeleting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!open) {
+      setDeleting(false)
+      setError(null)
+    }
+  }, [open])
+
+  const handleDelete = async () => {
+    if (!agent) return
+    setDeleting(true)
+    setError(null)
+    try {
+      await onDelete(agent)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Failed to delete the agent.")
+      setDeleting(false)
+    }
+  }
+
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            Delete {agent?.displayName ?? "agent"}?
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            This removes the user-created agent from the agents list. Existing chat history stays
+            available.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {error ? (
+          <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">
+            {error}
+          </p>
+        ) : null}
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            className={buttonVariants({ variant: "destructive" })}
+            disabled={deleting || !agent}
+            onClick={(event) => {
+              event.preventDefault()
+              void handleDelete()
+            }}
+          >
+            {deleting ? "Deleting..." : "Delete"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
+function AgentDefaultModelDialog({
+  agent,
+  modelOptions,
+  open,
+  onOpenChange,
+  onSave,
+}: {
+  agent: WorkflowAgentSummaryDto | null
+  modelOptions: readonly ComposerModelOptionView[]
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onSave: (defaultModel: AgentDefaultModelDto | null) => Promise<void>
+}) {
+  const [selectionKey, setSelectionKey] = useState(INHERIT_MODEL_VALUE)
+  const [thinkingEffort, setThinkingEffort] =
+    useState<ProviderModelThinkingEffortDto | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!agent || !open) return
+    const key =
+      agent.defaultModel?.selectionKey?.trim() ||
+      (agent.defaultModel
+        ? `${agent.defaultModel.providerId}:${agent.defaultModel.modelId}`
+        : INHERIT_MODEL_VALUE)
+    setSelectionKey(key)
+    setThinkingEffort(agent.defaultModel?.thinkingEffort ?? null)
+    setError(null)
+    setSaving(false)
+  }, [agent, open])
+
+  const selectedModel = useMemo(() => {
+    if (selectionKey === INHERIT_MODEL_VALUE) return null
+    return (
+      modelOptions.find((option) => option.selectionKey === selectionKey) ??
+      modelOptions.find(
+        (option) =>
+          agent?.defaultModel &&
+          option.providerId === agent.defaultModel.providerId &&
+          option.modelId === agent.defaultModel.modelId,
+      ) ??
+      null
+    )
+  }, [agent, modelOptions, selectionKey])
+
+  const groupedOptions = useMemo(() => {
+    const groups = new Map<string, ComposerModelOptionView[]>()
+    for (const option of modelOptions) {
+      const list = groups.get(option.providerLabel) ?? []
+      list.push(option)
+      groups.set(option.providerLabel, list)
+    }
+    return Array.from(groups.entries())
+  }, [modelOptions])
+
+  const thinkingOptions = selectedModel?.thinkingEffortOptions ?? []
+
+  useEffect(() => {
+    if (!selectedModel) {
+      setThinkingEffort(null)
+      return
+    }
+    if (thinkingEffort && thinkingOptions.includes(thinkingEffort)) {
+      return
+    }
+    setThinkingEffort(selectedModel.defaultThinkingEffort ?? null)
+  }, [selectedModel, thinkingEffort, thinkingOptions])
+
+  const handleSave = async () => {
+    if (!agent) return
+    setSaving(true)
+    setError(null)
+    try {
+      if (selectionKey === INHERIT_MODEL_VALUE) {
+        await onSave(null)
+        return
+      }
+      const model = selectedModel
+      if (!model) {
+        throw new Error("Select a model before saving.")
+      }
+      await onSave({
+        providerId: model.providerId,
+        providerProfileId: model.profileId ?? null,
+        modelId: model.modelId,
+        selectionKey: model.selectionKey,
+        thinkingEffort:
+          thinkingEffort && model.thinkingEffortOptions.includes(thinkingEffort)
+            ? thinkingEffort
+            : null,
+      })
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Failed to save the default model.")
+      setSaving(false)
+    }
+  }
+
+  const title = agent ? `${agent.displayName} default model` : "Default model"
+  const hasModels = modelOptions.length > 0
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[520px]">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>
+            Pick the model new runs should use when this agent is selected.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid gap-4">
+          <div className="grid gap-2">
+            <Label htmlFor="agent-default-model-select">Model</Label>
+            <Select
+              value={selectionKey}
+              onValueChange={(value) => setSelectionKey(value)}
+              disabled={saving || !hasModels}
+            >
+              <SelectTrigger id="agent-default-model-select" className="w-full">
+                <SelectValue placeholder={hasModels ? "Select model" : "No models available"} />
+              </SelectTrigger>
+              <SelectContent className="max-h-[320px]">
+                <SelectItem value={INHERIT_MODEL_VALUE}>Use provider default</SelectItem>
+                {groupedOptions.map(([providerLabel, options]) => (
+                  <SelectGroup key={providerLabel}>
+                    <SelectLabel>{providerLabel}</SelectLabel>
+                    {options.map((option) => (
+                      <SelectItem key={option.selectionKey} value={option.selectionKey}>
+                        {option.displayName}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {thinkingOptions.length > 0 ? (
+            <div className="grid gap-2">
+              <Label htmlFor="agent-default-thinking-select">Thinking effort</Label>
+              <Select
+                value={thinkingEffort ?? selectedModel?.defaultThinkingEffort ?? thinkingOptions[0]}
+                onValueChange={(value) =>
+                  setThinkingEffort(value as ProviderModelThinkingEffortDto)
+                }
+                disabled={saving}
+              >
+                <SelectTrigger id="agent-default-thinking-select" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {thinkingOptions.map((effort) => (
+                    <SelectItem key={effort} value={effort}>
+                      {formatThinkingEffort(effort)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
+
+          {error ? (
+            <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">
+              {error}
+            </p>
+          ) : null}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+            Cancel
+          </Button>
+          <Button onClick={() => void handleSave()} disabled={saving || !agent}>
+            {saving ? "Saving..." : "Save"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function formatThinkingEffort(effort: ProviderModelThinkingEffortDto): string {
+  switch (effort) {
+    case "none":
+      return "None"
+    case "minimal":
+      return "Minimal"
+    case "low":
+      return "Low"
+    case "medium":
+      return "Medium"
+    case "high":
+      return "High"
+    case "x_high":
+      return "Extra high"
+  }
 }
 
 // ---------------------------------------------------------------------------

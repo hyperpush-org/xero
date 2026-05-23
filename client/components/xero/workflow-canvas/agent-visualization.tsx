@@ -633,6 +633,23 @@ function normalizeMeasuredSize(size: NodeSize): NodeSize {
   }
 }
 
+export function measuredSizeForDimensionChange(
+  nodeId: string,
+  dimensions: NodeSize,
+  renderedCardSize: NodeSize | null,
+  viewportZoom = 1,
+): NodeSize | null {
+  if (nodeId.startsWith('stage:')) {
+    if (!renderedCardSize) return null
+    const zoom = Number.isFinite(viewportZoom) && viewportZoom > 0 ? viewportZoom : 1
+    return normalizeMeasuredSize({
+      width: renderedCardSize.width / zoom,
+      height: renderedCardSize.height / zoom,
+    })
+  }
+  return normalizeMeasuredSize(dimensions)
+}
+
 export function estimateExpandedCardHeight(
   cardHeight: number,
   bodyWrapperHeight: number,
@@ -1178,7 +1195,7 @@ export function applyKnownNodeDimensions(
     const handles = options.domMeasuredHandleNodeTypes?.has(node.type ?? '')
       ? undefined
       : knownHandlesForNode(node, width, height)
-    const pinsWrapperSize = node.type === 'tool-group-frame'
+    const pinsWrapperSize = node.type === 'tool-group-frame' || node.type === 'stage-group-frame'
     const nextWidth = pinsWrapperSize ? width : undefined
     const nextHeight = pinsWrapperSize ? height : undefined
     if (
@@ -1966,6 +1983,23 @@ function AgentVisualizationInner({
     [flushPendingMeasuredSizes],
   )
 
+  const scheduleDimensionChangeSize = useCallback(
+    (nodeId: string, dimensions: NodeSize) => {
+      const renderedCardSize = nodeId.startsWith('stage:')
+        ? estimateRenderedNodeSize(canvasRef.current, nodeId, false)
+        : null
+      const measured = measuredSizeForDimensionChange(
+        nodeId,
+        dimensions,
+        renderedCardSize,
+        reactFlow.getViewport().zoom,
+      )
+      if (!measured) return
+      scheduleMeasuredSize(nodeId, measured)
+    },
+    [reactFlow, scheduleMeasuredSize],
+  )
+
   const setNodeExpanded = useCallback(
     (nodeId: string, expanded: boolean) => {
       const current = expandedIdsRef.current
@@ -2614,7 +2648,7 @@ function AgentVisualizationInner({
 
       for (const change of changes) {
         if (change.type === 'dimensions') {
-          if (change.dimensions) scheduleMeasuredSize(change.id, change.dimensions)
+          if (change.dimensions) scheduleDimensionChangeSize(change.id, change.dimensions)
           continue
         }
 
@@ -2635,7 +2669,7 @@ function AgentVisualizationInner({
         })
       }
     },
-    [canvasInteractionsLocked, scheduleMeasuredSize, setNodes],
+    [canvasInteractionsLocked, scheduleDimensionChangeSize, setNodes],
   )
 
   // ============================================================
@@ -2655,7 +2689,7 @@ function AgentVisualizationInner({
     const laneDragChanges: NodeChange<Node>[] = []
     for (const change of changes) {
       if (change.type === 'dimensions') {
-        if (change.dimensions) scheduleMeasuredSize(change.id, change.dimensions)
+        if (change.dimensions) scheduleDimensionChangeSize(change.id, change.dimensions)
         continue
       }
       if (change.type === 'remove') continue // routed via detail mutation below

@@ -2,6 +2,7 @@ import { z } from 'zod'
 
 import {
   agentDefinitionBaseCapabilityProfileSchema,
+  agentDefaultModelSchema,
   agentDefinitionLifecycleStateSchema,
   agentDefinitionScopeSchema,
   canonicalCustomAgentDefinitionBaseSchema,
@@ -45,6 +46,7 @@ export const runtimeAgentPromptPolicySchema = z.enum([
   'debug',
   'crawl',
   'agent_create',
+  'generalist',
 ])
 export type RuntimeAgentPromptPolicyDto = z.infer<typeof runtimeAgentPromptPolicySchema>
 
@@ -115,6 +117,7 @@ export const workflowAgentSummarySchema = z
     baseCapabilityProfile: agentDefinitionBaseCapabilityProfileSchema,
     lastUsedAt: isoTimestampSchema.nullable().optional(),
     useCount: z.number().int().nonnegative(),
+    defaultModel: agentDefaultModelSchema.nullable().optional(),
   })
   .strict()
 export type WorkflowAgentSummaryDto = z.infer<typeof workflowAgentSummarySchema>
@@ -813,6 +816,22 @@ export const getWorkflowAgentGraphProjectionRequestSchema = getWorkflowAgentDeta
 export type GetWorkflowAgentGraphProjectionRequestDto = z.infer<
   typeof getWorkflowAgentGraphProjectionRequestSchema
 >
+
+export const setAgentDefaultModelRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    ref: agentRefSchema,
+    defaultModel: agentDefaultModelSchema.nullable().optional(),
+  })
+  .strict()
+export type SetAgentDefaultModelRequestDto = z.infer<typeof setAgentDefaultModelRequestSchema>
+
+export const setAgentDefaultModelResponseSchema = z
+  .object({
+    defaultModel: agentDefaultModelSchema.nullable().optional(),
+  })
+  .strict()
+export type SetAgentDefaultModelResponseDto = z.infer<typeof setAgentDefaultModelResponseSchema>
 
 export const agentAuthoringDbTableSchema = z
   .object({

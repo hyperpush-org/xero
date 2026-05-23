@@ -39,6 +39,7 @@ import {
   estimateDbTableCardHeight,
   estimateExpandedCardHeight,
   getLaneDragMemberIds,
+  measuredSizeForDimensionChange,
   selectedNodeFocusCenter,
 } from './agent-visualization'
 import {
@@ -46,8 +47,10 @@ import {
   AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS,
   AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS,
   AGENT_GRAPH_TRIGGER_HANDLES,
+  STAGE_GROUP_FRAME_NODE_ID,
   buildAgentGraph,
 } from './build-agent-graph'
+import { layoutAgentGraphByCategory } from './layout'
 
 const originalElementFromPoint = document.elementFromPoint
 const AGENT_VISUALIZATION_CSS = readFileSync(
@@ -749,17 +752,25 @@ describe('AgentVisualization', () => {
           position: { x: 0, y: 0 },
           data: { label: 'Core', count: 1, order: 0, sourceGroups: ['core'] },
         },
+        {
+          id: STAGE_GROUP_FRAME_NODE_ID,
+          type: 'stage-group-frame',
+          position: { x: 0, y: 0 },
+          data: { count: 2 },
+        },
       ],
       new Map([
         ['agent-header', { width: 300, height: 210 }],
         ['db:write:agent_runs', { width: 260, height: 140 }],
         ['tool-group-frame:core', { width: 280, height: 96 }],
+        [STAGE_GROUP_FRAME_NODE_ID, { width: 284, height: 304 }],
       ]),
     ) as Node[]
 
     const headerNode = nodes.find((node) => node.id === 'agent-header')
     const dbNode = nodes.find((node) => node.id === 'db:write:agent_runs')
     const frameNode = nodes.find((node) => node.id === 'tool-group-frame:core')
+    const stageFrameNode = nodes.find((node) => node.id === STAGE_GROUP_FRAME_NODE_ID)
     const toolHandle = headerNode?.handles?.find(
       (handle) => handle.id === AGENT_GRAPH_HEADER_HANDLES.tool,
     )
@@ -818,6 +829,70 @@ describe('AgentVisualization', () => {
     ).toBeCloseTo(70)
     expect(frameNode?.width).toBe(280)
     expect(frameNode?.height).toBe(96)
+    expect(stageFrameNode?.width).toBe(284)
+    expect(stageFrameNode?.height).toBe(304)
+  })
+
+  it('uses the rendered stage card size instead of the stage wrapper dimensions', () => {
+    expect(
+      measuredSizeForDimensionChange(
+        'stage:triage',
+        { width: 260, height: 260 },
+        { width: 260, height: 148 },
+      ),
+    ).toEqual({ width: 260, height: 148 })
+    expect(
+      measuredSizeForDimensionChange(
+        'stage:triage',
+        { width: 260, height: 260 },
+        { width: 130, height: 74 },
+        0.5,
+      ),
+    ).toEqual({ width: 260, height: 148 })
+    expect(
+      measuredSizeForDimensionChange('stage:triage', { width: 260, height: 260 }, null),
+    ).toBeNull()
+    expect(
+      measuredSizeForDimensionChange('tool:read', { width: 240, height: 44 }, null),
+    ).toEqual({ width: 240, height: 44 })
+  })
+
+  it('sizes the stages category frame from measured stage cards', () => {
+    const { nodes: graphNodes } = buildAgentGraph({
+      ...detail(),
+      workflowStructure: {
+        startPhaseId: 'triage',
+        phases: [
+          {
+            id: 'triage',
+            title: 'Triage',
+            description: 'Judge the task shape and either suggest routing or proceed.',
+          },
+          {
+            id: 'work',
+            title: 'Work',
+            description: 'Carry out the task using the full engineering toolset.',
+          },
+        ],
+      },
+    })
+    const sizes = buildSizeMap(
+      graphNodes,
+      new Set(),
+      new Map([
+        ['stage:triage', { width: 260, height: 148 }],
+        ['stage:work', { width: 260, height: 132 }],
+      ]),
+    )
+    const placed = applyKnownNodeDimensions(
+      layoutAgentGraphByCategory(graphNodes, sizes),
+      sizes,
+    ) as Node[]
+    const stageFrame = placed.find((node) => node.id === STAGE_GROUP_FRAME_NODE_ID)
+
+    expect(sizes.get('stage:triage')?.height).toBe(148)
+    expect(sizes.get('stage:work')?.height).toBe(132)
+    expect(stageFrame?.height).toBe(320)
   })
 
   it('uses measured header height for seeded side handles on copied templates', () => {

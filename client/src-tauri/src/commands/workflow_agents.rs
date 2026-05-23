@@ -66,11 +66,12 @@ pub fn list_workflow_agents<R: Runtime>(
 ) -> CommandResult<ListWorkflowAgentsResponseDto> {
     validate_non_empty(&request.project_id, "projectId")?;
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let global_db_path = state.global_db_path(&app)?;
 
     let mut agents: Vec<WorkflowAgentSummaryDto> = available_builtin_runtime_agent_descriptors()
         .into_iter()
-        .map(builtin_summary)
-        .collect();
+        .map(|descriptor| builtin_summary(&global_db_path, descriptor))
+        .collect::<CommandResult<Vec<_>>>()?;
 
     let custom_records =
         project_store::list_agent_definitions(&repo_root, request.include_archived)?;
@@ -80,7 +81,7 @@ pub fn list_workflow_agents<R: Runtime>(
             // so the sidebar shows one row per built-in.
             continue;
         }
-        agents.push(custom_summary(record));
+        agents.push(custom_summary(&repo_root, record)?);
     }
 
     Ok(ListWorkflowAgentsResponseDto { agents })
@@ -3101,8 +3102,15 @@ fn base_capability_profile_id(profile: &AgentDefinitionBaseCapabilityProfileDto)
     }
 }
 
-fn builtin_summary(descriptor: RuntimeAgentDescriptorDto) -> WorkflowAgentSummaryDto {
-    WorkflowAgentSummaryDto {
+fn builtin_summary(
+    global_db_path: &Path,
+    descriptor: RuntimeAgentDescriptorDto,
+) -> CommandResult<WorkflowAgentSummaryDto> {
+    let default_model = crate::commands::agent_default_models::load_builtin_agent_default_model(
+        global_db_path,
+        descriptor.id,
+    )?;
+    Ok(WorkflowAgentSummaryDto {
         r#ref: AgentRefDto::BuiltIn {
             runtime_agent_id: descriptor.id,
             version: descriptor.version,
@@ -3115,11 +3123,27 @@ fn builtin_summary(descriptor: RuntimeAgentDescriptorDto) -> WorkflowAgentSummar
         base_capability_profile: base_capability_from_runtime(descriptor.base_capability_profile),
         last_used_at: None,
         use_count: 0,
-    }
+        default_model,
+    })
 }
 
-fn custom_summary(record: project_store::AgentDefinitionRecord) -> WorkflowAgentSummaryDto {
-    WorkflowAgentSummaryDto {
+fn custom_summary(
+    repo_root: &Path,
+    record: project_store::AgentDefinitionRecord,
+) -> CommandResult<WorkflowAgentSummaryDto> {
+    let default_model = project_store::load_agent_definition_version(
+        repo_root,
+        &record.definition_id,
+        record.current_version,
+    )?
+    .and_then(|version| {
+        version
+            .snapshot
+            .get("defaultModel")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+    });
+    Ok(WorkflowAgentSummaryDto {
         r#ref: AgentRefDto::Custom {
             definition_id: record.definition_id.clone(),
             version: record.current_version,
@@ -3132,7 +3156,8 @@ fn custom_summary(record: project_store::AgentDefinitionRecord) -> WorkflowAgent
         base_capability_profile: base_capability_from_str(&record.base_capability_profile),
         last_used_at: None,
         use_count: 0,
-    }
+        default_model,
+    })
 }
 
 fn builtin_detail(

@@ -53,6 +53,7 @@ import {
   getRuntimeAgentDescriptorsForProjectOrigin,
   getRuntimeAgentLabel,
   getRuntimeRunThinkingEffortLabel,
+  type AgentDefaultModelDto,
   type RuntimeRunControlInputDto,
   type StagedAgentAttachmentDto,
 } from '@/src/lib/xero-model'
@@ -170,6 +171,8 @@ export interface AgentRuntimeProps {
   isCreatingSession?: boolean
   /** Active and known custom agent definitions visible to the composer selector. */
   customAgentDefinitions?: readonly AgentDefinitionSummaryDto[]
+  /** Per-agent default models keyed by composer agent selection key. */
+  agentDefaultModels?: Readonly<Record<string, AgentDefaultModelDto | null | undefined>>
   /** Open the Settings → Agents tab so the user can manage custom agents. */
   onOpenAgentManagement?: () => void
   /** Open the by-hand agent builder form. */
@@ -1713,6 +1716,7 @@ export const AgentRuntime = memo(function AgentRuntime({
   onCreateSession,
   isCreatingSession = false,
   customAgentDefinitions = [],
+  agentDefaultModels = {},
   onOpenAgentManagement,
   onCreateAgentByHand,
   onStartWorkflowAgentCreate,
@@ -2171,6 +2175,7 @@ export const AgentRuntime = memo(function AgentRuntime({
     selectedRuntimeAgentId: agent.selectedRuntimeAgentId,
     selectedAgentDefinitionId: agent.runtimeRunActiveControls?.agentDefinitionId ?? null,
     customAgentDefinitions,
+    agentDefaultModels,
     selectedThinkingEffort: agent.selectedThinkingEffort,
     selectedApprovalMode: agent.selectedApprovalMode,
     selectedAutoCompactEnabled: agent.selectedAutoCompactEnabled,

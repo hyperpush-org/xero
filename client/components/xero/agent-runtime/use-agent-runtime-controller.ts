@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentPaneView } from '@/src/features/xero/use-xero-desktop-state'
 import type {
   AgentDefinitionSummaryDto,
+  AgentDefaultModelDto,
   ProviderModelThinkingEffortDto,
   RuntimeAgentIdDto,
   RuntimeRunApprovalModeDto,
@@ -42,6 +43,7 @@ interface UseAgentRuntimeControllerOptions {
   selectedRuntimeAgentId: RuntimeAgentIdDto
   selectedAgentDefinitionId?: string | null
   customAgentDefinitions?: readonly AgentDefinitionSummaryDto[]
+  agentDefaultModels?: Readonly<Record<string, AgentDefaultModelDto | null | undefined>>
   selectedThinkingEffort: ComposerThinkingLevel
   selectedApprovalMode: RuntimeRunApprovalModeDto
   selectedAutoCompactEnabled: boolean
@@ -273,12 +275,66 @@ function writeStoredComposerSettings(settings: Required<StoredComposerSettings>)
   }
 }
 
+function defaultModelSelectionForAgent(
+  runtimeAgentId: RuntimeAgentIdDto,
+  agentDefinitionId: string | null,
+  customAgentDefinitions: readonly AgentDefinitionSummaryDto[],
+  agentDefaultModels: Readonly<Record<string, AgentDefaultModelDto | null | undefined>>,
+  availableModels: AgentPaneView['providerModelCatalog']['models'],
+): {
+  selectionKey: string
+  thinkingEffort: ComposerThinkingLevel
+} | null {
+  const trimmedDefinitionId = agentDefinitionId?.trim() ?? ''
+  const selectionKey = buildComposerAgentSelectionKey(
+    runtimeAgentId,
+    trimmedDefinitionId.length > 0 ? trimmedDefinitionId : null,
+  )
+  const defaultModel =
+    agentDefaultModels[selectionKey] ??
+    (trimmedDefinitionId
+      ? customAgentDefinitions.find((definition) => definition.definitionId === trimmedDefinitionId)
+          ?.defaultModel
+      : null)
+  if (!defaultModel?.modelId?.trim()) return null
+
+  const configuredKey =
+    defaultModel.selectionKey?.trim() ||
+    `${defaultModel.providerId}:${defaultModel.modelId.trim()}`
+  const matchingModel =
+    availableModels.find(
+      (model) =>
+        model.selectionKey === configuredKey ||
+        (
+          model.providerId === defaultModel.providerId &&
+          model.modelId === defaultModel.modelId &&
+          (
+            !defaultModel.providerProfileId ||
+            !model.profileId ||
+            model.profileId === defaultModel.providerProfileId
+          )
+        ),
+    ) ?? getComposerModelOption(availableModels, configuredKey)
+  const thinkingEffort =
+    defaultModel.thinkingEffort &&
+    matchingModel?.thinkingSupported &&
+    matchingModel.thinkingEffortOptions.includes(defaultModel.thinkingEffort)
+      ? defaultModel.thinkingEffort
+      : matchingModel?.defaultThinkingEffort ?? null
+
+  return {
+    selectionKey: matchingModel?.selectionKey ?? configuredKey,
+    thinkingEffort,
+  }
+}
+
 export function useAgentRuntimeController({
   projectId,
   selectedModelSelectionKey,
   selectedRuntimeAgentId,
   selectedAgentDefinitionId = null,
   customAgentDefinitions = [],
+  agentDefaultModels = {},
   selectedThinkingEffort,
   selectedApprovalMode,
   selectedAutoCompactEnabled,
@@ -531,16 +587,30 @@ export function useAgentRuntimeController({
     if (runtimeMutationInFlight) return
 
     const trimmedAgentDefinitionId = pendingInitialAgentDefinitionId?.trim() ?? ''
+    const defaultModelSelection = defaultModelSelectionForAgent(
+      pendingInitialRuntimeAgentId,
+      trimmedAgentDefinitionId.length > 0 ? trimmedAgentDefinitionId : null,
+      customAgentDefinitions,
+      agentDefaultModels,
+      availableModels,
+    )
     setDraftRuntimeAgentId(pendingInitialRuntimeAgentId)
     setDraftAgentDefinitionId(
       trimmedAgentDefinitionId.length > 0 ? trimmedAgentDefinitionId : null,
     )
+    if (defaultModelSelection) {
+      setDraftModelSelectionKey(defaultModelSelection.selectionKey)
+      setDraftThinkingEffort(defaultModelSelection.thinkingEffort)
+    }
     setDraftApprovalMode((current) =>
       resolveRuntimeAgentApprovalMode(pendingInitialRuntimeAgentId, current),
     )
     onPendingInitialRuntimeAgentIdConsumed?.()
   }, [
     activeRuntimeRun,
+    availableModels,
+    agentDefaultModels,
+    customAgentDefinitions,
     onPendingInitialRuntimeAgentIdConsumed,
     pendingInitialAgentDefinitionId,
     pendingInitialRuntimeAgentId,
@@ -937,6 +1007,13 @@ export function useAgentRuntimeController({
     }
 
     hasUserComposerSettingsRef.current = true
+    const defaultModelSelection = defaultModelSelectionForAgent(
+      selection.runtimeAgentId,
+      selection.agentDefinitionId,
+      customAgentDefinitions,
+      agentDefaultModels,
+      availableModels,
+    )
     if (activeRuntimeRun) {
       void queueRuntimeRunControls(
         getComposerControlInput({
@@ -957,6 +1034,10 @@ export function useAgentRuntimeController({
 
     setDraftRuntimeAgentId(selection.runtimeAgentId)
     setDraftAgentDefinitionId(selection.agentDefinitionId)
+    if (defaultModelSelection) {
+      setDraftModelSelectionKey(defaultModelSelection.selectionKey)
+      setDraftThinkingEffort(defaultModelSelection.thinkingEffort)
+    }
     setDraftApprovalMode((current) =>
       resolveRuntimeAgentApprovalMode(selection.runtimeAgentId, current),
     )

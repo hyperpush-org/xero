@@ -2180,6 +2180,7 @@ function createMockAdapter(options?: {
     saveAgentDefinition,
     updateAgentDefinition,
     previewAgentDefinition,
+    setAgentDefaultModel: vi.fn(async () => ({ defaultModel: null })),
     listWorkflowAgents,
     getWorkflowAgentDetail,
     getAgentAuthoringCatalog,
