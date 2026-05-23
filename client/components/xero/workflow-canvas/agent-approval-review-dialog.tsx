@@ -1,5 +1,5 @@
-import { useMemo } from 'react'
-import { ArrowRight, Loader2, ShieldCheck, Sparkles } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { ArrowRight, ChevronDown, Loader2, ShieldCheck, Sparkles } from 'lucide-react'
 
 import {
   Dialog,
@@ -10,6 +10,11 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 import type { AgentDefinitionPreSaveReviewDto } from '@/src/lib/xero-model/agent-definition'
@@ -31,10 +36,10 @@ const SECTION_LABELS: Record<string, string> = {
   memoryPolicy: 'Memory policy',
   retrievalPolicy: 'Retrieval policy',
   handoffPolicy: 'Handoff policy',
-  outputContract: 'Output contract',
+  outputContract: 'Response format',
   databaseAccess: 'Database touchpoints',
   consumedArtifacts: 'Consumed artifacts',
-  workflowStructure: 'Workflow',
+  workflowStructure: 'Stages',
   safetyLimits: 'Safety limits',
 }
 
@@ -61,6 +66,7 @@ export function AgentApprovalReviewDialog({
   onApprove,
   onCancel,
 }: AgentApprovalReviewDialogProps) {
+  const [detailsOpen, setDetailsOpen] = useState(false)
   const orderedSections = useMemo(() => {
     if (!review) return []
     const order = Object.keys(SECTION_LABELS)
@@ -80,10 +86,19 @@ export function AgentApprovalReviewDialog({
     ? 'Approve new agent definition'
     : 'Approve update to this agent'
   const description = review?.isInitialVersion
-    ? 'No prior version exists. Confirm the configuration this new agent will save with.'
+    ? 'Confirm this new agent before it becomes available to you.'
     : !review?.changed
-      ? 'This update is byte-equivalent to the active version — saving will create a new version with no behavior changes.'
-      : 'Review the changes before saving. Saving creates a new immutable version pinned to future runs.'
+      ? 'This save creates a new version without behavior changes.'
+      : 'Saving creates a new immutable version for future runs.'
+  const changedSectionLabels = review
+    ? orderedSections
+        .filter((section) => section.changed)
+        .map((section) => sectionLabel(section.section))
+    : []
+
+  useEffect(() => {
+    setDetailsOpen(false)
+  }, [open, review?.definitionId, review?.toVersion])
 
   return (
     <Dialog
@@ -92,88 +107,134 @@ export function AgentApprovalReviewDialog({
         if (!next && !busy) onCancel()
       }}
     >
-      <DialogContent className="max-w-3xl gap-0 p-0">
-        <DialogHeader className="border-b border-border/50 p-4">
-          <DialogTitle className="flex items-center gap-2 text-[14px]">
-            <HeaderIcon className="h-4 w-4 text-primary" aria-hidden="true" />
+      <DialogContent className="max-w-lg gap-0 overflow-hidden p-0">
+        <DialogHeader className="border-b border-border/50 p-5 pb-4">
+          <DialogTitle className="flex items-center gap-2 text-[15px]">
+            <span className="flex size-7 items-center justify-center rounded-md border border-primary/20 bg-primary/10">
+              <HeaderIcon className="h-4 w-4 text-primary" aria-hidden="true" />
+            </span>
             {title}
           </DialogTitle>
-          <DialogDescription className="text-[12.5px]">
+          <DialogDescription className="text-[13px] leading-5">
             {description}
           </DialogDescription>
-          {review ? (
-            <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-muted-foreground">
-              <span className="font-mono">{review.definitionId}</span>
-              {review.isInitialVersion ? (
-                <span className="inline-flex items-center gap-1">
-                  <Sparkles className="h-3 w-3" aria-hidden="true" />v
-                  {review.toVersion}
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1">
-                  v{review.fromVersion ?? '?'}
-                  <ArrowRight className="h-3 w-3" aria-hidden="true" />v
-                  {review.toVersion}
-                </span>
-              )}
-              <span aria-live="polite">
-                {review.changed
-                  ? `${review.changedSections.length} section${review.changedSections.length === 1 ? '' : 's'} changed`
-                  : 'No changes'}
-              </span>
-            </div>
-          ) : null}
         </DialogHeader>
 
-        <ScrollArea className="max-h-[60vh]">
-          <div className="px-4 py-3">
-            {!review ? (
-              <p className="text-[12.5px] text-muted-foreground">
-                Loading approval review…
-              </p>
-            ) : !review.changed && !review.isInitialVersion ? (
-              <ZeroDeltaNotice />
-            ) : (
-              <ul className="flex flex-col gap-2">
-                {orderedSections.map((section) => (
-                  <li
-                    key={section.section}
-                    className={cn(
-                      'rounded-md border px-2.5 py-2',
-                      section.changed
-                        ? 'border-warning/30 bg-warning/[0.05]'
-                        : 'border-border/40 bg-secondary/10',
+        <div className="flex flex-col gap-3 px-5 py-4">
+          {!review ? (
+            <p className="text-[13px] text-muted-foreground">
+              Loading approval review…
+            </p>
+          ) : (
+            <>
+              <div className="rounded-md border border-border/60 bg-secondary/10 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate font-mono text-[13px] text-foreground">
+                      {review.definitionId}
+                    </p>
+                    <p className="mt-1 text-[12px] text-muted-foreground">
+                      {review.isInitialVersion ? 'New user agent' : 'Agent update'}
+                    </p>
+                  </div>
+                  <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-[11.5px] text-muted-foreground">
+                    {review.isInitialVersion ? (
+                      <>
+                        <Sparkles className="h-3 w-3" aria-hidden="true" />v
+                        {review.toVersion}
+                      </>
+                    ) : (
+                      <>
+                        v{review.fromVersion ?? '?'}
+                        <ArrowRight className="h-3 w-3" aria-hidden="true" />v
+                        {review.toVersion}
+                      </>
                     )}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-[12px] font-medium text-foreground">
-                        {sectionLabel(section.section)}
-                      </span>
-                      <span className="text-[11px] text-muted-foreground">
-                        {section.changed
-                          ? review.isInitialVersion
-                            ? 'added'
-                            : 'changed'
-                          : 'unchanged'}
-                      </span>
-                    </div>
-                    {section.changed ? (
-                      <DiffFieldList
-                        fields={section.fields}
-                        before={section.before}
-                        after={section.after}
-                        initialVersion={review.isInitialVersion}
-                      />
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </ScrollArea>
+                  </span>
+                </div>
+              </div>
+
+              {!review.changed && !review.isInitialVersion ? (
+                <ZeroDeltaNotice />
+              ) : (
+                <div className="rounded-md border border-border/60 bg-background/40 px-3 py-2.5">
+                  <p className="text-[12.5px] font-medium text-foreground">
+                    {review.isInitialVersion
+                      ? 'This will save the current canvas as a new agent.'
+                      : 'This will save the current canvas as the next agent version.'}
+                  </p>
+                  <p className="mt-1 text-[12px] leading-5 text-muted-foreground">
+                    {changedSectionLabels.length > 0
+                      ? `${changedSectionLabels.length} configuration area${
+                          changedSectionLabels.length === 1 ? '' : 's'
+                        } will be saved.`
+                      : 'No behavior changes were detected.'}
+                  </p>
+                </div>
+              )}
+
+              <Collapsible open={detailsOpen} onOpenChange={setDetailsOpen}>
+                <CollapsibleTrigger
+                  className={cn(
+                    'inline-flex items-center gap-1.5 self-start rounded-md text-[12.5px] font-medium',
+                    'text-muted-foreground transition-colors hover:text-foreground',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  )}
+                >
+                  <ChevronDown
+                    className={cn(
+                      'h-3.5 w-3.5 transition-transform motion-fast',
+                      detailsOpen ? 'rotate-0' : '-rotate-90',
+                    )}
+                    aria-hidden="true"
+                  />
+                  {detailsOpen ? 'Hide' : 'Show'} technical details
+                </CollapsibleTrigger>
+                <CollapsibleContent className="mt-3">
+                  <ScrollArea className="h-[min(30vh,18rem)] rounded-md border border-border/60 bg-background/40">
+                    <ul className="flex flex-col gap-2 p-3">
+                      {orderedSections.map((section) => (
+                        <li
+                          key={section.section}
+                          className={cn(
+                            'rounded-md border px-2.5 py-2',
+                            section.changed
+                              ? 'border-warning/30 bg-warning/[0.05]'
+                              : 'border-border/40 bg-secondary/10',
+                          )}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-[12px] font-medium text-foreground">
+                              {sectionLabel(section.section)}
+                            </span>
+                            <span className="text-[11px] text-muted-foreground">
+                              {section.changed
+                                ? review.isInitialVersion
+                                  ? 'added'
+                                  : 'changed'
+                                : 'unchanged'}
+                            </span>
+                          </div>
+                          {section.changed ? (
+                            <DiffFieldList
+                              fields={section.fields}
+                              before={section.before}
+                              after={section.after}
+                              initialVersion={review.isInitialVersion}
+                            />
+                          ) : null}
+                        </li>
+                      ))}
+                    </ul>
+                  </ScrollArea>
+                </CollapsibleContent>
+              </Collapsible>
+            </>
+          )}
+        </div>
 
         {errorMessage ? (
-          <div className="border-t border-destructive/30 bg-destructive/[0.06] px-4 py-2 text-[12px] text-destructive">
+          <div className="border-t border-destructive/30 bg-destructive/[0.06] px-5 py-2 text-[12px] text-destructive">
             {errorMessage}
           </div>
         ) : null}
@@ -214,9 +275,8 @@ function ZeroDeltaNotice() {
         No changes detected
       </p>
       <p className="mt-1 text-[11.5px] text-muted-foreground">
-        Saving this update will create a new version with the same canonical
-        snapshot as the active one. The audit trail will record the operator
-        approval, but no behavior changes for live runs.
+        This will create a new version with the same saved behavior as the
+        active one.
       </p>
     </div>
   )

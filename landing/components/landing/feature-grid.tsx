@@ -791,11 +791,15 @@ function KeyRayVisual() {
     "#10a37f", // openai
     "#cc785c", // anthropic
     "#4285f4", // gemini
+    "#f8f9fa", // openrouter
+    "#f8f9fa", // github
+    "#f8f9fa", // xai
+    "#26241e", // cursor
+    "#f8f9fa", // ollama / local
     "#0078d4", // azure
     "#ff9900", // bedrock
     "#1a73e8", // vertex
-    "#f8f9fa", // ollama / local
-    "#d4a574", // generic
+    "#d4a574", // openai-compatible
   ]
   const pt = (deg: number, r: number) => {
     const a = ((deg - 90) * Math.PI) / 180
@@ -860,7 +864,7 @@ function KeyRayVisual() {
 
       {/* Caption */}
       <text x={cx} y="190" textAnchor="middle" fontFamily="var(--font-mono)" fontSize="8.5" fill="var(--muted-foreground)" opacity="0.7" letterSpacing="2">
-        keys local · 11 providers · no relay
+        keys local · 12 providers · no relay
       </text>
     </svg>
   )

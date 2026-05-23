@@ -20,6 +20,7 @@ import {
 import {
   AGENT_GRAPH_HEADER_NODE_ID,
   buildAgentGraph,
+  buildAgentGraphForEditing,
   type AgentHeaderNodeData,
 } from './build-agent-graph'
 import { buildSnapshotFromGraph } from './build-snapshot'
@@ -32,7 +33,7 @@ function detail(): WorkflowAgentDetailDto {
       shortLabel: 'Release',
       description: 'Draft release notes from reviewed context.',
       taskPurpose: 'Retrieve approved release context and draft source-cited notes.',
-      scope: 'project_custom',
+      scope: 'global_custom',
       lifecycleState: 'active',
       baseCapabilityProfile: 'observe_only',
       defaultApprovalMode: 'suggest',
@@ -394,6 +395,45 @@ function expectStableSaveReloadRoundTrip(
 }
 
 describe('buildSnapshotFromGraph', () => {
+  it('seeds new agents with a backend-saveable output section', () => {
+    const { graph } = buildAgentGraphForEditing('create', null)
+    const snapshot = canonicalCustomAgentDefinitionSchema.parse(
+      buildSnapshotFromGraph(graph.nodes, graph.edges).snapshot,
+    )
+
+    expect(snapshot.scope).toBe('global_custom')
+    expect(snapshot.output.sections).toEqual([
+      {
+        id: 'final_answer',
+        label: 'Final answer',
+        description:
+          'Replace this with the main sections or evidence the agent should include in its final response.',
+        emphasis: 'core',
+        producedByTools: [],
+      },
+    ])
+    expect(snapshot.refusalEscalationCases.join(' ')).not.toMatch(
+      /bypass user approval/i,
+    )
+
+    const staleGraph = buildAgentGraphForEditing('create', null).graph
+    const header = staleGraph.nodes.find((node) => node.type === 'agent-header')
+    expect(header).toBeDefined()
+    if (!header) throw new Error('missing agent header node')
+    const headerData = header.data as AgentHeaderNodeData
+    headerData.advanced.refusalEscalationCases = [
+      'Untitled agent is asked to perform an action outside of its capability profile.',
+      'Untitled agent is asked to handle sensitive credentials or secret values.',
+      'Untitled agent is asked to bypass user approvals or operate without explicit consent.',
+    ]
+    const staleSnapshot = canonicalCustomAgentDefinitionSchema.parse(
+      buildSnapshotFromGraph(staleGraph.nodes, staleGraph.edges).snapshot,
+    )
+    expect(staleSnapshot.refusalEscalationCases.join(' ')).not.toMatch(
+      /bypass user approval/i,
+    )
+  })
+
   it('serializes the canonical custom-agent graph without dropping granular policy', () => {
     const graph = buildAgentGraph(detail())
     const { snapshot } = buildSnapshotFromGraph(graph.nodes, graph.edges, {

@@ -137,6 +137,7 @@ export interface AgentWorkspaceProps
       | 'onRefreshNotificationRoutes'
       | 'onUpsertNotificationRoute'
       | 'pendingInitialRuntimeAgentId'
+      | 'pendingInitialAgentDefinitionId'
       | 'onPendingInitialRuntimeAgentIdConsumed'
     >,
     PaneAwareRuntimeHandlers {
@@ -154,6 +155,7 @@ export interface AgentWorkspaceProps
   pendingInitialRuntimeAgent?: {
     agentSessionId: string
     runtimeAgentId: RuntimeAgentIdDto
+    agentDefinitionId?: string | null
   } | null
   onClearPendingInitialRuntimeAgent?: (agentSessionId: string) => void
 }
@@ -359,12 +361,14 @@ interface PaneRuntimeWrapperProps extends PaneAwareRuntimeHandlers {
     | 'onRefreshNotificationRoutes'
     | 'onUpsertNotificationRoute'
     | 'pendingInitialRuntimeAgentId'
+    | 'pendingInitialAgentDefinitionId'
     | 'onPendingInitialRuntimeAgentIdConsumed'
   >
   highChurnStore: XeroHighChurnStore
   pendingInitialRuntimeAgent?: {
     agentSessionId: string
     runtimeAgentId: RuntimeAgentIdDto
+    agentDefinitionId?: string | null
   } | null
   onClearPendingInitialRuntimeAgent?: (agentSessionId: string) => void
 }
@@ -409,6 +413,12 @@ const PaneRuntime = memo(function PaneRuntime({
     paneSessionId &&
     pendingInitialRuntimeAgent.agentSessionId === paneSessionId
       ? pendingInitialRuntimeAgent.runtimeAgentId
+      : null
+  const pendingInitialAgentDefinitionId =
+    pendingInitialRuntimeAgent &&
+    paneSessionId &&
+    pendingInitialRuntimeAgent.agentSessionId === paneSessionId
+      ? pendingInitialRuntimeAgent.agentDefinitionId ?? null
       : null
   const handlePendingInitialRuntimeAgentIdConsumed = useMemo(
     () =>
@@ -539,6 +549,7 @@ const PaneRuntime = memo(function PaneRuntime({
       onPaneCloseStateChange={handlePaneCloseStateChange}
       dragHandle={dragHandle}
       pendingInitialRuntimeAgentId={pendingInitialRuntimeAgentId}
+      pendingInitialAgentDefinitionId={pendingInitialAgentDefinitionId}
       onPendingInitialRuntimeAgentIdConsumed={handlePendingInitialRuntimeAgentIdConsumed}
     />
   )

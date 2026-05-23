@@ -2646,7 +2646,7 @@ describe('XeroApp current UI', () => {
     render(<XeroApp adapter={adapter} />)
 
     expect(await screen.findByRole('heading', { name: /Welcome to Xero/i })).toBeVisible()
-    expect(screen.getByText('OpenAI, Anthropic, Ollama, Bedrock, Vertex, and more')).toBeVisible()
+    expect(screen.getByText('OpenAI, Cursor, Anthropic, Ollama, Bedrock, Vertex, and more')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Get started' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Skip setup' })).toBeVisible()
     expect(screen.queryByLabelText('Status bar')).not.toBeInTheDocument()
@@ -3443,6 +3443,58 @@ describe('XeroApp current UI', () => {
     const selectedAgentHeader = await screen.findByLabelText('Selected agent')
     expect(within(selectedAgentHeader).getByText('Engineer')).toBeVisible()
     expect(library).toHaveAttribute('aria-hidden', 'false')
+  })
+
+  it('uses an agent from the library menu in the Agent chat composer', async () => {
+    const agentRef = {
+      kind: 'built_in',
+      runtimeAgentId: 'engineer',
+      version: 1,
+    } satisfies AgentRefDto
+    const agentSummary: WorkflowAgentSummaryDto = {
+      ref: agentRef,
+      displayName: 'Engineer',
+      shortLabel: 'Build',
+      description: 'Implements repository changes.',
+      scope: 'built_in',
+      lifecycleState: 'active',
+      baseCapabilityProfile: 'engineering',
+      lastUsedAt: null,
+      useCount: 0,
+    }
+    const { adapter } = createAdapter()
+    adapter.listWorkflowAgents = vi.fn(async () => ({ agents: [agentSummary] }))
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Editor' }))
+    expect(await screen.findByText('README.md')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open workflows' }))
+    const library = await screen.findByLabelText('Library')
+    fireEvent.click(within(library).getByRole('tab', { name: 'Agents' }))
+    fireEvent.pointerDown(
+      await within(library).findByRole('button', { name: 'More actions for Engineer' }),
+      {
+        button: 0,
+        ctrlKey: false,
+      },
+    )
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Use in Chat' }))
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Agent' })).toHaveClass('bg-secondary'),
+    )
+    expect(screen.getByRole('button', { name: 'Editor' })).not.toHaveClass('bg-secondary')
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent(
+        'Engineer',
+      ),
+    )
   })
 
   it('renders live git footer data from desktop state while leaving mock-only fields untouched', async () => {

@@ -1794,7 +1794,7 @@ fn advanced_fields_for_detail(detail: &WorkflowAgentDetailDto) -> JsonValue {
         "refusalEscalationCases": [
             format!("{subject} is asked to perform an action outside of its capability profile."),
             format!("{subject} is asked to handle sensitive credentials or secret values."),
-            format!("{subject} is asked to bypass user approvals or operate without explicit consent."),
+            format!("{subject} is asked to act without required review or consent."),
         ],
         "allowedEffectClasses": [],
         "deniedTools": [],

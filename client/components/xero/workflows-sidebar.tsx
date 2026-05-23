@@ -6,7 +6,9 @@ import {
   Compass,
   Copy,
   Hammer,
+  MessageCircle,
   MoreHorizontal,
+  Package,
   Pencil,
   Plus,
   Search,
@@ -63,6 +65,7 @@ interface WorkflowsSidebarProps {
   onEditAgent?: (ref: AgentRefDto) => void
   onDuplicateAgent?: (ref: AgentRefDto) => void
   onDeleteAgent?: (ref: AgentRefDto) => void
+  onUseAgentInChat?: (ref: AgentRefDto) => void
 }
 
 const AGENT_PROFILE_ICON: Record<AgentDefinitionBaseCapabilityProfileDto, typeof Bot> = {
@@ -92,6 +95,7 @@ export function WorkflowsSidebar({
   onEditAgent,
   onDuplicateAgent,
   onDeleteAgent,
+  onUseAgentInChat,
 }: WorkflowsSidebarProps) {
   const [tab, setTabState] = useState<LibraryTab>(() => readPersistedTab() ?? "workflows")
   const [query, setQuery] = useState("")
@@ -253,6 +257,7 @@ export function WorkflowsSidebar({
             onEditAgent={onEditAgent}
             onDuplicateAgent={onDuplicateAgent}
             onDeleteAgent={onDeleteAgent}
+            onUseAgentInChat={onUseAgentInChat}
           />
         </div>
       </div>
@@ -438,6 +443,7 @@ function LibraryList({
   onEditAgent,
   onDuplicateAgent,
   onDeleteAgent,
+  onUseAgentInChat,
 }: {
   tab: LibraryTab
   agents: WorkflowAgentSummaryDto[]
@@ -451,6 +457,7 @@ function LibraryList({
   onEditAgent?: (ref: AgentRefDto) => void
   onDuplicateAgent?: (ref: AgentRefDto) => void
   onDeleteAgent?: (ref: AgentRefDto) => void
+  onUseAgentInChat?: (ref: AgentRefDto) => void
 }) {
   if (tab === "workflows") {
     return <WorkflowsComingSoon />
@@ -493,6 +500,7 @@ function LibraryList({
             onEdit={onEditAgent}
             onDuplicate={onDuplicateAgent}
             onDelete={onDeleteAgent}
+            onUseInChat={onUseAgentInChat}
           />
         </li>
       ))}
@@ -529,6 +537,7 @@ function AgentRow({
   onEdit,
   onDuplicate,
   onDelete,
+  onUseInChat,
 }: {
   agent: WorkflowAgentSummaryDto
   selected: boolean
@@ -536,9 +545,10 @@ function AgentRow({
   onEdit?: (ref: AgentRefDto) => void
   onDuplicate?: (ref: AgentRefDto) => void
   onDelete?: (ref: AgentRefDto) => void
+  onUseInChat?: (ref: AgentRefDto) => void
 }) {
-  const Icon = AGENT_PROFILE_ICON[agent.baseCapabilityProfile] ?? Bot
   const isBuiltIn = agent.scope === "built_in"
+  const Icon = isBuiltIn ? (AGENT_PROFILE_ICON[agent.baseCapabilityProfile] ?? Bot) : Package
   const showEdit = !isBuiltIn
 
   const handleActivate = () => {
@@ -597,6 +607,7 @@ function AgentRow({
           onEdit={onEdit ? () => onEdit(agent.ref) : undefined}
           onDuplicate={onDuplicate ? () => onDuplicate(agent.ref) : undefined}
           onDelete={onDelete ? () => onDelete(agent.ref) : undefined}
+          onUseInChat={onUseInChat ? () => onUseInChat(agent.ref) : undefined}
         />
       </div>
     </div>
@@ -610,6 +621,7 @@ function RowMenu({
   onEdit,
   onDuplicate,
   onDelete,
+  onUseInChat,
 }: {
   name: string
   showEdit: boolean
@@ -617,7 +629,9 @@ function RowMenu({
   onEdit?: () => void
   onDuplicate?: () => void
   onDelete?: () => void
+  onUseInChat?: () => void
 }) {
+  const useInChatEnabled = Boolean(onUseInChat)
   const editEnabled = showEdit && Boolean(onEdit)
   const duplicateEnabled = Boolean(onDuplicate)
   const deleteEnabled = !deleteDisabled && Boolean(onDelete)
@@ -634,6 +648,14 @@ function RowMenu({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" sideOffset={4}>
+        <DropdownMenuItem
+          className="cursor-pointer text-[12px]"
+          disabled={!useInChatEnabled}
+          onSelect={useInChatEnabled ? onUseInChat : undefined}
+        >
+          <MessageCircle className="mr-2 h-3.5 w-3.5" />
+          Use in Chat
+        </DropdownMenuItem>
         {showEdit ? (
           <DropdownMenuItem
             className="cursor-pointer text-[12px]"

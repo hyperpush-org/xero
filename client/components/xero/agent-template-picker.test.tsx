@@ -34,7 +34,7 @@ function custom(
     displayName,
     shortLabel: displayName,
     description: `${displayName} description`,
-    scope: 'project_custom',
+    scope: 'global_custom',
     lifecycleState: options.lifecycleState ?? 'active',
     baseCapabilityProfile: profile,
     lastUsedAt: options.lastUsedAt ?? null,

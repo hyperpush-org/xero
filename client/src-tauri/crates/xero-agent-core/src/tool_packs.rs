@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 pub const DOMAIN_TOOL_PACK_CONTRACT_VERSION: u32 = 1;
+const TOOL_PACK_POLICY_DISABLED_CHECK_ID: &str = "tool_pack_policy_disabled";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -183,7 +184,7 @@ pub fn domain_tool_pack_health_report(
             status: DomainToolPackHealthStatus::Skipped,
             checked_at: input.checked_at.clone(),
             checks: vec![DomainToolPackHealthCheck {
-                check_id: "tool_pack_policy_disabled".into(),
+                check_id: TOOL_PACK_POLICY_DISABLED_CHECK_ID.into(),
                 label: "Agent policy".into(),
                 status: DomainToolPackHealthStatus::Skipped,
                 summary: format!(
@@ -735,7 +736,7 @@ fn project_context_pack_manifest() -> DomainToolPackManifest {
                 "project_context_retrieve_and_record",
                 "Retrieve and record context",
                 "Search reviewed project context, read current files, and record a durable finding with source references.",
-                &["project_context_search", "project_context_record", "read"],
+                &["project_context_search", "project_context_record"],
                 true,
                 false,
             ),
@@ -743,7 +744,7 @@ fn project_context_pack_manifest() -> DomainToolPackManifest {
                 "workspace_index_related_tests",
                 "Find related tests",
                 "Query the semantic workspace index for related files and tests, then read authoritative file contents.",
-                &["workspace_index", "read"],
+                &["workspace_index"],
                 false,
                 false,
             ),
@@ -798,18 +799,28 @@ fn manifest(
         denied_effect_classes: strings(denied_effect_classes),
         review_requirements: review_requirements.to_vec(),
         prerequisites: prerequisites.to_vec(),
-        health_checks: prerequisites
-            .iter()
-            .map(|prerequisite| DomainToolPackCheckDescriptor {
-                check_id: prerequisite.prerequisite_id.clone(),
-                label: prerequisite.label.clone(),
-                description: format!(
-                    "Check whether prerequisite `{}` is available for the `{pack_id}` pack.",
-                    prerequisite.label
-                ),
-                prerequisite_ids: vec![prerequisite.prerequisite_id.clone()],
-            })
-            .collect(),
+        health_checks: std::iter::once(DomainToolPackCheckDescriptor {
+            check_id: TOOL_PACK_POLICY_DISABLED_CHECK_ID.into(),
+            label: "Agent policy".into(),
+            description: format!(
+                "Check whether the active agent policy enables the `{pack_id}` pack."
+            ),
+            prerequisite_ids: Vec::new(),
+        })
+        .chain(
+            prerequisites
+                .iter()
+                .map(|prerequisite| DomainToolPackCheckDescriptor {
+                    check_id: prerequisite.prerequisite_id.clone(),
+                    label: prerequisite.label.clone(),
+                    description: format!(
+                        "Check whether prerequisite `{}` is available for the `{pack_id}` pack.",
+                        prerequisite.label
+                    ),
+                    prerequisite_ids: vec![prerequisite.prerequisite_id.clone()],
+                }),
+        )
+        .collect(),
         scenario_checks: scenario_checks.to_vec(),
         ui_affordances: ui_affordances.to_vec(),
         cli_commands: strings(cli_commands),
@@ -903,6 +914,107 @@ mod tests {
             assert!(!manifest.health_checks.is_empty());
             assert!(!manifest.scenario_checks.is_empty());
             assert!(!manifest.ui_affordances.is_empty());
+        }
+    }
+
+    #[test]
+    fn domain_tool_pack_catalog_relations_are_self_consistent() {
+        for manifest in domain_tool_pack_manifests() {
+            let tool_names = manifest
+                .tools
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            for scenario in &manifest.scenario_checks {
+                for tool_name in &scenario.tool_names {
+                    assert!(
+                        tool_names.contains(tool_name.as_str()),
+                        "pack `{}` scenario `{}` references undeclared tool `{}`",
+                        manifest.pack_id,
+                        scenario.scenario_id,
+                        tool_name
+                    );
+                }
+            }
+
+            let prerequisite_ids = manifest
+                .prerequisites
+                .iter()
+                .map(|prerequisite| prerequisite.prerequisite_id.as_str())
+                .collect::<BTreeSet<_>>();
+            let mut health_check_ids = BTreeSet::new();
+            for check in &manifest.health_checks {
+                assert!(
+                    health_check_ids.insert(check.check_id.as_str()),
+                    "pack `{}` declares duplicate health check `{}`",
+                    manifest.pack_id,
+                    check.check_id
+                );
+                for prerequisite_id in &check.prerequisite_ids {
+                    assert!(
+                        prerequisite_ids.contains(prerequisite_id.as_str()),
+                        "pack `{}` health check `{}` references undeclared prerequisite `{}`",
+                        manifest.pack_id,
+                        check.check_id,
+                        prerequisite_id
+                    );
+                }
+            }
+
+            let scenario_ids = manifest
+                .scenario_checks
+                .iter()
+                .map(|scenario| scenario.scenario_id.as_str())
+                .collect::<BTreeSet<_>>();
+            for enabled_by_policy in [false, true] {
+                let report = domain_tool_pack_health_report(
+                    &manifest,
+                    &DomainToolPackHealthInput {
+                        pack_id: manifest.pack_id.clone(),
+                        enabled_by_policy,
+                        available_prerequisites: manifest
+                            .prerequisites
+                            .iter()
+                            .map(|prerequisite| prerequisite.prerequisite_id.clone())
+                            .collect(),
+                        checked_at: "2026-05-23T00:00:00Z".into(),
+                    },
+                );
+
+                for check in &report.checks {
+                    assert!(
+                        health_check_ids.contains(check.check_id.as_str()),
+                        "pack `{}` report references undeclared health check `{}`",
+                        manifest.pack_id,
+                        check.check_id
+                    );
+                }
+                for scenario in &report.scenario_checks {
+                    assert!(
+                        scenario_ids.contains(scenario.scenario_id.as_str()),
+                        "pack `{}` report references undeclared scenario `{}`",
+                        manifest.pack_id,
+                        scenario.scenario_id
+                    );
+                    for tool_name in &scenario.tool_names {
+                        assert!(
+                            tool_names.contains(tool_name.as_str()),
+                            "pack `{}` report scenario `{}` references undeclared tool `{}`",
+                            manifest.pack_id,
+                            scenario.scenario_id,
+                            tool_name
+                        );
+                    }
+                }
+                for prerequisite_id in &report.missing_prerequisites {
+                    assert!(
+                        prerequisite_ids.contains(prerequisite_id.as_str()),
+                        "pack `{}` report references undeclared missing prerequisite `{}`",
+                        manifest.pack_id,
+                        prerequisite_id
+                    );
+                }
+            }
         }
     }
 

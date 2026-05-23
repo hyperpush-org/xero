@@ -70,6 +70,7 @@ interface UseAgentRuntimeControllerOptions {
    * landing the user on `agent_create`.
    */
   pendingInitialRuntimeAgentId?: RuntimeAgentIdDto | null
+  pendingInitialAgentDefinitionId?: string | null
   /** Called once the pending initial runtime agent has been applied. */
   onPendingInitialRuntimeAgentIdConsumed?: () => void
   onStartRuntimeRun?: (options?: {
@@ -300,6 +301,7 @@ export function useAgentRuntimeController({
   dictationScopeKey,
   reportComposerControls = true,
   pendingInitialRuntimeAgentId = null,
+  pendingInitialAgentDefinitionId = null,
   onPendingInitialRuntimeAgentIdConsumed,
   onStartRuntimeRun,
   onStartRuntimeSession,
@@ -528,8 +530,11 @@ export function useAgentRuntimeController({
     if (activeRuntimeRun) return
     if (runtimeMutationInFlight) return
 
+    const trimmedAgentDefinitionId = pendingInitialAgentDefinitionId?.trim() ?? ''
     setDraftRuntimeAgentId(pendingInitialRuntimeAgentId)
-    setDraftAgentDefinitionId(null)
+    setDraftAgentDefinitionId(
+      trimmedAgentDefinitionId.length > 0 ? trimmedAgentDefinitionId : null,
+    )
     setDraftApprovalMode((current) =>
       resolveRuntimeAgentApprovalMode(pendingInitialRuntimeAgentId, current),
     )
@@ -537,6 +542,7 @@ export function useAgentRuntimeController({
   }, [
     activeRuntimeRun,
     onPendingInitialRuntimeAgentIdConsumed,
+    pendingInitialAgentDefinitionId,
     pendingInitialRuntimeAgentId,
     runtimeMutationInFlight,
   ])

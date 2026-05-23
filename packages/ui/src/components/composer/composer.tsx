@@ -763,28 +763,30 @@ function SelectGroupOptions({
 					{index > 0 ? (
 						<SelectPrimitive.Separator className="my-1 h-px bg-border/60" />
 					) : null}
-					{group.label ? (
-						<SelectPrimitive.Label className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
-							{group.label}
-						</SelectPrimitive.Label>
-					) : null}
-					{group.options.map((option) => (
-						<SelectItem
-							key={option.id}
-							value={option.id}
-							disabled={option.disabled}
-						>
-							<span className="flex items-center gap-1.5">
-								{option.icon ?? null}
-								{option.label}
-								{option.sublabel ? (
-									<span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-										· {option.sublabel}
-									</span>
-								) : null}
-							</span>
-						</SelectItem>
-					))}
+					<SelectPrimitive.Group>
+						{group.label ? (
+							<SelectPrimitive.Label className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+								{group.label}
+							</SelectPrimitive.Label>
+						) : null}
+						{group.options.map((option) => (
+							<SelectItem
+								key={option.id}
+								value={option.id}
+								disabled={option.disabled}
+							>
+								<span className="flex items-center gap-1.5">
+									{option.icon ?? null}
+									{option.label}
+									{option.sublabel ? (
+										<span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+											· {option.sublabel}
+										</span>
+									) : null}
+								</span>
+							</SelectItem>
+						))}
+					</SelectPrimitive.Group>
 				</Fragment>
 			))}
 		</>

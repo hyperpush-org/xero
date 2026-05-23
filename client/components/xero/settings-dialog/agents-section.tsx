@@ -8,6 +8,7 @@ import {
   ListChecks,
   Loader2,
   MessageCircle,
+  Package,
   RefreshCw,
   Search,
   Sparkles,
@@ -358,18 +359,15 @@ export function AgentsSection({
 
   const groups = useMemo(() => {
     const builtIns: AgentDefinitionSummaryDto[] = []
-    const projectAgents: AgentDefinitionSummaryDto[] = []
-    const globalAgents: AgentDefinitionSummaryDto[] = []
+    const userAgents: AgentDefinitionSummaryDto[] = []
     for (const def of state.definitions) {
       if (def.isBuiltIn) {
         builtIns.push(def)
-      } else if (def.scope === "project_custom") {
-        projectAgents.push(def)
-      } else if (def.scope === "global_custom") {
-        globalAgents.push(def)
+      } else {
+        userAgents.push(def)
       }
     }
-    return { builtIns, projectAgents, globalAgents }
+    return { builtIns, userAgents }
   }, [state.definitions])
 
   if (!projectId) {
@@ -462,22 +460,10 @@ export function AgentsSection({
           />
 
           <AgentDefinitionGroup
-            title="Project agents"
-            count={groups.projectAgents.length}
-            emptyMessage="No project-scoped custom agents yet. Pick Agent Create in the composer to design one."
-            definitions={groups.projectAgents}
-            pendingArchiveId={pendingArchiveId}
-            onArchive={handleArchive}
-            onViewHistory={handleViewVersion}
-            canMutate={Boolean(onArchiveAgentDefinition)}
-            showHistory={Boolean(onGetAgentDefinitionVersion)}
-          />
-
-          <AgentDefinitionGroup
-            title="Global agents"
-            count={groups.globalAgents.length}
-            emptyMessage="No global custom agents yet."
-            definitions={groups.globalAgents}
+            title="User agents"
+            count={groups.userAgents.length}
+            emptyMessage="No user-created custom agents yet. Pick Agent Create in the composer to design one."
+            definitions={groups.userAgents}
             pendingArchiveId={pendingArchiveId}
             onArchive={handleArchive}
             onViewHistory={handleViewVersion}
@@ -574,7 +560,7 @@ function AgentDefinitionRow({
   canMutate,
   showHistory,
 }: AgentDefinitionRowProps) {
-  const Icon = profileIcon(definition.baseCapabilityProfile)
+  const Icon = definition.isBuiltIn ? profileIcon(definition.baseCapabilityProfile) : Package
   const isArchived = definition.lifecycleState === "archived"
   const showArchive = canMutate && !definition.isBuiltIn && !isArchived
   const showLifecyclePill = definition.lifecycleState !== "active"

@@ -9,6 +9,7 @@ import {
   GitMerge,
   Layers,
   Lock,
+  Package,
   Sparkles,
   Wrench,
   type LucideIcon,
@@ -30,6 +31,7 @@ import {
 
 export const AgentHeaderNode = memo(function AgentHeaderNode({ data }: NodeProps<AgentHeaderFlowNode>) {
   const { header, summary } = data
+  const HeaderIcon = header.scope === 'built_in' ? Bot : Package
 
   return (
     <>
@@ -98,7 +100,7 @@ export const AgentHeaderNode = memo(function AgentHeaderNode({ data }: NodeProps
         <div className="px-3.5 pt-3 pb-3 border-b border-border/60">
           <div className="flex items-start gap-2.5">
             <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/15 ring-1 ring-primary/30 mt-px">
-              <Bot className="h-3.5 w-3.5 text-primary" />
+              <HeaderIcon className="h-3.5 w-3.5 text-primary" />
             </span>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1.5">

@@ -45,7 +45,7 @@ function buildReview(
 }
 
 describe('AgentApprovalReviewDialog', () => {
-  it('renders the structured diff for an update with changed sections', () => {
+  it('summarizes changed sections and hides technical details by default', () => {
     render(
       <AgentApprovalReviewDialog
         open
@@ -63,10 +63,21 @@ describe('AgentApprovalReviewDialog', () => {
     expect(screen.getByText('release_notes_helper')).toBeInTheDocument()
     expect(screen.getByText(/v4/)).toBeInTheDocument()
     expect(screen.getByText(/v5/)).toBeInTheDocument()
-    expect(screen.getByText(/2 sections changed/)).toBeInTheDocument()
+    expect(
+      screen.getByText(/This will save the current canvas as the next agent version/i),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/2 configuration areas will be saved/i),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Tool policy')).not.toBeInTheDocument()
+    expect(screen.queryByText('Before')).not.toBeInTheDocument()
 
+    fireEvent.click(screen.getByRole('button', { name: /Show technical details/i }))
     const toolPolicy = screen.getByText('Tool policy').closest('li')
     expect(toolPolicy).not.toBeNull()
+    expect(toolPolicy?.closest('[data-slot="scroll-area"]')).toHaveClass(
+      'h-[min(30vh,18rem)]',
+    )
     expect(within(toolPolicy as HTMLElement).getByText('changed')).toBeInTheDocument()
     expect(
       within(toolPolicy as HTMLElement).getByText('Before'),
@@ -117,7 +128,7 @@ describe('AgentApprovalReviewDialog', () => {
     expect(onApprove).toHaveBeenCalledTimes(1)
   })
 
-  it('renders an initial-version review with single-pane "added" cells', () => {
+  it('renders an initial-version review with advanced cells behind details', () => {
     const review = buildReview({
       isInitialVersion: true,
       fromVersion: null,
@@ -156,6 +167,12 @@ describe('AgentApprovalReviewDialog', () => {
     expect(
       screen.getByRole('heading', { name: /Approve new agent definition/i }),
     ).toBeInTheDocument()
+    expect(
+      screen.getByText(/This will save the current canvas as a new agent/i),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Identity')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Show technical details/i }))
     const identity = screen.getByText('Identity').closest('li')
     expect(within(identity as HTMLElement).getByText('added')).toBeInTheDocument()
     // Initial-version rows show only the "After" pane — no Before pane.

@@ -1,4 +1,4 @@
-import { Bug, Compass, ListChecks, MessageCircle, Search, Sparkles, Users, Wrench } from 'lucide-react'
+import { Bug, Compass, ListChecks, MessageCircle, Package, Search, Sparkles, Wrench } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, type ReactNode, type RefObject } from 'react'
 
 import type {
@@ -219,15 +219,7 @@ export function ComposerDock({
       ),
     [availableRuntimeAgentIdSet, composerAgentDefinitionId, customAgentDefinitions],
   )
-  const projectCustomAgents = useMemo(
-    () => visibleCustomAgents.filter((agent) => agent.scope === 'project_custom'),
-    [visibleCustomAgents],
-  )
-  const globalCustomAgents = useMemo(
-    () => visibleCustomAgents.filter((agent) => agent.scope === 'global_custom'),
-    [visibleCustomAgents],
-  )
-  const AgentTriggerIcon = isCustomAgent ? Users : getBuiltinAgentIcon(composerRuntimeAgentId)
+  const AgentTriggerIcon = isCustomAgent ? Package : getBuiltinAgentIcon(composerRuntimeAgentId)
 
   const agentGroups = useMemo<ComposerSelectGroup[]>(() => {
     const groups: ComposerSelectGroup[] = []
@@ -244,38 +236,23 @@ export function ComposerDock({
         }),
       })
     }
-    if (projectCustomAgents.length > 0) {
+    if (visibleCustomAgents.length > 0) {
       groups.push({
-        id: 'project',
-        label: 'Project agents',
-        options: projectCustomAgents.map((agent) => ({
+        id: 'custom',
+        label: 'User agents',
+        options: visibleCustomAgents.map((agent) => ({
           id: buildComposerAgentSelectionKey(
             runtimeAgentIdForCustomBaseCapability(agent.baseCapabilityProfile),
             agent.definitionId,
           ),
           label: agent.displayName,
-          icon: <Users aria-hidden="true" className="size-3 text-primary" />,
-          sublabel: agent.lifecycleState !== 'active' ? agent.lifecycleState : undefined,
-        })),
-      })
-    }
-    if (globalCustomAgents.length > 0) {
-      groups.push({
-        id: 'global',
-        label: 'Global agents',
-        options: globalCustomAgents.map((agent) => ({
-          id: buildComposerAgentSelectionKey(
-            runtimeAgentIdForCustomBaseCapability(agent.baseCapabilityProfile),
-            agent.definitionId,
-          ),
-          label: agent.displayName,
-          icon: <Users aria-hidden="true" className="size-3 text-muted-foreground" />,
+          icon: <Package aria-hidden="true" className="size-3 text-primary" />,
           sublabel: agent.lifecycleState !== 'active' ? agent.lifecycleState : undefined,
         })),
       })
     }
     return groups
-  }, [globalCustomAgents, projectCustomAgents, selectableRuntimeAgents])
+  }, [selectableRuntimeAgents, visibleCustomAgents])
 
   const modelGroups = useMemo<ComposerSelectGroup[]>(
     () =>
@@ -316,7 +293,7 @@ export function ComposerDock({
   const agentTooltip = runtimeAgentSwitchDisabled
     ? 'Selected agent is fixed for the current run.'
     : isCustomAgent
-      ? `${agentTriggerLabel} (${activeCustomAgent?.scope === 'project_custom' ? 'project' : 'global'} custom agent)`
+      ? `${agentTriggerLabel} (user custom agent)`
       : `${agentTriggerLabel} agent`
 
   const composerError = runtimeRunActionError

@@ -32,8 +32,8 @@ const REAL_AGENTS: WorkflowAgentSummaryDto[] = [
     ref: { kind: 'custom', definitionId: 'security_reviewer', version: 1 },
     displayName: 'Security Reviewer',
     shortLabel: 'SecRev',
-    description: 'Project-specific threat model reviewer.',
-    scope: 'project_custom',
+    description: 'User-created threat model reviewer.',
+    scope: 'global_custom',
     lifecycleState: 'active',
     baseCapabilityProfile: 'engineering',
     lastUsedAt: null,
@@ -60,7 +60,7 @@ describe('WorkflowsSidebar', () => {
 
     // Scope badge per row.
     expect(screen.getAllByText('Built-in').length).toBeGreaterThanOrEqual(2)
-    expect(screen.getByText('Project')).toBeInTheDocument()
+    expect(screen.getByText('User')).toBeInTheDocument()
   })
 
   it('invokes onSelectAgent with the row ref when clicked', () => {
@@ -78,6 +78,29 @@ describe('WorkflowsSidebar', () => {
     expect(onSelectAgent).toHaveBeenCalledWith({
       kind: 'built_in',
       runtimeAgentId: 'engineer',
+      version: 1,
+    })
+  })
+
+  it('invokes onUseAgentInChat from the row action menu', async () => {
+    const onUseAgentInChat = vi.fn()
+    render(
+      <WorkflowsSidebar
+        open
+        agents={REAL_AGENTS}
+        onUseAgentInChat={onUseAgentInChat}
+      />,
+    )
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions for Ask' }), {
+      button: 0,
+      ctrlKey: false,
+    })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Use in Chat' }))
+
+    expect(onUseAgentInChat).toHaveBeenCalledWith({
+      kind: 'built_in',
+      runtimeAgentId: 'ask',
       version: 1,
     })
   })

@@ -31,6 +31,7 @@ import type { SpeechDictationAdapter } from '@/components/xero/agent-runtime/use
 import type { AgentPaneView } from '@/src/features/xero/use-xero-desktop-state'
 import type { DictationEventDto, DictationStatusDto } from '@/src/lib/xero-model/dictation'
 import type {
+  AgentDefinitionSummaryDto,
   ProjectDetailView,
   RuntimeRunView,
   RuntimeStreamActivityItemView,
@@ -2957,6 +2958,44 @@ describe('AgentRuntime current UI', () => {
     )
 
     expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent('Agent Create')
+    expect(onConsumed).toHaveBeenCalled()
+  })
+
+  it('applies a pending custom agent definition preselection', () => {
+    const onConsumed = vi.fn()
+    const customAgent = {
+      definitionId: 'security_reviewer',
+      currentVersion: 1,
+      displayName: 'Security Reviewer',
+      shortLabel: 'SecRev',
+      description: 'User-created threat model reviewer.',
+      scope: 'global_custom',
+      lifecycleState: 'active',
+      baseCapabilityProfile: 'engineering',
+      createdAt: '2026-04-15T20:00:00Z',
+      updatedAt: '2026-04-15T20:00:00Z',
+      isBuiltIn: false,
+    } satisfies AgentDefinitionSummaryDto
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          selectedRuntimeAgentId: 'ask',
+          selectedRuntimeAgentLabel: 'Ask',
+          selectedApprovalMode: 'suggest',
+        })}
+        customAgentDefinitions={[customAgent]}
+        pendingInitialRuntimeAgentId="engineer"
+        pendingInitialAgentDefinitionId="security_reviewer"
+        onPendingInitialRuntimeAgentIdConsumed={onConsumed}
+        onStartRuntimeRun={vi.fn(async () => makeRuntimeRun())}
+      />,
+    )
+
+    expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent(
+      'Security Reviewer',
+    )
     expect(onConsumed).toHaveBeenCalled()
   })
 

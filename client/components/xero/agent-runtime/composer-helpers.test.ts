@@ -31,10 +31,10 @@ const baseModel: AgentProviderModelView = {
 const customDefinition: AgentDefinitionSummaryDto = {
   definitionId: 'project_research',
   currentVersion: 2,
-  displayName: 'Project Research',
+  displayName: 'User Research',
   shortLabel: 'Research',
-  description: 'Project-aware observe-only researcher.',
-  scope: 'project_custom',
+  description: 'User-created observe-only researcher.',
+  scope: 'global_custom',
   lifecycleState: 'active',
   baseCapabilityProfile: 'observe_only',
   createdAt: '2026-04-30T18:00:00Z',
@@ -87,9 +87,9 @@ describe('parseComposerAgentSelectionKey', () => {
     expect(parsed).toMatchObject({
       runtimeAgentId: 'ask',
       agentDefinitionId: 'project_research',
-      label: 'Project Research',
+      label: 'User Research',
       isCustom: true,
-      scope: 'project_custom',
+      scope: 'global_custom',
     })
   })
 

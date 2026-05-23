@@ -1,5 +1,5 @@
 /**
- * Brand SVG icons sourced from simple-icons (https://simpleicons.org, CC0).
+ * Brand SVG icons mostly sourced from simple-icons (https://simpleicons.org, CC0).
  * Using inline SVG to avoid a runtime dependency — paths are stable brand marks.
  */
 
@@ -125,6 +125,27 @@ export function XAIIcon({ className }: BrandIconProps) {
       aria-label="xAI"
     >
       <path d="M2.25 3h4.57l5.17 6.58L17.7 3h4.05l-7.81 8.93L22.25 21h-4.58l-5.7-7.15L5.76 21H1.75l8.13-9.36Z" />
+    </svg>
+  )
+}
+
+export function CursorIcon({ className }: BrandIconProps) {
+  return (
+    <svg
+      role="img"
+      viewBox="0 0 126 146"
+      xmlns="http://www.w3.org/2000/svg"
+      className={cn("h-4 w-4", className)}
+      aria-label="Cursor"
+    >
+      <path
+        fill="currentColor"
+        d="M60.66 0h3.76c18.25 10.62 36.57 21.12 54.83 31.72 1.99 1.29 4.29 2.46 5.47 4.62.62 2.83.34 5.76.39 8.64-.04 18.65-.03 37.3 0 55.95-.04 1.91.03 3.86-.38 5.75-1.2 1.86-3.23 2.94-5.05 4.09-15.65 8.95-31.23 18.03-46.83 27.06-3.32 1.85-6.49 4.08-10.11 5.34-2.23-.32-4.17-1.6-6.12-2.63-15.81-9.32-31.8-18.32-47.62-27.62-3.15-1.76-6.21-3.69-9-5.99V36.1c3.83-3.78 8.81-5.98 13.34-8.77C29.1 18.19 44.82 8.98 60.66 0Z"
+      />
+      <path
+        fill="var(--background, #fff)"
+        d="M5.62 38.04c4.45-.51 8.92-.02 13.37-.17 27.36-.02 54.72-.02 82.07 0 6.17.04 12.35-.22 18.51.27-.73 2.28-1.68 4.48-2.92 6.53-16.72 29.25-33.58 58.41-50.41 87.6-.95 1.71-2.06 3.33-3.23 4.9-.29-1.73-.47-3.48-.47-5.24-.03-15.64.03-31.29.01-46.93-.05-4.57.31-9.18-.5-13.7C46.5 61.89 30.6 53.06 14.96 43.8c-3.08-1.97-6.68-3.16-9.34-5.76Z"
+      />
     </svg>
   )
 }

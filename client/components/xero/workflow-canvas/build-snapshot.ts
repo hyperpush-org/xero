@@ -48,6 +48,13 @@ function trimAll(values: readonly string[]): string[] {
   return values.map((value) => value.trim()).filter((value) => value.length > 0)
 }
 
+function normalizeEscalation(value: string): string {
+  return value.replace(
+    /\bis asked to bypass user approvals or operate without explicit consent\./i,
+    'is asked to act without required review or consent.',
+  )
+}
+
 function padExamples(values: readonly string[], displayName: string): string[] {
   const trimmed = trimAll(values)
   const subject = displayName.trim() || 'this agent'
@@ -64,12 +71,12 @@ function padExamples(values: readonly string[], displayName: string): string[] {
 }
 
 function padEscalations(values: readonly string[], displayName: string): string[] {
-  const trimmed = trimAll(values)
+  const trimmed = trimAll(values).map(normalizeEscalation)
   const subject = displayName.trim() || 'this agent'
   const fallbacks = [
     `${subject} is asked to perform an action outside of its capability profile.`,
     `${subject} is asked to handle sensitive credentials or secret values.`,
-    `${subject} is asked to bypass user approvals or operate without explicit consent.`,
+    `${subject} is asked to act without required review or consent.`,
   ]
   let i = 0
   while (trimmed.length < MIN_ESCALATIONS && i < fallbacks.length) {
@@ -124,7 +131,6 @@ export interface BuildSnapshotOptions {
   refusalEscalationCases?: readonly string[]
   workflowContract?: string
   finalResponseContract?: string
-  scope?: 'project_custom' | 'global_custom'
   attachedSkills?: readonly CustomAgentAttachedSkillDto[]
 }
 
@@ -250,9 +256,7 @@ export function buildSnapshotFromGraph(
     output?.data.output.description ??
     ''
   ).trim()
-  const scope = options.scope ?? (
-    headerDto.scope === 'global_custom' ? 'global_custom' : 'project_custom'
-  )
+  const scope = 'global_custom'
 
   const baseCapabilityProfile = headerDto.baseCapabilityProfile
 

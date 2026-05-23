@@ -40,7 +40,6 @@ import {
   Magnet,
   Maximize,
   RotateCcw,
-  ShieldCheck,
   Unlock,
   ZoomIn,
   ZoomOut,
@@ -123,7 +122,6 @@ import { EditingSmoothStepEdge } from './edges/editing-smoothstep-edge'
 import { PhaseBranchEdge } from './edges/phase-branch-edge'
 import { TriggerEdge } from './edges/trigger-edge'
 import { layoutAgentGraphByCategory, type NodeSize } from './layout'
-import { EffectiveRuntimePanel } from './effective-runtime-panel'
 import { NodeDetailsPanel } from './node-details-panel'
 import { NodePropertiesPanel } from './node-properties-panel'
 import { AgentHeaderNode } from './nodes/agent-header-node'
@@ -180,6 +178,7 @@ const CREATE_MODE_INITIAL_FIT_MAX_PASSES = 3
 const CREATE_MODE_INITIAL_FIT_TRANSITION_MS = 0
 const CREATE_MODE_REFIT_TRANSITION_MS = 180
 const CREATE_MODE_INITIAL_FIT_REVEAL_DELAY_MS = 80
+const CREATE_MODE_REENTRY_SETTLE_REFIT_DELAY_MS = 140
 const CREATE_MODE_FIT_MAX_ZOOM = 1
 const CREATE_MODE_FIT_MIN_ZOOM = 0.38
 const CREATE_MODE_FIT_MIN_PADDING = 72
@@ -342,10 +341,8 @@ interface AgentVisualizationProps {
   // so the surrounding chrome can react (e.g. App.tsx auto-collapses any open
   // sidebar so the panel has the canvas to itself, then reopens it on close).
   onSelectedNodeChange?: (hasSelection: boolean) => void
-  // When provided, the canvas exposes an "Effective runtime" affordance that
-  // builds a snapshot from the current displayed (or edited) graph and runs it
-  // through the parent's preview adapter. The panel renders the result in
-  // place. When omitted, the affordance is hidden.
+  // When provided, editing mode uses the preview adapter to resolve inline
+  // tool-policy diagnostics from the current unsaved canvas snapshot.
   onPreviewEffectiveRuntime?: (params: {
     snapshot: Record<string, unknown>
     definitionId: string | null
@@ -3822,15 +3819,12 @@ function AgentVisualizationInner({
   }, [editing, editingDetail])
 
   // ============================================================
-  // Effective-runtime preview state. Snapshots are built from the
-  // currently displayed graph (the same node/edge data the user sees)
-  // so view mode previews the saved active version and edit mode
-  // previews the unsaved canvas. The parent supplies the actual
-  // adapter via onPreviewEffectiveRuntime — the canvas only owns
-  // panel open/loading state and the trigger affordance.
+  // Effective-runtime preview state. Editing mode sends the unsaved canvas
+  // snapshot to the host preview adapter so the granular policy editor can
+  // surface authoritative inline diagnostics without showing a separate
+  // runtime preview panel.
   // ============================================================
   const previewEnabled = Boolean(onPreviewEffectiveRuntime)
-  const [effectiveRuntimePanelOpen, setEffectiveRuntimePanelOpen] = useState(false)
   const [effectiveRuntimePreviewState, setEffectiveRuntimePreviewState] = useState<{
     loading: boolean
     errorMessage: string | null
@@ -3942,30 +3936,6 @@ function AgentVisualizationInner({
     fromServer.forEach(consider)
     return merged
   }, [effectiveRuntimePreviewState.preview, editingServerDiagnostics])
-
-  const handleToggleEffectiveRuntimePanel = useCallback(() => {
-    setEffectiveRuntimePanelOpen((prev) => {
-      const next = !prev
-      if (next) {
-        // Auto-fetch on open if we don't already have a preview.
-        if (!effectiveRuntimePreviewState.preview) {
-          void refreshEffectiveRuntimePreview()
-        }
-      }
-      return next
-    })
-  }, [effectiveRuntimePreviewState.preview, refreshEffectiveRuntimePreview])
-
-  const handleCloseEffectiveRuntimePanel = useCallback(() => {
-    setEffectiveRuntimePanelOpen(false)
-  }, [])
-
-  const effectiveRuntimeAgentLabel = useMemo(() => {
-    if (editing) {
-      return editingDetail?.header.displayName ?? 'Unsaved canvas'
-    }
-    return detail?.header.displayName ?? 'Agent'
-  }, [detail, editing, editingDetail])
 
   const editingStageList = useMemo<ReadonlyArray<{ id: string; title: string }>>(() => {
     const phases = editingDetail?.workflowStructure?.phases ?? []
@@ -4200,9 +4170,10 @@ function AgentVisualizationInner({
   const createModeInitialFitReadyRef = useRef(false)
   const createModeInitialFitRevealTimerRef = useRef<number | null>(null)
   const [createModeInitialFitReady, setCreateModeInitialFitReady] = useState(false)
+  const [createModeReentryFitNonce, setCreateModeReentryFitNonce] = useState(0)
   const hideDuringInitialAuthoringFit = editing && effectiveCanvasMode === 'create'
   useEffect(() => {
-    if (!active || !isInitialFitAuthoring) {
+    if (!isInitialFitAuthoring) {
       createModeWasActiveRef.current = false
       createModeViewportFittedRef.current = false
       createModeInitialFitReadyRef.current = false
@@ -4214,13 +4185,32 @@ function AgentVisualizationInner({
       return
     }
 
+    if (!active) {
+      createModeWasActiveRef.current = false
+      createModeViewportFittedRef.current = false
+      // If the graph has already been revealed, keep it visible across
+      // Workflow <-> Agent tab switches. Re-entry can still refit the
+      // viewport, but it should not blank an already usable canvas.
+      if (!createModeInitialFitReadyRef.current) {
+        setCreateModeInitialFitReady(false)
+        if (createModeInitialFitRevealTimerRef.current !== null) {
+          window.clearTimeout(createModeInitialFitRevealTimerRef.current)
+          createModeInitialFitRevealTimerRef.current = null
+        }
+      }
+      return
+    }
+
     if (!createModeWasActiveRef.current) {
       initialCreateFitKeyRef.current = null
       initialCreateFitCanvasBoundsKeyRef.current = null
       initialCreateFitPassCountRef.current = 0
       createModeViewportFittedRef.current = false
-      createModeInitialFitReadyRef.current = false
-      setCreateModeInitialFitReady(false)
+      if (!createModeInitialFitReadyRef.current) {
+        setCreateModeInitialFitReady(false)
+      } else {
+        setCreateModeReentryFitNonce((nonce) => nonce + 1)
+      }
     }
     createModeWasActiveRef.current = true
 
@@ -4302,10 +4292,10 @@ function AgentVisualizationInner({
     return () => {
       window.cancelAnimationFrame(firstFrame)
       if (secondFrame !== null) window.cancelAnimationFrame(secondFrame)
-      if (!createModeInitialFitReadyRef.current && createModeInitialFitRevealTimerRef.current !== null) {
-        window.clearTimeout(createModeInitialFitRevealTimerRef.current)
-        createModeInitialFitRevealTimerRef.current = null
-      }
+      // Leave an already-scheduled reveal timer alone. This effect also
+      // re-runs for measurement/layout churn after the viewport fit, and
+      // clearing the timer there can strand create mode behind the hidden
+      // initial-fit veil. Inactive/unmount cleanup handles real exits.
     }
   }, [
     active,
@@ -4314,6 +4304,44 @@ function AgentVisualizationInner({
     createModeFitKey,
     createModeFitNodeBounds,
     createModeHasSelection,
+    hasDetail,
+    isInitialFitAuthoring,
+    nodes.length,
+    reactFlow,
+  ])
+
+  useEffect(() => {
+    if (
+      !active ||
+      !isInitialFitAuthoring ||
+      createModeReentryFitNonce === 0 ||
+      createModeHasSelection ||
+      !hasDetail ||
+      nodes.length === 0 ||
+      !canvasBounds ||
+      !createModeFitNodeBounds
+    ) {
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      if (canvasInteractingRef.current) return
+      if (nodesRef.current.some((node) => node.selected)) return
+      void reactFlow.setViewport(
+        createModeInitialViewport(createModeFitNodeBounds, canvasBounds),
+        { duration: CREATE_MODE_REFIT_TRANSITION_MS },
+      )
+    }, CREATE_MODE_REENTRY_SETTLE_REFIT_DELAY_MS)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [
+    active,
+    canvasBounds,
+    createModeFitNodeBounds,
+    createModeHasSelection,
+    createModeReentryFitNonce,
     hasDetail,
     isInitialFitAuthoring,
     nodes.length,
@@ -4680,38 +4708,6 @@ function AgentVisualizationInner({
               onClose={clearAuthoringSelection}
             />
           )}
-          {previewEnabled ? (
-            <>
-              <button
-                type="button"
-                aria-label={
-                  effectiveRuntimePanelOpen
-                    ? 'Close effective runtime panel'
-                    : 'Open effective runtime panel'
-                }
-                aria-pressed={effectiveRuntimePanelOpen}
-                onClick={handleToggleEffectiveRuntimePanel}
-                title="Effective runtime"
-                onPointerDown={(event) => event.stopPropagation()}
-                className={`agent-visualization__effective-runtime-toggle pointer-events-auto absolute right-[5.25rem] top-2.5 z-20 inline-flex size-[30px] items-center justify-center rounded-md bg-transparent transition-colors ${
-                  effectiveRuntimePanelOpen
-                    ? 'text-primary hover:text-primary'
-                    : 'text-foreground/70 hover:text-foreground'
-                }`}
-              >
-                <ShieldCheck className="size-3.5" aria-hidden="true" />
-              </button>
-              <EffectiveRuntimePanel
-                open={effectiveRuntimePanelOpen}
-                onClose={handleCloseEffectiveRuntimePanel}
-                agentLabel={effectiveRuntimeAgentLabel}
-                loading={effectiveRuntimePreviewState.loading}
-                errorMessage={effectiveRuntimePreviewState.errorMessage}
-                preview={effectiveRuntimePreviewState.preview}
-                onRefreshActive={refreshEffectiveRuntimePreview}
-              />
-            </>
-          ) : null}
           <AgentApprovalReviewDialog
             open={pendingApproval !== null}
             review={pendingApproval?.review ?? null}

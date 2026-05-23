@@ -444,6 +444,30 @@ describe('AgentVisualization', () => {
     )
   })
 
+  it('keeps persistent edge layers below node cards', () => {
+    const edgeLayer = zIndexForSelector(
+      AGENT_VISUALIZATION_CSS,
+      '.agent-visualization .react-flow__edges',
+    )
+    const edgeLabelLayer = zIndexForSelector(
+      AGENT_VISUALIZATION_CSS,
+      '.agent-visualization .react-flow__edge-labels',
+    )
+    const fanOverlayLayer = zIndexForSelector(
+      AGENT_VISUALIZATION_CSS,
+      '.agent-visualization .agent-stage-tool-fan-overlay',
+    )
+    const nodeLayer = zIndexForSelector(
+      AGENT_VISUALIZATION_CSS,
+      '.agent-visualization .react-flow__nodes',
+    )
+
+    expect(edgeLayer).toBeLessThan(nodeLayer)
+    expect(edgeLabelLayer).toBeLessThan(nodeLayer)
+    expect(fanOverlayLayer).toBeLessThan(nodeLayer)
+    expect(edgeLabelLayer).toBeGreaterThan(edgeLayer)
+  })
+
   it('does not put important Tailwind sizing classes on React Flow handles', () => {
     installResizeObserverStub()
 
@@ -1076,6 +1100,22 @@ describe('AgentVisualization', () => {
     })
   })
 
+  it('does not expose the effective runtime panel affordance from the canvas', () => {
+    installResizeObserverStub()
+
+    const { queryByLabelText, queryByRole } = render(
+      <AgentVisualization
+        detail={detail()}
+        onPreviewEffectiveRuntime={async () => {
+          throw new Error('Preview should not be requested from hidden UI')
+        }}
+      />,
+    )
+
+    expect(queryByRole('button', { name: /effective runtime/i })).toBeNull()
+    expect(queryByLabelText('Effective runtime preview')).toBeNull()
+  })
+
   it('keeps layout controls available while authoring', () => {
     installResizeObserverStub()
 
@@ -1355,6 +1395,100 @@ describe('AgentVisualization', () => {
     expect(visibleAgainViewport.zoom).toBeLessThanOrEqual(1)
     expect(visibleAgainViewport.x).toBeGreaterThan(0)
     expect(visibleAgainViewport.y).toBeGreaterThan(0)
+  })
+
+  it('keeps an already revealed new-agent canvas visible after React Activity switches away and back', async () => {
+    installResizeObserverStub()
+    mockElementBounds(720, 760)
+    vi.useFakeTimers()
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      callback(0)
+      return 1
+    })
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+
+    function ActivityWrappedCanvas({ active }: { active: boolean }) {
+      return (
+        <Activity mode={active ? 'visible' : 'hidden'} name="workflow-pane">
+          <AgentVisualization active={active} detail={null} editing mode="create" />
+        </Activity>
+      )
+    }
+
+    const { container, rerender } = render(<ActivityWrappedCanvas active />)
+
+    await act(async () => {
+      await Promise.resolve()
+      vi.advanceTimersByTime(100)
+    })
+    expect(container.querySelector('.agent-visualization')).not.toHaveClass(
+      'is-initial-fit-pending',
+    )
+    setViewportSpy.mockClear()
+
+    rerender(<ActivityWrappedCanvas active={false} />)
+    rerender(<ActivityWrappedCanvas active />)
+
+    expect(container.querySelector('.agent-visualization')).not.toHaveClass(
+      'is-initial-fit-pending',
+    )
+    expect(setViewportSpy).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      vi.advanceTimersByTime(140)
+    })
+
+    expect(setViewportSpy).toHaveBeenCalledTimes(2)
+    const [settledViewport, settledOptions] = setViewportSpy.mock.calls[1]!
+    expect(settledOptions).toEqual({ duration: 180 })
+    expect(settledViewport.zoom).toBeGreaterThan(0)
+    expect(settledViewport.zoom).toBeLessThanOrEqual(1)
+    expect(settledViewport.x).toBeGreaterThan(0)
+    expect(settledViewport.y).toBeGreaterThan(0)
+  })
+
+  it('reveals the new-agent canvas when the graph refreshes before the initial fit veil clears', async () => {
+    installResizeObserverStub()
+    mockElementBounds(720, 760)
+    vi.useFakeTimers()
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      callback(0)
+      return 1
+    })
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+
+    const { container, rerender } = render(
+      <AgentVisualization
+        active
+        detail={null}
+        editing
+        mode="create"
+        initialDetail={detail()}
+      />,
+    )
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(setViewportSpy).toHaveBeenCalledTimes(1)
+    const canvas = container.querySelector('.agent-visualization')
+    expect(canvas).toHaveClass('is-initial-fit-pending')
+
+    rerender(
+      <AgentVisualization
+        active
+        detail={null}
+        editing
+        mode="create"
+        initialDetail={detail()}
+      />,
+    )
+
+    await act(async () => {
+      vi.advanceTimersByTime(100)
+    })
+
+    expect(canvas).not.toHaveClass('is-initial-fit-pending')
   })
 
   it('refreshes node internals after mount with zero-sized DOM handles', () => {

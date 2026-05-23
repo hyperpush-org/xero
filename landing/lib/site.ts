@@ -24,6 +24,7 @@ export const siteConfig = {
     "Tauri app",
     "workflow automation",
     "software development",
+    "Cursor",
     "OpenRouter",
     "Claude",
     "OpenAI",

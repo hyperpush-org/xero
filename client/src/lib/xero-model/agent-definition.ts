@@ -1643,9 +1643,9 @@ export function getAgentDefinitionScopeLabel(scope: AgentDefinitionScopeDto): st
     case 'built_in':
       return 'Built-in'
     case 'global_custom':
-      return 'Global'
+      return 'User'
     case 'project_custom':
-      return 'Project'
+      return 'User'
   }
 }
 

@@ -344,7 +344,7 @@ describe('buildAgentGraph', () => {
     detail.ref = { kind: 'custom', definitionId: 'custom-agent', version: 1 }
     detail.header = {
       ...detail.header,
-      scope: 'project_custom',
+      scope: 'global_custom',
     }
 
     const { nodes } = buildAgentGraph(detail)
@@ -590,6 +590,17 @@ describe('buildAgentGraph', () => {
     expect(toolLane?.selectable).toBe(false)
     expect(toolLane?.draggable).toBe(true)
     expect(toolLane?.dragHandle).toBe('.agent-graph-lane-label')
+  })
+
+  it('labels response lanes by their hierarchy', () => {
+    const detail = fixtureDetail()
+    const { nodes } = buildAgentGraph(detail)
+    const placed = layoutAgentGraphByCategory(nodes, new Map())
+    const responseFormatLane = placed.find((node) => node.id === 'lane:agent-output')
+    const responseSectionsLane = placed.find((node) => node.id === 'lane:output-section')
+
+    expect(responseFormatLane?.data.label).toBe('Response Format')
+    expect(responseSectionsLane?.data.label).toBe('Response Sections')
   })
 
   it('matches the default prompt/header gap to the header/output gap', () => {

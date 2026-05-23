@@ -14,6 +14,7 @@ import {
   Layers,
   ListChecks,
   Lock,
+  Package,
   Plus,
   RefreshCcw,
   Sparkles,
@@ -46,7 +47,6 @@ import {
 import { cn } from '@/lib/utils'
 import {
   agentDefinitionBaseCapabilityProfileSchema,
-  agentDefinitionScopeSchema,
   getAgentDefinitionBaseCapabilityLabel,
   type AgentDefinitionBaseCapabilityProfileDto,
   type AgentDefinitionValidationDiagnosticDto,
@@ -256,10 +256,11 @@ export function panelMetaForNode(node: AgentGraphNode): PanelMeta {
   switch (node.type) {
     case 'agent-header': {
       const data = node.data as AgentHeaderNodeData
+      const isCustomAgent = data.header.scope !== 'built_in'
       return {
         title: data.header.displayName || 'Agent',
         subtitle: 'Agent header',
-        Icon: Bot,
+        Icon: isCustomAgent ? Package : Bot,
         iconWrap: 'bg-primary/15 text-primary ring-1 ring-primary/30',
       }
     }
@@ -303,7 +304,7 @@ export function panelMetaForNode(node: AgentGraphNode): PanelMeta {
       const data = node.data as OutputNodeData
       return {
         title: data.output.label || 'Final response',
-        subtitle: 'Output',
+        subtitle: 'Response format',
         Icon: Target,
         iconWrap: 'bg-foreground/10 text-foreground/80 ring-1 ring-foreground/30',
       }
@@ -312,7 +313,7 @@ export function panelMetaForNode(node: AgentGraphNode): PanelMeta {
       const data = node.data as OutputSectionNodeData
       return {
         title: data.section.label || 'Section',
-        subtitle: 'Output section',
+        subtitle: 'Response section',
         Icon: Layers,
         iconWrap: 'bg-foreground/10 text-foreground/70 ring-1 ring-foreground/30',
       }
@@ -651,20 +652,13 @@ function AgentHeaderEditor({ nodeId, data }: { nodeId: string; data: AgentHeader
         <div className="grid grid-cols-2 gap-2">
           <FieldGroup label="Visibility">
             <PanelSelect
-              value={header.scope === 'built_in' ? 'project_custom' : header.scope}
+              value="global_custom"
               onChange={(value) => {
-                const parsed = agentDefinitionScopeSchema.safeParse(value)
-                if (
-                  parsed.success &&
-                  (parsed.data === 'project_custom' || parsed.data === 'global_custom')
-                ) {
-                  updateHeader({ scope: parsed.data })
+                if (value === 'global_custom') {
+                  updateHeader({ scope: 'global_custom' })
                 }
               }}
-              options={[
-                { value: 'project_custom', label: 'Project' },
-                { value: 'global_custom', label: 'Global' },
-              ]}
+              options={[{ value: 'global_custom', label: 'User' }]}
             />
           </FieldGroup>
           <FieldGroup label="Approval">
@@ -1788,7 +1782,7 @@ function OutputEditor({ nodeId, data }: { nodeId: string; data: OutputNodeData }
 
   return (
     <div className="space-y-3">
-      <FieldGroup label="Label">
+      <FieldGroup label="Response name">
         <Input
           value={output.label}
           onChange={(event) => updateOutput({ label: event.target.value })}
@@ -1796,7 +1790,7 @@ function OutputEditor({ nodeId, data }: { nodeId: string; data: OutputNodeData }
           className="h-8 text-[10.75px] font-medium"
         />
       </FieldGroup>
-      <FieldGroup label="Contract">
+      <FieldGroup label="Response type">
         <PanelSelect
           value={output.contract}
           onChange={(value) =>
@@ -1808,7 +1802,7 @@ function OutputEditor({ nodeId, data }: { nodeId: string; data: OutputNodeData }
           }))}
         />
       </FieldGroup>
-      <FieldGroup label="Description">
+      <FieldGroup label="Instructions">
         <Textarea
           value={output.description}
           onChange={(event) => updateOutput({ description: event.target.value })}
@@ -1838,7 +1832,7 @@ function OutputSectionEditor({
 
   return (
     <div className="space-y-3">
-      <FieldGroup label="Label">
+      <FieldGroup label="Section name">
         <Input
           value={section.label}
           onChange={(event) => updateSection({ label: event.target.value })}
@@ -1866,7 +1860,7 @@ function OutputSectionEditor({
           }))}
         />
       </FieldGroup>
-      <FieldGroup label="Description">
+      <FieldGroup label="Instructions">
         <Textarea
           value={section.description}
           onChange={(event) => updateSection({ description: event.target.value })}

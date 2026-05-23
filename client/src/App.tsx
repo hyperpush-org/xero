@@ -15,6 +15,7 @@ import { AgentWorkspace } from '@/components/xero/agent-workspace'
 import { AgentSessionsSidebar } from '@/components/xero/agent-sessions-sidebar'
 import { AgentWorkspaceDndProvider } from '@/components/xero/agent-runtime/agent-workspace-dnd-provider'
 import { AgentCommandPalette } from '@/components/xero/agent-runtime/agent-command-palette'
+import { runtimeAgentIdForCustomBaseCapability } from '@/components/xero/agent-runtime/composer-helpers'
 import { type View } from '@/components/xero/data'
 import { LoadingScreen } from '@/components/xero/loading-screen'
 import { NoProjectEmptyState } from '@/components/xero/no-project-empty-state'
@@ -65,6 +66,7 @@ import type {
   SearchAgentAuthoringSkillsResponseDto,
   AgentRefDto,
   WorkflowAgentDetailDto,
+  WorkflowAgentSummaryDto,
 } from '@/src/lib/xero-model/workflow-agents'
 import { useWorkflowAgentInspector } from '@/src/features/xero/use-workflow-agent-inspector'
 import {
@@ -607,6 +609,42 @@ function sameRuntimeRunControlInput(
     left.approvalMode === right.approvalMode &&
     Boolean(left.planModeRequired) === Boolean(right.planModeRequired)
   )
+}
+
+interface PendingInitialAgentSelection {
+  agentSessionId: string
+  runtimeAgentId: RuntimeAgentIdDto
+  agentDefinitionId: string | null
+}
+
+type RuntimeAgentSelection = Omit<PendingInitialAgentSelection, 'agentSessionId'>
+
+function runtimeAgentSelectionFromRef(
+  ref: AgentRefDto,
+  customDefinitions: readonly AgentDefinitionSummaryDto[],
+  workflowAgents: readonly WorkflowAgentSummaryDto[],
+): RuntimeAgentSelection | null {
+  if (ref.kind === 'built_in') {
+    return {
+      runtimeAgentId: ref.runtimeAgentId,
+      agentDefinitionId: null,
+    }
+  }
+
+  const customDefinition = customDefinitions.find(
+    (definition) => definition.definitionId === ref.definitionId,
+  )
+  const workflowAgent = workflowAgents.find(
+    (agent) => agent.ref.kind === 'custom' && agent.ref.definitionId === ref.definitionId,
+  )
+  const baseCapabilityProfile =
+    customDefinition?.baseCapabilityProfile ?? workflowAgent?.baseCapabilityProfile
+  if (!baseCapabilityProfile) return null
+
+  return {
+    runtimeAgentId: runtimeAgentIdForCustomBaseCapability(baseCapabilityProfile),
+    agentDefinitionId: ref.definitionId,
+  }
 }
 
 function shouldConfirmPaneClose(state: AgentPaneCloseState | null | undefined): state is AgentPaneCloseState {
@@ -1250,7 +1288,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [startTargetsDialogOpen, setStartTargetsDialogOpen] = useState(false)
   const [pendingInitialRuntimeAgent, setPendingInitialRuntimeAgent] =
-    useState<{ agentSessionId: string; runtimeAgentId: RuntimeAgentIdDto } | null>(null)
+    useState<PendingInitialAgentSelection | null>(null)
   const [agentAuthoringSession, setAgentAuthoringSession] = useState<{
     mode: 'create' | 'edit' | 'duplicate'
     initialDetail: WorkflowAgentDetailDto | null
@@ -1522,6 +1560,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setPendingInitialRuntimeAgent({
         agentSessionId: activeProject.selectedAgentSessionId,
         runtimeAgentId: 'agent_create',
+        agentDefinitionId: null,
       })
     }
     setBrowserOpen(false)
@@ -2050,13 +2089,20 @@ export function XeroApp({ adapter }: XeroAppProps) {
   }, [resolvedAdapter, retry])
   const workflowAgentCreateActive =
     activeView === 'phases' && agentAuthoringSession?.mode === 'create'
-  const pendingAgentDockRuntimeAgentId: RuntimeAgentIdDto | null =
+  const pendingAgentDockSelection =
     workflowAgentCreateActive && isCreatingAgentSession
-      ? 'agent_create'
+      ? ({ runtimeAgentId: 'agent_create', agentDefinitionId: null } satisfies RuntimeAgentSelection)
       : pendingInitialRuntimeAgent &&
           pendingInitialRuntimeAgent.agentSessionId === activeProject?.selectedAgentSessionId
-        ? pendingInitialRuntimeAgent.runtimeAgentId
+        ? {
+            runtimeAgentId: pendingInitialRuntimeAgent.runtimeAgentId,
+            agentDefinitionId: pendingInitialRuntimeAgent.agentDefinitionId,
+          }
         : null
+  const pendingAgentDockRuntimeAgentId: RuntimeAgentIdDto | null =
+    pendingAgentDockSelection?.runtimeAgentId ?? null
+  const pendingAgentDockAgentDefinitionId: string | null =
+    pendingAgentDockSelection?.agentDefinitionId ?? null
 
   useEffect(() => {
     if (!onboardingDismissed && !isLoading && projects.length === 0) {
@@ -2396,6 +2442,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
             setPendingInitialRuntimeAgent({
               agentSessionId: newSessionId,
               runtimeAgentId: 'agent_create',
+              agentDefinitionId: null,
             })
           }
         })
@@ -2534,6 +2581,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setPendingInitialRuntimeAgent({
         agentSessionId: activeProject.selectedAgentSessionId,
         runtimeAgentId: 'agent_create',
+        agentDefinitionId: null,
       })
     }
   }, [activeProject?.selectedAgentSessionId, activeProjectId, setActiveView])
@@ -2619,6 +2667,60 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setActiveView('phases')
     },
     [setActiveView, workflowAgentInspector.selectAgent],
+  )
+
+  const handleUseWorkflowAgentInChat = useCallback(
+    (ref: AgentRefDto) => {
+      if (!activeProjectId) return
+      const selection = runtimeAgentSelectionFromRef(
+        ref,
+        customAgentDefinitions,
+        workflowAgentInspector.agents,
+      )
+      if (!selection) {
+        console.error('Failed to resolve agent for chat selection', ref)
+        return
+      }
+
+      const applySelection = (agentSessionId: string) => {
+        setPendingInitialRuntimeAgent({
+          agentSessionId,
+          ...selection,
+        })
+      }
+
+      setWorkflowsOpen(false)
+      setBrowserOpen(false)
+      setIosOpen(false)
+      setSolanaOpen(false)
+      setVcsOpen(false)
+      setUsageOpen(false)
+      setTerminalOpen(false)
+      setAgentDockOpen(false)
+      setActiveView('agent')
+
+      if (activeProject?.selectedAgentSessionId) {
+        applySelection(activeProject.selectedAgentSessionId)
+        return
+      }
+
+      setIsCreatingAgentSession(true)
+      void createAgentSession()
+        .then((updatedProject) => {
+          const newSessionId = updatedProject?.selectedAgentSessionId
+          if (newSessionId) applySelection(newSessionId)
+        })
+        .finally(() => {
+          setIsCreatingAgentSession(false)
+        })
+    },
+    [
+      activeProject?.selectedAgentSessionId,
+      activeProjectId,
+      createAgentSession,
+      customAgentDefinitions,
+      workflowAgentInspector.agents,
+    ],
   )
 
   const handlePhaseAuthoringSaved = useCallback(
@@ -3524,6 +3626,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onEditAgent={(ref) => handleStartAgentAuthoringFromRef('edit', ref)}
                 onDuplicateAgent={(ref) => handleStartAgentAuthoringFromRef('duplicate', ref)}
                 onDeleteAgent={handleArchiveAgentDefinition}
+                onUseAgentInChat={handleUseWorkflowAgentInChat}
               />
             </Suspense>
           </LazyPrerenderedSurface>
@@ -3626,6 +3729,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onRetryStream={retry}
                 agentCreateCanvasIncluded={workflowAgentCreateActive}
                 pendingInitialRuntimeAgentId={pendingAgentDockRuntimeAgentId}
+                pendingInitialAgentDefinitionId={pendingAgentDockAgentDefinitionId}
                 onPendingInitialRuntimeAgentIdConsumed={() => {
                   if (activeProject?.selectedAgentSessionId) {
                     handleClearPendingInitialRuntimeAgent(activeProject.selectedAgentSessionId)

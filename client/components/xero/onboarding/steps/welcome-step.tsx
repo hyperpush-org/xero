@@ -17,7 +17,7 @@ const HIGHLIGHTS: Array<{
     step: "01",
     Icon: Sparkles,
     label: "Pick a provider",
-    hint: "OpenAI, Anthropic, Ollama, Bedrock, Vertex, and more",
+    hint: "OpenAI, Cursor, Anthropic, Ollama, Bedrock, Vertex, and more",
   },
   {
     step: "02",

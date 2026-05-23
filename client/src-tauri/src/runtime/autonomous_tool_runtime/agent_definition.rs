@@ -1926,7 +1926,12 @@ fn normalize_definition_snapshot(
         .unwrap_or_else(|| format!("Custom agent definition for {display_name}."));
     let task_purpose =
         text_alias(object, &["taskPurpose", "purpose"]).unwrap_or_else(|| description.clone());
-    let scope = text_alias(object, &["scope"]).unwrap_or_else(|| "global_custom".into());
+    let raw_scope = text_alias(object, &["scope"]).unwrap_or_else(|| "global_custom".into());
+    let scope = if raw_scope.trim() == "built_in" {
+        "built_in".to_string()
+    } else {
+        "global_custom".to_string()
+    };
     let lifecycle_state = if draft_mode {
         "draft".to_string()
     } else {
@@ -4347,7 +4352,7 @@ mod tests {
             "shortLabel": "Release",
             "description": "Draft release notes from reviewed project context without changing repository files.",
             "taskPurpose": "Answer release-note questions using source-cited project context and approved memory.",
-            "scope": "project_custom",
+            "scope": "global_custom",
             "baseCapabilityProfile": "observe_only",
             "defaultApprovalMode": "suggest",
             "allowedApprovalModes": ["suggest"],
@@ -4470,6 +4475,79 @@ mod tests {
                 "Refuse to invent unreviewed release claims."
             ],
             "attachedSkills": []
+        })
+    }
+
+    fn blank_canvas_definition() -> JsonValue {
+        json!({
+            "schema": AGENT_DEFINITION_SCHEMA,
+            "schemaVersion": AGENT_DEFINITION_SCHEMA_VERSION,
+            "id": "untitled_agent",
+            "displayName": "Untitled agent",
+            "shortLabel": "Untitled",
+            "description": "Custom agent built on the canvas.",
+            "taskPurpose": "Describe the agent's primary task, the steps it should take, and the boundaries it must respect.",
+            "scope": "global_custom",
+            "lifecycleState": "active",
+            "baseCapabilityProfile": "observe_only",
+            "defaultApprovalMode": "suggest",
+            "allowedApprovalModes": ["suggest"],
+            "toolPolicy": {
+                "allowedTools": [],
+                "deniedTools": [],
+                "allowedToolPacks": [],
+                "deniedToolPacks": [],
+                "allowedMcpServers": [],
+                "deniedMcpServers": [],
+                "allowedDynamicTools": [],
+                "deniedDynamicTools": [],
+                "allowedToolGroups": [],
+                "deniedToolGroups": [],
+                "allowedEffectClasses": []
+            },
+            "workflowContract": "Describe the agent's primary task, the steps it should take, and the boundaries it must respect.",
+            "finalResponseContract": "Replace this with what a successful final response from the agent must include.",
+            "examplePrompts": [
+                "Walk me through how Untitled agent would tackle a typical assignment.",
+                "Give me a concrete example of an interaction Untitled agent should handle well.",
+                "Outline a scenario where Untitled agent stays in scope and produces a useful result."
+            ],
+            "refusalEscalationCases": [
+                "Untitled agent is asked to perform an action outside of its capability profile.",
+                "Untitled agent is asked to handle sensitive credentials or secret values.",
+                "Untitled agent is asked to act without required review or consent."
+            ],
+            "attachedSkills": [],
+            "output": {
+                "contract": "answer",
+                "label": "Final response",
+                "description": "Replace this with what a successful final response from the agent must include.",
+                "sections": [
+                    {
+                        "id": "final_answer",
+                        "label": "Final answer",
+                        "description": "Replace this with the main sections or evidence the agent should include in its final response.",
+                        "emphasis": "core",
+                        "producedByTools": []
+                    }
+                ]
+            },
+            "prompts": [
+                {
+                    "id": "system_prompt",
+                    "label": "System prompt",
+                    "role": "system",
+                    "source": "custom",
+                    "body": "You are a helpful agent. Replace this with the system prompt that describes how the agent should behave, what it must do, and what it must avoid."
+                }
+            ],
+            "tools": [],
+            "dbTouchpoints": {
+                "reads": [],
+                "writes": [],
+                "encouraged": []
+            },
+            "consumes": []
         })
     }
 
@@ -4695,7 +4773,7 @@ mod tests {
         let saved = project_store::load_agent_definition(&repo_root, "release_notes_helper")
             .expect("load saved")
             .expect("saved definition");
-        assert_eq!(saved.scope, "project_custom");
+        assert_eq!(saved.scope, "global_custom");
         assert_eq!(saved.lifecycle_state, "active");
         assert_eq!(saved.base_capability_profile, "observe_only");
         let saved_version =
@@ -4735,6 +4813,72 @@ mod tests {
         assert_eq!(
             fs::read_to_string(repo_root.join("README.md")).expect("read repo file"),
             "project file\n"
+        );
+    }
+
+    #[test]
+    fn agent_definition_accepts_blank_canvas_snapshot() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        create_project_database(&repo_root, "project-blank-canvas");
+        let runtime = agent_create_runtime(&repo_root);
+        let request = AutonomousAgentDefinitionRequest {
+            action: AutonomousAgentDefinitionAction::Save,
+            definition_id: None,
+            source_definition_id: None,
+            include_archived: false,
+            definition: Some(blank_canvas_definition()),
+        };
+
+        let unapproved = runtime
+            .agent_definition(request.clone())
+            .expect("unapproved save response");
+        let AutonomousToolOutput::AgentDefinition(unapproved_output) = unapproved.output else {
+            panic!("expected agent definition output");
+        };
+        assert_eq!(
+            unapproved_output
+                .validation_report
+                .as_ref()
+                .expect("validation report")
+                .status,
+            AutonomousAgentDefinitionValidationStatus::Valid
+        );
+        assert!(unapproved_output.approval_required);
+        assert!(
+            unapproved_output.approval_review.is_some(),
+            "blank canvas saves must return a pre-save review for the UI approval dialog"
+        );
+
+        let approved = runtime
+            .agent_definition_with_operator_approval(request)
+            .expect("approved save");
+        let AutonomousToolOutput::AgentDefinition(output) = approved.output else {
+            panic!("expected agent definition output");
+        };
+        assert!(output.applied);
+        assert!(!output.approval_required);
+        assert_eq!(
+            output
+                .validation_report
+                .as_ref()
+                .expect("validation report")
+                .status,
+            AutonomousAgentDefinitionValidationStatus::Valid
+        );
+
+        let saved = project_store::load_agent_definition(&repo_root, "untitled_agent")
+            .expect("load saved")
+            .expect("saved definition");
+        assert_eq!(saved.scope, "global_custom");
+        let saved_version =
+            project_store::load_agent_definition_version(&repo_root, "untitled_agent", 1)
+                .expect("load saved version")
+                .expect("saved version");
+        assert_eq!(
+            saved_version.snapshot["output"]["sections"][0]["id"],
+            json!("final_answer")
         );
     }
 

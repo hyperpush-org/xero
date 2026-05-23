@@ -24,7 +24,7 @@ const baseHeader = {
   shortLabel: 'eng',
   description: 'Custom engineering agent.',
   taskPurpose: 'Build features end-to-end.',
-  scope: 'project_custom' as const,
+  scope: 'global_custom' as const,
   lifecycleState: 'active' as const,
   baseCapabilityProfile: 'engineering' as const,
   defaultApprovalMode: 'suggest' as const,

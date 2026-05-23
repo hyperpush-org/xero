@@ -28,8 +28,8 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
         </p>
         <p>
           When an agent calls a model, the request goes from your machine straight to the provider
-          (Anthropic, OpenAI, xAI, Google, OpenRouter, GitHub, Azure, Bedrock, Vertex, or local
-          Ollama). We are not in the middle of those calls.
+          (Anthropic, OpenAI, Cursor, xAI, Google, OpenRouter, GitHub, Azure, Bedrock, Vertex, or
+          local Ollama). We are not in the middle of those calls.
         </p>
       </>
     ),

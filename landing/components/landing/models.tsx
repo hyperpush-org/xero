@@ -3,6 +3,7 @@ import {
   AnthropicIcon,
   AWSIcon,
   AzureIcon,
+  CursorIcon,
   GoogleCloudIcon,
   GoogleIcon,
   OllamaIcon,
@@ -56,6 +57,12 @@ const providers: Provider[] = [
     badgeClass: "bg-foreground text-background",
   },
   {
+    name: "Cursor",
+    plan: "SDK-backed agent harness",
+    icon: <CursorIcon className="h-5 w-5" />,
+    badgeClass: "bg-[#f8f9fa] text-[#26241e]",
+  },
+  {
     name: "Ollama",
     plan: "Local models, no network",
     icon: <OllamaIcon className="h-5 w-5" />,
@@ -99,7 +106,7 @@ export function Models() {
             Bring your own model
           </p>
           <h2 className="mt-3 font-sans text-3xl font-medium tracking-tight text-balance sm:text-4xl lg:text-5xl">
-            Eleven providers. Keys stay on your machine.
+            Twelve providers. Keys stay on your machine.
           </h2>
         </div>
 

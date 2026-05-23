@@ -136,6 +136,7 @@ describe('ProviderCredentialsList', () => {
     expect(within(getProviderCard('OpenRouter')).getByRole('img', { name: 'OpenRouter' })).toBeInTheDocument()
     expect(within(getProviderCard('DeepSeek')).getByRole('img', { name: 'DeepSeek' })).toBeInTheDocument()
     expect(within(getProviderCard('xAI / Grok')).getByRole('img', { name: 'xAI' })).toBeInTheDocument()
+    expect(within(getProviderCard('Cursor')).getByRole('img', { name: 'Cursor' })).toBeInTheDocument()
     expect(within(getProviderCard('GitHub Models')).getByRole('img', { name: 'GitHub' })).toBeInTheDocument()
     expect(within(getProviderCard('Ollama')).getByRole('img', { name: 'Ollama' })).toBeInTheDocument()
     expect(within(getProviderCard('Azure OpenAI')).getByRole('img', { name: 'Microsoft Azure' })).toBeInTheDocument()

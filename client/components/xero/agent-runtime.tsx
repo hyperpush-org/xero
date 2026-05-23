@@ -227,6 +227,7 @@ export interface AgentRuntimeProps {
    * points that open a fresh session pre-selected on a specific agent.
    */
   pendingInitialRuntimeAgentId?: RuntimeAgentIdDto | null
+  pendingInitialAgentDefinitionId?: string | null
   /** Called once the pending initial runtime agent has been applied. */
   onPendingInitialRuntimeAgentIdConsumed?: () => void
   /** Display preference for compacting adjacent completed tool calls. */
@@ -1731,6 +1732,7 @@ export const AgentRuntime = memo(function AgentRuntime({
   onCloseSidebar,
   historicalConversationTurns,
   pendingInitialRuntimeAgentId = null,
+  pendingInitialAgentDefinitionId = null,
   onPendingInitialRuntimeAgentIdConsumed,
   toolCallGroupingPreference = 'grouped',
 }: AgentRuntimeProps) {
@@ -2191,6 +2193,7 @@ export const AgentRuntime = memo(function AgentRuntime({
     dictationScopeKey: `${agent.project.id}:${agent.project.selectedAgentSessionId ?? 'none'}`,
     reportComposerControls: foregroundWorkReady && isFocusedPane,
     pendingInitialRuntimeAgentId,
+    pendingInitialAgentDefinitionId,
     onPendingInitialRuntimeAgentIdConsumed,
     onStartRuntimeRun,
     onStartRuntimeSession,

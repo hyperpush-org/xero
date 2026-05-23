@@ -9,13 +9,13 @@ import {
   LogIn,
   LogOut,
   MonitorCheck,
-  MousePointer2,
   Webhook,
 } from "lucide-react"
 import {
   AWSIcon,
   AnthropicIcon,
   AzureIcon,
+  CursorIcon,
   DeepSeekIcon,
   GitHubIcon,
   GoogleCloudIcon,
@@ -87,7 +87,7 @@ const PROVIDER_ICON_BY_ID: Record<SupportedProviderId, ProviderIconConfig> = {
     icon: XAIIcon,
   },
   external_cursor_sdk: {
-    icon: MousePointer2,
+    icon: CursorIcon,
   },
   ollama: {
     icon: OllamaIcon,

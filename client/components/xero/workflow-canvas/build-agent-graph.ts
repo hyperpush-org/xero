@@ -1336,7 +1336,7 @@ function defaultAdvancedFor(detail: WorkflowAgentDetailDto): AgentHeaderAdvanced
     refusalEscalationCases: [
       `${subject} is asked to perform an action outside of its capability profile.`,
       `${subject} is asked to handle sensitive credentials or secret values.`,
-      `${subject} is asked to bypass user approvals or operate without explicit consent.`,
+      `${subject} is asked to act without required review or consent.`,
     ],
     allowedEffectClasses: [],
     deniedTools: [],
@@ -1641,7 +1641,7 @@ function blankDetail(): WorkflowAgentDetailDto {
       description: 'Custom agent built on the canvas.',
       taskPurpose:
         "Describe the agent's primary task, the steps it should take, and the boundaries it must respect.",
-      scope: 'project_custom',
+      scope: 'global_custom',
       lifecycleState: 'active',
       baseCapabilityProfile: 'observe_only',
       defaultApprovalMode: 'suggest',
@@ -1673,7 +1673,16 @@ function blankDetail(): WorkflowAgentDetailDto {
       label: 'Final response',
       description:
         'Replace this with what a successful final response from the agent must include.',
-      sections: [],
+      sections: [
+        {
+          id: 'final_answer',
+          label: 'Final answer',
+          description:
+            'Replace this with the main sections or evidence the agent should include in its final response.',
+          emphasis: 'core',
+          producedByTools: [],
+        },
+      ],
     },
     consumes: [],
     attachedSkills: [],
@@ -1704,8 +1713,7 @@ export function buildAgentGraphForEditing(
         ...detail.header,
         displayName: `${detail.header.displayName} (copy)`.slice(0, 80),
         shortLabel: `${detail.header.shortLabel} copy`.slice(0, 24),
-        scope:
-          detail.header.scope === 'global_custom' ? 'global_custom' : 'project_custom',
+        scope: 'global_custom',
       },
     }
     return { graph: buildAgentGraph(next), detail: next }

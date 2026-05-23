@@ -582,13 +582,13 @@ function OutputDetails({ data }: { data: OutputNodeData }) {
       <Section label="Metadata">
         <MetaRow
           items={[
-            { label: 'Label', value: output.label },
-            { label: 'Contract', value: humanizeIdentifier(output.contract) },
+            { label: 'Response name', value: output.label },
+            { label: 'Response type', value: humanizeIdentifier(output.contract) },
           ]}
         />
       </Section>
       {output.description ? (
-        <Section label="Description">
+        <Section label="Instructions">
           <Prose>{output.description}</Prose>
         </Section>
       ) : null}
@@ -609,7 +609,7 @@ function OutputSectionDetails({ data }: { data: OutputSectionNodeData }) {
         />
       </Section>
       {section.description ? (
-        <Section label="Description">
+        <Section label="Instructions">
           <Prose>{section.description}</Prose>
         </Section>
       ) : null}

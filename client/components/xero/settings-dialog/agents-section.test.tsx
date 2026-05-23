@@ -25,10 +25,10 @@ const builtin: AgentDefinitionSummaryDto = {
 const projectCustom: AgentDefinitionSummaryDto = {
   definitionId: 'project_research',
   currentVersion: 3,
-  displayName: 'Project Research',
+  displayName: 'User Research',
   shortLabel: 'Research',
-  description: 'Project-aware observe-only researcher.',
-  scope: 'project_custom',
+  description: 'User-created observe-only researcher.',
+  scope: 'global_custom',
   lifecycleState: 'active',
   baseCapabilityProfile: 'observe_only',
   createdAt: '2026-04-30T18:00:00Z',
@@ -76,7 +76,7 @@ describe('AgentsSection', () => {
     })
 
     expect(await screen.findByText('Ask')).toBeInTheDocument()
-    expect(await screen.findByText('Project Research')).toBeInTheDocument()
+    expect(await screen.findByText('User Research')).toBeInTheDocument()
     // built-ins do not get an Archive button
     const archiveButtons = screen.queryAllByRole('button', { name: /^Archive$/i })
     expect(archiveButtons).toHaveLength(1)
@@ -142,7 +142,7 @@ describe('AgentsSection', () => {
       />,
     )
 
-    await screen.findByText('Project Research')
+    await screen.findByText('User Research')
     expect(screen.queryByText('Archived Helper')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('checkbox', { name: /Include archived/i }))
@@ -177,7 +177,7 @@ describe('AgentsSection', () => {
       />,
     )
 
-    await screen.findByText('Project Research')
+    await screen.findByText('User Research')
     fireEvent.click(screen.getByRole('button', { name: /Version history/i }))
 
     await waitFor(() => {
@@ -239,7 +239,7 @@ describe('AgentsSection', () => {
       />,
     )
 
-    await screen.findByText('Project Research')
+    await screen.findByText('User Research')
     fireEvent.click(screen.getByRole('button', { name: /Version history/i }))
 
     await waitFor(() => {
@@ -297,7 +297,7 @@ describe('AgentsSection', () => {
       />,
     )
 
-    await screen.findByText('Project Research')
+    await screen.findByText('User Research')
     fireEvent.click(screen.getByRole('button', { name: /Version history/i }))
 
     await waitFor(() => {

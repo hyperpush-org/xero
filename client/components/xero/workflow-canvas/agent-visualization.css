@@ -132,10 +132,9 @@
 }
 
 .agent-visualization .react-flow__edges {
-  /* Keep every edge family above the editing handles so arrowheads remain
-     visible at drop points. Edge hit testing stays disabled below, so the
-     raised SVG layer does not steal handle/card pointer events. */
-  z-index: 2;
+  /* Keep persistent graph edges below cards so wires tuck under node surfaces
+     instead of drawing across labels, borders, and card content. */
+  z-index: 0;
 }
 
 .agent-visualization .react-flow__nodes,
@@ -175,7 +174,7 @@
 }
 
 .agent-visualization .react-flow__nodes {
-  z-index: 1;
+  z-index: 2;
 }
 
 /* Strip default node container styling so only our card children paint a surface.
@@ -344,14 +343,12 @@
 }
 
 /* Trigger-edge labels are rendered in a separate DOM portal via React Flow's
-   `EdgeLabelRenderer` (see `edges/trigger-edge.tsx`). That portal sits in
-   `.react-flow__edge-labels` which is positioned above the node layer, so
-   labels never fall behind a card the edge happens to cross — every label
-   reads at uniform brightness regardless of what's underneath. */
+   `EdgeLabelRenderer` (see `edges/trigger-edge.tsx`). Keep that portal above
+   edge paths but below node cards so labels cannot cover card content. */
 .agent-visualization .react-flow__edge-labels {
   position: absolute;
   pointer-events: none;
-  z-index: 6;
+  z-index: 1;
 }
 
 .agent-visualization .agent-edge-trigger-label {
@@ -427,10 +424,9 @@
   opacity: 0.78;
 }
 
-/* Workflow-phase branch edges — amber so they read as state-machine wiring
-   rather than data flow. Labels render via EdgeLabelRenderer like trigger
-   edges, so the conditional ("always", "todo: id", "tool: name") sits on
-   top of any card the branch happens to cross. */
+/* Stage branch edges — amber so they read as state-machine wiring rather
+   than data flow. Labels render via EdgeLabelRenderer like trigger edges,
+   above paths but still beneath node cards. */
 .agent-visualization .react-flow__edge.agent-edge-phase-branch .react-flow__edge-path {
   stroke: color-mix(in oklab, var(--color-amber-500, #f59e0b) 70%, var(--foreground));
   stroke-width: 1.25;
@@ -449,7 +445,7 @@
    admittance, 20–30 paths flipping into the paint tree on hover) feel
    laggy. The stroke is non-scaling so the line stays 1px at every zoom. */
 .agent-visualization .agent-stage-tool-fan-overlay {
-  z-index: 2;
+  z-index: 1;
 }
 .agent-visualization .agent-stage-tool-fan-overlay path {
   stroke: color-mix(in oklab, var(--color-amber-500, #f59e0b) 70%, var(--foreground));

@@ -25,7 +25,7 @@ function template(definitionId: string, displayName: string): WorkflowAgentSumma
     displayName,
     shortLabel: displayName,
     description: '',
-    scope: 'project_custom',
+    scope: 'global_custom',
     lifecycleState: 'active',
     baseCapabilityProfile: 'engineering',
     lastUsedAt: null,

@@ -66,6 +66,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   openai_codex: "OpenAI Codex",
   openrouter: "OpenRouter",
   github_models: "GitHub Models",
+  external_cursor_sdk: "Cursor",
   azure_openai: "Azure OpenAI",
   gemini_ai_studio: "Gemini",
   bedrock: "AWS Bedrock",

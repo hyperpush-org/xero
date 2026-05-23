@@ -87,6 +87,7 @@ export interface AgentDockSidebarProps {
   onCodeUndoApplied?: AgentRuntimeProps["onCodeUndoApplied"]
   agentCreateCanvasIncluded?: AgentRuntimeProps["agentCreateCanvasIncluded"]
   pendingInitialRuntimeAgentId?: AgentRuntimeProps["pendingInitialRuntimeAgentId"]
+  pendingInitialAgentDefinitionId?: AgentRuntimeProps["pendingInitialAgentDefinitionId"]
   onPendingInitialRuntimeAgentIdConsumed?: AgentRuntimeProps["onPendingInitialRuntimeAgentIdConsumed"]
 }
 

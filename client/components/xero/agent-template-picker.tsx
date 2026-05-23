@@ -5,6 +5,7 @@ import {
   ListChecks,
   Loader2,
   MessageCircle,
+  Package,
   Plus,
   Search,
   Sparkles,
@@ -209,7 +210,7 @@ interface TemplateRowProps {
 }
 
 function TemplateRow({ agent, onSelect }: TemplateRowProps) {
-  const Icon = profileIcon(agent.baseCapabilityProfile)
+  const Icon = agent.ref.kind === 'built_in' ? profileIcon(agent.baseCapabilityProfile) : Package
   const draft = agent.lifecycleState === 'draft'
   return (
     <li>
