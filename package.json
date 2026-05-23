@@ -39,7 +39,8 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild",
-      "lightningcss"
+      "lightningcss",
+      "sqlite3"
     ]
   }
 }

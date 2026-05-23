@@ -9,6 +9,7 @@ import {
   LogIn,
   LogOut,
   MonitorCheck,
+  MousePointer2,
   Webhook,
 } from "lucide-react"
 import {
@@ -85,6 +86,9 @@ const PROVIDER_ICON_BY_ID: Record<SupportedProviderId, ProviderIconConfig> = {
   xai: {
     icon: XAIIcon,
   },
+  external_cursor_sdk: {
+    icon: MousePointer2,
+  },
   ollama: {
     icon: OllamaIcon,
   },
@@ -122,6 +126,7 @@ function isSupportedProviderId(value: string | null | undefined): value is Suppo
     value === "openai_api" ||
     value === "deepseek" ||
     value === "xai" ||
+    value === "external_cursor_sdk" ||
     value === "ollama" ||
     value === "azure_openai" ||
     value === "gemini_ai_studio" ||

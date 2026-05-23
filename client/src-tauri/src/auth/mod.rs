@@ -347,6 +347,7 @@ pub fn start_provider_auth_flow(
         )),
         RuntimeProvider::OpenAiApi
         | RuntimeProvider::DeepSeek
+        | RuntimeProvider::Cursor
         | RuntimeProvider::Ollama
         | RuntimeProvider::AzureOpenAi
         | RuntimeProvider::GitHubModels
@@ -428,6 +429,7 @@ pub fn complete_provider_auth_flow<R: Runtime>(
         )),
         RuntimeProvider::OpenAiApi
         | RuntimeProvider::DeepSeek
+        | RuntimeProvider::Cursor
         | RuntimeProvider::Ollama
         | RuntimeProvider::AzureOpenAi
         | RuntimeProvider::GitHubModels
@@ -471,6 +473,7 @@ pub fn refresh_provider_auth_session<R: Runtime>(
         )),
         RuntimeProvider::OpenAiApi
         | RuntimeProvider::DeepSeek
+        | RuntimeProvider::Cursor
         | RuntimeProvider::Ollama
         | RuntimeProvider::AzureOpenAi
         | RuntimeProvider::GitHubModels

@@ -16,6 +16,7 @@ export type ProviderRuntimeKind =
   | 'openai_compatible'
   | 'deepseek'
   | 'xai'
+  | 'cursor_sdk'
   | 'gemini'
 export type ProviderPresetId =
   | 'openrouter'
@@ -24,6 +25,7 @@ export type ProviderPresetId =
   | 'openai_api'
   | 'deepseek'
   | 'xai'
+  | 'external_cursor_sdk'
   | 'ollama'
   | 'azure_openai'
   | 'gemini_ai_studio'
@@ -143,6 +145,24 @@ const CLOUD_PROVIDER_PRESETS: CloudProviderPreset[] = [
     connectionHint: 'Use browser sign-in, device code, or an app-local xAI API key.',
     browserOAuthSupported: true,
     deviceCodeSupported: true,
+  },
+  {
+    providerId: 'external_cursor_sdk',
+    runtimeKind: 'cursor_sdk',
+    label: 'Cursor',
+    description: "Use Cursor's SDK-backed agent through Xero's local harness with a saved app-local API key.",
+    defaultProfileId: 'external_cursor_sdk-default',
+    defaultProfileLabel: 'Cursor',
+    defaultModelId: 'composer-latest',
+    presetId: 'external_cursor_sdk',
+    authMode: 'api_key',
+    baseUrlMode: 'none',
+    apiVersionMode: 'none',
+    regionMode: 'none',
+    projectIdMode: 'none',
+    manualModelAllowed: false,
+    supportsCatalogRefresh: true,
+    connectionHint: 'Uses the local Cursor SDK bridge and Xero tool-registry MCP harness.',
   },
   {
     providerId: 'github_models',

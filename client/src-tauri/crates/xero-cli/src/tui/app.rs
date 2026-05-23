@@ -275,6 +275,8 @@ pub struct App {
     pub slash_selected: usize,
     pub palette: Option<PaletteState>,
     pub status: Option<String>,
+    pub update_notice: Option<String>,
+    update_check_receiver: Option<Receiver<Result<crate::update_cli::UpdateCheck, String>>>,
     pub run_detail: Option<RunDetail>,
     pub active_run_id: Option<String>,
     pub active_session_id: Option<String>,
@@ -396,6 +398,8 @@ impl App {
             slash_selected: 0,
             palette: None,
             status,
+            update_notice: None,
+            update_check_receiver: None,
             run_detail: None,
             active_run_id: None,
             active_session_id: None,
@@ -423,6 +427,18 @@ impl App {
     /// `/login` and `/logout` invoke this after the bridge mutates state.
     pub fn refresh_signed_in_handle(&mut self) {
         self.signed_in_handle = load_signed_in_handle(&self.identity_path);
+    }
+
+    pub fn start_update_check(&mut self) {
+        if env::var_os("XERO_DISABLE_UPDATE_CHECK").is_some() {
+            return;
+        }
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = crate::update_cli::check_for_update(None).map_err(|error| error.message);
+            let _ = sender.send(result);
+        });
+        self.update_check_receiver = Some(receiver);
     }
 
     pub fn selected_agent_label(&self) -> &str {
@@ -653,6 +669,7 @@ struct PromptJob {
 pub fn run_interactive(globals: GlobalOptions) -> Result<CliResponse, CliError> {
     let project = super::project::resolve(&globals);
     let mut app = App::new(&globals, project);
+    app.start_update_check();
     // Probe streaming support once so the rest of the loop can adopt the
     // NDJSON path as soon as the backend ships `--stream`.
     let _ = runtime::mode(&globals);
@@ -924,6 +941,7 @@ fn event_loop(
     let mut remote_ui_events = super::remote::subscribe_ui_events();
     let mut terminal_size = current_terminal_size(terminal)?;
     loop {
+        poll_update_check(app);
         poll_remote_ui_events(app, &mut remote_ui_events);
         poll_active_run(globals, app, &mut active_run);
         poll_pending_login(globals, app, &mut last_login_poll_at);
@@ -981,6 +999,7 @@ fn fullscreen_event_loop(
     let mut last_login_poll_at: Option<Instant> = None;
     let mut remote_ui_events = super::remote::subscribe_ui_events();
     loop {
+        poll_update_check(app);
         poll_remote_ui_events(app, &mut remote_ui_events);
         poll_active_run(globals, app, &mut active_run);
         poll_pending_login(globals, app, &mut last_login_poll_at);
@@ -1008,6 +1027,21 @@ fn fullscreen_event_loop(
             }
             _ => {}
         };
+    }
+}
+
+fn poll_update_check(app: &mut App) {
+    let Some(receiver) = app.update_check_receiver.take() else {
+        return;
+    };
+    match receiver.try_recv() {
+        Ok(Ok(check)) => {
+            app.update_notice = crate::update_cli::update_notice(&check);
+        }
+        Ok(Err(_)) | Err(TryRecvError::Disconnected) => {}
+        Err(TryRecvError::Empty) => {
+            app.update_check_receiver = Some(receiver);
+        }
     }
 }
 
@@ -3698,6 +3732,8 @@ pub(crate) fn test_only_empty_app() -> App {
         slash_selected: 0,
         palette: None,
         status: None,
+        update_notice: None,
+        update_check_receiver: None,
         run_detail: None,
         active_run_id: None,
         active_session_id: None,
@@ -3713,8 +3749,8 @@ pub(crate) fn test_only_empty_app() -> App {
         inline_height: INLINE_HEIGHT_IDLE,
         last_scrollback_line_blank: false,
         committed_scrollback: Vec::new(),
-        preferences_path: PathBuf::from("/tmp/xero-tui-test-prefs.json"),
-        identity_path: PathBuf::from("/tmp/xero-tui-test-identity.json"),
+        preferences_path: PathBuf::from("/tmp/xero-test-prefs.json"),
+        identity_path: PathBuf::from("/tmp/xero-test-identity.json"),
         signed_in_handle: None,
         login_flow_id: None,
     }
@@ -3908,7 +3944,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock after unix epoch")
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("xero-tui-{nonce}"));
+        let dir = std::env::temp_dir().join(format!("xero-{nonce}"));
         std::fs::create_dir_all(&dir).expect("create temp attachment dir");
         let path = dir.join(name);
         std::fs::write(&path, b"attachment").expect("write temp attachment");
@@ -4005,6 +4041,8 @@ mod tests {
             slash_selected: 0,
             palette: None,
             status: None,
+            update_notice: None,
+            update_check_receiver: None,
             run_detail: None,
             active_run_id: None,
             active_session_id: None,
@@ -4020,8 +4058,8 @@ mod tests {
             inline_height: INLINE_HEIGHT_IDLE,
             last_scrollback_line_blank: false,
             committed_scrollback: Vec::new(),
-            preferences_path: PathBuf::from("/tmp/xero-tui-test-prefs.json"),
-            identity_path: PathBuf::from("/tmp/xero-tui-test-identity.json"),
+            preferences_path: PathBuf::from("/tmp/xero-test-prefs.json"),
+            identity_path: PathBuf::from("/tmp/xero-test-identity.json"),
             signed_in_handle: None,
             login_flow_id: None,
         }
@@ -5336,7 +5374,7 @@ mod tests {
     #[test]
     fn load_signed_in_handle_reads_camelcase_identity_file() {
         let dir = std::env::temp_dir().join(format!(
-            "xero-tui-identity-{}",
+            "xero-identity-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -5355,7 +5393,7 @@ mod tests {
 
     #[test]
     fn load_signed_in_handle_returns_none_when_file_missing() {
-        let missing = std::env::temp_dir().join("xero-tui-identity-missing-file.json");
+        let missing = std::env::temp_dir().join("xero-identity-missing-file.json");
         let _ = std::fs::remove_file(&missing);
         assert!(super::load_signed_in_handle(&missing).is_none());
     }

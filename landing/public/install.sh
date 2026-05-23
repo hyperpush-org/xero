@@ -2,7 +2,7 @@
 set -eu
 
 fail() {
-  printf 'xero-tui install: %s\n' "$1" >&2
+  printf 'xero install: %s\n' "$1" >&2
   exit 1
 }
 
@@ -66,7 +66,7 @@ main() {
   base_url="${XERO_INSTALL_BASE_URL:-https://xeroshell.com}"
   base_url="${base_url%/}"
   install_dir="${XERO_INSTALL_DIR:-$HOME/.local/bin}"
-  archive="xero-tui-$target.tar.gz"
+  archive="xero-$target.tar.gz"
   archive_url="$base_url/downloads/tui/latest/$archive"
   checksum_url="$archive_url.sha256"
   tmp_dir="$(mktemp -d)"
@@ -83,23 +83,23 @@ main() {
     tar -xzf "$archive"
   )
 
-  [ -f "$tmp_dir/xero-tui" ] || fail "archive did not contain xero-tui"
+  [ -f "$tmp_dir/xero" ] || fail "archive did not contain xero"
 
   mkdir -p "$install_dir"
   if command -v install >/dev/null 2>&1; then
-    install -m 0755 "$tmp_dir/xero-tui" "$install_dir/xero-tui"
+    install -m 0755 "$tmp_dir/xero" "$install_dir/xero"
   else
-    cp "$tmp_dir/xero-tui" "$install_dir/xero-tui"
-    chmod 0755 "$install_dir/xero-tui"
+    cp "$tmp_dir/xero" "$install_dir/xero"
+    chmod 0755 "$install_dir/xero"
   fi
 
-  printf 'Installed xero-tui to %s/xero-tui\n' "$install_dir"
+  printf 'Installed xero to %s/xero\n' "$install_dir"
   case ":$PATH:" in
     *":$install_dir:"*)
-      printf 'Run it with: xero-tui\n'
+      printf 'Run it with: xero\n'
       ;;
     *)
-      printf 'Add this to your shell profile, then run xero-tui:\n'
+      printf 'Add this to your shell profile, then run xero:\n'
       printf '  export PATH="%s:$PATH"\n' "$install_dir"
       ;;
   esac

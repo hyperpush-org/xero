@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(scriptDir, '..')
 const tauriConfigPath = resolve(repoRoot, 'client/src-tauri/tauri.conf.json')
+const xeroCliCargoPath = resolve(repoRoot, 'client/src-tauri/crates/xero-cli/Cargo.toml')
 
 function usage() {
   console.log(`Usage: pnpm release:push <version> [--dry-run] [--remote <name>]
@@ -96,6 +97,14 @@ function ensureReleaseVersion(version) {
   if (config.version !== version) {
     fail(
       `Version mismatch: client/src-tauri/tauri.conf.json is ${config.version}, but command requested ${version}`,
+    )
+  }
+
+  const cargoToml = readFileSync(xeroCliCargoPath, 'utf8')
+  const packageVersion = cargoToml.match(/^\[package\][\s\S]*?^version\s*=\s*"([^"]+)"/m)?.[1]
+  if (packageVersion !== version) {
+    fail(
+      `Version mismatch: client/src-tauri/crates/xero-cli/Cargo.toml is ${packageVersion ?? 'missing'}, but command requested ${version}`,
     )
   }
 }

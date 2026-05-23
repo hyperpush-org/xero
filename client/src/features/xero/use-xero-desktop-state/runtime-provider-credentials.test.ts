@@ -342,6 +342,29 @@ describe('buildComposerModelOptions', () => {
     ])
     expect(options[0]?.thinkingEffortOptions).toEqual(['medium', 'high'])
   })
+
+  it('includes the Cursor SDK harness model when the Cursor credential and catalog exist', () => {
+    const credentials = makeSnapshot([
+      makeCredential({ providerId: 'external_cursor_sdk', defaultModelId: 'composer-latest' }),
+    ])
+    const catalogs = {
+      'external_cursor_sdk-default': makeCatalog('external_cursor_sdk', [
+        { modelId: 'composer-latest', displayName: 'Composer Latest' },
+      ]),
+    }
+
+    const options = buildComposerModelOptions(credentials, catalogs)
+
+    expect(options).toHaveLength(1)
+    expect(options[0]).toMatchObject({
+      selectionKey: 'external_cursor_sdk:composer-latest',
+      profileId: 'external_cursor_sdk-default',
+      providerId: 'external_cursor_sdk',
+      providerLabel: 'Cursor',
+      modelId: 'composer-latest',
+      displayName: 'Composer Latest',
+    })
+  })
 })
 
 describe('isAgentRuntimeBlocked', () => {

@@ -855,6 +855,18 @@ static COMMANDS: &[Command] = &[
         action: run_cli(&["settings", "soul"], CommandScope::None),
     },
     Command {
+        id: "update check",
+        title: "update check",
+        hint: "latest xero version",
+        action: run_cli(&["update", "check"], CommandScope::None),
+    },
+    Command {
+        id: "update install",
+        title: "update install",
+        hint: "install latest xero",
+        action: preview_cli(&["update", "install"], CommandScope::None),
+    },
+    Command {
         id: "usage summary",
         title: "usage summary",
         hint: "tokens and cost",

@@ -37,10 +37,10 @@ use crate::{
     },
     runtime::{
         is_supported_xai_text_model_id, ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID,
-        BEDROCK_PROVIDER_ID, DEEPSEEK_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID,
-        GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID,
-        OPENAI_CODEX_PROVIDER_ID, OPENAI_CODEX_SUPPORTED_MODEL_IDS, OPENROUTER_PROVIDER_ID,
-        VERTEX_PROVIDER_ID, XAI_DEFAULT_MODEL_ID, XAI_PROVIDER_ID,
+        BEDROCK_PROVIDER_ID, CURSOR_DEFAULT_MODEL_ID, CURSOR_PROVIDER_ID, DEEPSEEK_PROVIDER_ID,
+        GEMINI_AI_STUDIO_PROVIDER_ID, GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID,
+        OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENAI_CODEX_SUPPORTED_MODEL_IDS,
+        OPENROUTER_PROVIDER_ID, VERTEX_PROVIDER_ID, XAI_DEFAULT_MODEL_ID, XAI_PROVIDER_ID,
     },
     state::DesktopState,
 };
@@ -225,6 +225,7 @@ struct ProviderModelCatalogCacheLoad {
 enum ProviderModelCatalogRefreshTarget {
     OpenAiCodex,
     Xai,
+    Cursor,
     OpenRouter,
     Anthropic,
     AnthropicAmbient,
@@ -356,7 +357,7 @@ pub fn load_provider_model_catalog<R: Runtime>(
     let expected_scope = refresh_target.cache_scope(&profile);
     let cache_supported = !matches!(
         refresh_target,
-        ProviderModelCatalogRefreshTarget::OpenAiCodex
+        ProviderModelCatalogRefreshTarget::OpenAiCodex | ProviderModelCatalogRefreshTarget::Cursor
     );
     let cached_row = if cache_supported {
         cache_load.requested_cache_row(&profile, &expected_scope)
@@ -420,6 +421,7 @@ fn refresh_provider_model_catalog(
 ) -> ProviderModelCatalog {
     let live_models = match refresh_target {
         ProviderModelCatalogRefreshTarget::OpenAiCodex => Ok(openai_codex_projection()),
+        ProviderModelCatalogRefreshTarget::Cursor => Ok(cursor_projection()),
         ProviderModelCatalogRefreshTarget::Xai => {
             let Some(token) = xai_catalog_bearer_token(profile, provider_profiles) else {
                 let diagnostic = missing_xai_credential_diagnostic(profile);
@@ -522,7 +524,8 @@ fn refresh_provider_model_catalog(
                 .collect::<Vec<_>>();
             let source = if matches!(
                 refresh_target,
-                ProviderModelCatalogRefreshTarget::AnthropicAmbient
+                ProviderModelCatalogRefreshTarget::Cursor
+                    | ProviderModelCatalogRefreshTarget::AnthropicAmbient
                     | ProviderModelCatalogRefreshTarget::OpenAiCompatible(
                         ResolvedOpenAiCompatibleEndpoint {
                             model_list_strategy: OpenAiCompatibleModelListStrategy::Manual,
@@ -610,6 +613,17 @@ fn openai_codex_projection() -> Vec<ProviderModelRecord> {
 
 fn xai_projection() -> Vec<ProviderModelRecord> {
     vec![xai_model_record(XAI_DEFAULT_MODEL_ID.into())]
+}
+
+fn cursor_projection() -> Vec<ProviderModelRecord> {
+    vec![provider_model_record(
+        CURSOR_PROVIDER_ID,
+        CURSOR_DEFAULT_MODEL_ID.into(),
+        "Composer Latest".into(),
+        unsupported_thinking_capability(),
+        None,
+        None,
+    )]
 }
 
 fn xai_model_record(model_id: String) -> ProviderModelRecord {
@@ -1061,6 +1075,7 @@ fn normalize_openai_compatible_models(
 
 fn manual_provider_projection(profile: &ProviderCredentialProfile) -> Vec<ProviderModelRecord> {
     match profile.provider_id.as_str() {
+        CURSOR_PROVIDER_ID => cursor_projection(),
         BEDROCK_PROVIDER_ID | VERTEX_PROVIDER_ID => manual_anthropic_family_projection(profile),
         _ => manual_openai_compatible_projection(profile),
     }
@@ -1248,6 +1263,16 @@ fn unavailable_or_manual_catalog(
     diagnostic: Option<ProviderModelCatalogDiagnostic>,
 ) -> ProviderModelCatalog {
     match refresh_target {
+        ProviderModelCatalogRefreshTarget::Cursor => ProviderModelCatalog {
+            profile_id: profile.profile_id.clone(),
+            provider_id: profile.provider_id.clone(),
+            configured_model_id: profile.model_id.clone(),
+            source: ProviderModelCatalogSource::Manual,
+            fetched_at: Some(profile.updated_at.clone()),
+            last_success_at: Some(profile.updated_at.clone()),
+            last_refresh_error: diagnostic,
+            models: cursor_projection(),
+        },
         ProviderModelCatalogRefreshTarget::Xai => ProviderModelCatalog {
             profile_id: profile.profile_id.clone(),
             provider_id: profile.provider_id.clone(),
@@ -1299,6 +1324,7 @@ fn resolve_provider_model_catalog_refresh_target(
     match profile.provider_id.as_str() {
         OPENAI_CODEX_PROVIDER_ID => Ok(ProviderModelCatalogRefreshTarget::OpenAiCodex),
         XAI_PROVIDER_ID => Ok(ProviderModelCatalogRefreshTarget::Xai),
+        CURSOR_PROVIDER_ID => Ok(ProviderModelCatalogRefreshTarget::Cursor),
         OPENROUTER_PROVIDER_ID => Ok(ProviderModelCatalogRefreshTarget::OpenRouter),
         ANTHROPIC_PROVIDER_ID => Ok(ProviderModelCatalogRefreshTarget::Anthropic),
         BEDROCK_PROVIDER_ID | VERTEX_PROVIDER_ID => {
@@ -1539,6 +1565,7 @@ fn readiness_diagnostic(
             | BEDROCK_PROVIDER_ID
             | VERTEX_PROVIDER_ID
             | XAI_PROVIDER_ID
+            | CURSOR_PROVIDER_ID
             | OPENAI_API_PROVIDER_ID
             | DEEPSEEK_PROVIDER_ID
             | OLLAMA_PROVIDER_ID
@@ -1555,6 +1582,7 @@ fn readiness_diagnostic(
         ProviderCredentialReadinessStatus::Missing => Some(match profile.provider_id.as_str() {
             OPENROUTER_PROVIDER_ID => missing_openrouter_credential_diagnostic(profile),
             XAI_PROVIDER_ID => missing_xai_credential_diagnostic(profile),
+            CURSOR_PROVIDER_ID => missing_cursor_credential_diagnostic(profile),
             ANTHROPIC_PROVIDER_ID => missing_anthropic_credential_diagnostic(profile),
             BEDROCK_PROVIDER_ID => missing_bedrock_ambient_diagnostic(profile),
             VERTEX_PROVIDER_ID => missing_vertex_ambient_diagnostic(profile),
@@ -1587,6 +1615,14 @@ fn readiness_diagnostic(
                 code: "provider_credentials_unavailable".into(),
                 message: format!(
                     "Xero cannot discover xAI models for provider `{}` because the redacted credential metadata no longer matches the saved app-local secret state.",
+                    profile.provider_id
+                ),
+                retryable: false,
+            },
+            CURSOR_PROVIDER_ID => ProviderModelCatalogDiagnostic {
+                code: "provider_credentials_unavailable".into(),
+                message: format!(
+                    "Xero cannot load Cursor models for provider `{}` because the redacted credential metadata no longer matches the saved app-local secret state.",
                     profile.provider_id
                 ),
                 retryable: false,
@@ -1676,6 +1712,19 @@ fn missing_xai_credential_diagnostic(
         code: "xai_credential_missing".into(),
         message: format!(
             "Xero cannot discover xAI models for provider `{}` because no xAI OAuth session or app-local API key is configured.",
+            profile.provider_id
+        ),
+        retryable: false,
+    }
+}
+
+fn missing_cursor_credential_diagnostic(
+    profile: &ProviderCredentialProfile,
+) -> ProviderModelCatalogDiagnostic {
+    ProviderModelCatalogDiagnostic {
+        code: "cursor_api_key_missing".into(),
+        message: format!(
+            "Xero cannot load Cursor models for provider `{}` because no app-local Cursor API key is configured.",
             profile.provider_id
         ),
         retryable: false,
@@ -1881,6 +1930,18 @@ mod tests {
             grok.thinking.default_effort,
             Some(ProviderModelThinkingEffort::Low)
         );
+    }
+
+    #[test]
+    fn cursor_projection_exposes_composer_latest_without_owned_model_capabilities() {
+        let models = cursor_projection();
+        assert_eq!(models.len(), 1);
+        let composer = &models[0];
+
+        assert_eq!(composer.model_id, CURSOR_DEFAULT_MODEL_ID);
+        assert_eq!(composer.display_name, "Composer Latest");
+        assert!(!composer.thinking.supported);
+        assert!(composer.thinking.effort_options.is_empty());
     }
 
     #[test]

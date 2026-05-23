@@ -73,6 +73,10 @@ describe('runtime run control schemas', () => {
     expect(runtimeProviderIdSchema.parse('deepseek')).toBe('deepseek')
   })
 
+  it('accepts Cursor as an external agent runtime provider id', () => {
+    expect(runtimeProviderIdSchema.parse('external_cursor_sdk')).toBe('external_cursor_sdk')
+  })
+
   it('registers built-in runtime agents as descriptor-backed entries', () => {
     expect(runtimeAgentIdSchema.parse('debug')).toBe('debug')
     expect(runtimeAgentIdSchema.parse('plan')).toBe('plan')

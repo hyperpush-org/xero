@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
@@ -20,20 +22,22 @@ use xero_agent_core::{
     AgentCoreStore, AgentRuntimeFacade, ApprovalDecisionRequest, CancelRunRequest, ContextManifest,
     ContinueRunRequest, DomainToolPackHealthInput, DomainToolPackHealthReport,
     DomainToolPackHealthStatus, DomainToolPackManifest, EnvironmentSemanticIndexState,
-    FileAgentCoreStore, HeadlessProviderExecutionConfig, HeadlessProviderRuntime,
-    HeadlessRuntimeOptions, MessageRole, NewContextManifest, NewMessageRecord, NewRunRecord,
-    NewRuntimeEvent, OpenAiCodexHeadlessConfig, OpenAiCompatibleHeadlessConfig,
-    OpenAiCompatibleProviderPreflightProbeRequest, PermissionProfileSandbox,
-    ProductionRuntimeContract, ProjectTrustState, ProviderCapabilityCatalog,
-    ProviderCapabilityCatalogInput, ProviderPreflightInput, ProviderPreflightRequiredFeatures,
-    ProviderPreflightSnapshot, ProviderPreflightSource, ProviderSelection, ResumeRunRequest,
-    RunControls, RunSnapshot, RunStatus, RunSummary, RuntimeEvent, RuntimeEventKind,
-    RuntimeMessage, RuntimeMessageProviderMetadata, RuntimeStoreDescriptor, RuntimeTrace,
-    RuntimeTraceContext, SandboxApprovalSource, SandboxExecutionContext, SandboxExecutionMetadata,
-    SandboxPlatform, SandboxedProcessRequest, SandboxedProcessRunner, StartRunRequest,
-    ToolApprovalRequirement, ToolCallInput, ToolDescriptorV2, ToolEffectClass,
-    ToolExecutionContext, ToolMutability, ToolSandbox, ToolSandboxRequirement, UserInputRequest,
-    DEFAULT_PROVIDER_CATALOG_TTL_SECONDS, DOMAIN_TOOL_PACK_CONTRACT_VERSION,
+    FileAgentCoreStore, HeadlessProductionToolRuntime, HeadlessProviderExecutionConfig,
+    HeadlessProviderRuntime, HeadlessRuntimeOptions, MessageRole, NewContextManifest,
+    NewMessageRecord, NewRunRecord, NewRuntimeEvent, OpenAiCodexHeadlessConfig,
+    OpenAiCompatibleHeadlessConfig, OpenAiCompatibleProviderPreflightProbeRequest,
+    PermissionProfileSandbox, ProductionRuntimeContract, ProjectTrustState,
+    ProviderCapabilityCatalog, ProviderCapabilityCatalogInput, ProviderPreflightInput,
+    ProviderPreflightRequiredFeatures, ProviderPreflightSnapshot, ProviderPreflightSource,
+    ProviderSelection, ResumeRunRequest, RunControls, RunSnapshot, RunStatus, RunSummary,
+    RuntimeEvent, RuntimeEventKind, RuntimeMessage, RuntimeMessageProviderMetadata,
+    RuntimeStoreDescriptor, RuntimeTrace, RuntimeTraceContext, SandboxApprovalSource,
+    SandboxExecutionContext, SandboxExecutionMetadata, SandboxPlatform, SandboxedProcessRequest,
+    SandboxedProcessRunner, StartRunRequest, ToolApprovalRequirement, ToolBatchDispatchReport,
+    ToolCallInput, ToolDescriptorV2, ToolDispatchFailure, ToolDispatchOutcome, ToolDispatchSuccess,
+    ToolEffectClass, ToolErrorCategory, ToolExecutionContext, ToolExecutionError, ToolMutability,
+    ToolSandbox, ToolSandboxRequirement, UserInputRequest, DEFAULT_PROVIDER_CATALOG_TTL_SECONDS,
+    DOMAIN_TOOL_PACK_CONTRACT_VERSION,
 };
 
 mod agent_definition_cli;
@@ -46,6 +50,7 @@ mod remote_cli;
 mod settings_cli;
 mod skills_cli;
 mod tui;
+pub(crate) mod update_cli;
 mod usage_cli;
 
 const APP_DATA_DIRECTORY_NAME: &str = "dev.sn0w.xero";
@@ -61,6 +66,33 @@ const DEFAULT_MODEL_ID: &str = "fake-model";
 const DEFAULT_PROJECT_ID: &str = "headless-local";
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const MCP_SERVER_NAME: &str = "xero-local-harness";
+const MCP_TOOLS_SERVER_NAME: &str = "xero-tool-registry-v2";
+const CURSOR_PROVIDER_ID: &str = "external_cursor_sdk";
+const CURSOR_DEFAULT_MODEL_ID: &str = "composer-latest";
+const CURSOR_BRIDGE_VERSION: &str = "xero-cursor-sdk-bridge.v1";
+const CURSOR_BRIDGE_SCRIPT_RELATIVE: &str = "../../../scripts/cursor-sdk-bridge.mjs";
+const TOOL_REGISTRY_MCP_RUNTIME: &str = "cursor_sdk_xero_mcp";
+const TOOL_NAME_WRITE: &str = "write";
+const TOOL_NAME_PATCH: &str = "patch";
+const TOOL_NAME_DELETE: &str = "delete";
+const TOOL_NAME_MOVE: &str = "move";
+const TOOL_NAME_REPLACE: &str = "replace";
+const TOOL_NAME_COMMAND: &str = "command";
+const CURSOR_NATIVE_TOOL_NAMES: &[&str] = &[
+    "read",
+    "write",
+    "edit",
+    "delete",
+    "shell",
+    "grep",
+    "glob",
+    "ls",
+    "run_terminal_cmd",
+    "terminal",
+    "apply_patch",
+    "create_file",
+    "update_file",
+];
 const WORKSPACE_INDEX_VERSION: u32 = 1;
 const DEFAULT_INDEX_FILE_LIMIT: usize = 5_000;
 const HARD_INDEX_FILE_LIMIT: usize = 20_000;
@@ -409,10 +441,10 @@ fn dispatch(globals: GlobalOptions, args: Vec<String>) -> Result<CliResponse, Cl
     match args.first().map(String::as_str) {
         Some("--version") | Some("version") => Ok(response(
             &globals,
-            format!("xero-cli {}", env!("CARGO_PKG_VERSION")),
+            format!("xero {}", env!("CARGO_PKG_VERSION")),
             json!({
                 "kind": "version",
-                "name": "xero-cli",
+                "name": "xero",
                 "version": env!("CARGO_PKG_VERSION"),
             }),
         )),
@@ -448,6 +480,9 @@ fn dispatch(globals: GlobalOptions, args: Vec<String>) -> Result<CliResponse, Cl
             settings_cli::dispatch_environment(globals, args[1..].to_vec())
         }
         Some("settings") => settings_cli::dispatch_settings(globals, args[1..].to_vec()),
+        Some("update") | Some("updates") => {
+            update_cli::dispatch_update(globals, args[1..].to_vec())
+        }
         Some("wipe") => project_state_cli::dispatch_wipe(globals, args[1..].to_vec()),
         Some("usage") => usage_cli::dispatch_usage(globals, args[1..].to_vec()),
         Some("tool-pack") => dispatch_tool_pack(globals, args[1..].to_vec()),
@@ -480,11 +515,12 @@ fn dispatch_agent(globals: GlobalOptions, args: Vec<String>) -> Result<CliRespon
     match args.first().map(String::as_str) {
         Some("exec") => command_agent_exec(globals, args[1..].to_vec()),
         Some("host") => command_agent_host(globals, args[1..].to_vec()),
+        Some("cursor") => command_agent_cursor(globals, args[1..].to_vec()),
         Some(other) => Err(CliError::usage(format!(
-            "Unknown agent command `{other}`. Run `xero agent exec --help` or `xero agent host --help`."
+            "Unknown agent command `{other}`. Run `xero agent exec --help`, `xero agent host --help`, or `xero agent cursor --help`."
         ))),
         None => Err(CliError::usage(
-            "Missing agent command. Use `xero agent exec` or `xero agent host`.",
+            "Missing agent command. Use `xero agent exec`, `xero agent host`, or `xero agent cursor`.",
         )),
     }
 }
@@ -547,9 +583,10 @@ fn dispatch_mcp(globals: GlobalOptions, args: Vec<String>) -> Result<CliResponse
         Some("remove") | Some("delete") => command_mcp_remove(globals, args[1..].to_vec()),
         Some("status") => command_mcp_status(globals, args[1..].to_vec()),
         Some("serve") => command_mcp_serve(globals, args[1..].to_vec()),
+        Some("serve-tools") => command_mcp_serve_tools(globals, args[1..].to_vec()),
         Some(other) => Err(CliError::usage(format!("Unknown MCP command `{other}`."))),
         None => Err(CliError::usage(
-            "Missing MCP command. Use list, add, login, remove, status, or serve.",
+            "Missing MCP command. Use list, add, login, remove, status, serve, or serve-tools.",
         )),
     }
 }
@@ -2502,6 +2539,11 @@ fn command_agent_host(
     }
 
     let adapter = external_agent_adapter(&adapter_id)?;
+    if adapter.adapter_id == "cursor" {
+        return Err(CliError::usage(
+            "Use `xero agent cursor` for the Cursor SDK adapter so Xero can attach MCP tools, persistence, and reconciliation.",
+        ));
+    }
     let Some(approval_source) = external_agent_approval_source(allow_subprocess) else {
         return Err(CliError::user_fixable(
             "xero_cli_external_agent_approval_required",
@@ -2550,6 +2592,184 @@ fn command_agent_host(
         text,
         json!({
             "kind": "externalAgentHost",
+            "storePath": store.path(),
+            "snapshot": snapshot,
+        }),
+    ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CursorNativeToolPolicy {
+    Recover,
+    Warn,
+    FailOnUnrecoverableNativeMutation,
+    FailOnAnyNativeTool,
+}
+
+impl CursorNativeToolPolicy {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Recover => "recover",
+            Self::Warn => "warn",
+            Self::FailOnUnrecoverableNativeMutation => "fail_on_unrecoverable_native_mutation",
+            Self::FailOnAnyNativeTool => "fail_on_any_native_tool",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CursorContainmentMode {
+    Copy,
+    Live,
+}
+
+impl CursorContainmentMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Copy => "copy",
+            Self::Live => "live",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CursorAgentRunRequest {
+    project_id: String,
+    agent_session_id: String,
+    run_id: String,
+    prompt: String,
+    model_id: String,
+    repo_root: PathBuf,
+    bridge_path: PathBuf,
+    xero_cli_path: PathBuf,
+    api_key_env: Option<String>,
+    timeout_ms: u64,
+    max_tool_calls: Option<u64>,
+    max_command_calls: Option<u64>,
+    runtime_agent_id: String,
+    mcp_mode: ToolRegistryMcpMode,
+    native_tool_policy: CursorNativeToolPolicy,
+    containment: CursorContainmentMode,
+    fixture: Option<PathBuf>,
+    approval_source: ExternalAgentApprovalSource,
+}
+
+fn command_agent_cursor(
+    globals: GlobalOptions,
+    mut args: Vec<String>,
+) -> Result<CliResponse, CliError> {
+    if take_help(&args) {
+        return Ok(response(
+            &globals,
+            "Usage: xero agent cursor [PROMPT] [--repo PATH] [--project-id ID] [--model MODEL] [--mode observe-only|workspace-write|command-enabled] [--allow-writes] [--allow-commands] --allow-subprocess\nRuns Cursor through the Cursor SDK bridge as a Xero external-agent adapter.",
+            json!({ "command": "agent cursor" }),
+        ));
+    }
+    let prompt_flag = take_option(&mut args, "--prompt")?;
+    let repo = take_option(&mut args, "--repo")?.unwrap_or_else(|| ".".into());
+    let project_id = take_option(&mut args, "--project-id")?;
+    let agent_session_id =
+        take_option(&mut args, "--session-id")?.unwrap_or_else(|| generate_id("cursor-session"));
+    let run_id = take_option(&mut args, "--run-id")?.unwrap_or_else(|| generate_id("cursor-run"));
+    let model_id =
+        take_option(&mut args, "--model")?.unwrap_or_else(|| CURSOR_DEFAULT_MODEL_ID.into());
+    let api_key_env = take_option(&mut args, "--api-key-env")?;
+    let timeout_ms = take_option(&mut args, "--timeout-ms")?
+        .map(|value| parse_positive_u64(&value, "--timeout-ms"))
+        .transpose()?
+        .unwrap_or(EXTERNAL_AGENT_DEFAULT_TIMEOUT_MS);
+    let max_tool_calls = take_option(&mut args, "--max-tool-calls")?
+        .map(|value| parse_positive_u64(&value, "--max-tool-calls"))
+        .transpose()?;
+    let max_command_calls = take_option(&mut args, "--max-command-calls")?
+        .map(|value| parse_positive_u64(&value, "--max-command-calls"))
+        .transpose()?;
+    let runtime_agent_id =
+        take_option(&mut args, "--runtime-agent-id")?.unwrap_or_else(|| "engineer".into());
+    let mut mcp_mode = take_option(&mut args, "--mode")?
+        .map(|value| parse_tool_registry_mcp_mode(&value))
+        .transpose()?
+        .unwrap_or(ToolRegistryMcpMode::ObserveOnly);
+    if take_bool_flag(&mut args, "--allow-writes") && mcp_mode == ToolRegistryMcpMode::ObserveOnly {
+        mcp_mode = ToolRegistryMcpMode::WorkspaceWrite;
+    }
+    if take_bool_flag(&mut args, "--allow-commands") {
+        mcp_mode = ToolRegistryMcpMode::CommandEnabled;
+    }
+    if matches!(
+        runtime_agent_id.as_str(),
+        "ask" | "plan" | "crawl" | "agent_create"
+    ) {
+        mcp_mode = ToolRegistryMcpMode::ObserveOnly;
+    }
+    let native_tool_policy = take_option(&mut args, "--native-tool-policy")?
+        .map(|value| parse_cursor_native_tool_policy(&value))
+        .transpose()?
+        .unwrap_or(CursorNativeToolPolicy::Recover);
+    let containment = take_option(&mut args, "--containment")?
+        .map(|value| parse_cursor_containment_mode(&value))
+        .transpose()?
+        .unwrap_or(CursorContainmentMode::Copy);
+    let bridge_path = take_option(&mut args, "--bridge-path")?
+        .map(PathBuf::from)
+        .unwrap_or_else(default_cursor_bridge_path);
+    let xero_cli_path = take_option(&mut args, "--xero-cli-path")?
+        .map(PathBuf::from)
+        .unwrap_or_else(default_xero_cli_path);
+    let fixture = take_option(&mut args, "--fixture")?.map(PathBuf::from);
+    let allow_subprocess = take_bool_flag(&mut args, "--allow-subprocess");
+    reject_unknown_options(&args)?;
+
+    let prompt = prompt_flag
+        .or_else(|| (!args.is_empty()).then(|| args.join(" ")))
+        .ok_or_else(|| CliError::usage("Missing prompt. Use `xero agent cursor \"...\"`."))?;
+    if prompt.trim().is_empty() {
+        return Err(CliError::usage("Prompt cannot be empty."));
+    }
+    let Some(approval_source) = external_agent_approval_source(allow_subprocess) else {
+        return Err(CliError::user_fixable(
+            "xero_cli_external_agent_approval_required",
+            "Cursor SDK hosting launches a local Node subprocess. Re-run with `--allow-subprocess` or set XERO_EXTERNAL_AGENT_APPROVED=1 after reviewing the bridge command.",
+        ));
+    };
+    let repo_root = canonicalize_existing_path(&repo)?;
+    let project_id = project_id.unwrap_or_else(|| stable_project_id_for_repo_root(&repo_root));
+    let request = CursorAgentRunRequest {
+        project_id,
+        agent_session_id,
+        run_id,
+        prompt,
+        model_id,
+        repo_root,
+        bridge_path,
+        xero_cli_path,
+        api_key_env,
+        timeout_ms,
+        max_tool_calls,
+        max_command_calls,
+        runtime_agent_id,
+        mcp_mode,
+        native_tool_policy,
+        containment,
+        fixture,
+        approval_source,
+    };
+    let store = open_cursor_agent_store(&globals, &request.project_id)?;
+    let snapshot = host_cursor_agent_run(&globals, &store, request)?;
+    let text = format!(
+        "Cursor run {} finished with status {:?}.\nProvider: {}/{}\nTrace: {}\nState: {}",
+        snapshot.run_id,
+        snapshot.status,
+        snapshot.provider_id,
+        snapshot.model_id,
+        snapshot.trace_id,
+        store.path().display()
+    );
+    Ok(response(
+        &globals,
+        text,
+        json!({
+            "kind": "cursorAgentRun",
             "storePath": store.path(),
             "snapshot": snapshot,
         }),
@@ -3124,7 +3344,7 @@ fn command_provider_login(
         .is_some_and(|entry| entry.catalog_kind == "external_agent_adapter")
     {
         return Err(CliError::usage(
-            "External agent adapters do not use provider credentials. Launch them with `xero agent host --adapter ... --allow-subprocess`.",
+            "External agent adapters do not use provider profiles. Launch Cursor with `xero agent cursor --allow-subprocess`; launch other adapters with `xero agent host --adapter ... --allow-subprocess`.",
         ));
     }
     let profile_id = profile_id.unwrap_or_else(|| format!("{provider_id}-headless"));
@@ -3698,6 +3918,140 @@ fn command_mcp_serve(globals: GlobalOptions, args: Vec<String>) -> Result<CliRes
     ))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolRegistryMcpMode {
+    ObserveOnly,
+    WorkspaceWrite,
+    CommandEnabled,
+}
+
+impl ToolRegistryMcpMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ObserveOnly => "observe-only",
+            Self::WorkspaceWrite => "workspace-write",
+            Self::CommandEnabled => "command-enabled",
+        }
+    }
+
+    fn allow_writes(self) -> bool {
+        matches!(self, Self::WorkspaceWrite | Self::CommandEnabled)
+    }
+
+    fn allow_commands(self) -> bool {
+        matches!(self, Self::CommandEnabled)
+    }
+}
+
+fn command_mcp_serve_tools(
+    globals: GlobalOptions,
+    mut args: Vec<String>,
+) -> Result<CliResponse, CliError> {
+    if take_help(&args) {
+        return Ok(response(
+            &globals,
+            "Usage: xero mcp serve-tools --project-id PROJECT --run-id RUN --session-id SESSION --repo REPO [--mode observe-only|workspace-write|command-enabled]\nRuns Xero's Tool Registry V2 MCP server over stdio for external-agent adapters.",
+            json!({
+                "command": "mcp serve-tools",
+                "transport": "stdio",
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+            }),
+        ));
+    }
+
+    let self_test = take_bool_flag(&mut args, "--self-test");
+    let project_id = take_option(&mut args, "--project-id")?;
+    let run_id = take_option(&mut args, "--run-id")?;
+    let session_id = take_option(&mut args, "--session-id")?;
+    let repo = take_option(&mut args, "--repo")?.unwrap_or_else(|| ".".into());
+    let runtime_agent_id =
+        take_option(&mut args, "--runtime-agent-id")?.unwrap_or_else(|| "engineer".into());
+    let mut mode = take_option(&mut args, "--mode")?
+        .map(|value| parse_tool_registry_mcp_mode(&value))
+        .transpose()?
+        .unwrap_or(ToolRegistryMcpMode::ObserveOnly);
+    if take_bool_flag(&mut args, "--allow-writes") && mode == ToolRegistryMcpMode::ObserveOnly {
+        mode = ToolRegistryMcpMode::WorkspaceWrite;
+    }
+    if take_bool_flag(&mut args, "--allow-commands") {
+        mode = ToolRegistryMcpMode::CommandEnabled;
+    }
+    reject_unknown_options(&args)?;
+
+    if matches!(
+        runtime_agent_id.as_str(),
+        "ask" | "plan" | "crawl" | "agent_create"
+    ) {
+        mode = ToolRegistryMcpMode::ObserveOnly;
+    }
+
+    let repo_root = canonicalize_existing_path(&repo)?;
+    let runtime = HeadlessProductionToolRuntime::new_with_modes(
+        Some(&repo_root),
+        mode.allow_writes(),
+        mode.allow_commands(),
+        vec![globals.state_dir.display().to_string()],
+    )
+    .map_err(core_error)?;
+
+    if self_test {
+        let descriptors = runtime.descriptors();
+        return Ok(response(
+            &globals,
+            format!(
+                "Tool Registry MCP self-test passed with {} tool(s) in {} mode.",
+                descriptors.len(),
+                mode.as_str()
+            ),
+            json!({
+                "kind": "mcpServeToolsSelfTest",
+                "repoRoot": repo_root,
+                "mode": mode.as_str(),
+                "tools": descriptors.iter().map(|descriptor| descriptor.name.clone()).collect::<Vec<_>>(),
+            }),
+        ));
+    }
+
+    let project_id =
+        project_id.ok_or_else(|| CliError::usage("`--project-id` is required for serve-tools."))?;
+    let run_id =
+        run_id.ok_or_else(|| CliError::usage("`--run-id` is required for serve-tools."))?;
+    let session_id =
+        session_id.ok_or_else(|| CliError::usage("`--session-id` is required for serve-tools."))?;
+    let store = open_cursor_agent_store(&globals, &project_id)?;
+    let snapshot = store.load_run(&project_id, &run_id).map_err(core_error)?;
+    record_external_tool_registry_snapshot(&store, &snapshot, 0, &runtime, mode)?;
+
+    run_mcp_tools_stdio_server(ToolRegistryMcpServerConfig {
+        project_id,
+        run_id,
+        session_id,
+        repo_root,
+        app_data_roots: vec![globals.state_dir.display().to_string()],
+        mode,
+        store,
+    })?;
+    Ok(silent_response(
+        &globals,
+        json!({ "kind": "mcpServeTools", "transport": "stdio", "mode": mode.as_str() }),
+    ))
+}
+
+fn parse_tool_registry_mcp_mode(value: &str) -> Result<ToolRegistryMcpMode, CliError> {
+    match value.trim() {
+        "observe-only" | "observe_only" | "observe" | "read-only" | "read_only" => {
+            Ok(ToolRegistryMcpMode::ObserveOnly)
+        }
+        "workspace-write" | "workspace_write" | "write" => Ok(ToolRegistryMcpMode::WorkspaceWrite),
+        "command-enabled" | "command_enabled" | "command" => {
+            Ok(ToolRegistryMcpMode::CommandEnabled)
+        }
+        other => Err(CliError::usage(format!(
+            "Unknown serve-tools mode `{other}`. Use observe-only, workspace-write, or command-enabled."
+        ))),
+    }
+}
+
 fn command_workspace_index(
     globals: GlobalOptions,
     mut args: Vec<String>,
@@ -3984,7 +4338,7 @@ fn load_conversation_snapshot(
             return Err(core_error(error));
         }
     };
-    if snapshot.provider_id != FAKE_PROVIDER_ID {
+    if snapshot.provider_id != FAKE_PROVIDER_ID && !snapshot.provider_id.starts_with("external_") {
         return Err(CliError::user_fixable(
             "xero_cli_harness_store_real_run_rejected",
             format!(
@@ -4209,6 +4563,22 @@ fn default_harness_project_id() -> String {
 
 fn open_harness_agent_store(globals: &GlobalOptions) -> Result<FileAgentCoreStore, CliError> {
     FileAgentCoreStore::open(harness_store_path(globals)).map_err(core_error)
+}
+
+fn open_cursor_agent_store(
+    globals: &GlobalOptions,
+    project_id: &str,
+) -> Result<CliAgentStore, CliError> {
+    match open_registered_project_store(globals, project_id) {
+        Ok(store) => Ok(CliAgentStore::AppData(store)),
+        Err(error) if error.code == "xero_cli_project_registry_missing" => {
+            Ok(CliAgentStore::Harness(open_harness_agent_store(globals)?))
+        }
+        Err(error) if error.code == "xero_cli_project_not_found" => {
+            Ok(CliAgentStore::Harness(open_harness_agent_store(globals)?))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn harness_store_path(globals: &GlobalOptions) -> PathBuf {
@@ -5865,6 +6235,7 @@ fn root_help() -> String {
         "Commands:",
         "  agent exec",
         "  agent host",
+        "  agent cursor",
         "  benchmark terminal-bench",
         "  conversation list|show|dump|support-bundle|compact|continue|answer|approve|deny|cancel|resume|search|export|retry|clone|branch|stats",
         "  project list|import|create|remove|snapshot|select",
@@ -5872,7 +6243,7 @@ fn root_help() -> String {
         "  process targets|add-target|remove-target|start|list|status|tail|stop",
         "  session list|create|rename|auto-name|archive|restore|delete|resume|select",
         "  provider list|login|remove|doctor|preflight",
-        "  mcp list|add|login|remove|status|serve",
+        "  mcp list|add|login|remove|status|serve|serve-tools",
         "  workspace index|status|query|explain|reset",
         "  file list|read|write|patch|delete|move|replace|tools",
         "  git status|diff|stage|unstage|discard|commit|fetch|pull|push",
@@ -5882,6 +6253,7 @@ fn root_help() -> String {
         "  notification routes|upsert-route|remove-route|dispatches|replies",
         "  environment status|profile|user-tools|save-tool|remove-tool",
         "  settings agent-tooling|browser-control|soul",
+        "  update check|install",
         "  usage summary",
         "  wipe project|all",
         "  tool-pack list|doctor",
@@ -5899,6 +6271,7 @@ fn root_help_json() -> JsonValue {
         "commands": [
             "agent exec",
             "agent host",
+            "agent cursor",
             "benchmark terminal-bench",
             "conversation list",
             "conversation show",
@@ -5955,6 +6328,7 @@ fn root_help_json() -> JsonValue {
             "mcp remove",
             "mcp status",
             "mcp serve",
+            "mcp serve-tools",
             "workspace index",
             "workspace status",
             "workspace query",
@@ -6004,6 +6378,8 @@ fn root_help_json() -> JsonValue {
             "settings agent-tooling",
             "settings browser-control",
             "settings soul",
+            "update check",
+            "update install",
             "usage summary",
             "wipe project",
             "wipe all",
@@ -6386,6 +6762,15 @@ fn provider_catalog() -> Vec<ProviderCatalogEntry> {
             adapter_kind: Some("gemini"),
         },
         ProviderCatalogEntry {
+            provider_id: CURSOR_PROVIDER_ID,
+            label: "Cursor",
+            default_model: CURSOR_DEFAULT_MODEL_ID,
+            credential_kind: "cursor_api_key_env",
+            headless_status: "local_sdk_mvp",
+            catalog_kind: "external_agent_adapter",
+            adapter_kind: Some("cursor"),
+        },
+        ProviderCatalogEntry {
             provider_id: "external_custom_agent",
             label: "Custom External Agent",
             default_model: "external-agent",
@@ -6425,6 +6810,10 @@ fn provider_credential_proof_for_entry(
     match (entry.credential_kind, profile) {
         ("none", _) => Some("none_required".into()),
         ("external_process", _) => Some("external_process".into()),
+        ("cursor_api_key_env", _) => env::var("CURSOR_API_KEY")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(|_| "cursor_api_key_env_present".into()),
         (_, Some(profile)) if profile.api_key_env.is_some() => Some("api_key_env_recorded".into()),
         (_, Some(profile))
             if profile
@@ -6783,11 +7172,18 @@ fn ensure_owned_agent_provider(provider_id: &str) -> Result<(), CliError> {
     };
 
     if entry.catalog_kind == "external_agent_adapter" {
+        let launch = if entry.provider_id == CURSOR_PROVIDER_ID {
+            "xero agent cursor".to_string()
+        } else {
+            format!(
+                "xero agent host --adapter {}",
+                entry.adapter_kind.unwrap_or("custom")
+            )
+        };
         return Err(CliError::user_fixable(
             "xero_cli_provider_external_agent_mismatch",
             format!(
-                "Provider `{provider_id}` is an external-agent adapter. Use `xero agent host --adapter {}` so the run is labeled and audited as external.",
-                entry.adapter_kind.unwrap_or("custom")
+                "Provider `{provider_id}` is an external-agent adapter. Use `{launch}` so the run is labeled and audited as external."
             ),
         ));
     }
@@ -7234,6 +7630,54 @@ fn provider_doctor_checks(
         }];
     }
 
+    if provider_id == CURSOR_PROVIDER_ID {
+        let mut checks = vec![ProviderDoctorCheck {
+            code: "provider_external_agent_cataloged".into(),
+            status: "passed".into(),
+            message: "`external_cursor_sdk` is cataloged as the Cursor external-agent adapter."
+                .into(),
+        }];
+        checks.push(ProviderDoctorCheck {
+            code: "cursor_node_available".into(),
+            status: if command_available("node") {
+                "passed"
+            } else {
+                "failed"
+            }
+            .into(),
+            message: if command_available("node") {
+                "Node.js is available for the Cursor SDK bridge.".into()
+            } else {
+                "Node.js was not found on PATH. Install Node 20+ before running Cursor.".into()
+            },
+        });
+        let bridge_path = default_cursor_bridge_path();
+        checks.push(ProviderDoctorCheck {
+            code: "cursor_sdk_bridge_available".into(),
+            status: if bridge_path.is_file() {
+                "passed"
+            } else {
+                "failed"
+            }
+            .into(),
+            message: format!("Cursor SDK bridge path: {}", bridge_path.display()),
+        });
+        checks.push(ProviderDoctorCheck {
+            code: "cursor_auth_env".into(),
+            status: if env::var("CURSOR_API_KEY")
+                .ok()
+                .is_some_and(|value| !value.trim().is_empty())
+            {
+                "passed"
+            } else {
+                "failed"
+            }
+            .into(),
+            message: "Set CURSOR_API_KEY to a Cursor API key or service account key.".into(),
+        });
+        return checks;
+    }
+
     if let Some(entry) = provider_catalog_entry(provider_id)
         .filter(|entry| entry.catalog_kind == "external_agent_adapter")
     {
@@ -7366,6 +7810,14 @@ fn external_agent_adapter(adapter_id: &str) -> Result<ExternalAgentAdapter, CliE
             default_command: Some("gemini"),
             default_args_before_prompt: &["-p"],
         }),
+        "cursor" | "cursor_sdk" | "external_cursor_sdk" => Ok(ExternalAgentAdapter {
+            adapter_id: "cursor",
+            provider_id: CURSOR_PROVIDER_ID,
+            label: "Cursor",
+            default_model_id: CURSOR_DEFAULT_MODEL_ID,
+            default_command: Some("node"),
+            default_args_before_prompt: &[],
+        }),
         "custom" | "external_custom_agent" => Ok(ExternalAgentAdapter {
             adapter_id: "custom",
             provider_id: "external_custom_agent",
@@ -7375,7 +7827,7 @@ fn external_agent_adapter(adapter_id: &str) -> Result<ExternalAgentAdapter, CliE
             default_args_before_prompt: &[],
         }),
         other => Err(CliError::usage(format!(
-            "Unknown external agent adapter `{other}`. Use codex, claude, gemini, or custom."
+            "Unknown external agent adapter `{other}`. Use codex, claude, gemini, cursor, or custom."
         ))),
     }
 }
@@ -7782,6 +8234,1271 @@ fn external_agent_provenance(request: &ExternalAgentRunRequest) -> JsonValue {
         "command": request.command,
         "argv": request.argv,
     })
+}
+
+fn host_cursor_agent_run(
+    globals: &GlobalOptions,
+    store: &CliAgentStore,
+    request: CursorAgentRunRequest,
+) -> Result<RunSnapshot, CliError> {
+    validate_required_cli(&request.project_id, "projectId")?;
+    validate_required_cli(&request.agent_session_id, "sessionId")?;
+    validate_required_cli(&request.run_id, "runId")?;
+    validate_required_cli(&request.prompt, "prompt")?;
+    if !command_available("node") {
+        return Err(CliError::user_fixable(
+            "cursor_sdk_bridge_failed",
+            "Node.js is required to run the Cursor SDK bridge. Install Node 20+ and retry.",
+        ));
+    }
+    if !request.bridge_path.is_file() {
+        return Err(CliError::user_fixable(
+            "cursor_sdk_bridge_failed",
+            format!(
+                "Cursor SDK bridge script `{}` was not found.",
+                request.bridge_path.display()
+            ),
+        ));
+    }
+    if !request.xero_cli_path.exists() {
+        return Err(CliError::user_fixable(
+            "cursor_mcp_server_failed",
+            format!(
+                "Xero CLI path `{}` was not found for the Cursor MCP server.",
+                request.xero_cli_path.display()
+            ),
+        ));
+    }
+    if request.fixture.is_none()
+        && env::var(request.api_key_env.as_deref().unwrap_or("CURSOR_API_KEY"))
+            .ok()
+            .map(|value| value.trim().is_empty())
+            .unwrap_or(true)
+    {
+        return Err(CliError::user_fixable(
+            "cursor_auth_missing",
+            format!(
+                "Cursor requires {} before Xero can start a Cursor-backed run.",
+                request.api_key_env.as_deref().unwrap_or("CURSOR_API_KEY")
+            ),
+        ));
+    }
+    if request.fixture.is_none() {
+        cursor_bridge_import_self_test(&request.bridge_path)?;
+    }
+
+    let agent_definition =
+        store.resolve_agent_definition_for_run(None, &request.runtime_agent_id)?;
+    let system_prompt = "Cursor SDK via Xero MCP harness. Cursor-specific mechanics are trace detail; routine user experience should remain provider-like.".to_string();
+    let snapshot = store
+        .insert_run(NewRunRecord {
+            trace_id: None,
+            runtime_agent_id: request.runtime_agent_id.clone(),
+            agent_definition_id: agent_definition.definition_id,
+            agent_definition_version: agent_definition.version,
+            system_prompt: system_prompt.clone(),
+            project_id: request.project_id.clone(),
+            agent_session_id: request.agent_session_id.clone(),
+            run_id: request.run_id.clone(),
+            provider_id: CURSOR_PROVIDER_ID.into(),
+            model_id: request.model_id.clone(),
+            prompt: request.prompt.clone(),
+        })
+        .map_err(core_error)?;
+
+    let include_protected_dirs = request.containment == CursorContainmentMode::Live;
+    let baseline = capture_cursor_workspace_snapshot(&request.repo_root, include_protected_dirs)?;
+    let containment = prepare_cursor_containment(&request, &baseline)?;
+    let sandbox_metadata =
+        cursor_agent_sandbox_metadata(globals, &request, &containment.repo_root)?;
+    store
+        .append_event(NewRuntimeEvent {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            event_kind: RuntimeEventKind::RunStarted,
+            trace: Some(RuntimeTraceContext::for_run(
+                &snapshot.trace_id,
+                &snapshot.run_id,
+                "cursor_run_started",
+            )),
+            payload: json!({
+                "status": "starting",
+                "providerId": CURSOR_PROVIDER_ID,
+                "modelId": request.model_id,
+                "execution": "external_agent_adapter",
+                "provenance": cursor_agent_provenance(&request),
+                "mcp": {
+                    "server": MCP_TOOLS_SERVER_NAME,
+                    "mode": request.mcp_mode.as_str(),
+                    "toolRegistry": "tool_registry_v2",
+                },
+                "sandbox": external_agent_sandbox_payload(&sandbox_metadata, request.timeout_ms),
+                "containment": {
+                    "mode": request.containment.as_str(),
+                    "repoRoot": containment.repo_root,
+                },
+            }),
+        })
+        .map_err(core_error)?;
+    store
+        .append_event(NewRuntimeEvent {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            event_kind: RuntimeEventKind::PolicyDecision,
+            trace: Some(RuntimeTraceContext::for_run(
+                &snapshot.trace_id,
+                &snapshot.run_id,
+                "cursor_subprocess_approved",
+            )),
+            payload: json!({
+                "decision": "allow",
+                "policy": "external_agent_subprocess_requires_explicit_approval",
+                "approvalSource": match request.approval_source {
+                    ExternalAgentApprovalSource::OperatorFlag => "operator_flag",
+                    ExternalAgentApprovalSource::Environment => "environment",
+                },
+                "command": "node",
+                "bridgePath": request.bridge_path,
+                "timeoutMs": request.timeout_ms,
+                "preservedEnvironment": cursor_preserved_environment_keys(&request),
+            }),
+        })
+        .map_err(core_error)?;
+    store
+        .append_message(NewMessageRecord {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            role: MessageRole::System,
+            content: system_prompt,
+            provider_metadata: None,
+        })
+        .map_err(core_error)?;
+    store
+        .append_message(NewMessageRecord {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            role: MessageRole::User,
+            content: request.prompt.clone(),
+            provider_metadata: None,
+        })
+        .map_err(core_error)?;
+    store
+        .append_event(NewRuntimeEvent {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            event_kind: RuntimeEventKind::MessageDelta,
+            trace: Some(RuntimeTraceContext::for_run(
+                &snapshot.trace_id,
+                &snapshot.run_id,
+                "user_message",
+            )),
+            payload: json!({ "role": "user", "text": request.prompt }),
+        })
+        .map_err(core_error)?;
+    store
+        .update_run_status(&snapshot.project_id, &snapshot.run_id, RunStatus::Running)
+        .map_err(core_error)?;
+
+    let bridge = run_cursor_bridge_process(
+        globals,
+        store,
+        &request,
+        &containment.repo_root,
+        &sandbox_metadata,
+    )?;
+    if !bridge.stderr.trim().is_empty() {
+        append_cursor_bridge_output_event(store, &snapshot, "stderr", &bridge.stderr)?;
+    }
+    if !bridge.assistant_text.trim().is_empty() {
+        store
+            .append_message(NewMessageRecord {
+                project_id: snapshot.project_id.clone(),
+                run_id: snapshot.run_id.clone(),
+                role: MessageRole::Assistant,
+                content: bridge.assistant_text.trim().to_owned(),
+                provider_metadata: None,
+            })
+            .map_err(core_error)?;
+    }
+
+    let promote_contained_changes = bridge.failure.is_none() && !bridge.cancelled;
+    let reconciliation = reconcile_cursor_workspace(
+        store,
+        &snapshot,
+        &request,
+        &baseline,
+        &containment,
+        promote_contained_changes,
+    )?;
+    let failed = if bridge.cancelled {
+        None
+    } else {
+        bridge.failure.or_else(|| reconciliation.failure.clone())
+    };
+    let final_snapshot = if bridge.cancelled {
+        store
+            .update_run_status(&snapshot.project_id, &snapshot.run_id, RunStatus::Cancelled)
+            .map_err(core_error)?;
+        store
+            .append_event(NewRuntimeEvent {
+                project_id: snapshot.project_id.clone(),
+                run_id: snapshot.run_id.clone(),
+                event_kind: RuntimeEventKind::StateTransition,
+                trace: Some(RuntimeTraceContext::for_run(
+                    &snapshot.trace_id,
+                    &snapshot.run_id,
+                    "cursor_run_cancelled",
+                )),
+                payload: json!({
+                    "code": "cursor_run_cancelled",
+                    "message": "Cursor SDK bridge was cancelled by Xero.",
+                    "provenance": cursor_agent_provenance(&request),
+                    "reconciliation": reconciliation.report,
+                }),
+            })
+            .map_err(core_error)?;
+        store
+            .load_run(&snapshot.project_id, &snapshot.run_id)
+            .map_err(core_error)?
+    } else if let Some((code, message)) = failed {
+        store
+            .update_run_status(&snapshot.project_id, &snapshot.run_id, RunStatus::Failed)
+            .map_err(core_error)?;
+        store
+            .append_event(NewRuntimeEvent {
+                project_id: snapshot.project_id.clone(),
+                run_id: snapshot.run_id.clone(),
+                event_kind: RuntimeEventKind::RunFailed,
+                trace: Some(RuntimeTraceContext::for_run(
+                    &snapshot.trace_id,
+                    &snapshot.run_id,
+                    "cursor_run_failed",
+                )),
+                payload: json!({
+                    "code": code,
+                    "message": message,
+                    "provenance": cursor_agent_provenance(&request),
+                    "reconciliation": reconciliation.report,
+                }),
+            })
+            .map_err(core_error)?;
+        store
+            .load_run(&snapshot.project_id, &snapshot.run_id)
+            .map_err(core_error)?
+    } else {
+        store
+            .update_run_status(&snapshot.project_id, &snapshot.run_id, RunStatus::Completed)
+            .map_err(core_error)?;
+        store
+            .append_event(NewRuntimeEvent {
+                project_id: snapshot.project_id.clone(),
+                run_id: snapshot.run_id.clone(),
+                event_kind: RuntimeEventKind::RunCompleted,
+                trace: Some(RuntimeTraceContext::for_run(
+                    &snapshot.trace_id,
+                    &snapshot.run_id,
+                    "cursor_run_completed",
+                )),
+                payload: json!({
+                    "summary": "Cursor SDK run completed through Xero.",
+                    "provenance": cursor_agent_provenance(&request),
+                    "cursorAgentId": bridge.cursor_agent_id,
+                    "cursorRunId": bridge.cursor_run_id,
+                    "reconciliation": reconciliation.report,
+                }),
+            })
+            .map_err(core_error)?;
+        store
+            .load_run(&snapshot.project_id, &snapshot.run_id)
+            .map_err(core_error)?
+    };
+    cleanup_cursor_containment(containment);
+    Ok(final_snapshot)
+}
+
+fn parse_cursor_native_tool_policy(value: &str) -> Result<CursorNativeToolPolicy, CliError> {
+    match value.trim() {
+        "recover" => Ok(CursorNativeToolPolicy::Recover),
+        "warn" => Ok(CursorNativeToolPolicy::Warn),
+        "fail_on_unrecoverable_native_mutation" => {
+            Ok(CursorNativeToolPolicy::FailOnUnrecoverableNativeMutation)
+        }
+        "fail_on_any_native_tool" => Ok(CursorNativeToolPolicy::FailOnAnyNativeTool),
+        other => Err(CliError::usage(format!(
+            "Unknown Cursor native-tool policy `{other}`. Use recover, warn, fail_on_unrecoverable_native_mutation, or fail_on_any_native_tool."
+        ))),
+    }
+}
+
+fn parse_cursor_containment_mode(value: &str) -> Result<CursorContainmentMode, CliError> {
+    match value.trim() {
+        "copy" | "snapshot" | "snapshot-copy" => Ok(CursorContainmentMode::Copy),
+        "live" | "live-workspace" => Ok(CursorContainmentMode::Live),
+        other => Err(CliError::usage(format!(
+            "Unknown Cursor containment mode `{other}`. Use copy or live."
+        ))),
+    }
+}
+
+fn default_cursor_bridge_path() -> PathBuf {
+    env::var_os("XERO_CURSOR_BRIDGE_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(CURSOR_BRIDGE_SCRIPT_RELATIVE)
+        })
+}
+
+fn default_xero_cli_path() -> PathBuf {
+    env::var_os("XERO_CLI_PATH")
+        .map(PathBuf::from)
+        .or_else(|| env::current_exe().ok())
+        .unwrap_or_else(|| PathBuf::from("xero"))
+}
+
+fn cursor_bridge_import_self_test(bridge_path: &Path) -> Result<(), CliError> {
+    let output = Command::new("node")
+        .arg(bridge_path)
+        .arg("--self-test")
+        .output()
+        .map_err(|error| {
+            CliError::user_fixable(
+                "cursor_sdk_bridge_failed",
+                format!(
+                    "Could not run Cursor SDK bridge self-test `{}`: {error}",
+                    bridge_path.display()
+                ),
+            )
+        })?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let message = stdout
+        .lines()
+        .rev()
+        .find_map(|line| serde_json::from_str::<JsonValue>(line).ok())
+        .and_then(|event| {
+            event
+                .get("message")
+                .and_then(JsonValue::as_str)
+                .map(str::to_owned)
+        })
+        .filter(|message| !message.trim().is_empty())
+        .unwrap_or_else(|| {
+            let combined = format!("{}{}", stdout, stderr);
+            truncate_bytes(combined.trim(), 2048)
+        });
+    Err(CliError::user_fixable(
+        "cursor_sdk_bridge_failed",
+        format!("Cursor SDK bridge self-test failed: {message}"),
+    ))
+}
+
+fn cursor_agent_provenance(request: &CursorAgentRunRequest) -> JsonValue {
+    json!({
+        "kind": "external_agent",
+        "adapterId": "cursor",
+        "adapterLabel": "Cursor",
+        "providerId": CURSOR_PROVIDER_ID,
+        "modelId": request.model_id,
+        "bridgeVersion": CURSOR_BRIDGE_VERSION,
+        "sdkRuntime": "local",
+        "nativeToolPolicy": request.native_tool_policy.as_str(),
+    })
+}
+
+fn cursor_preserved_environment_keys(request: &CursorAgentRunRequest) -> Vec<String> {
+    let mut keys = vec!["PATH".into(), "HOME".into()];
+    keys.push(
+        request
+            .api_key_env
+            .clone()
+            .unwrap_or_else(|| "CURSOR_API_KEY".into()),
+    );
+    keys
+}
+
+#[derive(Debug, Clone)]
+struct CursorWorkspaceSnapshot {
+    files: BTreeMap<String, CursorFileSnapshot>,
+}
+
+#[derive(Debug, Clone)]
+struct CursorFileSnapshot {
+    sha256: String,
+    bytes: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct CursorContainment {
+    repo_root: PathBuf,
+    temp_root: Option<PathBuf>,
+}
+
+#[derive(Debug, Default)]
+struct CursorBridgeRunReport {
+    assistant_text: String,
+    stderr: String,
+    cursor_agent_id: Option<String>,
+    cursor_run_id: Option<String>,
+    tool_call_count: u64,
+    command_call_count: u64,
+    native_tool_count: u64,
+    native_mutation_count: u64,
+    cancelled: bool,
+    failure: Option<(String, String)>,
+}
+
+#[derive(Debug)]
+struct CursorReconciliationReport {
+    report: JsonValue,
+    failure: Option<(String, String)>,
+}
+
+fn capture_cursor_workspace_snapshot(
+    root: &Path,
+    include_protected_dirs: bool,
+) -> Result<CursorWorkspaceSnapshot, CliError> {
+    let mut snapshot = CursorWorkspaceSnapshot {
+        files: BTreeMap::new(),
+    };
+    capture_cursor_workspace_snapshot_inner(root, root, include_protected_dirs, &mut snapshot)?;
+    Ok(snapshot)
+}
+
+fn capture_cursor_workspace_snapshot_inner(
+    root: &Path,
+    path: &Path,
+    include_protected_dirs: bool,
+    snapshot: &mut CursorWorkspaceSnapshot,
+) -> Result<(), CliError> {
+    for entry in fs::read_dir(path).map_err(|error| {
+        CliError::system_fault(
+            "cursor_workspace_snapshot_failed",
+            format!(
+                "Could not read workspace directory `{}`: {error}",
+                path.display()
+            ),
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            CliError::system_fault("cursor_workspace_snapshot_failed", error.to_string())
+        })?;
+        let file_type = entry.file_type().map_err(|error| {
+            CliError::system_fault("cursor_workspace_snapshot_failed", error.to_string())
+        })?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if file_type.is_dir() {
+            if should_skip_cursor_snapshot_dir(&name, include_protected_dirs) {
+                continue;
+            }
+            capture_cursor_workspace_snapshot_inner(
+                root,
+                &entry.path(),
+                include_protected_dirs,
+                snapshot,
+            )?;
+        } else if file_type.is_file() {
+            let bytes = fs::read(entry.path()).map_err(|error| {
+                CliError::system_fault(
+                    "cursor_workspace_snapshot_failed",
+                    format!("Could not read `{}`: {error}", entry.path().display()),
+                )
+            })?;
+            let relative = entry
+                .path()
+                .strip_prefix(root)
+                .map_err(|error| {
+                    CliError::system_fault("cursor_workspace_snapshot_failed", error.to_string())
+                })?
+                .to_string_lossy()
+                .replace('\\', "/");
+            snapshot.files.insert(
+                relative,
+                CursorFileSnapshot {
+                    sha256: hex_sha256(&bytes),
+                    bytes,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
+fn should_skip_cursor_snapshot_dir(name: &str, include_protected_dirs: bool) -> bool {
+    if !include_protected_dirs && matches!(name, ".git" | ".xero") {
+        return true;
+    }
+    matches!(
+        name,
+        ".next"
+            | ".turbo"
+            | ".cache"
+            | ".yarn"
+            | ".pnpm-store"
+            | "build"
+            | "coverage"
+            | "dist"
+            | "node_modules"
+            | "target"
+    )
+}
+
+fn prepare_cursor_containment(
+    request: &CursorAgentRunRequest,
+    _baseline: &CursorWorkspaceSnapshot,
+) -> Result<CursorContainment, CliError> {
+    if request.containment == CursorContainmentMode::Live {
+        return Ok(CursorContainment {
+            repo_root: request.repo_root.clone(),
+            temp_root: None,
+        });
+    }
+    let temp_root = env::temp_dir().join(format!(
+        "xero-cursor-{}-{}",
+        sanitize_identifier_segment(&request.run_id),
+        now_millis()
+    ));
+    fs::create_dir_all(&temp_root).map_err(|error| {
+        CliError::system_fault(
+            "cursor_containment_prepare_failed",
+            format!(
+                "Could not create Cursor containment directory `{}`: {error}",
+                temp_root.display()
+            ),
+        )
+    })?;
+    copy_cursor_workspace(&request.repo_root, &temp_root)?;
+    Ok(CursorContainment {
+        repo_root: temp_root.clone(),
+        temp_root: Some(temp_root),
+    })
+}
+
+fn copy_cursor_workspace(source: &Path, target: &Path) -> Result<(), CliError> {
+    for entry in fs::read_dir(source).map_err(|error| {
+        CliError::system_fault(
+            "cursor_containment_copy_failed",
+            format!("Could not read `{}`: {error}", source.display()),
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            CliError::system_fault("cursor_containment_copy_failed", error.to_string())
+        })?;
+        let file_type = entry.file_type().map_err(|error| {
+            CliError::system_fault("cursor_containment_copy_failed", error.to_string())
+        })?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if should_skip_cursor_snapshot_dir(&name, false) {
+            continue;
+        }
+        let destination = target.join(&name);
+        if file_type.is_dir() {
+            fs::create_dir_all(&destination).map_err(|error| {
+                CliError::system_fault(
+                    "cursor_containment_copy_failed",
+                    format!("Could not create `{}`: {error}", destination.display()),
+                )
+            })?;
+            copy_cursor_workspace(&entry.path(), &destination)?;
+        } else if file_type.is_file() {
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent).map_err(|error| {
+                    CliError::system_fault(
+                        "cursor_containment_copy_failed",
+                        format!("Could not create `{}`: {error}", parent.display()),
+                    )
+                })?;
+            }
+            fs::copy(entry.path(), &destination).map_err(|error| {
+                CliError::system_fault(
+                    "cursor_containment_copy_failed",
+                    format!(
+                        "Could not copy `{}` to `{}`: {error}",
+                        entry.path().display(),
+                        destination.display()
+                    ),
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn cleanup_cursor_containment(containment: CursorContainment) {
+    if let Some(temp_root) = containment.temp_root {
+        let _ = fs::remove_dir_all(temp_root);
+    }
+}
+
+fn cursor_agent_sandbox_metadata(
+    globals: &GlobalOptions,
+    request: &CursorAgentRunRequest,
+    repo_root: &Path,
+) -> Result<SandboxExecutionMetadata, CliError> {
+    let descriptor = ToolDescriptorV2 {
+        name: "cursor_sdk_bridge".into(),
+        description:
+            "Launch the Cursor SDK bridge and capture its JSONL stream as an auditable Xero run."
+                .into(),
+        input_schema: json!({ "type": "object" }),
+        capability_tags: vec![
+            "external_agent".into(),
+            "cursor".into(),
+            "subprocess".into(),
+        ],
+        application_metadata: Default::default(),
+        effect_class: ToolEffectClass::CommandExecution,
+        mutability: ToolMutability::Mutating,
+        sandbox_requirement: ToolSandboxRequirement::FullLocal,
+        approval_requirement: ToolApprovalRequirement::Always,
+        telemetry_attributes: BTreeMap::new(),
+        result_truncation: Default::default(),
+    };
+    let sandbox = PermissionProfileSandbox::new(SandboxExecutionContext {
+        workspace_root: repo_root.display().to_string(),
+        app_data_roots: vec![globals.state_dir.display().to_string()],
+        project_trust: ProjectTrustState::UserApproved,
+        approval_source: match request.approval_source {
+            ExternalAgentApprovalSource::OperatorFlag => SandboxApprovalSource::Operator,
+            ExternalAgentApprovalSource::Environment => SandboxApprovalSource::Policy,
+        },
+        platform: SandboxPlatform::current(),
+        explicit_git_mutation_allowed: false,
+        legacy_xero_migration_allowed: false,
+        preserved_environment_keys: cursor_preserved_environment_keys(request),
+    });
+    let call = ToolCallInput {
+        tool_call_id: format!("cursor-bridge-{}", request.run_id),
+        tool_name: descriptor.name.clone(),
+        input: json!({
+            "projectId": request.project_id,
+            "runId": request.run_id,
+            "repoRoot": repo_root,
+            "bridgePath": request.bridge_path,
+        }),
+    };
+    sandbox
+        .evaluate(&descriptor, &call, &ToolExecutionContext::default())
+        .map_err(|denied| CliError::user_fixable(denied.error.code, denied.error.message))
+}
+
+fn run_cursor_bridge_process(
+    globals: &GlobalOptions,
+    store: &CliAgentStore,
+    request: &CursorAgentRunRequest,
+    effective_repo_root: &Path,
+    sandbox_metadata: &SandboxExecutionMetadata,
+) -> Result<CursorBridgeRunReport, CliError> {
+    let mut argv = vec![
+        "node".to_string(),
+        request.bridge_path.display().to_string(),
+        "--prompt".into(),
+        request.prompt.clone(),
+        "--repo-root".into(),
+        effective_repo_root.display().to_string(),
+        "--project-id".into(),
+        request.project_id.clone(),
+        "--run-id".into(),
+        request.run_id.clone(),
+        "--session-id".into(),
+        request.agent_session_id.clone(),
+        "--model".into(),
+        request.model_id.clone(),
+        "--xero-cli-path".into(),
+        request.xero_cli_path.display().to_string(),
+        "--xero-state-dir".into(),
+        globals.state_dir.display().to_string(),
+        "--mcp-mode".into(),
+        request.mcp_mode.as_str().into(),
+    ];
+    if let Some(api_key_env) = request.api_key_env.as_deref() {
+        argv.push("--api-key-env".into());
+        argv.push(api_key_env.into());
+    }
+    if let Some(fixture) = request.fixture.as_deref() {
+        argv.push("--fixture".into());
+        argv.push(fixture.display().to_string());
+    }
+    let output = SandboxedProcessRunner::new().run(
+        SandboxedProcessRequest {
+            argv,
+            cwd: Some(effective_repo_root.display().to_string()),
+            timeout_ms: Some(request.timeout_ms),
+            stdout_limit_bytes: 4 * 1024 * 1024,
+            stderr_limit_bytes: 1024 * 1024,
+            metadata: sandbox_metadata.clone(),
+        },
+        || cursor_run_cancelled(store, request),
+    );
+    let mut report = CursorBridgeRunReport::default();
+    match output {
+        Ok(output) => {
+            report.stderr = output.stderr.unwrap_or_default();
+            let stdout = output.stdout.unwrap_or_default();
+            for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+                append_cursor_bridge_output_event(
+                    store,
+                    &request_snapshot(store, request)?,
+                    "stdout",
+                    line,
+                )?;
+                match serde_json::from_str::<JsonValue>(line) {
+                    Ok(event) => process_cursor_bridge_event(store, request, &mut report, event)?,
+                    Err(error) => {
+                        report.failure.get_or_insert((
+                            "cursor_sdk_bridge_failed".into(),
+                            format!("Cursor bridge emitted invalid JSONL: {error}"),
+                        ));
+                    }
+                }
+            }
+            if output.exit_code != Some(0) && report.failure.is_none() {
+                report.failure = Some((
+                    "cursor_sdk_bridge_failed".into(),
+                    format!(
+                        "Cursor SDK bridge exited with status {:?}.",
+                        output.exit_code
+                    ),
+                ));
+            }
+        }
+        Err(error) => {
+            if error.code == "sandboxed_process_cancelled" {
+                report.cancelled = true;
+            }
+            report.failure = Some((
+                match error.code.as_str() {
+                    "sandboxed_process_timeout" => "cursor_run_timeout".into(),
+                    "sandboxed_process_cancelled" => "cursor_run_cancelled".into(),
+                    _ => "cursor_sdk_bridge_failed".into(),
+                },
+                error.message,
+            ));
+        }
+    }
+    Ok(report)
+}
+
+fn cursor_run_cancelled(store: &CliAgentStore, request: &CursorAgentRunRequest) -> bool {
+    store
+        .load_run(&request.project_id, &request.run_id)
+        .map(|snapshot| {
+            matches!(
+                snapshot.status,
+                RunStatus::Cancelling | RunStatus::Cancelled
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn request_snapshot(
+    store: &CliAgentStore,
+    request: &CursorAgentRunRequest,
+) -> Result<RunSnapshot, CliError> {
+    store
+        .load_run(&request.project_id, &request.run_id)
+        .map_err(core_error)
+}
+
+fn append_cursor_bridge_output_event(
+    store: &CliAgentStore,
+    snapshot: &RunSnapshot,
+    stream: &str,
+    output: &str,
+) -> Result<(), CliError> {
+    store
+        .append_event(NewRuntimeEvent {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            event_kind: RuntimeEventKind::CommandOutput,
+            trace: Some(RuntimeTraceContext::for_run(
+                &snapshot.trace_id,
+                &snapshot.run_id,
+                "cursor_bridge_output",
+            )),
+            payload: json!({
+                "stream": format!("cursor_bridge_{stream}"),
+                "text": truncate_bytes(output, 64 * 1024),
+            }),
+        })
+        .map(|_| ())
+        .map_err(core_error)
+}
+
+fn process_cursor_bridge_event(
+    store: &CliAgentStore,
+    request: &CursorAgentRunRequest,
+    report: &mut CursorBridgeRunReport,
+    event: JsonValue,
+) -> Result<(), CliError> {
+    let snapshot = request_snapshot(store, request)?;
+    let event_type = event
+        .get("type")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("unknown");
+    if let Some(agent_id) = event.get("cursorAgentId").and_then(JsonValue::as_str) {
+        report.cursor_agent_id = Some(agent_id.to_owned());
+    }
+    if let Some(cursor_run_id) = event.get("cursorRunId").and_then(JsonValue::as_str) {
+        report.cursor_run_id = Some(cursor_run_id.to_owned());
+    }
+    match event_type {
+        "delta" => {
+            if let Some(text) = event.get("text").and_then(JsonValue::as_str) {
+                if !text.is_empty() {
+                    report.assistant_text.push_str(text);
+                    store
+                        .append_event(NewRuntimeEvent {
+                            project_id: snapshot.project_id.clone(),
+                            run_id: snapshot.run_id.clone(),
+                            event_kind: RuntimeEventKind::MessageDelta,
+                            trace: Some(RuntimeTraceContext::for_run(
+                                &snapshot.trace_id,
+                                &snapshot.run_id,
+                                "cursor_assistant_delta",
+                            )),
+                            payload: json!({
+                                "role": "assistant",
+                                "text": text,
+                                "provenance": cursor_agent_provenance(request),
+                            }),
+                        })
+                        .map_err(core_error)?;
+                }
+            }
+        }
+        "tool_call" => process_cursor_tool_call_event(store, request, report, &snapshot, &event)?,
+        "failed" => {
+            let code = event
+                .get("code")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("cursor_sdk_bridge_failed")
+                .to_owned();
+            let message = event
+                .get("message")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("Cursor SDK bridge failed.")
+                .to_owned();
+            report.failure = Some((code, message));
+        }
+        _ => {}
+    }
+    store
+        .append_event(NewRuntimeEvent {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            event_kind: RuntimeEventKind::StateTransition,
+            trace: Some(RuntimeTraceContext::for_run(
+                &snapshot.trace_id,
+                &snapshot.run_id,
+                "cursor_bridge_event",
+            )),
+            payload: json!({
+                "kind": "cursor_bridge_event",
+                "cursorEventKind": event_type,
+                "event": truncate_cursor_bridge_event(event),
+                "provenance": cursor_agent_provenance(request),
+            }),
+        })
+        .map(|_| ())
+        .map_err(core_error)
+}
+
+fn truncate_cursor_bridge_event(event: JsonValue) -> JsonValue {
+    let text = event.to_string();
+    if text.len() <= 16 * 1024 {
+        event
+    } else {
+        json!({
+            "truncated": true,
+            "preview": truncate_bytes(&text, 16 * 1024),
+        })
+    }
+}
+
+fn process_cursor_tool_call_event(
+    store: &CliAgentStore,
+    request: &CursorAgentRunRequest,
+    report: &mut CursorBridgeRunReport,
+    snapshot: &RunSnapshot,
+    event: &JsonValue,
+) -> Result<(), CliError> {
+    let name = event
+        .get("name")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("unknown")
+        .to_owned();
+    let status = event
+        .get("status")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("running");
+    if status == "running" {
+        report.tool_call_count = report.tool_call_count.saturating_add(1);
+        if is_cursor_command_tool_name(&name) {
+            report.command_call_count = report.command_call_count.saturating_add(1);
+        }
+    }
+    if let Some(limit) = request.max_tool_calls {
+        if report.tool_call_count > limit {
+            report.failure.get_or_insert((
+                "cursor_tool_call_limit_exceeded".into(),
+                format!("Cursor exceeded the configured max tool call limit of {limit}."),
+            ));
+        }
+    }
+    if let Some(limit) = request.max_command_calls {
+        if report.command_call_count > limit {
+            report.failure.get_or_insert((
+                "cursor_command_call_limit_exceeded".into(),
+                format!("Cursor exceeded the configured max command call limit of {limit}."),
+            ));
+        }
+    }
+    if is_cursor_native_tool_call(&name) {
+        report.native_tool_count = report.native_tool_count.saturating_add(1);
+        let mutating = is_cursor_native_mutating_tool(&name);
+        if mutating {
+            report.native_mutation_count = report.native_mutation_count.saturating_add(1);
+        }
+        store.append_event(NewRuntimeEvent {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            event_kind: RuntimeEventKind::PolicyDecision,
+            trace: Some(RuntimeTraceContext::for_run(
+                &snapshot.trace_id,
+                &snapshot.run_id,
+                "cursor_native_tool_observed",
+            )),
+            payload: json!({
+                "decision": if request.native_tool_policy == CursorNativeToolPolicy::FailOnAnyNativeTool { "deny" } else { "observe" },
+                "policy": "cursor_native_tool_bypass",
+                "reasonCode": "cursor_native_tool_bypass",
+                "toolName": name,
+                "status": status,
+                "mutating": mutating,
+                "defaultRecovery": request.native_tool_policy.as_str(),
+                "event": event,
+            }),
+        }).map_err(core_error)?;
+        if request.native_tool_policy == CursorNativeToolPolicy::FailOnAnyNativeTool {
+            report.failure.get_or_insert((
+                "cursor_native_tool_bypass".into(),
+                "Cursor used a native tool while strict native-tool denial was enabled.".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_cursor_native_tool_call(name: &str) -> bool {
+    let normalized = name.trim().to_ascii_lowercase();
+    if normalized.contains("mcp") || normalized.contains("xero") {
+        return false;
+    }
+    CURSOR_NATIVE_TOOL_NAMES
+        .iter()
+        .any(|tool| normalized == *tool || normalized.ends_with(&format!("_{tool}")))
+}
+
+fn is_cursor_command_tool_name(name: &str) -> bool {
+    let normalized = name.trim().to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "shell" | "terminal" | "run_terminal_cmd" | "command"
+    )
+}
+
+fn is_cursor_native_mutating_tool(name: &str) -> bool {
+    let normalized = name.trim().to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "write"
+            | "edit"
+            | "delete"
+            | "shell"
+            | "terminal"
+            | "run_terminal_cmd"
+            | "apply_patch"
+            | "create_file"
+            | "update_file"
+    )
+}
+
+fn reconcile_cursor_workspace(
+    store: &CliAgentStore,
+    snapshot: &RunSnapshot,
+    request: &CursorAgentRunRequest,
+    baseline: &CursorWorkspaceSnapshot,
+    containment: &CursorContainment,
+    promote_contained_changes: bool,
+) -> Result<CursorReconciliationReport, CliError> {
+    let final_snapshot = capture_cursor_workspace_snapshot(
+        &containment.repo_root,
+        request.containment == CursorContainmentMode::Live,
+    )?;
+    let accounted =
+        accounted_cursor_file_change_paths(store, &request.project_id, &request.run_id)?;
+    let mut entries = Vec::new();
+    let mut failure = None;
+    for path in cursor_workspace_diff_paths(baseline, &final_snapshot) {
+        let diff_kind = cursor_diff_kind(&path, baseline, &final_snapshot);
+        let accounted_by_xero = accounted.contains(&path);
+        let safe = is_safe_cursor_reconciliation_path(&path);
+        let provenance = if accounted_by_xero {
+            "contained_cursor_change_promotion"
+        } else {
+            "recovered_cursor_direct_edit"
+        };
+        let mut action = "recorded";
+        if containment.temp_root.is_some() && safe && promote_contained_changes {
+            promote_cursor_diff_to_workspace(
+                store,
+                snapshot,
+                request,
+                &path,
+                provenance,
+                &diff_kind,
+                &final_snapshot,
+            )?;
+            action = "promoted";
+        } else if containment.temp_root.is_some() && safe {
+            action = "discarded_contained";
+        } else if containment.temp_root.is_none() && !safe {
+            restore_cursor_path_from_baseline(&request.repo_root, &path, baseline)?;
+            record_recovered_cursor_file_change(
+                store,
+                snapshot,
+                &path,
+                "revert_unsafe",
+                "cursor_unsafe_change_reverted",
+            )?;
+            action = "reverted";
+        } else if !safe {
+            action = "dropped_contained";
+        }
+        if !accounted_by_xero
+            && !safe
+            && request.native_tool_policy
+                == CursorNativeToolPolicy::FailOnUnrecoverableNativeMutation
+        {
+            failure.get_or_insert((
+                "cursor_untracked_mutation".into(),
+                "Cursor produced an unsafe direct mutation that Xero could not safely import."
+                    .into(),
+            ));
+        }
+        entries.push(json!({
+            "path": path,
+            "kind": diff_kind,
+            "accountedByXeroTools": accounted_by_xero,
+            "safe": safe,
+            "action": action,
+            "provenance": provenance,
+        }));
+    }
+    let report = json!({
+        "kind": "cursor_workspace_reconciliation",
+        "containment": request.containment.as_str(),
+        "mode": request.mcp_mode.as_str(),
+        "changedPathCount": entries.len(),
+        "changes": entries,
+    });
+    store
+        .append_event(NewRuntimeEvent {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            event_kind: RuntimeEventKind::StateTransition,
+            trace: Some(RuntimeTraceContext::for_run(
+                &snapshot.trace_id,
+                &snapshot.run_id,
+                "cursor_workspace_reconciliation",
+            )),
+            payload: report.clone(),
+        })
+        .map_err(core_error)?;
+    Ok(CursorReconciliationReport { report, failure })
+}
+
+fn accounted_cursor_file_change_paths(
+    store: &CliAgentStore,
+    project_id: &str,
+    run_id: &str,
+) -> Result<BTreeSet<String>, CliError> {
+    let snapshot = store.load_run(project_id, run_id).map_err(core_error)?;
+    Ok(snapshot
+        .events
+        .iter()
+        .filter(|event| event.event_kind == RuntimeEventKind::FileChanged)
+        .filter_map(|event| event.payload.get("path").and_then(JsonValue::as_str))
+        .map(|path| path.replace('\\', "/"))
+        .collect())
+}
+
+fn cursor_workspace_diff_paths(
+    baseline: &CursorWorkspaceSnapshot,
+    final_snapshot: &CursorWorkspaceSnapshot,
+) -> BTreeSet<String> {
+    let mut paths = baseline.files.keys().cloned().collect::<BTreeSet<_>>();
+    paths.extend(final_snapshot.files.keys().cloned());
+    paths
+        .into_iter()
+        .filter(|path| {
+            let before = baseline.files.get(path);
+            let after = final_snapshot.files.get(path);
+            before.map(|item| item.sha256.as_str()) != after.map(|item| item.sha256.as_str())
+        })
+        .collect()
+}
+
+fn cursor_diff_kind(
+    path: &str,
+    baseline: &CursorWorkspaceSnapshot,
+    final_snapshot: &CursorWorkspaceSnapshot,
+) -> &'static str {
+    match (
+        baseline.files.contains_key(path),
+        final_snapshot.files.contains_key(path),
+    ) {
+        (false, true) => "untracked_generated_file",
+        (true, false) => "untracked_delete",
+        (true, true) => "untracked_direct_edit",
+        (false, false) => "unchanged",
+    }
+}
+
+fn is_safe_cursor_reconciliation_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    if normalized.starts_with("../") || normalized.starts_with('/') {
+        return false;
+    }
+    let first = normalized.split('/').next().unwrap_or_default();
+    !matches!(first, ".git" | ".xero")
+}
+
+fn promote_cursor_diff_to_workspace(
+    store: &CliAgentStore,
+    snapshot: &RunSnapshot,
+    request: &CursorAgentRunRequest,
+    path: &str,
+    provenance: &str,
+    diff_kind: &str,
+    final_snapshot: &CursorWorkspaceSnapshot,
+) -> Result<(), CliError> {
+    let target = request.repo_root.join(path);
+    match final_snapshot.files.get(path) {
+        Some(file) => {
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(|error| {
+                    CliError::system_fault(
+                        "cursor_reconciliation_promote_failed",
+                        format!("Could not create `{}`: {error}", parent.display()),
+                    )
+                })?;
+            }
+            fs::write(&target, &file.bytes).map_err(|error| {
+                CliError::system_fault(
+                    "cursor_reconciliation_promote_failed",
+                    format!("Could not promote `{}`: {error}", target.display()),
+                )
+            })?;
+            record_recovered_cursor_file_change(store, snapshot, path, diff_kind, provenance)
+        }
+        None => {
+            if target.exists() {
+                fs::remove_file(&target).map_err(|error| {
+                    CliError::system_fault(
+                        "cursor_reconciliation_promote_failed",
+                        format!("Could not remove `{}`: {error}", target.display()),
+                    )
+                })?;
+            }
+            record_recovered_cursor_file_change(store, snapshot, path, "delete", provenance)
+        }
+    }
+}
+
+fn restore_cursor_path_from_baseline(
+    repo_root: &Path,
+    path: &str,
+    baseline: &CursorWorkspaceSnapshot,
+) -> Result<(), CliError> {
+    let target = repo_root.join(path);
+    if let Some(file) = baseline.files.get(path) {
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                CliError::system_fault(
+                    "cursor_reconciliation_revert_failed",
+                    format!("Could not create `{}`: {error}", parent.display()),
+                )
+            })?;
+        }
+        fs::write(&target, &file.bytes).map_err(|error| {
+            CliError::system_fault(
+                "cursor_reconciliation_revert_failed",
+                format!("Could not restore `{}`: {error}", target.display()),
+            )
+        })?;
+    } else if target.exists() {
+        fs::remove_file(&target).map_err(|error| {
+            CliError::system_fault(
+                "cursor_reconciliation_revert_failed",
+                format!("Could not remove `{}`: {error}", target.display()),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn record_recovered_cursor_file_change(
+    store: &CliAgentStore,
+    snapshot: &RunSnapshot,
+    path: &str,
+    operation: &str,
+    provenance: &str,
+) -> Result<(), CliError> {
+    store
+        .append_event(NewRuntimeEvent {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            event_kind: RuntimeEventKind::FileChanged,
+            trace: Some(RuntimeTraceContext::for_storage_write(
+                &snapshot.trace_id,
+                &snapshot.run_id,
+                "workspace_file",
+                snapshot.events.len(),
+            )),
+            payload: json!({
+                "path": path,
+                "operation": operation,
+                "runtime": "cursor_sdk_reconciliation",
+                "dispatch": {
+                    "registryVersion": "tool_registry_v2",
+                    "provenance": provenance,
+                    "recovered": provenance == "recovered_cursor_direct_edit",
+                },
+            }),
+        })
+        .map(|_| ())
+        .map_err(core_error)
+}
+
+fn hex_sha256(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn now_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
 }
 
 fn command_available(command: &str) -> bool {
@@ -8473,6 +10190,851 @@ fn mcp_tool_definitions() -> Vec<JsonValue> {
             "annotations": { "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
         }),
     ]
+}
+
+#[derive(Debug, Clone)]
+struct ToolRegistryMcpServerConfig {
+    project_id: String,
+    run_id: String,
+    session_id: String,
+    repo_root: PathBuf,
+    app_data_roots: Vec<String>,
+    mode: ToolRegistryMcpMode,
+    store: CliAgentStore,
+}
+
+fn run_mcp_tools_stdio_server(config: ToolRegistryMcpServerConfig) -> Result<(), CliError> {
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
+    run_mcp_tools_jsonrpc_stream(config, stdin.lock(), &mut stdout)
+}
+
+fn run_mcp_tools_jsonrpc_stream<R: BufRead, W: Write>(
+    config: ToolRegistryMcpServerConfig,
+    reader: R,
+    writer: &mut W,
+) -> Result<(), CliError> {
+    let mut session = ToolRegistryMcpServerSession { config };
+    for line in reader.lines() {
+        let line = line.map_err(|error| {
+            CliError::system_fault("xero_mcp_tools_stdio_read_failed", error.to_string())
+        })?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let response = match serde_json::from_str::<JsonValue>(&line) {
+            Ok(message) => session.handle_message(message),
+            Err(error) => Some(mcp_error(
+                JsonValue::Null,
+                -32700,
+                "Parse error",
+                json!({ "message": error.to_string() }),
+            )),
+        };
+        if let Some(response) = response {
+            let payload = serde_json::to_string(&response).map_err(|error| {
+                CliError::system_fault("xero_mcp_tools_encode_failed", error.to_string())
+            })?;
+            writer.write_all(payload.as_bytes()).map_err(|error| {
+                CliError::system_fault("xero_mcp_tools_stdio_write_failed", error.to_string())
+            })?;
+            writer.write_all(b"\n").map_err(|error| {
+                CliError::system_fault("xero_mcp_tools_stdio_write_failed", error.to_string())
+            })?;
+            writer.flush().map_err(|error| {
+                CliError::system_fault("xero_mcp_tools_stdio_flush_failed", error.to_string())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+struct ToolRegistryMcpServerSession {
+    config: ToolRegistryMcpServerConfig,
+}
+
+impl ToolRegistryMcpServerSession {
+    fn handle_message(&mut self, message: JsonValue) -> Option<JsonValue> {
+        let Some(object) = message.as_object() else {
+            return Some(mcp_error(
+                JsonValue::Null,
+                -32600,
+                "Invalid Request",
+                json!({"message": "JSON-RPC messages must be objects."}),
+            ));
+        };
+        let id = object.get("id").cloned();
+        let Some(method) = object.get("method").and_then(JsonValue::as_str) else {
+            return id.map(|id| {
+                mcp_error(
+                    id,
+                    -32600,
+                    "Invalid Request",
+                    json!({"message": "Requests must include a string method."}),
+                )
+            });
+        };
+        let params = object.get("params").cloned().unwrap_or_else(|| json!({}));
+        if id.is_none() {
+            return match method {
+                "notifications/initialized" | "notifications/cancelled" => None,
+                _ => None,
+            };
+        }
+        let id = id.unwrap_or(JsonValue::Null);
+        let result = match method {
+            "initialize" => Ok(mcp_tools_initialize_result(&params, self.config.mode)),
+            "ping" => Ok(json!({})),
+            "tools/list" => self.handle_tools_list(),
+            "tools/call" => self.handle_tool_call(params, &id),
+            _ => Err(mcp_error(
+                id.clone(),
+                -32601,
+                "Method not found",
+                json!({ "method": method }),
+            )),
+        };
+        Some(match result {
+            Ok(result) => mcp_success(id, result),
+            Err(error) => error,
+        })
+    }
+
+    fn runtime(&self) -> Result<HeadlessProductionToolRuntime, JsonValue> {
+        HeadlessProductionToolRuntime::new_with_modes(
+            Some(&self.config.repo_root),
+            self.config.mode.allow_writes(),
+            self.config.mode.allow_commands(),
+            self.config.app_data_roots.clone(),
+        )
+        .map_err(|error| {
+            mcp_error(
+                JsonValue::Null,
+                -32000,
+                "Xero Tool Registry runtime unavailable",
+                json!({ "code": error.code, "message": error.message }),
+            )
+        })
+    }
+
+    fn handle_tools_list(&self) -> Result<JsonValue, JsonValue> {
+        let runtime = self.runtime()?;
+        Ok(json!({
+            "tools": runtime
+                .descriptors()
+                .into_iter()
+                .map(mcp_tool_definition_from_descriptor)
+                .collect::<Vec<_>>()
+        }))
+    }
+
+    fn handle_tool_call(
+        &mut self,
+        params: JsonValue,
+        request_id: &JsonValue,
+    ) -> Result<JsonValue, JsonValue> {
+        let name = params
+            .get("name")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| {
+                mcp_error(
+                    request_id.clone(),
+                    -32602,
+                    "Invalid params",
+                    json!({"message": "`name` is required for tools/call."}),
+                )
+            })?;
+        let arguments = params
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        if !arguments.is_object() {
+            return Err(mcp_error(
+                request_id.clone(),
+                -32602,
+                "Invalid params",
+                json!({"message": "`arguments` must be an object."}),
+            ));
+        }
+
+        let runtime = self.runtime()?;
+        let descriptor_names = runtime
+            .descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.name)
+            .collect::<BTreeSet<_>>();
+        if !descriptor_names.contains(name) {
+            let _ = record_external_policy_decision(
+                &self.config.store,
+                &self.config.project_id,
+                &self.config.run_id,
+                "deny",
+                "cursor_mcp_tool_not_allowed",
+                format!(
+                    "Tool `{name}` is not exposed in {} mode.",
+                    self.config.mode.as_str()
+                ),
+                json!({
+                    "toolName": name,
+                    "mode": self.config.mode.as_str(),
+                    "allowedTools": descriptor_names,
+                    "runtime": TOOL_REGISTRY_MCP_RUNTIME,
+                }),
+            );
+            return Ok(mcp_tool_error(
+                "cursor_mcp_tool_not_allowed",
+                format!(
+                    "Tool `{name}` is not available in {} mode.",
+                    self.config.mode.as_str()
+                ),
+            ));
+        }
+
+        let snapshot = match self
+            .config
+            .store
+            .load_run(&self.config.project_id, &self.config.run_id)
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return Ok(mcp_tool_error(error.code, error.message));
+            }
+        };
+        let call = ToolCallInput {
+            tool_call_id: mcp_tool_call_id(name, request_id, &arguments),
+            tool_name: name.to_owned(),
+            input: arguments,
+        };
+        if let Err(error) = record_external_tool_started(&self.config.store, &snapshot, 0, &call) {
+            return Ok(mcp_tool_error(error.code, error.message));
+        }
+
+        let report = match runtime.dispatch_batch(
+            &self.config.project_id,
+            &self.config.run_id,
+            0,
+            std::slice::from_ref(&call),
+        ) {
+            Ok(report) => report,
+            Err(error) => return Ok(mcp_tool_error(error.code, error.message)),
+        };
+        let report_json = serde_json::to_value(&report).unwrap_or_else(|_| json!({}));
+        let first_failure = first_tool_dispatch_failure(&report);
+        if let Err(error) =
+            persist_tool_registry_mcp_report(&self.config.store, &snapshot, &report, 0)
+        {
+            return Ok(mcp_tool_error(error.code, error.message));
+        }
+        if let Some((code, message)) = first_failure {
+            Ok(mcp_tool_result(
+                message.clone(),
+                json!({
+                    "ok": false,
+                    "projectId": self.config.project_id,
+                    "runId": self.config.run_id,
+                    "sessionId": self.config.session_id,
+                    "toolName": name,
+                    "mode": self.config.mode.as_str(),
+                    "error": { "code": code, "message": message },
+                    "report": report_json,
+                }),
+                true,
+            ))
+        } else {
+            Ok(mcp_tool_result(
+                format!("Dispatched `{name}` through Xero Tool Registry V2."),
+                json!({
+                    "ok": true,
+                    "projectId": self.config.project_id,
+                    "runId": self.config.run_id,
+                    "sessionId": self.config.session_id,
+                    "toolName": name,
+                    "mode": self.config.mode.as_str(),
+                    "report": report_json,
+                }),
+                false,
+            ))
+        }
+    }
+}
+
+fn mcp_tools_initialize_result(params: &JsonValue, mode: ToolRegistryMcpMode) -> JsonValue {
+    let requested = params
+        .get("protocolVersion")
+        .and_then(JsonValue::as_str)
+        .unwrap_or(MCP_PROTOCOL_VERSION);
+    let protocol_version = if matches!(requested, "2025-06-18" | "2025-03-26") {
+        requested
+    } else {
+        MCP_PROTOCOL_VERSION
+    };
+    json!({
+        "protocolVersion": protocol_version,
+        "capabilities": {
+            "tools": { "listChanged": false }
+        },
+        "serverInfo": {
+            "name": MCP_TOOLS_SERVER_NAME,
+            "title": "Xero Tool Registry V2",
+            "version": env!("CARGO_PKG_VERSION")
+        },
+        "instructions": format!(
+            "Use Xero Tool Registry V2 tools for auditable workspace actions. Current mode: {}.",
+            mode.as_str()
+        )
+    })
+}
+
+fn mcp_tool_definition_from_descriptor(descriptor: ToolDescriptorV2) -> JsonValue {
+    json!({
+        "name": descriptor.name,
+        "title": descriptor.name,
+        "description": descriptor.description,
+        "inputSchema": descriptor.input_schema,
+        "annotations": {
+            "readOnlyHint": descriptor.mutability == ToolMutability::ReadOnly,
+            "destructiveHint": matches!(
+                descriptor.effect_class,
+                ToolEffectClass::WorkspaceMutation | ToolEffectClass::CommandExecution
+            ),
+            "idempotentHint": descriptor.mutability == ToolMutability::ReadOnly,
+            "openWorldHint": matches!(
+                descriptor.effect_class,
+                ToolEffectClass::ExternalService | ToolEffectClass::BrowserControl | ToolEffectClass::DeviceControl
+            ),
+        }
+    })
+}
+
+fn mcp_tool_call_id(name: &str, request_id: &JsonValue, arguments: &JsonValue) -> String {
+    if let Some(id) = arguments
+        .get("toolCallId")
+        .or_else(|| arguments.get("tool_call_id"))
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        return id.to_owned();
+    }
+    let id = match request_id {
+        JsonValue::String(value) => value.clone(),
+        other => other.to_string(),
+    };
+    format!(
+        "cursor-mcp-{}-{}",
+        sanitize_identifier_segment(name),
+        sanitize_identifier_segment(&id)
+    )
+}
+
+fn sanitize_identifier_segment(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let sanitized = sanitized.trim_matches('-');
+    if sanitized.is_empty() {
+        "id".into()
+    } else {
+        sanitized.chars().take(80).collect()
+    }
+}
+
+fn first_tool_dispatch_failure(report: &ToolBatchDispatchReport) -> Option<(String, String)> {
+    for group in &report.groups {
+        for outcome in &group.outcomes {
+            if let ToolDispatchOutcome::Failed(failure) = outcome {
+                return Some((failure.error.code.clone(), failure.error.message.clone()));
+            }
+        }
+    }
+    None
+}
+
+fn record_external_tool_registry_snapshot(
+    store: &CliAgentStore,
+    snapshot: &RunSnapshot,
+    turn_index: usize,
+    runtime: &HeadlessProductionToolRuntime,
+    mode: ToolRegistryMcpMode,
+) -> Result<(), CliError> {
+    let descriptors = runtime.descriptors();
+    store
+        .append_event(NewRuntimeEvent {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            event_kind: RuntimeEventKind::ToolRegistrySnapshot,
+            trace: Some(RuntimeTraceContext::for_provider_turn(
+                &snapshot.trace_id,
+                &snapshot.run_id,
+                turn_index,
+            )),
+            payload: json!({
+                "kind": "active_tool_registry",
+                "runtime": TOOL_REGISTRY_MCP_RUNTIME,
+                "providerLoop": "cursor_sdk_bridge",
+                "turnIndex": turn_index,
+                "executionRegistry": "tool_registry_v2",
+                "mode": mode.as_str(),
+                "descriptorNames": descriptors.iter().map(|descriptor| descriptor.name.clone()).collect::<Vec<_>>(),
+                "descriptorsV2": descriptors,
+                "legacyMiniToolsAvailable": false,
+            }),
+        })
+        .map(|_| ())
+        .map_err(core_error)
+}
+
+fn record_external_tool_started(
+    store: &CliAgentStore,
+    snapshot: &RunSnapshot,
+    turn_index: usize,
+    call: &ToolCallInput,
+) -> Result<(), CliError> {
+    let (persisted_input, input_redacted) =
+        redacted_tool_registry_mcp_input(&call.tool_name, &call.input);
+    store
+        .append_event(NewRuntimeEvent {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            event_kind: RuntimeEventKind::ToolStarted,
+            trace: Some(RuntimeTraceContext::for_tool_call(
+                &snapshot.trace_id,
+                &snapshot.run_id,
+                &call.tool_call_id,
+            )),
+            payload: json!({
+                "toolCallId": call.tool_call_id,
+                "toolName": call.tool_name,
+                "turnIndex": turn_index,
+                "runtime": TOOL_REGISTRY_MCP_RUNTIME,
+                "input": persisted_input,
+                "inputRedacted": input_redacted,
+                "dispatch": {
+                    "registryVersion": "tool_registry_v2",
+                    "providerLoop": "cursor_sdk_bridge",
+                    "path": "xero_mcp_serve_tools",
+                },
+            }),
+        })
+        .map(|_| ())
+        .map_err(core_error)
+}
+
+fn record_external_policy_decision(
+    store: &CliAgentStore,
+    project_id: &str,
+    run_id: &str,
+    decision: &str,
+    reason_code: &str,
+    message: impl Into<String>,
+    details: JsonValue,
+) -> Result<(), CliError> {
+    let snapshot = store.load_run(project_id, run_id).map_err(core_error)?;
+    store
+        .append_event(NewRuntimeEvent {
+            project_id: project_id.to_owned(),
+            run_id: run_id.to_owned(),
+            event_kind: RuntimeEventKind::PolicyDecision,
+            trace: Some(RuntimeTraceContext::for_run(
+                &snapshot.trace_id,
+                &snapshot.run_id,
+                reason_code,
+            )),
+            payload: json!({
+                "decision": decision,
+                "policy": "cursor_external_agent_adapter",
+                "reasonCode": reason_code,
+                "message": message.into(),
+                "details": details,
+            }),
+        })
+        .map(|_| ())
+        .map_err(core_error)
+}
+
+fn persist_tool_registry_mcp_report(
+    store: &CliAgentStore,
+    snapshot: &RunSnapshot,
+    report: &ToolBatchDispatchReport,
+    turn_index: usize,
+) -> Result<(), CliError> {
+    for group in &report.groups {
+        for outcome in &group.outcomes {
+            match outcome {
+                ToolDispatchOutcome::Succeeded(success) => {
+                    persist_tool_registry_mcp_success(store, snapshot, group, success, turn_index)?
+                }
+                ToolDispatchOutcome::Failed(failure) => {
+                    persist_tool_registry_mcp_failure(store, snapshot, group, failure)?
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn persist_tool_registry_mcp_success(
+    store: &CliAgentStore,
+    snapshot: &RunSnapshot,
+    group: &xero_agent_core::ToolGroupDispatchReport,
+    success: &ToolDispatchSuccess,
+    turn_index: usize,
+) -> Result<(), CliError> {
+    persist_tool_registry_mcp_file_changes(store, snapshot, success, turn_index)?;
+    if success.tool_name == TOOL_NAME_COMMAND {
+        persist_tool_registry_mcp_command_output(store, snapshot, success)?;
+    }
+    store
+        .append_event(NewRuntimeEvent {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            event_kind: RuntimeEventKind::ToolCompleted,
+            trace: Some(RuntimeTraceContext::for_tool_call(
+                &snapshot.trace_id,
+                &snapshot.run_id,
+                &success.tool_call_id,
+            )),
+            payload: json!({
+                "toolCallId": success.tool_call_id,
+                "toolName": success.tool_name,
+                "ok": true,
+                "summary": success.summary,
+                "resultPreview": truncate_bytes(&success.output.to_string(), 2048),
+                "dispatch": tool_registry_mcp_success_dispatch(group, success),
+            }),
+        })
+        .map(|_| ())
+        .map_err(core_error)
+}
+
+fn persist_tool_registry_mcp_failure(
+    store: &CliAgentStore,
+    snapshot: &RunSnapshot,
+    group: &xero_agent_core::ToolGroupDispatchReport,
+    failure: &ToolDispatchFailure,
+) -> Result<(), CliError> {
+    if matches!(
+        failure.error.category,
+        ToolErrorCategory::PolicyDenied | ToolErrorCategory::SandboxDenied
+    ) {
+        store
+            .append_event(NewRuntimeEvent {
+                project_id: snapshot.project_id.clone(),
+                run_id: snapshot.run_id.clone(),
+                event_kind: RuntimeEventKind::PolicyDecision,
+                trace: Some(RuntimeTraceContext::for_tool_call(
+                    &snapshot.trace_id,
+                    &snapshot.run_id,
+                    &failure.tool_call_id,
+                )),
+                payload: json!({
+                    "decision": "deny",
+                    "policy": "tool_registry_v2",
+                    "reasonCode": failure.error.code,
+                    "message": failure.error.message,
+                    "toolName": failure.tool_name,
+                    "runtime": TOOL_REGISTRY_MCP_RUNTIME,
+                }),
+            })
+            .map_err(core_error)?;
+    }
+    store
+        .append_event(NewRuntimeEvent {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            event_kind: RuntimeEventKind::ToolCompleted,
+            trace: Some(RuntimeTraceContext::for_tool_call(
+                &snapshot.trace_id,
+                &snapshot.run_id,
+                &failure.tool_call_id,
+            )),
+            payload: json!({
+                "toolCallId": failure.tool_call_id,
+                "toolName": failure.tool_name,
+                "ok": false,
+                "code": failure.error.code,
+                "message": failure.error.message,
+                "dispatch": tool_registry_mcp_failure_dispatch(group, failure),
+            }),
+        })
+        .map(|_| ())
+        .map_err(core_error)
+}
+
+fn persist_tool_registry_mcp_file_changes(
+    store: &CliAgentStore,
+    snapshot: &RunSnapshot,
+    success: &ToolDispatchSuccess,
+    turn_index: usize,
+) -> Result<(), CliError> {
+    match success.tool_name.as_str() {
+        TOOL_NAME_WRITE => record_tool_registry_mcp_file_changed(
+            store,
+            snapshot,
+            success.output["path"].clone(),
+            "write",
+            turn_index,
+            json!({
+                "bytes": success.output["bytes"].clone(),
+                "fileReservation": success.output["fileReservation"].clone(),
+                "rollback": success.output["rollback"].clone(),
+            }),
+        ),
+        TOOL_NAME_PATCH => {
+            for path in success.output["changedFiles"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                record_tool_registry_mcp_file_changed(
+                    store,
+                    snapshot,
+                    path.clone(),
+                    "patch",
+                    turn_index,
+                    json!({}),
+                )?;
+            }
+            Ok(())
+        }
+        TOOL_NAME_DELETE => record_tool_registry_mcp_file_changed(
+            store,
+            snapshot,
+            success.output["path"].clone(),
+            "delete",
+            turn_index,
+            json!({
+                "kind": success.output["kind"].clone(),
+                "recursive": success.output["recursive"].clone(),
+                "fileReservation": success.output["fileReservation"].clone(),
+                "rollback": success.output["rollback"].clone(),
+            }),
+        ),
+        TOOL_NAME_MOVE => {
+            record_tool_registry_mcp_file_changed(
+                store,
+                snapshot,
+                success.output["from"].clone(),
+                "move_from",
+                turn_index,
+                json!({
+                    "to": success.output["to"].clone(),
+                    "kind": success.output["kind"].clone(),
+                    "fileReservation": success.output["fileReservation"].clone(),
+                    "rollback": success.output["rollback"].clone(),
+                }),
+            )?;
+            record_tool_registry_mcp_file_changed(
+                store,
+                snapshot,
+                success.output["to"].clone(),
+                "move_to",
+                turn_index,
+                json!({
+                    "from": success.output["from"].clone(),
+                    "kind": success.output["kind"].clone(),
+                    "fileReservation": success.output["fileReservation"].clone(),
+                    "rollback": success.output["rollback"].clone(),
+                }),
+            )
+        }
+        TOOL_NAME_REPLACE => {
+            for changed_file in success.output["changedFiles"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                record_tool_registry_mcp_file_changed(
+                    store,
+                    snapshot,
+                    changed_file["path"].clone(),
+                    "replace",
+                    turn_index,
+                    json!({
+                        "replacements": changed_file["replacements"].clone(),
+                        "occurrences": changed_file["occurrences"].clone(),
+                        "truncated": changed_file["truncated"].clone(),
+                        "fileReservation": changed_file["fileReservation"].clone(),
+                        "rollback": changed_file["rollback"].clone(),
+                        "dryRun": success.output["dryRun"].clone(),
+                    }),
+                )?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn record_tool_registry_mcp_file_changed(
+    store: &CliAgentStore,
+    snapshot: &RunSnapshot,
+    path: JsonValue,
+    operation: &'static str,
+    turn_index: usize,
+    dispatch_extra: JsonValue,
+) -> Result<(), CliError> {
+    store
+        .append_event(NewRuntimeEvent {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            event_kind: RuntimeEventKind::FileChanged,
+            trace: Some(RuntimeTraceContext::for_storage_write(
+                &snapshot.trace_id,
+                &snapshot.run_id,
+                "workspace_file",
+                turn_index,
+            )),
+            payload: json!({
+                "path": path,
+                "operation": operation,
+                "runtime": TOOL_REGISTRY_MCP_RUNTIME,
+                "dispatch": {
+                    "registryVersion": "tool_registry_v2",
+                    "details": dispatch_extra,
+                },
+            }),
+        })
+        .map(|_| ())
+        .map_err(core_error)
+}
+
+fn persist_tool_registry_mcp_command_output(
+    store: &CliAgentStore,
+    snapshot: &RunSnapshot,
+    success: &ToolDispatchSuccess,
+) -> Result<(), CliError> {
+    for stream in ["stdout", "stderr"] {
+        let text = success.output[stream].as_str().unwrap_or_default();
+        if text.is_empty() {
+            continue;
+        }
+        store
+            .append_event(NewRuntimeEvent {
+                project_id: snapshot.project_id.clone(),
+                run_id: snapshot.run_id.clone(),
+                event_kind: RuntimeEventKind::CommandOutput,
+                trace: Some(RuntimeTraceContext::for_tool_call(
+                    &snapshot.trace_id,
+                    &snapshot.run_id,
+                    &success.tool_call_id,
+                )),
+                payload: json!({
+                    "stream": stream,
+                    "text": truncate_bytes(text, 64 * 1024),
+                    "toolCallId": success.tool_call_id,
+                    "runtime": TOOL_REGISTRY_MCP_RUNTIME,
+                }),
+            })
+            .map_err(core_error)?;
+    }
+    Ok(())
+}
+
+fn tool_registry_mcp_success_dispatch(
+    group: &xero_agent_core::ToolGroupDispatchReport,
+    success: &ToolDispatchSuccess,
+) -> JsonValue {
+    json!({
+        "registryVersion": "tool_registry_v2",
+        "providerLoop": "cursor_sdk_bridge",
+        "groupMode": group.mode,
+        "groupElapsedMs": group.elapsed_ms,
+        "elapsedMs": success.elapsed_ms,
+        "truncation": success.truncation,
+        "sandbox": success.sandbox_metadata,
+        "telemetry": success.telemetry_attributes,
+        "preHook": success.pre_hook_payload,
+        "postHook": success.post_hook_payload,
+        "fileReservation": success.output.get("fileReservation").cloned(),
+        "rollback": success.output.get("rollback").cloned(),
+        "timeout": group.timeout_error.as_ref().map(tool_execution_error_json),
+    })
+}
+
+fn tool_registry_mcp_failure_dispatch(
+    group: &xero_agent_core::ToolGroupDispatchReport,
+    failure: &ToolDispatchFailure,
+) -> JsonValue {
+    json!({
+        "registryVersion": "tool_registry_v2",
+        "providerLoop": "cursor_sdk_bridge",
+        "groupMode": group.mode,
+        "groupElapsedMs": group.elapsed_ms,
+        "elapsedMs": failure.elapsed_ms,
+        "typedErrorCategory": failure.error.category,
+        "modelMessage": failure.error.model_message,
+        "retryable": failure.error.retryable,
+        "doomLoopSignal": failure.doom_loop_signal,
+        "rollbackPayload": failure.rollback_payload,
+        "rollbackError": failure.rollback_error.as_ref().map(tool_execution_error_json),
+        "sandbox": failure.sandbox_metadata,
+        "preHook": failure.pre_hook_payload,
+        "postHook": failure.post_hook_payload,
+        "timeout": group.timeout_error.as_ref().map(tool_execution_error_json),
+    })
+}
+
+fn tool_execution_error_json(error: &ToolExecutionError) -> JsonValue {
+    json!({
+        "category": error.category,
+        "code": error.code,
+        "message": error.message,
+        "modelMessage": error.model_message,
+        "retryable": error.retryable,
+    })
+}
+
+fn redacted_tool_registry_mcp_input(tool_name: &str, input: &JsonValue) -> (JsonValue, bool) {
+    let Some(object) = input.as_object() else {
+        return (input.clone(), false);
+    };
+    let mut redacted = object.clone();
+    let mut changed = false;
+    for key in ["content", "patch", "search", "replacement"] {
+        if redacted.contains_key(key)
+            && matches!(
+                tool_name,
+                TOOL_NAME_WRITE | TOOL_NAME_PATCH | TOOL_NAME_REPLACE
+            )
+        {
+            redacted.insert(
+                key.into(),
+                json!({
+                    "redacted": true,
+                    "reason": "tool_input_may_contain_source_text",
+                }),
+            );
+            changed = true;
+        }
+    }
+    (JsonValue::Object(redacted), changed)
+}
+
+fn mcp_tool_result(
+    summary: impl Into<String>,
+    structured_content: JsonValue,
+    is_error: bool,
+) -> JsonValue {
+    let summary = summary.into();
+    json!({
+        "content": [
+            {
+                "type": "text",
+                "text": summary,
+            }
+        ],
+        "structuredContent": structured_content,
+        "isError": is_error,
+    })
 }
 
 fn mcp_success(id: JsonValue, result: JsonValue) -> JsonValue {
@@ -12751,6 +15313,17 @@ mod tests {
             external["capabilities"]["capabilities"]["toolCalls"]["status"],
             json!("not_applicable")
         );
+
+        let cursor = providers
+            .iter()
+            .find(|provider| provider["providerId"] == json!(CURSOR_PROVIDER_ID))
+            .expect("cursor provider");
+        assert_eq!(cursor["defaultModel"], json!(CURSOR_DEFAULT_MODEL_ID));
+        assert_eq!(
+            cursor["capabilities"]["catalogKind"],
+            json!("external_agent_adapter")
+        );
+        assert_eq!(cursor["adapterKind"], json!("cursor"));
     }
 
     #[test]
@@ -13159,6 +15732,402 @@ mod tests {
                 && message["content"]
                     .as_str()
                     .is_some_and(|content| content.contains("external-output"))));
+    }
+
+    #[test]
+    fn mcp_serve_tools_observe_only_lists_registry_tools_and_denies_write() {
+        let state_dir = unique_temp_dir("mcp-serve-tools-observe");
+        let repo_dir = unique_temp_dir("mcp-serve-tools-repo");
+        fs::write(repo_dir.join("README.md"), "hello").expect("seed repo");
+        let store = FileAgentCoreStore::open(state_dir.join(AGENT_CORE_STATE_FILE)).expect("store");
+        let snapshot = store
+            .insert_run(NewRunRecord {
+                trace_id: None,
+                runtime_agent_id: "engineer".into(),
+                agent_definition_id: "engineer".into(),
+                agent_definition_version: 1,
+                system_prompt: "cursor test".into(),
+                project_id: "project-cursor-mcp".into(),
+                agent_session_id: "session-cursor-mcp".into(),
+                run_id: "run-cursor-mcp".into(),
+                provider_id: CURSOR_PROVIDER_ID.into(),
+                model_id: CURSOR_DEFAULT_MODEL_ID.into(),
+                prompt: "test".into(),
+            })
+            .expect("insert run");
+        let config = ToolRegistryMcpServerConfig {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            session_id: snapshot.agent_session_id.clone(),
+            repo_root: repo_dir,
+            app_data_roots: vec![state_dir.display().to_string()],
+            mode: ToolRegistryMcpMode::ObserveOnly,
+            store: CliAgentStore::Harness(store),
+        };
+        let input = [
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":MCP_PROTOCOL_VERSION}}),
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"write","arguments":{"path":"note.txt","content":"nope"}}}),
+        ]
+        .into_iter()
+        .map(|message| serde_json::to_string(&message).expect("encode"))
+        .collect::<Vec<_>>()
+        .join("\n");
+        let mut output = Vec::new();
+        run_mcp_tools_jsonrpc_stream(config, std::io::Cursor::new(input), &mut output)
+            .expect("mcp tools stream");
+        let responses = String::from_utf8(output)
+            .expect("utf8")
+            .lines()
+            .map(|line| serde_json::from_str::<JsonValue>(line).expect("json"))
+            .collect::<Vec<_>>();
+        let tools = responses[1]["result"]["tools"].as_array().expect("tools");
+        assert!(tools.iter().any(|tool| tool["name"] == json!("read")));
+        assert!(tools.iter().any(|tool| tool["name"] == json!("list")));
+        assert!(!tools.iter().any(|tool| tool["name"] == json!("write")));
+        assert_eq!(responses[2]["result"]["isError"], json!(true));
+        assert_eq!(
+            responses[2]["result"]["structuredContent"]["error"]["code"],
+            json!("cursor_mcp_tool_not_allowed")
+        );
+    }
+
+    #[test]
+    fn mcp_serve_tools_workspace_write_dispatches_through_registry_and_persists_trace() {
+        let state_dir = unique_temp_dir("mcp-serve-tools-write");
+        let repo_dir = unique_temp_dir("mcp-serve-tools-write-repo");
+        let store = FileAgentCoreStore::open(state_dir.join(AGENT_CORE_STATE_FILE)).expect("store");
+        let snapshot = store
+            .insert_run(NewRunRecord {
+                trace_id: None,
+                runtime_agent_id: "engineer".into(),
+                agent_definition_id: "engineer".into(),
+                agent_definition_version: 1,
+                system_prompt: "cursor test".into(),
+                project_id: "project-cursor-write".into(),
+                agent_session_id: "session-cursor-write".into(),
+                run_id: "run-cursor-write".into(),
+                provider_id: CURSOR_PROVIDER_ID.into(),
+                model_id: CURSOR_DEFAULT_MODEL_ID.into(),
+                prompt: "test".into(),
+            })
+            .expect("insert run");
+        let config = ToolRegistryMcpServerConfig {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            session_id: snapshot.agent_session_id.clone(),
+            repo_root: repo_dir.clone(),
+            app_data_roots: vec![state_dir.display().to_string()],
+            mode: ToolRegistryMcpMode::WorkspaceWrite,
+            store: CliAgentStore::Harness(store.clone()),
+        };
+        let input = [
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":MCP_PROTOCOL_VERSION}}),
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"write","arguments":{"path":"note.txt","content":"hello"}}}),
+        ]
+        .into_iter()
+        .map(|message| serde_json::to_string(&message).expect("encode"))
+        .collect::<Vec<_>>()
+        .join("\n");
+        let mut output = Vec::new();
+        run_mcp_tools_jsonrpc_stream(config, std::io::Cursor::new(input), &mut output)
+            .expect("mcp tools stream");
+        assert_eq!(
+            fs::read_to_string(repo_dir.join("note.txt")).unwrap(),
+            "hello"
+        );
+        let responses = String::from_utf8(output)
+            .expect("utf8")
+            .lines()
+            .map(|line| serde_json::from_str::<JsonValue>(line).expect("json"))
+            .collect::<Vec<_>>();
+        assert_eq!(responses[1]["result"]["isError"], json!(false));
+        let trace = store
+            .export_trace("project-cursor-write", "run-cursor-write")
+            .expect("trace");
+        assert!(trace.snapshot.events.iter().any(|event| {
+            event.event_kind == RuntimeEventKind::ToolStarted
+                && event.payload["dispatch"]["registryVersion"] == json!("tool_registry_v2")
+        }));
+        assert!(trace.snapshot.events.iter().any(|event| {
+            event.event_kind == RuntimeEventKind::FileChanged
+                && event.payload["dispatch"]["registryVersion"] == json!("tool_registry_v2")
+        }));
+    }
+
+    #[test]
+    fn mcp_serve_tools_workspace_write_rejects_command_tool() {
+        let state_dir = unique_temp_dir("mcp-serve-tools-command-denied");
+        let repo_dir = unique_temp_dir("mcp-serve-tools-command-denied-repo");
+        let store = FileAgentCoreStore::open(state_dir.join(AGENT_CORE_STATE_FILE)).expect("store");
+        let snapshot = store
+            .insert_run(NewRunRecord {
+                trace_id: None,
+                runtime_agent_id: "engineer".into(),
+                agent_definition_id: "engineer".into(),
+                agent_definition_version: 1,
+                system_prompt: "cursor test".into(),
+                project_id: "project-cursor-command-denied".into(),
+                agent_session_id: "session-cursor-command-denied".into(),
+                run_id: "run-cursor-command-denied".into(),
+                provider_id: CURSOR_PROVIDER_ID.into(),
+                model_id: CURSOR_DEFAULT_MODEL_ID.into(),
+                prompt: "test".into(),
+            })
+            .expect("insert run");
+        let config = ToolRegistryMcpServerConfig {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            session_id: snapshot.agent_session_id.clone(),
+            repo_root: repo_dir,
+            app_data_roots: vec![state_dir.display().to_string()],
+            mode: ToolRegistryMcpMode::WorkspaceWrite,
+            store: CliAgentStore::Harness(store.clone()),
+        };
+        let input = [
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"command","arguments":{"command":"echo nope"}}}),
+        ]
+        .into_iter()
+        .map(|message| serde_json::to_string(&message).expect("encode"))
+        .collect::<Vec<_>>()
+        .join("\n");
+        let mut output = Vec::new();
+        run_mcp_tools_jsonrpc_stream(config, std::io::Cursor::new(input), &mut output)
+            .expect("mcp tools stream");
+        let responses = String::from_utf8(output)
+            .expect("utf8")
+            .lines()
+            .map(|line| serde_json::from_str::<JsonValue>(line).expect("json"))
+            .collect::<Vec<_>>();
+        let tools = responses[0]["result"]["tools"].as_array().expect("tools");
+        assert!(!tools.iter().any(|tool| tool["name"] == json!("command")));
+        assert_eq!(responses[1]["result"]["isError"], json!(true));
+        assert_eq!(
+            responses[1]["result"]["structuredContent"]["error"]["code"],
+            json!("cursor_mcp_tool_not_allowed")
+        );
+        let trace = store
+            .export_trace("project-cursor-command-denied", "run-cursor-command-denied")
+            .expect("trace");
+        assert!(trace.snapshot.events.iter().any(|event| {
+            event.event_kind == RuntimeEventKind::PolicyDecision
+                && event.payload["reasonCode"] == json!("cursor_mcp_tool_not_allowed")
+        }));
+    }
+
+    #[test]
+    fn cursor_reconciliation_promotes_safe_contained_direct_edit() {
+        let state_dir = unique_temp_dir("cursor-reconcile");
+        let repo_dir = unique_temp_dir("cursor-reconcile-repo");
+        fs::write(repo_dir.join("app.txt"), "old").expect("seed");
+        let baseline = capture_cursor_workspace_snapshot(&repo_dir, false).expect("baseline");
+        let contained = unique_temp_dir("cursor-reconcile-contained");
+        copy_cursor_workspace(&repo_dir, &contained).expect("copy");
+        fs::write(contained.join("app.txt"), "new").expect("edit contained");
+
+        let store = FileAgentCoreStore::open(state_dir.join(AGENT_CORE_STATE_FILE)).expect("store");
+        let snapshot = store
+            .insert_run(NewRunRecord {
+                trace_id: None,
+                runtime_agent_id: "engineer".into(),
+                agent_definition_id: "engineer".into(),
+                agent_definition_version: 1,
+                system_prompt: "cursor test".into(),
+                project_id: "project-cursor-reconcile".into(),
+                agent_session_id: "session-cursor-reconcile".into(),
+                run_id: "run-cursor-reconcile".into(),
+                provider_id: CURSOR_PROVIDER_ID.into(),
+                model_id: CURSOR_DEFAULT_MODEL_ID.into(),
+                prompt: "test".into(),
+            })
+            .expect("insert run");
+        let request = CursorAgentRunRequest {
+            project_id: snapshot.project_id.clone(),
+            agent_session_id: snapshot.agent_session_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            prompt: "test".into(),
+            model_id: CURSOR_DEFAULT_MODEL_ID.into(),
+            repo_root: repo_dir.clone(),
+            bridge_path: PathBuf::from("bridge"),
+            xero_cli_path: PathBuf::from("xero"),
+            api_key_env: None,
+            timeout_ms: 1000,
+            max_tool_calls: None,
+            max_command_calls: None,
+            runtime_agent_id: "engineer".into(),
+            mcp_mode: ToolRegistryMcpMode::WorkspaceWrite,
+            native_tool_policy: CursorNativeToolPolicy::Recover,
+            containment: CursorContainmentMode::Copy,
+            fixture: None,
+            approval_source: ExternalAgentApprovalSource::OperatorFlag,
+        };
+        let containment = CursorContainment {
+            repo_root: contained.clone(),
+            temp_root: Some(contained),
+        };
+        let report = reconcile_cursor_workspace(
+            &CliAgentStore::Harness(store.clone()),
+            &snapshot,
+            &request,
+            &baseline,
+            &containment,
+            true,
+        )
+        .expect("reconcile");
+        assert!(report.failure.is_none());
+        assert_eq!(fs::read_to_string(repo_dir.join("app.txt")).unwrap(), "new");
+        let trace = store
+            .export_trace("project-cursor-reconcile", "run-cursor-reconcile")
+            .expect("trace");
+        assert!(trace.snapshot.events.iter().any(|event| {
+            event.event_kind == RuntimeEventKind::FileChanged
+                && event.payload["dispatch"]["provenance"] == json!("recovered_cursor_direct_edit")
+        }));
+    }
+
+    #[test]
+    fn cursor_reconciliation_ignores_protected_dirs_missing_from_containment_copy() {
+        let repo_dir = unique_temp_dir("cursor-reconcile-protected");
+        fs::create_dir_all(repo_dir.join(".git")).expect("git dir");
+        fs::create_dir_all(repo_dir.join(".xero")).expect("xero dir");
+        fs::write(repo_dir.join(".git/config"), "[core]\n").expect("git config");
+        fs::write(repo_dir.join(".xero/state.json"), "{}").expect("legacy state");
+        fs::write(repo_dir.join("app.txt"), "ok").expect("seed");
+
+        let baseline =
+            capture_cursor_workspace_snapshot(&repo_dir, false).expect("baseline snapshot");
+        let contained = unique_temp_dir("cursor-reconcile-protected-contained");
+        copy_cursor_workspace(&repo_dir, &contained).expect("copy");
+        let final_snapshot =
+            capture_cursor_workspace_snapshot(&contained, false).expect("final snapshot");
+        let diff_paths = cursor_workspace_diff_paths(&baseline, &final_snapshot);
+
+        assert!(
+            diff_paths.is_empty(),
+            "protected repository-local state excluded from containment should not appear as a workspace diff: {diff_paths:?}"
+        );
+    }
+
+    #[test]
+    fn cursor_reconciliation_reverts_unsafe_live_change_from_baseline() {
+        let state_dir = unique_temp_dir("cursor-reconcile-live-unsafe");
+        let repo_dir = unique_temp_dir("cursor-reconcile-live-unsafe-repo");
+        fs::create_dir_all(repo_dir.join(".xero")).expect("legacy state dir");
+        fs::write(repo_dir.join(".xero/state.json"), r#"{"ok":true}"#).expect("seed");
+        let baseline = capture_cursor_workspace_snapshot(&repo_dir, true).expect("baseline");
+        fs::write(repo_dir.join(".xero/state.json"), r#"{"ok":false}"#).expect("unsafe edit");
+
+        let store = FileAgentCoreStore::open(state_dir.join(AGENT_CORE_STATE_FILE)).expect("store");
+        let snapshot = store
+            .insert_run(NewRunRecord {
+                trace_id: None,
+                runtime_agent_id: "engineer".into(),
+                agent_definition_id: "engineer".into(),
+                agent_definition_version: 1,
+                system_prompt: "cursor test".into(),
+                project_id: "project-cursor-live-unsafe".into(),
+                agent_session_id: "session-cursor-live-unsafe".into(),
+                run_id: "run-cursor-live-unsafe".into(),
+                provider_id: CURSOR_PROVIDER_ID.into(),
+                model_id: CURSOR_DEFAULT_MODEL_ID.into(),
+                prompt: "test".into(),
+            })
+            .expect("insert run");
+        let request = CursorAgentRunRequest {
+            project_id: snapshot.project_id.clone(),
+            agent_session_id: snapshot.agent_session_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            prompt: "test".into(),
+            model_id: CURSOR_DEFAULT_MODEL_ID.into(),
+            repo_root: repo_dir.clone(),
+            bridge_path: PathBuf::from("bridge"),
+            xero_cli_path: PathBuf::from("xero"),
+            api_key_env: None,
+            timeout_ms: 1000,
+            max_tool_calls: None,
+            max_command_calls: None,
+            runtime_agent_id: "engineer".into(),
+            mcp_mode: ToolRegistryMcpMode::WorkspaceWrite,
+            native_tool_policy: CursorNativeToolPolicy::Recover,
+            containment: CursorContainmentMode::Live,
+            fixture: None,
+            approval_source: ExternalAgentApprovalSource::OperatorFlag,
+        };
+        let containment = CursorContainment {
+            repo_root: repo_dir.clone(),
+            temp_root: None,
+        };
+        let report = reconcile_cursor_workspace(
+            &CliAgentStore::Harness(store.clone()),
+            &snapshot,
+            &request,
+            &baseline,
+            &containment,
+            true,
+        )
+        .expect("reconcile");
+
+        assert!(report.failure.is_none());
+        assert_eq!(
+            fs::read_to_string(repo_dir.join(".xero/state.json")).unwrap(),
+            r#"{"ok":true}"#
+        );
+        let trace = store
+            .export_trace("project-cursor-live-unsafe", "run-cursor-live-unsafe")
+            .expect("trace");
+        assert!(trace.snapshot.events.iter().any(|event| {
+            event.event_kind == RuntimeEventKind::FileChanged
+                && event.payload["dispatch"]["provenance"] == json!("cursor_unsafe_change_reverted")
+        }));
+    }
+
+    #[test]
+    fn cursor_support_bundle_redacts_bridge_output_text() {
+        let state_dir = unique_temp_dir("cursor-support-redaction");
+        let store = FileAgentCoreStore::open(state_dir.join(AGENT_CORE_STATE_FILE)).expect("store");
+        let snapshot = store
+            .insert_run(NewRunRecord {
+                trace_id: None,
+                runtime_agent_id: "engineer".into(),
+                agent_definition_id: "engineer".into(),
+                agent_definition_version: 1,
+                system_prompt: "cursor test".into(),
+                project_id: "project-cursor-redaction".into(),
+                agent_session_id: "session-cursor-redaction".into(),
+                run_id: "run-cursor-redaction".into(),
+                provider_id: CURSOR_PROVIDER_ID.into(),
+                model_id: CURSOR_DEFAULT_MODEL_ID.into(),
+                prompt: "test".into(),
+            })
+            .expect("insert run");
+        store
+            .append_event(NewRuntimeEvent {
+                project_id: snapshot.project_id.clone(),
+                run_id: snapshot.run_id.clone(),
+                event_kind: RuntimeEventKind::CommandOutput,
+                trace: Some(RuntimeTraceContext::for_run(
+                    &snapshot.trace_id,
+                    &snapshot.run_id,
+                    "cursor_bridge_output",
+                )),
+                payload: json!({
+                    "stream": "cursor_bridge_stderr",
+                    "text": "CURSOR_API_KEY=cursor-secret-value",
+                }),
+            })
+            .expect("event");
+
+        let trace = store
+            .export_trace("project-cursor-redaction", "run-cursor-redaction")
+            .expect("trace");
+        let support_bundle = trace.redacted_support_bundle().expect("support bundle");
+        let serialized = serde_json::to_string(&support_bundle).expect("serialize");
+
+        assert!(!serialized.contains("cursor-secret-value"));
+        assert!(support_bundle.redaction_report.redacted_value_count > 0);
     }
 
     fn seed_registered_project(state_dir: &Path, project_id: &str, repo_root: &Path) {

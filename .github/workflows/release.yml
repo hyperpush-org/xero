@@ -50,6 +50,24 @@ jobs:
             exit 1
           fi
 
+      - name: Validate TUI version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          CLI_VERSION=$(awk '
+            /^\[package\]$/ { in_package = 1; next }
+            /^\[/ && in_package { exit }
+            in_package && /^version = / {
+              gsub(/"/, "", $3)
+              print $3
+              exit
+            }
+          ' client/src-tauri/crates/xero-cli/Cargo.toml)
+          if [ "$CLI_VERSION" != "$VERSION" ]; then
+            echo "::error::client/src-tauri/crates/xero-cli/Cargo.toml version $CLI_VERSION does not match release version $VERSION"
+            exit 1
+          fi
+
       - name: Create draft GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -292,6 +310,49 @@ jobs:
           pattern: tui-release-*
           merge-multiple: true
           path: landing/public/downloads/tui/latest
+
+      - name: Write TUI update manifest
+        env:
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          download_dir="landing/public/downloads/tui/latest"
+          pub_date="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          manifest="$(jq -n \
+            --arg version "$VERSION" \
+            --arg pub_date "$pub_date" \
+            '{schema: "xero.tui.update.v1", version: $version, pub_date: $pub_date, assets: {}}')"
+
+          for archive_path in "$download_dir"/xero-*.tar.gz "$download_dir"/xero-*.zip; do
+            [ -f "$archive_path" ] || continue
+            archive="$(basename "$archive_path")"
+            checksum_file="$archive_path.sha256"
+            if [ ! -f "$checksum_file" ]; then
+              echo "::error::Missing checksum for $archive"
+              exit 1
+            fi
+            target="${archive#xero-}"
+            target="${target%.tar.gz}"
+            target="${target%.zip}"
+            binary="xero"
+            if [[ "$archive" == *.zip ]]; then
+              binary="xero.exe"
+            fi
+            sha256="$(awk '{print $1}' "$checksum_file")"
+            url="https://xeroshell.com/downloads/tui/latest/$archive"
+            manifest="$(jq \
+              --arg target "$target" \
+              --arg url "$url" \
+              --arg sha256 "$sha256" \
+              --arg binary "$binary" \
+              --arg archive "$archive" \
+              '.assets[$target] = {url: $url, sha256: $sha256, binary: $binary, archive: $archive}' \
+              <<<"$manifest")"
+          done
+
+          printf '%s\n' "$manifest" > "$download_dir/manifest.json"
+          jq . "$download_dir/manifest.json"
 
       - name: Set up flyctl
         uses: superfly/flyctl-actions/setup-flyctl@master

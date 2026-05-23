@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 function Fail($Message) {
-  Write-Error "xero-tui install: $Message"
+  Write-Error "xero install: $Message"
   exit 1
 }
 
@@ -17,10 +17,10 @@ function Get-TargetTriple {
 $baseUrl = if ($env:XERO_INSTALL_BASE_URL) { $env:XERO_INSTALL_BASE_URL.TrimEnd("/") } else { "https://xeroshell.com" }
 $installDir = if ($env:XERO_INSTALL_DIR) { $env:XERO_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Programs\Xero\bin" }
 $target = Get-TargetTriple
-$archive = "xero-tui-$target.zip"
+$archive = "xero-$target.zip"
 $archiveUrl = "$baseUrl/downloads/tui/latest/$archive"
 $checksumUrl = "$archiveUrl.sha256"
-$tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "xero-tui-install-$([System.Guid]::NewGuid().ToString('n'))"
+$tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "xero-install-$([System.Guid]::NewGuid().ToString('n'))"
 
 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 
@@ -40,13 +40,13 @@ try {
   }
 
   Expand-Archive -Path $archivePath -DestinationPath $extractDir -Force
-  $binary = Join-Path $extractDir "xero-tui.exe"
+  $binary = Join-Path $extractDir "xero.exe"
   if (!(Test-Path $binary)) {
-    Fail "archive did not contain xero-tui.exe"
+    Fail "archive did not contain xero.exe"
   }
 
   New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-  Copy-Item -Path $binary -Destination (Join-Path $installDir "xero-tui.exe") -Force
+  Copy-Item -Path $binary -Destination (Join-Path $installDir "xero.exe") -Force
 
   $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
   $pathEntries = @()
@@ -61,8 +61,8 @@ try {
     Write-Host "Added $installDir to your user PATH. Open a new terminal to use it everywhere."
   }
 
-  Write-Host "Installed xero-tui to $(Join-Path $installDir 'xero-tui.exe')"
-  Write-Host "Run it with: xero-tui"
+  Write-Host "Installed xero to $(Join-Path $installDir 'xero.exe')"
+  Write-Host "Run it with: xero"
 } finally {
   Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
 }

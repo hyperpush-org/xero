@@ -45,6 +45,10 @@ fn left_segment(app: &App) -> Vec<Span<'static>> {
         spans.push(Span::styled("  ", theme::dim()));
         spans.push(Span::styled(status, theme::dim()));
     }
+    if let Some(update_notice) = app.update_notice.clone() {
+        spans.push(Span::styled("  ", theme::dim()));
+        spans.push(Span::styled(update_notice, theme::accent()));
+    }
     spans
 }
 

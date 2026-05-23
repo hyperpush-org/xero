@@ -54,9 +54,9 @@ const stopPatterns = [
   {
     label: 'Xero TUI dev launcher',
     test: (command) =>
-      command.includes('client/scripts/xero-tui-dev.mjs') ||
-      command.includes('client\\scripts\\xero-tui-dev.mjs') ||
-      command.includes('--bin xero-tui'),
+      command.includes('client/scripts/xero-dev.mjs') ||
+      command.includes('client\\scripts\\xero-dev.mjs') ||
+      /\b--bin\s+xero\b/.test(command),
   },
   {
     label: 'Vite dev server',

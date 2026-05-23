@@ -2613,6 +2613,14 @@ export function XeroApp({ adapter }: XeroAppProps) {
     workflowAgentInspector.selectAgent(null)
   }, [workflowAgentInspector.selectAgent])
 
+  const handleInspectWorkflowAgent = useCallback(
+    (ref: AgentRefDto) => {
+      workflowAgentInspector.selectAgent(ref)
+      setActiveView('phases')
+    },
+    [setActiveView, workflowAgentInspector.selectAgent],
+  )
+
   const handlePhaseAuthoringSaved = useCallback(
     (response: AgentDefinitionWriteResponseDto) => {
       handleAgentAuthoringSaved()
@@ -3510,7 +3518,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 agentsLoading={workflowAgentInspector.agentsStatus === 'loading'}
                 agentsError={workflowAgentInspector.agentsError}
                 selectedAgentRef={workflowAgentInspector.selectedRef}
-                onSelectAgent={workflowAgentInspector.selectAgent}
+                onSelectAgent={handleInspectWorkflowAgent}
                 onCreateAgent={handleCreateAgent}
                 onCreateAgentByHand={handleStartAgentAuthoringCreate}
                 onEditAgent={(ref) => handleStartAgentAuthoringFromRef('edit', ref)}

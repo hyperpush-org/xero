@@ -35,6 +35,7 @@ export const runtimeProviderIdSchema = z.enum([
   'openai_api',
   'deepseek',
   'xai',
+  'external_cursor_sdk',
   'ollama',
   'azure_openai',
   'gemini_ai_studio',

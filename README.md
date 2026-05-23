@@ -352,6 +352,8 @@ irm https://xeroshell.com/install.ps1 | iex
 The install scripts download from the Fly-hosted landing app at
 `/downloads/tui/latest/`, verify the archive checksum, and install `xero`
 locally. Set `XERO_INSTALL_DIR` to choose a different install directory.
+Once installed, `xero update check` reports whether a newer TUI is available
+and `xero update install` downloads, verifies, and applies it.
 
 Headless launch verification:
 

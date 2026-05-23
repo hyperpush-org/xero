@@ -1688,6 +1688,7 @@ fn provider_tool_result_message_id(run_id: &str, turn_index: usize, tool_call_id
 pub struct HeadlessProductionToolRuntime {
     workspace_root: PathBuf,
     allow_workspace_writes: bool,
+    allow_commands: bool,
     app_data_roots: Vec<String>,
 }
 
@@ -1695,6 +1696,20 @@ impl HeadlessProductionToolRuntime {
     pub fn new(
         workspace_root: Option<&PathBuf>,
         allow_workspace_writes: bool,
+        app_data_roots: Vec<String>,
+    ) -> CoreResult<Self> {
+        Self::new_with_modes(
+            workspace_root,
+            allow_workspace_writes,
+            allow_workspace_writes,
+            app_data_roots,
+        )
+    }
+
+    pub fn new_with_modes(
+        workspace_root: Option<&PathBuf>,
+        allow_workspace_writes: bool,
+        allow_commands: bool,
         app_data_roots: Vec<String>,
     ) -> CoreResult<Self> {
         let workspace_root = workspace_root.ok_or_else(|| {
@@ -1715,6 +1730,7 @@ impl HeadlessProductionToolRuntime {
         Ok(Self {
             workspace_root,
             allow_workspace_writes,
+            allow_commands,
             app_data_roots,
         })
     }
@@ -1727,6 +1743,8 @@ impl HeadlessProductionToolRuntime {
             descriptors.push(headless_delete_descriptor());
             descriptors.push(headless_move_descriptor());
             descriptors.push(headless_replace_descriptor());
+        }
+        if self.allow_commands {
             descriptors.push(headless_command_descriptor());
         }
         descriptors
@@ -1769,12 +1787,13 @@ impl HeadlessProductionToolRuntime {
             budget,
             policy: Arc::new(HeadlessProductionToolPolicy {
                 allow_workspace_writes: self.allow_workspace_writes,
+                allow_commands: self.allow_commands,
             }),
             sandbox: Arc::new(PermissionProfileSandbox::new(SandboxExecutionContext {
                 workspace_root: self.workspace_root.display().to_string(),
                 app_data_roots: self.app_data_roots.clone(),
                 project_trust: ProjectTrustState::Trusted,
-                approval_source: if self.allow_workspace_writes {
+                approval_source: if self.allow_workspace_writes || self.allow_commands {
                     SandboxApprovalSource::Policy
                 } else {
                     SandboxApprovalSource::None
@@ -1859,19 +1878,6 @@ impl HeadlessProductionToolRuntime {
                 ))
                 .map_err(tool_execution_error_to_core_error)?;
 
-            let command_runtime = self.clone();
-            registry
-                .register(StaticToolHandler::new_cancellable(
-                    headless_command_descriptor(),
-                    move |context, call, control| {
-                        control.ensure_not_cancelled(&call.tool_name)?;
-                        let output = command_runtime.command(context, call)?;
-                        control.ensure_not_cancelled(&call.tool_name)?;
-                        Ok(output)
-                    },
-                ))
-                .map_err(tool_execution_error_to_core_error)?;
-
             let delete_runtime = self.clone();
             registry
                 .register(StaticToolHandler::new_cancellable(
@@ -1905,6 +1911,21 @@ impl HeadlessProductionToolRuntime {
                     move |context, call, control| {
                         control.ensure_not_cancelled(&call.tool_name)?;
                         let output = replace_runtime.replace_text(context, call)?;
+                        control.ensure_not_cancelled(&call.tool_name)?;
+                        Ok(output)
+                    },
+                ))
+                .map_err(tool_execution_error_to_core_error)?;
+        }
+
+        if self.allow_commands {
+            let command_runtime = self.clone();
+            registry
+                .register(StaticToolHandler::new_cancellable(
+                    headless_command_descriptor(),
+                    move |context, call, control| {
+                        control.ensure_not_cancelled(&call.tool_name)?;
+                        let output = command_runtime.command(context, call)?;
                         control.ensure_not_cancelled(&call.tool_name)?;
                         Ok(output)
                     },
@@ -2511,11 +2532,21 @@ impl HeadlessProductionToolRuntime {
 #[derive(Debug, Clone, Copy)]
 struct HeadlessProductionToolPolicy {
     allow_workspace_writes: bool,
+    allow_commands: bool,
 }
 
 impl ToolPolicy for HeadlessProductionToolPolicy {
     fn evaluate(&self, descriptor: &ToolDescriptorV2, _call: &ToolCallInput) -> ToolPolicyDecision {
-        if descriptor.mutability == ToolMutability::Mutating && !self.allow_workspace_writes {
+        if descriptor.name == HEADLESS_TOOL_COMMAND && !self.allow_commands {
+            return ToolPolicyDecision::Deny {
+                code: "agent_core_headless_command_not_approved".into(),
+                message: "Headless command execution is disabled for this run.".into(),
+            };
+        }
+        if descriptor.name != HEADLESS_TOOL_COMMAND
+            && descriptor.mutability == ToolMutability::Mutating
+            && !self.allow_workspace_writes
+        {
             return ToolPolicyDecision::Deny {
                 code: "agent_core_headless_write_not_approved".into(),
                 message: "Headless real-provider writes are disabled for this run.".into(),

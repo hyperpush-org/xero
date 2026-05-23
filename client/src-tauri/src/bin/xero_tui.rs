@@ -41,7 +41,7 @@ use xero_desktop_lib::{
         discover_project_skill_directory, load_skill_source_settings_from_path,
         persist_skill_source_settings, AutonomousAgentDefinitionAction,
         AutonomousAgentDefinitionRequest, AutonomousToolOutput, AutonomousToolRuntime,
-        XeroPluginRoot,
+        XeroPluginRoot, CURSOR_PROVIDER_ID,
     },
     state::{DesktopState, AUTONOMOUS_SKILL_CACHE_DIRECTORY_NAME},
 };
@@ -498,14 +498,15 @@ fn desktop_provider_entry_json<R: tauri::Runtime>(
     } else {
         default_model
     };
+    let is_cursor = profile.provider_id == CURSOR_PROVIDER_ID;
     Ok(json!({
         "providerId": profile.provider_id,
         "label": profile.label,
         "defaultModel": default_model,
         "credentialKind": provider_credential_kind_for_profile(state, app, &profile.provider_id)?,
-        "headlessStatus": "configured",
-        "catalogKind": "model_provider",
-        "adapterKind": JsonValue::Null,
+        "headlessStatus": if is_cursor { "configured_external_agent" } else { "configured" },
+        "catalogKind": if is_cursor { "external_agent_adapter" } else { "model_provider" },
+        "adapterKind": if is_cursor { json!("cursor") } else { JsonValue::Null },
         "profiles": [profile.profile_id],
         "models": desktop_provider_model_payloads(&catalog.models, default_model),
     }))

@@ -12,8 +12,8 @@ pub use sql::{
 pub use view::{
     load_provider_credentials_view_or_default, ProviderApiKeyCredentialEntry,
     ProviderCredentialLink, ProviderCredentialProfile, ProviderCredentialReadinessProjection,
-    ProviderCredentialReadinessStatus, ProviderCredentialsView, OPENAI_CODEX_DEFAULT_PROFILE_ID,
-    XAI_DEFAULT_PROFILE_ID,
+    ProviderCredentialReadinessStatus, ProviderCredentialsView, CURSOR_DEFAULT_PROFILE_ID,
+    OPENAI_CODEX_DEFAULT_PROFILE_ID, XAI_DEFAULT_PROFILE_ID,
 };
 
 use serde::{Deserialize, Serialize};

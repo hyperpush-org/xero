@@ -181,7 +181,7 @@ mod tests {
         GlobalOptions {
             output_mode: OutputMode::Json,
             ci: false,
-            state_dir: PathBuf::from("/tmp/xero-tui-project-test"),
+            state_dir: PathBuf::from("/tmp/xero-project-test"),
             tui_adapter: Some(adapter),
         }
     }

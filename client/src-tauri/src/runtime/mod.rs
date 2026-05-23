@@ -231,15 +231,16 @@ pub use platform_adapter::{
 };
 pub use protocol::RuntimeSupervisorLaunchContext;
 pub use provider::{
-    anthropic_provider, azure_openai_provider, bedrock_provider, deepseek_provider,
-    default_runtime_provider, gemini_ai_studio_provider, github_models_provider,
+    anthropic_provider, azure_openai_provider, bedrock_provider, cursor_provider,
+    deepseek_provider, default_runtime_provider, gemini_ai_studio_provider, github_models_provider,
     is_supported_xai_text_model_id, logout_provider_runtime_session,
     normalize_openai_codex_model_id, ollama_provider, openai_api_provider, openai_codex_provider,
     openrouter_provider, refresh_provider_runtime_session, resolve_runtime_provider_identity,
     vertex_provider, xai_provider, ResolvedRuntimeProvider, RuntimeProvider,
     RuntimeProviderBindOutcome, RuntimeProviderReconcileOutcome, RuntimeProviderSessionBinding,
     ANTHROPIC_PROVIDER_ID, ANTHROPIC_RUNTIME_KIND, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID,
-    DEEPSEEK_PROVIDER_ID, DEEPSEEK_RUNTIME_KIND, GEMINI_AI_STUDIO_PROVIDER_ID, GEMINI_RUNTIME_KIND,
+    CURSOR_DEFAULT_MODEL_ID, CURSOR_PROVIDER_ID, CURSOR_RUNTIME_KIND, DEEPSEEK_PROVIDER_ID,
+    DEEPSEEK_RUNTIME_KIND, GEMINI_AI_STUDIO_PROVIDER_ID, GEMINI_RUNTIME_KIND,
     GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID,
     OPENAI_CODEX_DEFAULT_MODEL_ID, OPENAI_CODEX_PROVIDER_ID, OPENAI_CODEX_SUPPORTED_MODEL_IDS,
     OPENAI_COMPATIBLE_RUNTIME_KIND, OPENROUTER_PROVIDER_ID, VERTEX_PROVIDER_ID,

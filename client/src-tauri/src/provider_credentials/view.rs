@@ -4,7 +4,8 @@ use crate::{
     commands::CommandResult,
     runtime::{
         normalize_openai_codex_model_id, ANTHROPIC_PROVIDER_ID, ANTHROPIC_RUNTIME_KIND,
-        AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID, DEEPSEEK_PROVIDER_ID, DEEPSEEK_RUNTIME_KIND,
+        AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID, CURSOR_DEFAULT_MODEL_ID, CURSOR_PROVIDER_ID,
+        CURSOR_RUNTIME_KIND, DEEPSEEK_PROVIDER_ID, DEEPSEEK_RUNTIME_KIND,
         GEMINI_AI_STUDIO_PROVIDER_ID, GEMINI_RUNTIME_KIND, GITHUB_MODELS_PROVIDER_ID,
         OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
         OPENAI_COMPATIBLE_RUNTIME_KIND, OPENROUTER_PROVIDER_ID, VERTEX_PROVIDER_ID,
@@ -23,6 +24,7 @@ pub const ANTHROPIC_DEFAULT_PROFILE_ID: &str = "anthropic-default";
 pub const GITHUB_MODELS_DEFAULT_PROFILE_ID: &str = "github_models-default";
 pub const DEEPSEEK_DEFAULT_PROFILE_ID: &str = "deepseek-default";
 pub const XAI_DEFAULT_PROFILE_ID: &str = "xai-default";
+pub const CURSOR_DEFAULT_PROFILE_ID: &str = "external_cursor_sdk-default";
 pub const OPENROUTER_FALLBACK_MODEL_ID: &str = "openai/gpt-4.1-mini";
 pub const DEEPSEEK_FALLBACK_MODEL_ID: &str = "deepseek-v4-pro";
 
@@ -302,6 +304,8 @@ fn synthesize_profile_from_credential(
                 DEEPSEEK_FALLBACK_MODEL_ID.into()
             } else if provider_id == XAI_PROVIDER_ID {
                 XAI_DEFAULT_MODEL_ID.into()
+            } else if provider_id == CURSOR_PROVIDER_ID {
+                CURSOR_DEFAULT_MODEL_ID.into()
             } else {
                 provider_id.to_owned()
             }
@@ -376,6 +380,12 @@ fn synthesized_profile_metadata(
             "xAI / Grok".into(),
             XAI_RUNTIME_KIND,
             Some(XAI_PROVIDER_ID.into()),
+        ),
+        CURSOR_PROVIDER_ID => (
+            CURSOR_DEFAULT_PROFILE_ID.into(),
+            "Cursor".into(),
+            CURSOR_RUNTIME_KIND,
+            Some(CURSOR_PROVIDER_ID.into()),
         ),
         OPENAI_API_PROVIDER_ID => (
             format!("{OPENAI_API_PROVIDER_ID}-default"),
@@ -496,5 +506,48 @@ mod tests {
             Some(ProviderCredentialLink::Xai { ref account_id, ref session_id, .. })
                 if account_id == "acct-1" && session_id == "sess-1"
         ));
+    }
+
+    #[test]
+    fn cursor_api_key_profile_is_synthesized_as_external_provider() {
+        let record = ProviderCredentialRecord {
+            provider_id: CURSOR_PROVIDER_ID.into(),
+            kind: ProviderCredentialKind::ApiKey,
+            api_key: Some("cursor-key".into()),
+            oauth_account_id: None,
+            oauth_session_id: None,
+            oauth_access_token: None,
+            oauth_refresh_token: None,
+            oauth_expires_at: None,
+            base_url: None,
+            api_version: None,
+            region: None,
+            project_id: None,
+            default_model_id: None,
+            updated_at: "2026-05-23T12:00:00Z".into(),
+        };
+
+        let synthesized = synthesize_profile_from_credential(&record).expect("Cursor profile");
+
+        assert_eq!(synthesized.profile.profile_id, CURSOR_DEFAULT_PROFILE_ID);
+        assert_eq!(synthesized.profile.provider_id, CURSOR_PROVIDER_ID);
+        assert_eq!(synthesized.profile.runtime_kind, CURSOR_RUNTIME_KIND);
+        assert_eq!(synthesized.profile.label, "Cursor");
+        assert_eq!(synthesized.profile.model_id, CURSOR_DEFAULT_MODEL_ID);
+        assert_eq!(
+            synthesized.profile.preset_id.as_deref(),
+            Some(CURSOR_PROVIDER_ID)
+        );
+        assert!(matches!(
+            synthesized.profile.credential_link,
+            Some(ProviderCredentialLink::ApiKey { .. })
+        ));
+        assert_eq!(
+            synthesized
+                .api_key_entry
+                .as_ref()
+                .map(|entry| entry.profile_id.as_str()),
+            Some(CURSOR_DEFAULT_PROFILE_ID)
+        );
     }
 }

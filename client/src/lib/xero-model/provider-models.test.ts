@@ -135,6 +135,30 @@ function makeOpenRouterCatalog() {
   }
 }
 
+function makeCursorCatalog() {
+  return {
+    profileId: 'external_cursor_sdk-default',
+    providerId: 'external_cursor_sdk' as const,
+    configuredModelId: 'composer-latest',
+    source: 'manual' as const,
+    fetchedAt: '2026-05-23T12:00:00Z',
+    lastSuccessAt: '2026-05-23T12:00:00Z',
+    lastRefreshError: null,
+    models: [
+      {
+        modelId: 'composer-latest',
+        displayName: 'Composer Latest',
+        thinking: {
+          supported: false,
+          effortOptions: [] as const,
+          defaultEffort: null,
+        },
+      },
+    ],
+    contractDiagnostics: [],
+  }
+}
+
 describe('provider-models', () => {
   it('parses a strict provider-model catalog and exposes configured-model helpers', () => {
     const catalog = providerModelCatalogSchema.parse(makeOpenRouterCatalog())
@@ -155,6 +179,15 @@ describe('provider-models', () => {
     expect(capabilities.catalogKind).toBe('model_provider')
     expect(capabilities.capabilities.toolCalls.status).toBe('supported')
     expect(capabilities.requestPreview.toolSchemaNames).toEqual(['xero_echo_probe'])
+  })
+
+  it('accepts the Cursor SDK harness manual catalog', () => {
+    const catalog = providerModelCatalogSchema.parse(makeCursorCatalog())
+
+    expect(catalog.providerId).toBe('external_cursor_sdk')
+    expect(catalog.configuredModelId).toBe('composer-latest')
+    expect(getCloudProviderPreset('external_cursor_sdk')?.label).toBe('Cursor')
+    expect(getProviderModelCatalogConfiguredModel(catalog)?.modelId).toBe('composer-latest')
   })
 
   it('accepts first-party DeepSeek V4 provider catalogs and preset defaults', () => {

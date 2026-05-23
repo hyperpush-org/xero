@@ -29,10 +29,10 @@ use crate::{
         ProviderModelThinkingEffort,
     },
     runtime::{
-        ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID, DEEPSEEK_PROVIDER_ID,
-        GEMINI_AI_STUDIO_PROVIDER_ID, GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID,
-        OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID,
-        VERTEX_PROVIDER_ID, XAI_PROVIDER_ID,
+        ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID, CURSOR_PROVIDER_ID,
+        DEEPSEEK_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID, GITHUB_MODELS_PROVIDER_ID,
+        OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
+        OPENROUTER_PROVIDER_ID, VERTEX_PROVIDER_ID, XAI_PROVIDER_ID,
     },
     state::DesktopState,
 };
@@ -201,6 +201,7 @@ fn provider_preflight_cache_binding_parts(
     let endpoint_fingerprint = match profile.provider_id.as_str() {
         OPENAI_CODEX_PROVIDER_ID => "https://chatgpt.com/backend-api/codex/responses".into(),
         XAI_PROVIDER_ID => format!("{XAI_BASE_URL}/responses"),
+        CURSOR_PROVIDER_ID => "cursor-sdk://local-harness".into(),
         OPENAI_API_PROVIDER_ID
         | DEEPSEEK_PROVIDER_ID
         | GITHUB_MODELS_PROVIDER_ID

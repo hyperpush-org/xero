@@ -167,6 +167,11 @@ import type {
   UpsertNotificationRouteRequestDto,
   XaiDeviceCodeLoginDto,
 } from '@/src/lib/xero-model'
+import type {
+  AgentRefDto,
+  WorkflowAgentDetailDto,
+  WorkflowAgentSummaryDto,
+} from '@/src/lib/xero-model/workflow-agents'
 import {
   getCloudProviderPreset,
   type CloudProviderPreset,
@@ -3349,6 +3354,95 @@ describe('XeroApp current UI', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Open workflows' })[0])
 
     expect(await screen.findByRole('searchbox', { name: 'Search agents' })).toHaveValue('review')
+  })
+
+  it('reveals the Workflow view when inspecting an agent from the library outside Workflow', async () => {
+    const agentRef = {
+      kind: 'built_in',
+      runtimeAgentId: 'engineer',
+      version: 1,
+    } satisfies AgentRefDto
+    const agentSummary: WorkflowAgentSummaryDto = {
+      ref: agentRef,
+      displayName: 'Engineer',
+      shortLabel: 'Build',
+      description: 'Implements repository changes.',
+      scope: 'built_in',
+      lifecycleState: 'active',
+      baseCapabilityProfile: 'engineering',
+      lastUsedAt: null,
+      useCount: 0,
+    }
+    const agentDetail: WorkflowAgentDetailDto = {
+      ref: agentRef,
+      header: {
+        displayName: 'Engineer',
+        shortLabel: 'Build',
+        description: 'Implements repository changes.',
+        taskPurpose: 'Inspect, plan, edit, verify.',
+        scope: 'built_in',
+        lifecycleState: 'active',
+        baseCapabilityProfile: 'engineering',
+        defaultApprovalMode: 'suggest',
+        allowedApprovalModes: ['suggest'],
+        allowPlanGate: true,
+        allowVerificationGate: true,
+        allowAutoCompact: true,
+      },
+      promptPolicy: 'engineer',
+      toolPolicy: 'engineering',
+      prompts: [],
+      tools: [],
+      dbTouchpoints: {
+        reads: [],
+        writes: [],
+        encouraged: [],
+      },
+      output: {
+        contract: 'engineering_summary',
+        label: 'Engineering Summary',
+        description: 'Summary text.',
+        sections: [],
+      },
+      consumes: [],
+      attachedSkills: [],
+      graphProjection: {
+        schema: 'xero.workflow_agent_graph_projection.v1',
+        nodes: [],
+        edges: [],
+        groups: [],
+      },
+    }
+    const { adapter } = createAdapter()
+    const getWorkflowAgentDetail = vi.fn(async () => agentDetail)
+    adapter.listWorkflowAgents = vi.fn(async () => ({ agents: [agentSummary] }))
+    adapter.getWorkflowAgentDetail = getWorkflowAgentDetail
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Editor' }))
+    expect(await screen.findByText('README.md')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Editor' })).toHaveClass('bg-secondary')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open workflows' }))
+
+    const library = await screen.findByLabelText('Library')
+    fireEvent.click(within(library).getByRole('tab', { name: 'Agents' }))
+    fireEvent.click(await within(library).findByLabelText('Inspect Engineer'))
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Workflow' })).toHaveClass('bg-secondary'),
+    )
+    expect(screen.getByRole('button', { name: 'Editor' })).not.toHaveClass('bg-secondary')
+    expect(getWorkflowAgentDetail).toHaveBeenCalledWith({ projectId: 'project-1', ref: agentRef })
+
+    const selectedAgentHeader = await screen.findByLabelText('Selected agent')
+    expect(within(selectedAgentHeader).getByText('Engineer')).toBeVisible()
+    expect(library).toHaveAttribute('aria-hidden', 'false')
   })
 
   it('renders live git footer data from desktop state while leaving mock-only fields untouched', async () => {

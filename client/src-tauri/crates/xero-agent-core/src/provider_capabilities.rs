@@ -374,6 +374,9 @@ fn provider_static_capability(provider_id: &str) -> ProviderStaticCapability {
         "external_gemini_cli" => {
             external_agent_static("external_gemini_cli", "Gemini CLI", "gemini-cli")
         }
+        "external_cursor_sdk" => {
+            external_agent_static("external_cursor_sdk", "Cursor", "composer-latest")
+        }
         "external_custom_agent" => external_agent_static(
             "external_custom_agent",
             "Custom External Agent",

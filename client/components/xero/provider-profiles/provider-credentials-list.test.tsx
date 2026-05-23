@@ -117,6 +117,7 @@ describe('ProviderCredentialsList', () => {
     expect(within(getProviderCard('xAI / Grok')).getByRole('button', { name: /sign in/i })).toBeInTheDocument()
     expect(within(getProviderCard('xAI / Grok')).getByRole('button', { name: /device/i })).toBeInTheDocument()
     expect(within(getProviderCard('xAI / Grok')).getByRole('button', { name: /configure/i })).toBeInTheDocument()
+    expect(within(getProviderCard('Cursor')).getByRole('button', { name: /configure/i })).toBeInTheDocument()
     expect(within(getProviderCard('Ollama')).getByRole('button', { name: /configure/i })).toBeInTheDocument()
     expect(within(getProviderCard('Amazon Bedrock')).getByRole('button', { name: /configure/i })).toBeInTheDocument()
   })

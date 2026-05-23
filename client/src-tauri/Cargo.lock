@@ -10814,16 +10814,19 @@ dependencies = [
 
 [[package]]
 name = "xero-cli"
-version = "0.1.0"
+version = "0.1.13"
 dependencies = [
  "crossterm",
+ "flate2",
  "pulldown-cmark",
  "qrcode",
  "ratatui",
+ "reqwest 0.12.28",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2",
+ "tar",
  "time",
  "xero-agent-core",
  "xero-remote-bridge",

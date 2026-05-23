@@ -42,10 +42,10 @@ use crate::{
         DeepSeekProviderConfig, OpenAiCodexResponsesProviderConfig, OpenAiCompatibleProviderConfig,
         OpenAiResponsesProviderConfig, OwnedAgentRunRequest, RuntimeProvider, VertexProviderConfig,
         XaiResponsesProviderConfig, ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID,
-        BEDROCK_PROVIDER_ID, DEEPSEEK_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID,
-        GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID,
-        OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID, OWNED_AGENT_RUNTIME_KIND,
-        OWNED_AGENT_SUPERVISOR_KIND, VERTEX_PROVIDER_ID, XAI_PROVIDER_ID,
+        BEDROCK_PROVIDER_ID, CURSOR_PROVIDER_ID, DEEPSEEK_PROVIDER_ID,
+        GEMINI_AI_STUDIO_PROVIDER_ID, GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID,
+        OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID,
+        OWNED_AGENT_RUNTIME_KIND, OWNED_AGENT_SUPERVISOR_KIND, VERTEX_PROVIDER_ID, XAI_PROVIDER_ID,
     },
     state::DesktopState,
 };
@@ -770,6 +770,10 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
                 }
             }
         },
+        CURSOR_PROVIDER_ID => Err(CommandError::user_fixable(
+            "cursor_external_agent_runtime",
+            "Cursor is configured as an external-agent provider. Use the Cursor SDK harness (`xero agent cursor`) until desktop external-agent run orchestration is wired.",
+        )),
         OPENROUTER_PROVIDER_ID => {
             let api_key = runtime_settings
                 .provider_api_key
@@ -1039,6 +1043,13 @@ pub(crate) fn ensure_owned_runtime_provider_turn_capabilities<R: Runtime>(
     model_id: &str,
     initial_attachments: &[crate::commands::StagedAgentAttachmentDto],
 ) -> CommandResult<ProviderPreflightSnapshot> {
+    if provider_id == CURSOR_PROVIDER_ID {
+        return Err(CommandError::user_fixable(
+            "cursor_external_agent_runtime",
+            "Cursor is configured as an external-agent provider. Use the Cursor SDK harness (`xero agent cursor`) until desktop external-agent run orchestration is wired.",
+        ));
+    }
+
     let mut required_features = ProviderPreflightRequiredFeatures::owned_agent_text_turn();
     required_features.attachments = !initial_attachments.is_empty();
     let preflight = if require_persisted_profile {
