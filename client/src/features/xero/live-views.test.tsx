@@ -13,6 +13,10 @@ vi.mock('@/components/xero/workflow-canvas/agent-visualization', () => ({
   AgentVisualization: () => null,
 }))
 
+vi.mock('@/components/xero/workflow-canvas/workflow-definition-canvas', () => ({
+  WorkflowDefinitionCanvas: () => <div data-testid="workflow-definition-canvas" />,
+}))
+
 afterEach(() => {
   openUrlMock.mockReset()
 })
@@ -25,6 +29,7 @@ import type {
   ExecutionPaneView,
   WorkflowPaneView,
 } from '@/src/features/xero/use-xero-desktop-state'
+import { instantiateWorkflowTemplate } from '@/src/lib/xero-model/workflow-templates'
 import type { AgentProviderModelCatalogView } from '@/src/features/xero/use-xero-desktop-state/types'
 import {
   getRuntimeAgentLabel,
@@ -520,6 +525,27 @@ describe('live views', () => {
     expect(within(selectedAgent).getByText('Planning')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Close agent inspector' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Create workflow' })).not.toBeInTheDocument()
+  })
+
+  it('can close a selected workflow back to the empty canvas state', () => {
+    const onClearWorkflowSelection = vi.fn()
+    const selectedWorkflowDefinition = instantiateWorkflowTemplate({
+      projectId: 'project-1',
+      templateId: 'continuous_delivery',
+    })
+
+    render(
+      <PhaseView
+        workflow={makeWorkflow()}
+        selectedWorkflowDefinition={selectedWorkflowDefinition}
+        onClearWorkflowSelection={onClearWorkflowSelection}
+      />,
+    )
+
+    expect(screen.getByLabelText('Selected workflow')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Close workflow' }))
+
+    expect(onClearWorkflowSelection).toHaveBeenCalledTimes(1)
   })
 
   it('does not render the mock pipeline controls on the workflow tab', () => {

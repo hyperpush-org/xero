@@ -93,7 +93,7 @@ function WorkflowTemplatePicker({
           key={template.id}
           icon={<Sparkles className="h-4 w-4" />}
           title={template.name}
-          description={`${template.nodeCount} nodes - ${template.description}`}
+          description={`${template.difficulty} - ${template.nodeCount} nodes - ${template.description}`}
           onClick={() => onPickTemplate(template.id)}
         />
       ))}

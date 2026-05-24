@@ -19,7 +19,7 @@ const builtInAgentRef = {
 
 const readableTemplateCardWidth = 240
 const readableTemplateCardHeight = 96
-const readableTemplateHorizontalGap = 40
+const readableTemplateHorizontalGap = 140
 const readableTemplateVerticalGap = 16
 
 function linearWorkflow(): WorkflowDefinitionDto {
@@ -395,8 +395,30 @@ describe('validateWorkflowDefinition', () => {
     }
   })
 
-  it('exposes only the current starter workflow templates', () => {
-    expect(WORKFLOW_TEMPLATE_LIBRARY.map((template) => template.id)).toEqual(['gsd_auto'])
+  it('exposes starter templates before the advanced GSD Auto template', () => {
+    expect(WORKFLOW_TEMPLATE_LIBRARY.map((template) => template.id)).toEqual([
+      'continuous_delivery',
+      'bug_triage_fix_loop',
+      'release_train',
+      'gsd_auto',
+    ])
+    expect(WORKFLOW_TEMPLATE_LIBRARY.map((template) => template.difficulty)).toEqual([
+      'starter',
+      'intermediate',
+      'intermediate',
+      'advanced',
+    ])
+  })
+
+  it('uses the visible template name as the draft workflow name', () => {
+    for (const template of WORKFLOW_TEMPLATE_LIBRARY) {
+      const workflow = instantiateWorkflowTemplate({
+        projectId: 'project-1',
+        templateId: template.id,
+      })
+
+      expect(workflow.name).toBe(template.name)
+    }
   })
 
   it('spaces starter workflow templates into readable lanes', () => {

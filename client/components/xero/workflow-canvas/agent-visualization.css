@@ -220,10 +220,13 @@
 }
 
 .agent-visualization .react-flow__controls {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
   background: var(--card);
   border: 1px solid color-mix(in oklab, var(--foreground) 12%, transparent);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
-  border-radius: 8px;
+  border-radius: 10px;
   overflow: hidden;
 }
 
@@ -231,14 +234,14 @@
   background: transparent;
   color: var(--muted-foreground);
   border: none;
-  border-bottom: 1px solid color-mix(in oklab, var(--foreground) 8%, transparent);
-  width: 28px;
-  height: 28px;
+  border-right: 1px solid color-mix(in oklab, var(--foreground) 8%, transparent);
+  width: 34px;
+  height: 34px;
   transition: background-color 140ms ease, color 140ms ease;
 }
 
 .agent-visualization .react-flow__controls-button:last-child {
-  border-bottom: none;
+  border-right: none;
 }
 
 .agent-visualization .react-flow__controls-button:hover {
@@ -256,8 +259,8 @@
 }
 
 .agent-visualization .react-flow__controls-button svg {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
@@ -802,6 +805,33 @@
   --agent-handle-bridge-color: color-mix(
     in oklab,
     var(--color-emerald-500, #10b981) 52%,
+    var(--background)
+  );
+}
+
+.agent-visualization.is-editing .react-flow__handle[class~='!bg-indigo-500'] {
+  --agent-handle-tone: var(--color-indigo-500, #6366f1);
+  --agent-handle-bridge-color: color-mix(
+    in oklab,
+    var(--color-indigo-500, #6366f1) 56%,
+    var(--background)
+  );
+}
+
+.agent-visualization.is-editing .react-flow__handle[class~='!bg-orange-500'] {
+  --agent-handle-tone: var(--color-orange-500, #f97316);
+  --agent-handle-bridge-color: color-mix(
+    in oklab,
+    var(--color-orange-500, #f97316) 56%,
+    var(--background)
+  );
+}
+
+.agent-visualization.is-editing .react-flow__handle[class~='!bg-violet-500'] {
+  --agent-handle-tone: var(--color-violet-500, #8b5cf6);
+  --agent-handle-bridge-color: color-mix(
+    in oklab,
+    var(--color-violet-500, #8b5cf6) 56%,
     var(--background)
   );
 }

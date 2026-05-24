@@ -77,6 +77,7 @@ interface PhaseViewProps {
   onCreateWorkflowFromTemplate?: (templateId: WorkflowTemplateIdDto) => void
   onSaveWorkflowDefinition?: (definition: WorkflowDefinitionDto) => Promise<WorkflowDefinitionDto | void>
   onCancelWorkflowEditing?: () => void
+  onClearWorkflowSelection?: () => void
   onStartWorkflowDefinitionRun?: (workflowId: string, initialInput: unknown) => Promise<WorkflowRunDto | void>
   onCancelWorkflowRun?: (runId: string) => Promise<WorkflowRunDto | void>
   onRetryWorkflowNodeRun?: (runId: string, nodeRunId: string) => Promise<WorkflowRunDto | void>
@@ -162,6 +163,7 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
     onCreateWorkflowFromTemplate,
     onSaveWorkflowDefinition,
     onCancelWorkflowEditing,
+    onClearWorkflowSelection,
     onStartWorkflowDefinitionRun,
     onCancelWorkflowRun,
     onRetryWorkflowNodeRun,
@@ -527,6 +529,22 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
               )}
             >
               <Square className="size-3.5" />
+            </Button>
+          ) : null}
+          {showWorkflowDefinition && !workflowCanvasStatus?.editing && onClearWorkflowSelection ? (
+            <Button
+              type="button"
+              aria-label="Close workflow"
+              onClick={onClearWorkflowSelection}
+              size="icon-sm"
+              variant="ghost"
+              title="Close"
+              className={cn(
+                'size-[30px] cursor-pointer rounded-md bg-transparent',
+                'text-foreground/70 hover:bg-transparent hover:text-foreground',
+              )}
+            >
+              <X className="size-3.5" />
             </Button>
           ) : null}
           {isAuthoring && editingStatus ? (

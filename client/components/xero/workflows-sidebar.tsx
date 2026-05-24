@@ -1001,7 +1001,7 @@ function WorkflowTemplates({
             badges={
               <>
                 <Badge variant="secondary" className="px-1 py-0 text-[9px] leading-tight">
-                  Template
+                  {humanizeWorkflowStatus(template.difficulty)}
                 </Badge>
                 <Badge variant="outline" className="px-1 py-0 text-[9px] leading-tight">
                   {template.nodeCount} nodes

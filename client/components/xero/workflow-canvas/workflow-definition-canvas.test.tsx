@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import {
@@ -12,8 +12,11 @@ import type { WorkflowDefinitionDto } from '@/src/lib/xero-model/workflow-defini
 import type { WorkflowRunDto } from '@/src/lib/xero-model/workflow-run'
 
 const fitViewSpy = vi.hoisted(() => vi.fn())
+const updateNodeInternalsSpy = vi.hoisted(() => vi.fn())
 
-vi.mock('@xyflow/react', () => ({
+vi.mock('@xyflow/react', async () => {
+  const React = await vi.importActual<typeof import('react')>('react')
+  return {
   ConnectionMode: { Loose: 'loose', Strict: 'strict' },
   ControlButton: ({
     children,
@@ -48,6 +51,7 @@ vi.mock('@xyflow/react', () => ({
     nodes,
     fitViewOptions,
     onNodeClick,
+    onNodesChange,
   }: {
     children: ReactNode
     edges?: Array<{
@@ -71,6 +75,7 @@ vi.mock('@xyflow/react', () => ({
     nodes: Array<{ id: string; position?: { x: number; y: number } }>
     fitViewOptions?: { maxZoom?: number }
     onNodeClick?: (event: unknown, node: { id: string }) => void
+    onNodesChange?: (changes: Array<{ id: string; type: 'position'; position: { x: number; y: number } }>) => void
   }) => (
     <div
       data-testid="workflow-react-flow"
@@ -89,6 +94,23 @@ vi.mock('@xyflow/react', () => ({
           {node.id}
         </button>
       ))}
+      {nodes[0] ? (
+        <button
+          type="button"
+          data-testid="simulate-workflow-node-move"
+          onClick={() =>
+            onNodesChange?.([
+              {
+                id: nodes[0].id,
+                type: 'position',
+                position: { x: 440, y: 777 },
+              },
+            ])
+          }
+        >
+          move node
+        </button>
+      ) : null}
       {edges.map((edge) => (
         <span
           key={edge.id}
@@ -120,8 +142,28 @@ vi.mock('@xyflow/react', () => ({
     zoomIn: vi.fn(),
     zoomOut: vi.fn(),
   }),
+  useUpdateNodeInternals: () => updateNodeInternalsSpy,
+  applyNodeChanges: <NodeType extends { id: string; position?: { x: number; y: number }; selected?: boolean }>(
+    changes: Array<{ id: string; type: string; position?: { x: number; y: number }; selected?: boolean }>,
+    nodes: NodeType[],
+  ) =>
+    nodes
+      .filter((node) => !changes.some((change) => change.type === 'remove' && change.id === node.id))
+      .map((node) => {
+        const change = changes.find((candidate) => candidate.id === node.id)
+        if (!change) return node
+        if (change.type === 'position' && change.position) {
+          return { ...node, position: change.position }
+        }
+        if (change.type === 'select') {
+          return { ...node, selected: change.selected ?? false }
+        }
+        return node
+      }),
+  useNodesState: <NodeType,>(initialNodes: NodeType[]) => React.useState(initialNodes),
   useOnViewportChange: () => undefined,
-}))
+  }
+})
 
 import { WorkflowDefinitionCanvas } from './workflow-definition-canvas'
 
@@ -141,9 +183,11 @@ describe('WorkflowDefinitionCanvas', () => {
     expect(screen.getByTestId('workflow-react-flow')).toHaveAttribute('data-node-count', '0')
     expect(screen.getByTestId('workflow-react-flow')).toHaveAttribute('data-fit-max-zoom', '1')
     expect(screen.queryByText('Done')).toBeNull()
-    expect(screen.getByText('Build a blank workflow')).toBeInTheDocument()
-    expect(screen.getByText('Add agent')).toBeInTheDocument()
-    expect(screen.getByText('Add router')).toBeInTheDocument()
+    expect(screen.queryByText('Workflow Health')).toBeNull()
+    const emptyState = screen.getByRole('region', { name: 'Blank workflow start' })
+    expect(within(emptyState).getByText('Start with an agent')).toBeInTheDocument()
+    expect(within(emptyState).getByRole('button', { name: 'Add first agent step' })).toBeInTheDocument()
+    expect(within(emptyState).queryByRole('button', { name: 'Add router' })).toBeNull()
   })
 
   it('makes the first blank-canvas node the workflow start node', async () => {
@@ -160,7 +204,7 @@ describe('WorkflowDefinitionCanvas', () => {
       />,
     )
 
-    const addAgentButton = screen.getByText('Add agent').closest('button')
+    const addAgentButton = screen.getByRole('button', { name: 'Add first agent step' })
     expect(addAgentButton).not.toBeNull()
     fireEvent.click(addAgentButton as HTMLButtonElement)
 
@@ -176,6 +220,51 @@ describe('WorkflowDefinitionCanvas', () => {
     })
   })
 
+  it('keeps live drag moves off the workflow definition status path', async () => {
+    const onCanvasStatusChange = vi.fn()
+    const definition = instantiateWorkflowTemplate({
+      projectId: 'project-1',
+      templateId: 'continuous_delivery',
+    })
+
+    render(
+      <WorkflowDefinitionCanvas
+        definition={definition}
+        initialMode="edit"
+        onSaveDefinition={vi.fn()}
+        onCanvasStatusChange={onCanvasStatusChange}
+      />,
+    )
+
+    await waitFor(() => expect(onCanvasStatusChange).toHaveBeenCalled())
+    await waitFor(() => expect(updateNodeInternalsSpy).toHaveBeenCalled())
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+    updateNodeInternalsSpy.mockClear()
+    const initialStatusCalls = onCanvasStatusChange.mock.calls.length
+    expect(screen.getByTestId('workflow-edge-goal_to_plan')).toHaveAttribute(
+      'data-source-handle',
+      'workflow-right-success',
+    )
+
+    fireEvent.click(screen.getByTestId('simulate-workflow-node-move'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('workflow-node-goal_intake')).toHaveAttribute('data-position-x', '440')
+    })
+    expect(screen.getByTestId('workflow-node-goal_intake')).toHaveAttribute('data-position-y', '777')
+    expect(screen.getByTestId('workflow-edge-goal_to_plan')).toHaveAttribute(
+      'data-source-handle',
+      'workflow-top-success',
+    )
+    expect(screen.getByTestId('workflow-edge-goal_to_plan')).toHaveAttribute(
+      'data-target-handle',
+      'workflow-bottom-success',
+    )
+    await waitFor(() => expect(updateNodeInternalsSpy).toHaveBeenCalled())
+    expect(updateNodeInternalsSpy).toHaveBeenCalledWith(expect.arrayContaining(['goal_intake', 'plan']))
+    expect(onCanvasStatusChange).toHaveBeenCalledTimes(initialStatusCalls)
+  })
+
   it('routes workflow edges through the nearest facing node sides', () => {
     const definition = instantiateWorkflowTemplate({
       projectId: 'project-1',
@@ -186,45 +275,45 @@ describe('WorkflowDefinitionCanvas', () => {
 
     expect(screen.getByTestId('workflow-edge-plan_to_work')).toHaveAttribute(
       'data-source-handle',
-      'workflow-right',
+      'workflow-right-success',
     )
     expect(screen.getByTestId('workflow-edge-plan_to_work')).toHaveAttribute(
       'data-target-handle',
-      'workflow-left',
+      'workflow-left-success',
     )
     expect(screen.getByTestId('workflow-edge-plan_to_work')).toHaveAttribute('data-marker-end', 'arrowclosed')
     expect(screen.getByTestId('workflow-edge-plan_to_work')).toHaveAttribute('data-marker-width', '18')
     expect(screen.getByTestId('workflow-edge-plan_to_work')).toHaveAttribute('data-marker-height', '18')
     expect(screen.getByTestId('workflow-edge-plan_to_work')).toHaveAttribute('data-target-clearance', '0')
-    expect(screen.getByTestId('workflow-edge-plan_to_work').getAttribute('data-edge-color')).toContain('--color-amber-500')
-    expect(screen.getByTestId('workflow-edge-plan_to_work').getAttribute('data-marker-color')).toContain('--color-amber-500')
+    expect(screen.getByTestId('workflow-edge-plan_to_work').getAttribute('data-edge-color')).toContain('--color-emerald-500')
+    expect(screen.getByTestId('workflow-edge-plan_to_work').getAttribute('data-marker-color')).toContain('--color-emerald-500')
     expect(screen.getByTestId('workflow-edge-verification_passed').getAttribute('data-edge-color')).toContain('--color-sky-500')
     expect(screen.getByTestId('workflow-edge-verification_passed').getAttribute('data-marker-color')).toContain('--color-sky-500')
     expect(screen.getByTestId('workflow-edge-verification_passed').getAttribute('data-label-border-color')).toContain('--color-sky-500')
     expect(screen.getByTestId('workflow-edge-verification_passed').getAttribute('data-label-text-color')).toContain('--color-sky-500')
     expect(screen.getByTestId('workflow-edge-work_failed_to_debug')).toHaveAttribute(
       'data-source-handle',
-      'workflow-bottom',
+      'workflow-bottom-recovery',
     )
     expect(screen.getByTestId('workflow-edge-work_failed_to_debug')).toHaveAttribute(
       'data-target-handle',
-      'workflow-top',
+      'workflow-top-recovery',
     )
     expect(screen.getByTestId('workflow-edge-debug_to_work')).toHaveAttribute(
       'data-source-handle',
-      'workflow-top',
+      'workflow-top-loop',
     )
     expect(screen.getByTestId('workflow-edge-debug_to_work')).toHaveAttribute(
       'data-target-handle',
-      'workflow-bottom',
+      'workflow-bottom-loop',
     )
     expect(screen.getByTestId('workflow-edge-verification_gaps')).toHaveAttribute(
       'data-source-handle',
-      'workflow-bottom',
+      'workflow-bottom-conditional',
     )
     expect(screen.getByTestId('workflow-edge-verification_gaps')).toHaveAttribute(
       'data-target-handle',
-      'workflow-top',
+      'workflow-top-conditional',
     )
     expect(screen.getByTestId('workflow-edge-gap_back_to_work__exhausted')).toHaveAttribute(
       'data-source',

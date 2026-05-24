@@ -4,17 +4,22 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
+  type CSSProperties,
   type ReactNode,
 } from 'react'
 import {
+  applyNodeChanges,
   ConnectionMode,
   Handle,
   MarkerType,
   Position,
   ReactFlow,
   ReactFlowProvider,
+  useNodesState,
   useReactFlow,
+  useUpdateNodeInternals,
   type Connection,
   type Edge,
   type EdgeTypes,
@@ -71,6 +76,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import {
@@ -114,6 +120,19 @@ import {
 } from './canvas-shell'
 import { PhaseBranchEdge } from './edges/phase-branch-edge'
 import { CanvasNodeCard } from './nodes/canvas-node-card'
+import {
+  WORKFLOW_EDGE_HELP,
+  WORKFLOW_HANDOFF_PRESETS,
+  WORKFLOW_NODE_HELP,
+  handoffLabel,
+  workflowConditionPlainSummary,
+  workflowEdgePlainSummary,
+  workflowInputBindingPlainSummary,
+  workflowNodePlainSummary,
+  workflowStateFilterPlainSummary,
+  workflowStateQueryPlainSummary,
+  workflowStateWritePlainSummary,
+} from './workflow-authoring-help'
 
 type WorkflowCanvasMode = 'view' | 'edit'
 type Selection =
@@ -183,6 +202,7 @@ interface WorkflowNodeData extends Record<string, unknown> {
   isStart: boolean
   incomingCount: number
   outgoingCount: number
+  handles: WorkflowNodeHandle[]
 }
 
 type WorkflowReactNode = Node<WorkflowNodeData, 'workflowNode'>
@@ -231,6 +251,14 @@ type WorkflowLayoutEdge = {
   kind: 'direct' | 'exhausted'
 }
 type WorkflowHandleSide = 'top' | 'right' | 'bottom' | 'left'
+type WorkflowNodePosition = { x: number; y: number }
+type WorkflowNodeHandle = {
+  id: string
+  side: WorkflowHandleSide
+  edgeType: WorkflowEdgeTypeDto
+  className: string
+  style?: CSSProperties
+}
 
 const NODE_TYPES = {
   workflowNode: WorkflowNodeCard,
@@ -242,7 +270,7 @@ const EDGE_TYPES = {
 const FIT_VIEW_OPTIONS = { padding: 0.14, includeHiddenNodes: false, maxZoom: 1 } as const
 const WORKFLOW_LAYOUT_CARD_WIDTH = 240
 const WORKFLOW_LAYOUT_CARD_HEIGHT = 112
-const WORKFLOW_LAYOUT_COLUMN_GAP = 360
+const WORKFLOW_LAYOUT_COLUMN_GAP = 400
 const WORKFLOW_LAYOUT_ORIGIN_X = 80
 const WORKFLOW_LAYOUT_LANE_GAP = 184
 const WORKFLOW_LAYOUT_LANE_Y: Record<WorkflowLayoutLane, number> = {
@@ -258,6 +286,14 @@ const WORKFLOW_HANDLE_POSITION: Record<WorkflowHandleSide, Position> = {
   bottom: Position.Bottom,
   left: Position.Left,
 }
+const WORKFLOW_EDGE_TYPE_ORDER: readonly WorkflowEdgeTypeDto[] = [
+  'success',
+  'conditional',
+  'loop',
+  'recovery',
+  'failure',
+  'manual_override',
+]
 const WORKFLOW_EDGE_MARKER = {
   type: MarkerType.ArrowClosed,
   width: 18,
@@ -265,6 +301,7 @@ const WORKFLOW_EDGE_MARKER = {
   markerUnits: 'strokeWidth',
   strokeWidth: 1.8,
 } as const
+const EMPTY_WORKFLOW_AGENTS: readonly WorkflowAgentSummaryDto[] = []
 const WORKFLOW_HANDLE_VISUAL_SIZE = 18
 const WORKFLOW_ARROW_TARGET_GAP = 4
 const WORKFLOW_MARKER_VIEWBOX_SIZE = 20
@@ -348,7 +385,7 @@ function WorkflowDefinitionCanvasInner({
   active = true,
   definition,
   run = null,
-  agents = [],
+  agents = EMPTY_WORKFLOW_AGENTS,
   initialMode = 'view',
   isCreating = false,
   saving = false,
@@ -368,6 +405,7 @@ function WorkflowDefinitionCanvasInner({
   onEditAgent,
 }: WorkflowDefinitionCanvasProps) {
   const reactFlow = useReactFlow()
+  const updateNodeInternals = useUpdateNodeInternals()
   const [mode, setMode] = useState<WorkflowCanvasMode>(initialMode)
   const [draft, setDraft] = useState<WorkflowDefinitionDto>(() => cloneDefinition(definition))
   const [selection, setSelection] = useState<Selection>(null)
@@ -380,6 +418,9 @@ function WorkflowDefinitionCanvasInner({
   const [snapToGrid, setSnapToGrid] = useState(true)
   const [entering, setEntering] = useState(true)
   const [dragging, setDragging] = useState(false)
+  const editFitFrameRef = useRef<number | null>(null)
+  const nodeInternalsRefreshKeyRef = useRef('')
+  const nodeInternalsSecondPassFrameRef = useRef<number | null>(null)
   const editable = mode === 'edit'
   const canvasInteractionsLocked = editable && canvasLocked
 
@@ -389,6 +430,18 @@ function WorkflowDefinitionCanvasInner({
     setSelection(null)
     setLocalError(null)
   }, [definition.id, definition.version, definition.updatedAt, initialMode])
+
+  useEffect(
+    () => () => {
+      if (editFitFrameRef.current !== null) {
+        window.cancelAnimationFrame(editFitFrameRef.current)
+      }
+      if (nodeInternalsSecondPassFrameRef.current !== null) {
+        window.cancelAnimationFrame(nodeInternalsSecondPassFrameRef.current)
+      }
+    },
+    [],
+  )
 
   useEffect(() => {
     setEntering(true)
@@ -446,9 +499,10 @@ function WorkflowDefinitionCanvasInner({
     () => agents.map((agent) => ({ agent, key: agentRefKey(agent.ref) })),
     [agents],
   )
-  const nodes = useMemo<WorkflowReactNode[]>(
-    () =>
-      effectiveDefinition.nodes.map((node) => {
+  const computedNodes = useMemo<WorkflowReactNode[]>(
+    () => {
+      const handlesByNodeId = buildWorkflowNodeHandles(effectiveDefinition, editable)
+      return effectiveDefinition.nodes.map((node) => {
         const incomingCount = workflowIncomingEdgeCount(node.id, effectiveDefinition.edges)
         const outgoingCount = workflowOutgoingEdgeCount(node.id, effectiveDefinition.edges)
         return {
@@ -463,27 +517,94 @@ function WorkflowDefinitionCanvasInner({
             isStart: node.id === effectiveDefinition.startNodeId,
             incomingCount,
             outgoingCount,
+            handles: handlesByNodeId.get(node.id) ?? [],
           },
           draggable: editable && !canvasInteractionsLocked,
           selectable: true,
           selected: selection?.kind === 'node' && selection.id === node.id,
         }
-      }),
+      })
+    },
     [
       agents,
       canvasInteractionsLocked,
       editable,
-      effectiveDefinition.edges,
-      effectiveDefinition.nodes,
+      effectiveDefinition,
       latestArtifactByNodeId,
       latestRunNodeByNodeId,
       selection,
     ],
   )
+  const [nodes, setNodes] = useNodesState<WorkflowReactNode>(computedNodes)
+  const nodesRef = useRef<WorkflowReactNode[]>(computedNodes)
+  useEffect(() => {
+    nodesRef.current = nodes
+  }, [nodes])
+
+  useEffect(() => {
+    const current = nodesRef.current
+    const byId = new Map(current.map((node) => [node.id, node] as const))
+    let changed = current.length !== computedNodes.length
+    const nextNodes = computedNodes.map((next) => {
+      const previous = byId.get(next.id)
+      if (!previous) {
+        changed = true
+        return next
+      }
+      if (
+        previous.position.x === next.position.x &&
+        previous.position.y === next.position.y &&
+        previous.type === next.type &&
+        previous.draggable === next.draggable &&
+        previous.selectable === next.selectable &&
+        previous.selected === next.selected &&
+        previous.data === next.data
+      ) {
+        return previous
+      }
+      changed = true
+      return { ...previous, ...next, position: next.position }
+    })
+    if (!changed) return
+    nodesRef.current = nextNodes
+    setNodes(nextNodes)
+  }, [computedNodes, setNodes])
+
+  const renderedDefinition = useMemo(
+    () => workflowDefinitionWithReactNodePositions(effectiveDefinition, nodes),
+    [effectiveDefinition, nodes],
+  )
+  const renderedNodes = useMemo(
+    () => workflowNodesWithRenderedHandles(nodes, renderedDefinition, editable),
+    [editable, nodes, renderedDefinition],
+  )
+  const refreshWorkflowNodeInternals = useCallback(
+    (ids: readonly string[]) => {
+      if (ids.length === 0) return
+      const nextIds = [...ids]
+      updateNodeInternals(nextIds)
+      if (nodeInternalsSecondPassFrameRef.current !== null) {
+        window.cancelAnimationFrame(nodeInternalsSecondPassFrameRef.current)
+      }
+      nodeInternalsSecondPassFrameRef.current = window.requestAnimationFrame(() => {
+        nodeInternalsSecondPassFrameRef.current = null
+        updateNodeInternals(nextIds)
+      })
+    },
+    [updateNodeInternals],
+  )
+
+  useEffect(() => {
+    const refreshKey = workflowNodeInternalsRefreshKey(renderedNodes)
+    if (refreshKey === nodeInternalsRefreshKeyRef.current) return
+    nodeInternalsRefreshKeyRef.current = refreshKey
+    refreshWorkflowNodeInternals(renderedNodes.map((node) => node.id))
+  }, [refreshWorkflowNodeInternals, renderedNodes])
+
   const edges = useMemo<WorkflowReactEdge[]>(
     () => {
-      const nodeById = new Map(effectiveDefinition.nodes.map((node) => [node.id, node]))
-      return effectiveDefinition.edges.flatMap((edge) => {
+      const nodeById = new Map(renderedDefinition.nodes.map((node) => [node.id, node]))
+      return renderedDefinition.edges.flatMap((edge) => {
         const reactEdges = [
           workflowReactEdgeFromDefinitionEdge(edge, nodeById, {
             editing: editable,
@@ -511,7 +632,7 @@ function WorkflowDefinitionCanvasInner({
         return reactEdges
       })
     },
-    [editable, effectiveDefinition.edges, effectiveDefinition.nodes, matchedEdgeIds, run?.status, selectedNodeId],
+    [editable, matchedEdgeIds, renderedDefinition.edges, renderedDefinition.nodes, run?.status, selectedNodeId],
   )
 
   const canSave = editable && validation.status === 'valid' && Boolean(onSaveDefinition)
@@ -546,6 +667,10 @@ function WorkflowDefinitionCanvasInner({
     [selectedEdge, updateDefinition],
   )
 
+  const handleNodeDragStart = useCallback(() => {
+    setDragging(true)
+  }, [])
+
   const handleNodeDragStop = useCallback(
     (_event: unknown, node: WorkflowReactNode) => {
       setDragging(false)
@@ -563,47 +688,56 @@ function WorkflowDefinitionCanvasInner({
   const handleNodesChange = useCallback(
     (changes: NodeChange<WorkflowReactNode>[]) => {
       if (!editable || canvasInteractionsLocked) return
-      const moved = new Map<string, { x: number; y: number }>()
+      const flowChanges: NodeChange<WorkflowReactNode>[] = []
       for (const change of changes) {
-        if (change.type !== 'position' || !change.position) continue
-        moved.set(change.id, change.position)
+        if (change.type === 'remove') continue
+        flowChanges.push(change)
       }
-      if (moved.size === 0) return
-      updateDefinition((current) => ({
-        ...current,
-        nodes: current.nodes.map((node) => {
-          const position = moved.get(node.id)
-          return position ? { ...node, position } : node
-        }),
-      }))
+      if (flowChanges.length === 0) return
+      setNodes((current) => {
+        const next = applyNodeChanges(flowChanges, current)
+        nodesRef.current = next
+        return next
+      })
     },
-    [canvasInteractionsLocked, editable, updateDefinition],
+    [canvasInteractionsLocked, editable, setNodes],
   )
 
   const handleConnect = useCallback(
     (connection: Connection) => {
       if (!editable || canvasInteractionsLocked || !connection.source || !connection.target) return
       updateDefinition((current) => {
+        if (!isValidWorkflowConnection(connection, current.nodes)) return current
+        const edgeType = workflowEdgeTypeFromHandleId(connection.sourceHandle) ?? 'success'
         const id = uniqueId('edge', current.edges.map((edge) => edge.id))
+        const baseEdge: WorkflowEdgeDto = {
+          id,
+          fromNodeId: connection.source ?? '',
+          toNodeId: connection.target ?? '',
+          type: edgeType,
+          label: '',
+          priority: workflowDefaultEdgePriority(edgeType),
+          condition: { kind: 'always' },
+          loopPolicy: null,
+        }
         return {
           ...current,
           edges: [
             ...current.edges,
-            {
-              id,
-              fromNodeId: connection.source ?? '',
-              toNodeId: connection.target ?? '',
-              type: 'success',
-              label: '',
-              priority: 100,
-              condition: { kind: 'always' },
-              loopPolicy: null,
-            },
+            edgeType === 'loop'
+              ? { ...baseEdge, loopPolicy: defaultWorkflowLoopPolicy(baseEdge) }
+              : baseEdge,
           ],
         }
       })
     },
     [canvasInteractionsLocked, editable, updateDefinition],
+  )
+
+  const isWorkflowConnectionValid = useCallback(
+    (connection: Connection | WorkflowReactEdge) =>
+      isValidWorkflowConnection(connection, effectiveDefinition.nodes),
+    [effectiveDefinition.nodes],
   )
 
   const addNode = useCallback(
@@ -821,6 +955,23 @@ function WorkflowDefinitionCanvasInner({
     void reactFlow.fitView({ ...FIT_VIEW_OPTIONS, duration: 420 })
   }, [reactFlow])
 
+  useEffect(() => {
+    if (!editable || effectiveDefinition.nodes.length === 0) return
+    if (editFitFrameRef.current !== null) {
+      window.cancelAnimationFrame(editFitFrameRef.current)
+    }
+    editFitFrameRef.current = window.requestAnimationFrame(() => {
+      editFitFrameRef.current = null
+      void reactFlow.fitView({ ...FIT_VIEW_OPTIONS, duration: 0 })
+    })
+    return () => {
+      if (editFitFrameRef.current !== null) {
+        window.cancelAnimationFrame(editFitFrameRef.current)
+        editFitFrameRef.current = null
+      }
+    }
+  }, [editable, effectiveDefinition.id, effectiveDefinition.nodes.length, effectiveDefinition.version, reactFlow])
+
   const handleResetLayout = useCallback(() => {
     updateDefinition(autoLayoutWorkflowDefinition)
     window.requestAnimationFrame(fitWorkflowView)
@@ -919,16 +1070,17 @@ function WorkflowDefinitionCanvasInner({
       )}
     >
       <ReactFlow
-        nodes={nodes}
+        nodes={renderedNodes}
         edges={edges}
         nodeTypes={NODE_TYPES}
         edgeTypes={EDGE_TYPES}
-        fitView
+        fitView={!editable && effectiveDefinition.nodes.length > 0}
         fitViewOptions={FIT_VIEW_OPTIONS}
         defaultViewport={AGENT_CANVAS_EMPTY_VIEWPORT}
         minZoom={0.2}
         maxZoom={2}
         connectionMode={ConnectionMode.Loose}
+        isValidConnection={isWorkflowConnectionValid}
         nodesDraggable={editable && !canvasInteractionsLocked}
         nodesConnectable={editable && !canvasInteractionsLocked}
         elementsSelectable
@@ -936,7 +1088,7 @@ function WorkflowDefinitionCanvasInner({
         snapGrid={AGENT_CANVAS_SNAP_GRID}
         onNodesChange={handleNodesChange}
         onConnect={handleConnect}
-        onNodeDragStart={() => setDragging(true)}
+        onNodeDragStart={handleNodeDragStart}
         onEdgeClick={(_, edge) => {
           if (edge.data?.visualOnly) return
           setSelection({ kind: 'edge', id: edge.id })
@@ -963,9 +1115,6 @@ function WorkflowDefinitionCanvasInner({
       {editable && effectiveDefinition.nodes.length === 0 ? (
         <WorkflowDraftEmptyState
           onAddAgent={() => addNode('agent')}
-          onAddRouter={() => addNode('router')}
-          onAddCheckpoint={() => addNode('human_checkpoint')}
-          onAddTerminal={() => addNode('terminal')}
           onCreateAgent={onCreateAgent}
         />
       ) : null}
@@ -1087,13 +1236,14 @@ function WorkflowNodeCard({ data, selected }: NodeProps<WorkflowReactNode>) {
   const isStart = data.isStart
   return (
     <>
-      {WORKFLOW_HANDLE_SIDES.map((side) => (
+      {data.handles.map((handle) => (
         <Handle
-          key={side}
-          id={workflowHandleId(side)}
+          key={handle.id}
+          id={handle.id}
           type="source"
-          position={WORKFLOW_HANDLE_POSITION[side]}
-          className={handleClassForNode(node.type)}
+          position={WORKFLOW_HANDLE_POSITION[handle.side]}
+          className={handle.className}
+          style={handle.style}
           isConnectableStart
           isConnectableEnd
         />
@@ -1161,38 +1311,37 @@ function WorkflowNodeCard({ data, selected }: NodeProps<WorkflowReactNode>) {
 
 function WorkflowDraftEmptyState({
   onAddAgent,
-  onAddRouter,
-  onAddCheckpoint,
-  onAddTerminal,
   onCreateAgent,
 }: {
   onAddAgent: () => void
-  onAddRouter: () => void
-  onAddCheckpoint: () => void
-  onAddTerminal: () => void
   onCreateAgent?: () => void
 }) {
   return (
     <div className="pointer-events-none absolute inset-0 z-[6] flex items-center justify-center px-6">
       <div
-        className="pointer-events-auto flex w-full max-w-md flex-col items-center text-center"
+        aria-label="Blank workflow start"
+        className="pointer-events-auto flex w-full max-w-sm flex-col items-center text-center"
         onPointerDown={(event) => event.stopPropagation()}
+        role="region"
       >
         <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-border bg-card/80 shadow-sm">
           <Workflow className="h-6 w-6 text-foreground" aria-hidden="true" />
         </div>
         <h3 className="mt-5 text-[22px] font-semibold tracking-tight text-foreground">
-          Build a blank workflow
+          Start with an agent
         </h3>
         <p className="mt-2 max-w-sm text-[12.5px] leading-relaxed text-muted-foreground">
-          Add the first node, then connect agents, routers, checkpoints, and terminals into a run path.
+          The first step receives the goal and produces the first handoff. Add routing, checkpoints,
+          and terminal outcomes after that path exists.
         </p>
-        <div className="mt-6 grid w-full grid-cols-2 gap-2">
-          <WorkflowDraftAction icon={Bot} label="Add agent" onClick={onAddAgent} />
-          <WorkflowDraftAction icon={Route} label="Add router" onClick={onAddRouter} />
-          <WorkflowDraftAction icon={PauseCircle} label="Add checkpoint" onClick={onAddCheckpoint} />
-          <WorkflowDraftAction icon={CheckCircle2} label="Add terminal" onClick={onAddTerminal} />
-        </div>
+        <Button
+          type="button"
+          className="mt-6 h-10 w-full justify-center text-[12.5px] font-semibold"
+          onClick={onAddAgent}
+        >
+          <Bot className="h-4 w-4" />
+          Add first agent step
+        </Button>
         {onCreateAgent ? (
           <Button
             type="button"
@@ -1207,27 +1356,6 @@ function WorkflowDraftEmptyState({
         ) : null}
       </div>
     </div>
-  )
-}
-
-function WorkflowDraftAction({
-  icon: Icon,
-  label,
-  onClick,
-}: {
-  icon: LucideIcon
-  label: string
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      className="group flex h-10 items-center gap-2 rounded-lg border border-border/70 bg-card/80 px-3 text-left text-[12px] font-medium text-foreground/85 shadow-sm transition-colors hover:border-primary/40 hover:bg-primary/[0.04] hover:text-foreground focus-visible:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
-      onClick={onClick}
-    >
-      <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-primary" />
-      <span className="min-w-0 truncate">{label}</span>
-    </button>
   )
 }
 
@@ -1259,6 +1387,10 @@ function WorkflowPropertiesPanel({
   onEditAgent?: (ref: AgentRefDto) => void
 }) {
   const title = selectedNode ? selectedNode.title : selectedEdge?.label || selectedEdge?.id || ''
+  const selectedAgentLabel =
+    selectedNode?.type === 'agent'
+      ? labelForAgentRef(selectedNode.agentRef, agents.map((entry) => entry.agent))
+      : null
   return (
     <div
       className="agent-properties-panel pointer-events-auto absolute bottom-4 left-5 z-30 flex max-h-[calc(100%-5rem)] w-[300px] flex-col overflow-hidden rounded-lg border border-border/60 bg-card/95 text-[11.5px] text-card-foreground shadow-[0_8px_28px_-12px_rgba(0,0,0,0.55)] backdrop-blur-md"
@@ -1287,6 +1419,12 @@ function WorkflowPropertiesPanel({
             ))}
           </div>
         ) : null}
+        <WorkflowGuidanceCard
+          definition={definition}
+          edge={selectedEdge}
+          node={selectedNode}
+          agentLabel={selectedAgentLabel}
+        />
         {selectedNode ? (
           <NodeEditor
             agents={agents}
@@ -1324,21 +1462,21 @@ function NodeEditor({
 }) {
   return (
     <>
-      <Field label="Title">
+      <Field label="Title" hint="Name this step the way a teammate would describe it.">
         <Input
           value={node.title}
           onChange={(event) => onUpdate((current) => ({ ...current, title: event.target.value }))}
           className="h-8 text-[12px]"
         />
       </Field>
-      <Field label="Description">
+      <Field label="Description" hint="Optional note shown on the canvas and in run details.">
         <Textarea
           value={node.description}
           onChange={(event) => onUpdate((current) => ({ ...current, description: event.target.value }))}
           className="min-h-20 text-[12px]"
         />
       </Field>
-      <Field label="Start">
+      <Field label="Start" hint="The Workflow begins at exactly one start node.">
         <Button
           type="button"
           variant={definition.startNodeId === node.id ? 'secondary' : 'outline'}
@@ -1361,7 +1499,7 @@ function NodeEditor({
         />
       ) : null}
       {node.type === 'gate' ? (
-        <Field label="Blocked behavior">
+        <Field label="Blocked behavior" hint="Choose what happens when a required check does not pass.">
           <Select
             value={node.onBlocked}
             onValueChange={(value) => onUpdate((current) => current.type === 'gate' ? { ...current, onBlocked: value as 'pause' | 'fail' } : current)}
@@ -1378,7 +1516,10 @@ function NodeEditor({
       ) : null}
       {node.type === 'state_read' || node.type === 'state_query' ? (
         <>
-          <Field label="Entity">
+          <div className="rounded-md border border-border/45 bg-muted/25 px-2.5 py-2 text-[10.5px] leading-relaxed text-muted-foreground">
+            {workflowStateQueryPlainSummary(node.query)}
+          </div>
+          <Field label="Record type" hint="The durable project state this node reads.">
             <Select
               value={node.query.entityType}
               onValueChange={(value) =>
@@ -1407,7 +1548,7 @@ function NodeEditor({
               </SelectContent>
             </Select>
           </Field>
-          <Field label="Filter path">
+          <Field label="Filter field" hint="Common fields include status, priority, updatedAt, and sortOrder.">
             <Input
               value={node.query.filters[0]?.path ?? '$.status'}
               onChange={(event) =>
@@ -1433,7 +1574,7 @@ function NodeEditor({
               className="h-8 text-[12px]"
             />
           </Field>
-          <Field label="Filter operator">
+          <Field label="Filter" hint="Use simple language first; the raw JSON path stays editable here.">
             <Select
               value={node.query.filters[0]?.operator ?? 'neq'}
               onValueChange={(value) =>
@@ -1469,7 +1610,7 @@ function NodeEditor({
               </SelectContent>
             </Select>
           </Field>
-          <Field label="Filter value">
+          <Field label="Compare to">
             <Input
               value={stateFilterValueText(node.query.filters[0])}
               onChange={(event) =>
@@ -1493,7 +1634,7 @@ function NodeEditor({
               className="h-8 text-[12px]"
             />
           </Field>
-          <Field label="Order path">
+          <Field label="Sort by" hint="Leave blank for default ordering.">
             <Input
               value={node.query.orderBy ?? ''}
               onChange={(event) =>
@@ -1512,7 +1653,7 @@ function NodeEditor({
               className="h-8 text-[12px]"
             />
           </Field>
-          <Field label="Output artifact">
+          <Field label="Handoff name" hint="This is the name later nodes use to consume the query result.">
             <Input
               value={node.outputArtifactType}
               onChange={(event) =>
@@ -1529,7 +1670,10 @@ function NodeEditor({
       ) : null}
       {node.type === 'state_write' || node.type === 'state_patch' ? (
         <>
-          <Field label="Entity">
+          <div className="rounded-md border border-border/45 bg-muted/25 px-2.5 py-2 text-[10.5px] leading-relaxed text-muted-foreground">
+            {workflowStateWritePlainSummary(node.operation)}
+          </div>
+          <Field label="Record type">
             <Select
               value={node.operation.entityType}
               onValueChange={(value) =>
@@ -1558,7 +1702,7 @@ function NodeEditor({
               </SelectContent>
             </Select>
           </Field>
-          <Field label="Action">
+          <Field label="Action" hint="Use upsert for repeatable writes; use mark complete or archive for lifecycle changes.">
             <Select
               value={node.operation.action}
               onValueChange={(value) =>
@@ -1587,7 +1731,7 @@ function NodeEditor({
               </SelectContent>
             </Select>
           </Field>
-          <Field label="Target id">
+          <Field label="Target id" hint="Leave blank when the payload creates or resolves the record id.">
             <Input
               value={node.operation.targetId ?? ''}
               onChange={(event) =>
@@ -1606,7 +1750,7 @@ function NodeEditor({
               className="h-8 text-[12px]"
             />
           </Field>
-          <Field label="Payload JSON">
+          <Field label="Payload JSON" hint="Advanced: values can include runtime bindings like input, artifact, or state placeholders.">
             <Textarea
               value={JSON.stringify(node.operation.payload, null, 2)}
               onChange={(event) => {
@@ -1628,7 +1772,7 @@ function NodeEditor({
         </>
       ) : null}
       {node.type === 'state_checkpoint' ? (
-        <Field label="Blocked behavior">
+        <Field label="Blocked behavior" hint="Choose what happens when durable state is not ready.">
           <Select
             value={node.onBlocked}
             onValueChange={(value) => onUpdate((current) => current.type === 'state_checkpoint' ? { ...current, onBlocked: value as 'pause' | 'fail' } : current)}
@@ -1645,7 +1789,10 @@ function NodeEditor({
       ) : null}
       {node.type === 'collection_loop' ? (
         <>
-          <Field label="Entity">
+          <div className="rounded-md border border-border/45 bg-muted/25 px-2.5 py-2 text-[10.5px] leading-relaxed text-muted-foreground">
+            {workflowStateQueryPlainSummary(node.collection)}
+          </div>
+          <Field label="Collection">
             <Select
               value={node.collection.entityType}
               onValueChange={(value) =>
@@ -1674,7 +1821,7 @@ function NodeEditor({
               </SelectContent>
             </Select>
           </Field>
-          <Field label="Sort key">
+          <Field label="Sort by" hint="The field used to pick the next item.">
             <Input
               value={node.sortKey ?? ''}
               onChange={(event) =>
@@ -1687,7 +1834,7 @@ function NodeEditor({
               className="h-8 text-[12px]"
             />
           </Field>
-          <Field label="Max items">
+          <Field label="Max items" hint="Hard guard against runaway loops.">
             <Input
               type="number"
               min={1}
@@ -1702,7 +1849,7 @@ function NodeEditor({
               className="h-8 text-[12px]"
             />
           </Field>
-          <Field label="Only input path">
+          <Field label="Only input path" hint="Optional start input path for running one matching item.">
             <Input
               value={node.controls.onlyInputPath ?? ''}
               onChange={(event) =>
@@ -1764,7 +1911,7 @@ function NodeEditor({
         </>
       ) : null}
       {node.type === 'subgraph' ? (
-        <Field label="Subgraph">
+        <Field label="Subflow">
           <Select
             value={node.subgraphId}
             onValueChange={(value) =>
@@ -1788,7 +1935,7 @@ function NodeEditor({
       ) : null}
       {node.type === 'command' ? (
         <>
-          <Field label="Command">
+          <Field label="Command" hint="Only commands on the allowlist can run.">
             <Input
               value={node.command}
               onChange={(event) =>
@@ -1814,7 +1961,7 @@ function NodeEditor({
               className="h-8 text-[12px]"
             />
           </Field>
-          <Field label="Timeout seconds">
+          <Field label="Timeout seconds" hint="Commands stop automatically after this limit.">
             <Input
               type="number"
               min={1}
@@ -1829,7 +1976,7 @@ function NodeEditor({
               className="h-8 text-[12px]"
             />
           </Field>
-          <Field label="Allowlist">
+          <Field label="Allowlist" hint="Comma-separated executable names approved for this node.">
             <Input
               value={node.allowedCommands.join(', ')}
               onChange={(event) =>
@@ -1848,7 +1995,7 @@ function NodeEditor({
               className="h-8 text-[12px]"
             />
           </Field>
-          <Field label="Working directory">
+          <Field label="Working directory" hint="Leave blank for the project workspace.">
             <Input
               value={node.workingDirectory ?? ''}
               onChange={(event) =>
@@ -1864,7 +2011,7 @@ function NodeEditor({
               className="h-8 text-[12px]"
             />
           </Field>
-          <Field label="Parser">
+          <Field label="Parser" hint="Choose whether output is plain text or structured JSON.">
             <Select
               value={node.parser.extraction}
               onValueChange={(value) =>
@@ -1891,7 +2038,7 @@ function NodeEditor({
               </SelectContent>
             </Select>
           </Field>
-          <Field label="Render path">
+          <Field label="Preview field" hint="JSON path used for the run detail preview.">
             <Input
               value={node.parser.renderTextPath ?? ''}
               onChange={(event) =>
@@ -1942,14 +2089,14 @@ function NodeEditor({
               </SelectContent>
             </Select>
           </Field>
-          <Field label="Checkpoint prompt">
+          <Field label="Checkpoint prompt" hint="This prompt is shown when the Workflow pauses.">
             <Textarea
               value={node.prompt}
               onChange={(event) => onUpdate((current) => current.type === 'human_checkpoint' ? { ...current, prompt: event.target.value } : current)}
               className="min-h-20 text-[12px]"
             />
           </Field>
-          <Field label="Decisions">
+          <Field label="Decision buttons" hint="Comma-separated labels, such as continue, stop, or gaps_found.">
             <Input
               value={node.decisionOptions.join(', ')}
               onChange={(event) =>
@@ -1968,7 +2115,7 @@ function NodeEditor({
               className="h-8 text-[12px]"
             />
           </Field>
-          <Field label="Resume payload schema">
+          <Field label="Resume payload schema" hint="Advanced: optional JSON Schema for extra data on resume.">
             <Textarea
               value={JSON.stringify(node.resumePayloadSchema ?? {}, null, 2)}
               onChange={(event) => {
@@ -1990,7 +2137,7 @@ function NodeEditor({
               className="min-h-24 font-mono text-[11px]"
             />
           </Field>
-          <Field label="State updates JSON">
+          <Field label="State updates JSON" hint="Advanced: optional state writes after a human decision.">
             <Textarea
               value={JSON.stringify(node.stateUpdates, null, 2)}
               onChange={(event) => {
@@ -2012,7 +2159,7 @@ function NodeEditor({
         </>
       ) : null}
       {node.type === 'terminal' ? (
-        <Field label="Terminal status">
+        <Field label="Final status">
           <Select
             value={node.terminalStatus}
             onValueChange={(value) =>
@@ -2053,9 +2200,14 @@ function AgentNodeEditor({
   onEditAgent?: (ref: AgentRefDto) => void
 }) {
   const selectedKey = agentRefKey(node.agentRef)
+  const selectedHandoffPreset = WORKFLOW_HANDOFF_PRESETS.some(
+    (preset) => preset.artifactType === node.outputContract.artifactType,
+  )
+    ? node.outputContract.artifactType
+    : 'custom'
   return (
     <>
-      <Field label="Agent">
+      <Field label="Agent" hint="Pick the worker that should handle this step.">
         <Select
           value={selectedKey}
           onValueChange={(value) => {
@@ -2089,7 +2241,44 @@ function AgentNodeEditor({
           ) : null}
         </div>
       </Field>
-      <Field label="Output artifact">
+      <Field label="Handoff preset" hint="Choose a common result shape when later routing needs structure.">
+        <Select
+          value={selectedHandoffPreset}
+          onValueChange={(value) => {
+            if (value === 'custom') return
+            const preset = WORKFLOW_HANDOFF_PRESETS.find((candidate) => candidate.artifactType === value)
+            onUpdate((current) =>
+              current.type === 'agent'
+                ? {
+                    ...current,
+                    outputContract: {
+                      ...current.outputContract,
+                      artifactType: value,
+                      extraction: preset?.extraction ?? current.outputContract.extraction,
+                    },
+                  }
+                : current,
+            )
+          }}
+        >
+          <SelectTrigger className="h-8 text-[12px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {WORKFLOW_HANDOFF_PRESETS.map((preset) => (
+              <SelectItem key={preset.artifactType} value={preset.artifactType}>
+                {preset.label}
+              </SelectItem>
+            ))}
+            <SelectItem value="custom">Custom handoff</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="mt-1 text-[10.5px] leading-relaxed text-muted-foreground/75">
+          {WORKFLOW_HANDOFF_PRESETS.find((preset) => preset.artifactType === node.outputContract.artifactType)?.description
+            ?? 'Use a custom handoff when this Workflow owns a specialized schema.'}
+        </p>
+      </Field>
+      <Field label="Handoff name" hint="Later nodes refer to this as this node plus this handoff name.">
         <Input
           value={node.outputContract.artifactType}
           onChange={(event) =>
@@ -2108,7 +2297,7 @@ function AgentNodeEditor({
           className="h-8 text-[12px]"
         />
       </Field>
-      <Field label="Extraction">
+      <Field label="Extraction" hint="Use plain text for flexible summaries; use JSON when routers need fields.">
         <Select
           value={node.outputContract.extraction}
           onValueChange={(value) =>
@@ -2139,6 +2328,140 @@ function AgentNodeEditor({
   )
 }
 
+function EdgeRecipePicker({
+  definition,
+  edge,
+  onUpdate,
+}: {
+  definition: WorkflowDefinitionDto
+  edge: WorkflowEdgeDto
+  onUpdate: (updater: (edge: WorkflowEdgeDto) => WorkflowEdgeDto) => void
+}) {
+  const sourceNode = definition.nodes.find((node) => node.id === edge.fromNodeId) ?? null
+  const producedArtifactRef = sourceNode ? producedArtifactRefForNode(sourceNode) : null
+  const firstDecision =
+    sourceNode?.type === 'human_checkpoint'
+      ? sourceNode.decisionOptions[0] ?? 'continue'
+      : 'continue'
+  const recipes: Array<{
+    key: string
+    label: string
+    description: string
+    disabled?: boolean
+    apply: () => void
+  }> = [
+    {
+      key: 'success',
+      label: 'After Success',
+      description: 'Normal happy path.',
+      apply: () =>
+        onUpdate((current) => ({
+          ...current,
+          type: 'success',
+          priority: 10,
+          condition: { kind: 'always' },
+          loopPolicy: null,
+        })),
+    },
+    {
+      key: 'failure',
+      label: 'On Failure',
+      description: 'Escalate, debug, or stop.',
+      apply: () =>
+        onUpdate((current) => ({
+          ...current,
+          type: 'failure',
+          priority: 10,
+          condition: { kind: 'always' },
+          loopPolicy: null,
+        })),
+    },
+    {
+      key: 'artifact',
+      label: 'If Handoff Exists',
+      description: producedArtifactRef
+        ? `Checks ${handoffLabel(producedArtifactRef.split('.')[1] ?? producedArtifactRef)}.`
+        : 'Source node does not create a handoff.',
+      disabled: !producedArtifactRef,
+      apply: () => {
+        if (!producedArtifactRef) return
+        onUpdate((current) => ({
+          ...current,
+          type: 'conditional',
+          priority: 20,
+          condition: { kind: 'artifact_exists', artifactRef: producedArtifactRef },
+          loopPolicy: null,
+        }))
+      },
+    },
+    {
+      key: 'manual',
+      label: 'Human Decision',
+      description: 'Match a checkpoint button.',
+      disabled: sourceNode?.type !== 'human_checkpoint',
+      apply: () =>
+        onUpdate((current) => ({
+          ...current,
+          type: 'manual_override',
+          priority: 20,
+          condition: {
+            kind: 'human_decision_is',
+            checkpointNodeId: current.fromNodeId,
+            decision: firstDecision,
+          },
+          loopPolicy: null,
+        })),
+    },
+    {
+      key: 'loop',
+      label: 'Loop Limit',
+      description: 'Retry with a hard cap.',
+      apply: () =>
+        onUpdate((current) => ({
+          ...current,
+          type: 'loop',
+          priority: 30,
+          condition: current.condition,
+          loopPolicy: current.loopPolicy ?? defaultWorkflowLoopPolicy(current),
+        })),
+    },
+  ]
+
+  return (
+    <section className="space-y-2">
+      <div className="space-y-0.5">
+        <h3 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+          Quick path recipes
+        </h3>
+        <p className="text-[10.5px] leading-relaxed text-muted-foreground/75">
+          Pick a recipe to fill the connection type, condition, and retry policy.
+        </p>
+      </div>
+      <div className="grid grid-cols-2 gap-1.5">
+        {recipes.map((recipe) => (
+          <Button
+            key={recipe.key}
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-auto min-h-9 justify-start px-2 py-1.5 text-left text-[10.5px]"
+            disabled={recipe.disabled}
+            title={recipe.description}
+            onClick={recipe.apply}
+          >
+            <span className="min-w-0">
+              <span className="block truncate font-medium">{recipe.label}</span>
+              <span className="block truncate text-[9.5px] font-normal text-muted-foreground">
+                {recipe.description}
+              </span>
+            </span>
+          </Button>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 function EdgeEditor({
   definition,
   edge,
@@ -2150,14 +2473,15 @@ function EdgeEditor({
 }) {
   return (
     <>
-      <Field label="Label">
+      <EdgeRecipePicker definition={definition} edge={edge} onUpdate={onUpdate} />
+      <Field label="Path label" hint="Short text shown on the connection line.">
         <Input
           value={edge.label}
           onChange={(event) => onUpdate((current) => ({ ...current, label: event.target.value }))}
           className="h-8 text-[12px]"
         />
       </Field>
-      <Field label="Type">
+      <Field label="When this path runs" hint={WORKFLOW_EDGE_HELP[edge.type].oneLine}>
         <Select
           value={edge.type}
           onValueChange={(value) =>
@@ -2166,16 +2490,7 @@ function EdgeEditor({
               type: value as WorkflowEdgeTypeDto,
               loopPolicy:
                 value === 'loop'
-                  ? current.loopPolicy ?? {
-                      loopKey: `${current.fromNodeId}_loop`,
-                      maxAttempts: 2,
-                      attemptScope: 'run',
-                      carryoverPolicy: 'all',
-                      selectedArtifactRefs: [],
-                      resetPolicy: 'never',
-                      stallDetector: null,
-                      onExhausted: current.toNodeId,
-                    }
+                  ? current.loopPolicy ?? defaultWorkflowLoopPolicy(current)
                   : null,
             }))
           }
@@ -2192,7 +2507,7 @@ function EdgeEditor({
           </SelectContent>
         </Select>
       </Field>
-      <Field label="Priority">
+      <Field label="Priority" hint="Lower numbers win when multiple outgoing paths match.">
         <Input
           type="number"
           value={edge.priority}
@@ -2203,7 +2518,7 @@ function EdgeEditor({
       <ConditionEditor edge={edge} onUpdate={onUpdate} />
       {edge.loopPolicy ? (
         <>
-          <Field label="Loop key">
+          <Field label="Loop key" hint="Shared counter name for this bounded loop.">
             <Input
               value={edge.loopPolicy.loopKey}
               onChange={(event) =>
@@ -2216,7 +2531,7 @@ function EdgeEditor({
               className="h-8 text-[12px]"
             />
           </Field>
-          <Field label="Max attempts">
+          <Field label="Max attempts" hint="Hard stop before routing to the exhausted path.">
             <Input
               type="number"
               min={1}
@@ -2237,7 +2552,7 @@ function EdgeEditor({
               className="h-8 text-[12px]"
             />
           </Field>
-          <Field label="On exhausted">
+          <Field label="When exhausted">
             <Select
               value={edge.loopPolicy.onExhausted}
               onValueChange={(value) =>
@@ -2280,7 +2595,7 @@ function ConditionEditor({
   }
   return (
     <>
-      <Field label="Condition">
+      <Field label="Condition" hint={workflowConditionPlainSummary(condition)}>
         <Select
           value={conditionKind}
           onValueChange={(value) => setCondition(defaultCondition(value))}
@@ -2300,7 +2615,7 @@ function ConditionEditor({
         </Select>
       </Field>
       {'stateRef' in condition ? (
-        <Field label="State ref">
+        <Field label="State handoff">
           <Input
             value={condition.stateRef}
             onChange={(event) =>
@@ -2311,7 +2626,7 @@ function ConditionEditor({
         </Field>
       ) : null}
       {'artifactRef' in condition ? (
-        <Field label="Artifact ref">
+        <Field label="Handoff">
           <Input
             value={condition.artifactRef}
             onChange={(event) =>
@@ -2322,7 +2637,7 @@ function ConditionEditor({
         </Field>
       ) : null}
       {'path' in condition ? (
-        <Field label="JSON path">
+        <Field label="Field path">
           <Input
             value={condition.path}
             onChange={(event) =>
@@ -2333,7 +2648,7 @@ function ConditionEditor({
         </Field>
       ) : null}
       {condition.kind === 'artifact_field_equals' ? (
-        <Field label="Value">
+        <Field label="Compare to">
           <Input
             value={String(condition.value ?? '')}
             onChange={(event) => setCondition({ ...condition, value: event.target.value })}
@@ -2342,7 +2657,7 @@ function ConditionEditor({
         </Field>
       ) : null}
       {condition.kind === 'state_field_equals' ? (
-        <Field label="Value">
+        <Field label="Compare to">
           <Input
             value={String(condition.value ?? '')}
             onChange={(event) => setCondition({ ...condition, value: event.target.value })}
@@ -2374,7 +2689,7 @@ function ConditionEditor({
               </SelectContent>
             </Select>
           </Field>
-          <Field label="Value">
+          <Field label="Number">
             <Input
               type="number"
               value={condition.value}
@@ -2408,6 +2723,79 @@ function ConditionEditor({
       ) : null}
     </>
   )
+}
+
+function WorkflowGuidanceCard({
+  definition,
+  node,
+  edge,
+  agentLabel,
+}: {
+  definition: WorkflowDefinitionDto
+  node: WorkflowNodeDto | null
+  edge: WorkflowEdgeDto | null
+  agentLabel: string | null
+}) {
+  if (!node && !edge) return null
+  const help = node ? WORKFLOW_NODE_HELP[node.type] : edge ? WORKFLOW_EDGE_HELP[edge.type] : null
+  if (!help) return null
+  const summary = node
+    ? workflowNodePlainSummary(node, agentLabel)
+    : edge
+      ? workflowEdgePlainSummary(edge, definition)
+      : ''
+  const advanced = node ? WORKFLOW_NODE_HELP[node.type].advanced : edge ? ['Condition', 'priority', 'loop policy'] : []
+  const setup = node ? WORKFLOW_NODE_HELP[node.type].setup : edge ? [WORKFLOW_EDGE_HELP[edge.type].useWhen] : []
+
+  return (
+    <section className="rounded-md border border-primary/20 bg-primary/[0.045] p-2.5">
+      <div className="flex items-start gap-2">
+        <span className="mt-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded bg-primary/10 text-primary">
+          <InfoIcon />
+        </span>
+        <div className="min-w-0 flex-1 space-y-2">
+          <div className="space-y-0.5">
+            <p className="text-[11.5px] font-semibold text-foreground">{help.label}</p>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">{summary}</p>
+          </div>
+          <Tabs defaultValue="guide" className="gap-2">
+            <TabsList className="h-7 rounded-md bg-background/45 p-0.5">
+              <TabsTrigger value="guide" className="h-6 px-2 text-[10.5px]">
+                Guide
+              </TabsTrigger>
+              <TabsTrigger value="terms" className="h-6 px-2 text-[10.5px]">
+                Terms
+              </TabsTrigger>
+            </TabsList>
+            <TabsContent value="guide" className="mt-0 space-y-1.5">
+              <p className="text-[10.5px] leading-relaxed text-muted-foreground">
+                {help.useWhen}
+              </p>
+              {setup.length > 0 ? (
+                <ul className="space-y-1">
+                  {setup.map((item) => (
+                    <li key={item} className="flex gap-1.5 text-[10.5px] leading-relaxed text-foreground/85">
+                      <CheckCircle2 className="mt-0.5 size-3 shrink-0 text-primary" aria-hidden="true" />
+                      <span>{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </TabsContent>
+            <TabsContent value="terms" className="mt-0">
+              <p className="text-[10.5px] leading-relaxed text-muted-foreground">
+                Advanced fields: {advanced.join(', ') || 'none'}.
+              </p>
+            </TabsContent>
+          </Tabs>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function InfoIcon() {
+  return <AlertCircle className="size-3" aria-hidden="true" />
 }
 
 function WorkflowRunRecoveryPanel({
@@ -2571,7 +2959,8 @@ function WorkflowDetailsPanel({
       <div className="min-h-0 space-y-4 overflow-y-auto px-3 py-3">
         {node ? (
           <>
-            <ReadOnlyRow label="Type" value={NODE_KIND_LABEL[node.type]} />
+            <ReadOnlyRow label="Summary" value={workflowNodePlainSummary(node, agentLabel)} />
+            <ReadOnlyRow label="Type" value={WORKFLOW_NODE_HELP[node.type].label} />
             <ReadOnlyRow label="Node ID" value={node.id} />
             {node.description.trim() ? <ReadOnlyRow label="Description" value={node.description} /> : null}
             {agentLabel ? <ReadOnlyRow label="Agent" value={agentLabel} /> : null}
@@ -2672,7 +3061,8 @@ function WorkflowDetailsPanel({
           </>
         ) : edge ? (
           <>
-            <ReadOnlyRow label="Type" value={EDGE_TYPE_LABEL[edge.type]} />
+            <ReadOnlyRow label="Summary" value={workflowEdgePlainSummary(edge, definition)} />
+            <ReadOnlyRow label="Type" value={WORKFLOW_EDGE_HELP[edge.type].label} />
             <ReadOnlyRow label="Edge ID" value={edge.id} />
             <ReadOnlyRow label="From" value={fromNode ? `${fromNode.title} (${edge.fromNodeId})` : edge.fromNodeId} />
             <ReadOnlyRow label="To" value={toNode ? `${toNode.title} (${edge.toNodeId})` : edge.toNodeId} />
@@ -2709,7 +3099,7 @@ function WorkflowNodeReadOnlyDetails({
     return (
       <>
         {agentLabel ? null : <ReadOnlyRow label="Agent" value={labelForAgentRef(node.agentRef, [])} />}
-        <ReadOnlyRow label="Output" value={outputContractSummary(node.outputContract)} />
+        <ReadOnlyRow label="Handoff" value={outputContractSummary(node.outputContract)} />
         <ReadOnlyRow label="Inputs" value={inputBindingsSummary(node.inputBindings)} />
         {node.resourceScopes.length > 0 ? <ReadOnlyRow label="Resource scopes" value={node.resourceScopes.join(', ')} /> : null}
         {node.runOverrides ? <ReadOnlyRow label="Run overrides" value={runOverrideSummary(node.runOverrides)} /> : null}
@@ -2723,7 +3113,7 @@ function WorkflowNodeReadOnlyDetails({
         <ReadOnlyRow label="Entity" value={humanize(node.query.entityType)} />
         <ReadOnlyRow label="Filters" value={stateFiltersSummary(node.query.filters)} />
         <ReadOnlyRow label="Order" value={stateQueryOrderSummary(node.query)} />
-        <ReadOnlyRow label="Output" value={node.outputArtifactType} />
+        <ReadOnlyRow label="Handoff" value={handoffLabel(node.outputArtifactType)} />
       </>
     )
   }
@@ -2735,7 +3125,7 @@ function WorkflowNodeReadOnlyDetails({
         <ReadOnlyRow label="Target" value={node.operation.targetId ?? 'Created from payload'} />
         {node.operation.idempotencyKey ? <ReadOnlyRow label="Idempotency key" value={node.operation.idempotencyKey} /> : null}
         <ReadOnlyRow label="Payload" value={jsonPreview(node.operation.payload)} />
-        <ReadOnlyRow label="Output" value={node.operation.outputArtifactType} />
+        <ReadOnlyRow label="Handoff" value={handoffLabel(node.operation.outputArtifactType)} />
         {node.inputBindings.length > 0 ? <ReadOnlyRow label="Inputs" value={inputBindingsSummary(node.inputBindings)} /> : null}
       </>
     )
@@ -2748,7 +3138,7 @@ function WorkflowNodeReadOnlyDetails({
         <ReadOnlyRow label="Filters" value={stateFiltersSummary(node.collection.filters)} />
         <ReadOnlyRow label="Sort" value={node.sortKey ?? node.collection.orderBy ?? 'Insertion order'} />
         <ReadOnlyRow label="Window controls" value={loopControlsSummary(node.controls)} />
-        <ReadOnlyRow label="Item artifact" value={`${node.itemArtifactType} as ${node.itemVariableName}`} />
+        <ReadOnlyRow label="Item handoff" value={`${handoffLabel(node.itemArtifactType)} as ${node.itemVariableName}`} />
         <ReadOnlyRow label="After item" value={node.afterItemRequery ? 'Requery collection before continuing' : 'Continue without requery'} />
         {node.maxRuntimeSeconds ? <ReadOnlyRow label="Max runtime" value={`${node.maxRuntimeSeconds}s`} /> : null}
       </>
@@ -2763,7 +3153,7 @@ function WorkflowNodeReadOnlyDetails({
         <ReadOnlyRow label="Working directory" value={node.workingDirectory ?? 'Project workspace'} />
         <ReadOnlyRow label="Timeout" value={`${node.timeoutSeconds}s`} />
         <ReadOnlyRow label="Success exits" value={node.successExitCodes.join(', ')} />
-        <ReadOnlyRow label="Output" value={outputContractSummary(node.outputContract)} />
+        <ReadOnlyRow label="Handoff" value={outputContractSummary(node.outputContract)} />
       </>
     )
   }
@@ -2807,7 +3197,7 @@ function WorkflowNodeReadOnlyDetails({
       <>
         <ReadOnlyRow label="Subgraph" value={node.subgraphId} />
         <ReadOnlyRow label="Inputs" value={inputBindingsSummary(node.inputBindings)} />
-        <ReadOnlyRow label="Output" value={outputContractSummary(node.outputContract)} />
+        <ReadOnlyRow label="Handoff" value={outputContractSummary(node.outputContract)} />
       </>
     )
   }
@@ -2962,12 +3352,25 @@ function CheckpointResumeBar({
   )
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string
+  hint?: ReactNode
+  children: ReactNode
+}) {
   return (
     <div className="space-y-1.5">
-      <Label className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-        {label}
-      </Label>
+      <div className="space-y-0.5">
+        <Label className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+          {label}
+        </Label>
+        {hint ? (
+          <p className="text-[10.5px] leading-relaxed text-muted-foreground/75">{hint}</p>
+        ) : null}
+      </div>
       {children}
     </div>
   )
@@ -3005,7 +3408,7 @@ function outputContractSummary(contract: WorkflowOutputContractLike): string {
   const extraction = humanize(contract.extraction)
   const required = contract.required ? 'required' : 'optional'
   const renderText = contract.renderTextPath ? `, render ${contract.renderTextPath}` : ''
-  return `${contract.artifactType} v${contract.schemaVersion}, ${extraction}, ${required}${renderText}`
+  return `${handoffLabel(contract.artifactType)} (${contract.artifactType}) v${contract.schemaVersion}, ${extraction}, ${required}${renderText}`
 }
 
 type WorkflowOutputContractLike = {
@@ -3022,18 +3425,19 @@ function inputBindingsSummary(bindings: readonly WorkflowInputBindingDto[]): str
 }
 
 function inputBindingSummary(binding: WorkflowInputBindingDto): string {
+  const plain = workflowInputBindingPlainSummary(binding)
   const label = binding.promptLabel ?? humanize(binding.name)
   const required = binding.required ? 'required' : 'optional'
   if (binding.source === 'run_input') {
     const path = binding.path ? ` ${binding.path}` : ''
-    return `${label} <- run input ${binding.name}${path} (${required})`
+    return `${plain}\n${label} <- run input ${binding.name}${path} (${required})`
   }
   if (binding.source === 'artifact') {
     const path = binding.path ? ` ${binding.path}` : ''
-    return `${label} <- artifact ${binding.artifactRef}${path} (${required})`
+    return `${plain}\n${label} <- artifact ${binding.artifactRef}${path} (${required})`
   }
   const path = binding.path ? ` ${binding.path}` : ''
-  return `${label} <- state ${binding.stateRef}${path} (${required})`
+  return `${plain}\n${label} <- state ${binding.stateRef}${path} (${required})`
 }
 
 function stateFiltersSummary(filters: readonly WorkflowStateQueryFilterDto[]): string {
@@ -3042,13 +3446,14 @@ function stateFiltersSummary(filters: readonly WorkflowStateQueryFilterDto[]): s
 }
 
 function stateFilterSummary(filter: WorkflowStateQueryFilterDto): string {
+  const plain = workflowStateFilterPlainSummary(filter)
   if (filter.operator === 'exists' || filter.operator === 'missing') {
-    return `${filter.path} ${filter.operator}`
+    return `${plain} (${filter.path} ${filter.operator})`
   }
   if (filter.operator === 'in' || filter.operator === 'not_in') {
-    return `${filter.path} ${filter.operator.replace('_', ' ')} ${formatJsonValues(filter.values ?? [])}`
+    return `${plain} (${filter.path} ${filter.operator.replace('_', ' ')} ${formatJsonValues(filter.values ?? [])})`
   }
-  return `${filter.path} ${filter.operator} ${formatJsonValue(filter.value)}`
+  return `${plain} (${filter.path} ${filter.operator} ${formatJsonValue(filter.value)})`
 }
 
 function stateQueryOrderSummary(query: {
@@ -3277,6 +3682,38 @@ function buildWorkflowRunPreview(definition: WorkflowDefinitionDto): WorkflowRun
   definition.nodes.forEach(visitNode)
   definition.subgraphs.forEach((subgraph) => subgraph.nodes.forEach(visitNode))
   return preview
+}
+
+function producedArtifactRefForNode(node: WorkflowNodeDto): string | null {
+  switch (node.type) {
+    case 'agent':
+    case 'command':
+    case 'subgraph':
+      return `${node.id}.${node.outputContract.artifactType}`
+    case 'state_read':
+    case 'state_query':
+      return `${node.id}.${node.outputArtifactType}`
+    case 'state_write':
+    case 'state_patch':
+      return `${node.id}.${node.operation.outputArtifactType}`
+    case 'collection_loop':
+      return `${node.id}.${node.itemArtifactType}`
+    default:
+      return null
+  }
+}
+
+function defaultWorkflowLoopPolicy(edge: WorkflowEdgeDto): NonNullable<WorkflowEdgeDto['loopPolicy']> {
+  return {
+    loopKey: `${edge.fromNodeId}_loop`,
+    maxAttempts: 2,
+    attemptScope: 'run',
+    carryoverPolicy: 'all',
+    selectedArtifactRefs: [],
+    resetPolicy: 'never',
+    stallDetector: null,
+    onExhausted: edge.toNodeId,
+  }
 }
 
 function createNode(
@@ -3806,33 +4243,333 @@ function nodeIconTone(type: WorkflowNodeDto['type']): string {
   }
 }
 
-function handleClassForNode(type: WorkflowNodeDto['type']): string {
+function handleClassForEdgeType(type: WorkflowEdgeTypeDto): string {
   switch (type) {
-    case 'agent':
-      return '!bg-amber-500'
-    case 'router':
-      return '!bg-sky-500'
-    case 'gate':
+    case 'success':
       return '!bg-emerald-500'
-    case 'human_checkpoint':
+    case 'failure':
       return '!bg-rose-500'
-    case 'merge':
+    case 'conditional':
+      return '!bg-sky-500'
+    case 'loop':
+      return '!bg-indigo-500'
+    case 'recovery':
+      return '!bg-orange-500'
+    case 'manual_override':
       return '!bg-violet-500'
+  }
+}
+
+function workflowDefinitionWithReactNodePositions(
+  definition: WorkflowDefinitionDto,
+  nodes: readonly WorkflowReactNode[],
+): WorkflowDefinitionDto {
+  if (nodes.length === 0) return definition
+  const positionById = new Map<string, WorkflowNodePosition>()
+  for (const node of nodes) {
+    positionById.set(node.id, node.position)
+  }
+  let changed = false
+  const positionedNodes = definition.nodes.map((node) => {
+    const position = positionById.get(node.id)
+    if (!position || (position.x === node.position.x && position.y === node.position.y)) {
+      return node
+    }
+    changed = true
+    return { ...node, position }
+  })
+  return changed ? { ...definition, nodes: positionedNodes } : definition
+}
+
+function workflowNodesWithRenderedHandles(
+  nodes: readonly WorkflowReactNode[],
+  definition: WorkflowDefinitionDto,
+  editable: boolean,
+): WorkflowReactNode[] {
+  const nodeById = new Map(definition.nodes.map((node) => [node.id, node]))
+  const handlesByNodeId = buildWorkflowNodeHandles(definition, editable)
+  let changed = false
+  const renderedNodes = nodes.map((node) => {
+    const definitionNode = nodeById.get(node.id) ?? node.data.node
+    const handles = handlesByNodeId.get(node.id) ?? []
+    if (node.data.node === definitionNode && workflowNodeHandlesEqual(node.data.handles, handles)) {
+      return node
+    }
+    changed = true
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        node: definitionNode,
+        handles,
+      },
+    }
+  })
+  return changed ? renderedNodes : nodes as WorkflowReactNode[]
+}
+
+function workflowNodeHandlesEqual(
+  left: readonly WorkflowNodeHandle[],
+  right: readonly WorkflowNodeHandle[],
+): boolean {
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    const leftHandle = left[index]
+    const rightHandle = right[index]
+    if (
+      leftHandle.id !== rightHandle.id ||
+      leftHandle.side !== rightHandle.side ||
+      leftHandle.edgeType !== rightHandle.edgeType ||
+      leftHandle.className !== rightHandle.className ||
+      !workflowHandleStylesEqual(leftHandle.style, rightHandle.style)
+    ) {
+      return false
+    }
+  }
+  return true
+}
+
+function workflowHandleStylesEqual(
+  left: CSSProperties | undefined,
+  right: CSSProperties | undefined,
+): boolean {
+  if (!left || !right) return left === right
+  return left.left === right.left && left.top === right.top
+}
+
+function workflowNodeInternalsRefreshKey(nodes: readonly WorkflowReactNode[]): string {
+  const parts: string[] = []
+  for (const node of nodes) {
+    parts.push([
+      node.id,
+      node.type ?? '',
+      node.width ?? '',
+      node.height ?? '',
+      node.initialWidth ?? '',
+      node.initialHeight ?? '',
+      node.measured?.width ?? '',
+      node.measured?.height ?? '',
+      node.data.handles
+        .map((handle) => [
+          handle.id,
+          handle.side,
+          handle.edgeType,
+          handle.style?.left ?? '',
+          handle.style?.top ?? '',
+        ].join(':'))
+        .join(','),
+    ].join('|'))
+  }
+  return parts.join('::')
+}
+
+function buildWorkflowNodeHandles(
+  definition: WorkflowDefinitionDto,
+  editable: boolean,
+): Map<string, WorkflowNodeHandle[]> {
+  const nodeById = new Map(definition.nodes.map((node) => [node.id, node]))
+  const buckets = new Map<string, Map<string, WorkflowNodeHandle>>()
+  const addHandle = (
+    nodeId: string,
+    side: WorkflowHandleSide,
+    edgeType: WorkflowEdgeTypeDto,
+  ) => {
+    const node = nodeById.get(nodeId)
+    if (!node) return
+    const nodeHandles = buckets.get(nodeId) ?? new Map<string, WorkflowNodeHandle>()
+    buckets.set(nodeId, nodeHandles)
+    const id = workflowHandleId(side, edgeType)
+    if (nodeHandles.has(id)) return
+    nodeHandles.set(id, {
+      id,
+      side,
+      edgeType,
+      className: handleClassForEdgeType(edgeType),
+    })
+  }
+
+  for (const edge of workflowVisibleEdges(definition.edges)) {
+    const sides = workflowEdgeHandleSides(edge, nodeById)
+    addHandle(edge.fromNodeId, sides.source, edge.type)
+    addHandle(edge.toNodeId, sides.target, edge.type)
+  }
+
+  if (editable) {
+    for (const node of definition.nodes) {
+      const outgoingTypes = workflowSupportedOutgoingEdgeTypes(node)
+      for (const edgeType of outgoingTypes) {
+        addHandle(node.id, 'right', edgeType)
+      }
+      for (const edgeType of workflowSupportedIncomingEdgeTypes(node)) {
+        if (node.type === 'terminal' || !outgoingTypes.includes(edgeType)) {
+          addHandle(node.id, 'left', edgeType)
+        }
+      }
+    }
+  }
+
+  const result = new Map<string, WorkflowNodeHandle[]>()
+  for (const [nodeId, nodeHandles] of buckets) {
+    const handles = [...nodeHandles.values()].sort(workflowHandleSort)
+    const sideCounts = new Map<WorkflowHandleSide, number>()
+    for (const handle of handles) {
+      sideCounts.set(handle.side, (sideCounts.get(handle.side) ?? 0) + 1)
+    }
+    const sideIndexes = new Map<WorkflowHandleSide, number>()
+    result.set(
+      nodeId,
+      handles.map((handle) => {
+        const index = sideIndexes.get(handle.side) ?? 0
+        sideIndexes.set(handle.side, index + 1)
+        return {
+          ...handle,
+          style: workflowHandleOffsetStyle(handle.side, index, sideCounts.get(handle.side) ?? 1),
+        }
+      }),
+    )
+  }
+  return result
+}
+
+function workflowVisibleEdges(edges: readonly WorkflowEdgeDto[]): WorkflowEdgeDto[] {
+  const visible: WorkflowEdgeDto[] = []
+  for (const edge of edges) {
+    visible.push(edge)
+    const exhaustionTargetId = workflowLoopExhaustionTarget(edge)
+    if (exhaustionTargetId) {
+      visible.push(workflowLoopExhaustionVisualEdge(edge, exhaustionTargetId))
+    }
+  }
+  return visible
+}
+
+function workflowHandleSort(left: WorkflowNodeHandle, right: WorkflowNodeHandle): number {
+  const sideDelta = WORKFLOW_HANDLE_SIDES.indexOf(left.side) - WORKFLOW_HANDLE_SIDES.indexOf(right.side)
+  if (sideDelta !== 0) return sideDelta
+  return workflowEdgeTypeOrder(left.edgeType) - workflowEdgeTypeOrder(right.edgeType)
+}
+
+function workflowEdgeTypeOrder(type: WorkflowEdgeTypeDto): number {
+  const index = WORKFLOW_EDGE_TYPE_ORDER.indexOf(type)
+  return index === -1 ? WORKFLOW_EDGE_TYPE_ORDER.length : index
+}
+
+function workflowHandleOffsetStyle(
+  side: WorkflowHandleSide,
+  index: number,
+  count: number,
+): CSSProperties | undefined {
+  if (count <= 1) return undefined
+  const offset = `${((index + 1) / (count + 1)) * 100}%`
+  if (side === 'top' || side === 'bottom') return { left: offset }
+  return { top: offset }
+}
+
+function workflowSupportedOutgoingEdgeTypes(node: WorkflowNodeDto): readonly WorkflowEdgeTypeDto[] {
+  switch (node.type) {
     case 'terminal':
-      return '!bg-foreground'
+      return []
+    case 'router':
+      return ['conditional', 'loop']
+    case 'human_checkpoint':
+      return ['manual_override']
+    case 'gate':
+    case 'state_checkpoint':
+      return ['success', 'failure', 'recovery']
+    case 'command':
+      return ['success', 'failure', 'recovery']
+    case 'collection_loop':
+      return ['success', 'conditional', 'loop']
+    case 'merge':
+      return ['success', 'conditional', 'loop']
+    case 'subgraph':
+      return ['success', 'failure', 'recovery', 'loop']
+    case 'agent':
+      return ['success', 'failure', 'conditional', 'loop', 'recovery']
     case 'state_read':
     case 'state_query':
-      return '!bg-cyan-500'
+      return ['success', 'failure', 'conditional']
     case 'state_write':
     case 'state_patch':
+      return ['success', 'failure', 'loop']
+  }
+}
+
+function workflowSupportedIncomingEdgeTypes(node: WorkflowNodeDto): readonly WorkflowEdgeTypeDto[] {
+  if (node.type === 'terminal') {
+    if (node.terminalStatus === 'success') return ['success', 'conditional', 'manual_override']
+    if (node.terminalStatus === 'failure') return ['failure', 'recovery', 'loop']
+    return ['failure', 'recovery', 'conditional', 'loop', 'manual_override']
+  }
+  switch (node.type) {
+    case 'router':
+      return ['success', 'conditional', 'loop']
+    case 'human_checkpoint':
+      return ['failure', 'recovery', 'conditional', 'loop', 'manual_override']
+    case 'gate':
     case 'state_checkpoint':
-      return '!bg-lime-500'
+      return ['success', 'failure', 'recovery', 'conditional']
+    case 'merge':
+      return ['success', 'conditional', 'loop']
+    case 'state_read':
+    case 'state_query':
     case 'collection_loop':
-      return '!bg-indigo-500'
-    case 'subgraph':
-      return '!bg-fuchsia-500'
+      return ['success', 'conditional', 'loop']
+    case 'state_write':
+    case 'state_patch':
+      return ['success', 'conditional', 'loop', 'manual_override']
     case 'command':
-      return '!bg-orange-500'
+      return ['success', 'conditional']
+    case 'agent':
+    case 'subgraph':
+      return ['success', 'failure', 'conditional', 'loop', 'recovery', 'manual_override']
+  }
+}
+
+function workflowNodeSupportsOutgoingEdgeType(
+  node: WorkflowNodeDto | undefined,
+  edgeType: WorkflowEdgeTypeDto,
+): boolean {
+  return Boolean(node && workflowSupportedOutgoingEdgeTypes(node).includes(edgeType))
+}
+
+function workflowNodeSupportsIncomingEdgeType(
+  node: WorkflowNodeDto | undefined,
+  edgeType: WorkflowEdgeTypeDto,
+): boolean {
+  return Boolean(node && workflowSupportedIncomingEdgeTypes(node).includes(edgeType))
+}
+
+function isValidWorkflowConnection(
+  connection: Connection | WorkflowReactEdge,
+  nodes: readonly WorkflowNodeDto[],
+): boolean {
+  if (!connection.source || !connection.target || connection.source === connection.target) {
+    return false
+  }
+  const sourceEdgeType = workflowEdgeTypeFromHandleId(connection.sourceHandle)
+  const targetEdgeType = workflowEdgeTypeFromHandleId(connection.targetHandle)
+  if (!sourceEdgeType || !targetEdgeType || sourceEdgeType !== targetEdgeType) return false
+  const nodeById = new Map(nodes.map((node) => [node.id, node]))
+  return (
+    workflowNodeSupportsOutgoingEdgeType(nodeById.get(connection.source), sourceEdgeType) &&
+    workflowNodeSupportsIncomingEdgeType(nodeById.get(connection.target), targetEdgeType)
+  )
+}
+
+function workflowDefaultEdgePriority(edgeType: WorkflowEdgeTypeDto): number {
+  switch (edgeType) {
+    case 'success':
+      return 10
+    case 'failure':
+    case 'recovery':
+      return 20
+    case 'conditional':
+      return 30
+    case 'loop':
+      return 40
+    case 'manual_override':
+      return 50
   }
 }
 
@@ -3885,17 +4622,16 @@ function workflowReactEdgeFromDefinitionEdge(
   } = {},
 ): WorkflowReactEdge {
   const handleSides = workflowEdgeHandleSides(edge, nodeById)
-  const sourceNode = nodeById.get(edge.fromNodeId)
-  const edgeTone = workflowEdgeToneForSource(sourceNode)
+  const edgeTone = workflowEdgeTone(edge.type)
   const focused = options.selectedNodeId
     ? edge.fromNodeId === options.selectedNodeId || edge.toNodeId === options.selectedNodeId
     : false
   return {
     id: edge.id,
     source: edge.fromNodeId,
-    sourceHandle: workflowHandleId(handleSides.source),
+    sourceHandle: workflowHandleId(handleSides.source, edge.type),
     target: edge.toNodeId,
-    targetHandle: workflowHandleId(handleSides.target),
+    targetHandle: workflowHandleId(handleSides.target, edge.type),
     type: 'workflow-branch',
     markerEnd: { ...WORKFLOW_EDGE_MARKER, color: edgeTone.color },
     data: {
@@ -3927,8 +4663,8 @@ function workflowReactEdgeFromDefinitionEdge(
   }
 }
 
-function workflowEdgeToneForSource(node: WorkflowNodeDto | undefined): WorkflowEdgeTone {
-  const base = workflowSourceColorToken(node?.type)
+function workflowEdgeTone(type: WorkflowEdgeTypeDto): WorkflowEdgeTone {
+  const base = workflowEdgeColorToken(type)
   return {
     color: `color-mix(in oklab, ${base} 82%, var(--foreground))`,
     labelBackground: `color-mix(in oklab, var(--background) 94%, ${base} 6%)`,
@@ -3937,40 +4673,38 @@ function workflowEdgeToneForSource(node: WorkflowNodeDto | undefined): WorkflowE
   }
 }
 
-function workflowSourceColorToken(type: WorkflowNodeDto['type'] | undefined): string {
+function workflowEdgeColorToken(type: WorkflowEdgeTypeDto): string {
   switch (type) {
-    case 'agent':
-      return 'var(--color-amber-500, #f59e0b)'
-    case 'router':
-      return 'var(--color-sky-500, #0ea5e9)'
-    case 'gate':
+    case 'success':
       return 'var(--color-emerald-500, #10b981)'
-    case 'human_checkpoint':
+    case 'failure':
       return 'var(--color-rose-500, #f43f5e)'
-    case 'merge':
-      return 'var(--color-violet-500, #8b5cf6)'
-    case 'terminal':
-      return 'var(--foreground)'
-    case 'state_read':
-    case 'state_query':
-      return 'var(--color-cyan-500, #06b6d4)'
-    case 'state_write':
-    case 'state_patch':
-    case 'state_checkpoint':
-      return 'var(--color-lime-500, #84cc16)'
-    case 'collection_loop':
+    case 'conditional':
+      return 'var(--color-sky-500, #0ea5e9)'
+    case 'loop':
       return 'var(--color-indigo-500, #6366f1)'
-    case 'subgraph':
-      return 'var(--color-fuchsia-500, #d946ef)'
-    case 'command':
+    case 'recovery':
       return 'var(--color-orange-500, #f97316)'
-    default:
-      return 'var(--color-amber-500, #f59e0b)'
+    case 'manual_override':
+      return 'var(--color-violet-500, #8b5cf6)'
   }
 }
 
-function workflowHandleId(side: WorkflowHandleSide): string {
-  return `workflow-${side}`
+function workflowHandleId(side: WorkflowHandleSide, edgeType: WorkflowEdgeTypeDto): string {
+  return `workflow-${side}-${edgeType}`
+}
+
+function workflowEdgeTypeFromHandleId(handleId: string | null | undefined): WorkflowEdgeTypeDto | null {
+  if (!handleId) return null
+  const prefix = 'workflow-'
+  if (!handleId.startsWith(prefix)) return null
+  const withoutPrefix = handleId.slice(prefix.length)
+  const side = WORKFLOW_HANDLE_SIDES.find((candidate) => withoutPrefix.startsWith(`${candidate}-`))
+  if (!side) return null
+  const edgeType = withoutPrefix.slice(side.length + 1)
+  return WORKFLOW_EDGE_TYPE_ORDER.includes(edgeType as WorkflowEdgeTypeDto)
+    ? edgeType as WorkflowEdgeTypeDto
+    : null
 }
 
 function workflowArrowTargetClearance(marker: {

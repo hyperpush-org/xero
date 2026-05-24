@@ -24,9 +24,12 @@ import {
   ZoomOut,
 } from 'lucide-react'
 
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { cn } from '@/lib/utils'
+
 export const AGENT_CANVAS_EMPTY_VIEWPORT = { x: 0, y: 0, zoom: 0.72 } as const
 export const AGENT_CANVAS_CONTROL_ZOOM_TRANSITION_MS = 180
-export const AGENT_CANVAS_CONTROL_ICON_CLASS = 'h-[18px] w-[18px]'
+export const AGENT_CANVAS_CONTROL_ICON_CLASS = 'h-5 w-5'
 export const AGENT_CANVAS_DOT_GRID_GAP = 32
 export const AGENT_CANVAS_SNAP_GRID_SIZE = AGENT_CANVAS_DOT_GRID_GAP / 2
 export const AGENT_CANVAS_SNAP_GRID: [number, number] = [
@@ -187,48 +190,48 @@ export function AgentCanvasControls({
       showZoom={false}
       showFitView={false}
       showInteractive={false}
-      className="!bg-card !border !border-border !rounded-md !shadow-sm"
+      className="agent-canvas-controls"
     >
-      <ControlButton
+      <CanvasControlButton
         className="react-flow__controls-zoomin"
         onClick={handleZoomIn}
-        aria-label="Zoom in"
+        label="Zoom in"
       >
         <ZoomIn className={AGENT_CANVAS_CONTROL_ICON_CLASS} aria-hidden="true" />
-      </ControlButton>
-      <ControlButton
+      </CanvasControlButton>
+      <CanvasControlButton
         className="react-flow__controls-zoomout"
         onClick={handleZoomOut}
-        aria-label="Zoom out"
+        label="Zoom out"
       >
         <ZoomOut className={AGENT_CANVAS_CONTROL_ICON_CLASS} aria-hidden="true" />
-      </ControlButton>
-      <ControlButton
+      </CanvasControlButton>
+      <CanvasControlButton
         className="react-flow__controls-fitview"
         onClick={handleFitView}
-        aria-label="Fit view"
+        label="Fit view"
       >
         <Maximize className={AGENT_CANVAS_CONTROL_ICON_CLASS} aria-hidden="true" />
-      </ControlButton>
+      </CanvasControlButton>
       {extraControls?.map((item) => (
-        <ControlButton
+        <CanvasControlButton
           key={item.key ?? item.label}
           onClick={item.onClick}
-          aria-label={item.label}
-          aria-pressed={item.pressed}
+          label={item.label}
+          tooltip={item.title ?? item.label}
+          pressed={item.pressed}
           disabled={item.disabled}
           style={item.style}
-          title={item.title ?? item.label}
         >
           {item.children}
-        </ControlButton>
+        </CanvasControlButton>
       ))}
       {canShowLayoutControls ? (
         <>
-          <ControlButton
+          <CanvasControlButton
             onClick={onToggleLock}
-            aria-label={locked ? 'Unlock canvas' : 'Lock canvas'}
-            aria-pressed={locked}
+            label={locked ? 'Unlock canvas' : 'Lock canvas'}
+            pressed={locked}
             style={locked ? { color: 'var(--primary)' } : undefined}
           >
             {locked ? (
@@ -236,27 +239,67 @@ export function AgentCanvasControls({
             ) : (
               <Unlock className={AGENT_CANVAS_CONTROL_ICON_CLASS} aria-hidden="true" />
             )}
-          </ControlButton>
-          <ControlButton
+          </CanvasControlButton>
+          <CanvasControlButton
             onClick={onToggleSnapToGrid}
-            aria-label={snapToGrid ? 'Disable snap to grid' : 'Enable snap to grid'}
-            aria-pressed={snapToGrid}
+            label={snapToGrid ? 'Disable snap to grid' : 'Enable snap to grid'}
+            pressed={snapToGrid}
             disabled={layoutControlsDisabled}
             style={
               snapToGrid && !layoutControlsDisabled ? { color: 'var(--primary)' } : undefined
             }
           >
             <Magnet className={AGENT_CANVAS_CONTROL_ICON_CLASS} aria-hidden="true" />
-          </ControlButton>
-          <ControlButton
+          </CanvasControlButton>
+          <CanvasControlButton
             onClick={onResetLayout}
-            aria-label="Reset layout"
+            label="Reset layout"
             disabled={layoutControlsDisabled}
           >
             <RotateCcw className={AGENT_CANVAS_CONTROL_ICON_CLASS} aria-hidden="true" />
-          </ControlButton>
+          </CanvasControlButton>
         </>
       ) : null}
     </Controls>
+  )
+}
+
+function CanvasControlButton({
+  children,
+  className,
+  disabled,
+  label,
+  onClick,
+  pressed,
+  style,
+  tooltip = label,
+}: {
+  children: ReactNode
+  className?: string
+  disabled?: boolean
+  label: string
+  onClick: () => void
+  pressed?: boolean
+  style?: CSSProperties
+  tooltip?: string
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <ControlButton
+          className={cn('agent-canvas-controls__button', className)}
+          onClick={onClick}
+          aria-label={label}
+          aria-pressed={pressed}
+          disabled={disabled}
+          style={style}
+        >
+          {children}
+        </ControlButton>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={6} className="px-2 py-1 text-[11px]">
+        {tooltip}
+      </TooltipContent>
+    </Tooltip>
   )
 }

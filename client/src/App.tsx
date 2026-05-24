@@ -2951,6 +2951,13 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setSelectedWorkflowTemplatePreviewId(null)
   }, [selectedWorkflowIsDraft])
 
+  const handleClearWorkflowSelection = useCallback(() => {
+    setSelectedWorkflowDefinition(null)
+    setSelectedWorkflowRun(null)
+    setSelectedWorkflowIsDraft(false)
+    setSelectedWorkflowTemplatePreviewId(null)
+  }, [])
+
   const handleStartWorkflowDefinitionRun = useCallback(
     async (workflowId: string, initialInput: unknown) => {
       if (!activeProjectId || !resolvedAdapter.startWorkflowRun) {
@@ -3714,6 +3721,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onCreateWorkflowFromTemplate={handleCreateWorkflowFromTemplate}
                 onSaveWorkflowDefinition={handleSaveWorkflowDefinition}
                 onCancelWorkflowEditing={handleCancelWorkflowEditing}
+                onClearWorkflowSelection={handleClearWorkflowSelection}
                 onStartWorkflowDefinitionRun={handleStartWorkflowDefinitionRun}
                 onCancelWorkflowRun={handleCancelWorkflowRun}
                 onRetryWorkflowNodeRun={handleRetryWorkflowNodeRun}
