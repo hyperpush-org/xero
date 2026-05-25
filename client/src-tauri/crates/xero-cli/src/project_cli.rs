@@ -19,6 +19,13 @@ use super::{
 const TUI_SETTINGS_FILE: &str = "tui-settings.json";
 const DEFAULT_AGENT_SESSION_TITLE: &str = "New Chat";
 const MAX_SESSION_TITLE_CHARS: usize = 64;
+pub(crate) const GLOBAL_COMPUTER_USE_PROJECT_ID: &str = "global-computer-use";
+pub(crate) const GLOBAL_COMPUTER_USE_PROJECT_NAME: &str = "Computer Use";
+pub(crate) const GLOBAL_COMPUTER_USE_AGENT_SESSION_ID: &str = "agent-session-global-computer-use";
+
+const GLOBAL_COMPUTER_USE_REPOSITORY_ID: &str = "global-computer-use-repository";
+const GLOBAL_COMPUTER_USE_DIR: &str = "computer-use";
+const GLOBAL_COMPUTER_USE_STATE_DB: &str = "state.db";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -60,6 +67,7 @@ struct SessionRecord {
     agent_session_id: String,
     title: String,
     summary: String,
+    session_kind: String,
     status: String,
     selected: bool,
     created_at: String,
@@ -123,8 +131,12 @@ pub(crate) fn dispatch_git(
         Some("status") => command_git_status(globals, args[1..].to_vec()),
         Some("diff") => command_git_diff(globals, args[1..].to_vec()),
         Some("stage") => command_git_passthrough(globals, args[1..].to_vec(), "add", false),
-        Some("unstage") => command_git_passthrough(globals, args[1..].to_vec(), "restore-staged", false),
-        Some("discard") => command_git_passthrough(globals, args[1..].to_vec(), "restore-worktree", true),
+        Some("unstage") => {
+            command_git_passthrough(globals, args[1..].to_vec(), "restore-staged", false)
+        }
+        Some("discard") => {
+            command_git_passthrough(globals, args[1..].to_vec(), "restore-worktree", true)
+        }
         Some("commit") => command_git_commit(globals, args[1..].to_vec()),
         Some("fetch") => command_git_simple(globals, args[1..].to_vec(), &["fetch"]),
         Some("pull") => command_git_simple(globals, args[1..].to_vec(), &["pull", "--ff-only"]),
@@ -416,8 +428,23 @@ fn command_session_create(
         take_option(&mut args, "--session-id")?.unwrap_or_else(|| generate_id("session"));
     let title =
         take_option(&mut args, "--title")?.unwrap_or_else(|| title_from_session_id(&session_id));
+    let session_kind =
+        take_option(&mut args, "--session-kind")?.unwrap_or_else(|| "standard".to_owned());
+    match session_kind.trim() {
+        "standard" => {}
+        "computer_use" => {
+            return Err(CliError::usage(
+                "Computer Use is a global TUI capability and cannot be created inside a project.",
+            ));
+        }
+        other => {
+            return Err(CliError::usage(format!(
+                "`--session-kind` must be `standard` for project sessions, got `{other}`."
+            )));
+        }
+    }
     reject_project_unknown_options(&args)?;
-    upsert_session(&globals, &project_id, &session_id, &title)?;
+    upsert_session(&globals, &project_id, &session_id, &title, &session_kind)?;
     select_session(&globals, &project_id, &session_id)?;
     let session = session_by_id(&globals, &project_id, &session_id)?;
     Ok(response(
@@ -714,13 +741,14 @@ fn list_projects(globals: &GlobalOptions) -> Result<Vec<ProjectRecord>, CliError
                    repositories.branch, repositories.head_sha, projects.start_targets
             FROM projects
             JOIN repositories ON repositories.project_id = projects.id
+            WHERE projects.id != ?1
             ORDER BY projects.updated_at DESC, repositories.updated_at DESC, repositories.root_path ASC
             "#,
         )
         .map_err(|error| sqlite_error("xero_cli_project_list_prepare_failed", error))?;
     let app_data_root = cli_app_data_root(globals);
     let rows = statement
-        .query_map([], |row| {
+        .query_map(params![GLOBAL_COMPUTER_USE_PROJECT_ID], |row| {
             let project_id: String = row.get(0)?;
             let root_path: String = row.get(3)?;
             let raw_start_targets: String = row.get(6)?;
@@ -767,7 +795,7 @@ fn list_sessions(
     let settings = load_tui_settings(globals)?;
     let mut sql = String::from(
         r#"
-        SELECT project_id, agent_session_id, title, summary, status, selected,
+        SELECT project_id, agent_session_id, title, summary, session_kind, status, selected,
                created_at, updated_at, archived_at, last_run_id, last_provider_id
         FROM agent_sessions
         WHERE project_id = ?1
@@ -783,7 +811,7 @@ fn list_sessions(
     let rows = statement
         .query_map(params![project_id], |row| {
             let agent_session_id: String = row.get(1)?;
-            let db_selected = row.get::<_, i64>(5)? != 0;
+            let db_selected = row.get::<_, i64>(6)? != 0;
             Ok(SessionRecord {
                 selected: settings.selected_session_id.as_deref()
                     == Some(agent_session_id.as_str())
@@ -792,12 +820,13 @@ fn list_sessions(
                 agent_session_id,
                 title: row.get(2)?,
                 summary: row.get(3)?,
-                status: row.get(4)?,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
-                archived_at: row.get(8)?,
-                last_run_id: row.get(9)?,
-                last_provider_id: row.get(10)?,
+                session_kind: row.get(4)?,
+                status: row.get(5)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+                archived_at: row.get(9)?,
+                last_run_id: row.get(10)?,
+                last_provider_id: row.get(11)?,
             })
         })
         .map_err(|error| sqlite_error("xero_cli_session_list_failed", error))?;
@@ -848,27 +877,39 @@ fn upsert_session(
     project_id: &str,
     session_id: &str,
     title: &str,
+    session_kind: &str,
 ) -> Result<(), CliError> {
     validate_required_cli(session_id, "sessionId")?;
     validate_required_cli(title, "title")?;
+    validate_session_kind(session_kind)?;
     let connection = project_connection(globals, project_id)?;
     connection
         .execute(
             r#"
             INSERT INTO agent_sessions (
-                project_id, agent_session_id, title, summary, status, selected, updated_at
+                project_id, agent_session_id, title, summary, session_kind, status, selected, updated_at
             )
-            VALUES (?1, ?2, ?3, '', 'active', 0, ?4)
+            VALUES (?1, ?2, ?3, '', ?4, 'active', 0, ?5)
             ON CONFLICT(project_id, agent_session_id) DO UPDATE SET
                 title = excluded.title,
+                session_kind = excluded.session_kind,
                 status = 'active',
                 archived_at = NULL,
                 updated_at = excluded.updated_at
             "#,
-            params![project_id, session_id, title, now_timestamp()],
+            params![project_id, session_id, title, session_kind, now_timestamp()],
         )
         .map_err(|error| sqlite_error("xero_cli_session_upsert_failed", error))?;
     Ok(())
+}
+
+fn validate_session_kind(value: &str) -> Result<(), CliError> {
+    match value.trim() {
+        "standard" | "computer_use" => Ok(()),
+        other => Err(CliError::usage(format!(
+            "Session kind must be `standard` or `computer_use`, got `{other}`."
+        ))),
+    }
 }
 
 fn title_from_session_id(session_id: &str) -> String {
@@ -1049,6 +1090,7 @@ fn open_global_registry(globals: &GlobalOptions) -> Result<Connection, CliError>
         )
         .map_err(|error| sqlite_error("xero_cli_project_registry_migrate_failed", error))?;
     ensure_project_start_targets_column(&connection)?;
+    ensure_agent_session_kind_column(&connection)?;
     Ok(connection)
 }
 
@@ -1092,6 +1134,187 @@ fn upsert_global_project(
             params![repository_id, project_id, root_path, name, branch, head_sha, now_timestamp()],
         )
         .map_err(|error| sqlite_error("xero_cli_project_registry_write_failed", error))?;
+    Ok(())
+}
+
+pub(crate) fn global_computer_use_root(globals: &GlobalOptions) -> PathBuf {
+    cli_app_data_root(globals).join(GLOBAL_COMPUTER_USE_DIR)
+}
+
+pub(crate) fn global_computer_use_database_path(globals: &GlobalOptions) -> PathBuf {
+    global_computer_use_root(globals).join(GLOBAL_COMPUTER_USE_STATE_DB)
+}
+
+pub(crate) fn ensure_global_computer_use_project(globals: &GlobalOptions) -> Result<(), CliError> {
+    let root_path = global_computer_use_root(globals);
+    fs::create_dir_all(&root_path).map_err(|error| {
+        CliError::system_fault(
+            "xero_cli_computer_use_root_prepare_failed",
+            format!(
+                "Could not create Computer Use app-data root `{}`: {error}",
+                root_path.display()
+            ),
+        )
+    })?;
+
+    let root_path_string = root_path.to_string_lossy().into_owned();
+    upsert_global_computer_use_registry(globals, &root_path_string)?;
+    ensure_global_computer_use_state(globals, &root_path_string)
+}
+
+fn upsert_global_computer_use_registry(
+    globals: &GlobalOptions,
+    root_path: &str,
+) -> Result<(), CliError> {
+    let connection = open_global_registry(globals)?;
+    let now = now_timestamp();
+    connection
+        .execute(
+            r#"
+            INSERT INTO projects (id, name, branch, updated_at)
+            VALUES (?1, ?2, NULL, ?3)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                branch = NULL,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                GLOBAL_COMPUTER_USE_PROJECT_ID,
+                GLOBAL_COMPUTER_USE_PROJECT_NAME,
+                now,
+            ],
+        )
+        .map_err(|error| sqlite_error("xero_cli_computer_use_registry_write_failed", error))?;
+    connection
+        .execute(
+            r#"
+            INSERT INTO repositories (id, project_id, root_path, display_name, branch, head_sha, is_git_repo, updated_at)
+            VALUES (?1, ?2, ?3, ?4, NULL, NULL, 0, ?5)
+            ON CONFLICT(id) DO UPDATE SET
+                project_id = excluded.project_id,
+                root_path = excluded.root_path,
+                display_name = excluded.display_name,
+                branch = NULL,
+                head_sha = NULL,
+                is_git_repo = 0,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                GLOBAL_COMPUTER_USE_REPOSITORY_ID,
+                GLOBAL_COMPUTER_USE_PROJECT_ID,
+                root_path,
+                GLOBAL_COMPUTER_USE_PROJECT_NAME,
+                now,
+            ],
+        )
+        .map_err(|error| sqlite_error("xero_cli_computer_use_registry_write_failed", error))?;
+    Ok(())
+}
+
+fn ensure_global_computer_use_state(
+    globals: &GlobalOptions,
+    root_path: &str,
+) -> Result<(), CliError> {
+    let database_path = global_computer_use_database_path(globals);
+    if let Some(parent) = database_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            CliError::system_fault(
+                "xero_cli_computer_use_state_prepare_failed",
+                format!(
+                    "Could not create Computer Use state directory `{}`: {error}",
+                    parent.display()
+                ),
+            )
+        })?;
+    }
+    let connection = Connection::open(&database_path)
+        .map_err(|error| sqlite_error("xero_cli_computer_use_state_open_failed", error))?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(|error| sqlite_error("xero_cli_computer_use_state_config_failed", error))?;
+    connection
+        .execute_batch(BENCHMARK_PROJECT_SCHEMA)
+        .map_err(|error| sqlite_error("xero_cli_computer_use_state_migrate_failed", error))?;
+    ensure_project_start_targets_column(&connection)?;
+    ensure_agent_session_kind_column(&connection)?;
+
+    let now = now_timestamp();
+    let tx = connection
+        .unchecked_transaction()
+        .map_err(|error| sqlite_error("xero_cli_computer_use_state_write_failed", error))?;
+    tx.execute(
+        r#"
+        INSERT INTO projects (id, name, branch, updated_at)
+        VALUES (?1, ?2, NULL, ?3)
+        ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            branch = NULL,
+            updated_at = excluded.updated_at
+        "#,
+        params![
+            GLOBAL_COMPUTER_USE_PROJECT_ID,
+            GLOBAL_COMPUTER_USE_PROJECT_NAME,
+            now,
+        ],
+    )
+    .map_err(|error| sqlite_error("xero_cli_computer_use_state_write_failed", error))?;
+    tx.execute(
+        r#"
+        INSERT INTO repositories (id, project_id, root_path, display_name, branch, head_sha, is_git_repo, updated_at)
+        VALUES (?1, ?2, ?3, ?4, NULL, NULL, 0, ?5)
+        ON CONFLICT(id) DO UPDATE SET
+            project_id = excluded.project_id,
+            root_path = excluded.root_path,
+            display_name = excluded.display_name,
+            branch = NULL,
+            head_sha = NULL,
+            is_git_repo = 0,
+            updated_at = excluded.updated_at
+        "#,
+        params![
+            GLOBAL_COMPUTER_USE_REPOSITORY_ID,
+            GLOBAL_COMPUTER_USE_PROJECT_ID,
+            root_path,
+            GLOBAL_COMPUTER_USE_PROJECT_NAME,
+            now,
+        ],
+    )
+    .map_err(|error| sqlite_error("xero_cli_computer_use_state_write_failed", error))?;
+    tx.execute(
+        r#"
+        INSERT INTO agent_sessions (
+            project_id,
+            agent_session_id,
+            title,
+            summary,
+            session_kind,
+            status,
+            selected,
+            remote_visible,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, '', 'computer_use', 'active', 1, 0, ?4)
+        ON CONFLICT(project_id, agent_session_id) DO UPDATE SET
+            session_kind = 'computer_use',
+            title = CASE
+                WHEN trim(agent_sessions.title) = '' THEN excluded.title
+                ELSE agent_sessions.title
+            END,
+            status = 'active',
+            selected = 1,
+            remote_visible = 0,
+            archived_at = NULL
+        "#,
+        params![
+            GLOBAL_COMPUTER_USE_PROJECT_ID,
+            GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
+            GLOBAL_COMPUTER_USE_PROJECT_NAME,
+            now,
+        ],
+    )
+    .map_err(|error| sqlite_error("xero_cli_computer_use_state_write_failed", error))?;
+    tx.commit()
+        .map_err(|error| sqlite_error("xero_cli_computer_use_state_write_failed", error))?;
     Ok(())
 }
 
@@ -1178,8 +1401,8 @@ fn ensure_project_state(
             params![
                 project_id,
                 match kind {
-                    ProjectKind::Brownfield => "Main",
-                    ProjectKind::Greenfield => "Main",
+                    ProjectKind::Brownfield => DEFAULT_AGENT_SESSION_TITLE,
+                    ProjectKind::Greenfield => DEFAULT_AGENT_SESSION_TITLE,
                 },
                 now_timestamp(),
             ],
@@ -1209,6 +1432,30 @@ fn ensure_project_start_targets_column(connection: &Connection) -> Result<(), Cl
     Ok(())
 }
 
+fn ensure_agent_session_kind_column(connection: &Connection) -> Result<(), CliError> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(agent_sessions)")
+        .map_err(|error| sqlite_error("xero_cli_session_kind_probe_failed", error))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| sqlite_error("xero_cli_session_kind_probe_failed", error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| sqlite_error("xero_cli_session_kind_probe_failed", error))?;
+    if columns.is_empty() {
+        return Ok(());
+    }
+    if columns.iter().any(|column| column == "session_kind") {
+        return Ok(());
+    }
+    connection
+        .execute(
+            "ALTER TABLE agent_sessions ADD COLUMN session_kind TEXT NOT NULL DEFAULT 'standard'",
+            [],
+        )
+        .map_err(|error| sqlite_error("xero_cli_session_kind_migrate_failed", error))?;
+    Ok(())
+}
+
 fn decode_start_targets(value: &JsonValue) -> Result<Vec<StartTargetRecord>, CliError> {
     let targets = value
         .as_array()
@@ -1235,6 +1482,18 @@ pub(crate) fn project_connection(
     project_id: &str,
 ) -> Result<Connection, CliError> {
     validate_required_cli(project_id, "projectId")?;
+    if project_id == GLOBAL_COMPUTER_USE_PROJECT_ID {
+        ensure_global_computer_use_project(globals)?;
+        let database_path = global_computer_use_database_path(globals);
+        let connection = Connection::open(&database_path)
+            .map_err(|error| sqlite_error("xero_cli_project_state_open_failed", error))?;
+        connection
+            .busy_timeout(Duration::from_secs(5))
+            .map_err(|error| sqlite_error("xero_cli_project_state_config_failed", error))?;
+        ensure_project_start_targets_column(&connection)?;
+        ensure_agent_session_kind_column(&connection)?;
+        return Ok(connection);
+    }
     let project = project_by_id(globals, project_id)?;
     if !Path::new(&project.database_path).exists() {
         return Err(CliError::user_fixable(
@@ -1255,6 +1514,10 @@ pub(crate) fn project_root_path(
     globals: &GlobalOptions,
     project_id: &str,
 ) -> Result<PathBuf, CliError> {
+    if project_id == GLOBAL_COMPUTER_USE_PROJECT_ID {
+        ensure_global_computer_use_project(globals)?;
+        return Ok(global_computer_use_root(globals));
+    }
     Ok(PathBuf::from(project_by_id(globals, project_id)?.root_path))
 }
 
@@ -1592,5 +1855,107 @@ mod tests {
             title_from_session_id("session-1234567890abcdef"),
             "New Chat"
         );
+    }
+
+    #[test]
+    fn ensure_project_state_seeds_default_session_as_new_chat() {
+        let root = temp_path("default-session-title");
+        let globals = globals_for(root.clone());
+        let root_path = root.to_string_lossy().into_owned();
+
+        for (project_id, kind) in [
+            ("project-brownfield", ProjectKind::Brownfield),
+            ("project-greenfield", ProjectKind::Greenfield),
+        ] {
+            let repository_id = format!("repo-{project_id}");
+            ensure_project_state(
+                &globals,
+                ProjectStateSeed {
+                    project_id,
+                    repository_id: &repository_id,
+                    name: "Project",
+                    root_path: &root_path,
+                    branch: Some("main"),
+                    head_sha: Some("abc123"),
+                    kind,
+                },
+            )
+            .expect("ensure project state");
+
+            let connection =
+                Connection::open(workspace_project_database_path(&globals, project_id))
+                    .expect("open project database");
+            let title: String = connection
+                .query_row(
+                    "SELECT title FROM agent_sessions WHERE project_id = ?1 AND agent_session_id = 'agent-session-main'",
+                    params![project_id],
+                    |row| row.get(0),
+                )
+                .expect("default agent session title");
+            assert_eq!(title, DEFAULT_AGENT_SESSION_TITLE);
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn global_computer_use_project_is_app_data_backed_and_hidden() {
+        let root = temp_path("computer-use");
+        let globals = globals_for(root.clone());
+
+        ensure_global_computer_use_project(&globals).expect("ensure global computer use project");
+
+        let database_path = global_computer_use_database_path(&globals);
+        assert!(database_path.exists());
+        assert!(database_path.starts_with(cli_app_data_root(&globals)));
+        assert!(list_projects(&globals)
+            .expect("list projects")
+            .iter()
+            .all(|project| project.project_id != GLOBAL_COMPUTER_USE_PROJECT_ID));
+
+        let connection =
+            project_connection(&globals, GLOBAL_COMPUTER_USE_PROJECT_ID).expect("project db");
+        let (title, session_kind, remote_visible): (String, String, i64) = connection
+            .query_row(
+                r#"
+                SELECT title, session_kind, remote_visible
+                FROM agent_sessions
+                WHERE project_id = ?1 AND agent_session_id = ?2
+                "#,
+                params![
+                    GLOBAL_COMPUTER_USE_PROJECT_ID,
+                    GLOBAL_COMPUTER_USE_AGENT_SESSION_ID
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("global computer use session");
+        assert_eq!(title, GLOBAL_COMPUTER_USE_PROJECT_NAME);
+        assert_eq!(session_kind, "computer_use");
+        assert_eq!(remote_visible, 0);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_session_create_rejects_computer_use_kind() {
+        let root = temp_path("project-computer-use-session-kind");
+        let globals = globals_for(root.clone());
+
+        let error = command_session_create(
+            globals.clone(),
+            vec![
+                "--project-id".into(),
+                "project-1".into(),
+                "--session-kind".into(),
+                "computer_use".into(),
+            ],
+        )
+        .expect_err("computer use cannot be project-scoped");
+
+        assert!(error
+            .message
+            .contains("Computer Use is a global TUI capability"));
+
+        let _ = fs::remove_dir_all(root);
     }
 }

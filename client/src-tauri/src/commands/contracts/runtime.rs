@@ -158,6 +158,7 @@ impl Default for ResolvedAgentToolApplicationStyleDto {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeAgentIdDto {
     Ask,
+    ComputerUse,
     Plan,
     Engineer,
     Debug,
@@ -188,6 +189,7 @@ pub enum RuntimeAgentLifecycleStateDto {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeAgentBaseCapabilityProfileDto {
     ObserveOnly,
+    ComputerUse,
     Planning,
     RepositoryRecon,
     Engineering,
@@ -199,6 +201,7 @@ pub enum RuntimeAgentBaseCapabilityProfileDto {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeAgentPromptPolicyDto {
     Ask,
+    ComputerUse,
     Plan,
     Engineer,
     Debug,
@@ -211,6 +214,7 @@ pub enum RuntimeAgentPromptPolicyDto {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeAgentToolPolicyDto {
     ObserveOnly,
+    ComputerUse,
     Planning,
     RepositoryRecon,
     Engineering,
@@ -254,6 +258,7 @@ impl RuntimeAgentIdDto {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Ask => "ask",
+            Self::ComputerUse => "computer_use",
             Self::Plan => "plan",
             Self::Engineer => "engineer",
             Self::Debug => "debug",
@@ -266,6 +271,7 @@ impl RuntimeAgentIdDto {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Ask => "Ask",
+            Self::ComputerUse => "Computer Use",
             Self::Plan => "Plan",
             Self::Engineer => "Engineer",
             Self::Debug => "Debug",
@@ -327,6 +333,7 @@ pub fn default_runtime_agent_approval_mode(
 ) -> RuntimeRunApprovalModeDto {
     match agent_id {
         RuntimeAgentIdDto::Ask => RuntimeRunApprovalModeDto::Suggest,
+        RuntimeAgentIdDto::ComputerUse => RuntimeRunApprovalModeDto::Suggest,
         RuntimeAgentIdDto::Plan => RuntimeRunApprovalModeDto::Suggest,
         RuntimeAgentIdDto::Engineer => RuntimeRunApprovalModeDto::Suggest,
         RuntimeAgentIdDto::Debug => RuntimeRunApprovalModeDto::Suggest,
@@ -341,6 +348,7 @@ pub fn runtime_agent_allowed_approval_modes(
 ) -> Vec<RuntimeRunApprovalModeDto> {
     match agent_id {
         RuntimeAgentIdDto::Ask
+        | RuntimeAgentIdDto::ComputerUse
         | RuntimeAgentIdDto::Plan
         | RuntimeAgentIdDto::Crawl
         | RuntimeAgentIdDto::AgentCreate => {
@@ -362,6 +370,7 @@ pub fn runtime_agent_allows_approval_mode(
 ) -> bool {
     match agent_id {
         RuntimeAgentIdDto::Ask
+        | RuntimeAgentIdDto::ComputerUse
         | RuntimeAgentIdDto::Plan
         | RuntimeAgentIdDto::Crawl
         | RuntimeAgentIdDto::AgentCreate => {
@@ -377,6 +386,7 @@ pub fn builtin_runtime_agent_descriptors() -> Vec<RuntimeAgentDescriptorDto> {
     [
         runtime_agent_descriptor(RuntimeAgentIdDto::Generalist),
         runtime_agent_descriptor(RuntimeAgentIdDto::Ask),
+        runtime_agent_descriptor(RuntimeAgentIdDto::ComputerUse),
         runtime_agent_descriptor(RuntimeAgentIdDto::Plan),
         runtime_agent_descriptor(RuntimeAgentIdDto::Engineer),
         runtime_agent_descriptor(RuntimeAgentIdDto::Debug),
@@ -413,6 +423,25 @@ pub fn runtime_agent_descriptor(agent_id: RuntimeAgentIdDto) -> RuntimeAgentDesc
             output_contract: RuntimeAgentOutputContractDto::Answer,
             allow_plan_gate: false,
             allow_verification_gate: true,
+            allow_auto_compact: true,
+        },
+        RuntimeAgentIdDto::ComputerUse => RuntimeAgentDescriptorDto {
+            id: agent_id,
+            version: 1,
+            label: "Computer Use".into(),
+            short_label: "Computer".into(),
+            description: "Follow direct user instructions by observing and controlling the local computer through bounded automation tools.".into(),
+            task_purpose: "Observe visible computer state, perform bounded UI automation, ask before risky actions, and stop immediately when cancelled.".into(),
+            scope: RuntimeAgentScopeDto::BuiltIn,
+            lifecycle_state: RuntimeAgentLifecycleStateDto::Active,
+            base_capability_profile: RuntimeAgentBaseCapabilityProfileDto::ComputerUse,
+            default_approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            allowed_approval_modes: runtime_agent_allowed_approval_modes(&agent_id),
+            prompt_policy: RuntimeAgentPromptPolicyDto::ComputerUse,
+            tool_policy: RuntimeAgentToolPolicyDto::ComputerUse,
+            output_contract: RuntimeAgentOutputContractDto::Answer,
+            allow_plan_gate: false,
+            allow_verification_gate: false,
             allow_auto_compact: true,
         },
         RuntimeAgentIdDto::Plan => RuntimeAgentDescriptorDto {
@@ -675,6 +704,13 @@ pub enum AgentSessionStatusDto {
     Archived,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentSessionKindDto {
+    Standard,
+    ComputerUse,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentSessionLineageBoundaryKindDto {
@@ -723,6 +759,7 @@ pub struct AgentSessionLineageDto {
 pub struct AgentSessionDto {
     pub project_id: String,
     pub agent_session_id: String,
+    pub session_kind: AgentSessionKindDto,
     pub title: String,
     pub summary: String,
     pub status: AgentSessionStatusDto,
@@ -748,6 +785,10 @@ pub struct CreateAgentSessionRequestDto {
     pub summary: String,
     #[serde(default)]
     pub selected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_kind: Option<AgentSessionKindDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_agent_id: Option<RuntimeAgentIdDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1205,6 +1246,7 @@ mod tests {
             vec![
                 "generalist",
                 "ask",
+                "computer_use",
                 "plan",
                 "engineer",
                 "debug",
@@ -1365,6 +1407,7 @@ mod tests {
             vec![
                 RuntimeAgentIdDto::Generalist,
                 RuntimeAgentIdDto::Ask,
+                RuntimeAgentIdDto::ComputerUse,
                 RuntimeAgentIdDto::Plan,
                 RuntimeAgentIdDto::Engineer,
                 RuntimeAgentIdDto::Debug,
@@ -1399,6 +1442,10 @@ mod tests {
                 RuntimeRunApprovalModeDto::AutoEdit,
                 RuntimeRunApprovalModeDto::Yolo
             ]
+        );
+        assert_eq!(
+            runtime_agent_allowed_approval_modes(&RuntimeAgentIdDto::ComputerUse),
+            vec![RuntimeRunApprovalModeDto::Suggest]
         );
     }
 
@@ -1535,6 +1582,54 @@ pub enum RuntimeStreamTranscriptRole {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeStreamMediaKindDto {
+    Image,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", tag = "kind", deny_unknown_fields)]
+pub enum RuntimeStreamMediaSourceDto {
+    #[serde(rename = "app_data_path")]
+    AppDataPath { absolute_path: String },
+    #[serde(rename = "artifact")]
+    Artifact {
+        artifact_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        absolute_path: Option<String>,
+    },
+    #[serde(rename = "data_url")]
+    DataUrl { data_url: String },
+    #[serde(rename = "remote_artifact")]
+    RemoteArtifact {
+        artifact_id: String,
+        computer_id: String,
+        session_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeStreamMediaAttachmentDto {
+    pub id: String,
+    pub kind: RuntimeStreamMediaKindDto,
+    pub media_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    pub source: RuntimeStreamMediaSourceDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeStreamItemDto {
     pub kind: RuntimeStreamItemKind,
@@ -1562,6 +1657,8 @@ pub struct RuntimeStreamItemDto {
     pub tool_summary: Option<ToolResultSummaryDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_result_preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media_attachments: Vec<RuntimeStreamMediaAttachmentDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

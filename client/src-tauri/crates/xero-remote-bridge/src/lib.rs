@@ -398,6 +398,7 @@ pub enum InboundCommandKind {
     StageAttachment,
     DiscardAttachment,
     UpdateSessionControls,
+    FetchRuntimeMediaArtifact,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -746,7 +747,7 @@ impl Default for DesktopBridgeLoopOptions {
     }
 }
 
-const CONTROL_SESSION_IDS: [&str; 3] = ["__sessions__", "__projects__", "__new__"];
+const CONTROL_SESSION_IDS: [&str; 4] = ["__sessions__", "__projects__", "__new__", "__theme__"];
 const MAX_SESSION_REPLAY_FRAMES: usize = 512;
 const RELAY_TOKEN_REFRESH_SKEW_SECONDS: i64 = 120;
 const ACCOUNT_DEVICES_CACHE_TTL: Duration = Duration::from_secs(5);
@@ -1007,6 +1008,13 @@ where
         let bytes = encode_envelope(&envelope)?;
         self.enqueue_envelope(&envelope)?;
         Ok(Some(bytes))
+    }
+
+    pub fn computer_id(&self) -> BridgeResult<Option<String>> {
+        Ok(self
+            .registered_identity()?
+            .and_then(|identity| identity.desktop_device_id)
+            .filter(|id| !id.trim().is_empty()))
     }
 
     pub fn forward_payload(
@@ -1694,6 +1702,7 @@ mod tests {
                 "__sessions__".to_string(),
                 "__projects__".to_string(),
                 "__new__".to_string(),
+                "__theme__".to_string(),
             ]
         );
     }

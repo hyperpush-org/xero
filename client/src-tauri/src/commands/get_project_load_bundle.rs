@@ -17,6 +17,7 @@ use crate::{
     state::DesktopState,
 };
 
+use super::global_computer_use::GLOBAL_COMPUTER_USE_PROJECT_ID;
 use super::runtime_support::{
     emit_runtime_run_updated_if_changed, load_persisted_runtime_run, load_runtime_session_status,
     runtime_run_dto_from_snapshot, runtime_run_status_from_persisted, sync_autonomous_run_state,
@@ -69,11 +70,16 @@ fn get_project_load_bundle_blocking<R: Runtime>(
 
     let mut diagnostics = Vec::new();
 
-    let repository_status = section_result(
-        "repositoryStatus",
-        status::load_repository_status_from_root(&repo_root),
-        &mut diagnostics,
-    );
+    let is_global_computer_use = project_id == GLOBAL_COMPUTER_USE_PROJECT_ID;
+    let repository_status = if is_global_computer_use {
+        None
+    } else {
+        section_result(
+            "repositoryStatus",
+            status::load_repository_status_from_root(&repo_root),
+            &mut diagnostics,
+        )
+    };
 
     let runtime_session = section_result(
         "runtimeSession",
@@ -128,21 +134,27 @@ fn get_project_load_bundle_blocking<R: Runtime>(
         (None, None)
     };
 
-    let notification_dispatches = section_result(
-        "notificationDispatches",
-        project_store::load_notification_dispatches(&repo_root, &project_id, None).map(
-            |dispatches| {
-                dispatches
-                    .into_iter()
-                    .map(map_notification_dispatch_record)
-                    .collect::<Vec<_>>()
-            },
-        ),
-        &mut diagnostics,
-    )
-    .unwrap_or_default();
+    let notification_dispatches = if is_global_computer_use {
+        Vec::new()
+    } else {
+        section_result(
+            "notificationDispatches",
+            project_store::load_notification_dispatches(&repo_root, &project_id, None).map(
+                |dispatches| {
+                    dispatches
+                        .into_iter()
+                        .map(map_notification_dispatch_record)
+                        .collect::<Vec<_>>()
+                },
+            ),
+            &mut diagnostics,
+        )
+        .unwrap_or_default()
+    };
 
-    let notification_routes = if request.include_notification_routes {
+    let notification_routes = if is_global_computer_use {
+        Vec::new()
+    } else if request.include_notification_routes {
         section_result(
             "notificationRoutes",
             load_notification_routes(&app, &state, &repo_root, &project_id),
@@ -253,6 +265,7 @@ mod tests {
             agent_session_id: agent_session_id.into(),
             title: agent_session_id.into(),
             summary: String::new(),
+            session_kind: crate::commands::AgentSessionKindDto::Standard,
             status: status.clone(),
             selected,
             remote_visible: false,

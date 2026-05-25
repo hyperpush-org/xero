@@ -69,7 +69,7 @@ export function remoteVisibleSessionUpdateFromEnvelope(
 			projectName,
 			session,
 		);
-		return summary ? { kind: "upsert", summary } : null;
+		return summary?.remoteVisible ? { kind: "upsert", summary } : null;
 	}
 
 	if (
@@ -89,6 +89,8 @@ function removedSessionId(payload: Record<string, unknown>): string | null {
 	return (
 		stringField(
 			payload,
+			"remoteSessionId",
+			"remote_session_id",
 			"sessionId",
 			"session_id",
 			"agentSessionId",
@@ -97,6 +99,8 @@ function removedSessionId(payload: Record<string, unknown>): string | null {
 		(isRecord(payload.session)
 			? stringField(
 					payload.session,
+					"remoteSessionId",
+					"remote_session_id",
 					"agentSessionId",
 					"agent_session_id",
 					"sessionId",
@@ -139,17 +143,31 @@ function summaryFromRemoteSession(
 	session: unknown,
 ): VisibleSessionSummary | null {
 	if (!isRecord(session)) return null;
-	const sessionId = stringField(session, "agentSessionId", "agent_session_id");
+	const agentSessionId = stringField(
+		session,
+		"agentSessionId",
+		"agent_session_id",
+		"sessionId",
+		"session_id",
+	);
+	const sessionId =
+		stringField(session, "remoteSessionId", "remote_session_id") ??
+		stringField(session, "sessionId", "session_id") ??
+		agentSessionId;
 	const resolvedProjectId =
 		projectId ?? stringField(session, "projectId", "project_id");
-	if (!sessionId || !resolvedProjectId) return null;
+	if (!sessionId || !agentSessionId || !resolvedProjectId) return null;
 	const resolvedProjectName =
 		projectName ?? stringField(session, "projectName", "project_name");
-	return {
+	const sessionKind = sessionKindField(session);
+	const summary = {
 		computerId,
 		sessionId,
+		agentSessionId,
 		projectId: resolvedProjectId,
 		projectName: resolvedProjectName,
+		sessionKind,
+		isComputerUse: sessionKind === "computer_use",
 		title: stringField(session, "title") ?? "New Chat",
 		lastActivityAt:
 			stringField(
@@ -163,6 +181,14 @@ function summaryFromRemoteSession(
 		remoteVisible:
 			booleanField(session, "remoteVisible", "remote_visible") ?? true,
 	};
+	return summary.remoteVisible ? summary : null;
+}
+
+function sessionKindField(
+	record: Record<string, unknown>,
+): "standard" | "computer_use" {
+	const value = stringField(record, "sessionKind", "session_kind");
+	return value === "computer_use" ? "computer_use" : "standard";
 }
 
 function desktopNameForId(

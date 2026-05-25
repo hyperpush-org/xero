@@ -15,13 +15,9 @@ pub(crate) fn dispatch_file(
     match args.first().map(String::as_str) {
         Some("list") | Some("tree") => command_file_tool(globals, args[1..].to_vec(), "list"),
         Some("read") | Some("preview") => command_file_tool(globals, args[1..].to_vec(), "read"),
-        Some("write") | Some("create") => {
-            command_file_tool(globals, args[1..].to_vec(), "write")
-        }
+        Some("write") | Some("create") => command_file_tool(globals, args[1..].to_vec(), "write"),
         Some("patch") => command_file_tool(globals, args[1..].to_vec(), "patch"),
-        Some("delete") | Some("remove") => {
-            command_file_tool(globals, args[1..].to_vec(), "delete")
-        }
+        Some("delete") | Some("remove") => command_file_tool(globals, args[1..].to_vec(), "delete"),
         Some("move") | Some("rename") => command_file_tool(globals, args[1..].to_vec(), "move"),
         Some("replace") => command_file_tool(globals, args[1..].to_vec(), "replace"),
         Some("tools") => command_file_tools(globals, args[1..].to_vec()),

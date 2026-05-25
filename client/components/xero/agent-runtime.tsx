@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronRight,
   Loader2,
+  Monitor,
   Plus,
   SplitSquareHorizontal,
   X,
@@ -41,6 +42,7 @@ import type {
   RuntimeStreamActionRequiredItemView,
   RuntimeStreamActivityItemView,
   RuntimeStreamFailureItemView,
+  RuntimeStreamMediaAttachmentDto,
   RuntimeStreamToolItemView,
   RuntimeStreamViewItem,
   ReturnSessionToHereResponseDto,
@@ -92,6 +94,7 @@ import {
   type CodeUndoRequest,
   type CodeUndoConflictSummary,
   type CodeUndoUiState,
+  type ConversationMessageAttachment,
   type ConversationTurn,
   type ReturnSessionToHereUiRequest,
 } from '@xero/ui/components/transcript/conversation-section'
@@ -365,9 +368,48 @@ function actionTurnFromItem(item: RuntimeStreamToolItemView): ConversationTurn {
     title: getToolCardTitle(item),
     detail,
     detailRows: getActionDetailRows(item, summary),
+    mediaAttachments: runtimeMediaAttachmentsToConversation(item.mediaAttachments),
     state: item.toolState,
     defaultOpen: isCodeEditToolName(item.toolName),
   }
+}
+
+function runtimeMediaAttachmentsToConversation(
+  attachments: readonly RuntimeStreamMediaAttachmentDto[] | null | undefined,
+): ConversationMessageAttachment[] | undefined {
+  if (!attachments || attachments.length === 0) {
+    return undefined
+  }
+  return attachments.map((attachment) => {
+    const originalName = attachment.title?.trim()
+      || (attachment.source.kind === 'app_data_path'
+        ? attachment.source.absolutePath.split(/[\\/]/).pop()
+        : null)
+      || attachment.id
+    const absolutePath =
+      attachment.source.kind === 'app_data_path'
+        ? attachment.source.absolutePath
+        : attachment.source.kind === 'artifact'
+          ? attachment.source.absolutePath ?? undefined
+          : undefined
+    return {
+      id: attachment.id,
+      kind: attachment.kind,
+      mediaType: attachment.mediaType,
+      originalName,
+      sizeBytes: attachment.sizeBytes ?? 0,
+      title: attachment.title ?? null,
+      alt: attachment.alt ?? null,
+      width: attachment.width ?? null,
+      height: attachment.height ?? null,
+      source: attachment.source,
+      renderUrl: attachment.renderUrl ?? null,
+      previewSrc:
+        attachment.renderUrl ??
+        (attachment.source.kind === 'data_url' ? attachment.source.dataUrl : undefined),
+      absolutePath,
+    }
+  })
 }
 
 function fileChangeTurnFromItem(item: RuntimeStreamActivityItemView): ConversationTurn {
@@ -484,6 +526,22 @@ function mergeActionRows(
   return merged
 }
 
+function mergeConversationAttachments(
+  existing: ConversationMessageAttachment[] | undefined,
+  incoming: ConversationMessageAttachment[] | undefined,
+): ConversationMessageAttachment[] | undefined {
+  if (!existing?.length) return incoming
+  if (!incoming?.length) return existing
+  const merged = existing.slice()
+  const seen = new Set(existing.map((attachment) => attachment.id))
+  for (const attachment of incoming) {
+    if (seen.has(attachment.id)) continue
+    seen.add(attachment.id)
+    merged.push(attachment)
+  }
+  return merged
+}
+
 function mergeActionTurn(existing: ConversationTurn, incoming: ConversationTurn): void {
   if (existing.kind !== 'action' || incoming.kind !== 'action') {
     return
@@ -493,6 +551,10 @@ function mergeActionTurn(existing: ConversationTurn, incoming: ConversationTurn)
   existing.state = incoming.state
   existing.detail = incoming.detail
   existing.detailRows = mergeActionRows(existing.detailRows, incoming.detailRows)
+  existing.mediaAttachments = mergeConversationAttachments(
+    existing.mediaAttachments,
+    incoming.mediaAttachments,
+  )
   existing.defaultOpen = Boolean(existing.defaultOpen || incoming.defaultOpen)
 
   if (incoming.title.length >= existing.title.length) {
@@ -635,6 +697,7 @@ function actionGroupTurnFromActions(
       title: action.title,
       detail: action.detail,
       detailRows: action.detailRows,
+      mediaAttachments: action.mediaAttachments,
       state: action.state ?? null,
       ...(action.defaultOpen ? { defaultOpen: true } : {}),
     })),
@@ -801,6 +864,10 @@ function routeItemIntoTurns(item: RuntimeStreamViewItem, context: TurnRoutingCon
     if (item.role === 'assistant' && previous?.kind === 'message' && previous.role === item.role) {
       previous.text = appendTranscriptDelta(previous.text, item.text)
       previous.sequence = item.sequence
+      previous.attachments = mergeConversationAttachments(
+        previous.attachments,
+        runtimeMediaAttachmentsToConversation(item.mediaAttachments),
+      )
       maybeAttachRoutingSuggestion(context, previous)
       return false
     }
@@ -811,6 +878,7 @@ function routeItemIntoTurns(item: RuntimeStreamViewItem, context: TurnRoutingCon
       role: item.role,
       sequence: item.sequence,
       text: item.text,
+      attachments: runtimeMediaAttachmentsToConversation(item.mediaAttachments),
     })
     if (item.role === 'assistant') {
       const justPushed = context.turns.at(-1)
@@ -1149,11 +1217,12 @@ function conversationTurnTextKey(turn: ConversationTurn): string | null {
 
   const runId = getConversationTurnRunId(turn)
   const text = normalizeConversationTurnText(turn.text)
-  if (!runId || !text) {
+  const attachmentKey = turn.attachments?.map((attachment) => attachment.id).join('|') ?? ''
+  if (!runId || (!text && !attachmentKey)) {
     return null
   }
 
-  return ['message', runId, turn.role, text].join('\u0000')
+  return ['message', runId, turn.role, text, attachmentKey].join('\u0000')
 }
 
 function conversationMessageCovers(
@@ -1177,7 +1246,9 @@ function conversationMessageCovers(
   const coveringText = normalizeConversationTurnText(coveringTurn.text)
   const candidateText = normalizeConversationTurnText(candidateTurn.text)
   if (!coveringText || !candidateText) {
-    return false
+    const coveringAttachments = coveringTurn.attachments?.map((attachment) => attachment.id).join('|') ?? ''
+    const candidateAttachments = candidateTurn.attachments?.map((attachment) => attachment.id).join('|') ?? ''
+    return Boolean(coveringAttachments && coveringAttachments === candidateAttachments)
   }
 
   return (
@@ -1924,6 +1995,8 @@ export const AgentRuntime = memo(function AgentRuntime({
   const selectedAgentSessionId =
     selectedAgentSession?.agentSessionId ?? agent.project.selectedAgentSessionId ?? null
   const hasSelectedAgentSession = Boolean(selectedAgentSessionId?.trim())
+  const isComputerUseSession = Boolean(selectedAgentSession?.isComputerUse)
+  const isComputerUseSidebar = inSidebar && isComputerUseSession
   const [codeUndoStates, setCodeUndoStates] = useState<Record<string, CodeUndoUiState>>({})
   const [returnSessionToHereStates, setReturnSessionToHereStates] = useState<Record<string, CodeUndoUiState>>({})
 
@@ -2197,6 +2270,7 @@ export const AgentRuntime = memo(function AgentRuntime({
     dictationEnabled: foregroundWorkReady && isFocusedPane,
     dictationScopeKey: `${agent.project.id}:${agent.project.selectedAgentSessionId ?? 'none'}`,
     reportComposerControls: foregroundWorkReady && isFocusedPane,
+    lockedRuntimeAgentId: isComputerUseSession ? 'computer_use' : null,
     pendingInitialRuntimeAgentId,
     pendingInitialAgentDefinitionId,
     onPendingInitialRuntimeAgentIdConsumed,
@@ -2238,14 +2312,19 @@ export const AgentRuntime = memo(function AgentRuntime({
     [controller.composerRuntimeAgentId],
   )
   const agentProjectOrigin = getAgentProjectOrigin(agent.project)
-  const availableRuntimeAgentIds = useMemo(
+  const availableRuntimeAgentIds = useMemo<readonly RuntimeAgentIdDto[]>(
     () =>
-      getRuntimeAgentDescriptorsForProjectOrigin(agentProjectOrigin).map(
-        (descriptor) => descriptor.id,
-      ),
-    [agentProjectOrigin],
+      isComputerUseSession
+        ? ['computer_use']
+        : getRuntimeAgentDescriptorsForProjectOrigin(agentProjectOrigin)
+            .map((descriptor) => descriptor.id)
+            .filter((id) => id !== 'computer_use'),
+    [agentProjectOrigin, isComputerUseSession],
   )
   useEffect(() => {
+    if (isComputerUseSession) {
+      return
+    }
     if (
       !controller.isRuntimeAgentSwitchDisabled &&
       !availableRuntimeAgentIds.includes(controller.composerRuntimeAgentId)
@@ -2257,6 +2336,7 @@ export const AgentRuntime = memo(function AgentRuntime({
     controller.composerRuntimeAgentId,
     controller.isRuntimeAgentSwitchDisabled,
     controller.handleComposerRuntimeAgentChange,
+    isComputerUseSession,
   ])
 
   const [resolvedRoutingTurns, setResolvedRoutingTurns] = useState<
@@ -2334,6 +2414,7 @@ export const AgentRuntime = memo(function AgentRuntime({
     {
       selectedProviderId,
       agentRuntimeBlocked,
+      selectedRuntimeAgentId: controller.composerRuntimeAgentId,
     },
   )
   const composerPlaceholder =
@@ -2352,6 +2433,11 @@ export const AgentRuntime = memo(function AgentRuntime({
           runtimeSession?.isAuthenticated &&
           !renderableRuntimeRun?.isTerminal
         ? 'Map this repository...'
+      : controller.composerRuntimeAgentId === 'computer_use' &&
+          !agentRuntimeBlocked &&
+          runtimeSession?.isAuthenticated &&
+          !renderableRuntimeRun?.isTerminal
+        ? 'Tell Xero what to do on this computer...'
       : baseComposerPlaceholder
   const showAgentSetupEmptyState = Boolean(
     agentRuntimeBlocked &&
@@ -2848,19 +2934,27 @@ export const AgentRuntime = memo(function AgentRuntime({
               dragHandle ? 'pointer-events-auto cursor-grab active:cursor-grabbing select-none' : null,
             )}
           >
-            <div className="pointer-events-auto flex min-w-0 items-center gap-1.5 text-[12.5px] text-muted-foreground">
-              {showPaneNumberChip ? (
-                <span
-                  aria-label={`Pane ${paneNumber}`}
-                  className="inline-flex h-[18px] shrink-0 items-center justify-center rounded-sm border border-border/60 bg-muted/40 px-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
-                >
-                  P{paneNumber}
+            {isComputerUseSidebar ? (
+              <div className="pointer-events-auto flex min-w-0 items-center gap-2 text-[12.5px]">
+                <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                  <Monitor className="h-3.5 w-3.5" />
                 </span>
-              ) : null}
-              <span className="truncate font-semibold text-foreground">{projectLabel}</span>
-              <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground/70" />
-              {inSidebar && sidebarSessions && sidebarSessions.length > 0 && onSelectSidebarSession ? (
-                <DropdownMenu>
+                <span className="truncate font-semibold text-foreground">{sessionLabel}</span>
+              </div>
+            ) : (
+              <div className="pointer-events-auto flex min-w-0 items-center gap-1.5 text-[12.5px] text-muted-foreground">
+                {showPaneNumberChip ? (
+                  <span
+                    aria-label={`Pane ${paneNumber}`}
+                    className="inline-flex h-[18px] shrink-0 items-center justify-center rounded-sm border border-border/60 bg-muted/40 px-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
+                  >
+                    P{paneNumber}
+                  </span>
+                ) : null}
+                <span className="truncate font-semibold text-foreground">{projectLabel}</span>
+                <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground/70" />
+                {inSidebar && sidebarSessions && sidebarSessions.length > 0 && onSelectSidebarSession ? (
+                  <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button
                       type="button"
@@ -2872,6 +2966,12 @@ export const AgentRuntime = memo(function AgentRuntime({
                       )}
                     >
                       <span className="truncate">{sessionLabel}</span>
+                      {isComputerUseSession ? (
+                        <span className="inline-flex h-[18px] shrink-0 items-center gap-1 rounded-sm border border-primary/20 bg-primary/10 px-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-primary">
+                          <Monitor className="h-3 w-3" />
+                          Computer
+                        </span>
+                      ) : null}
                       <ChevronDown className="h-3 w-3 shrink-0 opacity-60" />
                     </button>
                   </DropdownMenuTrigger>
@@ -2907,17 +3007,29 @@ export const AgentRuntime = memo(function AgentRuntime({
                             )}
                           />
                           <span className="min-w-0 flex-1 truncate">{label}</span>
+                          {session.isComputerUse ? (
+                            <Monitor className="h-3.5 w-3.5 text-primary" />
+                          ) : null}
                         </DropdownMenuItem>
                       )
                     })}
                   </DropdownMenuContent>
                 </DropdownMenu>
               ) : (
-                <span className="truncate font-medium">{sessionLabel}</span>
+                <span className="inline-flex min-w-0 items-center gap-1">
+                  <span className="truncate font-medium">{sessionLabel}</span>
+                  {isComputerUseSession ? (
+                    <span className="inline-flex h-[18px] shrink-0 items-center gap-1 rounded-sm border border-primary/20 bg-primary/10 px-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-primary">
+                      <Monitor className="h-3 w-3" />
+                      Computer
+                    </span>
+                  ) : null}
+                </span>
               )}
-            </div>
+              </div>
+            )}
             <div className="pointer-events-auto flex items-center gap-1">
-              {onCreateSession && paneCount === 1 ? (
+              {!isComputerUseSidebar && onCreateSession && paneCount === 1 ? (
                 <button
                   type="button"
                   aria-label="New session"
@@ -2937,7 +3049,7 @@ export const AgentRuntime = memo(function AgentRuntime({
                   <span>{inSidebar ? 'New' : 'New Session'}</span>
                 </button>
               ) : null}
-              {onSpawnPane ? (
+              {!isComputerUseSidebar && onSpawnPane ? (
                 <button
                   type="button"
                   aria-label={spawnPaneDisabled ? 'Pane limit reached' : 'Spawn agent pane'}
@@ -2953,7 +3065,7 @@ export const AgentRuntime = memo(function AgentRuntime({
                   <SplitSquareHorizontal className="h-3.5 w-3.5" />
                 </button>
               ) : null}
-              {showCloseButton ? (
+              {!isComputerUseSidebar && showCloseButton ? (
                 <button
                   type="button"
                   aria-label="Close pane"
@@ -2969,7 +3081,7 @@ export const AgentRuntime = memo(function AgentRuntime({
               {inSidebar && onCloseSidebar ? (
                 <button
                   type="button"
-                  aria-label="Close agent dock"
+                  aria-label={isComputerUseSidebar ? 'Close Computer Use' : 'Close agent dock'}
                   onClick={onCloseSidebar}
                   className={cn(
                     'inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-muted-foreground transition-colors',
@@ -3015,7 +3127,11 @@ export const AgentRuntime = memo(function AgentRuntime({
             ) : showEmptySessionState ? (
               <EmptySessionState
                 context={
-                  controller.composerRuntimeAgentId === 'agent_create' ? 'agent-create' : 'default'
+                  isComputerUseSession
+                    ? 'computer-use'
+                    : controller.composerRuntimeAgentId === 'agent_create'
+                      ? 'agent-create'
+                      : 'default'
                 }
                 agentCreateCanvasIncluded={agentCreateCanvasIncluded}
                 onStartWorkflowAgentCreate={onStartWorkflowAgentCreate}
@@ -3098,6 +3214,15 @@ export const AgentRuntime = memo(function AgentRuntime({
           composerRuntimeAgentId={controller.composerRuntimeAgentId}
           composerRuntimeAgentLabel={getRuntimeAgentLabel(controller.composerRuntimeAgentId)}
           availableRuntimeAgentIds={availableRuntimeAgentIds}
+          hideAgentSelector={isComputerUseSession}
+          hideAutoCompact={isComputerUseSession}
+          hideContextMeter={isComputerUseSession}
+          hideDictation={isComputerUseSession}
+          runtimeAgentLockReason={
+            isComputerUseSession
+              ? 'Computer Use sessions always run with the Computer Use agent.'
+              : undefined
+          }
           composerAgentDefinitionId={controller.composerAgentDefinitionId}
           composerAgentSelectionKey={controller.composerAgentSelectionKey}
           customAgentDefinitions={customAgentDefinitions}

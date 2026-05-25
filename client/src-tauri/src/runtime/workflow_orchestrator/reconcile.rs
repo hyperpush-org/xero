@@ -1232,6 +1232,7 @@ fn start_agent_node<R: Runtime + 'static>(
                 node_run.node_id, run.definition_snapshot.name
             ),
             selected: false,
+            session_kind: crate::db::project_store::AgentSessionKind::Standard,
         },
     )?;
     let resource_scopes = find_node(&run.definition_snapshot, &node_run.node_id)

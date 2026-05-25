@@ -614,6 +614,7 @@ pub enum AgentDefinitionLifecycleStateDto {
 #[serde(rename_all = "snake_case")]
 pub enum AgentDefinitionBaseCapabilityProfileDto {
     ObserveOnly,
+    ComputerUse,
     Planning,
     RepositoryRecon,
     Engineering,
@@ -877,6 +878,7 @@ fn parse_agent_definition_base_capability_profile(
 ) -> AgentDefinitionBaseCapabilityProfileDto {
     match value {
         "planning" => AgentDefinitionBaseCapabilityProfileDto::Planning,
+        "computer_use" => AgentDefinitionBaseCapabilityProfileDto::ComputerUse,
         "repository_recon" => AgentDefinitionBaseCapabilityProfileDto::RepositoryRecon,
         "engineering" => AgentDefinitionBaseCapabilityProfileDto::Engineering,
         "debugging" => AgentDefinitionBaseCapabilityProfileDto::Debugging,

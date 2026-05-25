@@ -11,6 +11,7 @@ import {
   Globe,
   Maximize2,
   Minus,
+  Monitor,
   Play,
   Square,
   TerminalSquare,
@@ -115,6 +116,9 @@ interface XeroShellProps {
   agentDockOpen?: boolean
   /** Disabled state for the agent dock toggle (e.g., when on the agent view). */
   agentDockDisabled?: boolean
+  onToggleComputerUse?: () => void
+  computerUseOpen?: boolean
+  computerUseRunning?: boolean
   onToggleTerminal?: () => void
   terminalOpen?: boolean
   /** Project run state — drives the Play/Stop button visuals. */
@@ -255,6 +259,9 @@ export function XeroShell({
   onToggleAgentDock,
   agentDockOpen = false,
   agentDockDisabled = false,
+  onToggleComputerUse,
+  computerUseOpen = false,
+  computerUseRunning = false,
   onToggleTerminal,
   terminalOpen = false,
   projectRunning = false,
@@ -722,6 +729,33 @@ export function XeroShell({
     </button>
   )
 
+  const ComputerUseBtn = onToggleComputerUse ? (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          aria-label={computerUseOpen ? "Close Computer Use" : "Open Computer Use"}
+          aria-pressed={computerUseOpen}
+          className={cn(
+            titlebarToolButtonClassName(computerUseOpen),
+            computerUseRunning &&
+              !computerUseOpen &&
+              "text-primary ring-1 ring-primary/30 hover:bg-primary/10 hover:text-primary",
+          )}
+          onClick={onToggleComputerUse}
+          onFocus={() => queueSurfacePreload("agent-dock")}
+          onPointerEnter={() => queueSurfacePreload("agent-dock")}
+          size="icon-sm"
+          title="Computer Use"
+          type="button"
+          variant="ghost"
+        >
+          <Monitor className="h-4 w-4" />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={8}>Computer Use</TooltipContent>
+    </Tooltip>
+  ) : null
+
   const DragSpacer = (
     <div
       aria-hidden="true"
@@ -843,20 +877,21 @@ export function XeroShell({
         <div className="pointer-events-none absolute left-1/2 top-1/2 flex max-w-[40vw] -translate-x-1/2 -translate-y-1/2 items-center">
           {Logo}
         </div>
-        {!chromeOnly ? (
+        {!chromeOnly || ComputerUseBtn ? (
           <div
             className="titlebar-no-drag flex items-center gap-2 shrink-0"
             data-titlebar-no-drag="true"
             onDoubleClick={stopTitlebarMouseEventPropagation}
             onMouseDown={stopTitlebarMouseEventPropagation}
           >
-            {VcsBtn}
-            {WorkflowsBtn}
-            {AgentDockBtn}
-            {IosToolBtn}
-            {BrowserToolBtn}
-            {SolanaToolBtn}
-            {TerminalToolBtn}
+            {!chromeOnly ? VcsBtn : null}
+            {!chromeOnly ? WorkflowsBtn : null}
+            {ComputerUseBtn}
+            {!chromeOnly ? AgentDockBtn : null}
+            {!chromeOnly ? IosToolBtn : null}
+            {!chromeOnly ? BrowserToolBtn : null}
+            {!chromeOnly ? SolanaToolBtn : null}
+            {!chromeOnly ? TerminalToolBtn : null}
           </div>
         ) : null}
       </header>
@@ -886,14 +921,15 @@ export function XeroShell({
           onDoubleClick={stopTitlebarMouseEventPropagation}
           onMouseDown={stopTitlebarMouseEventPropagation}
         >
-          {!chromeOnly ? (
+          {!chromeOnly || ComputerUseBtn ? (
             <>
-              {VcsBtn}
-              {WorkflowsBtn}
-              {AgentDockBtn}
-              {BrowserToolBtn}
-              {SolanaToolBtn}
-              {TerminalToolBtn}
+              {!chromeOnly ? VcsBtn : null}
+              {!chromeOnly ? WorkflowsBtn : null}
+              {ComputerUseBtn}
+              {!chromeOnly ? AgentDockBtn : null}
+              {!chromeOnly ? BrowserToolBtn : null}
+              {!chromeOnly ? SolanaToolBtn : null}
+              {!chromeOnly ? TerminalToolBtn : null}
               <div className="mx-2 h-4 w-px bg-border" />
             </>
           ) : null}

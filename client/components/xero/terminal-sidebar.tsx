@@ -20,7 +20,7 @@ import { useTheme } from "@/src/features/theme/theme-provider"
 import type {
   EditorPalette,
   ThemeDefinition,
-} from "@/src/features/theme/theme-definitions"
+} from "@xero/ui/theme"
 import type { EditorTerminalTaskExit } from "./execution-view/editor-tasks"
 
 import "@xterm/xterm/css/xterm.css"

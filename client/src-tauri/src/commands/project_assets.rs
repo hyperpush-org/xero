@@ -36,8 +36,44 @@ pub(crate) struct ProjectAssetGrant {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct ProjectAppDataAssetGrant {
+    pub project_id: String,
+    pub root_path: PathBuf,
+    pub absolute_path: PathBuf,
+    pub byte_length: u64,
+    pub modified_at: String,
+    pub content_hash: String,
+    pub mime_type: String,
+    pub renderer_kind: ProjectFileRendererKindDto,
+}
+
+#[derive(Debug, Clone)]
+enum ProjectAssetTokenGrant {
+    ProjectFile(ProjectAssetGrant),
+    AppData(ProjectAppDataAssetGrant),
+}
+
+impl ProjectAssetTokenGrant {
+    fn project_id(&self) -> &str {
+        match self {
+            ProjectAssetTokenGrant::ProjectFile(grant) => &grant.project_id,
+            ProjectAssetTokenGrant::AppData(grant) => &grant.project_id,
+        }
+    }
+
+    fn path_key(&self) -> String {
+        match self {
+            ProjectAssetTokenGrant::ProjectFile(grant) => grant.path.clone(),
+            ProjectAssetTokenGrant::AppData(grant) => {
+                grant.absolute_path.to_string_lossy().into_owned()
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 struct ProjectAssetToken {
-    grant: ProjectAssetGrant,
+    grant: ProjectAssetTokenGrant,
     expires_at: Instant,
 }
 
@@ -57,7 +93,7 @@ impl ProjectAssetState {
         tokens.insert(
             token.clone(),
             ProjectAssetToken {
-                grant,
+                grant: ProjectAssetTokenGrant::ProjectFile(grant),
                 expires_at: Instant::now() + TOKEN_TTL,
             },
         );
@@ -65,7 +101,25 @@ impl ProjectAssetState {
         format!("{URI_SCHEME}://{token}")
     }
 
-    fn take_valid_grant(&self, token: &str) -> Option<ProjectAssetGrant> {
+    pub(crate) fn issue_app_data_preview_url(&self, grant: ProjectAppDataAssetGrant) -> String {
+        let token = random_token();
+        let mut tokens = self
+            .tokens
+            .lock()
+            .expect("project asset token lock poisoned");
+        prune_expired_tokens(&mut tokens);
+        tokens.insert(
+            token.clone(),
+            ProjectAssetToken {
+                grant: ProjectAssetTokenGrant::AppData(grant),
+                expires_at: Instant::now() + TOKEN_TTL,
+            },
+        );
+
+        format!("{URI_SCHEME}://{token}")
+    }
+
+    fn take_valid_grant(&self, token: &str) -> Option<ProjectAssetTokenGrant> {
         let mut tokens = self
             .tokens
             .lock()
@@ -92,10 +146,11 @@ impl ProjectAssetState {
             .lock()
             .expect("project asset token lock poisoned");
         tokens.retain(|_, entry| {
-            if entry.grant.project_id != project_id {
+            if entry.grant.project_id() != project_id {
                 return true;
             }
-            !path_set.is_empty() && !path_set.contains(entry.grant.path.as_str())
+            let path_key = entry.grant.path_key();
+            !path_set.is_empty() && !path_set.contains(path_key.as_str())
         });
     }
 }
@@ -138,7 +193,30 @@ fn serve_request<R: Runtime>(
         return not_found("project asset token is expired or unknown");
     };
 
-    let project_root = match resolve_project_root(app, desktop_state.inner(), &grant.project_id) {
+    match grant {
+        ProjectAssetTokenGrant::ProjectFile(grant) => serve_project_file_request(
+            app,
+            desktop_state.inner(),
+            request,
+            asset_state.inner(),
+            token,
+            grant,
+        ),
+        ProjectAssetTokenGrant::AppData(grant) => {
+            serve_app_data_request(request, asset_state.inner(), token, grant)
+        }
+    }
+}
+
+fn serve_project_file_request<R: Runtime>(
+    app: &AppHandle<R>,
+    desktop_state: &DesktopState,
+    request: http::Request<Vec<u8>>,
+    asset_state: &ProjectAssetState,
+    token: String,
+    grant: ProjectAssetGrant,
+) -> http::Response<Vec<u8>> {
+    let project_root = match resolve_project_root(app, desktop_state, &grant.project_id) {
         Ok(root) => root,
         Err(error) => return command_error_response(http::StatusCode::NOT_FOUND, &error.message),
     };
@@ -189,6 +267,78 @@ fn serve_request<R: Runtime>(
     match range {
         Some(range) => serve_byte_range(&resolved_path, &grant, range, request.method()),
         None => serve_full_file(&resolved_path, &grant, request.method()),
+    }
+}
+
+fn serve_app_data_request(
+    request: http::Request<Vec<u8>>,
+    asset_state: &ProjectAssetState,
+    token: String,
+    grant: ProjectAppDataAssetGrant,
+) -> http::Response<Vec<u8>> {
+    let root_path = match fs::canonicalize(&grant.root_path) {
+        Ok(path) => path,
+        Err(_) => {
+            asset_state.revoke(&token);
+            return not_found("app-data asset root is unavailable");
+        }
+    };
+    let resolved_path = match fs::canonicalize(&grant.absolute_path) {
+        Ok(path) => path,
+        Err(_) => {
+            asset_state.revoke(&token);
+            return not_found("app-data asset is unavailable");
+        }
+    };
+    if !resolved_path.starts_with(&root_path) {
+        asset_state.revoke(&token);
+        return forbidden("app-data asset escaped its allowed root");
+    }
+
+    let metadata = match read_metadata(&resolved_path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            asset_state.revoke(&token);
+            return command_error_response(http::StatusCode::NOT_FOUND, &error.message);
+        }
+    };
+    if !metadata.is_file() {
+        asset_state.revoke(&token);
+        return forbidden("app-data asset is not a file");
+    }
+
+    let modified_at = crate::commands::project_files::metadata_modified_at(&metadata);
+    if metadata.len() != grant.byte_length || modified_at != grant.modified_at {
+        asset_state.revoke(&token);
+        return gone("app-data asset changed on disk");
+    }
+
+    let header_grant = ProjectAssetGrant {
+        project_id: grant.project_id,
+        path: grant.absolute_path.to_string_lossy().into_owned(),
+        byte_length: grant.byte_length,
+        modified_at: grant.modified_at,
+        content_hash: grant.content_hash,
+        mime_type: grant.mime_type,
+        renderer_kind: grant.renderer_kind,
+    };
+
+    let range = match request
+        .headers()
+        .get(http::header::RANGE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| parse_range_header(value, header_grant.byte_length))
+        .transpose()
+    {
+        Ok(value) => value.flatten(),
+        Err(()) => {
+            return range_not_satisfiable(header_grant.byte_length);
+        }
+    };
+
+    match range {
+        Some(range) => serve_byte_range(&resolved_path, &header_grant, range, request.method()),
+        None => serve_full_file(&resolved_path, &header_grant, request.method()),
     }
 }
 
@@ -447,7 +597,7 @@ fn empty_response(status: http::StatusCode) -> http::Response<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use crate::commands::ReadProjectFileResponseDto;
     use tauri::Manager;
@@ -685,6 +835,80 @@ mod tests {
         assert_eq!(unsafe_response.status(), http::StatusCode::FORBIDDEN);
     }
 
+    #[test]
+    fn project_asset_protocol_serves_app_data_preview_bytes_and_denies_escape() {
+        let registry_root = tempfile::tempdir().expect("registry temp dir");
+        let project_root = tempfile::tempdir().expect("project temp dir");
+        let app_data_root = tempfile::tempdir().expect("app data temp dir");
+        let media_dir = app_data_root.path().join("tool-artifacts");
+        fs::create_dir_all(&media_dir).expect("create app-data media dir");
+        let image_path = media_dir.join("screenshot.png");
+        let bytes = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x55, 0x66];
+        fs::write(&image_path, bytes).expect("write app-data png");
+        let app = build_project_asset_test_app(&registry_root, project_root.path());
+        let preview_url =
+            app.state::<ProjectAssetState>()
+                .issue_app_data_preview_url(test_app_data_grant(
+                    app_data_root.path().to_path_buf(),
+                    image_path.clone(),
+                ));
+
+        let full_response = serve_request(
+            app.handle(),
+            http::Request::builder()
+                .method(http::Method::GET)
+                .uri(preview_url.as_str())
+                .body(Vec::new())
+                .expect("app-data full request"),
+        );
+
+        assert_eq!(full_response.status(), http::StatusCode::OK);
+        assert_eq!(full_response.body(), &bytes);
+        assert_eq!(
+            full_response
+                .headers()
+                .get(http::header::CONTENT_TYPE)
+                .unwrap(),
+            "image/png"
+        );
+        assert_eq!(
+            full_response.headers().get("X-Xero-Renderer-Kind").unwrap(),
+            "image"
+        );
+
+        let range_response = serve_request(
+            app.handle(),
+            http::Request::builder()
+                .method(http::Method::GET)
+                .uri(preview_url.as_str())
+                .header(http::header::RANGE, "bytes=8-9")
+                .body(Vec::new())
+                .expect("app-data range request"),
+        );
+
+        assert_eq!(range_response.status(), http::StatusCode::PARTIAL_CONTENT);
+        assert_eq!(range_response.body(), &[0x55, 0x66]);
+
+        let outside_path = project_root.path().join("outside.png");
+        fs::write(&outside_path, bytes).expect("write outside png");
+        let escape_url =
+            app.state::<ProjectAssetState>()
+                .issue_app_data_preview_url(test_app_data_grant(
+                    app_data_root.path().to_path_buf(),
+                    outside_path,
+                ));
+        let escape_response = serve_request(
+            app.handle(),
+            http::Request::builder()
+                .method(http::Method::GET)
+                .uri(escape_url.as_str())
+                .body(Vec::new())
+                .expect("app-data escape request"),
+        );
+
+        assert_eq!(escape_response.status(), http::StatusCode::FORBIDDEN);
+    }
+
     #[cfg(unix)]
     #[test]
     fn project_asset_protocol_denies_symlinked_paths() {
@@ -768,6 +992,20 @@ mod tests {
             path: path.into(),
             byte_length: 10,
             modified_at: "2026-01-01T00:00:00Z".into(),
+            content_hash: "abc123".into(),
+            mime_type: "image/png".into(),
+            renderer_kind: ProjectFileRendererKindDto::Image,
+        }
+    }
+
+    fn test_app_data_grant(root_path: PathBuf, absolute_path: PathBuf) -> ProjectAppDataAssetGrant {
+        let metadata = fs::metadata(&absolute_path).expect("app-data metadata");
+        ProjectAppDataAssetGrant {
+            project_id: "project-1".into(),
+            root_path,
+            absolute_path,
+            byte_length: metadata.len(),
+            modified_at: crate::commands::project_files::metadata_modified_at(&metadata),
             content_hash: "abc123".into(),
             mime_type: "image/png".into(),
             renderer_kind: ProjectFileRendererKindDto::Image,

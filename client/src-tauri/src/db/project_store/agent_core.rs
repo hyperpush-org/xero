@@ -3205,6 +3205,7 @@ fn parse_agent_run_status(value: &str) -> AgentRunStatus {
 fn parse_runtime_agent_id(value: &str) -> RuntimeAgentIdDto {
     match value {
         "plan" => RuntimeAgentIdDto::Plan,
+        "computer_use" => RuntimeAgentIdDto::ComputerUse,
         "engineer" => RuntimeAgentIdDto::Engineer,
         "debug" => RuntimeAgentIdDto::Debug,
         "crawl" => RuntimeAgentIdDto::Crawl,

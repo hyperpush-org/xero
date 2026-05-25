@@ -1443,11 +1443,11 @@ fn activation_tool_policy_failures(snapshot: &JsonValue, base_profile: &str) -> 
     }
     if matches!(
         base_profile,
-        "observe_only" | "planning" | "repository_recon" | "agent_builder"
+        "observe_only" | "computer_use" | "planning" | "repository_recon" | "agent_builder"
     ) && (default_mode != "suggest" || allowed_modes.iter().any(|mode| mode != "suggest"))
     {
         failures.push(
-            "observe_only, planning, repository_recon, and agent_builder profiles can only use suggest approval mode"
+            "observe_only, computer_use, planning, repository_recon, and agent_builder profiles can only use suggest approval mode"
                 .to_string(),
         );
     }
@@ -1504,6 +1504,7 @@ fn activation_tool_policy_failures(snapshot: &JsonValue, base_profile: &str) -> 
 fn activation_string_tool_policy_allowed(base_profile: &str, policy: &str) -> bool {
     match base_profile {
         "observe_only" => policy == "observe_only",
+        "computer_use" => matches!(policy, "computer_use" | "observe_only"),
         "planning" => matches!(policy, "planning" | "observe_only"),
         "repository_recon" => matches!(policy, "repository_recon" | "observe_only"),
         "agent_builder" => matches!(policy, "agent_builder" | "observe_only"),
@@ -1515,6 +1516,10 @@ fn activation_string_tool_policy_allowed(base_profile: &str, policy: &str) -> bo
 fn activation_effect_allowed_by_profile(base_profile: &str, effect_class: &str) -> bool {
     match base_profile {
         "observe_only" => effect_class == "observe",
+        "computer_use" => matches!(
+            effect_class,
+            "observe" | "runtime_state" | "browser_control" | "device_control" | "process_control"
+        ),
         "planning" => matches!(effect_class, "observe" | "runtime_state"),
         "repository_recon" => matches!(
             effect_class,
@@ -1903,6 +1908,7 @@ fn validate_new_agent_definition(record: &NewAgentDefinitionRecord) -> Result<()
         &record.base_capability_profile,
         &[
             "observe_only",
+            "computer_use",
             "planning",
             "repository_recon",
             "engineering",
@@ -1944,6 +1950,7 @@ pub fn runtime_agent_id_for_base_capability_profile(profile: &str) -> RuntimeAge
     match profile {
         "engineering" => RuntimeAgentIdDto::Engineer,
         "debugging" => RuntimeAgentIdDto::Debug,
+        "computer_use" => RuntimeAgentIdDto::ComputerUse,
         "planning" => RuntimeAgentIdDto::Plan,
         "repository_recon" => RuntimeAgentIdDto::Crawl,
         "agent_builder" => RuntimeAgentIdDto::AgentCreate,
@@ -1954,6 +1961,7 @@ pub fn runtime_agent_id_for_base_capability_profile(profile: &str) -> RuntimeAge
 fn runtime_agent_id_for_builtin_definition_id(definition_id: &str) -> Option<RuntimeAgentIdDto> {
     match definition_id {
         "ask" => Some(RuntimeAgentIdDto::Ask),
+        "computer_use" => Some(RuntimeAgentIdDto::ComputerUse),
         "plan" => Some(RuntimeAgentIdDto::Plan),
         "engineer" => Some(RuntimeAgentIdDto::Engineer),
         "debug" => Some(RuntimeAgentIdDto::Debug),

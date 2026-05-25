@@ -79,6 +79,7 @@ describe('runtime run control schemas', () => {
 
   it('registers built-in runtime agents as descriptor-backed entries', () => {
     expect(runtimeAgentIdSchema.parse('debug')).toBe('debug')
+    expect(runtimeAgentIdSchema.parse('computer_use')).toBe('computer_use')
     expect(runtimeAgentIdSchema.parse('plan')).toBe('plan')
     expect(runtimeAgentIdSchema.parse('crawl')).toBe('crawl')
     expect(runtimeAgentIdSchema.parse('agent_create')).toBe('agent_create')
@@ -86,6 +87,7 @@ describe('runtime run control schemas', () => {
     expect(ALL_RUNTIME_AGENT_DESCRIPTORS.map((agent) => agent.id)).toEqual([
       'generalist',
       'ask',
+      'computer_use',
       'plan',
       'engineer',
       'debug',
@@ -116,6 +118,22 @@ describe('runtime run control schemas', () => {
       promptPolicy: 'plan',
       toolPolicy: 'planning',
       outputContract: 'plan_pack',
+      defaultApprovalMode: 'suggest',
+      allowPlanGate: false,
+      allowVerificationGate: false,
+      allowAutoCompact: true,
+      allowedApprovalModes: ['suggest'],
+    })
+    expect(getRuntimeAgentDescriptor('computer_use')).toMatchObject({
+      id: 'computer_use',
+      label: 'Computer Use',
+      shortLabel: 'Computer',
+      scope: 'built_in',
+      lifecycleState: 'active',
+      baseCapabilityProfile: 'computer_use',
+      promptPolicy: 'computer_use',
+      toolPolicy: 'computer_use',
+      outputContract: 'answer',
       defaultApprovalMode: 'suggest',
       allowPlanGate: false,
       allowVerificationGate: false,
@@ -170,7 +188,7 @@ describe('runtime run control schemas', () => {
     expect(getRuntimeAgentAvailability({ DEV: false, MODE: 'production' })).toEqual({})
     expect(
       getRuntimeAgentDescriptorsForAvailability({}).map((agent) => agent.id),
-    ).toEqual(['generalist', 'ask', 'plan', 'engineer', 'debug', 'crawl', 'agent_create'])
+    ).toEqual(['generalist', 'ask', 'computer_use', 'plan', 'engineer', 'debug', 'crawl', 'agent_create'])
   })
 
   it('shows Crawl only for brownfield project origins', () => {
@@ -185,12 +203,12 @@ describe('runtime run control schemas', () => {
       getRuntimeAgentDescriptorsForProjectOrigin('greenfield', {}).map(
         (agent) => agent.id,
       ),
-    ).toEqual(['generalist', 'ask', 'plan', 'engineer', 'debug', 'agent_create'])
+    ).toEqual(['generalist', 'ask', 'computer_use', 'plan', 'engineer', 'debug', 'agent_create'])
     expect(
       getRuntimeAgentDescriptorsForProjectOrigin('brownfield', {}).map(
         (agent) => agent.id,
       ),
-    ).toEqual(['generalist', 'ask', 'plan', 'engineer', 'debug', 'crawl', 'agent_create'])
+    ).toEqual(['generalist', 'ask', 'computer_use', 'plan', 'engineer', 'debug', 'crawl', 'agent_create'])
   })
 
   it('maps durable active and pending control snapshots into a selected pending projection', () => {

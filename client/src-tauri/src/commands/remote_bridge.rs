@@ -10,8 +10,8 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value as JsonValue};
-use tauri::{AppHandle, Manager, Runtime, State};
+use serde_json::{json, Map as JsonMap, Value as JsonValue};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::sync::broadcast::error::TryRecvError as BroadcastTryRecvError;
 use xero_remote_bridge::{
     AccountDevice, AuthStatus, BridgeAccount, BridgeConfig, BridgeError, BridgeResult,
@@ -23,8 +23,17 @@ use crate::{
     commands::{
         agent_run_dto,
         agent_session::{agent_session_dto, stop_idle_owned_runtime_run_before_archive},
+        global_computer_use::{
+            ensure_global_computer_use_session_record, GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
+            GLOBAL_COMPUTER_USE_PROJECT_ID, REMOTE_COMPUTER_USE_SESSION_ID,
+        },
+        project_state::{read_app_ui_state_value, write_app_ui_state_value},
         provider_credentials::load_provider_credentials_view,
         resolve_operator_action::resolve_operator_action_blocking,
+        runtime_media::{
+            extract_runtime_media_attachments, read_runtime_media_artifact,
+            RemoteRuntimeMediaContext, RuntimeMediaExtractionRequest,
+        },
         runtime_support::{
             emit_project_updated, load_persisted_runtime_run, resolve_project_root,
             runtime_run_dto_from_snapshot,
@@ -44,7 +53,7 @@ use crate::{
     },
     db::project_store::{
         self, AgentEventRecord, AgentSessionCreateRecord, AgentSessionRecord,
-        DEFAULT_AGENT_SESSION_TITLE,
+        COMPUTER_USE_AGENT_SESSION_TITLE, DEFAULT_AGENT_SESSION_TITLE,
     },
     provider_models::{
         load_provider_model_catalog, ProviderModelRecord, ProviderModelThinkingCapability,
@@ -58,6 +67,15 @@ use crate::{
 
 const REMOTE_DIR: &str = "remote";
 const IDENTITY_FILE: &str = "desktop-identity.json";
+const THEME_CONTROL_SESSION_ID: &str = "__theme__";
+const THEME_APP_STATE_KEY: &str = "theme.active.v1";
+const CUSTOM_THEMES_APP_STATE_KEY: &str = "theme.custom.v1";
+const DEFAULT_THEME_ID: &str = "dusk";
+const CUSTOM_THEME_ID_PREFIX: &str = "custom-";
+const COMPOSER_SETTINGS_APP_STATE_KEY: &str = "xero.agent.composer.settings.v1";
+const COMPOSER_SETTINGS_UPDATED_EVENT: &str = "agent:composer_settings_updated";
+const COMPOSER_SETTINGS_VERSION: u64 = 1;
+const PROJECT_REMOTE_SESSION_ID_PREFIX: &str = "project:";
 
 type AppRemoteBridge = RemoteBridge<FileIdentityStore>;
 
@@ -90,6 +108,14 @@ pub struct BridgeRevokeDeviceRequestDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BridgePollGithubLoginRequestDto {
     pub flow_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BridgeThemeSyncRequestDto {
+    pub theme_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_theme: Option<JsonValue>,
 }
 
 #[tauri::command]
@@ -164,6 +190,28 @@ pub fn bridge_revoke_device<R: Runtime>(
         .map_err(map_bridge_error)
 }
 
+#[tauri::command]
+pub fn bridge_publish_theme<R: Runtime + 'static>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    remote_state: State<'_, RemoteBridgeRuntimeState>,
+    request: BridgeThemeSyncRequestDto,
+) -> CommandResult<()> {
+    validate_non_empty(&request.theme_id, "themeId")?;
+    let theme_id = request.theme_id.trim().to_string();
+    let bridge = remote_state.bridge(&app, state.inner())?;
+    if !registered_identity_exists(&app, state.inner())? {
+        return Ok(());
+    }
+    remote_state.start_if_registered(&app, state.inner())?;
+    publish_theme_to_cloud(
+        &bridge,
+        &theme_id,
+        custom_theme_for_theme_id(&theme_id, request.custom_theme),
+    )
+    .map_err(map_bridge_error)
+}
+
 pub fn start_remote_bridge_if_registered<R: Runtime + 'static>(
     app: &AppHandle<R>,
 ) -> CommandResult<()> {
@@ -189,22 +237,14 @@ pub fn publish_remote_project_list_to_cloud<R: Runtime>(app: &AppHandle<R>, stat
             return;
         }
     };
-    let summaries = match read_project_summaries(&path) {
-        Ok(summaries) => summaries,
-        Err(error) => {
-            eprintln!("[remote-bridge] project list publish skipped: {error}");
-            return;
-        }
-    };
-    let projects: Vec<JsonValue> = summaries
-        .into_iter()
-        .map(|summary| {
-            json!({
-                "projectId": summary.registry.project_id,
-                "projectName": summary.project.name,
-            })
-        })
-        .collect();
+    let projects =
+        match read_project_summaries(&path).and_then(remote_project_summaries_from_projects) {
+            Ok(projects) => projects,
+            Err(error) => {
+                eprintln!("[remote-bridge] project list publish skipped: {error}");
+                return;
+            }
+        };
     if let Err(error) = bridge.forward_control_event(
         "__projects__",
         json!({
@@ -214,6 +254,57 @@ pub fn publish_remote_project_list_to_cloud<R: Runtime>(app: &AppHandle<R>, stat
     ) {
         eprintln!("[remote-bridge] project list publish skipped: {error}");
     }
+}
+
+fn publish_current_theme_to_cloud<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    bridge: &AppRemoteBridge,
+) -> CommandResult<()> {
+    let theme_id = read_app_ui_state_value(app, state, THEME_APP_STATE_KEY)?
+        .and_then(|value| value.as_str().map(str::trim).map(ToOwned::to_owned))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_THEME_ID.to_string());
+    let custom_theme = if theme_id.starts_with(CUSTOM_THEME_ID_PREFIX) {
+        read_app_ui_state_value(app, state, CUSTOM_THEMES_APP_STATE_KEY)?
+            .and_then(|value| custom_theme_from_state_value(&theme_id, value))
+    } else {
+        None
+    };
+    publish_theme_to_cloud(bridge, &theme_id, custom_theme).map_err(map_bridge_error)
+}
+
+fn publish_theme_to_cloud(
+    bridge: &AppRemoteBridge,
+    theme_id: &str,
+    custom_theme: Option<JsonValue>,
+) -> BridgeResult<()> {
+    let mut payload = json!({
+        "schema": "xero.cloud_theme.v1",
+        "themeId": theme_id,
+    });
+    if let Some(custom_theme) = custom_theme_for_theme_id(theme_id, custom_theme) {
+        payload["customTheme"] = custom_theme;
+    }
+    bridge.forward_control_event(THEME_CONTROL_SESSION_ID, payload)?;
+    Ok(())
+}
+
+fn custom_theme_for_theme_id(theme_id: &str, custom_theme: Option<JsonValue>) -> Option<JsonValue> {
+    if theme_id.starts_with(CUSTOM_THEME_ID_PREFIX) {
+        custom_theme
+    } else {
+        None
+    }
+}
+
+fn custom_theme_from_state_value(theme_id: &str, value: JsonValue) -> Option<JsonValue> {
+    value.as_array().and_then(|themes| {
+        themes
+            .iter()
+            .find(|theme| theme.get("id").and_then(JsonValue::as_str) == Some(theme_id))
+            .cloned()
+    })
 }
 
 pub(crate) fn publish_agent_session_remote_state<R: Runtime>(
@@ -233,6 +324,13 @@ fn publish_agent_session_remote_state_inner<R: Runtime>(
     project_id: &str,
     session: &AgentSessionRecord,
 ) -> CommandResult<()> {
+    if matches!(
+        session.session_kind,
+        project_store::AgentSessionKind::ComputerUse
+    ) {
+        return Ok(());
+    }
+
     let Some(bridge) = runtime_event_forwarder() else {
         return Ok(());
     };
@@ -262,7 +360,7 @@ pub fn forward_agent_event(repo_root: &Path, event: &AgentEventRecord) {
                 return;
             }
         };
-    let payload = serde_json::from_str(&event.payload_json).unwrap_or_else(|_| {
+    let mut payload = serde_json::from_str(&event.payload_json).unwrap_or_else(|_| {
         json!({
             "raw": event.payload_json,
         })
@@ -271,6 +369,36 @@ pub fn forward_agent_event(repo_root: &Path, event: &AgentEventRecord) {
         .ok()
         .and_then(|value| value.as_str().map(ToOwned::to_owned))
         .unwrap_or_else(|| format!("{:?}", event.event_kind));
+    let remote_session_id = remote_session_id_for(&event.project_id, &run.agent_session_id);
+    if matches!(
+        event.event_kind,
+        project_store::AgentRunEventKind::ToolCompleted
+    ) {
+        if let (Some(output), Some(computer_id)) =
+            (payload.get("output"), bridge.computer_id().ok().flatten())
+        {
+            let attachments = extract_runtime_media_attachments(RuntimeMediaExtractionRequest {
+                repo_root,
+                project_id: &event.project_id,
+                run_id: &event.run_id,
+                event_id: event.id,
+                tool_call_id: payload.get("toolCallId").and_then(JsonValue::as_str),
+                tool_name: payload.get("toolName").and_then(JsonValue::as_str),
+                output,
+                asset_state: None,
+                remote_context: Some(RemoteRuntimeMediaContext {
+                    computer_id: &computer_id,
+                    session_id: &remote_session_id,
+                }),
+            });
+            if !attachments.is_empty() {
+                if let Some(object) = payload.as_object_mut() {
+                    object.insert("mediaAttachments".into(), json!(attachments));
+                    object.remove("modelVisibleToolResult");
+                }
+            }
+        }
+    }
     let runtime_event = json!({
         "schema": "xero.remote_runtime_event.v1",
         "projectId": &event.project_id,
@@ -281,7 +409,7 @@ pub fn forward_agent_event(repo_root: &Path, event: &AgentEventRecord) {
         "payload": payload,
         "createdAt": &event.created_at,
     });
-    if let Err(error) = bridge.forward(&run.agent_session_id, runtime_event) {
+    if let Err(error) = bridge.forward(&remote_session_id, runtime_event) {
         eprintln!("[remote-bridge] runtime event forward skipped: {error}");
     }
 }
@@ -313,13 +441,16 @@ fn publish_deleted_agent_session_remote_state<R: Runtime + 'static>(
     }
 
     remote_state.start_if_registered(app, state)?;
+    let remote_session_id = remote_session_id_for(project_id, &session.agent_session_id);
     bridge
         .forward_session_removed(
-            &session.agent_session_id,
+            &remote_session_id,
             json!({
                 "schema": "xero.remote_session_removed.v1",
                 "projectId": project_id,
+                "remoteSessionId": remote_session_id,
                 "sessionId": &session.agent_session_id,
+                "agentSessionId": &session.agent_session_id,
             }),
         )
         .map_err(map_bridge_error)?;
@@ -513,6 +644,9 @@ fn route_inbound_command<R: Runtime + 'static>(
         InboundCommandKind::UpdateSessionControls => {
             route_update_session_controls(app, state, &bridge, command)
         }
+        InboundCommandKind::FetchRuntimeMediaArtifact => {
+            route_fetch_runtime_media_artifact(app, state, &bridge, command)
+        }
     }
 }
 
@@ -604,15 +738,7 @@ fn remote_project_summaries<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
 ) -> CommandResult<Vec<JsonValue>> {
-    Ok(read_project_summaries(&state.global_db_path(app)?)?
-        .into_iter()
-        .map(|summary| {
-            json!({
-                "projectId": summary.registry.project_id,
-                "projectName": summary.project.name,
-            })
-        })
-        .collect())
+    remote_project_summaries_from_projects(read_project_summaries(&state.global_db_path(app)?)?)
 }
 
 fn route_archive_session<R: Runtime>(
@@ -642,13 +768,16 @@ fn route_archive_session<R: Runtime>(
     )?;
 
     publish_remote_session_list(app, state, bridge)?;
+    let remote_session_id = remote_session_id_for(project_id, &session.agent_session_id);
     bridge
         .forward_session_removed(
-            &session.agent_session_id,
+            &remote_session_id,
             json!({
                 "schema": "xero.remote_session_removed.v1",
                 "projectId": project_id,
+                "remoteSessionId": remote_session_id,
                 "sessionId": &session.agent_session_id,
+                "agentSessionId": &session.agent_session_id,
             }),
         )
         .map_err(map_bridge_error)?;
@@ -661,7 +790,7 @@ fn publish_remote_session_snapshot(
     bridge: &AppRemoteBridge,
     located: LocatedRemoteSession,
 ) -> CommandResult<()> {
-    let session_id = located.session.agent_session_id.clone();
+    let session_id = located.remote_session_id.clone();
     let snapshot = remote_session_snapshot(app, state, &located)?;
     bridge
         .snapshot(&session_id, snapshot)
@@ -678,7 +807,9 @@ fn route_session_attached<R: Runtime>(
     let session_id = required_command_session(&command)?;
     match session_id {
         "__sessions__" => return route_list_sessions(app, state, bridge),
+        "__projects__" => return route_list_projects(app, state, bridge),
         "__new__" => return Ok(()),
+        THEME_CONTROL_SESSION_ID => return publish_current_theme_to_cloud(app, state, bridge),
         _ => {}
     }
 
@@ -702,11 +833,22 @@ fn route_start_session<R: Runtime + 'static>(
     bridge: &AppRemoteBridge,
     command: InboundCommand,
 ) -> CommandResult<()> {
-    let prompt = payload_string(&command.payload, &["prompt", "message"]);
+    let prompt = payload_string(&command.payload, &["prompt", "message"]).map(ToOwned::to_owned);
+    let session_kind = remote_session_kind_from_payload(&command.payload)?;
+    ensure_remote_payload_matches_session_kind(session_kind, &command.payload)?;
+    if matches!(session_kind, project_store::AgentSessionKind::ComputerUse) {
+        return route_start_computer_use_session(app, state, bridge, command, prompt.as_deref());
+    }
+
     let located_project = locate_project_for_remote_start(app, state, &command.payload)?;
     let title = payload_string(&command.payload, &["title"])
-        .unwrap_or(DEFAULT_AGENT_SESSION_TITLE)
-        .to_string();
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| match session_kind {
+            project_store::AgentSessionKind::Standard => DEFAULT_AGENT_SESSION_TITLE.to_string(),
+            project_store::AgentSessionKind::ComputerUse => {
+                COMPUTER_USE_AGENT_SESSION_TITLE.to_string()
+            }
+        });
     let session = project_store::create_agent_session(
         &located_project.repo_root,
         &AgentSessionCreateRecord {
@@ -714,6 +856,7 @@ fn route_start_session<R: Runtime + 'static>(
             title,
             summary: String::new(),
             selected: true,
+            session_kind,
         },
     )?;
     emit_project_updated(
@@ -723,9 +866,23 @@ fn route_start_session<R: Runtime + 'static>(
         ProjectUpdateReason::MetadataChanged,
     )?;
 
-    let run = match prompt {
+    let run = match prompt.as_deref() {
         Some(prompt) => {
-            let controls = remote_run_controls_from_payload(&command.payload, None)?;
+            let controls = remote_run_controls_from_payload(
+                &command.payload,
+                None,
+                remote_default_agent_for_session_kind(session_kind),
+            )?;
+            ensure_remote_controls_match_session_kind(session_kind, controls.as_ref())?;
+            if let Some(controls) = controls.as_ref() {
+                persist_remote_composer_settings(
+                    app,
+                    state,
+                    session_kind,
+                    controls,
+                    payload_string(&command.payload, &["providerId", "provider_id"]),
+                )?;
+            }
             let initial_attachments = remote_attachments_from_payload(&command.payload)?;
             Some(start_runtime_run_blocking(
                 app.clone(),
@@ -771,6 +928,121 @@ fn route_start_session<R: Runtime + 'static>(
     Ok(())
 }
 
+fn route_start_computer_use_session<R: Runtime + 'static>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    bridge: &AppRemoteBridge,
+    command: InboundCommand,
+    prompt: Option<&str>,
+) -> CommandResult<()> {
+    let global = ensure_global_computer_use_session_record(app, state)?;
+    let run = match prompt.map(str::trim).filter(|prompt| !prompt.is_empty()) {
+        Some(prompt) => {
+            let existing = load_persisted_runtime_run(
+                &global.repo_root,
+                &global.project_id,
+                &global.session.agent_session_id,
+            )?;
+            let attachments = remote_attachments_from_payload(&command.payload)?;
+            Some(match existing {
+                Some(snapshot) => {
+                    let selected_controls = selected_runtime_run_controls(&snapshot);
+                    let controls = remote_run_controls_from_payload(
+                        &command.payload,
+                        Some(&selected_controls),
+                        Some(RuntimeAgentIdDto::ComputerUse),
+                    )?;
+                    ensure_remote_controls_match_session_kind(
+                        project_store::AgentSessionKind::ComputerUse,
+                        controls.as_ref(),
+                    )?;
+                    if let Some(controls) = controls.as_ref() {
+                        persist_remote_composer_settings(
+                            app,
+                            state,
+                            project_store::AgentSessionKind::ComputerUse,
+                            controls,
+                            payload_string(&command.payload, &["providerId", "provider_id"]),
+                        )?;
+                    }
+                    update_runtime_run_controls_blocking(
+                        app.clone(),
+                        state.clone(),
+                        UpdateRuntimeRunControlsRequestDto {
+                            project_id: global.project_id.clone(),
+                            agent_session_id: global.session.agent_session_id.clone(),
+                            run_id: snapshot.run.run_id,
+                            controls,
+                            prompt: Some(prompt.to_string()),
+                            attachments,
+                        },
+                    )?
+                }
+                None => {
+                    let controls = remote_run_controls_from_payload(
+                        &command.payload,
+                        None,
+                        Some(RuntimeAgentIdDto::ComputerUse),
+                    )?;
+                    ensure_remote_controls_match_session_kind(
+                        project_store::AgentSessionKind::ComputerUse,
+                        controls.as_ref(),
+                    )?;
+                    if let Some(controls) = controls.as_ref() {
+                        persist_remote_composer_settings(
+                            app,
+                            state,
+                            project_store::AgentSessionKind::ComputerUse,
+                            controls,
+                            payload_string(&command.payload, &["providerId", "provider_id"]),
+                        )?;
+                    }
+                    start_runtime_run_blocking(
+                        app.clone(),
+                        state.clone(),
+                        StartRuntimeRunRequestDto {
+                            project_id: global.project_id.clone(),
+                            agent_session_id: global.session.agent_session_id.clone(),
+                            initial_controls: controls,
+                            initial_prompt: Some(prompt.to_string()),
+                            initial_attachments: attachments,
+                        },
+                    )?
+                }
+            })
+        }
+        None => None,
+    };
+
+    let mut session_payload = remote_session_result_payload(
+        &global.project_id,
+        Some(GLOBAL_COMPUTER_USE_PROJECT_ID),
+        &global.session,
+    );
+    if let Some(payload) = session_payload.as_object_mut() {
+        payload.insert("run".to_string(), json!(run));
+    }
+    bridge
+        .forward_control_event(
+            REMOTE_COMPUTER_USE_SESSION_ID,
+            json!({
+                "schema": "xero.remote_session_started.v1",
+                "result": session_payload,
+            }),
+        )
+        .map_err(map_bridge_error)?;
+    bridge
+        .forward_control_event(
+            "__new__",
+            json!({
+                "schema": "xero.remote_session_started.v1",
+                "result": session_payload,
+            }),
+        )
+        .map_err(map_bridge_error)?;
+    Ok(())
+}
+
 fn route_send_message<R: Runtime + 'static>(
     app: &AppHandle<R>,
     state: &DesktopState,
@@ -780,38 +1052,76 @@ fn route_send_message<R: Runtime + 'static>(
     let session_id = required_command_session(&command)?;
     let message = required_payload_string(&command.payload, &["message", "prompt"])?;
     let located = locate_remote_session(app, state, session_id)?;
-    let existing = load_persisted_runtime_run(&located.repo_root, &located.project_id, session_id)?;
+    let agent_session_id = local_agent_session_id(&located).to_string();
+    let existing =
+        load_persisted_runtime_run(&located.repo_root, &located.project_id, &agent_session_id)?;
     let attachments = remote_attachments_from_payload(&command.payload)?;
+    ensure_remote_payload_matches_session_kind(located.session.session_kind, &command.payload)?;
     let run = match existing {
         Some(snapshot) => {
             let selected_controls = selected_runtime_run_controls(&snapshot);
+            let controls = remote_run_controls_from_payload(
+                &command.payload,
+                Some(&selected_controls),
+                remote_default_agent_for_session_kind(located.session.session_kind),
+            )?;
+            ensure_remote_controls_match_session_kind(
+                located.session.session_kind,
+                controls.as_ref(),
+            )?;
+            if let Some(controls) = controls.as_ref() {
+                persist_remote_composer_settings(
+                    app,
+                    state,
+                    located.session.session_kind,
+                    controls,
+                    payload_string(&command.payload, &["providerId", "provider_id"]),
+                )?;
+            }
             update_runtime_run_controls_blocking(
                 app.clone(),
                 state.clone(),
                 UpdateRuntimeRunControlsRequestDto {
                     project_id: located.project_id.clone(),
-                    agent_session_id: session_id.to_string(),
+                    agent_session_id: agent_session_id.clone(),
                     run_id: snapshot.run.run_id,
-                    controls: remote_run_controls_from_payload(
-                        &command.payload,
-                        Some(&selected_controls),
-                    )?,
+                    controls,
                     prompt: Some(message.to_string()),
                     attachments,
                 },
             )?
         }
-        None => start_runtime_run_blocking(
-            app.clone(),
-            state.clone(),
-            StartRuntimeRunRequestDto {
-                project_id: located.project_id.clone(),
-                agent_session_id: session_id.to_string(),
-                initial_controls: remote_run_controls_from_payload(&command.payload, None)?,
-                initial_prompt: Some(message.to_string()),
-                initial_attachments: attachments,
-            },
-        )?,
+        None => {
+            let controls = remote_run_controls_from_payload(
+                &command.payload,
+                None,
+                remote_default_agent_for_session_kind(located.session.session_kind),
+            )?;
+            ensure_remote_controls_match_session_kind(
+                located.session.session_kind,
+                controls.as_ref(),
+            )?;
+            if let Some(controls) = controls.as_ref() {
+                persist_remote_composer_settings(
+                    app,
+                    state,
+                    located.session.session_kind,
+                    controls,
+                    payload_string(&command.payload, &["providerId", "provider_id"]),
+                )?;
+            }
+            start_runtime_run_blocking(
+                app.clone(),
+                state.clone(),
+                StartRuntimeRunRequestDto {
+                    project_id: located.project_id.clone(),
+                    agent_session_id: agent_session_id.clone(),
+                    initial_controls: controls,
+                    initial_prompt: Some(message.to_string()),
+                    initial_attachments: attachments,
+                },
+            )?
+        }
     };
 
     send_command_ok(
@@ -830,32 +1140,56 @@ fn route_update_session_controls<R: Runtime + 'static>(
 ) -> CommandResult<()> {
     let session_id = required_command_session(&command)?;
     let located = locate_remote_session(app, state, session_id)?;
-    let existing = load_persisted_runtime_run(&located.repo_root, &located.project_id, session_id)?
-        .ok_or_else(|| {
-            CommandError::user_fixable(
-                "runtime_run_missing",
-                "Xero cannot update session controls because the session has no runtime run yet.",
-            )
-        })?;
-    let selected_controls = selected_runtime_run_controls(&existing);
-    let controls = remote_run_controls_from_payload(&command.payload, Some(&selected_controls))?;
-    let run = update_runtime_run_controls_blocking(
-        app.clone(),
-        state.clone(),
-        UpdateRuntimeRunControlsRequestDto {
-            project_id: located.project_id.clone(),
-            agent_session_id: session_id.to_string(),
-            run_id: existing.run.run_id,
-            controls,
-            prompt: None,
-            attachments: Vec::new(),
-        },
+    let agent_session_id = local_agent_session_id(&located).to_string();
+    let existing =
+        load_persisted_runtime_run(&located.repo_root, &located.project_id, &agent_session_id)?;
+    ensure_remote_payload_matches_session_kind(located.session.session_kind, &command.payload)?;
+    let selected_controls = existing.as_ref().map(selected_runtime_run_controls);
+    let controls = remote_run_controls_from_payload(
+        &command.payload,
+        selected_controls.as_ref(),
+        remote_default_agent_for_session_kind(located.session.session_kind),
     )?;
+    ensure_remote_controls_match_session_kind(located.session.session_kind, controls.as_ref())?;
+    let provider_id = payload_string(&command.payload, &["providerId", "provider_id"]);
+    let control_payload = controls
+        .as_ref()
+        .map(|controls| {
+            persist_remote_composer_settings(
+                app,
+                state,
+                located.session.session_kind,
+                controls,
+                provider_id,
+            )
+        })
+        .transpose()?;
+    if let Some(existing) = existing {
+        let run = update_runtime_run_controls_blocking(
+            app.clone(),
+            state.clone(),
+            UpdateRuntimeRunControlsRequestDto {
+                project_id: located.project_id.clone(),
+                agent_session_id,
+                run_id: existing.run.run_id,
+                controls,
+                prompt: None,
+                attachments: Vec::new(),
+            },
+        )?;
+        return send_command_ok(
+            bridge,
+            session_id,
+            "xero.remote_session_controls_updated.v1",
+            json!({ "run": run, "controls": control_payload }),
+        );
+    }
+
     send_command_ok(
         bridge,
         session_id,
         "xero.remote_session_controls_updated.v1",
-        json!({ "run": run }),
+        json!({ "controls": control_payload }),
     )
 }
 
@@ -897,11 +1231,12 @@ fn route_cancel_run<R: Runtime>(
 ) -> CommandResult<()> {
     let session_id = required_command_session(&command)?;
     let located = locate_remote_session(app, state, session_id)?;
+    let agent_session_id = local_agent_session_id(&located).to_string();
     let run_id = match payload_string(&command.payload, &["runId", "run_id"]) {
         Some(run_id) => run_id.to_string(),
         None => {
             let snapshot =
-                load_persisted_runtime_run(&located.repo_root, &located.project_id, session_id)?
+                load_persisted_runtime_run(&located.repo_root, &located.project_id, &agent_session_id)?
                     .ok_or_else(|| {
                         CommandError::user_fixable(
                             "runtime_run_missing",
@@ -918,7 +1253,7 @@ fn route_cancel_run<R: Runtime>(
         state.clone(),
         StopRuntimeRunRequestDto {
             project_id: located.project_id,
-            agent_session_id: session_id.to_string(),
+            agent_session_id,
             run_id,
         },
     )?;
@@ -939,12 +1274,13 @@ fn route_context_snapshot<R: Runtime>(
 ) -> CommandResult<()> {
     let session_id = required_command_session(&command)?;
     let located = locate_remote_session(app, state, session_id)?;
+    let agent_session_id = local_agent_session_id(&located).to_string();
     let request_id =
         payload_string(&command.payload, &["requestId", "request_id"]).map(ToOwned::to_owned);
     let context_result = build_session_context_snapshot(
         &located.repo_root,
         &located.project_id,
-        session_id,
+        &agent_session_id,
         payload_string(&command.payload, &["runId", "run_id"]),
         payload_string(&command.payload, &["providerId", "provider_id"]),
         payload_string(&command.payload, &["modelId", "model_id"]),
@@ -1080,6 +1416,45 @@ fn route_discard_attachment<R: Runtime>(
     Ok(())
 }
 
+fn route_fetch_runtime_media_artifact<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    bridge: &AppRemoteBridge,
+    command: InboundCommand,
+) -> CommandResult<()> {
+    let session_id = required_command_session(&command)?.to_string();
+    let artifact_id =
+        required_payload_string(&command.payload, &["artifactId", "artifact_id"])?.to_string();
+    let located = locate_remote_session(app, state, &session_id)?;
+    let result = read_runtime_media_artifact(&located.repo_root, &artifact_id);
+    let payload = match result {
+        Ok(artifact) => {
+            use base64::Engine as _;
+            let bytes_base64 =
+                base64::engine::general_purpose::STANDARD.encode(artifact.bytes.as_slice());
+            json!({
+                "schema": "xero.remote_runtime_media_artifact.v1",
+                "ok": true,
+                "artifactId": artifact.artifact_id,
+                "mediaType": artifact.media_type,
+                "bytesBase64": bytes_base64,
+                "sizeBytes": artifact.bytes.len(),
+            })
+        }
+        Err(error) => json!({
+            "schema": "xero.remote_runtime_media_artifact.v1",
+            "ok": false,
+            "artifactId": artifact_id,
+            "error": error,
+        }),
+    };
+
+    bridge
+        .forward_control_event(&session_id, payload)
+        .map_err(map_bridge_error)?;
+    Ok(())
+}
+
 fn attachment_staged_payload(attachment_id: &str, staged: &StagedAgentAttachmentDto) -> JsonValue {
     json!({
         "schema": "xero.remote_attachment_staged.v1",
@@ -1122,6 +1497,51 @@ struct LocatedRemoteSession {
     project_id: String,
     repo_root: std::path::PathBuf,
     session: AgentSessionRecord,
+    remote_session_id: String,
+}
+
+fn remote_session_id_for(project_id: &str, agent_session_id: &str) -> String {
+    if project_id == GLOBAL_COMPUTER_USE_PROJECT_ID
+        && agent_session_id == GLOBAL_COMPUTER_USE_AGENT_SESSION_ID
+    {
+        return REMOTE_COMPUTER_USE_SESSION_ID.into();
+    }
+
+    project_scoped_remote_session_id(project_id, agent_session_id)
+}
+
+fn project_scoped_remote_session_id(project_id: &str, agent_session_id: &str) -> String {
+    format!(
+        "{PROJECT_REMOTE_SESSION_ID_PREFIX}{}:{}{}",
+        project_id.len(),
+        project_id,
+        agent_session_id
+    )
+}
+
+fn parse_project_scoped_remote_session_id(remote_session_id: &str) -> Option<(&str, &str)> {
+    let rest = remote_session_id.strip_prefix(PROJECT_REMOTE_SESSION_ID_PREFIX)?;
+    let (project_len, scoped_id) = rest.split_once(':')?;
+    let project_len = project_len.parse::<usize>().ok()?;
+    if project_len == 0 || scoped_id.len() <= project_len {
+        return None;
+    }
+    let (project_id, agent_session_id) = scoped_id.split_at(project_len);
+    if project_id.is_empty() || agent_session_id.is_empty() {
+        return None;
+    }
+    Some((project_id, agent_session_id))
+}
+
+fn remote_agent_session_dto(project_id: &str, session: &AgentSessionRecord) -> JsonValue {
+    let mut value = json!(agent_session_dto(session));
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "remoteSessionId".to_string(),
+            json!(remote_session_id_for(project_id, &session.agent_session_id)),
+        );
+    }
+    value
 }
 
 fn locate_project_for_remote_start<R: Runtime>(
@@ -1156,6 +1576,38 @@ fn locate_remote_session<R: Runtime>(
     session_id: &str,
 ) -> CommandResult<LocatedRemoteSession> {
     validate_non_empty(session_id, "agentSessionId")?;
+    if session_id == REMOTE_COMPUTER_USE_SESSION_ID {
+        let global = ensure_global_computer_use_session_record(app, state)?;
+        return Ok(LocatedRemoteSession {
+            project_id: global.project_id,
+            repo_root: global.repo_root,
+            session: global.session,
+            remote_session_id: REMOTE_COMPUTER_USE_SESSION_ID.into(),
+        });
+    }
+    if let Some((project_id, agent_session_id)) = parse_project_scoped_remote_session_id(session_id)
+    {
+        let repo_root = resolve_project_root(app, state, project_id)?;
+        let session = project_store::get_agent_session(&repo_root, project_id, agent_session_id)?
+            .ok_or_else(|| {
+            CommandError::user_fixable(
+                "remote_session_not_found",
+                format!("Xero could not find session `{agent_session_id}`."),
+            )
+        })?;
+        if matches!(session.status, project_store::AgentSessionStatus::Archived) {
+            return Err(CommandError::policy_denied(
+                "Remote command rejected because this session is archived.",
+            ));
+        }
+        return Ok(LocatedRemoteSession {
+            project_id: project_id.to_string(),
+            repo_root,
+            session,
+            remote_session_id: session_id.to_string(),
+        });
+    }
+
     let registry = read_registry(&state.global_db_path(app)?)?;
     for project in registry.projects {
         let location = project_location(&project);
@@ -1167,10 +1619,12 @@ fn locate_remote_session<R: Runtime>(
                     "Remote command rejected because this session is archived.",
                 ));
             }
+            let remote_session_id = remote_session_id_for(&location.project_id, session_id);
             return Ok(LocatedRemoteSession {
                 project_id: location.project_id,
                 repo_root: location.repo_root,
                 session,
+                remote_session_id,
             });
         }
     }
@@ -1181,24 +1635,95 @@ fn locate_remote_session<R: Runtime>(
     ))
 }
 
+fn local_agent_session_id(located: &LocatedRemoteSession) -> &str {
+    located.session.agent_session_id.as_str()
+}
+
 fn remote_session_summaries<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
 ) -> CommandResult<Vec<JsonValue>> {
-    let projects = read_project_summaries(&state.global_db_path(app)?)?;
-    let mut sessions = Vec::new();
+    remote_session_summaries_from_projects(read_project_summaries(&state.global_db_path(app)?)?)
+}
+
+fn remote_project_summaries_from_projects(
+    projects: Vec<RegistryProjectSummaryRecord>,
+) -> CommandResult<Vec<JsonValue>> {
+    let mut summaries = Vec::new();
+    let mut successful_projects = 0_usize;
+    let mut first_error: Option<CommandError> = None;
+
     for project in projects {
         let location = project_summary_location(&project);
-        for session in
-            project_store::list_agent_sessions(&location.repo_root, &location.project_id, false)?
-        {
-            sessions.push(remote_session_summary_payload(
-                &location.project_id,
-                location.project_name.as_deref(),
-                &session,
-            ));
+        match project_store::list_agent_sessions(&location.repo_root, &location.project_id, false) {
+            Ok(_) => {
+                let project_id = location.project_id.clone();
+                let project_name = location.project_name.unwrap_or_else(|| project_id.clone());
+                successful_projects += 1;
+                summaries.push(json!({
+                    "projectId": project_id,
+                    "projectName": project_name,
+                }));
+            }
+            Err(error) => {
+                if first_error.is_none() {
+                    first_error = Some(error.clone());
+                }
+                log_remote_project_list_skip("project list", &location, &error);
+            }
         }
     }
+
+    if successful_projects == 0 {
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+    }
+
+    Ok(summaries)
+}
+
+fn remote_session_summaries_from_projects(
+    projects: Vec<RegistryProjectSummaryRecord>,
+) -> CommandResult<Vec<JsonValue>> {
+    let mut sessions = Vec::new();
+    let mut successful_projects = 0_usize;
+    let mut first_error: Option<CommandError> = None;
+
+    for project in projects {
+        let location = project_summary_location(&project);
+        match project_store::list_agent_sessions(&location.repo_root, &location.project_id, false) {
+            Ok(project_sessions) => {
+                successful_projects += 1;
+                for session in project_sessions {
+                    if matches!(
+                        session.session_kind,
+                        project_store::AgentSessionKind::ComputerUse
+                    ) {
+                        continue;
+                    }
+                    sessions.push(remote_session_summary_payload(
+                        &location.project_id,
+                        location.project_name.as_deref(),
+                        &session,
+                    ));
+                }
+            }
+            Err(error) => {
+                if first_error.is_none() {
+                    first_error = Some(error.clone());
+                }
+                log_remote_project_list_skip("session list", &location, &error);
+            }
+        }
+    }
+
+    if successful_projects == 0 {
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+    }
+
     Ok(sessions)
 }
 
@@ -1211,13 +1736,31 @@ fn remote_session_summary_payload(
         "projectId": project_id,
         "projectName": project_name.unwrap_or(project_id),
         "session": {
+            "remoteSessionId": remote_session_id_for(project_id, &session.agent_session_id),
             "agentSessionId": &session.agent_session_id,
+            "sessionKind": agent_session_kind_value(session.session_kind),
             "title": &session.title,
-            "remoteVisible": !matches!(session.status, project_store::AgentSessionStatus::Archived),
+            "remoteVisible": !matches!(session.status, project_store::AgentSessionStatus::Archived)
+                && !matches!(session.session_kind, project_store::AgentSessionKind::ComputerUse),
             "createdAt": &session.created_at,
             "updatedAt": &session.updated_at,
         },
     })
+}
+
+fn log_remote_project_list_skip(
+    list_name: &str,
+    location: &LocatedRemoteProject,
+    error: &CommandError,
+) {
+    eprintln!(
+        "[remote-bridge] skipped {} for project {} at {}: {} ({})",
+        list_name,
+        location.project_id,
+        location.repo_root.display(),
+        error.message,
+        error.code
+    );
 }
 
 fn remote_session_result_payload(
@@ -1228,7 +1771,7 @@ fn remote_session_result_payload(
     json!({
         "projectId": project_id,
         "projectName": project_name.unwrap_or(project_id),
-        "session": agent_session_dto(session),
+        "session": remote_agent_session_dto(project_id, session),
     })
 }
 
@@ -1252,30 +1795,150 @@ fn remote_session_snapshot<R: Runtime>(
     )?
     .as_ref()
     .map(runtime_run_dto_from_snapshot);
-    let (context_snapshot, context_snapshot_error) = match build_session_context_snapshot(
-        &located.repo_root,
-        &located.project_id,
-        &located.session.agent_session_id,
-        None,
-        None,
-        None,
-        None,
-    ) {
-        Ok(snapshot) => (Some(snapshot), None),
-        Err(error) => (None, Some(error)),
-    };
-
     Ok(json!({
         "schema": "xero.remote_session_snapshot.v1",
         "projectId": located.project_id,
-        "session": agent_session_dto(&located.session),
+        "session": remote_agent_session_dto(&located.project_id, &located.session),
         "runtimeRun": runtime_run,
+        "selectedControls": remote_selected_composer_controls(app, state, located.session.session_kind)?,
         "runs": runs,
         "availableAgents": remote_available_agents(),
         "availableModels": remote_available_models(app, state)?,
-        "contextSnapshot": context_snapshot,
-        "contextSnapshotError": context_snapshot_error,
+        "contextSnapshot": JsonValue::Null,
+        "contextSnapshotError": JsonValue::Null,
     }))
+}
+
+fn remote_selected_composer_controls<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    session_kind: project_store::AgentSessionKind,
+) -> CommandResult<JsonValue> {
+    let Some(value) = read_app_ui_state_value(app, state, COMPOSER_SETTINGS_APP_STATE_KEY)? else {
+        return Ok(JsonValue::Null);
+    };
+    Ok(
+        composer_settings_controls_from_state_value(&value, session_kind)
+            .unwrap_or(JsonValue::Null),
+    )
+}
+
+fn composer_settings_controls_from_state_value(
+    value: &JsonValue,
+    session_kind: project_store::AgentSessionKind,
+) -> Option<JsonValue> {
+    if value.get("version").and_then(JsonValue::as_u64) != Some(COMPOSER_SETTINGS_VERSION) {
+        return None;
+    }
+    let model_id = json_string_field(value, "modelId")?;
+    let mut payload = JsonMap::new();
+    payload.insert("modelId".into(), json!(model_id));
+    if let Some(provider_profile_id) = json_string_field(value, "providerProfileId") {
+        payload.insert("providerProfileId".into(), json!(provider_profile_id));
+    }
+    if let Some(provider_id) = json_string_field(value, "providerId") {
+        payload.insert("providerId".into(), json!(provider_id));
+    }
+    let runtime_agent_id = match session_kind {
+        project_store::AgentSessionKind::ComputerUse => Some(RuntimeAgentIdDto::ComputerUse),
+        project_store::AgentSessionKind::Standard => json_string_field(value, "runtimeAgentId")
+            .and_then(|agent| parse_runtime_agent_id(agent).ok())
+            .filter(|agent| !matches!(agent, RuntimeAgentIdDto::ComputerUse)),
+    };
+    if let Some(runtime_agent_id) = runtime_agent_id {
+        payload.insert("runtimeAgentId".into(), json!(runtime_agent_id.as_str()));
+    }
+    if let Some(thinking_effort) = json_string_field(value, "thinkingEffort") {
+        payload.insert("thinkingEffort".into(), json!(thinking_effort));
+    }
+    if let Some(approval_mode) = json_string_field(value, "approvalMode") {
+        payload.insert("approvalMode".into(), json!(approval_mode));
+    }
+    if let Some(auto_compact_enabled) = value.get("autoCompactEnabled").and_then(JsonValue::as_bool)
+    {
+        payload.insert("autoCompactEnabled".into(), json!(auto_compact_enabled));
+    }
+    Some(JsonValue::Object(payload))
+}
+
+fn persist_remote_composer_settings<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    session_kind: project_store::AgentSessionKind,
+    controls: &RuntimeRunControlInputDto,
+    provider_id: Option<&str>,
+) -> CommandResult<JsonValue> {
+    let payload = composer_settings_payload_from_controls(session_kind, controls, provider_id);
+    write_app_ui_state_value(app, state, COMPOSER_SETTINGS_APP_STATE_KEY, Some(&payload))?;
+    let _ = app.emit(COMPOSER_SETTINGS_UPDATED_EVENT, payload.clone());
+    Ok(payload)
+}
+
+fn composer_settings_payload_from_controls(
+    session_kind: project_store::AgentSessionKind,
+    controls: &RuntimeRunControlInputDto,
+    provider_id: Option<&str>,
+) -> JsonValue {
+    let mut payload = remote_control_payload_from_controls(controls, provider_id);
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("version".into(), json!(COMPOSER_SETTINGS_VERSION));
+        object.insert(
+            "sessionKind".into(),
+            json!(agent_session_kind_value(session_kind)),
+        );
+        object.insert("updatedAt".into(), json!(crate::auth::now_timestamp()));
+    }
+    payload
+}
+
+fn remote_control_payload_from_controls(
+    controls: &RuntimeRunControlInputDto,
+    provider_id: Option<&str>,
+) -> JsonValue {
+    let mut payload = JsonMap::new();
+    payload.insert(
+        "runtimeAgentId".into(),
+        json!(controls.runtime_agent_id.as_str()),
+    );
+    if let Some(agent_definition_id) = controls
+        .agent_definition_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        payload.insert("agentDefinitionId".into(), json!(agent_definition_id));
+    }
+    if let Some(provider_profile_id) = controls
+        .provider_profile_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        payload.insert("providerProfileId".into(), json!(provider_profile_id));
+    }
+    if let Some(provider_id) = provider_id.map(str::trim).filter(|value| !value.is_empty()) {
+        payload.insert("providerId".into(), json!(provider_id));
+    }
+    payload.insert("modelId".into(), json!(controls.model_id));
+    if let Some(thinking_effort) = controls.thinking_effort.as_ref() {
+        payload.insert(
+            "thinkingEffort".into(),
+            json!(thinking_effort_dto_wire_value(thinking_effort)),
+        );
+    }
+    payload.insert(
+        "approvalMode".into(),
+        json!(approval_mode_wire_value(&controls.approval_mode)),
+    );
+    payload.insert(
+        "planModeRequired".into(),
+        json!(controls.plan_mode_required),
+    );
+    payload.insert(
+        "autoCompactEnabled".into(),
+        json!(controls.auto_compact_enabled),
+    );
+    JsonValue::Object(payload)
 }
 
 /// Static list of runtime agents the cloud composer can dispatch.
@@ -1283,6 +1946,7 @@ fn remote_session_snapshot<R: Runtime>(
 fn remote_available_agents() -> Vec<JsonValue> {
     vec![
         json!({ "id": "ask", "label": "Ask" }),
+        json!({ "id": "computer_use", "label": "Computer Use" }),
         json!({ "id": "plan", "label": "Plan" }),
         json!({ "id": "engineer", "label": "Engineer" }),
         json!({ "id": "debug", "label": "Debug" }),
@@ -1410,6 +2074,25 @@ fn thinking_effort_wire_value(effort: &ProviderModelThinkingEffort) -> &'static 
         ProviderModelThinkingEffort::Medium => "medium",
         ProviderModelThinkingEffort::High => "high",
         ProviderModelThinkingEffort::XHigh => "x_high",
+    }
+}
+
+fn thinking_effort_dto_wire_value(effort: &ProviderModelThinkingEffortDto) -> &'static str {
+    match effort {
+        ProviderModelThinkingEffortDto::None => "none",
+        ProviderModelThinkingEffortDto::Minimal => "minimal",
+        ProviderModelThinkingEffortDto::Low => "low",
+        ProviderModelThinkingEffortDto::Medium => "medium",
+        ProviderModelThinkingEffortDto::High => "high",
+        ProviderModelThinkingEffortDto::XHigh => "x_high",
+    }
+}
+
+fn approval_mode_wire_value(mode: &RuntimeRunApprovalModeDto) -> &'static str {
+    match mode {
+        RuntimeRunApprovalModeDto::Suggest => "suggest",
+        RuntimeRunApprovalModeDto::AutoEdit => "auto_edit",
+        RuntimeRunApprovalModeDto::Yolo => "yolo",
     }
 }
 
@@ -1565,15 +2248,104 @@ fn remote_attachments_from_payload(
     Ok(attachments)
 }
 
+fn remote_session_kind_from_payload(
+    payload: &JsonValue,
+) -> CommandResult<project_store::AgentSessionKind> {
+    if let Some(value) = payload_string(payload, &["sessionKind", "session_kind"]) {
+        return match value.trim() {
+            "standard" => Ok(project_store::AgentSessionKind::Standard),
+            "computer_use" => Ok(project_store::AgentSessionKind::ComputerUse),
+            other => Err(CommandError::user_fixable(
+                "remote_session_kind_unsupported",
+                format!("Remote start does not support session kind `{other}`."),
+            )),
+        };
+    }
+
+    if remote_payload_runtime_agent_id(payload)? == Some(RuntimeAgentIdDto::ComputerUse) {
+        return Ok(project_store::AgentSessionKind::ComputerUse);
+    }
+
+    Ok(project_store::AgentSessionKind::Standard)
+}
+
+fn remote_default_agent_for_session_kind(
+    session_kind: project_store::AgentSessionKind,
+) -> Option<RuntimeAgentIdDto> {
+    match session_kind {
+        project_store::AgentSessionKind::Standard => None,
+        project_store::AgentSessionKind::ComputerUse => Some(RuntimeAgentIdDto::ComputerUse),
+    }
+}
+
+fn remote_payload_runtime_agent_id(
+    payload: &JsonValue,
+) -> CommandResult<Option<RuntimeAgentIdDto>> {
+    payload_string(payload, &["agent", "runtimeAgentId", "runtime_agent_id"])
+        .map(parse_runtime_agent_id)
+        .transpose()
+}
+
+fn ensure_remote_payload_matches_session_kind(
+    session_kind: project_store::AgentSessionKind,
+    payload: &JsonValue,
+) -> CommandResult<()> {
+    if let Some(runtime_agent_id) = remote_payload_runtime_agent_id(payload)? {
+        ensure_remote_agent_matches_session_kind(session_kind, runtime_agent_id)?;
+    }
+    Ok(())
+}
+
+fn ensure_remote_controls_match_session_kind(
+    session_kind: project_store::AgentSessionKind,
+    controls: Option<&RuntimeRunControlInputDto>,
+) -> CommandResult<()> {
+    if let Some(controls) = controls {
+        ensure_remote_agent_matches_session_kind(session_kind, controls.runtime_agent_id)?;
+    }
+    Ok(())
+}
+
+fn ensure_remote_agent_matches_session_kind(
+    session_kind: project_store::AgentSessionKind,
+    runtime_agent_id: RuntimeAgentIdDto,
+) -> CommandResult<()> {
+    match (session_kind, runtime_agent_id) {
+        (project_store::AgentSessionKind::ComputerUse, RuntimeAgentIdDto::ComputerUse) => Ok(()),
+        (project_store::AgentSessionKind::ComputerUse, _) => Err(CommandError::user_fixable(
+            "computer_use_agent_required",
+            "Computer Use sessions must run with the Computer Use agent.",
+        )),
+        (project_store::AgentSessionKind::Standard, RuntimeAgentIdDto::ComputerUse) => {
+            Err(CommandError::user_fixable(
+                "computer_use_session_required",
+                "The Computer Use agent can only run inside a Computer Use session.",
+            ))
+        }
+        (project_store::AgentSessionKind::Standard, _) => Ok(()),
+    }
+}
+
+fn agent_session_kind_value(session_kind: project_store::AgentSessionKind) -> &'static str {
+    match session_kind {
+        project_store::AgentSessionKind::Standard => "standard",
+        project_store::AgentSessionKind::ComputerUse => "computer_use",
+    }
+}
+
 fn remote_run_controls_from_payload(
     payload: &JsonValue,
     fallback: Option<&RuntimeRunControlInputDto>,
+    default_runtime_agent_id: Option<RuntimeAgentIdDto>,
 ) -> CommandResult<Option<RuntimeRunControlInputDto>> {
-    let Some(agent) = payload_string(payload, &["agent", "runtimeAgentId", "runtime_agent_id"])
-    else {
-        return Ok(None);
-    };
-    let runtime_agent_id = parse_runtime_agent_id(agent)?;
+    let runtime_agent_id =
+        match payload_string(payload, &["agent", "runtimeAgentId", "runtime_agent_id"]) {
+            Some(agent) => parse_runtime_agent_id(agent)?,
+            None => match default_runtime_agent_id {
+                Some(agent_id) => agent_id,
+                None => return Ok(None),
+            },
+        };
     let Some(model_id) = payload_string(payload, &["modelId", "model_id"]).or_else(|| {
         fallback
             .map(|controls| controls.model_id.as_str())
@@ -1588,7 +2360,7 @@ fn remote_run_controls_from_payload(
     };
     Ok(Some(RuntimeRunControlInputDto {
         runtime_agent_id,
-        agent_definition_id: Some(agent.trim().to_string()),
+        agent_definition_id: Some(runtime_agent_id.as_str().to_string()),
         provider_profile_id: payload_string(payload, &["providerProfileId", "provider_profile_id"])
             .map(ToOwned::to_owned)
             .or_else(|| fallback.and_then(|controls| controls.provider_profile_id.clone())),
@@ -1655,6 +2427,7 @@ fn parse_thinking_effort(value: &str) -> CommandResult<ProviderModelThinkingEffo
 fn parse_runtime_agent_id(value: &str) -> CommandResult<RuntimeAgentIdDto> {
     match value.trim() {
         "ask" => Ok(RuntimeAgentIdDto::Ask),
+        "computer_use" | "computer" => Ok(RuntimeAgentIdDto::ComputerUse),
         "plan" => Ok(RuntimeAgentIdDto::Plan),
         "engineer" => Ok(RuntimeAgentIdDto::Engineer),
         "debug" => Ok(RuntimeAgentIdDto::Debug),
@@ -1688,6 +2461,14 @@ fn required_payload_string<'a>(payload: &'a JsonValue, keys: &[&str]) -> Command
 fn payload_string<'a>(payload: &'a JsonValue, keys: &[&str]) -> Option<&'a str> {
     keys.iter()
         .find_map(|key| payload.get(*key).and_then(JsonValue::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn json_string_field<'a>(payload: &'a JsonValue, key: &str) -> Option<&'a str> {
+    payload
+        .get(key)
+        .and_then(JsonValue::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
 }
@@ -1756,6 +2537,86 @@ fn map_bridge_error(error: BridgeError) -> CommandError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{fs, path::Path};
+
+    use rusqlite::{params, Connection};
+
+    use crate::{
+        commands::{ProjectOriginDto, ProjectSummaryDto},
+        db::{
+            configure_connection, migrations::migrations, register_project_database_path_for_tests,
+        },
+    };
+
+    fn seed_project_database(repo_root: &Path, project_id: &str) {
+        fs::create_dir_all(repo_root).expect("repo root");
+        let database_path = repo_root
+            .parent()
+            .expect("repo parent")
+            .join("app-data")
+            .join("projects")
+            .join(project_id)
+            .join("state.db");
+        fs::create_dir_all(database_path.parent().expect("database parent")).expect("database dir");
+
+        let mut connection = Connection::open(&database_path).expect("open project database");
+        configure_connection(&connection).expect("configure project database");
+        migrations()
+            .to_latest(&mut connection)
+            .expect("migrate project database");
+        connection
+            .execute(
+                "INSERT INTO projects (id, name, description, milestone) VALUES (?1, 'Project', '', '')",
+                params![project_id],
+            )
+            .expect("insert project row");
+        connection
+            .execute(
+                r#"
+                INSERT INTO repositories (id, project_id, root_path, display_name, branch, head_sha, is_git_repo)
+                VALUES (?1, ?2, ?3, 'Project', 'main', 'abc123', 1)
+                "#,
+                params![
+                    format!("repo-{project_id}"),
+                    project_id,
+                    repo_root.to_string_lossy().as_ref()
+                ],
+            )
+            .expect("insert repository row");
+
+        register_project_database_path_for_tests(repo_root, database_path);
+    }
+
+    fn project_summary(
+        project_id: &str,
+        repository_id: &str,
+        repo_root: &Path,
+    ) -> RegistryProjectSummaryRecord {
+        RegistryProjectSummaryRecord {
+            registry: RegistryProjectRecord {
+                project_id: project_id.into(),
+                repository_id: repository_id.into(),
+                root_path: repo_root.to_string_lossy().into_owned(),
+            },
+            project: ProjectSummaryDto {
+                id: project_id.into(),
+                name: repo_root
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(project_id)
+                    .into(),
+                description: String::new(),
+                milestone: String::new(),
+                project_origin: ProjectOriginDto::Unknown,
+                total_phases: 0,
+                completed_phases: 0,
+                active_phase: 0,
+                branch: None,
+                runtime: None,
+                start_targets: Vec::new(),
+            },
+        }
+    }
 
     fn fallback_controls(model_id: &str) -> RuntimeRunControlInputDto {
         RuntimeRunControlInputDto {
@@ -1780,6 +2641,7 @@ mod tests {
                 "providerProfileId": "openai_codex-default",
             }),
             Some(&fallback),
+            None,
         )
         .expect("controls should parse")
         .expect("controls should be present");
@@ -1807,6 +2669,52 @@ mod tests {
     }
 
     #[test]
+    fn project_scoped_remote_session_ids_round_trip_duplicate_agent_session_ids() {
+        let mesh = remote_session_id_for("mesh-lang", "agent-session-main");
+        let xero = remote_session_id_for("xero", "agent-session-main");
+
+        assert_eq!(mesh, "project:9:mesh-langagent-session-main");
+        assert_eq!(xero, "project:4:xeroagent-session-main");
+        assert_ne!(mesh, xero);
+        assert_eq!(
+            parse_project_scoped_remote_session_id(&mesh),
+            Some(("mesh-lang", "agent-session-main"))
+        );
+        assert_eq!(
+            parse_project_scoped_remote_session_id(&xero),
+            Some(("xero", "agent-session-main"))
+        );
+        assert_eq!(parse_project_scoped_remote_session_id("session-main"), None);
+    }
+
+    #[test]
+    fn cloud_theme_payload_includes_custom_tokens_only_for_custom_ids() {
+        let custom = json!({
+            "id": "custom-ember",
+            "colors": { "background": "#fff1e8" },
+        });
+
+        assert_eq!(
+            custom_theme_for_theme_id("custom-ember", Some(custom.clone())),
+            Some(custom)
+        );
+        assert_eq!(custom_theme_for_theme_id("midnight", Some(json!({}))), None);
+    }
+
+    #[test]
+    fn cloud_theme_state_finds_matching_custom_theme() {
+        let themes = json!([
+            { "id": "custom-ocean", "colors": { "background": "#001122" } },
+            { "id": "custom-ember", "colors": { "background": "#fff1e8" } }
+        ]);
+
+        let theme = custom_theme_from_state_value("custom-ember", themes).expect("custom theme");
+
+        assert_eq!(theme["id"], json!("custom-ember"));
+        assert_eq!(theme["colors"]["background"], json!("#fff1e8"));
+    }
+
+    #[test]
     fn remote_controls_fall_back_to_current_settings() {
         let fallback = fallback_controls("gpt-5.5");
         let controls = remote_run_controls_from_payload(
@@ -1815,6 +2723,7 @@ mod tests {
                 "modelId": null,
             }),
             Some(&fallback),
+            None,
         )
         .expect("controls should parse")
         .expect("controls should be present");
@@ -1830,12 +2739,72 @@ mod tests {
     }
 
     #[test]
+    fn composer_settings_state_supplies_model_but_not_computer_use_agent_for_standard_sessions() {
+        let value = json!({
+            "version": COMPOSER_SETTINGS_VERSION,
+            "runtimeAgentId": "computer_use",
+            "providerProfileId": "xai-default",
+            "providerId": "xai",
+            "modelId": "grok-4.3",
+            "thinkingEffort": "low",
+            "autoCompactEnabled": false,
+        });
+
+        let standard = composer_settings_controls_from_state_value(
+            &value,
+            project_store::AgentSessionKind::Standard,
+        )
+        .expect("standard composer controls");
+        assert_eq!(standard["modelId"], json!("grok-4.3"));
+        assert_eq!(standard["providerProfileId"], json!("xai-default"));
+        assert_eq!(standard.get("runtimeAgentId"), None);
+
+        let computer_use = composer_settings_controls_from_state_value(
+            &value,
+            project_store::AgentSessionKind::ComputerUse,
+        )
+        .expect("computer use composer controls");
+        assert_eq!(computer_use["runtimeAgentId"], json!("computer_use"));
+        assert_eq!(computer_use["modelId"], json!("grok-4.3"));
+    }
+
+    #[test]
+    fn composer_settings_payload_round_trips_runtime_controls_for_cloud() {
+        let controls = RuntimeRunControlInputDto {
+            runtime_agent_id: RuntimeAgentIdDto::Debug,
+            agent_definition_id: Some("debug".into()),
+            provider_profile_id: Some("xai-default".into()),
+            model_id: "grok-4.3".into(),
+            thinking_effort: Some(ProviderModelThinkingEffortDto::Low),
+            approval_mode: RuntimeRunApprovalModeDto::Yolo,
+            plan_mode_required: false,
+            auto_compact_enabled: false,
+        };
+
+        let payload = composer_settings_payload_from_controls(
+            project_store::AgentSessionKind::Standard,
+            &controls,
+            Some("xai"),
+        );
+
+        assert_eq!(payload["version"], json!(COMPOSER_SETTINGS_VERSION));
+        assert_eq!(payload["runtimeAgentId"], json!("debug"));
+        assert_eq!(payload["providerId"], json!("xai"));
+        assert_eq!(payload["providerProfileId"], json!("xai-default"));
+        assert_eq!(payload["modelId"], json!("grok-4.3"));
+        assert_eq!(payload["thinkingEffort"], json!("low"));
+        assert_eq!(payload["approvalMode"], json!("yolo"));
+        assert_eq!(payload["autoCompactEnabled"], json!(false));
+    }
+
+    #[test]
     fn remote_controls_are_omitted_without_agent_and_model_pair() {
         assert!(remote_run_controls_from_payload(
             &json!({
                 "agent": "ask",
                 "modelId": null,
             }),
+            None,
             None,
         )
         .expect("controls should parse")
@@ -1846,9 +2815,43 @@ mod tests {
                 "message": "What is 1+1?",
             }),
             Some(&fallback_controls("gpt-5.5")),
+            None,
         )
         .expect("controls should parse")
         .is_none());
+    }
+
+    #[test]
+    fn computer_use_session_kind_infers_and_locks_remote_controls() {
+        assert_eq!(
+            remote_session_kind_from_payload(&json!({
+                "agent": "computer_use",
+            }))
+            .expect("session kind"),
+            project_store::AgentSessionKind::ComputerUse
+        );
+
+        let controls = remote_run_controls_from_payload(
+            &json!({
+                "sessionKind": "computer_use",
+                "modelId": "gpt-5.5",
+            }),
+            None,
+            Some(RuntimeAgentIdDto::ComputerUse),
+        )
+        .expect("controls")
+        .expect("computer-use controls");
+
+        assert_eq!(controls.runtime_agent_id, RuntimeAgentIdDto::ComputerUse);
+        assert_eq!(
+            controls.agent_definition_id.as_deref(),
+            Some("computer_use")
+        );
+        assert!(ensure_remote_payload_matches_session_kind(
+            project_store::AgentSessionKind::ComputerUse,
+            &json!({ "agent": "engineer" }),
+        )
+        .is_err());
     }
 
     #[test]
@@ -1856,6 +2859,7 @@ mod tests {
         let session = AgentSessionRecord {
             project_id: "project-1".into(),
             agent_session_id: "session-1".into(),
+            session_kind: project_store::AgentSessionKind::Standard,
             title: "Simple Addition".into(),
             summary: String::new(),
             status: project_store::AgentSessionStatus::Active,
@@ -1874,9 +2878,73 @@ mod tests {
 
         assert_eq!(payload["projectId"], "project-1");
         assert_eq!(payload["projectName"], "Mesh Lang");
+        assert_eq!(
+            payload["session"]["remoteSessionId"],
+            "project:9:project-1session-1"
+        );
         assert_eq!(payload["session"]["agentSessionId"], "session-1");
+        assert_eq!(payload["session"]["sessionKind"], "standard");
         assert_eq!(payload["session"]["title"], "Simple Addition");
         assert_eq!(payload["session"]["remoteVisible"], true);
         assert_eq!(payload["session"]["updatedAt"], "2026-05-20T20:42:00Z");
+    }
+
+    #[test]
+    fn remote_session_summaries_skip_stale_project_registry_entries() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let valid_root = tempdir.path().join("valid");
+        let stale_root = tempdir.path().join("stale");
+        seed_project_database(&valid_root, "project-valid");
+        seed_project_database(&stale_root, "project-other");
+
+        let session = project_store::create_agent_session(
+            &valid_root,
+            &AgentSessionCreateRecord {
+                project_id: "project-valid".into(),
+                title: "Main".into(),
+                summary: String::new(),
+                selected: true,
+                session_kind: project_store::AgentSessionKind::Standard,
+            },
+        )
+        .expect("create valid session");
+
+        let summaries = remote_session_summaries_from_projects(vec![
+            project_summary("project-stale", "repo-stale", &stale_root),
+            project_summary("project-valid", "repo-valid", &valid_root),
+        ])
+        .expect("session summaries");
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0]["projectId"], "project-valid");
+        assert_eq!(
+            summaries[0]["session"]["remoteSessionId"],
+            format!(
+                "project:{}:{}{}",
+                "project-valid".len(),
+                "project-valid",
+                session.agent_session_id
+            )
+        );
+        assert_eq!(
+            summaries[0]["session"]["agentSessionId"],
+            session.agent_session_id
+        );
+    }
+
+    #[test]
+    fn remote_session_summaries_error_when_every_project_is_unreadable() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let stale_root = tempdir.path().join("stale");
+        seed_project_database(&stale_root, "project-other");
+
+        let error = remote_session_summaries_from_projects(vec![project_summary(
+            "project-stale",
+            "repo-stale",
+            &stale_root,
+        )])
+        .expect_err("all-stale project list should remain an error");
+
+        assert_eq!(error.code, "project_registry_mismatch");
     }
 }

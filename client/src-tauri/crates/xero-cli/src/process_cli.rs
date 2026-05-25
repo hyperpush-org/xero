@@ -44,7 +44,9 @@ pub(crate) fn dispatch_process(
     args: Vec<String>,
 ) -> Result<CliResponse, CliError> {
     match args.first().map(String::as_str) {
-        Some("targets") | Some("target-list") => command_process_targets(globals, args[1..].to_vec()),
+        Some("targets") | Some("target-list") => {
+            command_process_targets(globals, args[1..].to_vec())
+        }
         Some("add-target") | Some("target-add") => {
             command_process_add_target(globals, args[1..].to_vec())
         }

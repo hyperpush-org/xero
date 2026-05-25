@@ -21,7 +21,7 @@ import { useTheme } from '@/src/features/theme/theme-provider'
 import type {
   EditorPalette,
   ThemeDefinition,
-} from '@/src/features/theme/theme-definitions'
+} from '@xero/ui/theme'
 import type { ProjectDiagnosticDto } from '@/src/lib/xero-model'
 import type { EditorSelectionContext } from './execution-view/agent-aware-editor-hooks'
 import type { EditorGitDiffLineMarker } from './execution-view/git-aware-editing'

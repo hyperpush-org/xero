@@ -1,4 +1,14 @@
-import { ChevronRight, GitBranch, Hammer, Lightbulb, Search, Sparkles, Workflow } from 'lucide-react'
+import {
+  ChevronRight,
+  GitBranch,
+  Hammer,
+  Lightbulb,
+  Monitor,
+  MousePointer2,
+  Search,
+  Sparkles,
+  Workflow,
+} from 'lucide-react'
 
 import { AppLogo } from './app-logo'
 import { cn } from '../lib/utils'
@@ -7,7 +17,7 @@ interface EmptySessionStateProps {
   projectLabel: string
   greetingName?: string | null
   onSelectSuggestion?: (prompt: string) => void
-  context?: 'default' | 'agent-create'
+  context?: 'default' | 'agent-create' | 'computer-use'
   agentCreateCanvasIncluded?: boolean
   onStartWorkflowAgentCreate?: () => void
   /** Density variant. `dense` strips the brand glyph + paragraph for ultra-compact panes. */
@@ -53,6 +63,19 @@ const AGENT_CREATE_SUGGESTIONS: Suggestion[] = [
   },
 ]
 
+const COMPUTER_USE_SUGGESTIONS: Suggestion[] = [
+  {
+    icon: Monitor,
+    label: 'Use an app',
+    prompt: 'Use the visible app to complete the next step, then tell me what happened.',
+  },
+  {
+    icon: MousePointer2,
+    label: 'Check the screen',
+    prompt: 'Inspect what is visible on this computer and summarize what needs attention.',
+  },
+]
+
 export function EmptySessionState({
   projectLabel,
   greetingName,
@@ -64,7 +87,12 @@ export function EmptySessionState({
 }: EmptySessionStateProps) {
   const greeting = greetingName ? `${getDaypartGreeting()}, ${greetingName}` : null
   const isAgentCreate = context === 'agent-create'
-  const suggestions = isAgentCreate ? AGENT_CREATE_SUGGESTIONS : DEFAULT_SUGGESTIONS
+  const isComputerUse = context === 'computer-use'
+  const suggestions = isAgentCreate
+    ? AGENT_CREATE_SUGGESTIONS
+    : isComputerUse
+      ? COMPUTER_USE_SUGGESTIONS
+      : DEFAULT_SUGGESTIONS
   const showWorkflowCanvasAction =
     isAgentCreate && !agentCreateCanvasIncluded && Boolean(onStartWorkflowAgentCreate)
 
@@ -73,7 +101,13 @@ export function EmptySessionState({
       <div className="relative flex min-h-full w-full items-center justify-center overflow-hidden">
         <div className="agent-empty-fade-in relative flex w-full max-w-[260px] flex-col items-stretch px-3 py-4">
           <h2 className="text-center text-[13px] font-semibold tracking-tight text-foreground">
-            {isAgentCreate ? 'Shape a definition' : <span className="text-primary">{projectLabel}</span>}
+            {isAgentCreate ? (
+              'Shape a definition'
+            ) : isComputerUse ? (
+              'Computer Use'
+            ) : (
+              <span className="text-primary">{projectLabel}</span>
+            )}
           </h2>
           {onSelectSuggestion || showWorkflowCanvasAction ? (
             <ul className="mt-3 flex w-full flex-col divide-y divide-border/40 overflow-hidden rounded-md border border-border/60 bg-card/30">
@@ -147,6 +181,8 @@ export function EmptySessionState({
         <h2 className="mt-3 text-2xl font-semibold tracking-tight text-foreground sm:text-[26px]">
           {isAgentCreate ? (
             'Shape a definition'
+          ) : isComputerUse ? (
+            'Computer Use'
           ) : (
             <>
               What can we build together in <span className="text-primary">{projectLabel}</span>?
@@ -158,6 +194,8 @@ export function EmptySessionState({
             ? agentCreateCanvasIncluded
               ? 'The canvas is already included. Describe the agent or Workflow, then approve the saved definition when it is ready.'
               : 'Start from a description. Agent Create will draft an agent or Workflow definition for review.'
+            : isComputerUse
+              ? 'Give a concrete instruction and Xero will operate the visible computer with bounded UI control.'
             : 'Just ask — I can read your code, suggest changes, or run a task for you. Everything we do will show up right here.'}
         </p>
 
@@ -240,11 +278,18 @@ function getDaypartGreeting(): string {
 
 function BrandGlyph({ context }: { context: EmptySessionStateProps['context'] }) {
   const isAgentCreate = context === 'agent-create'
+  const isComputerUse = context === 'computer-use'
 
   return (
     <div className="relative">
       <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-border bg-card/60">
-        {isAgentCreate ? <Sparkles className="h-6 w-6 text-primary" /> : <AppLogo className="h-7 w-7" />}
+        {isAgentCreate ? (
+          <Sparkles className="h-6 w-6 text-primary" />
+        ) : isComputerUse ? (
+          <Monitor className="h-6 w-6 text-primary" />
+        ) : (
+          <AppLogo className="h-7 w-7" />
+        )}
       </div>
     </div>
   )

@@ -14,8 +14,11 @@ function sessionSummary(
 	return {
 		computerId: "desktop-1",
 		sessionId: "session-1",
+		agentSessionId: "session-1",
 		projectId: "project-1",
 		projectName: "Clipstack",
+		sessionKind: "standard",
+		isComputerUse: false,
 		title: "Project Overview",
 		lastActivityAt: "2026-05-16T23:32:05.323554Z",
 		computerName: "Mac Studio",

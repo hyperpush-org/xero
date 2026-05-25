@@ -186,6 +186,7 @@ const BENCHMARK_PROJECT_SCHEMA: &str = r#"
         agent_session_id TEXT NOT NULL,
         title TEXT NOT NULL,
         summary TEXT NOT NULL DEFAULT '',
+        session_kind TEXT NOT NULL DEFAULT 'standard',
         status TEXT NOT NULL,
         selected INTEGER NOT NULL DEFAULT 0,
         remote_visible INTEGER NOT NULL DEFAULT 0,
@@ -4679,6 +4680,15 @@ fn builtin_agent_definition_seed(definition_id: &str) -> Option<BuiltinAgentDefi
             updated_at: "2026-05-01T00:00:00Z",
             snapshot_json: r#"{"id":"agent_create","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"agent_builder","label":"Agent Create","shortLabel":"Create","attachedSkills":[]}"#,
         },
+        "computer_use" => BuiltinAgentDefinitionSeed {
+            definition_id: "computer_use",
+            version: 1,
+            display_name: "Computer Use",
+            short_label: "Computer",
+            base_capability_profile: "computer_use",
+            updated_at: "2026-05-24T00:00:00Z",
+            snapshot_json: r#"{"schema":"xero.agent_definition.v1","id":"computer_use","version":1,"displayName":"Computer Use","shortLabel":"Computer","description":"Operate the visible computer through bounded UI control without repository mutation tools.","taskPurpose":"Use the currently visible computer directly for the user's task, asking before risky actions and reporting the result.","scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"computer_use","defaultApprovalMode":"suggest","allowedApprovalModes":["suggest"],"promptPolicy":"computer_use","toolPolicy":"computer_use","outputContract":"answer","attachedSkills":[]}"#,
+        },
         "generalist" => BuiltinAgentDefinitionSeed {
             definition_id: "generalist",
             version: 1,
@@ -5915,6 +5925,14 @@ fn registered_project_by_id(
     project_id: &str,
 ) -> Result<RegisteredProject, CliError> {
     validate_required_cli(project_id, "projectId")?;
+    if project_id == project_cli::GLOBAL_COMPUTER_USE_PROJECT_ID {
+        project_cli::ensure_global_computer_use_project(globals)?;
+        return Ok(RegisteredProject {
+            database_path: project_cli::global_computer_use_database_path(globals),
+            project_id: project_cli::GLOBAL_COMPUTER_USE_PROJECT_ID.to_owned(),
+            repo_root: project_cli::global_computer_use_root(globals),
+        });
+    }
     read_registered_projects_strict(globals)?
         .into_iter()
         .find(|project| project.project_id == project_id)
@@ -5974,6 +5992,7 @@ fn read_registered_projects_from_database(
             SELECT projects.id, repositories.root_path
             FROM projects
             JOIN repositories ON repositories.project_id = projects.id
+            WHERE projects.id != ?1
             ORDER BY projects.updated_at DESC, repositories.updated_at DESC, repositories.root_path ASC
             "#,
         )
@@ -5985,18 +6004,21 @@ fn read_registered_projects_from_database(
         })?;
     let app_data_root = cli_app_data_root(globals);
     let rows = statement
-        .query_map([], |row| {
-            let project_id = row.get::<_, String>(0)?;
-            let repo_root = PathBuf::from(row.get::<_, String>(1)?);
-            Ok(RegisteredProject {
-                database_path: workspace_project_database_path_for_app_root(
-                    &app_data_root,
-                    &project_id,
-                ),
-                project_id,
-                repo_root,
-            })
-        })
+        .query_map(
+            params![project_cli::GLOBAL_COMPUTER_USE_PROJECT_ID],
+            |row| {
+                let project_id = row.get::<_, String>(0)?;
+                let repo_root = PathBuf::from(row.get::<_, String>(1)?);
+                Ok(RegisteredProject {
+                    database_path: workspace_project_database_path_for_app_root(
+                        &app_data_root,
+                        &project_id,
+                    ),
+                    project_id,
+                    repo_root,
+                })
+            },
+        )
         .map_err(|error| {
             CliError::system_fault(
                 "xero_cli_project_registry_read_failed",
@@ -15252,8 +15274,7 @@ mod tests {
             show.json["snapshot"]["traceId"]
         );
         assert!(
-            responses[2]["result"]["structuredContent"]["supportBundle"]["qualityGates"]
-                ["gates"]
+            responses[2]["result"]["structuredContent"]["supportBundle"]["qualityGates"]["gates"]
                 .is_array(),
             "MCP support bundle should include trace quality gates without treating later-phase gates as Phase 2 blockers"
         );
@@ -16521,6 +16542,7 @@ mod tests {
             agent_session_id TEXT NOT NULL,
             title TEXT NOT NULL,
             summary TEXT NOT NULL DEFAULT '',
+            session_kind TEXT NOT NULL DEFAULT 'standard',
             status TEXT NOT NULL,
             selected INTEGER NOT NULL DEFAULT 0,
             remote_visible INTEGER NOT NULL DEFAULT 0,

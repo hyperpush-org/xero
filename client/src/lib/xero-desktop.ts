@@ -626,6 +626,7 @@ const COMMANDS = {
   wipeAllXeroData: 'wipe_all_xero_data',
   readAppUiState: 'read_app_ui_state',
   writeAppUiState: 'write_app_ui_state',
+  bridgePublishTheme: 'bridge_publish_theme',
   readProjectUiState: 'read_project_ui_state',
   writeProjectUiState: 'write_project_ui_state',
   createProjectStateBackup: 'create_project_state_backup',
@@ -678,6 +679,7 @@ const COMMANDS = {
   listProjectContextRecords: 'list_project_context_records',
   deleteProjectContextRecord: 'delete_project_context_record',
   supersedeProjectContextRecord: 'supersede_project_context_record',
+  ensureGlobalComputerUseSession: 'ensure_global_computer_use_session',
   createAgentSession: 'create_agent_session',
   listAgentDefinitions: 'list_agent_definitions',
   archiveAgentDefinition: 'archive_agent_definition',
@@ -847,6 +849,25 @@ const COMMANDS = {
   resolveEnvironmentPermissionRequests: 'resolve_environment_permission_requests',
   startEnvironmentDiscovery: 'start_environment_discovery',
 } as const
+
+export const bridgeThemeSyncRequestSchema = z
+  .object({
+    themeId: z.string().trim().min(1),
+    customTheme: z.unknown().nullable().optional(),
+  })
+  .strict()
+
+export type BridgeThemeSyncRequestDto = z.infer<typeof bridgeThemeSyncRequestSchema>
+
+const globalComputerUseSessionSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    agentSessionId: z.string().trim().min(1),
+    session: agentSessionSchema,
+  })
+  .strict()
+
+export type GlobalComputerUseSessionDto = z.infer<typeof globalComputerUseSessionSchema>
 
 const EVENTS = {
   projectUpdated: 'project:updated',
@@ -1100,6 +1121,7 @@ export interface XeroDesktopAdapter {
   wipeAllXeroData?(): Promise<WipeAllDataResponseDto>
   readAppUiState?(request: ReadAppUiStateRequestDto): Promise<AppUiStateResponseDto>
   writeAppUiState?(request: WriteAppUiStateRequestDto): Promise<AppUiStateResponseDto>
+  publishThemeToCloud?(request: BridgeThemeSyncRequestDto): Promise<void>
   readProjectUiState?(request: ReadProjectUiStateRequestDto): Promise<ProjectUiStateResponseDto>
   writeProjectUiState?(request: WriteProjectUiStateRequestDto): Promise<ProjectUiStateResponseDto>
   listProjectStateBackups?(
@@ -1179,6 +1201,7 @@ export interface XeroDesktopAdapter {
   supersedeProjectContextRecord(
     request: SupersedeProjectContextRecordRequestDto,
   ): Promise<SupersedeProjectContextRecordResponseDto>
+  ensureGlobalComputerUseSession?(): Promise<GlobalComputerUseSessionDto>
   createAgentSession(request: CreateAgentSessionRequestDto): Promise<AgentSessionDto>
   listAgentDefinitions(
     request: ListAgentDefinitionsRequestDto,
@@ -2310,6 +2333,11 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     })
   },
 
+  async publishThemeToCloud(request) {
+    const parsed = bridgeThemeSyncRequestSchema.parse(request)
+    await invokeRaw(COMMANDS.bridgePublishTheme, { request: parsed })
+  },
+
   readProjectUiState(request) {
     const parsed = readProjectUiStateRequestSchema.parse(request)
     return invokeTyped(COMMANDS.readProjectUiState, projectUiStateResponseSchema, {
@@ -2671,6 +2699,14 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     )
   },
 
+  ensureGlobalComputerUseSession() {
+    return invokeTyped(
+      COMMANDS.ensureGlobalComputerUseSession,
+      globalComputerUseSessionSchema,
+      {},
+    )
+  },
+
   createAgentSession(request) {
     const parsed = createAgentSessionRequestSchema.parse(request)
     return invokeTyped(COMMANDS.createAgentSession, agentSessionSchema, {
@@ -2679,6 +2715,8 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
         title: parsed.title ?? null,
         summary: parsed.summary ?? '',
         selected: parsed.selected ?? false,
+        sessionKind: parsed.sessionKind,
+        runtimeAgentId: parsed.runtimeAgentId ?? null,
       },
     })
   },

@@ -17,6 +17,7 @@ import {
 export const MAX_RUNTIME_STREAM_ACTION_REQUIRED = 10
 export const MAX_RUNTIME_STREAM_PLAN_ITEMS = 50
 export const MAX_RUNTIME_STREAM_ACTION_REQUIRED_OPTIONS = 20
+export const MAX_RUNTIME_STREAM_MEDIA_ATTACHMENTS = 24
 const OWNED_AGENT_REASONING_ACTIVITY_CODE = 'owned_agent_reasoning'
 const OWNED_AGENT_REASONING_BOUNDARY_CODE = 'owned_agent_reasoning_boundary'
 
@@ -95,6 +96,66 @@ export const runtimeStreamPlanItemSchema = z
   })
   .strict()
 export const runtimeStreamTranscriptRoleSchema = z.enum(['user', 'assistant', 'system', 'tool'])
+export const runtimeStreamImageMediaTypeSchema = z.enum([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+])
+export const runtimeStreamMediaSourceSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('app_data_path'),
+      absolutePath: z.string().trim().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('artifact'),
+      artifactId: z.string().trim().min(1),
+      absolutePath: nonEmptyOptionalTextSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('data_url'),
+      dataUrl: z.string().trim().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('remote_artifact'),
+      artifactId: z.string().trim().min(1),
+      computerId: z.string().trim().min(1),
+      sessionId: z.string().trim().min(1),
+    })
+    .strict(),
+]).superRefine((source, ctx) => {
+  if (source.kind !== 'data_url') {
+    return
+  }
+  if (!/^data:image\/(?:png|jpeg|gif|webp);base64,/i.test(source.dataUrl)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['dataUrl'],
+      message: 'Runtime image data URLs must be supported base64 image payloads.',
+    })
+  }
+})
+export const runtimeStreamMediaAttachmentSchema = z
+  .object({
+    id: z.string().trim().min(1),
+    kind: z.literal('image'),
+    mediaType: runtimeStreamImageMediaTypeSchema,
+    title: nonEmptyOptionalTextSchema,
+    alt: nonEmptyOptionalTextSchema,
+    sizeBytes: z.number().int().nonnegative().nullable().optional(),
+    width: z.number().int().positive().nullable().optional(),
+    height: z.number().int().positive().nullable().optional(),
+    source: runtimeStreamMediaSourceSchema,
+    renderUrl: nonEmptyOptionalTextSchema,
+  })
+  .strict()
 
 export const runtimeStreamItemSchema = z
   .object({
@@ -104,7 +165,7 @@ export const runtimeStreamItemSchema = z
     updatedSequence: z.number().int().positive().nullable().optional(),
     sessionId: nonEmptyOptionalTextSchema,
     flowId: nonEmptyOptionalTextSchema,
-    text: z.string().min(1).nullable().optional(),
+    text: z.string().nullable().optional(),
     transcriptRole: runtimeStreamTranscriptRoleSchema.nullable().optional(),
     toolCallId: nonEmptyOptionalTextSchema,
     toolName: nonEmptyOptionalTextSchema,
@@ -115,6 +176,11 @@ export const runtimeStreamItemSchema = z
     codePatchAvailability: codePatchAvailabilitySchema.nullable().optional(),
     toolSummary: toolResultSummarySchema.nullable().optional(),
     toolResultPreview: z.string().nullable().optional(),
+    mediaAttachments: z
+      .array(runtimeStreamMediaAttachmentSchema)
+      .max(MAX_RUNTIME_STREAM_MEDIA_ATTACHMENTS)
+      .nullable()
+      .optional(),
     skillId: nonEmptyOptionalTextSchema,
     skillStage: runtimeSkillLifecycleStageSchema.nullable().optional(),
     skillResult: runtimeSkillLifecycleResultSchema.nullable().optional(),
@@ -179,11 +245,11 @@ export const runtimeStreamItemSchema = z
 
     switch (item.kind) {
       case 'transcript':
-        if (!item.text) {
+        if (!item.text && (!item.mediaAttachments || item.mediaAttachments.length === 0)) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['text'],
-            message: 'Xero received a runtime transcript item without a non-empty text field.',
+            message: 'Xero received a runtime transcript item without text or media attachments.',
           })
         }
         return
@@ -495,6 +561,9 @@ export type RuntimeSkillSourceDto = z.infer<typeof runtimeSkillSourceSchema>
 export type RuntimeSkillDiagnosticDto = z.infer<typeof runtimeSkillDiagnosticSchema>
 export type RuntimeStreamItemKindDto = z.infer<typeof runtimeStreamItemKindSchema>
 export type RuntimeStreamTranscriptRoleDto = z.infer<typeof runtimeStreamTranscriptRoleSchema>
+export type RuntimeStreamImageMediaTypeDto = z.infer<typeof runtimeStreamImageMediaTypeSchema>
+export type RuntimeStreamMediaSourceDto = z.infer<typeof runtimeStreamMediaSourceSchema>
+export type RuntimeStreamMediaAttachmentDto = z.infer<typeof runtimeStreamMediaAttachmentSchema>
 export type RuntimeStreamItemDto = z.infer<typeof runtimeStreamItemSchema>
 export type SubscribeRuntimeStreamRequestDto = z.infer<typeof subscribeRuntimeStreamRequestSchema>
 export type SubscribeRuntimeStreamResponseDto = z.infer<typeof subscribeRuntimeStreamResponseSchema>
@@ -520,6 +589,7 @@ interface RuntimeStreamBaseItemView {
   codeCommitId?: string | null
   codeWorkspaceEpoch?: number | null
   codePatchAvailability?: CodePatchAvailabilityDto | null
+  mediaAttachments: RuntimeStreamMediaAttachmentDto[]
   /**
    * When set, this item belongs to a subagent run that was forwarded onto the
    * parent's stream. The conversation projection groups these items under a
@@ -705,6 +775,7 @@ function normalizeRuntimeCodeHistoryMetadata(
   | 'codeCommitId'
   | 'codeWorkspaceEpoch'
   | 'codePatchAvailability'
+  | 'mediaAttachments'
   | 'subagentId'
   | 'subagentRole'
   | 'subagentRoleLabel'
@@ -717,6 +788,7 @@ function normalizeRuntimeCodeHistoryMetadata(
     codeWorkspaceEpoch:
       typeof item.codeWorkspaceEpoch === 'number' ? item.codeWorkspaceEpoch : null,
     codePatchAvailability: item.codePatchAvailability ?? null,
+    mediaAttachments: normalizeRuntimeMediaAttachments(item),
     subagentId: normalizeOptionalText(item.subagentId),
     subagentRole: normalizeOptionalText(item.subagentRole),
     subagentRoleLabel: normalizeOptionalText(item.subagentRoleLabel),
@@ -746,6 +818,10 @@ function mergeRuntimeTimelineToolItem(
     sequence: existingItem.sequence,
     createdAt: existingItem.createdAt,
     updatedSequence: nextItem.sequence,
+    mediaAttachments: mergeRuntimeMediaAttachments(
+      existingItem.mediaAttachments,
+      nextItem.mediaAttachments,
+    ),
   }
 
   return currentItems.map((item, index) =>
@@ -868,8 +944,14 @@ function ensureRuntimeStreamText(value: string | null | undefined, field: string
   return normalized
 }
 
-function ensureRuntimeTranscriptText(value: string | null | undefined): string {
+function ensureRuntimeTranscriptText(
+  value: string | null | undefined,
+  mediaAttachments: readonly RuntimeStreamMediaAttachmentDto[],
+): string {
   if (typeof value !== 'string' || value.length === 0) {
+    if (mediaAttachments.length > 0) {
+      return ''
+    }
     throw new Error('Xero received a transcript item without non-empty text.')
   }
 
@@ -901,6 +983,10 @@ function mergeRuntimeTranscriptItems(
     id: previousItem.id,
     updatedSequence: nextItem.sequence,
     text: `${previousItem.text}${nextItem.text}`,
+    mediaAttachments: mergeRuntimeMediaAttachments(
+      previousItem.mediaAttachments,
+      nextItem.mediaAttachments,
+    ),
   }
 
   return [...currentItems.slice(0, -1), mergedItem]
@@ -926,6 +1012,41 @@ function normalizeRuntimeToolSummary(summary: ToolResultSummaryDto | null | unde
   }
 
   return parsedSummary.data
+}
+
+function normalizeRuntimeMediaAttachments(
+  item: RuntimeStreamItemDto,
+): RuntimeStreamMediaAttachmentDto[] {
+  if (!item.mediaAttachments || item.mediaAttachments.length === 0) {
+    return []
+  }
+
+  return item.mediaAttachments.map((attachment) => ({
+    ...attachment,
+    title: normalizeOptionalText(attachment.title),
+    alt: normalizeOptionalText(attachment.alt),
+    sizeBytes:
+      typeof attachment.sizeBytes === 'number' ? attachment.sizeBytes : null,
+    width: typeof attachment.width === 'number' ? attachment.width : null,
+    height: typeof attachment.height === 'number' ? attachment.height : null,
+    renderUrl: normalizeOptionalText(attachment.renderUrl),
+  }))
+}
+
+function mergeRuntimeMediaAttachments(
+  left: readonly RuntimeStreamMediaAttachmentDto[] | null | undefined,
+  right: readonly RuntimeStreamMediaAttachmentDto[] | null | undefined,
+): RuntimeStreamMediaAttachmentDto[] {
+  const merged: RuntimeStreamMediaAttachmentDto[] = []
+  const seen = new Set<string>()
+
+  for (const attachment of [...(left ?? []), ...(right ?? [])]) {
+    if (seen.has(attachment.id)) continue
+    seen.add(attachment.id)
+    merged.push(attachment)
+  }
+
+  return merged
 }
 
 function runtimeStreamItemId(kind: RuntimeStreamItemKindDto, runId: string, sequence: number): string {
@@ -1042,8 +1163,8 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
 
   switch (event.item.kind) {
     case 'transcript': {
-      const text = ensureRuntimeTranscriptText(event.item.text)
       const codeHistory = normalizeRuntimeCodeHistoryMetadata(event.item)
+      const text = ensureRuntimeTranscriptText(event.item.text, codeHistory.mediaAttachments)
       return {
         id: runtimeStreamItemId('transcript', itemRunId, event.item.sequence),
         kind: 'transcript',
@@ -1646,6 +1767,37 @@ function estimateOptionalTextBytes(value: string | null | undefined): number {
   return value ? estimateUtf16Bytes(value) : 0
 }
 
+function estimateRuntimeMediaAttachmentBytes(
+  attachment: RuntimeStreamMediaAttachmentDto,
+): number {
+  let bytes = 96
+  bytes += estimateUtf16Bytes(attachment.id)
+  bytes += estimateUtf16Bytes(attachment.kind)
+  bytes += estimateUtf16Bytes(attachment.mediaType)
+  bytes += estimateOptionalTextBytes(attachment.title)
+  bytes += estimateOptionalTextBytes(attachment.alt)
+  bytes += estimateOptionalTextBytes(attachment.renderUrl)
+  bytes += estimateUtf16Bytes(attachment.source.kind)
+  switch (attachment.source.kind) {
+    case 'app_data_path':
+      bytes += estimateUtf16Bytes(attachment.source.absolutePath)
+      break
+    case 'artifact':
+      bytes += estimateUtf16Bytes(attachment.source.artifactId)
+      bytes += estimateOptionalTextBytes(attachment.source.absolutePath)
+      break
+    case 'data_url':
+      bytes += estimateUtf16Bytes(attachment.source.dataUrl)
+      break
+    case 'remote_artifact':
+      bytes += estimateUtf16Bytes(attachment.source.artifactId)
+      bytes += estimateUtf16Bytes(attachment.source.computerId)
+      bytes += estimateUtf16Bytes(attachment.source.sessionId)
+      break
+  }
+  return bytes
+}
+
 function estimateRuntimeStreamItemBytes(item: RuntimeStreamViewItem): number {
   let bytes = 96
   bytes += estimateUtf16Bytes(item.id)
@@ -1671,6 +1823,9 @@ function estimateRuntimeStreamItemBytes(item: RuntimeStreamViewItem): number {
       bytes += estimateUtf16Bytes(hunk.filePath)
     }
   }
+  for (const attachment of item.mediaAttachments) {
+    bytes += estimateRuntimeMediaAttachmentBytes(attachment)
+  }
 
   switch (item.kind) {
     case 'transcript':
@@ -1682,6 +1837,7 @@ function estimateRuntimeStreamItemBytes(item: RuntimeStreamViewItem): number {
       bytes += estimateUtf16Bytes(item.toolName)
       bytes += estimateUtf16Bytes(item.toolState)
       bytes += estimateOptionalTextBytes(item.detail)
+      bytes += estimateOptionalTextBytes(item.toolResultPreview)
       if (item.toolSummary) {
         bytes += estimateUtf16Bytes(item.toolSummary.kind)
         switch (item.toolSummary.kind) {

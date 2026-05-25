@@ -2381,7 +2381,10 @@ fn tool_search_contextual_boost(
                 boost += 35;
             }
         }
-        RuntimeAgentIdDto::Plan | RuntimeAgentIdDto::Ask | RuntimeAgentIdDto::Crawl => {
+        RuntimeAgentIdDto::Plan
+        | RuntimeAgentIdDto::Ask
+        | RuntimeAgentIdDto::ComputerUse
+        | RuntimeAgentIdDto::Crawl => {
             if wants_observation && matches!(group, "core" | "intelligence") {
                 boost += 25;
             }

@@ -80,7 +80,7 @@ defmodule XeroWeb.RemoteChannelTest do
     end)
   end
 
-  test "web clients can subscribe to a desktop session list without a live desktop ack", %{
+  test "web clients can subscribe to a desktop session list and notify the desktop", %{
     conn: conn
   } do
     with_github_env(fn ->
@@ -105,7 +105,54 @@ defmodule XeroWeb.RemoteChannelTest do
 
       assert reply.desktop_device_id == desktop["desktop_device_id"]
       assert reply.session_id == "__sessions__"
-      refute_push "session_attached", %{}, 50
+
+      assert_push "session_join_requested", %{
+        auth_topic: auth_topic,
+        web_device_id: web_device_id,
+        session_id: "__sessions__",
+        last_seq: 0
+      }
+
+      assert is_binary(auth_topic)
+      assert web_device_id == web["web_device_id"]
+    end)
+  end
+
+  test "web clients can subscribe to a desktop theme channel and notify the desktop", %{
+    conn: conn
+  } do
+    with_github_env(fn ->
+      desktop = desktop_login!(conn)
+      web = web_login!(conn)
+
+      {:ok, desktop_socket} =
+        connect(XeroWeb.RemoteDesktopSocket, %{"token" => desktop["desktop_jwt"]})
+
+      {:ok, _desktop_reply, _desktop_socket} =
+        subscribe_and_join(desktop_socket, "desktop:#{desktop["desktop_device_id"]}", %{})
+
+      {:ok, web_socket} =
+        connect(XeroWeb.RemoteWebSocket, %{"token" => web["web_jwt"]})
+
+      {:ok, reply, _web_session} =
+        subscribe_and_join(
+          web_socket,
+          "session:#{desktop["desktop_device_id"]}:__theme__",
+          %{"last_seq" => 0}
+        )
+
+      assert reply.desktop_device_id == desktop["desktop_device_id"]
+      assert reply.session_id == "__theme__"
+
+      assert_push "session_join_requested", %{
+        auth_topic: auth_topic,
+        web_device_id: web_device_id,
+        session_id: "__theme__",
+        last_seq: 0
+      }
+
+      assert is_binary(auth_topic)
+      assert web_device_id == web["web_device_id"]
     end)
   end
 

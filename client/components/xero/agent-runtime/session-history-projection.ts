@@ -5,7 +5,10 @@ import type {
   SessionTranscriptItemDto,
 } from '@/src/lib/xero-model'
 
-import type { ConversationTurn } from '@xero/ui/components/transcript/conversation-section'
+import type {
+  ConversationMessageAttachment,
+  ConversationTurn,
+} from '@xero/ui/components/transcript/conversation-section'
 
 const HANDED_OFF_RUN_STATUS = 'handed_off'
 const MAX_HISTORICAL_CONVERSATION_TURNS = 80
@@ -56,7 +59,10 @@ export function buildHistoricalConversationTurns(
 
   const eligibleItems = transcript.items
     .filter((item) => item.runId !== activeRunId)
-    .filter((item) => isDisplayableUserOrAssistantMessage(item, displayPolicy))
+    .filter((item) =>
+      isDisplayableUserOrAssistantMessage(item, displayPolicy) ||
+      isDisplayableMediaToolResult(item),
+    )
 
   const turns: ConversationTurn[] = []
   let previousRunId: string | null = null
@@ -78,11 +84,15 @@ export function buildHistoricalConversationTurns(
     previousRunId = item.runId
     lastSequence = item.sequence
 
-    const messageTurn = toMessageTurn(item)
-    const routingTurn = extractRoutingSuggestion(messageTurn)
-    turns.push(messageTurn)
-    if (routingTurn) {
-      turns.push(routingTurn)
+    if (isDisplayableMediaToolResult(item)) {
+      turns.push(toMediaToolTurn(item))
+    } else {
+      const messageTurn = toMessageTurn(item)
+      const routingTurn = extractRoutingSuggestion(messageTurn)
+      turns.push(messageTurn)
+      if (routingTurn) {
+        turns.push(routingTurn)
+      }
     }
   }
 
@@ -124,6 +134,10 @@ function hasMessageText(item: SessionTranscriptItemDto): boolean {
   return (item.text ?? '').trim().length > 0
 }
 
+function hasMediaAttachments(item: SessionTranscriptItemDto): boolean {
+  return Boolean(item.mediaAttachments?.length)
+}
+
 function buildMessageDisplayPolicy(items: readonly SessionTranscriptItemDto[]): MessageDisplayPolicy {
   const runIdsWithUserMessages = new Set<string>()
 
@@ -148,7 +162,7 @@ function isDisplayableUserOrAssistantMessage(
 ): boolean {
   if (item.kind !== 'message') return false
   if (item.actor !== 'user' && item.actor !== 'assistant') return false
-  if (!hasMessageText(item)) return false
+  if (!hasMessageText(item) && !hasMediaAttachments(item)) return false
 
   if (item.sourceTable === 'agent_messages') {
     return true
@@ -165,6 +179,10 @@ function isDisplayableUserOrAssistantMessage(
   return false
 }
 
+function isDisplayableMediaToolResult(item: SessionTranscriptItemDto): boolean {
+  return item.kind === 'tool_result' && item.actor === 'tool' && hasMediaAttachments(item)
+}
+
 function toMessageTurn(item: SessionTranscriptItemDto): Extract<ConversationTurn, { kind: 'message' }> {
   return {
     // Match the live runtime-stream transcript id so a row can move from the
@@ -174,7 +192,62 @@ function toMessageTurn(item: SessionTranscriptItemDto): Extract<ConversationTurn
     role: item.actor === 'user' ? 'user' : 'assistant',
     sequence: item.sequence,
     text: item.text ?? '',
+    attachments: runtimeMediaAttachmentsToConversation(item.mediaAttachments),
   }
+}
+
+function toMediaToolTurn(item: SessionTranscriptItemDto): Extract<ConversationTurn, { kind: 'action' }> {
+  const toolName = item.toolName ?? 'tool'
+  const title = item.title ?? `Tool result · ${toolName}`
+  return {
+    id: `tool:${item.runId}:${item.toolCallId ?? item.sourceId}:${item.sequence}`,
+    kind: 'action',
+    sequence: item.sequence,
+    toolCallId: item.toolCallId ?? item.sourceId,
+    toolName,
+    title,
+    detail: item.text ?? 'Image output',
+    detailRows: [],
+    mediaAttachments: runtimeMediaAttachmentsToConversation(item.mediaAttachments),
+    state: item.toolState ?? 'succeeded',
+    defaultOpen: true,
+  }
+}
+
+function runtimeMediaAttachmentsToConversation(
+  attachments: SessionTranscriptItemDto['mediaAttachments'],
+): ConversationMessageAttachment[] | undefined {
+  if (!attachments?.length) return undefined
+  return attachments.map((attachment) => {
+    const originalName = attachment.title?.trim()
+      || (attachment.source.kind === 'app_data_path'
+        ? attachment.source.absolutePath.split(/[\\/]/).pop()
+        : null)
+      || attachment.id
+    const absolutePath =
+      attachment.source.kind === 'app_data_path'
+        ? attachment.source.absolutePath
+        : attachment.source.kind === 'artifact'
+          ? attachment.source.absolutePath ?? undefined
+          : undefined
+    return {
+      id: attachment.id,
+      kind: attachment.kind,
+      mediaType: attachment.mediaType,
+      originalName,
+      sizeBytes: attachment.sizeBytes ?? 0,
+      title: attachment.title ?? null,
+      alt: attachment.alt ?? null,
+      width: attachment.width ?? null,
+      height: attachment.height ?? null,
+      source: attachment.source,
+      renderUrl: attachment.renderUrl ?? null,
+      previewSrc:
+        attachment.renderUrl ??
+        (attachment.source.kind === 'data_url' ? attachment.source.dataUrl : undefined),
+      absolutePath,
+    }
+  })
 }
 
 const ROUTING_MARKER_REGEX = /<xero-routing-suggestion\s+([^/>]*?)\/>/i

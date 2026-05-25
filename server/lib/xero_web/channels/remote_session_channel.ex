@@ -83,20 +83,28 @@ defmodule XeroWeb.RemoteSessionChannel do
        do: :ok
 
   defp authorize_session_join(
-         %{assigns: %{device_kind: :web}},
-         _desktop_device_id,
+         %{assigns: %{device_kind: :web}} = socket,
+         desktop_device_id,
          "__sessions__",
-         _payload
+         payload
        ),
-       do: :ok
+       do: notify_desktop_control_session_join(socket, desktop_device_id, "__sessions__", payload)
 
   defp authorize_session_join(
-         %{assigns: %{device_kind: :web}},
-         _desktop_device_id,
+         %{assigns: %{device_kind: :web}} = socket,
+         desktop_device_id,
          "__projects__",
-         _payload
+         payload
        ),
-       do: :ok
+       do: notify_desktop_control_session_join(socket, desktop_device_id, "__projects__", payload)
+
+  defp authorize_session_join(
+         %{assigns: %{device_kind: :web}} = socket,
+         desktop_device_id,
+         "__theme__",
+         payload
+       ),
+       do: notify_desktop_control_session_join(socket, desktop_device_id, "__theme__", payload)
 
   defp authorize_session_join(
          %{assigns: %{device_kind: :web}} = socket,
@@ -135,6 +143,24 @@ defmodule XeroWeb.RemoteSessionChannel do
 
   defp authorize_session_join(_socket, _desktop_device_id, _session_id, _payload),
     do: {:error, :unauthorized}
+
+  defp notify_desktop_control_session_join(socket, desktop_device_id, session_id, payload) do
+    join_ref =
+      Map.get(payload, "join_ref") ||
+        "join:#{socket.assigns.device_id}:#{System.unique_integer([:positive])}"
+
+    auth_topic = "desktop:#{desktop_device_id}:session_join:#{join_ref}"
+
+    XeroWeb.Endpoint.broadcast("desktop:#{desktop_device_id}", "session_join_requested", %{
+      join_ref: join_ref,
+      auth_topic: auth_topic,
+      web_device_id: socket.assigns.device_id,
+      session_id: session_id,
+      last_seq: Map.get(payload, "last_seq")
+    })
+
+    :ok
+  end
 
   defp rate_limit_frame(%{assigns: %{device_kind: :web}} = socket),
     do: RemoteChannelRateLimit.hit(socket, "frame")

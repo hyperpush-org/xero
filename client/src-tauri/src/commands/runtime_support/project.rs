@@ -16,6 +16,10 @@ pub(crate) fn resolve_project_root<R: Runtime>(
     state: &DesktopState,
     project_id: &str,
 ) -> CommandResult<PathBuf> {
+    if project_id == crate::commands::global_computer_use::GLOBAL_COMPUTER_USE_PROJECT_ID {
+        return crate::commands::global_computer_use::global_computer_use_project_root(app, state);
+    }
+
     crate::runtime::resolve_imported_repo_root(app, state, project_id)
 }
 

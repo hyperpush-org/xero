@@ -2296,6 +2296,12 @@ fn agent_specific_handoff(
             "uncertainties": [],
             "followUpInformationNeeded": [],
         }),
+        RuntimeAgentIdDto::ComputerUse => json!({
+            "computerUseIntent": handoff_preview(pending_prompt, 700, redaction_count),
+            "visibleComputerProgress": completed_work,
+            "operatorDecisions": [],
+            "remainingComputerActions": [],
+        }),
         RuntimeAgentIdDto::Plan => json!({
             "planningIntent": handoff_preview(pending_prompt, 700, redaction_count),
             "planPackState": completed_work,

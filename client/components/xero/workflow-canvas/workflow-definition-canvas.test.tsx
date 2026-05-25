@@ -431,6 +431,31 @@ describe('WorkflowDefinitionCanvas', () => {
     expect(screen.getByText('route -> Phase route')).toBeInTheDocument()
   })
 
+  it('wraps long workflow binding summaries in the properties panel', () => {
+    const definition = instantiateWorkflowTemplate({
+      projectId: 'project-1',
+      templateId: 'gsd_auto',
+    })
+
+    render(
+      <WorkflowDefinitionCanvas
+        definition={definition}
+        initialMode="edit"
+        onSaveDefinition={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByTestId('workflow-node-archive_milestone'))
+
+    const longBindingSummaries = screen.getAllByText(
+      /Archive Milestone state for \{\{state\.reload_milestones/,
+    )
+    expect(longBindingSummaries.length).toBeGreaterThanOrEqual(2)
+    for (const summary of longBindingSummaries) {
+      expect(summary.className).toContain('[overflow-wrap:anywhere]')
+    }
+  })
+
   it('marks incoming and outgoing workflow edges as related when selecting a node', () => {
     const definition = instantiateWorkflowTemplate({
       projectId: 'project-1',

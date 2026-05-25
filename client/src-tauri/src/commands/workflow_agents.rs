@@ -2620,31 +2620,45 @@ fn template_tool_policy(
     base_capability_profile: AgentDefinitionBaseCapabilityProfileDto,
     tools: &[&str],
 ) -> JsonValue {
-    let (effect_classes, command_allowed, destructive_write_allowed) = match base_capability_profile
-    {
-        AgentDefinitionBaseCapabilityProfileDto::Engineering
-        | AgentDefinitionBaseCapabilityProfileDto::Debugging => (
-            vec![
-                "observe",
-                "runtime_state",
-                "write",
-                "destructive_write",
-                "command",
-                "process_control",
-            ],
-            true,
-            true,
-        ),
-        AgentDefinitionBaseCapabilityProfileDto::Planning => {
-            (vec!["observe", "runtime_state"], false, false)
-        }
-        AgentDefinitionBaseCapabilityProfileDto::RepositoryRecon => (
-            vec!["observe", "runtime_state", "command", "process_control"],
-            true,
-            false,
-        ),
-        _ => (vec!["observe"], false, false),
-    };
+    let (effect_classes, command_allowed, destructive_write_allowed, browser_control_allowed) =
+        match base_capability_profile {
+            AgentDefinitionBaseCapabilityProfileDto::Engineering
+            | AgentDefinitionBaseCapabilityProfileDto::Debugging => (
+                vec![
+                    "observe",
+                    "runtime_state",
+                    "write",
+                    "destructive_write",
+                    "command",
+                    "process_control",
+                ],
+                true,
+                true,
+                true,
+            ),
+            AgentDefinitionBaseCapabilityProfileDto::Planning => {
+                (vec!["observe", "runtime_state"], false, false, false)
+            }
+            AgentDefinitionBaseCapabilityProfileDto::ComputerUse => (
+                vec![
+                    "observe",
+                    "runtime_state",
+                    "browser_control",
+                    "device_control",
+                    "process_control",
+                ],
+                true,
+                false,
+                true,
+            ),
+            AgentDefinitionBaseCapabilityProfileDto::RepositoryRecon => (
+                vec!["observe", "runtime_state", "command", "process_control"],
+                true,
+                false,
+                false,
+            ),
+            _ => (vec!["observe"], false, false, false),
+        };
     json!({
         "allowedEffectClasses": effect_classes,
         "allowedToolGroups": [],
@@ -2653,7 +2667,7 @@ fn template_tool_policy(
         "deniedTools": [],
         "deniedToolPacks": [],
         "externalServiceAllowed": false,
-        "browserControlAllowed": false,
+        "browserControlAllowed": browser_control_allowed,
         "skillRuntimeAllowed": false,
         "subagentAllowed": false,
         "commandAllowed": command_allowed,
@@ -3094,6 +3108,7 @@ fn effect_class_id(effect_class: AgentToolEffectClassDto) -> &'static str {
 fn base_capability_profile_id(profile: &AgentDefinitionBaseCapabilityProfileDto) -> &'static str {
     match profile {
         AgentDefinitionBaseCapabilityProfileDto::ObserveOnly => "observe_only",
+        AgentDefinitionBaseCapabilityProfileDto::ComputerUse => "computer_use",
         AgentDefinitionBaseCapabilityProfileDto::Planning => "planning",
         AgentDefinitionBaseCapabilityProfileDto::RepositoryRecon => "repository_recon",
         AgentDefinitionBaseCapabilityProfileDto::Engineering => "engineering",
@@ -3855,6 +3870,9 @@ fn base_capability_from_runtime(
         RuntimeAgentBaseCapabilityProfileDto::ObserveOnly => {
             AgentDefinitionBaseCapabilityProfileDto::ObserveOnly
         }
+        RuntimeAgentBaseCapabilityProfileDto::ComputerUse => {
+            AgentDefinitionBaseCapabilityProfileDto::ComputerUse
+        }
         RuntimeAgentBaseCapabilityProfileDto::Planning => {
             AgentDefinitionBaseCapabilityProfileDto::Planning
         }
@@ -3893,6 +3911,7 @@ fn lifecycle_from_str(value: &str) -> AgentDefinitionLifecycleStateDto {
 
 fn base_capability_from_str(value: &str) -> AgentDefinitionBaseCapabilityProfileDto {
     match value {
+        "computer_use" => AgentDefinitionBaseCapabilityProfileDto::ComputerUse,
         "planning" => AgentDefinitionBaseCapabilityProfileDto::Planning,
         "repository_recon" => AgentDefinitionBaseCapabilityProfileDto::RepositoryRecon,
         "engineering" => AgentDefinitionBaseCapabilityProfileDto::Engineering,

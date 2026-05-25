@@ -15,6 +15,7 @@ import type {
   NotificationRouteKindDto,
   OperatorApprovalView,
   Phase,
+  AgentSessionKindDto,
   ProjectDetailView,
   ProjectListItem,
   ProjectUsageSummaryDto,
@@ -592,6 +593,8 @@ export interface UseXeroDesktopStateResult {
   createAgentSession: (options?: {
     title?: string | null
     summary?: string | null
+    sessionKind?: AgentSessionKindDto
+    runtimeAgentId?: RuntimeAgentIdDto | null
   }) => Promise<ProjectDetailView | null>
   selectAgentSession: (agentSessionId: string) => Promise<ProjectDetailView | null>
   archiveAgentSession: (agentSessionId: string) => Promise<ProjectDetailView | null>

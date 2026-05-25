@@ -13,6 +13,7 @@ use super::{
 
 pub const DEFAULT_AGENT_SESSION_ID: &str = "agent-session-main";
 pub const DEFAULT_AGENT_SESSION_TITLE: &str = "New Chat";
+pub const COMPUTER_USE_AGENT_SESSION_TITLE: &str = "Computer Use";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentSessionStatus {
@@ -20,10 +21,17 @@ pub enum AgentSessionStatus {
     Archived,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentSessionKind {
+    Standard,
+    ComputerUse,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentSessionRecord {
     pub project_id: String,
     pub agent_session_id: String,
+    pub session_kind: AgentSessionKind,
     pub title: String,
     pub summary: String,
     pub status: AgentSessionStatus,
@@ -44,6 +52,7 @@ pub struct AgentSessionCreateRecord {
     pub title: String,
     pub summary: String,
     pub selected: bool,
+    pub session_kind: AgentSessionKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +68,7 @@ pub struct AgentSessionUpdateRecord {
 struct RawAgentSessionRow {
     project_id: String,
     agent_session_id: String,
+    session_kind: String,
     title: String,
     summary: String,
     status: String,
@@ -121,6 +131,7 @@ pub fn create_agent_session(
             INSERT INTO agent_sessions (
                 project_id,
                 agent_session_id,
+                session_kind,
                 title,
                 summary,
                 status,
@@ -129,11 +140,12 @@ pub fn create_agent_session(
                 created_at,
                 updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, 'active', ?5, 0, ?6, ?7)
+            VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, 0, ?7, ?8)
             "#,
             params![
                 payload.project_id.as_str(),
                 agent_session_id.as_str(),
+                agent_session_kind_sql_value(payload.session_kind),
                 payload.title.trim(),
                 payload.summary.as_str(),
                 if payload.selected { 1 } else { 0 },
@@ -212,6 +224,7 @@ pub(crate) fn read_agent_sessions_with_connection(
             SELECT
                 project_id,
                 agent_session_id,
+                session_kind,
                 title,
                 summary,
                 status,
@@ -246,17 +259,18 @@ pub(crate) fn read_agent_sessions_with_connection(
                 Ok(RawAgentSessionRow {
                     project_id: row.get(0)?,
                     agent_session_id: row.get(1)?,
-                    title: row.get(2)?,
-                    summary: row.get(3)?,
-                    status: row.get(4)?,
-                    selected: row.get(5)?,
-                    remote_visible: row.get(6)?,
-                    created_at: row.get(7)?,
-                    updated_at: row.get(8)?,
-                    archived_at: row.get(9)?,
-                    last_run_id: row.get(10)?,
-                    last_runtime_kind: row.get(11)?,
-                    last_provider_id: row.get(12)?,
+                    session_kind: row.get(2)?,
+                    title: row.get(3)?,
+                    summary: row.get(4)?,
+                    status: row.get(5)?,
+                    selected: row.get(6)?,
+                    remote_visible: row.get(7)?,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(9)?,
+                    archived_at: row.get(10)?,
+                    last_run_id: row.get(11)?,
+                    last_runtime_kind: row.get(12)?,
+                    last_provider_id: row.get(13)?,
                 })
             },
         )
@@ -1105,6 +1119,7 @@ pub(crate) fn read_agent_session_row(
         SELECT
             project_id,
             agent_session_id,
+            session_kind,
             title,
             summary,
             status,
@@ -1125,17 +1140,18 @@ pub(crate) fn read_agent_session_row(
             Ok(RawAgentSessionRow {
                 project_id: row.get(0)?,
                 agent_session_id: row.get(1)?,
-                title: row.get(2)?,
-                summary: row.get(3)?,
-                status: row.get(4)?,
-                selected: row.get(5)?,
-                remote_visible: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-                archived_at: row.get(9)?,
-                last_run_id: row.get(10)?,
-                last_runtime_kind: row.get(11)?,
-                last_provider_id: row.get(12)?,
+                session_kind: row.get(2)?,
+                title: row.get(3)?,
+                summary: row.get(4)?,
+                status: row.get(5)?,
+                selected: row.get(6)?,
+                remote_visible: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+                archived_at: row.get(10)?,
+                last_run_id: row.get(11)?,
+                last_runtime_kind: row.get(12)?,
+                last_provider_id: row.get(13)?,
             })
         },
     );
@@ -1172,6 +1188,7 @@ pub(crate) fn read_selected_agent_session_row(
         SELECT
             project_id,
             agent_session_id,
+            session_kind,
             title,
             summary,
             status,
@@ -1193,17 +1210,18 @@ pub(crate) fn read_selected_agent_session_row(
             Ok(RawAgentSessionRow {
                 project_id: row.get(0)?,
                 agent_session_id: row.get(1)?,
-                title: row.get(2)?,
-                summary: row.get(3)?,
-                status: row.get(4)?,
-                selected: row.get(5)?,
-                remote_visible: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-                archived_at: row.get(9)?,
-                last_run_id: row.get(10)?,
-                last_runtime_kind: row.get(11)?,
-                last_provider_id: row.get(12)?,
+                session_kind: row.get(2)?,
+                title: row.get(3)?,
+                summary: row.get(4)?,
+                status: row.get(5)?,
+                selected: row.get(6)?,
+                remote_visible: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+                archived_at: row.get(10)?,
+                last_run_id: row.get(11)?,
+                last_runtime_kind: row.get(12)?,
+                last_provider_id: row.get(13)?,
             })
         },
     );
@@ -1261,6 +1279,15 @@ fn decode_agent_session_row(
             "agent_session_decode_failed",
             format!(
                 "Xero found malformed agent-session metadata in {}: {details}",
+                database_path.display()
+            ),
+        )
+    })?;
+    let session_kind = parse_agent_session_kind(&row.session_kind).map_err(|details| {
+        CommandError::system_fault(
+            "agent_session_decode_failed",
+            format!(
+                "Xero found malformed agent-session kind in {}: {details}",
                 database_path.display()
             ),
         )
@@ -1330,6 +1357,7 @@ fn decode_agent_session_row(
             database_path,
             "agent_session_decode_failed",
         )?,
+        session_kind,
         title: require_non_empty_owned(
             row.title,
             "title",
@@ -1381,6 +1409,23 @@ fn parse_agent_session_status(value: &str) -> Result<AgentSessionStatus, String>
         "archived" => Ok(AgentSessionStatus::Archived),
         other => Err(format!(
             "Field `status` must be a known agent-session status, found `{other}`."
+        )),
+    }
+}
+
+pub(crate) fn agent_session_kind_sql_value(kind: AgentSessionKind) -> &'static str {
+    match kind {
+        AgentSessionKind::Standard => "standard",
+        AgentSessionKind::ComputerUse => "computer_use",
+    }
+}
+
+fn parse_agent_session_kind(value: &str) -> Result<AgentSessionKind, String> {
+    match value {
+        "standard" => Ok(AgentSessionKind::Standard),
+        "computer_use" => Ok(AgentSessionKind::ComputerUse),
+        other => Err(format!(
+            "Field `session_kind` must be a known agent-session kind, found `{other}`."
         )),
     }
 }
@@ -1594,6 +1639,7 @@ mod tests {
                 title: DEFAULT_AGENT_SESSION_TITLE.into(),
                 summary: String::new(),
                 selected: true,
+                session_kind: crate::db::project_store::AgentSessionKind::Standard,
             },
         )
         .expect("create blank new session");
@@ -1666,6 +1712,7 @@ mod tests {
                 title: "Middle".into(),
                 summary: String::new(),
                 selected: false,
+                session_kind: crate::db::project_store::AgentSessionKind::Standard,
             },
         )
         .expect("create middle session");
@@ -1676,6 +1723,7 @@ mod tests {
                 title: "Top".into(),
                 summary: String::new(),
                 selected: false,
+                session_kind: crate::db::project_store::AgentSessionKind::Standard,
             },
         )
         .expect("create top session");

@@ -1,9 +1,33 @@
+import type { RuntimeStreamMediaAttachmentDto } from "@xero/ui/model/runtime-stream";
 import { describe, expect, it } from "vitest";
 
 import {
 	projectRemotePayloadToTurns,
 	projectStreamItemsToTurns,
 } from "./stream-projection";
+
+function imageMediaAttachment(
+	overrides: Partial<RuntimeStreamMediaAttachmentDto> = {},
+): RuntimeStreamMediaAttachmentDto {
+	return {
+		id: "media-browser-screenshot",
+		kind: "image",
+		mediaType: "image/png",
+		title: "Browser screenshot",
+		alt: "Screenshot from browser automation",
+		sizeBytes: 67,
+		width: 1,
+		height: 1,
+		source: {
+			kind: "remote_artifact",
+			artifactId: "artifact-browser-screenshot",
+			computerId: "computer-1",
+			sessionId: "session-1",
+		},
+		renderUrl: null,
+		...overrides,
+	};
+}
 
 describe("projectRemotePayloadToTurns", () => {
 	it("maps desktop session snapshots from persisted runs", () => {
@@ -294,6 +318,46 @@ describe("projectRemotePayloadToTurns", () => {
 			},
 		]);
 	});
+
+	it("maps wrapped remote tool image events without duplicating raw output", () => {
+		const turns = projectRemotePayloadToTurns({
+			schema: "xero.remote_runtime_event.v1",
+			runId: "run-media",
+			eventId: 9,
+			eventKind: "tool_completed",
+			payload: {
+				toolCallId: "call-browser-screenshot",
+				toolName: "browser",
+				ok: true,
+				summary: "Browser screenshot captured.",
+				output: '{"type":"image","data":"..."}',
+				mediaAttachments: [imageMediaAttachment()],
+			},
+		});
+
+		expect(turns).toEqual([
+			expect.objectContaining({
+				id: "tool:run-media:call-browser-screenshot:9",
+				kind: "action",
+				toolCallId: "call-browser-screenshot",
+				toolName: "browser",
+				detail: "Browser screenshot captured.",
+				detailRows: [],
+				state: "succeeded",
+				mediaAttachments: [
+					expect.objectContaining({
+						id: "media-browser-screenshot",
+						kind: "image",
+						mediaType: "image/png",
+						source: expect.objectContaining({
+							kind: "remote_artifact",
+							artifactId: "artifact-browser-screenshot",
+						}),
+					}),
+				],
+			}),
+		]);
+	});
 });
 
 describe("projectStreamItemsToTurns", () => {
@@ -317,6 +381,84 @@ describe("projectStreamItemsToTurns", () => {
 				sequence: 1,
 				text: "Raw stream item",
 			},
+		]);
+	});
+
+	it("projects media-only transcript items and merges later assistant media", () => {
+		const turns = projectStreamItemsToTurns([
+			{
+				kind: "transcript",
+				runId: "run-media",
+				sequence: 1,
+				createdAt: "2026-05-17T00:00:00.000Z",
+				transcriptRole: "assistant",
+				text: null,
+				mediaAttachments: [imageMediaAttachment()],
+			},
+			{
+				kind: "transcript",
+				runId: "run-media",
+				sequence: 2,
+				createdAt: "2026-05-17T00:00:01.000Z",
+				transcriptRole: "assistant",
+				text: "Screenshot captured.",
+				mediaAttachments: [
+					imageMediaAttachment({
+						id: "media-browser-screenshot-2",
+						title: "Second screenshot",
+					}),
+				],
+			},
+		]);
+
+		expect(turns).toEqual([
+			expect.objectContaining({
+				id: "transcript:run-media:1",
+				kind: "message",
+				role: "assistant",
+				sequence: 2,
+				text: "Screenshot captured.",
+				attachments: [
+					expect.objectContaining({ id: "media-browser-screenshot" }),
+					expect.objectContaining({ id: "media-browser-screenshot-2" }),
+				],
+			}),
+		]);
+	});
+
+	it("projects runtime tool image outputs without the raw tool preview row", () => {
+		const turns = projectStreamItemsToTurns([
+			{
+				kind: "tool",
+				runId: "run-media",
+				sequence: 4,
+				createdAt: "2026-05-17T00:00:02.000Z",
+				toolCallId: "call-browser-screenshot",
+				toolName: "browser",
+				toolState: "succeeded",
+				detail: "Browser screenshot captured.",
+				toolResultPreview: '{"type":"image","data":"..."}',
+				mediaAttachments: [imageMediaAttachment()],
+			},
+		]);
+
+		expect(turns).toEqual([
+			expect.objectContaining({
+				kind: "action",
+				toolCallId: "call-browser-screenshot",
+				detailRows: [
+					{
+						label: "Outcome",
+						value: "Browser screenshot captured.",
+					},
+				],
+				mediaAttachments: [
+					expect.objectContaining({
+						id: "media-browser-screenshot",
+						previewSrc: undefined,
+					}),
+				],
+			}),
 		]);
 	});
 });

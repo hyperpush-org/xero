@@ -22,11 +22,11 @@ use crate::{
         ensure_runtime_agent_available,
         get_runtime_settings::runtime_settings_snapshot_for_provider_profile,
         provider_credentials::load_provider_credentials_view, AgentDefaultModelDto, CommandError,
-        CommandResult, RuntimeRunActiveControlSnapshotDto, RuntimeRunCheckpointDto,
-        RuntimeRunCheckpointKindDto, RuntimeRunControlInputDto, RuntimeRunControlStateDto,
-        RuntimeRunDiagnosticDto, RuntimeRunDto, RuntimeRunPendingControlSnapshotDto,
-        RuntimeRunStatusDto, RuntimeRunTransportDto, RuntimeRunTransportLivenessDto,
-        RuntimeRunUpdatedPayloadDto, RUNTIME_RUN_UPDATED_EVENT,
+        CommandResult, RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto,
+        RuntimeRunCheckpointDto, RuntimeRunCheckpointKindDto, RuntimeRunControlInputDto,
+        RuntimeRunControlStateDto, RuntimeRunDiagnosticDto, RuntimeRunDto,
+        RuntimeRunPendingControlSnapshotDto, RuntimeRunStatusDto, RuntimeRunTransportDto,
+        RuntimeRunTransportLivenessDto, RuntimeRunUpdatedPayloadDto, RUNTIME_RUN_UPDATED_EVENT,
     },
     db::project_store::{
         self, build_runtime_run_control_state_with_profile, RuntimeRunActiveControlSnapshotRecord,
@@ -246,13 +246,18 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
     initial_attachments: Vec<crate::commands::StagedAgentAttachmentDto>,
 ) -> CommandResult<RuntimeRunLaunchOutcome> {
     let repo_root = resolve_project_root(app, state, project_id)?;
-    project_store::ensure_agent_session_active(&repo_root, project_id, agent_session_id)?;
+    let agent_session =
+        project_store::ensure_agent_session_active(&repo_root, project_id, agent_session_id)?;
     let before = load_persisted_runtime_run(&repo_root, project_id, agent_session_id)?;
 
     if let Some(existing) = before
         .as_ref()
         .filter(|snapshot| is_reconnectable_owned_runtime_run(snapshot))
     {
+        ensure_agent_matches_session_kind(
+            &agent_session,
+            existing.controls.active.runtime_agent_id,
+        )?;
         ensure_runtime_agent_available(existing.controls.active.runtime_agent_id)?;
         project_store::ensure_runtime_agent_allowed_for_project(
             &repo_root,
@@ -270,7 +275,11 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
     let requested_agent_id = requested_controls
         .as_ref()
         .map(|controls| controls.runtime_agent_id)
-        .unwrap_or_else(default_runtime_agent_id);
+        .unwrap_or_else(|| match agent_session.session_kind {
+            project_store::AgentSessionKind::Standard => default_runtime_agent_id(),
+            project_store::AgentSessionKind::ComputerUse => RuntimeAgentIdDto::ComputerUse,
+        });
+    ensure_agent_matches_session_kind(&agent_session, requested_agent_id)?;
     ensure_runtime_agent_available(requested_agent_id)?;
     project_store::ensure_runtime_agent_allowed_for_project(
         &repo_root,
@@ -1420,7 +1429,13 @@ pub(crate) fn update_owned_runtime_run_controls(
     prompt: Option<String>,
     attachments: &[crate::commands::StagedAgentAttachmentDto],
 ) -> CommandResult<RuntimeRunSnapshotRecord> {
+    let agent_session = project_store::ensure_agent_session_active(
+        repo_root,
+        &snapshot.run.project_id,
+        &snapshot.run.agent_session_id,
+    )?;
     let active = &snapshot.controls.active;
+    ensure_agent_matches_session_kind(&agent_session, active.runtime_agent_id)?;
     ensure_runtime_agent_available(active.runtime_agent_id)?;
     project_store::ensure_runtime_agent_allowed_for_project(
         repo_root,
@@ -1435,6 +1450,7 @@ pub(crate) fn update_owned_runtime_run_controls(
                 controls.agent_definition_id.as_deref(),
                 controls.runtime_agent_id,
             )?;
+            ensure_agent_matches_session_kind(&agent_session, selection.runtime_agent_id)?;
             ensure_runtime_agent_available(selection.runtime_agent_id)?;
             project_store::ensure_runtime_agent_allowed_for_project(
                 repo_root,
@@ -1614,6 +1630,30 @@ pub(crate) fn apply_owned_runtime_run_pending_controls_with_status(
         snapshot.last_checkpoint_sequence.saturating_add(1),
         Some(snapshot),
     )
+}
+
+fn ensure_agent_matches_session_kind(
+    session: &project_store::AgentSessionRecord,
+    runtime_agent_id: crate::commands::RuntimeAgentIdDto,
+) -> CommandResult<()> {
+    match (session.session_kind, runtime_agent_id) {
+        (
+            project_store::AgentSessionKind::ComputerUse,
+            crate::commands::RuntimeAgentIdDto::ComputerUse,
+        ) => Ok(()),
+        (project_store::AgentSessionKind::ComputerUse, _) => Err(CommandError::user_fixable(
+            "computer_use_agent_required",
+            "Computer Use sessions must run with the Computer Use agent.",
+        )),
+        (
+            project_store::AgentSessionKind::Standard,
+            crate::commands::RuntimeAgentIdDto::ComputerUse,
+        ) => Err(CommandError::user_fixable(
+            "computer_use_session_required",
+            "The Computer Use agent can only run inside a Computer Use session.",
+        )),
+        (project_store::AgentSessionKind::Standard, _) => Ok(()),
+    }
 }
 
 pub(crate) fn bind_owned_runtime_run_to_agent_handoff(

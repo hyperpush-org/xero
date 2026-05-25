@@ -41,6 +41,7 @@ const addDuplicateStringIssues = (
 
 export const runtimeAgentPromptPolicySchema = z.enum([
   'ask',
+  'computer_use',
   'plan',
   'engineer',
   'debug',
@@ -52,6 +53,7 @@ export type RuntimeAgentPromptPolicyDto = z.infer<typeof runtimeAgentPromptPolic
 
 export const runtimeAgentToolPolicySchema = z.enum([
   'observe_only',
+  'computer_use',
   'planning',
   'repository_recon',
   'engineering',

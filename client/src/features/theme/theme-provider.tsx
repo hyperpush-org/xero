@@ -9,17 +9,18 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { XeroDesktopAdapter } from '@/src/lib/xero-desktop'
+import { XeroDesktopAdapter, type BridgeThemeSyncRequestDto } from '@/src/lib/xero-desktop'
 import {
   CUSTOM_THEMES_STORAGE_KEY,
   DEFAULT_THEME_ID,
   THEMES,
   THEME_STORAGE_KEY,
+  applyThemeToDocument,
   getThemeById,
-  themeClassName,
-  themeColorsToCSSVars,
+  isCustomThemeId,
+  isThemeDefinition,
   type ThemeDefinition,
-} from './theme-definitions'
+} from '@xero/ui/theme'
 import { syncThemeDockIcon } from './dock-icon'
 
 interface ThemeContextValue {
@@ -64,7 +65,7 @@ function readStoredCustomThemes(): ThemeDefinition[] {
     if (!raw) return []
     const parsed = JSON.parse(raw) as unknown
     if (!Array.isArray(parsed)) return []
-    return parsed.filter(isValidThemeDefinition)
+    return parsed.filter(isThemeDefinition)
   } catch {
     return []
   }
@@ -76,48 +77,15 @@ function appStateThemeId(value: unknown): string | null {
 
 function appStateCustomThemes(value: unknown): ThemeDefinition[] {
   if (!Array.isArray(value)) return []
-  return value.filter(isValidThemeDefinition)
+  return value.filter(isThemeDefinition)
 }
 
-function isValidThemeDefinition(value: unknown): value is ThemeDefinition {
-  if (!value || typeof value !== 'object') return false
-  const t = value as Partial<ThemeDefinition>
-  return (
-    typeof t.id === 'string' &&
-    typeof t.name === 'string' &&
-    typeof t.description === 'string' &&
-    (t.appearance === 'dark' || t.appearance === 'light') &&
-    typeof t.shiki === 'string' &&
-    typeof t.colors === 'object' &&
-    t.colors !== null &&
-    typeof t.editor === 'object' &&
-    t.editor !== null
-  )
-}
-
-/**
- * Swap the `.theme-<id>` and `.dark` / `.light` classes on `<html>`, then
- * push every palette color onto the document root as inline CSS custom
- * properties. The class still drives first paint via `globals.css` for
- * built-in themes, but the inline vars are what make user-authored themes
- * possible at runtime — they take precedence over the stylesheet rules.
- */
-function applyThemeToDocument(theme: ThemeDefinition, allThemeIds: string[]): void {
-  if (typeof document === 'undefined') return
-  const root = document.documentElement
-  for (const id of allThemeIds) {
-    root.classList.remove(themeClassName(id))
+function themeSyncRequest(theme: ThemeDefinition): BridgeThemeSyncRequestDto {
+  const request: BridgeThemeSyncRequestDto = { themeId: theme.id }
+  if (isCustomThemeId(theme.id)) {
+    request.customTheme = theme
   }
-  root.classList.add(themeClassName(theme.id))
-
-  root.classList.remove('dark', 'light')
-  root.classList.add(theme.appearance)
-  root.style.colorScheme = theme.appearance
-  root.dataset.theme = theme.id
-
-  for (const [cssVar, value] of themeColorsToCSSVars(theme.colors)) {
-    root.style.setProperty(cssVar, value)
-  }
+  return request
 }
 
 export interface ThemeProviderProps {
@@ -181,10 +149,7 @@ export function ThemeProvider({ children, initialThemeId }: ThemeProviderProps) 
   }, [initialThemeId])
 
   useLayoutEffect(() => {
-    applyThemeToDocument(
-      theme,
-      allThemes.map((t) => t.id),
-    )
+    applyThemeToDocument(theme)
     try {
       window.localStorage.setItem(THEME_STORAGE_KEY, theme.id)
     } catch {
@@ -196,8 +161,13 @@ export function ThemeProvider({ children, initialThemeId }: ThemeProviderProps) 
         key: THEME_APP_STATE_KEY,
         value: theme.id,
       }).catch(() => undefined)
+      if (XeroDesktopAdapter.isDesktopRuntime()) {
+        void XeroDesktopAdapter.publishThemeToCloud?.(themeSyncRequest(theme)).catch(
+          () => undefined,
+        )
+      }
     }
-  }, [theme, allThemes, appStateHydrated])
+  }, [theme, appStateHydrated])
 
   useEffect(() => {
     void syncThemeDockIcon(theme)

@@ -7,6 +7,7 @@ pub(super) fn validate(snapshot: &JsonValue, diagnostics: &mut Diagnostics) -> S
         super::super::snapshot_text(snapshot, "baseCapabilityProfile").unwrap_or_default();
     if ![
         "observe_only",
+        "computer_use",
         "planning",
         "repository_recon",
         "engineering",
@@ -17,7 +18,7 @@ pub(super) fn validate(snapshot: &JsonValue, diagnostics: &mut Diagnostics) -> S
     {
         diagnostics.push(super::super::diagnostic(
             "agent_definition_base_profile_invalid",
-            "Base capability profile must be observe_only, planning, repository_recon, engineering, debugging, or agent_builder.",
+            "Base capability profile must be observe_only, computer_use, planning, repository_recon, engineering, debugging, or agent_builder.",
             "baseCapabilityProfile",
         ));
     }

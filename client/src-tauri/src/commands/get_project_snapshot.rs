@@ -10,6 +10,9 @@ use crate::{
     state::DesktopState,
 };
 
+use super::global_computer_use::GLOBAL_COMPUTER_USE_PROJECT_ID;
+use super::runtime_support::resolve_project_root;
+
 #[tauri::command]
 pub async fn get_project_snapshot<R: Runtime + 'static>(
     app: AppHandle<R>,
@@ -52,15 +55,20 @@ pub(crate) fn project_snapshot_record_for_project<R: Runtime>(
 ) -> CommandResult<ProjectSnapshotForProject> {
     validate_non_empty(project_id, "projectId")?;
 
-    let registry_path = state.global_db_path(app)?;
-    let repo_root =
-        crate::runtime::resolve_imported_repo_root_from_registry(&registry_path, project_id)?;
+    let repo_root = resolve_project_root(app, state, project_id)?;
 
     let (record, agent_sessions) =
         project_store::load_project_snapshot_and_agent_sessions(&repo_root, project_id, false)?;
     let mut snapshot = record.snapshot;
     snapshot.agent_sessions = agent_sessions
         .iter()
+        .filter(|session| {
+            project_id == GLOBAL_COMPUTER_USE_PROJECT_ID
+                || !matches!(
+                    session.session_kind,
+                    project_store::AgentSessionKind::ComputerUse
+                )
+        })
         .map(super::agent_session::agent_session_dto)
         .collect();
     Ok(ProjectSnapshotForProject {

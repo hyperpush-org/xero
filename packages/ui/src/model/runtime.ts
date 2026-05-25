@@ -52,6 +52,7 @@ export const DEFAULT_RUNTIME_RUN_APPROVAL_MODE: RuntimeRunApprovalModeDto = 'sug
 export const BUILTIN_RUNTIME_AGENT_IDS = [
   'generalist',
   'ask',
+  'computer_use',
   'plan',
   'engineer',
   'debug',
@@ -60,6 +61,7 @@ export const BUILTIN_RUNTIME_AGENT_IDS = [
 ] as const
 export const runtimeAgentIdSchema = z.enum(BUILTIN_RUNTIME_AGENT_IDS)
 export const DEFAULT_RUNTIME_AGENT_ID: RuntimeAgentIdDto = 'generalist'
+export const COMPUTER_USE_RUNTIME_AGENT_ID: RuntimeAgentIdDto = 'computer_use'
 export type RuntimeAgentProjectOrigin = 'brownfield' | 'greenfield' | 'unknown' | null | undefined
 
 export interface RuntimeAgentAvailabilityEnvironment {
@@ -79,6 +81,7 @@ export interface RuntimeAgentDescriptor {
   lifecycleState: 'draft' | 'valid' | 'active' | 'archived' | 'blocked'
   baseCapabilityProfile:
     | 'observe_only'
+    | 'computer_use'
     | 'planning'
     | 'repository_recon'
     | 'engineering'
@@ -86,8 +89,22 @@ export interface RuntimeAgentDescriptor {
     | 'agent_builder'
   defaultApprovalMode: RuntimeRunApprovalModeDto
   allowedApprovalModes: readonly RuntimeRunApprovalModeDto[]
-  promptPolicy: 'ask' | 'plan' | 'engineer' | 'debug' | 'crawl' | 'agent_create' | 'generalist'
-  toolPolicy: 'observe_only' | 'planning' | 'repository_recon' | 'engineering' | 'agent_builder'
+  promptPolicy:
+    | 'ask'
+    | 'computer_use'
+    | 'plan'
+    | 'engineer'
+    | 'debug'
+    | 'crawl'
+    | 'agent_create'
+    | 'generalist'
+  toolPolicy:
+    | 'observe_only'
+    | 'computer_use'
+    | 'planning'
+    | 'repository_recon'
+    | 'engineering'
+    | 'agent_builder'
   outputContract:
     | 'answer'
     | 'plan_pack'
@@ -184,6 +201,43 @@ export const ALL_RUNTIME_AGENT_DESCRIPTORS = [
     projectDataPolicy: {
       required: true,
       recordKinds: ['agent_handoff', 'project_fact', 'constraint', 'question', 'context_note', 'diagnostic'],
+      structuredSchemas: ['xero.project_record.v1'],
+      unstructuredScopes: ['answer_note', 'session_summary', 'troubleshooting_note'],
+      memoryCandidateKinds: ['project_fact', 'user_preference', 'decision', 'session_summary', 'troubleshooting'],
+    },
+    workflowRole: 'interactive',
+    allowPlanGate: false,
+    allowVerificationGate: false,
+    allowAutoCompact: true,
+  },
+  {
+    id: 'computer_use',
+    version: 1,
+    label: 'Computer Use',
+    shortLabel: 'Computer',
+    description:
+      'Follow direct user instructions by observing and controlling the local computer through bounded automation tools.',
+    taskPurpose:
+      'Observe visible computer state, perform bounded UI automation, ask before risky actions, and stop immediately when cancelled.',
+    scope: 'built_in',
+    lifecycleState: 'active',
+    baseCapabilityProfile: 'computer_use',
+    defaultApprovalMode: 'suggest',
+    allowedApprovalModes: ['suggest'],
+    promptPolicy: 'computer_use',
+    toolPolicy: 'computer_use',
+    outputContract: 'answer',
+    projectDataPolicy: {
+      required: true,
+      recordKinds: [
+        'agent_handoff',
+        'project_fact',
+        'decision',
+        'constraint',
+        'question',
+        'context_note',
+        'diagnostic',
+      ],
       structuredSchemas: ['xero.project_record.v1'],
       unstructuredScopes: ['answer_note', 'session_summary', 'troubleshooting_note'],
       memoryCandidateKinds: ['project_fact', 'user_preference', 'decision', 'session_summary', 'troubleshooting'],
@@ -677,6 +731,7 @@ export const runtimeRunControlStateSchema = z
   })
 
 export const agentSessionStatusSchema = z.enum(['active', 'archived'])
+export const agentSessionKindSchema = z.enum(['standard', 'computer_use'])
 
 export const agentSessionLineageBoundaryKindSchema = z.enum(['run', 'message', 'checkpoint'])
 
@@ -712,6 +767,7 @@ export const agentSessionSchema = z
   .object({
     projectId: z.string().trim().min(1),
     agentSessionId: z.string().trim().min(1),
+    sessionKind: agentSessionKindSchema.default('standard'),
     title: z.string().trim().min(1),
     summary: z.string(),
     status: agentSessionStatusSchema,
@@ -733,6 +789,8 @@ export const createAgentSessionRequestSchema = z
     title: z.string().trim().min(1).nullable().optional(),
     summary: z.string().optional(),
     selected: z.boolean().optional(),
+    sessionKind: agentSessionKindSchema.optional(),
+    runtimeAgentId: runtimeAgentIdSchema.nullable().optional(),
   })
   .strict()
 
@@ -928,6 +986,7 @@ export type RuntimeRunActiveControlSnapshotDto = z.infer<typeof runtimeRunActive
 export type RuntimeRunPendingControlSnapshotDto = z.infer<typeof runtimeRunPendingControlSnapshotSchema>
 export type RuntimeRunControlStateDto = z.infer<typeof runtimeRunControlStateSchema>
 export type AgentSessionStatusDto = z.infer<typeof agentSessionStatusSchema>
+export type AgentSessionKindDto = z.infer<typeof agentSessionKindSchema>
 export type AgentSessionLineageBoundaryKindDto = z.infer<typeof agentSessionLineageBoundaryKindSchema>
 export type AgentSessionLineageDiagnosticDto = z.infer<typeof agentSessionLineageDiagnosticSchema>
 export type AgentSessionLineageDto = z.infer<typeof agentSessionLineageSchema>
@@ -1093,6 +1152,7 @@ export interface RuntimeRunView {
 export interface AgentSessionView {
   projectId: string
   agentSessionId: string
+  sessionKind: AgentSessionKindDto
   title: string
   summary: string
   status: AgentSessionStatusDto
@@ -1108,6 +1168,7 @@ export interface AgentSessionView {
   lineage: AgentSessionLineageDto | null
   isActive: boolean
   isArchived: boolean
+  isComputerUse: boolean
 }
 
 function timestampToSortValue(value: string | null): number {
@@ -1441,9 +1502,11 @@ export function mapRuntimeRun(runtimeRun: RuntimeRunDto): RuntimeRunView {
 }
 
 export function mapAgentSession(agentSession: AgentSessionDto): AgentSessionView {
+  const sessionKind = agentSession.sessionKind ?? 'standard'
   return {
     projectId: agentSession.projectId,
     agentSessionId: normalizeText(agentSession.agentSessionId, DEFAULT_AGENT_SESSION_ID),
+    sessionKind,
     title: normalizeText(agentSession.title, 'Agent session'),
     summary: agentSession.summary,
     status: agentSession.status,
@@ -1459,6 +1522,7 @@ export function mapAgentSession(agentSession: AgentSessionDto): AgentSessionView
     lineage: agentSession.lineage ?? null,
     isActive: agentSession.status === 'active',
     isArchived: agentSession.status === 'archived',
+    isComputerUse: sessionKind === 'computer_use',
   }
 }
 

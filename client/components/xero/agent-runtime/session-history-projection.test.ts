@@ -165,6 +165,52 @@ function makeNonMessageItem(
   }
 }
 
+function makeMediaToolResultItem(
+  runId: string,
+  sequence: number,
+): SessionTranscriptItemDto {
+  return {
+    contractVersion: 1,
+    itemId: `${runId}:tool-result:${sequence}`,
+    projectId: PROJECT_ID,
+    agentSessionId: SESSION_ID,
+    runId,
+    providerId: PROVIDER_ID,
+    modelId: MODEL_ID,
+    sourceKind: 'runtime_stream',
+    sourceTable: 'agent_events',
+    sourceId: `${runId}:tool-result:${sequence}`,
+    sequence,
+    createdAt: '2026-05-08T10:00:00Z',
+    kind: 'tool_result',
+    actor: 'tool',
+    title: 'Browser screenshot',
+    text: '',
+    toolCallId: 'call-browser-screenshot',
+    toolName: 'browser',
+    toolState: 'succeeded',
+    mediaAttachments: [
+      {
+        id: 'media-browser-screenshot',
+        kind: 'image',
+        mediaType: 'image/png',
+        title: 'Browser screenshot',
+        alt: 'Screenshot from browser automation',
+        sizeBytes: 67,
+        width: 1,
+        height: 1,
+        source: {
+          kind: 'app_data_path',
+          absolutePath:
+            '/Users/sn0w/Library/Application Support/Xero/tool-artifacts/conversation-media/media-browser-screenshot.png',
+        },
+        renderUrl: 'xero-project-asset://preview/media-browser-screenshot',
+      },
+    ],
+    redaction: publicRedaction(),
+  }
+}
+
 function makeTranscript(
   runs: RunTranscriptSummaryDto[],
   items: SessionTranscriptItemDto[],
@@ -428,6 +474,39 @@ describe('buildHistoricalConversationTurns', () => {
     expect(turns).toEqual([
       expect.objectContaining({ kind: 'message', role: 'user', text: 'kept' }),
     ])
+  })
+
+  it('projects historical tool image results as expanded action turns', () => {
+    const transcript = makeTranscript(
+      [makeRun('run-A', 'completed', '2026-05-08T09:00:00Z', 2)],
+      [
+        makeMessageItem('run-A', 1, 'user', 'show the page'),
+        makeMediaToolResultItem('run-A', 2),
+      ],
+    )
+
+    const turns = buildHistoricalConversationTurns(transcript, {
+      activeRunId: null,
+    })
+
+    expect(turns.map((turn) => turn.kind)).toEqual(['message', 'action'])
+    expect(turns[1]).toMatchObject({
+      kind: 'action',
+      toolCallId: 'call-browser-screenshot',
+      toolName: 'browser',
+      title: 'Browser screenshot',
+      state: 'succeeded',
+      defaultOpen: true,
+      mediaAttachments: [
+        expect.objectContaining({
+          id: 'media-browser-screenshot',
+          kind: 'image',
+          mediaType: 'image/png',
+          previewSrc: 'xero-project-asset://preview/media-browser-screenshot',
+          renderUrl: 'xero-project-asset://preview/media-browser-screenshot',
+        }),
+      ],
+    })
   })
 
   it('extracts routing-suggestion markers from assistant messages into routing_suggestion turns', () => {

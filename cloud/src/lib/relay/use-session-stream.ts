@@ -1,5 +1,6 @@
 import { type Channel, Presence, type Socket } from "phoenix";
 import { useEffect, useRef, useState } from "react";
+import { applyRemoteThemeEnvelope } from "#/lib/theme/cloud-theme";
 import type { AccountDevice } from "../auth/session";
 import { decodeRelayFrame } from "./envelope";
 import {
@@ -8,14 +9,18 @@ import {
 	pushInboundCommand,
 	requestSessionArchive,
 	requestStartSession,
+	requestThemeSnapshot,
 } from "./relay-client";
 import {
+	GLOBAL_COMPUTER_USE_PROJECT_ID,
 	modelOptionId,
 	normalizeModelOptions,
 	parseThinkingEffort,
+	REMOTE_COMPUTER_USE_SESSION_ID,
 	type RemoteProjectSummary,
 	type SessionContextError,
 	type SessionContextSnapshot,
+	type SessionKind,
 	type SessionThinkingEffort,
 	type SessionTranscript,
 	sessionKey,
@@ -54,6 +59,7 @@ interface SessionSnapshotPayload {
 	transcript?: unknown[];
 	runs?: unknown[];
 	runtimeRun?: unknown;
+	selectedControls?: unknown;
 	contextSnapshot?: SessionContextSnapshot | null;
 	contextSnapshotError?: SessionContextError | null;
 }
@@ -78,9 +84,15 @@ interface UseSessionStreamOptions {
 export interface AccountRemoteSessionsState {
 	sessions: VisibleSessionSummary[];
 	projects: RemoteProjectSummary[];
-	startSession: (project: RemoteProjectSummary) => boolean;
+	startSession: (
+		project: RemoteProjectSummary,
+		options?: { sessionKind?: SessionKind },
+	) => boolean;
 	archiveSession: (summary: VisibleSessionSummary) => boolean;
 }
+
+const UNRECONCILED_REMOTE_LIST_RETRY_MS = 2_000;
+const RECONCILED_REMOTE_LIST_REFRESH_MS = 15_000;
 
 /**
  * Connects to a remote session channel and pushes decoded snapshot/event frames
@@ -142,7 +154,7 @@ export function useSessionStream({
 			if (envelope.kind === "snapshot") {
 				const snapshot = envelope.payload as SessionSnapshotPayload;
 				const initialTurns = projectRemotePayloadToTurns(snapshot);
-				const controls = remoteRunControlSelection(snapshot.runtimeRun);
+				const controls = remoteSnapshotControlSelection(snapshot);
 				const availableModels = normalizeModelOptions(
 					snapshot.availableModels ?? [],
 				);
@@ -169,6 +181,33 @@ export function useSessionStream({
 				};
 				replaceWithSnapshot(key, next);
 			} else if (envelope.kind === "event") {
+				const commandFailure = remoteCommandFailureTurn(
+					envelope.payload,
+					envelope.seq,
+				);
+				if (commandFailure) {
+					const current = useSessionStore.getState().transcripts[key];
+					if (current) {
+						appendTurn(key, commandFailure, envelope.seq);
+					} else {
+						replaceWithSnapshot(key, {
+							turns: [commandFailure],
+							lastSeq: envelope.seq,
+							isLive: false,
+							availableAgents: [],
+							availableModels: [],
+							currentAgentId: null,
+							currentModelId: null,
+							currentThinkingEffort: null,
+							currentAutoCompactEnabled: true,
+							contextSnapshot: null,
+							contextSnapshotError: null,
+							contextSnapshotRequestId: null,
+						});
+					}
+					setLive(key, false);
+					return;
+				}
 				const turns = projectRemotePayloadToTurns(envelope.payload);
 				for (const turn of turns) {
 					appendTurn(key, turn, envelope.seq);
@@ -244,6 +283,7 @@ export function useAccountRemoteSessions(
 	const sessionListChannelsRef = useRef(new Map<string, Channel>());
 	const projectListChannelsRef = useRef(new Map<string, Channel>());
 	const newSessionChannelsRef = useRef(new Map<string, Channel>());
+	const themeChannelsRef = useRef(new Map<string, Channel>());
 
 	useEffect(() => {
 		if (!relayTokenRef.current || !accountId) return;
@@ -274,7 +314,7 @@ export function useAccountRemoteSessions(
 		if (!relayTokenRef.current || !accountId) return;
 		let disposed = false;
 		const socket = getRelaySocket(relayTokenRef.current);
-		const retryHandles: ReturnType<typeof setInterval>[] = [];
+		const stopReconciliationTimers: Array<() => void> = [];
 		const desktopDevices = devices.filter(
 			(device) => device.kind === "desktop" && !device.revoked_at,
 		);
@@ -313,23 +353,19 @@ export function useAccountRemoteSessions(
 				0,
 				(joinedChannel) => {
 					if (disposed || !webDeviceId) return;
-					requestVisibleSessions(joinedChannel, computerId, webDeviceId);
-					const retryHandle = setInterval(() => {
-						if (disposed) {
-							clearInterval(retryHandle);
-							return;
-						}
-						const reconciled =
-							useSessionStore.getState().visibleSessionsByComputerVersion[
-								computerId
-							];
-						if (reconciled) {
-							clearInterval(retryHandle);
-							return;
-						}
-						requestVisibleSessions(joinedChannel, computerId, webDeviceId);
-					}, 2_000);
-					retryHandles.push(retryHandle);
+					stopReconciliationTimers.push(
+						scheduleRemoteListReconciliation({
+							isDisposed: () => disposed,
+							isReconciled: () =>
+								Boolean(
+									useSessionStore.getState().visibleSessionsByComputerVersion[
+										computerId
+									],
+								),
+							request: () =>
+								requestVisibleSessions(joinedChannel, computerId, webDeviceId),
+						}),
+					);
 				},
 			);
 			sessionListChannelsRef.current.set(computerId, sessionListChannel);
@@ -353,21 +389,19 @@ export function useAccountRemoteSessions(
 				0,
 				(joinedChannel) => {
 					if (disposed || !webDeviceId) return;
-					requestProjectList(joinedChannel, computerId, webDeviceId);
-					const retryHandle = setInterval(() => {
-						if (disposed) {
-							clearInterval(retryHandle);
-							return;
-						}
-						const reconciled =
-							useSessionStore.getState().remoteProjectsByComputer[computerId];
-						if (reconciled) {
-							clearInterval(retryHandle);
-							return;
-						}
-						requestProjectList(joinedChannel, computerId, webDeviceId);
-					}, 2_000);
-					retryHandles.push(retryHandle);
+					stopReconciliationTimers.push(
+						scheduleRemoteListReconciliation({
+							isDisposed: () => disposed,
+							isReconciled: () =>
+								Boolean(
+									useSessionStore.getState().remoteProjectsByComputer[
+										computerId
+									],
+								),
+							request: () =>
+								requestProjectList(joinedChannel, computerId, webDeviceId),
+						}),
+					);
 				},
 			);
 			projectListChannelsRef.current.set(computerId, projectListChannel);
@@ -393,10 +427,33 @@ export function useAccountRemoteSessions(
 			return newSessionChannel;
 		});
 
+		const themeChannels = onlineDesktopIds.map((computerId) => {
+			const themeChannel = joinSessionChannel(
+				socket,
+				computerId,
+				"__theme__",
+				0,
+				(joinedChannel) => {
+					if (disposed || !webDeviceId) return;
+					requestThemeSnapshot(joinedChannel, {
+						computerId,
+						deviceId: webDeviceId,
+					});
+				},
+			);
+			themeChannelsRef.current.set(computerId, themeChannel);
+			themeChannel.on("frame", (rawFrame: unknown) => {
+				const envelope = decodeRelayFrame(rawFrame);
+				if (!envelope) return;
+				applyRemoteThemeEnvelope(envelope);
+			});
+			return themeChannel;
+		});
+
 		return () => {
 			disposed = true;
-			for (const retryHandle of retryHandles) {
-				clearInterval(retryHandle);
+			for (const stopTimer of stopReconciliationTimers) {
+				stopTimer();
 			}
 			for (const sessionListChannel of sessionListChannels) {
 				sessionListChannel.leave();
@@ -406,6 +463,9 @@ export function useAccountRemoteSessions(
 			}
 			for (const newSessionChannel of newSessionChannels) {
 				newSessionChannel.leave();
+			}
+			for (const themeChannel of themeChannels) {
+				themeChannel.leave();
 			}
 			for (const [index, computerId] of onlineDesktopIds.entries()) {
 				if (
@@ -426,6 +486,9 @@ export function useAccountRemoteSessions(
 				) {
 					newSessionChannelsRef.current.delete(computerId);
 				}
+				if (themeChannelsRef.current.get(computerId) === themeChannels[index]) {
+					themeChannelsRef.current.delete(computerId);
+				}
 			}
 		};
 	}, [
@@ -442,14 +505,20 @@ export function useAccountRemoteSessions(
 		webDeviceId,
 	]);
 
-	const startSession = (project: RemoteProjectSummary): boolean => {
+	const startSession = (
+		project: RemoteProjectSummary,
+		options: { sessionKind?: SessionKind } = {},
+	): boolean => {
 		if (!webDeviceId) return false;
 		const channel = newSessionChannelsRef.current.get(project.computerId);
 		if (!channel) return false;
+		const sessionKind = options.sessionKind ?? "standard";
 		requestStartSession(channel, {
 			computerId: project.computerId,
 			projectId: project.projectId,
 			deviceId: webDeviceId,
+			sessionKind,
+			agent: sessionKind === "computer_use" ? "computer_use" : null,
 		});
 		return true;
 	};
@@ -462,19 +531,58 @@ export function useAccountRemoteSessions(
 			computerId: summary.computerId,
 			projectId: summary.projectId,
 			sessionId: summary.sessionId,
+			agentSessionId: summary.agentSessionId,
 			deviceId: webDeviceId,
 		});
 		return true;
 	};
 
 	const projects = flattenRemoteProjects(remoteProjectsByComputer);
+	const sessions = withGlobalComputerUseSessions(
+		visibleSessions,
+		onlineComputerIds,
+		devices,
+	);
 
 	return {
-		sessions: visibleSessions,
+		sessions,
 		projects,
 		startSession,
 		archiveSession,
 	};
+}
+
+export function withGlobalComputerUseSessions(
+	visibleSessions: readonly VisibleSessionSummary[],
+	onlineComputerIds: Record<string, true>,
+	devices: readonly AccountDevice[],
+): VisibleSessionSummary[] {
+	const existingKeys = new Set(
+		visibleSessions.map((session) =>
+			sessionKey(session.computerId, session.sessionId),
+		),
+	);
+	const next: VisibleSessionSummary[] = [...visibleSessions];
+	for (const computerId of Object.keys(onlineComputerIds).sort()) {
+		const key = sessionKey(computerId, REMOTE_COMPUTER_USE_SESSION_ID);
+		if (existingKeys.has(key)) continue;
+		const computerName =
+			devices.find((device) => device.id === computerId)?.name ?? null;
+		next.push({
+			computerId,
+			sessionId: REMOTE_COMPUTER_USE_SESSION_ID,
+			agentSessionId: REMOTE_COMPUTER_USE_SESSION_ID,
+			projectId: GLOBAL_COMPUTER_USE_PROJECT_ID,
+			projectName: null,
+			sessionKind: "computer_use",
+			isComputerUse: true,
+			title: "Computer Use",
+			lastActivityAt: null,
+			computerName,
+			remoteVisible: true,
+		});
+	}
+	return next;
 }
 
 export function useAccountVisibleSessions(
@@ -498,6 +606,28 @@ function useLatestRelayToken(relayToken: string) {
 function hasDesktopPresence(entry: unknown): boolean {
 	if (!isRecord(entry) || !Array.isArray(entry.metas)) return false;
 	return entry.metas.some((meta) => isRecord(meta) && meta.kind === "desktop");
+}
+
+function scheduleRemoteListReconciliation(options: {
+	isDisposed: () => boolean;
+	isReconciled: () => boolean;
+	request: () => void;
+}): () => void {
+	let timeout: ReturnType<typeof setTimeout> | null = null;
+	const tick = () => {
+		if (options.isDisposed()) return;
+		options.request();
+		timeout = setTimeout(
+			tick,
+			options.isReconciled()
+				? RECONCILED_REMOTE_LIST_REFRESH_MS
+				: UNRECONCILED_REMOTE_LIST_RETRY_MS,
+		);
+	};
+	tick();
+	return () => {
+		if (timeout) clearTimeout(timeout);
+	};
 }
 
 function requestVisibleSessions(
@@ -548,6 +678,26 @@ function remoteContextSnapshotUpdate(payload: unknown): {
 	};
 }
 
+function remoteCommandFailureTurn(
+	payload: unknown,
+	sequence: number,
+): SessionTranscript["turns"][number] | null {
+	if (!isRecord(payload)) return null;
+	if (payload.schema !== "xero.remote_command_result.v1") return null;
+	if (payload.ok !== false) return null;
+	const error = recordField(payload, "error");
+	const code = stringField(error, "code") ?? "remote_command_failed";
+	const message =
+		stringField(error, "message") ?? "Xero could not load this remote session.";
+	return {
+		id: `failure:remote-command:${sequence}`,
+		kind: "failure",
+		sequence,
+		code,
+		message,
+	};
+}
+
 function flattenRemoteProjects(
 	projectsByComputer: Record<string, RemoteProjectSummary[]>,
 ): RemoteProjectSummary[] {
@@ -567,8 +717,30 @@ function remoteEventControlSelection(
 		return null;
 	}
 	const result = recordField(payload, "result");
+	const controls =
+		recordField(result, "controls") ?? recordField(payload, "controls");
+	const selectedControls = remoteControlSelectionFromRecord(controls, null);
+	if (selectedControls) return selectedControls;
 	const run = recordField(result, "run");
 	return run ? remoteRunControlSelection(run) : null;
+}
+
+export function remoteSnapshotControlSelection(
+	snapshot: SessionSnapshotPayload,
+): RemoteControlSelection {
+	const run = isRecord(snapshot.runtimeRun) ? snapshot.runtimeRun : null;
+	if (runtimeRunCanSupplySelectedControls(run)) {
+		return remoteRunControlSelection(run);
+	}
+	const selectedControls = remoteControlSelectionFromRecord(
+		recordField(
+			snapshot as unknown as Record<string, unknown>,
+			"selectedControls",
+		),
+		null,
+	);
+	if (selectedControls) return selectedControls;
+	return remoteRunControlSelection(run);
 }
 
 function isTerminalRemoteEvent(payload: unknown): boolean {
@@ -622,17 +794,60 @@ function remoteRunControlSelection(run: unknown): RemoteControlSelection {
 	const controls = recordField(run, "controls");
 	const selected =
 		recordField(controls, "pending") ?? recordField(controls, "active");
-	const rawModelId = stringField(selected, "modelId");
-	const providerProfileId = stringField(selected, "providerProfileId");
-	const autoCompactEnabledRaw = selected?.autoCompactEnabled;
+	return (
+		remoteControlSelectionFromRecord(selected, {
+			providerId: stringField(run, "providerId"),
+		}) ?? {
+			agentId: null,
+			modelId: null,
+			rawModelId: null,
+			providerId: null,
+			providerProfileId: null,
+			thinkingEffort: null,
+			autoCompactEnabled: true,
+		}
+	);
+}
+
+function runtimeRunCanSupplySelectedControls(
+	run: Record<string, unknown> | null,
+): boolean {
+	if (!run) return false;
+	const isTerminal = booleanField(run, "isTerminal", "is_terminal");
+	if (isTerminal === true) return false;
+	const status = stringField(run, "status");
+	return status !== "stopped" && status !== "failed";
+}
+
+function remoteControlSelectionFromRecord(
+	selected: Record<string, unknown> | null,
+	fallback: { providerId?: string | null } | null,
+): RemoteControlSelection | null {
+	if (!selected) return null;
+	const rawModelId = stringField(selected, "modelId", "model_id");
+	const providerProfileId = stringField(
+		selected,
+		"providerProfileId",
+		"provider_profile_id",
+	);
+	const autoCompactEnabledRaw =
+		selected.autoCompactEnabled ?? selected.auto_compact_enabled;
 	return {
-		agentId: stringField(selected, "runtimeAgentId"),
+		agentId: stringField(
+			selected,
+			"runtimeAgentId",
+			"runtime_agent_id",
+			"agent",
+		),
 		modelId: modelOptionId(providerProfileId, rawModelId),
 		rawModelId,
-		providerId: stringField(run, "providerId"),
+		providerId:
+			stringField(selected, "providerId", "provider_id") ??
+			fallback?.providerId ??
+			null,
 		providerProfileId,
 		thinkingEffort: parseThinkingEffort(
-			stringField(selected, "thinkingEffort"),
+			stringField(selected, "thinkingEffort", "thinking_effort"),
 		),
 		autoCompactEnabled:
 			typeof autoCompactEnabledRaw === "boolean" ? autoCompactEnabledRaw : true,
@@ -692,13 +907,28 @@ function contextErrorField(
 
 function stringField(
 	record: Record<string, unknown> | null | undefined,
-	key: string,
+	...keys: string[]
 ): string | null {
 	if (!record) return null;
-	const value = record[key];
-	return typeof value === "string" && value.trim().length > 0
-		? value.trim()
-		: null;
+	for (const key of keys) {
+		const value = record[key];
+		if (typeof value === "string" && value.trim().length > 0) {
+			return value.trim();
+		}
+	}
+	return null;
+}
+
+function booleanField(
+	record: Record<string, unknown> | null | undefined,
+	...keys: string[]
+): boolean | null {
+	if (!record) return null;
+	for (const key of keys) {
+		const value = record[key];
+		if (typeof value === "boolean") return value;
+	}
+	return null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

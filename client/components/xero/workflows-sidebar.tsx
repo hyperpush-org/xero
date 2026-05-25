@@ -7,6 +7,7 @@ import {
   Hammer,
   History,
   MessageCircle,
+  Monitor,
   MoreHorizontal,
   Package,
   Pencil,
@@ -138,6 +139,7 @@ const AGENT_PROFILE_ICON: Record<AgentDefinitionBaseCapabilityProfileDto, typeof
   engineering: Hammer,
   debugging: Wrench,
   agent_builder: Wand2,
+  computer_use: Monitor,
 }
 
 const SCOPE_BADGE_VARIANT: Record<AgentDefinitionScopeDto, "default" | "secondary" | "outline"> = {

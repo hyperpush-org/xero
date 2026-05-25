@@ -37,9 +37,10 @@ import {
 import { InstallAppAction } from "#/components/install-app-action";
 import { NewSessionPicker } from "#/components/new-session-picker";
 import type { CloudSession } from "#/lib/auth/session";
-import type {
-	RemoteProjectSummary,
-	VisibleSessionSummary,
+import {
+	type RemoteProjectSummary,
+	sessionKey,
+	type VisibleSessionSummary,
 } from "#/lib/relay/session-store";
 
 import { SessionListRow } from "./session-list-row";
@@ -93,10 +94,10 @@ function groupSessionsByProject(
 	const groupsByKey = new Map<string, ProjectGroup>();
 	for (const summary of sessions) {
 		const key = `${summary.computerId}:${summary.projectId}`;
-		const sessionKey = `${summary.computerId}:${summary.sessionId}`;
+		const summaryKey = sessionKey(summary.computerId, summary.sessionId);
 		const existing = groupsByKey.get(key);
 		const activity = safeTimestamp(summary.lastActivityAt);
-		const isActiveMember = currentSessionKey === sessionKey;
+		const isActiveMember = currentSessionKey === summaryKey;
 		if (existing) {
 			existing.sessions.push(summary);
 			if (activity > existing.lastActivityAt) {
@@ -187,8 +188,24 @@ export function SessionListPanel({
 		}
 	}, [collapsedGroups, collapsedGroupsLoaded]);
 	const projectGroups = useMemo(
-		() => groupSessionsByProject(visibleSessions, currentSessionKey),
+		() =>
+			groupSessionsByProject(
+				visibleSessions.filter((session) => !session.isComputerUse),
+				currentSessionKey,
+			),
 		[visibleSessions, currentSessionKey],
+	);
+	const computerUseSessions = useMemo(
+		() =>
+			visibleSessions
+				.filter((session) => session.isComputerUse)
+				.sort(
+					(left, right) =>
+						(left.computerName ?? left.computerId).localeCompare(
+							right.computerName ?? right.computerId,
+						) || left.computerId.localeCompare(right.computerId),
+				),
+		[visibleSessions],
 	);
 	const total = visibleSessions.length;
 
@@ -202,7 +219,7 @@ export function SessionListPanel({
 	const handleArchiveSession = useCallback(
 		async (summary: VisibleSessionSummary) => {
 			if (!onArchiveSession) return;
-			const key = `${summary.computerId}:${summary.sessionId}`;
+			const key = sessionKey(summary.computerId, summary.sessionId);
 			setPendingSessionAction({ key, action: "archive" });
 			try {
 				await onArchiveSession(summary);
@@ -276,6 +293,26 @@ export function SessionListPanel({
 					</div>
 				) : (
 					<div className="flex flex-col pb-2">
+						{computerUseSessions.length > 0 ? (
+							<ul className="flex flex-col pt-2">
+								{computerUseSessions.map((summary) => {
+									const key = sessionKey(summary.computerId, summary.sessionId);
+									return (
+										<li key={key}>
+											<SessionListRow
+												summary={summary}
+												isActive={currentSessionKey === key}
+												onSelect={() => handleSelectSession(summary)}
+												isPending={false}
+												hideProjectLabel
+												compact
+												alwaysShowActions={alwaysShowRowActions}
+											/>
+										</li>
+									);
+								})}
+							</ul>
+						) : null}
 						{projectGroups.map((group, groupIndex) => {
 							const userCollapsed = collapsedGroups[group.key] === true;
 							const isOpen = group.containsActive || !userCollapsed;
@@ -362,7 +399,10 @@ export function SessionListPanel({
 									<CollapsibleContent className="overflow-hidden">
 										<ul className="flex flex-col">
 											{group.sessions.map((summary) => {
-												const key = `${summary.computerId}:${summary.sessionId}`;
+												const key = sessionKey(
+													summary.computerId,
+													summary.sessionId,
+												);
 												const pendingAction =
 													pendingSessionAction?.key === key
 														? pendingSessionAction.action

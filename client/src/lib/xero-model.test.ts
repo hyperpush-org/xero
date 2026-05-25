@@ -101,6 +101,7 @@ function makeSnapshot(overrides: Partial<ProjectSnapshotResponseDto> = {}): Proj
       {
         projectId: 'project-1',
         agentSessionId: 'agent-session-main',
+        sessionKind: 'standard',
         title: 'Main session',
         summary: 'Primary project session',
         status: 'active',

@@ -2,11 +2,18 @@ import type { ConversationTurn } from "@xero/ui/components/transcript/conversati
 import { create } from "zustand";
 import { appendConversationTurn } from "./stream-projection";
 
+export type SessionKind = "standard" | "computer_use";
+export const REMOTE_COMPUTER_USE_SESSION_ID = "__computer_use__";
+export const GLOBAL_COMPUTER_USE_PROJECT_ID = "global-computer-use";
+
 export interface VisibleSessionSummary {
 	computerId: string;
 	sessionId: string;
+	agentSessionId: string;
 	projectId: string;
 	projectName: string | null;
+	sessionKind: SessionKind;
+	isComputerUse: boolean;
 	title: string;
 	lastActivityAt: string | null;
 	computerName: string | null;
@@ -175,8 +182,11 @@ function visibleSessionsEqual(
 		return (
 			current.computerId === next.computerId &&
 			current.sessionId === next.sessionId &&
+			current.agentSessionId === next.agentSessionId &&
 			current.projectId === next.projectId &&
 			current.projectName === next.projectName &&
+			current.sessionKind === next.sessionKind &&
+			current.isComputerUse === next.isComputerUse &&
 			current.title === next.title &&
 			current.lastActivityAt === next.lastActivityAt &&
 			current.computerName === next.computerName &&
@@ -217,8 +227,10 @@ function pruneMissingTranscripts(
 			sessionKey(session.computerId, session.sessionId),
 		),
 	);
-	const entries = Object.entries(transcripts).filter(([key]) =>
-		visibleKeys.has(key),
+	const entries = Object.entries(transcripts).filter(
+		([key]) =>
+			visibleKeys.has(key) ||
+			key.endsWith(`:${REMOTE_COMPUTER_USE_SESSION_ID}`),
 	);
 	return entries.length === Object.keys(transcripts).length
 		? transcripts

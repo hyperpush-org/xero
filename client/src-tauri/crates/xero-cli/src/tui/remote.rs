@@ -21,13 +21,21 @@ use xero_remote_bridge::{
     InboundCommand, InboundCommandKind, RemoteBridge,
 };
 
-use crate::{generate_id, CliError, GlobalOptions};
+use crate::{
+    generate_id,
+    project_cli::{
+        ensure_global_computer_use_project, GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
+        GLOBAL_COMPUTER_USE_PROJECT_ID, GLOBAL_COMPUTER_USE_PROJECT_NAME,
+    },
+    CliError, GlobalOptions,
+};
 
 use super::app::invoke_json;
 
 type TuiRemoteBridge = RemoteBridge<FileIdentityStore>;
 const REMOTE_RUN_EVENT_POLL_INTERVAL: Duration = Duration::from_millis(150);
 const REMOTE_RUN_FINAL_LOAD_RETRY_LIMIT: u8 = 20;
+const REMOTE_COMPUTER_USE_SESSION_ID: &str = "__computer_use__";
 
 #[derive(Default)]
 struct TuiRemoteBridgeState {
@@ -49,6 +57,7 @@ struct LocatedRemoteSession {
     project_id: String,
     project_name: Option<String>,
     session: JsonValue,
+    remote_session_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +115,7 @@ struct RemoteRunSpec {
     project_name: Option<String>,
     session: JsonValue,
     session_id: String,
+    remote_session_id: String,
     run_id: String,
     choice: ProviderChoice,
     runtime_agent_id: String,
@@ -141,6 +151,9 @@ pub(crate) fn publish_session_added(
         return Ok(());
     };
     let located = locate_remote_session_in_project(globals, project_id, session_id, true)?;
+    if located.remote_session_id == REMOTE_COMPUTER_USE_SESSION_ID {
+        return Ok(());
+    }
     publish_session_added_to_bridge(&bridge, &located)
 }
 
@@ -176,6 +189,7 @@ pub(crate) fn publish_session_controls(
         "thinkingEffort": thinking_effort,
     });
     let choice = provider_choice_from_payload(globals, &payload)?;
+    let located = locate_remote_session_in_project(globals, project_id, session_id, true)?;
     let run = remote_runtime_run_payload(
         project_id,
         session_id,
@@ -187,11 +201,10 @@ pub(crate) fn publish_session_controls(
     );
     send_command_ok(
         &bridge,
-        session_id,
+        &located.remote_session_id,
         "xero.remote_session_controls_updated.v1",
         json!({ "run": run }),
     )?;
-    let located = locate_remote_session_in_project(globals, project_id, session_id, true)?;
     publish_session_snapshot_to_bridge(&bridge, globals, &located, Some(&run))
 }
 
@@ -396,6 +409,10 @@ fn route_inbound_command(
             route_resolve_operator_action(globals, &bridge, command)
         }
         InboundCommandKind::CancelRun => route_cancel_run(globals, &bridge, command),
+        InboundCommandKind::FetchRuntimeMediaArtifact => Err(CliError::user_fixable(
+            "remote_runtime_media_unavailable",
+            "Runtime media artifact fetches are only supported by the desktop app.",
+        )),
     }
 }
 
@@ -447,6 +464,11 @@ fn route_archive_session(
             "session_id",
         ],
     )?;
+    if session_id == REMOTE_COMPUTER_USE_SESSION_ID {
+        return Err(CliError::usage(
+            "Computer Use is global and cannot be archived from the project session list.",
+        ));
+    }
     invoke_json(
         globals,
         &["session", "archive", "--project-id", project_id, session_id],
@@ -496,6 +518,14 @@ fn route_start_session(
     bridge: Arc<TuiRemoteBridge>,
     command: InboundCommand,
 ) -> Result<(), CliError> {
+    let session_kind = remote_session_kind_from_payload(&command.payload)?;
+    ensure_remote_payload_matches_session_kind(&command.payload, session_kind)?;
+    if session_kind == "computer_use" {
+        let prompt =
+            payload_string(&command.payload, &["prompt", "message"]).map(ToOwned::to_owned);
+        return route_start_computer_use_session(globals, bridge, command, prompt.as_deref());
+    }
+
     let project = locate_project_for_remote_start(globals, &command.payload)?;
     let session_id = generate_id("session");
     let title = payload_string(&command.payload, &["title"])
@@ -512,6 +542,8 @@ fn route_start_session(
             &session_id,
             "--title",
             &title,
+            "--session-kind",
+            session_kind,
         ],
     )?;
     let session = created.get("session").cloned().unwrap_or(created);
@@ -519,6 +551,7 @@ fn route_start_session(
         project_id: project.project_id.clone(),
         project_name: project.project_name.clone(),
         session,
+        remote_session_id: session_id.clone(),
     };
     let session_payload = remote_session_result_payload(&located);
 
@@ -527,7 +560,7 @@ fn route_start_session(
             "__new__",
             json!({
                 "schema": "xero.remote_session_started.v1",
-                "result": session_payload,
+                "result": session_payload.clone(),
             }),
         )
         .map_err(map_bridge_error)?;
@@ -542,6 +575,43 @@ fn route_start_session(
     run_remote_prompt(globals, bridge, &located, &command.payload, prompt)
 }
 
+fn route_start_computer_use_session(
+    globals: &GlobalOptions,
+    bridge: Arc<TuiRemoteBridge>,
+    command: InboundCommand,
+    prompt: Option<&str>,
+) -> Result<(), CliError> {
+    let located = locate_global_computer_use_session(globals)?;
+    let mut session_payload = remote_session_result_payload(&located);
+    if let Some(payload) = session_payload.as_object_mut() {
+        payload.insert("run".to_owned(), JsonValue::Null);
+    }
+
+    bridge
+        .forward_control_event(
+            REMOTE_COMPUTER_USE_SESSION_ID,
+            json!({
+                "schema": "xero.remote_session_started.v1",
+                "result": session_payload.clone(),
+            }),
+        )
+        .map_err(map_bridge_error)?;
+    bridge
+        .forward_control_event(
+            "__new__",
+            json!({
+                "schema": "xero.remote_session_started.v1",
+                "result": session_payload,
+            }),
+        )
+        .map_err(map_bridge_error)?;
+
+    let Some(prompt) = prompt.filter(|prompt| !prompt.trim().is_empty()) else {
+        return Ok(());
+    };
+    run_remote_prompt(globals, bridge, &located, &command.payload, prompt)
+}
+
 fn route_send_message(
     globals: &GlobalOptions,
     bridge: Arc<TuiRemoteBridge>,
@@ -550,6 +620,10 @@ fn route_send_message(
     let session_id = required_command_session(&command)?;
     let message = required_payload_string(&command.payload, &["message", "prompt"])?;
     let located = locate_remote_session(globals, session_id)?;
+    ensure_remote_payload_matches_session_kind(
+        &command.payload,
+        remote_session_kind_value(&located.session),
+    )?;
     run_remote_prompt(globals, bridge, &located, &command.payload, message)
 }
 
@@ -562,11 +636,18 @@ fn run_remote_prompt(
 ) -> Result<(), CliError> {
     let project_id = located.project_id.as_str();
     let session_id = required_session_id(&located.session)?.to_owned();
+    let remote_session_id = located.remote_session_id.clone();
     let attachments = remote_attachments_from_payload(payload)?;
     let choice = provider_choice_from_payload(globals, payload)?;
+    let session_kind = remote_session_kind_value(&located.session);
+    ensure_remote_payload_matches_session_kind(payload, session_kind)?;
     let runtime_agent_id =
         payload_string(payload, &["agent", "runtimeAgentId", "runtime_agent_id"])
-            .unwrap_or("engineer")
+            .unwrap_or(if session_kind == "computer_use" {
+                "computer_use"
+            } else {
+                "engineer"
+            })
             .to_owned();
     let thinking_effort = payload_string(payload, &["thinkingEffort", "thinking_effort"])
         .unwrap_or("high")
@@ -583,7 +664,7 @@ fn run_remote_prompt(
     );
     send_command_ok(
         &bridge,
-        &session_id,
+        &remote_session_id,
         "xero.remote_message_accepted.v1",
         json!({ "run": accepted_run }),
     )?;
@@ -593,6 +674,7 @@ fn run_remote_prompt(
         project_name: located.project_name.clone(),
         session: located.session.clone(),
         session_id,
+        remote_session_id,
         run_id,
         choice,
         runtime_agent_id,
@@ -725,7 +807,7 @@ fn drive_remote_prompt_run(
                     &error,
                 );
                 let _ = bridge.forward_control_event(
-                    &spec.session_id,
+                    &spec.remote_session_id,
                     json!({
                         "schema": "xero.remote_command_result.v1",
                         "ok": false,
@@ -810,7 +892,7 @@ fn stream_snapshot_events(
             continue;
         };
         bridge
-            .forward(&spec.session_id, runtime_event)
+            .forward(&spec.remote_session_id, runtime_event)
             .map_err(map_bridge_error)?;
         last_event_id = event_id;
         if remote_event_kind(event).is_some_and(|kind| remote_event_kind_is_terminal(&kind)) {
@@ -849,7 +931,7 @@ fn forward_remote_run_failed_event(
 ) -> Result<(), CliError> {
     bridge
         .forward(
-            &spec.session_id,
+            &spec.remote_session_id,
             json!({
                 "schema": "xero.remote_runtime_event.v1",
                 "projectId": &spec.project_id,
@@ -871,14 +953,18 @@ fn publish_remote_run_snapshot_best_effort(
     latest_snapshot: Option<&JsonValue>,
 ) {
     auto_name_remote_session_best_effort(globals, &spec.project_id, &spec.session_id);
-    let located =
+    let mut located =
         locate_remote_session_in_project(globals, &spec.project_id, &spec.session_id, true)
             .unwrap_or_else(|_| LocatedRemoteSession {
                 project_id: spec.project_id.clone(),
                 project_name: spec.project_name.clone(),
                 session: spec.session.clone(),
+                remote_session_id: spec.remote_session_id.clone(),
             });
-    let _ = publish_session_added_to_bridge(bridge, &located);
+    located.remote_session_id = spec.remote_session_id.clone();
+    if located.remote_session_id != REMOTE_COMPUTER_USE_SESSION_ID {
+        let _ = publish_session_added_to_bridge(bridge, &located);
+    }
     let _ = publish_session_snapshot_to_bridge(bridge, globals, &located, latest_snapshot);
 }
 
@@ -934,12 +1020,13 @@ fn route_context_snapshot(
 ) -> Result<(), CliError> {
     let session_id = required_command_session(&command)?;
     let located = locate_remote_session(globals, session_id)?;
+    let local_session_id = required_session_id(&located.session)?.to_owned();
     let request_id =
         payload_string(&command.payload, &["requestId", "request_id"]).map(ToOwned::to_owned);
     let context_result = load_remote_context_snapshot(
         globals,
         &located.project_id,
-        session_id,
+        &local_session_id,
         payload_string(&command.payload, &["runId", "run_id"]),
         payload_string(&command.payload, &["providerId", "provider_id"]),
         payload_string(&command.payload, &["modelId", "model_id"]),
@@ -963,7 +1050,7 @@ fn route_context_snapshot(
         }),
     };
     bridge
-        .forward_control_event(session_id, payload)
+        .forward_control_event(&located.remote_session_id, payload)
         .map_err(map_bridge_error)?;
     Ok(())
 }
@@ -982,7 +1069,7 @@ fn route_resolve_operator_action(
         "operator-action".to_owned(),
         "resolve".to_owned(),
         "--project-id".to_owned(),
-        located.project_id,
+        located.project_id.clone(),
         "--action-id".to_owned(),
         action_id.to_owned(),
         "--decision".to_owned(),
@@ -996,7 +1083,7 @@ fn route_resolve_operator_action(
     let value = invoke_json(globals, &borrowed)?;
     send_command_ok(
         bridge,
-        session_id,
+        &located.remote_session_id,
         "xero.remote_operator_action_resolved.v1",
         json!({ "response": value.get("response").cloned().unwrap_or(value) }),
     )
@@ -1009,9 +1096,10 @@ fn route_cancel_run(
 ) -> Result<(), CliError> {
     let session_id = required_command_session(&command)?;
     let located = locate_remote_session(globals, session_id)?;
+    let local_session_id = required_session_id(&located.session)?.to_owned();
     let run_id = match payload_string(&command.payload, &["runId", "run_id"]) {
         Some(run_id) => run_id.to_owned(),
-        None => latest_remote_session_run_id(globals, &located.project_id, session_id)?,
+        None => latest_remote_session_run_id(globals, &located.project_id, &local_session_id)?,
     };
     let value = invoke_json(
         globals,
@@ -1029,12 +1117,15 @@ fn route_cancel_run(
         .unwrap_or_else(|| value.clone());
     send_command_ok(
         bridge,
-        session_id,
+        &located.remote_session_id,
         "xero.remote_run_cancelled.v1",
         json!({ "run": run }),
     )?;
-    let located = locate_remote_session_in_project(globals, &located.project_id, session_id, true)
-        .unwrap_or(located);
+    let remote_session_id = located.remote_session_id.clone();
+    let mut located =
+        locate_remote_session_in_project(globals, &located.project_id, &local_session_id, true)
+            .unwrap_or(located);
+    located.remote_session_id = remote_session_id;
     publish_session_snapshot_to_bridge(bridge, globals, &located, value.get("snapshot"))?;
     Ok(())
 }
@@ -1046,17 +1137,24 @@ fn route_update_session_controls(
 ) -> Result<(), CliError> {
     let session_id = required_command_session(&command)?;
     let located = locate_remote_session(globals, session_id)?;
+    let local_session_id = required_session_id(&located.session)?.to_owned();
+    let session_kind = remote_session_kind_value(&located.session);
+    ensure_remote_payload_matches_session_kind(&command.payload, session_kind)?;
     let choice = provider_choice_from_payload(globals, &command.payload)?;
     let runtime_agent_id = payload_string(
         &command.payload,
         &["agent", "runtimeAgentId", "runtime_agent_id"],
     )
-    .unwrap_or("engineer");
+    .unwrap_or(if session_kind == "computer_use" {
+        "computer_use"
+    } else {
+        "engineer"
+    });
     let thinking_effort =
         payload_string(&command.payload, &["thinkingEffort", "thinking_effort"]).unwrap_or("high");
     let run = remote_runtime_run_payload(
         &located.project_id,
-        session_id,
+        &local_session_id,
         "pending",
         &choice,
         runtime_agent_id,
@@ -1065,7 +1163,7 @@ fn route_update_session_controls(
     );
     send_command_ok(
         bridge,
-        session_id,
+        &located.remote_session_id,
         "xero.remote_session_controls_updated.v1",
         json!({ "run": run }),
     )?;
@@ -1125,7 +1223,7 @@ fn route_stage_attachment(
         }),
     };
     bridge
-        .forward_control_event(session_id, payload)
+        .forward_control_event(&located.remote_session_id, payload)
         .map_err(map_bridge_error)?;
     Ok(())
 }
@@ -1166,7 +1264,7 @@ fn route_discard_attachment(
         }),
     };
     bridge
-        .forward_control_event(session_id, payload)
+        .forward_control_event(&located.remote_session_id, payload)
         .map_err(map_bridge_error)?;
     Ok(())
 }
@@ -1227,10 +1325,9 @@ fn publish_session_snapshot_to_bridge(
     located: &LocatedRemoteSession,
     latest_run: Option<&JsonValue>,
 ) -> Result<(), CliError> {
-    let session_id = required_session_id(&located.session)?;
     let snapshot = remote_session_snapshot(globals, located, latest_run)?;
     bridge
-        .snapshot(session_id, snapshot)
+        .snapshot(&located.remote_session_id, snapshot)
         .map_err(map_bridge_error)?;
     Ok(())
 }
@@ -1272,6 +1369,9 @@ fn remote_session_summaries(globals: &GlobalOptions) -> Result<Vec<JsonValue>, C
             .into_iter()
             .flatten()
         {
+            if remote_session_kind_value(session) == "computer_use" {
+                continue;
+            }
             sessions.push(remote_session_summary_payload(
                 &project_id,
                 project_name.as_deref(),
@@ -1293,6 +1393,7 @@ fn remote_session_summary_payload(
         "projectName": project_name.unwrap_or(project_id),
         "session": {
             "agentSessionId": string_field(session, "agentSessionId").unwrap_or_default(),
+            "sessionKind": remote_session_kind_value(session),
             "title": string_field(session, "title").unwrap_or_else(|| "New Chat".to_owned()),
             "remoteVisible": status != "archived",
             "createdAt": string_field(session, "createdAt"),
@@ -1367,12 +1468,17 @@ fn draft_runtime_run_from_preferences(
         "modelId": preferences.model_id,
     });
     let choice = provider_choice_from_payload(globals, &payload)?;
-    let runtime_agent_id = preferences
-        .runtime_agent_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("generalist");
+    let session_kind = remote_session_kind_value(&located.session);
+    let runtime_agent_id = if session_kind == "computer_use" {
+        "computer_use"
+    } else {
+        preferences
+            .runtime_agent_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("generalist")
+    };
     let thinking_effort = preferences
         .thinking_effort
         .as_deref()
@@ -1541,6 +1647,7 @@ fn merge_latest_run_snapshot(runs: &mut Vec<JsonValue>, latest_run: &JsonValue) 
 fn remote_available_agents() -> Vec<JsonValue> {
     vec![
         json!({ "id": "ask", "label": "Ask" }),
+        json!({ "id": "computer_use", "label": "Computer Use" }),
         json!({ "id": "plan", "label": "Plan" }),
         json!({ "id": "engineer", "label": "Engineer" }),
         json!({ "id": "debug", "label": "Debug" }),
@@ -1815,6 +1922,9 @@ fn locate_remote_session(
     if session_id.trim().is_empty() {
         return Err(CliError::usage("Missing agent session id."));
     }
+    if session_id == REMOTE_COMPUTER_USE_SESSION_ID {
+        return locate_global_computer_use_session(globals);
+    }
     for project in remote_project_summaries(globals)? {
         let Some(project_id) = string_field(&project, "projectId") else {
             continue;
@@ -1829,6 +1939,21 @@ fn locate_remote_session(
         "xero_tui_remote_session_not_found",
         format!("Xero TUI could not find session `{session_id}`."),
     ))
+}
+
+fn locate_global_computer_use_session(
+    globals: &GlobalOptions,
+) -> Result<LocatedRemoteSession, CliError> {
+    ensure_global_computer_use_project(globals)?;
+    let mut located = locate_remote_session_in_project(
+        globals,
+        GLOBAL_COMPUTER_USE_PROJECT_ID,
+        GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
+        true,
+    )?;
+    located.project_name = Some(GLOBAL_COMPUTER_USE_PROJECT_NAME.to_owned());
+    located.remote_session_id = REMOTE_COMPUTER_USE_SESSION_ID.to_owned();
+    Ok(located)
 }
 
 fn locate_remote_session_in_project(
@@ -1855,11 +1980,24 @@ fn locate_remote_session_in_project(
                 format!("Xero TUI could not find session `{session_id}`."),
             )
         })?;
-    let project_name = project_name_for_id(globals, project_id).ok().flatten();
+    let project_name = if project_id == GLOBAL_COMPUTER_USE_PROJECT_ID {
+        Some(GLOBAL_COMPUTER_USE_PROJECT_NAME.to_owned())
+    } else {
+        project_name_for_id(globals, project_id).ok().flatten()
+    };
+    let remote_session_id = if project_id == GLOBAL_COMPUTER_USE_PROJECT_ID
+        && session_id == GLOBAL_COMPUTER_USE_AGENT_SESSION_ID
+    {
+        REMOTE_COMPUTER_USE_SESSION_ID
+    } else {
+        session_id
+    }
+    .to_owned();
     Ok(LocatedRemoteSession {
         project_id: project_id.to_owned(),
         project_name,
         session,
+        remote_session_id,
     })
 }
 
@@ -1955,6 +2093,61 @@ fn required_session_id(session: &JsonValue) -> Result<&str, CliError> {
         ],
     )
     .ok_or_else(|| CliError::usage("Missing agent session id."))
+}
+
+fn remote_session_kind_from_payload(payload: &JsonValue) -> Result<&'static str, CliError> {
+    if let Some(value) = payload_string(payload, &["sessionKind", "session_kind"]) {
+        return match value {
+            "standard" => Ok("standard"),
+            "computer_use" => Ok("computer_use"),
+            other => Err(CliError::usage(format!(
+                "Unsupported remote session kind `{other}`."
+            ))),
+        };
+    }
+
+    if remote_payload_agent_id(payload) == Some("computer_use") {
+        return Ok("computer_use");
+    }
+
+    Ok("standard")
+}
+
+fn remote_session_kind_value(session: &JsonValue) -> &'static str {
+    match payload_string(session, &["sessionKind", "session_kind"]) {
+        Some("computer_use") => "computer_use",
+        _ => "standard",
+    }
+}
+
+fn remote_payload_agent_id(payload: &JsonValue) -> Option<&str> {
+    payload_string(payload, &["agent", "runtimeAgentId", "runtime_agent_id"])
+}
+
+fn ensure_remote_payload_matches_session_kind(
+    payload: &JsonValue,
+    session_kind: &str,
+) -> Result<(), CliError> {
+    if let Some(agent_id) = remote_payload_agent_id(payload) {
+        ensure_remote_agent_matches_session_kind(session_kind, agent_id)?;
+    }
+    Ok(())
+}
+
+fn ensure_remote_agent_matches_session_kind(
+    session_kind: &str,
+    agent_id: &str,
+) -> Result<(), CliError> {
+    match (session_kind, agent_id) {
+        ("computer_use", "computer_use") => Ok(()),
+        ("computer_use", other) => Err(CliError::usage(format!(
+            "Computer Use sessions must use the `computer_use` agent, got `{other}`."
+        ))),
+        ("standard", "computer_use") => Err(CliError::usage(
+            "The `computer_use` agent requires a Computer Use session.",
+        )),
+        _ => Ok(()),
+    }
 }
 
 fn required_payload_string<'a>(payload: &'a JsonValue, keys: &[&str]) -> Result<&'a str, CliError> {
@@ -2176,6 +2369,7 @@ mod tests {
                 "title": "Session"
             }),
             session_id: "session-1".into(),
+            remote_session_id: "session-1".into(),
             run_id: "run-1".into(),
             choice: ProviderChoice {
                 provider_id: "provider-1".into(),

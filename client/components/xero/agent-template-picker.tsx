@@ -5,6 +5,7 @@ import {
   ListChecks,
   Loader2,
   MessageCircle,
+  Monitor,
   Package,
   Plus,
   Search,
@@ -41,6 +42,7 @@ const PROFILE_ICONS: Record<AgentDefinitionBaseCapabilityProfileDto, typeof Wren
   repository_recon: Search,
   agent_builder: Sparkles,
   observe_only: MessageCircle,
+  computer_use: Monitor,
 }
 
 function profileIcon(profile: AgentDefinitionBaseCapabilityProfileDto) {

@@ -5,6 +5,7 @@ import { BrandLogo } from "#/components/brand-logo";
 import type { CloudSession } from "#/lib/auth/session";
 import type {
 	RemoteProjectSummary,
+	SessionKind,
 	VisibleSessionSummary,
 } from "#/lib/relay/session-store";
 
@@ -16,7 +17,10 @@ interface SessionSidebarProps {
 	projects?: RemoteProjectSummary[];
 	currentSessionKey: string | null;
 	onSelectSession: (computerId: string, sessionId: string) => void;
-	onSelectProject?: (project: RemoteProjectSummary) => void;
+	onSelectProject?: (
+		project: RemoteProjectSummary,
+		options?: { sessionKind?: SessionKind },
+	) => void;
 	onArchiveSession?: (
 		summary: VisibleSessionSummary,
 	) => boolean | Promise<boolean>;
@@ -41,7 +45,7 @@ export function SessionSidebar({
 		<aside
 			aria-label="Desktop sessions"
 			className={cn(
-				"relative hidden h-dvh w-[300px] shrink-0 flex-col gap-0 border-r border-border/70 bg-sidebar lg:flex",
+				"relative hidden h-dvh w-[276px] shrink-0 flex-col gap-0 border-r border-border/70 bg-sidebar lg:flex",
 				className,
 			)}
 		>

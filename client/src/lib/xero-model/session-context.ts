@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { codePatchAvailabilitySchema } from '@xero/ui/model/code-history'
 import { isoTimestampSchema, nonEmptyOptionalTextSchema } from '@xero/ui/model/shared'
 import { agentSessionLineageSchema, agentSessionSchema } from '@xero/ui/model/runtime'
+import { runtimeStreamMediaAttachmentSchema } from '@xero/ui/model/runtime-stream'
 
 export const XERO_SESSION_CONTEXT_CONTRACT_VERSION = 1
 
@@ -112,6 +113,7 @@ export const sessionTranscriptItemSchema = z
     codePatchAvailability: codePatchAvailabilitySchema.nullable().optional(),
     checkpointKind: nonEmptyOptionalTextSchema,
     actionId: nonEmptyOptionalTextSchema,
+    mediaAttachments: z.array(runtimeStreamMediaAttachmentSchema).nullable().optional(),
     redaction: sessionContextRedactionSchema,
   })
   .strict()

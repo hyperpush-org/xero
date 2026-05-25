@@ -1053,6 +1053,7 @@ mod tests {
                     agent_session_id TEXT NOT NULL,
                     title TEXT NOT NULL,
                     summary TEXT NOT NULL DEFAULT '',
+                    session_kind TEXT NOT NULL DEFAULT 'standard',
                     status TEXT NOT NULL,
                     selected INTEGER NOT NULL DEFAULT 0,
                     remote_visible INTEGER NOT NULL DEFAULT 0,

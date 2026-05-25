@@ -14,7 +14,8 @@ use crate::db::project_store::{
 use super::code_history::CodePatchAvailabilityDto;
 use super::runtime::{
     AgentSessionDto, AgentSessionLineageBoundaryKindDto, AgentSessionLineageDto,
-    RuntimeStreamItemDto, RuntimeStreamItemKind, RuntimeToolCallState,
+    RuntimeStreamItemDto, RuntimeStreamItemKind, RuntimeStreamMediaAttachmentDto,
+    RuntimeToolCallState,
 };
 
 pub const XERO_SESSION_CONTEXT_CONTRACT_VERSION: u32 = 1;
@@ -191,6 +192,8 @@ pub struct SessionTranscriptItemDto {
     pub checkpoint_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media_attachments: Vec<RuntimeStreamMediaAttachmentDto>,
     pub redaction: SessionContextRedactionDto,
 }
 
@@ -1200,6 +1203,7 @@ pub fn run_transcript_from_agent_snapshot(
             code_patch_availability: None,
             checkpoint_kind: None,
             action_id: None,
+            media_attachments: Vec::new(),
             redaction: prompt_redaction,
         },
     });
@@ -1238,6 +1242,7 @@ pub fn run_transcript_from_agent_snapshot(
                 code_patch_availability: None,
                 checkpoint_kind: None,
                 action_id: None,
+                media_attachments: Vec::new(),
                 redaction,
             },
         });
@@ -1280,6 +1285,7 @@ pub fn run_transcript_from_agent_snapshot(
                 code_patch_availability: code_patch_availability_from_payload(&payload),
                 checkpoint_kind: None,
                 action_id: payload_string(&payload, "actionId"),
+                media_attachments: Vec::new(),
                 redaction,
             },
         });
@@ -1319,6 +1325,7 @@ pub fn run_transcript_from_agent_snapshot(
                 code_patch_availability: None,
                 checkpoint_kind: None,
                 action_id: None,
+                media_attachments: Vec::new(),
                 redaction,
             },
         });
@@ -1358,6 +1365,7 @@ pub fn run_transcript_from_agent_snapshot(
                 code_patch_availability: None,
                 checkpoint_kind: None,
                 action_id: None,
+                media_attachments: Vec::new(),
                 redaction: path_redaction,
             },
         });
@@ -1397,6 +1405,7 @@ pub fn run_transcript_from_agent_snapshot(
                 code_patch_availability: None,
                 checkpoint_kind: Some(checkpoint.checkpoint_kind.clone()),
                 action_id: None,
+                media_attachments: Vec::new(),
                 redaction,
             },
         });
@@ -1436,6 +1445,7 @@ pub fn run_transcript_from_agent_snapshot(
                 code_patch_availability: None,
                 checkpoint_kind: None,
                 action_id: Some(action.action_id.clone()),
+                media_attachments: Vec::new(),
                 redaction,
             },
         });
@@ -2498,6 +2508,7 @@ fn runtime_stream_transcript_item(
         code_patch_availability: item.code_patch_availability.clone(),
         checkpoint_kind: None,
         action_id: item.action_id.clone(),
+        media_attachments: item.media_attachments.clone(),
         redaction,
     }
 }

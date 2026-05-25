@@ -492,6 +492,7 @@ pub const fn db_touchpoints_for_runtime_agent(id: RuntimeAgentIdDto) -> DbTouchp
         RuntimeAgentIdDto::Plan => PLAN_ENTRIES,
         RuntimeAgentIdDto::Engineer => ENGINEER_ENTRIES,
         RuntimeAgentIdDto::Debug => DEBUG_ENTRIES,
+        RuntimeAgentIdDto::ComputerUse => &[],
         RuntimeAgentIdDto::Crawl => CRAWL_ENTRIES,
         RuntimeAgentIdDto::AgentCreate => AGENT_CREATE_ENTRIES,
         RuntimeAgentIdDto::Generalist => ENGINEER_ENTRIES,

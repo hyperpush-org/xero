@@ -222,8 +222,7 @@ pub fn read_app_ui_state<R: Runtime>(
     request: ReadAppUiStateRequestDto,
 ) -> CommandResult<AppUiStateResponseDto> {
     let key = validate_ui_state_key(&request.key)?;
-    let app_data_dir = state.inner().app_data_dir(&app)?;
-    let value = read_ui_state_value(&app_data_dir.join("ui-state"), &key, "app")?;
+    let value = read_app_ui_state_value(&app, state.inner(), &key)?;
     Ok(AppUiStateResponseDto {
         schema: "xero.app_ui_state.v1".into(),
         key,
@@ -233,6 +232,27 @@ pub fn read_app_ui_state<R: Runtime>(
     })
 }
 
+pub(crate) fn read_app_ui_state_value<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    key: &str,
+) -> CommandResult<Option<JsonValue>> {
+    let key = validate_ui_state_key(key)?;
+    let app_data_dir = state.app_data_dir(app)?;
+    read_ui_state_value(&app_data_dir.join("ui-state"), &key, "app")
+}
+
+pub(crate) fn write_app_ui_state_value<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    key: &str,
+    value: Option<&JsonValue>,
+) -> CommandResult<()> {
+    let key = validate_ui_state_key(key)?;
+    let app_data_dir = state.app_data_dir(app)?;
+    write_ui_state_value(&app_data_dir.join("ui-state"), &key, value, "app")
+}
+
 #[tauri::command]
 pub fn write_app_ui_state<R: Runtime>(
     app: AppHandle<R>,
@@ -240,13 +260,7 @@ pub fn write_app_ui_state<R: Runtime>(
     request: WriteAppUiStateRequestDto,
 ) -> CommandResult<AppUiStateResponseDto> {
     let key = validate_ui_state_key(&request.key)?;
-    let app_data_dir = state.inner().app_data_dir(&app)?;
-    write_ui_state_value(
-        &app_data_dir.join("ui-state"),
-        &key,
-        request.value.as_ref(),
-        "app",
-    )?;
+    write_app_ui_state_value(&app, state.inner(), &key, request.value.as_ref())?;
     Ok(AppUiStateResponseDto {
         schema: "xero.app_ui_state.v1".into(),
         key,

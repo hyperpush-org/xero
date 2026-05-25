@@ -1262,6 +1262,7 @@ mod tests {
                 title: title.into(),
                 summary: String::new(),
                 selected: true,
+                session_kind: crate::db::project_store::AgentSessionKind::Standard,
             },
         )
         .expect("create agent session");

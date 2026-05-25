@@ -2298,6 +2298,7 @@ mod tests {
                 title: "Audit export".into(),
                 summary: String::new(),
                 selected: true,
+                session_kind: crate::db::project_store::AgentSessionKind::Standard,
             },
         )
         .expect("create session");
@@ -2428,6 +2429,7 @@ mod tests {
                 title: "Run start explanation".into(),
                 summary: String::new(),
                 selected: true,
+                session_kind: crate::db::project_store::AgentSessionKind::Standard,
             },
         )
         .expect("create session");
@@ -2566,6 +2568,7 @@ mod tests {
                 title: "Handoff source".into(),
                 summary: String::new(),
                 selected: true,
+                session_kind: crate::db::project_store::AgentSessionKind::Standard,
             },
         )
         .expect("create source session");
@@ -2576,6 +2579,7 @@ mod tests {
                 title: "Handoff target".into(),
                 summary: String::new(),
                 selected: false,
+                session_kind: crate::db::project_store::AgentSessionKind::Standard,
             },
         )
         .expect("create target session");
@@ -2754,6 +2758,7 @@ mod tests {
                 title: "Knowledge source".into(),
                 summary: String::new(),
                 selected: true,
+                session_kind: crate::db::project_store::AgentSessionKind::Standard,
             },
         )
         .expect("create source session");
@@ -2764,6 +2769,7 @@ mod tests {
                 title: "Knowledge target".into(),
                 summary: String::new(),
                 selected: false,
+                session_kind: crate::db::project_store::AgentSessionKind::Standard,
             },
         )
         .expect("create target session");
@@ -3118,6 +3124,7 @@ mod tests {
                 title: "Lifecycle audit".into(),
                 summary: String::new(),
                 selected: true,
+                session_kind: crate::db::project_store::AgentSessionKind::Standard,
             },
         )
         .expect("create session");

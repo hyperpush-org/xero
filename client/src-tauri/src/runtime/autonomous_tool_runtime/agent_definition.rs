@@ -9,16 +9,18 @@ use super::{
     deferred_tool_catalog, tool_access_all_known_tools, tool_access_group_tools,
     tool_allowed_for_runtime_agent, tool_available_on_current_host, tool_effect_class,
     AutonomousAgentToolPolicy, AutonomousToolCatalogEntry, AutonomousToolEffectClass,
-    AutonomousToolOutput, AutonomousToolResult, AutonomousToolRuntime, AUTONOMOUS_TOOL_CODE_INTEL,
-    AUTONOMOUS_TOOL_COMMAND_PROBE, AUTONOMOUS_TOOL_DIRECTORY_DIGEST,
+    AutonomousToolOutput, AutonomousToolResult, AutonomousToolRuntime, AUTONOMOUS_TOOL_BROWSER,
+    AUTONOMOUS_TOOL_BROWSER_CONTROL, AUTONOMOUS_TOOL_BROWSER_OBSERVE, AUTONOMOUS_TOOL_CODE_INTEL,
+    AUTONOMOUS_TOOL_COMMAND_PROBE, AUTONOMOUS_TOOL_DIRECTORY_DIGEST, AUTONOMOUS_TOOL_EMULATOR,
     AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT, AUTONOMOUS_TOOL_FIND, AUTONOMOUS_TOOL_GIT_DIFF,
     AUTONOMOUS_TOOL_GIT_STATUS, AUTONOMOUS_TOOL_HARNESS_RUNNER, AUTONOMOUS_TOOL_HASH,
     AUTONOMOUS_TOOL_LIST, AUTONOMOUS_TOOL_LIST_TREE, AUTONOMOUS_TOOL_LSP,
-    AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET, AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
-    AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH, AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_READ_MANY,
-    AUTONOMOUS_TOOL_SEARCH, AUTONOMOUS_TOOL_SKILL, AUTONOMOUS_TOOL_STAT, AUTONOMOUS_TOOL_SUBAGENT,
-    AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE, AUTONOMOUS_TOOL_TODO, AUTONOMOUS_TOOL_TOOL_ACCESS,
-    AUTONOMOUS_TOOL_TOOL_SEARCH, AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+    AUTONOMOUS_TOOL_MACOS_AUTOMATION, AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+    AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD, AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+    AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_READ_MANY, AUTONOMOUS_TOOL_SEARCH, AUTONOMOUS_TOOL_SKILL,
+    AUTONOMOUS_TOOL_STAT, AUTONOMOUS_TOOL_SUBAGENT, AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
+    AUTONOMOUS_TOOL_TODO, AUTONOMOUS_TOOL_TOOL_ACCESS, AUTONOMOUS_TOOL_TOOL_SEARCH,
+    AUTONOMOUS_TOOL_WORKSPACE_INDEX,
 };
 use crate::{
     auth::now_timestamp,
@@ -2829,12 +2831,12 @@ fn validate_approval_modes(
     }
     if matches!(
         base_profile,
-        "observe_only" | "planning" | "repository_recon" | "agent_builder"
+        "observe_only" | "computer_use" | "planning" | "repository_recon" | "agent_builder"
     ) && (default_mode != "suggest" || allowed_modes.iter().any(|mode| mode != "suggest"))
     {
         diagnostics.push(diagnostic(
             "agent_definition_approval_exceeds_profile",
-            "observe_only, planning, repository_recon, and agent_builder profiles can only use suggest approval mode.",
+            "observe_only, computer_use, planning, repository_recon, and agent_builder profiles can only use suggest approval mode.",
             "allowedApprovalModes",
         ));
     }
@@ -2857,6 +2859,7 @@ fn validate_tool_policy(
     if let Some(policy) = value.as_str() {
         let allowed = match base_profile {
             "observe_only" => policy == "observe_only",
+            "computer_use" => policy == "computer_use" || policy == "observe_only",
             "planning" => policy == "planning" || policy == "observe_only",
             "repository_recon" => policy == "repository_recon" || policy == "observe_only",
             "agent_builder" => policy == "agent_builder" || policy == "observe_only",
@@ -3657,6 +3660,9 @@ fn tool_allowed_by_profile(base_profile: &str, tool: &str) -> bool {
     if base_profile == "repository_recon" {
         return repository_recon_tool_allowed(tool);
     }
+    if base_profile == "computer_use" {
+        return computer_use_tool_allowed(tool);
+    }
     if base_profile == "planning" {
         return planning_tool_allowed(tool);
     }
@@ -3666,6 +3672,10 @@ fn tool_allowed_by_profile(base_profile: &str, tool: &str) -> bool {
 fn effect_allowed_by_profile(base_profile: &str, effect_class: &str) -> bool {
     match base_profile {
         "observe_only" => effect_class == AutonomousToolEffectClass::Observe.as_str(),
+        "computer_use" => matches!(
+            effect_class,
+            "observe" | "runtime_state" | "browser_control" | "device_control" | "process_control"
+        ),
         "planning" => matches!(effect_class, "observe" | "runtime_state"),
         "repository_recon" => {
             matches!(
@@ -3713,6 +3723,23 @@ fn planning_tool_allowed(tool: &str) -> bool {
             | AUTONOMOUS_TOOL_DIRECTORY_DIGEST
             | AUTONOMOUS_TOOL_HASH
             | AUTONOMOUS_TOOL_TODO
+    )
+}
+
+fn computer_use_tool_allowed(tool: &str) -> bool {
+    matches!(
+        tool,
+        AUTONOMOUS_TOOL_TOOL_ACCESS
+            | AUTONOMOUS_TOOL_TOOL_SEARCH
+            | AUTONOMOUS_TOOL_TODO
+            | AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH
+            | AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET
+            | AUTONOMOUS_TOOL_BROWSER_OBSERVE
+            | AUTONOMOUS_TOOL_BROWSER_CONTROL
+            | AUTONOMOUS_TOOL_BROWSER
+            | AUTONOMOUS_TOOL_EMULATOR
+            | AUTONOMOUS_TOOL_MACOS_AUTOMATION
+            | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE
     )
 }
 
@@ -4137,6 +4164,58 @@ fn default_tool_policy(profile: &str) -> JsonValue {
             "skillRuntimeAllowed": false,
             "subagentAllowed": false,
             "commandAllowed": false,
+            "destructiveWriteAllowed": false
+        }),
+        "computer_use" => json!({
+            "allowedEffectClasses": [],
+            "allowedToolGroups": [],
+            "allowedToolPacks": [],
+            "allowedTools": [
+                AUTONOMOUS_TOOL_TOOL_ACCESS,
+                AUTONOMOUS_TOOL_TOOL_SEARCH,
+                AUTONOMOUS_TOOL_TODO,
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+                AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+                AUTONOMOUS_TOOL_BROWSER_CONTROL,
+                AUTONOMOUS_TOOL_BROWSER,
+                AUTONOMOUS_TOOL_EMULATOR,
+                AUTONOMOUS_TOOL_MACOS_AUTOMATION,
+                AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE
+            ],
+            "deniedTools": [
+                "write",
+                "edit",
+                "patch",
+                "copy",
+                "fs_transaction",
+                "json_edit",
+                "toml_edit",
+                "yaml_edit",
+                "delete",
+                "rename",
+                "mkdir",
+                "command",
+                "command_run",
+                "command_session",
+                "command_session_start",
+                "command_session_read",
+                "command_session_stop",
+                "powershell",
+                "process_manager",
+                "git_status",
+                "git_diff",
+                "mcp",
+                "mcp_call_tool",
+                "skill",
+                "subagent"
+            ],
+            "deniedToolPacks": [],
+            "externalServiceAllowed": false,
+            "browserControlAllowed": true,
+            "skillRuntimeAllowed": false,
+            "subagentAllowed": false,
+            "commandAllowed": true,
             "destructiveWriteAllowed": false
         }),
         "repository_recon" => json!({

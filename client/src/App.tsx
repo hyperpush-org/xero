@@ -55,7 +55,23 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { XeroDesktopAdapter as DefaultXeroDesktopAdapter, type XeroDesktopAdapter } from '@/src/lib/xero-desktop'
-import { mapAgentSession, type RuntimeAgentIdDto, type RuntimeRunControlInputDto } from '@/src/lib/xero-model/runtime'
+import {
+  applyRuntimeRun,
+  applyRuntimeSession,
+  mapProjectSnapshot,
+  mapRuntimeRun,
+  mapRuntimeSession,
+  type ProjectDetailView,
+  type RuntimeRunView,
+  type RuntimeSessionView,
+  type RuntimeStreamView,
+} from '@/src/lib/xero-model'
+import {
+  mapAgentSession,
+  type RuntimeAgentIdDto,
+  type RuntimeRunControlInputDto,
+  type StagedAgentAttachmentDto,
+} from '@/src/lib/xero-model/runtime'
 import {
   canonicalCustomAgentDefinitionSchema,
   type AgentDefaultModelDto,
@@ -109,8 +125,23 @@ import type {
 import {
   useXeroDesktopState,
   type AgentPaneView,
+  type OperatorActionErrorView,
   type RefreshSource,
+  type RuntimeRunActionKind,
+  type RuntimeRunActionStatus,
 } from '@/src/features/xero/use-xero-desktop-state'
+import {
+  buildAgentView,
+} from '@/src/features/xero/use-xero-desktop-state/view-builders'
+import {
+  createRuntimeStreamStoreKey,
+  removeRuntimeStreamForSession,
+} from '@/src/features/xero/use-xero-desktop-state/high-churn-store'
+import {
+  attachRuntimeStreamSubscription,
+  type RuntimeMetadataRefreshSource,
+} from '@/src/features/xero/use-xero-desktop-state/runtime-stream'
+import { getOperatorActionError } from '@/src/features/xero/use-xero-desktop-state/mutation-support'
 import { useForcedAppUpdate } from '@/src/features/updates/use-forced-app-update'
 import {
   clearProjectSelectionPreview,
@@ -142,6 +173,14 @@ const loadAgentDockSidebar = () => import('@/components/xero/agent-dock-sidebar'
 const loadTerminalSidebar = () => import('@/components/xero/terminal-sidebar')
 const loadStartTargetsDialog = () => import('@/components/xero/start-targets-dialog')
 const ACTIVE_VIEW_APP_STATE_KEY = 'app.activeView.v1'
+const GLOBAL_COMPUTER_USE_PROJECT_ID = 'global-computer-use'
+const GLOBAL_COMPUTER_USE_AGENT_SESSION_ID = 'agent-session-global-computer-use'
+
+interface ComputerUseLoadResult {
+  project: ProjectDetailView
+  runtimeSession: RuntimeSessionView | null
+  runtimeRun: RuntimeRunView | null
+}
 
 function normalizePersistedActiveView(value: unknown): View | null {
   if (value === 'workflow') {
@@ -625,8 +664,131 @@ function sameRuntimeRunControlInput(
     left.modelId === right.modelId &&
     (left.thinkingEffort ?? null) === (right.thinkingEffort ?? null) &&
     left.approvalMode === right.approvalMode &&
-    Boolean(left.planModeRequired) === Boolean(right.planModeRequired)
+    Boolean(left.planModeRequired) === Boolean(right.planModeRequired) &&
+    left.autoCompactEnabled === right.autoCompactEnabled
   )
+}
+
+const COMPOSER_SETTINGS_APP_STATE_KEY = 'xero.agent.composer.settings.v1'
+const COMPOSER_SETTINGS_UPDATED_EVENT = 'agent:composer_settings_updated'
+const COMPOSER_SETTINGS_VERSION = 1
+const COMPOSER_THINKING_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'x_high'] as const
+const COMPOSER_APPROVAL_MODES = ['suggest', 'auto_edit', 'yolo'] as const
+const COMPOSER_RUNTIME_AGENT_IDS: readonly RuntimeAgentIdDto[] = [
+  'generalist',
+  'ask',
+  'computer_use',
+  'plan',
+  'engineer',
+  'debug',
+  'crawl',
+  'agent_create',
+]
+
+function isComposerSettingsRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function normalizeComposerSettingsText(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function isComposerRuntimeAgentId(value: unknown): value is RuntimeAgentIdDto {
+  return (
+    typeof value === 'string' &&
+    COMPOSER_RUNTIME_AGENT_IDS.includes(value as RuntimeAgentIdDto)
+  )
+}
+
+function isComposerThinkingEffort(
+  value: unknown,
+): value is NonNullable<RuntimeRunControlInputDto['thinkingEffort']> {
+  return (
+    typeof value === 'string' &&
+    COMPOSER_THINKING_LEVELS.includes(
+      value as NonNullable<RuntimeRunControlInputDto['thinkingEffort']>,
+    )
+  )
+}
+
+function isComposerApprovalMode(
+  value: unknown,
+): value is RuntimeRunControlInputDto['approvalMode'] {
+  return (
+    typeof value === 'string' &&
+    COMPOSER_APPROVAL_MODES.includes(value as RuntimeRunControlInputDto['approvalMode'])
+  )
+}
+
+function composerSettingsValueFromControls(
+  controls: RuntimeRunControlInputDto | null,
+): Record<string, unknown> | null {
+  const modelId = normalizeComposerSettingsText(controls?.modelId)
+  if (!controls || !modelId) return null
+
+  return {
+    version: COMPOSER_SETTINGS_VERSION,
+    modelId,
+    providerProfileId: normalizeComposerSettingsText(controls.providerProfileId),
+    runtimeAgentId: controls.runtimeAgentId,
+    agentDefinitionId: normalizeComposerSettingsText(controls.agentDefinitionId),
+    thinkingEffort: controls.thinkingEffort ?? null,
+    approvalMode: controls.approvalMode,
+    autoCompactEnabled: controls.autoCompactEnabled,
+    updatedAt: new Date().toISOString(),
+  }
+}
+
+function runtimeControlsFromComposerSettingsValue(
+  value: unknown,
+): RuntimeRunControlInputDto | null {
+  if (!isComposerSettingsRecord(value) || value.version !== COMPOSER_SETTINGS_VERSION) {
+    return null
+  }
+  const modelId = normalizeComposerSettingsText(value.modelId)
+  if (!modelId || !isComposerRuntimeAgentId(value.runtimeAgentId)) {
+    return null
+  }
+
+  return {
+    runtimeAgentId: value.runtimeAgentId,
+    agentDefinitionId: normalizeComposerSettingsText(value.agentDefinitionId),
+    providerProfileId: normalizeComposerSettingsText(value.providerProfileId),
+    modelId,
+    thinkingEffort: isComposerThinkingEffort(value.thinkingEffort)
+      ? value.thinkingEffort
+      : null,
+    approvalMode: isComposerApprovalMode(value.approvalMode)
+      ? value.approvalMode
+      : 'suggest',
+    planModeRequired: false,
+    autoCompactEnabled:
+      typeof value.autoCompactEnabled === 'boolean' ? value.autoCompactEnabled : true,
+  }
+}
+
+function mirrorComposerSettingsToLocalStorage(value: unknown): void {
+  if (!isComposerSettingsRecord(value) || value.version !== COMPOSER_SETTINGS_VERSION) {
+    return
+  }
+  if (typeof window === 'undefined') return
+
+  try {
+    window.localStorage?.setItem?.(
+      COMPOSER_SETTINGS_APP_STATE_KEY,
+      JSON.stringify(value),
+    )
+    if (typeof value.autoCompactEnabled === 'boolean') {
+      window.localStorage?.setItem?.(
+        'xero.agent.autoCompact.enabled',
+        value.autoCompactEnabled ? '1' : '0',
+      )
+    }
+  } catch {
+    /* Keep the in-memory selection when localStorage is unavailable. */
+  }
 }
 
 interface PendingInitialAgentSelection {
@@ -1184,6 +1346,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
     providerCredentialsLoadError,
     providerCredentialsSaveStatus,
     providerCredentialsSaveError,
+    providerModelCatalogs,
+    providerModelCatalogLoadStatuses,
+    providerModelCatalogLoadErrors,
     doctorReport,
     doctorReportStatus,
     doctorReportError,
@@ -1290,6 +1455,70 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const [pendingPaneCloseId, setPendingPaneCloseId] = useState<string | null>(null)
   const [agentComposerControls, setAgentComposerControls] =
     useState<RuntimeRunControlInputDto | null>(null)
+  const persistComposerSettings = useCallback(
+    (controls: RuntimeRunControlInputDto | null) => {
+      const value = composerSettingsValueFromControls(controls)
+      if (!value) return
+      mirrorComposerSettingsToLocalStorage(value)
+      void resolvedAdapter.writeAppUiState?.({
+        key: COMPOSER_SETTINGS_APP_STATE_KEY,
+        value,
+      }).catch(() => undefined)
+    },
+    [resolvedAdapter],
+  )
+  useEffect(() => {
+    let disposed = false
+    void resolvedAdapter.readAppUiState?.({ key: COMPOSER_SETTINGS_APP_STATE_KEY })
+      .then((response) => {
+        if (disposed) return
+        const value = response.value ?? null
+        mirrorComposerSettingsToLocalStorage(value)
+        const controls = runtimeControlsFromComposerSettingsValue(value)
+        if (controls?.runtimeAgentId && controls.runtimeAgentId !== 'computer_use') {
+          setAgentComposerControls((current) =>
+            sameRuntimeRunControlInput(current, controls) ? current : controls,
+          )
+        }
+      })
+      .catch(() => undefined)
+
+    return () => {
+      disposed = true
+    }
+  }, [resolvedAdapter])
+  useEffect(() => {
+    if (!isTauri()) return
+    let disposed = false
+    let unlisten: (() => void) | null = null
+
+    void import('@tauri-apps/api/event')
+      .then(({ listen }) =>
+        listen<unknown>(COMPOSER_SETTINGS_UPDATED_EVENT, (event) => {
+          const value = event.payload
+          mirrorComposerSettingsToLocalStorage(value)
+          const controls = runtimeControlsFromComposerSettingsValue(value)
+          if (controls?.runtimeAgentId && controls.runtimeAgentId !== 'computer_use') {
+            setAgentComposerControls((current) =>
+              sameRuntimeRunControlInput(current, controls) ? current : controls,
+            )
+          }
+        }),
+      )
+      .then((nextUnlisten) => {
+        if (disposed) {
+          nextUnlisten()
+          return
+        }
+        unlisten = nextUnlisten
+      })
+      .catch(() => undefined)
+
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [])
   const [isCreatingAgentSession, setIsCreatingAgentSession] = useState(false)
   const [projectAddOpen, setProjectAddOpen] = useState(false)
   const [browserOpen, setBrowserOpen] = useState(false)
@@ -1317,6 +1546,21 @@ export function XeroApp({ adapter }: XeroAppProps) {
   })
   const [usageOpen, setUsageOpen] = useState(false)
   const [agentDockOpen, setAgentDockOpen] = useState(false)
+  const [computerUseOpen, setComputerUseOpen] = useState(false)
+  const [computerUseProject, setComputerUseProject] = useState<ProjectDetailView | null>(null)
+  const [computerUseRuntimeSession, setComputerUseRuntimeSession] =
+    useState<RuntimeSessionView | null>(null)
+  const [computerUseRuntimeRun, setComputerUseRuntimeRun] = useState<RuntimeRunView | null>(null)
+  const [computerUseRuntimeRunActionStatus, setComputerUseRuntimeRunActionStatus] =
+    useState<RuntimeRunActionStatus>('idle')
+  const [computerUsePendingRuntimeRunAction, setComputerUsePendingRuntimeRunAction] =
+    useState<RuntimeRunActionKind | null>(null)
+  const [computerUseRuntimeRunActionError, setComputerUseRuntimeRunActionError] =
+    useState<OperatorActionErrorView | null>(null)
+  const computerUseRuntimeActionRefreshKeysRef = useRef<Record<string, Set<string>>>({})
+  const computerUseRuntimeMetadataRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  )
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [startTargetsDialogOpen, setStartTargetsDialogOpen] = useState(false)
   const [pendingInitialRuntimeAgent, setPendingInitialRuntimeAgent] =
@@ -1594,6 +1838,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setVcsOpen(false)
     setWorkflowsOpen(false)
     setAgentDockOpen(false)
+    setComputerUseOpen(false)
     setTerminalOpen(false)
     setBrowserOpen(true)
   }, [browserOpen])
@@ -1608,6 +1853,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setVcsOpen(false)
     setWorkflowsOpen(false)
     setAgentDockOpen(false)
+    setComputerUseOpen(false)
     setTerminalOpen(false)
     setIosOpen(true)
   }, [iosOpen])
@@ -1622,6 +1868,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setVcsOpen(false)
     setWorkflowsOpen(false)
     setAgentDockOpen(false)
+    setComputerUseOpen(false)
     setTerminalOpen(false)
     setSolanaOpen(true)
   }, [solanaOpen])
@@ -1636,6 +1883,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setSolanaOpen(false)
     setWorkflowsOpen(false)
     setAgentDockOpen(false)
+    setComputerUseOpen(false)
     setTerminalOpen(false)
     setVcsOpen(true)
   }, [vcsOpen])
@@ -1650,6 +1898,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setSolanaOpen(false)
     setVcsOpen(false)
     setAgentDockOpen(false)
+    setComputerUseOpen(false)
     setTerminalOpen(false)
     setWorkflowsOpen(true)
   }, [workflowsOpen])
@@ -1673,8 +1922,238 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setWorkflowsOpen(false)
     setUsageOpen(false)
     setTerminalOpen(false)
+    setComputerUseOpen(false)
     setAgentDockOpen(true)
   }, [activeProject?.selectedAgentSessionId, activeView, agentDockOpen])
+
+  const loadComputerUseProject = useCallback(async (): Promise<ComputerUseLoadResult> => {
+    await resolvedAdapter.ensureGlobalComputerUseSession?.()
+
+    const bundle = resolvedAdapter.getProjectLoadBundle
+      ? await resolvedAdapter.getProjectLoadBundle({
+          projectId: GLOBAL_COMPUTER_USE_PROJECT_ID,
+          includeNotificationRoutes: false,
+        })
+      : null
+    const snapshot = bundle
+      ? bundle.projectSnapshot
+      : await resolvedAdapter.getProjectSnapshot(GLOBAL_COMPUTER_USE_PROJECT_ID)
+    const runtimeSession = bundle?.runtimeSession
+      ? mapRuntimeSession(bundle.runtimeSession)
+      : await resolvedAdapter
+          .getRuntimeSession(GLOBAL_COMPUTER_USE_PROJECT_ID)
+          .then(mapRuntimeSession)
+          .catch(() => null)
+    const runtimeRun = bundle?.runtimeRun
+      ? mapRuntimeRun(bundle.runtimeRun)
+      : await resolvedAdapter
+          .getRuntimeRun(GLOBAL_COMPUTER_USE_PROJECT_ID, GLOBAL_COMPUTER_USE_AGENT_SESSION_ID)
+          .then((run) => (run ? mapRuntimeRun(run) : null))
+          .catch(() => null)
+    const project = applyRuntimeRun(
+      applyRuntimeSession(
+        mapProjectSnapshot(snapshot, {
+          notificationDispatches: bundle?.notificationDispatches ?? [],
+        }),
+        runtimeSession,
+      ),
+      runtimeRun,
+    )
+
+    setComputerUseProject(project)
+    setComputerUseRuntimeSession(runtimeSession)
+    setComputerUseRuntimeRun(runtimeRun)
+    return { project, runtimeSession, runtimeRun }
+  }, [resolvedAdapter])
+
+  const refreshComputerUseRuntimeMetadata = useCallback(async () => {
+    const [runtimeSession, runtimeRun] = await Promise.all([
+      resolvedAdapter
+        .getRuntimeSession(GLOBAL_COMPUTER_USE_PROJECT_ID)
+        .then(mapRuntimeSession)
+        .catch(() => null),
+      resolvedAdapter
+        .getRuntimeRun(GLOBAL_COMPUTER_USE_PROJECT_ID, GLOBAL_COMPUTER_USE_AGENT_SESSION_ID)
+        .then((run) => (run ? mapRuntimeRun(run) : null))
+        .catch(() => null),
+    ])
+    setComputerUseRuntimeSession(runtimeSession)
+    setComputerUseRuntimeRun(runtimeRun)
+    setComputerUseProject((current) =>
+      current ? applyRuntimeRun(applyRuntimeSession(current, runtimeSession), runtimeRun) : current,
+    )
+    return { runtimeSession, runtimeRun }
+  }, [resolvedAdapter])
+
+  const scheduleComputerUseRuntimeMetadataRefresh = useCallback(
+    (_projectId: string, _source: RuntimeMetadataRefreshSource) => {
+      if (computerUseRuntimeMetadataRefreshTimeoutRef.current) {
+        window.clearTimeout(computerUseRuntimeMetadataRefreshTimeoutRef.current)
+      }
+      computerUseRuntimeMetadataRefreshTimeoutRef.current = window.setTimeout(() => {
+        computerUseRuntimeMetadataRefreshTimeoutRef.current = null
+        void refreshComputerUseRuntimeMetadata()
+      }, 24)
+    },
+    [refreshComputerUseRuntimeMetadata],
+  )
+
+  useEffect(() => {
+    return () => {
+      if (computerUseRuntimeMetadataRefreshTimeoutRef.current) {
+        window.clearTimeout(computerUseRuntimeMetadataRefreshTimeoutRef.current)
+        computerUseRuntimeMetadataRefreshTimeoutRef.current = null
+      }
+    }
+  }, [])
+
+  const updateComputerUseRuntimeStream = useCallback(
+    (
+      projectId: string,
+      agentSessionId: string,
+      updater: (current: RuntimeStreamView | null) => RuntimeStreamView | null,
+    ) => {
+      highChurnStore.setRuntimeStreams((currentStreams) => {
+        const sessionKey = createRuntimeStreamStoreKey(projectId, agentSessionId)
+        const currentStream = currentStreams[sessionKey] ?? currentStreams[projectId] ?? null
+        const nextStream = updater(currentStream)
+        if (!nextStream) {
+          return removeRuntimeStreamForSession(currentStreams, projectId, agentSessionId)
+        }
+        return {
+          ...currentStreams,
+          [sessionKey]: nextStream,
+          [projectId]: nextStream,
+        }
+      })
+    },
+    [highChurnStore],
+  )
+
+  useEffect(() => {
+    if (!computerUseOpen || !computerUseRuntimeSession || !computerUseRuntimeRun?.runId) {
+      return
+    }
+
+    return attachRuntimeStreamSubscription({
+      projectId: GLOBAL_COMPUTER_USE_PROJECT_ID,
+      agentSessionId: GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
+      runtimeSession: computerUseRuntimeSession,
+      runId: computerUseRuntimeRun.runId,
+      adapter: resolvedAdapter,
+      runtimeActionRefreshKeysRef: computerUseRuntimeActionRefreshKeysRef,
+      updateRuntimeStream: updateComputerUseRuntimeStream,
+      scheduleRuntimeMetadataRefresh: scheduleComputerUseRuntimeMetadataRefresh,
+    })
+  }, [
+    computerUseOpen,
+    computerUseRuntimeRun?.runId,
+    computerUseRuntimeSession,
+    resolvedAdapter,
+    scheduleComputerUseRuntimeMetadataRefresh,
+    updateComputerUseRuntimeStream,
+  ])
+
+  const computerUseProjectForView = useMemo(
+    () =>
+      computerUseProject
+        ? applyRuntimeRun(
+            applyRuntimeSession(computerUseProject, computerUseRuntimeSession),
+            computerUseRuntimeRun,
+          )
+        : null,
+    [computerUseProject, computerUseRuntimeRun, computerUseRuntimeSession],
+  )
+
+  const computerUseAgentView = useMemo(
+    () =>
+      buildAgentView({
+        project: computerUseProjectForView,
+        activePhase: null,
+        repositoryStatus: null,
+        fallbackRuntimeAgentId: 'computer_use',
+        providerCredentials,
+        runtimeSession: computerUseRuntimeSession,
+        providerModelCatalogs,
+        providerModelCatalogLoadStatuses,
+        providerModelCatalogLoadErrors,
+        runtimeRun: computerUseRuntimeRun,
+        autonomousRun: null,
+        runtimeErrorMessage: null,
+        runtimeRunErrorMessage: computerUseRuntimeRunActionError?.message ?? null,
+        autonomousRunErrorMessage: null,
+        runtimeStream: null,
+        notificationRoutes: [],
+        notificationRouteLoadStatus: 'ready',
+        notificationRouteError: null,
+        notificationSyncSummary: null,
+        notificationSyncError: null,
+        blockedNotificationSyncPollTarget: null,
+        notificationRouteMutationStatus: 'idle',
+        pendingNotificationRouteId: null,
+        notificationRouteMutationError: null,
+        previousTrustSnapshot: null,
+        operatorActionStatus: 'idle',
+        pendingOperatorActionId: null,
+        operatorActionError: null,
+        autonomousRunActionStatus: 'idle',
+        pendingAutonomousRunAction: null,
+        autonomousRunActionError: null,
+        runtimeRunActionStatus: computerUseRuntimeRunActionStatus,
+        pendingRuntimeRunAction: computerUsePendingRuntimeRunAction,
+        runtimeRunActionError: computerUseRuntimeRunActionError,
+      }).view,
+    [
+      computerUsePendingRuntimeRunAction,
+      computerUseProjectForView,
+      computerUseRuntimeRun,
+      computerUseRuntimeRunActionError,
+      computerUseRuntimeRunActionStatus,
+      computerUseRuntimeSession,
+      providerCredentials,
+      providerModelCatalogLoadErrors,
+      providerModelCatalogLoadStatuses,
+      providerModelCatalogs,
+    ],
+  )
+
+  const computerUseRunning = Boolean(
+    computerUseRuntimeRun?.isActive && !computerUseRuntimeRun.isTerminal,
+  )
+
+  const closeComputerUse = useCallback(() => {
+    setComputerUseOpen(false)
+  }, [])
+
+  const toggleComputerUse = useCallback(() => {
+    if (computerUseOpen) {
+      closeComputerUse()
+      return
+    }
+
+    preloadSurfaceChunk('agent-dock')
+    setSelectedWorkflowDefinition(null)
+    setSelectedWorkflowRun(null)
+    setSelectedWorkflowIsDraft(false)
+    setSelectedWorkflowTemplatePreviewId(null)
+    setBrowserOpen(false)
+    setIosOpen(false)
+    setSolanaOpen(false)
+    setVcsOpen(false)
+    setWorkflowsOpen(false)
+    setUsageOpen(false)
+    setTerminalOpen(false)
+    setAgentDockOpen(false)
+    setIsCreatingAgentSession(true)
+    void (async () => {
+      await loadComputerUseProject()
+      setComputerUseOpen(true)
+    })()
+      .catch(() => undefined)
+      .finally(() => {
+        setIsCreatingAgentSession(false)
+      })
+  }, [closeComputerUse, computerUseOpen, loadComputerUseProject])
 
   const toggleTerminal = useCallback(() => {
     if (terminalOpen) {
@@ -1688,6 +2167,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setWorkflowsOpen(false)
     setUsageOpen(false)
     setAgentDockOpen(false)
+    setComputerUseOpen(false)
     setTerminalOpen(true)
   }, [terminalOpen])
   useEffect(() => {
@@ -1719,6 +2199,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setWorkflowsOpen(false)
     setUsageOpen(false)
     setAgentDockOpen(false)
+    setComputerUseOpen(false)
     setTerminalOpen(true)
   }, [])
 
@@ -3403,10 +3884,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
     _paneId: string,
     controls: RuntimeRunControlInputDto | null,
   ) => {
+    persistComposerSettings(controls)
     setAgentComposerControls((current) =>
       sameRuntimeRunControlInput(current, controls) ? current : controls,
     )
-  }, [])
+  }, [persistComposerSettings])
   const handleAgentStartRuntimeSession = useCallback(
     (
       _paneId: string,
@@ -3422,6 +3904,162 @@ export function XeroApp({ adapter }: XeroAppProps) {
     (_paneId: string) => logoutRuntimeSession(),
     [logoutRuntimeSession],
   )
+
+  const startComputerUseRuntimeRun = useCallback(
+    async (options?: {
+      controls?: RuntimeRunControlInputDto | null
+      prompt?: string | null
+      attachments?: StagedAgentAttachmentDto[]
+    }) => {
+      const isPromptSubmission =
+        Boolean(options?.prompt?.trim()) || Boolean(options?.attachments?.length)
+      if (!isPromptSubmission) {
+        setComputerUseRuntimeRunActionStatus('running')
+        setComputerUsePendingRuntimeRunAction('start')
+      }
+      setComputerUseRuntimeRunActionError(null)
+
+      try {
+        await loadComputerUseProject()
+        const response = await resolvedAdapter.startRuntimeRun(
+          GLOBAL_COMPUTER_USE_PROJECT_ID,
+          GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
+          {
+            initialControls: options?.controls ?? null,
+            initialPrompt: options?.prompt ?? null,
+            initialAttachments: options?.attachments ?? [],
+          },
+        )
+        const runtimeRun = mapRuntimeRun(response)
+        setComputerUseRuntimeRun(runtimeRun)
+        setComputerUseProject((current) => (current ? applyRuntimeRun(current, runtimeRun) : current))
+        return runtimeRun
+      } catch (error) {
+        setComputerUseRuntimeRunActionError(
+          getOperatorActionError(
+            error,
+            'Xero could not start the Computer Use run.',
+          ),
+        )
+        throw error
+      } finally {
+        if (!isPromptSubmission) {
+          setComputerUseRuntimeRunActionStatus('idle')
+          setComputerUsePendingRuntimeRunAction(null)
+        }
+      }
+    },
+    [loadComputerUseProject, resolvedAdapter],
+  )
+
+  const updateComputerUseRuntimeRunControls = useCallback(
+    async (request: {
+      controls?: RuntimeRunControlInputDto | null
+      prompt?: string | null
+      attachments?: StagedAgentAttachmentDto[]
+    } = {}) => {
+      const isPromptSubmission =
+        Boolean(request.prompt?.trim()) || Boolean(request.attachments?.length)
+      if (!isPromptSubmission) {
+        setComputerUseRuntimeRunActionStatus('running')
+        setComputerUsePendingRuntimeRunAction('update_controls')
+      }
+      setComputerUseRuntimeRunActionError(null)
+
+      try {
+        const runId =
+          computerUseRuntimeRun?.runId ??
+          (await refreshComputerUseRuntimeMetadata()).runtimeRun?.runId ??
+          null
+        if (!runId) {
+          throw new Error('Xero cannot queue Computer Use controls until a run exists.')
+        }
+        const response = await resolvedAdapter.updateRuntimeRunControls({
+          projectId: GLOBAL_COMPUTER_USE_PROJECT_ID,
+          agentSessionId: GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
+          runId,
+          controls: request.controls ?? null,
+          prompt: request.prompt ?? null,
+          attachments: request.attachments ?? [],
+        })
+        const runtimeRun = mapRuntimeRun(response)
+        setComputerUseRuntimeRun(runtimeRun)
+        setComputerUseProject((current) => (current ? applyRuntimeRun(current, runtimeRun) : current))
+        return runtimeRun
+      } catch (error) {
+        setComputerUseRuntimeRunActionError(
+          getOperatorActionError(
+            error,
+            'Xero could not queue Computer Use control changes.',
+          ),
+        )
+        throw error
+      } finally {
+        if (!isPromptSubmission) {
+          setComputerUseRuntimeRunActionStatus('idle')
+          setComputerUsePendingRuntimeRunAction(null)
+        }
+      }
+    },
+    [computerUseRuntimeRun?.runId, refreshComputerUseRuntimeMetadata, resolvedAdapter],
+  )
+
+  const startComputerUseRuntimeSession = useCallback(
+    async (options?: { providerProfileId?: string | null }) => {
+      const response = await resolvedAdapter.startRuntimeSession(
+        GLOBAL_COMPUTER_USE_PROJECT_ID,
+        options,
+      )
+      const runtimeSession = mapRuntimeSession(response)
+      setComputerUseRuntimeSession(runtimeSession)
+      setComputerUseProject((current) =>
+        current ? applyRuntimeSession(current, runtimeSession) : current,
+      )
+      return runtimeSession
+    },
+    [resolvedAdapter],
+  )
+
+  const stopComputerUseRuntimeRun = useCallback(
+    async (runId: string) => {
+      setComputerUseRuntimeRunActionStatus('running')
+      setComputerUsePendingRuntimeRunAction('stop')
+      setComputerUseRuntimeRunActionError(null)
+      try {
+        const response = await resolvedAdapter.stopRuntimeRun(
+          GLOBAL_COMPUTER_USE_PROJECT_ID,
+          GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
+          runId,
+        )
+        const runtimeRun = response ? mapRuntimeRun(response) : null
+        setComputerUseRuntimeRun(runtimeRun)
+        setComputerUseProject((current) =>
+          current ? applyRuntimeRun(current, runtimeRun) : current,
+        )
+        return runtimeRun
+      } catch (error) {
+        setComputerUseRuntimeRunActionError(
+          getOperatorActionError(error, 'Xero could not stop the Computer Use run.'),
+        )
+        throw error
+      } finally {
+        setComputerUseRuntimeRunActionStatus('idle')
+        setComputerUsePendingRuntimeRunAction(null)
+      }
+    },
+    [resolvedAdapter],
+  )
+
+  const logoutComputerUseRuntimeSession = useCallback(async () => {
+    const response = await resolvedAdapter.logoutRuntimeSession(GLOBAL_COMPUTER_USE_PROJECT_ID)
+    const runtimeSession = mapRuntimeSession(response)
+    setComputerUseRuntimeSession(runtimeSession)
+    setComputerUseProject((current) =>
+      current ? applyRuntimeSession(current, runtimeSession) : current,
+    )
+    return runtimeSession
+  }, [resolvedAdapter])
+
   const handleAgentResolveOperatorAction = useCallback(async (
     paneId: string,
     actionId: string,
@@ -3874,6 +4512,14 @@ export function XeroApp({ adapter }: XeroAppProps) {
     ? projects.find((project) => project.id === pendingProjectSelectionId)?.name ?? null
     : null
   const shellProjectName = pendingProjectSelectionName ?? activeProject?.name
+  const agentDockSurfaceOpen = agentDockOpen || computerUseOpen
+  const agentDockSurfaceAgent = computerUseOpen ? computerUseAgentView : agentView
+  const agentDockSurfaceSessions = computerUseOpen
+    ? (computerUseProjectForView?.agentSessions ?? [])
+    : (activeProject?.agentSessions ?? [])
+  const agentDockSurfaceSelectedSessionId = computerUseOpen
+    ? GLOBAL_COMPUTER_USE_AGENT_SESSION_ID
+    : (activeProject?.selectedAgentSessionId ?? null)
   const foregroundProjectLoad = isForegroundProjectLoad(refreshSource)
   const isBlockingProjectLoading =
     isProjectLoading &&
@@ -3950,6 +4596,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
         onToggleAgentDock={toggleAgentDock}
         agentDockOpen={agentDockOpen}
         agentDockDisabled={activeView === 'agent' || !activeProject}
+        onToggleComputerUse={toggleComputerUse}
+        computerUseOpen={computerUseOpen}
+        computerUseRunning={computerUseRunning}
         vcsChangeCount={repositoryStatus?.statusCount ?? 0}
         vcsAdditions={repositoryStatus?.additions ?? 0}
         vcsDeletions={repositoryStatus?.deletions ?? 0}
@@ -4026,6 +4675,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
           onToggleAgentDock={toggleAgentDock}
           agentDockOpen={agentDockOpen}
           agentDockDisabled={activeView === 'agent' || !activeProject}
+          onToggleComputerUse={toggleComputerUse}
+          computerUseOpen={computerUseOpen}
+          computerUseRunning={computerUseRunning}
           onToggleTerminal={toggleTerminal}
           terminalOpen={terminalOpen}
           projectRunning={false}
@@ -4202,28 +4854,28 @@ export function XeroApp({ adapter }: XeroAppProps) {
             </Suspense>
           </LazyPrerenderedSurface>
           <LazyPrerenderedSurface
-            open={agentDockOpen}
+            open={agentDockSurfaceOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
           >
             <Suspense
               fallback={
                 <InlineSidebarLoadingShell
-                  label="Agent"
-                  open={agentDockOpen}
+                  label={computerUseOpen ? "Computer Use" : "Agent"}
+                  open={agentDockSurfaceOpen}
                   width={readPersistedAgentDockWidth()}
                 />
               }
             >
               <LazyAgentDockSidebar
-                open={agentDockOpen}
-                agent={agentView}
+                open={agentDockSurfaceOpen}
+                agent={agentDockSurfaceAgent}
                 highChurnStore={highChurnStore}
-                sessions={activeProject?.agentSessions ?? []}
-                selectedSessionId={activeProject?.selectedAgentSessionId ?? null}
+                sessions={agentDockSurfaceSessions}
+                selectedSessionId={agentDockSurfaceSelectedSessionId}
                 isCreatingSession={isCreatingAgentSession}
-                onClose={() => setAgentDockOpen(false)}
-                onSelectSession={handleSelectAgentSession}
-                onCreateSession={handleCreateAgentSession}
+                onClose={computerUseOpen ? closeComputerUse : () => setAgentDockOpen(false)}
+                onSelectSession={computerUseOpen ? () => undefined : handleSelectAgentSession}
+                onCreateSession={computerUseOpen ? () => undefined : handleCreateAgentSession}
                 desktopAdapter={resolvedAdapter}
                 accountAvatarUrl={githubSession?.user.avatarUrl ?? null}
                 accountLogin={githubSession?.user.login ?? null}
@@ -4239,19 +4891,32 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onStartAutonomousRun={() => startAutonomousRun()}
                 onInspectAutonomousRun={() => inspectAutonomousRun()}
                 onCancelAutonomousRun={(runId) => cancelAutonomousRun(runId)}
-                onStartRuntimeRun={(options) => startRuntimeRun(options)}
-                onUpdateRuntimeRunControls={(request) => updateRuntimeRunControls(request)}
-                onComposerControlsChange={(controls) =>
-                  setAgentComposerControls((current) =>
-                    sameRuntimeRunControlInput(current, controls) ? current : controls,
-                  )
+                onStartRuntimeRun={
+                  computerUseOpen ? startComputerUseRuntimeRun : (options) => startRuntimeRun(options)
                 }
-                onStartRuntimeSession={(options) => startRuntimeSession(options)}
-                onStopRuntimeRun={(runId) => stopRuntimeRun(runId)}
+                onUpdateRuntimeRunControls={
+                  computerUseOpen
+                    ? updateComputerUseRuntimeRunControls
+                    : (request) => updateRuntimeRunControls(request)
+                }
+                onComposerControlsChange={(controls) => {
+                  persistComposerSettings(controls)
+                  if (!computerUseOpen) {
+                    setAgentComposerControls((current) =>
+                      sameRuntimeRunControlInput(current, controls) ? current : controls,
+                    )
+                  }
+                }}
+                onStartRuntimeSession={
+                  computerUseOpen ? startComputerUseRuntimeSession : (options) => startRuntimeSession(options)
+                }
+                onStopRuntimeRun={
+                  computerUseOpen ? stopComputerUseRuntimeRun : (runId) => stopRuntimeRun(runId)
+                }
                 onSubmitManualCallback={(flowId, manualInput) =>
                   submitOpenAiCallback(flowId, { manualInput })
                 }
-                onLogout={() => logoutRuntimeSession()}
+                onLogout={computerUseOpen ? logoutComputerUseRuntimeSession : () => logoutRuntimeSession()}
                 onResolveOperatorAction={async (actionId, decision, options) => {
                   const result = await resolveOperatorAction(actionId, decision, {
                     userAnswer: options?.userAnswer ?? null,
@@ -4267,10 +4932,14 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onCodeUndoApplied={handleAgentCodeUndoApplied}
                 onRetryStream={retry}
                 agentCreateCanvasIncluded={agentCreateCanvasIncluded}
-                pendingInitialRuntimeAgentId={pendingAgentDockRuntimeAgentId}
-                pendingInitialAgentDefinitionId={pendingAgentDockAgentDefinitionId}
+                pendingInitialRuntimeAgentId={
+                  computerUseOpen ? null : pendingAgentDockRuntimeAgentId
+                }
+                pendingInitialAgentDefinitionId={
+                  computerUseOpen ? null : pendingAgentDockAgentDefinitionId
+                }
                 onPendingInitialRuntimeAgentIdConsumed={() => {
-                  if (activeProject?.selectedAgentSessionId) {
+                  if (!computerUseOpen && activeProject?.selectedAgentSessionId) {
                     handleClearPendingInitialRuntimeAgent(activeProject.selectedAgentSessionId)
                   }
                 }}

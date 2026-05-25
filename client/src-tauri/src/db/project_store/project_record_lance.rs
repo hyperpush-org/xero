@@ -1161,6 +1161,7 @@ fn optional_embedding(
 fn parse_runtime_agent_id(value: &str) -> RuntimeAgentIdDto {
     match value {
         "plan" => RuntimeAgentIdDto::Plan,
+        "computer_use" => RuntimeAgentIdDto::ComputerUse,
         "engineer" => RuntimeAgentIdDto::Engineer,
         "debug" => RuntimeAgentIdDto::Debug,
         "crawl" => RuntimeAgentIdDto::Crawl,

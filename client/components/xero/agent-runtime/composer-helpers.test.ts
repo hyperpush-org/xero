@@ -49,6 +49,7 @@ describe('runtimeAgentIdForCustomBaseCapability', () => {
     expect(runtimeAgentIdForCustomBaseCapability('repository_recon')).toBe('crawl')
     expect(runtimeAgentIdForCustomBaseCapability('engineering')).toBe('engineer')
     expect(runtimeAgentIdForCustomBaseCapability('debugging')).toBe('debug')
+    expect(runtimeAgentIdForCustomBaseCapability('computer_use')).toBe('computer_use')
     expect(runtimeAgentIdForCustomBaseCapability('agent_builder')).toBe('agent_create')
   })
 })

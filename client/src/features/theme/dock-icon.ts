@@ -1,4 +1,4 @@
-import type { ThemeDefinition } from './theme-definitions'
+import type { ThemeDefinition } from '@xero/ui/theme'
 
 const DOCK_ICON_SIZE = 512
 const DOCK_ICON_TILE_INSET = 30

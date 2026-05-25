@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it, afterEach } from 'vitest'
-import { THEMES } from './theme-definitions'
+import { THEMES } from '@xero/ui/theme'
 
 const INDEX_HTML = readFileSync(resolve(process.cwd(), 'index.html'), 'utf8')
 const BOOT_SCRIPT = INDEX_HTML.match(/<script>\s*([\s\S]*?)\s*<\/script>/)?.[1]

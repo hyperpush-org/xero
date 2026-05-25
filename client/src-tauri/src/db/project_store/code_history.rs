@@ -5561,6 +5561,7 @@ mod tests {
                 title: "Sibling".into(),
                 summary: String::new(),
                 selected: false,
+                session_kind: crate::db::project_store::AgentSessionKind::Standard,
             },
         )
         .expect("create sibling session");

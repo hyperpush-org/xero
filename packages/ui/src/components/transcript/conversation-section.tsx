@@ -25,8 +25,10 @@ import {
   FileText,
   GitBranch,
   History,
+  ImageIcon,
   Info,
   Loader2,
+  Maximize2,
   MoreHorizontal,
   Terminal,
   Undo2,
@@ -56,6 +58,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '../ui/dialog'
 import type {
   CodeHistoryConflictDto,
   CodePatchAvailabilityDto,
@@ -67,6 +77,7 @@ import type {
   RuntimeStreamCompleteItemView,
   RuntimeStreamFailureItemView,
   RuntimeStreamIssueView,
+  RuntimeStreamMediaSourceDto,
   RuntimeStreamToolItemView,
 } from '../../model'
 
@@ -81,6 +92,12 @@ export interface ConversationMessageAttachment {
   mediaType: string
   originalName: string
   sizeBytes: number
+  title?: string | null
+  alt?: string | null
+  width?: number | null
+  height?: number | null
+  source?: RuntimeStreamMediaSourceDto
+  renderUrl?: string | null
   /** Webview-renderable URL (e.g. via convertFileSrc) for image previews. */
   previewSrc?: string
   /** Absolute path on disk; used for click-to-open behaviour. */
@@ -111,6 +128,7 @@ export type ConversationTurn =
       title: string
       detail: string
       detailRows: Array<{ label: string; value: string }>
+      mediaAttachments?: ConversationMessageAttachment[]
       state?: RuntimeStreamToolItemView['toolState'] | null
       defaultOpen?: boolean
     }
@@ -129,6 +147,7 @@ export type ConversationTurn =
         title: string
         detail: string
         detailRows: Array<{ label: string; value: string }>
+        mediaAttachments?: ConversationMessageAttachment[]
         state: RuntimeStreamToolItemView['toolState'] | null
         defaultOpen?: boolean
       }>
@@ -743,7 +762,12 @@ function ConversationTurnRow({
         accountLogin={accountLogin}
       />
     ) : (
-      <AssistantMessage messageId={turn.id} text={turn.text} isStreaming={isStreaming} />
+      <AssistantMessage
+        messageId={turn.id}
+        text={turn.text}
+        attachments={turn.attachments}
+        isStreaming={isStreaming}
+      />
     )
   }
 
@@ -878,6 +902,7 @@ function ConversationTurnRow({
         title={turn.title}
         detail={turn.detail}
         detailRows={turn.detailRows}
+        mediaAttachments={turn.mediaAttachments}
         state={turn.state ?? null}
         defaultOpen={turn.defaultOpen ?? false}
         connectsTop={connectsTop}
@@ -1475,6 +1500,7 @@ interface ActionCardProps {
   title: string
   detail: string
   detailRows: Array<{ label: string; value: string }>
+  mediaAttachments?: ConversationMessageAttachment[]
   state: RuntimeStreamToolItemView['toolState'] | null
   defaultOpen?: boolean
   connectsTop?: boolean
@@ -1485,12 +1511,13 @@ function ActionCard({
   title,
   detail,
   detailRows,
+  mediaAttachments,
   state,
   defaultOpen = false,
   connectsTop = false,
   connectsBottom = false,
 }: ActionCardProps) {
-  const hasDetails = detailRows.length > 0
+  const hasDetails = detailRows.length > 0 || Boolean(mediaAttachments?.length)
   const [open, setOpen] = useState(() => defaultOpen && hasDetails)
   const isFailed = state === 'failed'
   const isRunning = state === 'running'
@@ -1542,7 +1569,7 @@ function ActionCard({
             )}
           >
             <div className="ml-[22px] pl-3 pr-1 pb-1.5 pt-1">
-              <ToolDetailRows rows={detailRows} />
+              <ToolDetailRows rows={detailRows} mediaAttachments={mediaAttachments} />
             </div>
           </CollapsibleContent>
         ) : null}
@@ -1639,23 +1666,28 @@ function ToolChainConnectors({
 
 interface ToolDetailRowsProps {
   rows: Array<{ label: string; value: string }>
+  mediaAttachments?: ConversationMessageAttachment[]
 }
 
-function ToolDetailRows({ rows }: ToolDetailRowsProps) {
+function ToolDetailRows({ rows, mediaAttachments }: ToolDetailRowsProps) {
+  const hasMedia = Boolean(mediaAttachments?.length)
   const outputRow = rows.find((row) => /output/i.test(row.label))
   if (outputRow) {
     return (
-      <div className="group/output relative">
-        <pre
-          className={cn(
-            'm-0 max-h-[360px] overflow-auto whitespace-pre-wrap break-words rounded-md',
-            'bg-background/40 px-3 py-2.5 pr-9 font-mono text-[12px] leading-[1.6] text-foreground/85',
-            'scrollbar-thin',
-          )}
-        >
-          {outputRow.value}
-        </pre>
-        <ToolOutputCopyAffordance text={outputRow.value} label="Copy tool output" />
+      <div className="flex flex-col gap-2">
+        {hasMedia ? <ToolMediaAttachments attachments={mediaAttachments!} /> : null}
+        <div className="group/output relative">
+          <pre
+            className={cn(
+              'm-0 max-h-[360px] overflow-auto whitespace-pre-wrap break-words rounded-md',
+              'bg-background/40 px-3 py-2.5 pr-9 font-mono text-[12px] leading-[1.6] text-foreground/85',
+              'scrollbar-thin',
+            )}
+          >
+            {outputRow.value}
+          </pre>
+          <ToolOutputCopyAffordance text={outputRow.value} label="Copy tool output" />
+        </div>
       </div>
     )
   }
@@ -1664,28 +1696,123 @@ function ToolDetailRows({ rows }: ToolDetailRowsProps) {
     rows.find((row) => /result/i.test(row.label)) ??
     rows.find((row) => /input|outcome|cmd|command/i.test(row.label)) ??
     rows[0]
-  if (!fallback) return null
+  if (!fallback) {
+    return hasMedia ? <ToolMediaAttachments attachments={mediaAttachments!} /> : null
+  }
 
   const isCommandLike = /^[A-Za-z][\w./-]*\s/.test(fallback.value.trim())
   return (
-    <div className="group/output relative">
-      <div
-        className={cn(
-          'rounded-md bg-background/40 px-3 py-2 pr-9',
-          'whitespace-pre-wrap break-words font-mono text-[12px] leading-[1.6] text-foreground/80',
-        )}
-      >
-        {isCommandLike ? (
-          <span className="flex items-start gap-2">
-            <Terminal aria-hidden="true" className="mt-[2px] h-3 w-3 shrink-0 text-primary/75" />
-            <span className="min-w-0 flex-1">{fallback.value}</span>
-          </span>
-        ) : (
-          fallback.value
-        )}
+    <div className="flex flex-col gap-2">
+      {hasMedia ? <ToolMediaAttachments attachments={mediaAttachments!} /> : null}
+      <div className="group/output relative">
+        <div
+          className={cn(
+            'rounded-md bg-background/40 px-3 py-2 pr-9',
+            'whitespace-pre-wrap break-words font-mono text-[12px] leading-[1.6] text-foreground/80',
+          )}
+        >
+          {isCommandLike ? (
+            <span className="flex items-start gap-2">
+              <Terminal aria-hidden="true" className="mt-[2px] h-3 w-3 shrink-0 text-primary/75" />
+              <span className="min-w-0 flex-1">{fallback.value}</span>
+            </span>
+          ) : (
+            fallback.value
+          )}
+        </div>
+        <ToolOutputCopyAffordance text={fallback.value} label="Copy tool output" />
       </div>
-      <ToolOutputCopyAffordance text={fallback.value} label="Copy tool output" />
     </div>
+  )
+}
+
+function ToolMediaAttachments({ attachments }: { attachments: ConversationMessageAttachment[] }) {
+  if (attachments.length === 0) return null
+  return (
+    <div className="flex max-w-full flex-wrap gap-2">
+      {attachments.map((attachment) => (
+        <ImageAttachmentPreview
+          key={attachment.id}
+          attachment={attachment}
+          className="max-w-[260px]"
+        />
+      ))}
+    </div>
+  )
+}
+
+function attachmentPreviewSrc(attachment: ConversationMessageAttachment): string | undefined {
+  if (attachment.previewSrc) return attachment.previewSrc
+  if (attachment.renderUrl) return attachment.renderUrl
+  if (attachment.source?.kind === 'data_url') return attachment.source.dataUrl
+  return undefined
+}
+
+function attachmentDisplayName(attachment: ConversationMessageAttachment): string {
+  return attachment.title?.trim() || attachment.originalName
+}
+
+function ImageAttachmentPreview({
+  attachment,
+  className,
+}: {
+  attachment: ConversationMessageAttachment
+  className?: string
+}) {
+  const src = attachmentPreviewSrc(attachment)
+  const title = attachmentDisplayName(attachment)
+  const alt = attachment.alt?.trim() || title
+  const dimensions =
+    attachment.width && attachment.height ? `${attachment.width} x ${attachment.height}` : null
+
+  if (attachment.kind !== 'image' || !src) {
+    return <UserMessageAttachmentChip attachment={attachment} />
+  }
+
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            'group/image relative overflow-hidden rounded-md border border-border/50 bg-background text-left shadow-sm',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            className,
+          )}
+          title={title}
+          aria-label={`Open image preview for ${title}`}
+        >
+          <img
+            src={src}
+            alt={alt}
+            className="block max-h-44 w-auto max-w-full object-contain"
+            draggable={false}
+          />
+          <span
+            aria-hidden="true"
+            className="absolute right-1.5 top-1.5 inline-flex h-6 w-6 items-center justify-center rounded-md bg-background/80 text-muted-foreground opacity-0 shadow-sm ring-1 ring-border/50 backdrop-blur transition-opacity group-hover/image:opacity-100"
+          >
+            <Maximize2 className="h-3.5 w-3.5" />
+          </span>
+        </button>
+      </DialogTrigger>
+      <DialogContent className="max-w-[min(96vw,1100px)] gap-3 p-4 sm:max-w-[min(96vw,1100px)]">
+        <DialogHeader className="pr-8">
+          <DialogTitle className="truncate text-base">{title}</DialogTitle>
+          <DialogDescription>
+            {dimensions ?? attachment.mediaType}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex max-h-[78vh] items-center justify-center overflow-auto rounded-md bg-muted/20">
+          <img
+            src={src}
+            alt={alt}
+            className="max-h-[78vh] w-auto max-w-full object-contain"
+            draggable={false}
+          />
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -1975,6 +2102,7 @@ interface ActionGroupCardProps {
     title: string
     detail: string
     detailRows: Array<{ label: string; value: string }>
+    mediaAttachments?: ConversationMessageAttachment[]
     state: RuntimeStreamToolItemView['toolState'] | null
     defaultOpen?: boolean
   }>
@@ -2071,7 +2199,7 @@ function ActionGroupItem({
   index?: number
 }) {
   const [open, setOpen] = useState(false)
-  const hasDetails = action.detailRows.length > 0
+  const hasDetails = action.detailRows.length > 0 || Boolean(action.mediaAttachments?.length)
   const rowClass = cn(
     'flex w-full items-center gap-2 rounded-md py-0.5 text-left transition-colors',
     'hover:bg-foreground/[0.03]',
@@ -2116,7 +2244,10 @@ function ActionGroupItem({
             )}
           >
             <div className="ml-[20px] pb-1.5 pl-3 pr-1 pt-1">
-              <ToolDetailRows rows={action.detailRows} />
+              <ToolDetailRows
+                rows={action.detailRows}
+                mediaAttachments={action.mediaAttachments}
+              />
             </div>
           </CollapsibleContent>
         ) : null}
@@ -2297,20 +2428,8 @@ function useIsTouchDevice(): boolean {
 }
 
 function UserMessageAttachmentChip({ attachment }: { attachment: ConversationMessageAttachment }) {
-  if (attachment.kind === 'image' && attachment.previewSrc) {
-    return (
-      <div
-        className="overflow-hidden rounded-md border border-border/50 bg-background shadow-sm"
-        title={attachment.originalName}
-      >
-        <img
-          src={attachment.previewSrc}
-          alt={attachment.originalName}
-          className="block max-h-40 max-w-[260px] object-cover"
-          draggable={false}
-        />
-      </div>
-    )
+  if (attachment.kind === 'image' && attachmentPreviewSrc(attachment)) {
+    return <ImageAttachmentPreview attachment={attachment} className="max-w-[260px]" />
   }
   return (
     <div
@@ -2371,13 +2490,16 @@ function splitAssistantText(text: string): AssistantSegment[] {
 function AssistantMessage({
   messageId,
   text,
+  attachments,
   isStreaming,
 }: {
   messageId: string
   text: string
+  attachments?: ConversationMessageAttachment[]
   isStreaming: boolean
 }) {
   const segments = useMemo(() => splitAssistantText(text), [text])
+  const hasAttachments = Boolean(attachments?.length)
   const isTouch = useIsTouchDevice()
   const responseCopyText = useMemo(
     () =>
@@ -2412,6 +2534,7 @@ function AssistantMessage({
             />
           ),
         )}
+        {hasAttachments ? <ToolMediaAttachments attachments={attachments!} /> : null}
       </div>
       {responseCopyText.length > 0 ? (
         <div
@@ -2843,6 +2966,7 @@ function DenseTurnItem({
         title={turn.title}
         detail={turn.detail}
         detailRows={turn.detailRows}
+        mediaAttachments={turn.mediaAttachments}
         state={turn.state ?? null}
       />
     )
@@ -3121,12 +3245,13 @@ interface DenseActionItemProps {
   title: string
   detail: string
   detailRows: Array<{ label: string; value: string }>
+  mediaAttachments?: ConversationMessageAttachment[]
   state: RuntimeStreamToolItemView['toolState'] | null
 }
 
-function DenseActionItem({ title, detail, detailRows, state }: DenseActionItemProps) {
+function DenseActionItem({ title, detail, detailRows, mediaAttachments, state }: DenseActionItemProps) {
   const [open, setOpen] = useState(false)
-  const hasDetails = detailRows.length > 0 || detail.trim().length > 0
+  const hasDetails = detailRows.length > 0 || detail.trim().length > 0 || Boolean(mediaAttachments?.length)
 
   return (
     <li className="px-1">
@@ -3166,7 +3291,11 @@ function DenseActionItem({ title, detail, detailRows, state }: DenseActionItemPr
             'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-150',
           )}
         >
-          <DenseToolDetails detail={detail} detailRows={detailRows} />
+          <DenseToolDetails
+            detail={detail}
+            detailRows={detailRows}
+            mediaAttachments={mediaAttachments}
+          />
         </div>
       ) : null}
     </li>
@@ -3182,6 +3311,7 @@ interface DenseActionGroupItemProps {
     title: string
     detail: string
     detailRows: Array<{ label: string; value: string }>
+    mediaAttachments?: ConversationMessageAttachment[]
     state: RuntimeStreamToolItemView['toolState'] | null
   }>
 }
@@ -3234,6 +3364,7 @@ function DenseActionGroupItem({ title, detail, state, actions }: DenseActionGrou
               title={action.title}
               detail={action.detail}
               detailRows={action.detailRows}
+              mediaAttachments={action.mediaAttachments}
               state={action.state}
             />
           ))}
@@ -3246,11 +3377,14 @@ function DenseActionGroupItem({ title, detail, state, actions }: DenseActionGrou
 function DenseToolDetails({
   detail,
   detailRows,
+  mediaAttachments,
 }: {
   detail: string
   detailRows: Array<{ label: string; value: string }>
+  mediaAttachments?: ConversationMessageAttachment[]
 }) {
   const trimmedDetail = detail.trim()
+  const hasMedia = Boolean(mediaAttachments?.length)
   const outputRow = detailRows.find((row) => /output/i.test(row.label))
   const fallbackRow =
     outputRow ??
@@ -3259,10 +3393,24 @@ function DenseToolDetails({
     detailRows[0] ??
     null
 
-  if (!fallbackRow && trimmedDetail.length === 0) return null
+  if (!fallbackRow && trimmedDetail.length === 0 && !hasMedia) return null
 
   return (
     <div className="flex flex-col gap-1.5 text-[11.5px]">
+      {hasMedia ? (
+        <ul className="flex flex-wrap gap-1 text-[11px] text-muted-foreground/80">
+          {mediaAttachments!.map((attachment) => (
+            <li
+              key={attachment.id}
+              className="inline-flex max-w-[220px] items-center gap-1 rounded-sm border border-border/40 bg-muted/20 px-1.5 py-0.5"
+              title={attachmentDisplayName(attachment)}
+            >
+              <ImageIcon className="h-3 w-3 shrink-0" aria-hidden="true" />
+              <span className="truncate">{attachmentDisplayName(attachment)}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {trimmedDetail.length > 0 ? (
         <p className="m-0 whitespace-pre-wrap break-words text-muted-foreground/85">
           {trimmedDetail}

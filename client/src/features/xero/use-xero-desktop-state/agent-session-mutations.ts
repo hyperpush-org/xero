@@ -6,7 +6,12 @@ import type {
 } from './mutation-support'
 import { getActiveProjectId } from './mutation-support'
 import { XeroDesktopError } from '@/src/lib/xero-desktop'
-import { mapAgentSession, type AgentSessionView } from '@/src/lib/xero-model'
+import {
+  mapAgentSession,
+  type AgentSessionKindDto,
+  type AgentSessionView,
+  type RuntimeAgentIdDto,
+} from '@/src/lib/xero-model'
 
 const DEFAULT_AGENT_SESSION_TITLE = 'New Chat'
 
@@ -72,18 +77,33 @@ export function useAgentSessionMutations({
   )
 
   const createAgentSession = useCallback(
-    async (options: { title?: string | null; summary?: string | null } = {}) => {
+    async (
+      options: {
+        title?: string | null
+        summary?: string | null
+        sessionKind?: AgentSessionKindDto
+        runtimeAgentId?: RuntimeAgentIdDto | null
+      } = {},
+    ) => {
       const projectId = getActiveProjectId(
         activeProjectIdRef,
         'Select an imported project before creating an agent session.',
       )
 
-      const response = await adapter.createAgentSession({
+      const request = {
         projectId,
         title: options.title ?? null,
         summary: options.summary ?? undefined,
         selected: true,
-      })
+      }
+      if (options.sessionKind) {
+        Object.assign(request, { sessionKind: options.sessionKind })
+      }
+      if (options.runtimeAgentId !== undefined) {
+        Object.assign(request, { runtimeAgentId: options.runtimeAgentId })
+      }
+
+      const response = await adapter.createAgentSession(request)
 
       if (activeProjectIdRef.current === projectId) {
         const currentProject = activeProjectRef.current

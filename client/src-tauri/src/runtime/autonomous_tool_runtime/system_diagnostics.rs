@@ -2610,13 +2610,9 @@ mod macos_accessibility {
             redacted: false,
             diagnostics: Vec::new(),
             include_children: request.include_children,
-            max_depth: request.max_depth.unwrap_or({
-                if request.include_children {
-                    2
-                } else {
-                    0
-                }
-            }),
+            max_depth: request
+                .max_depth
+                .unwrap_or(if request.include_children { 2 } else { 0 }),
             attributes,
         };
 

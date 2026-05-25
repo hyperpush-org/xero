@@ -509,7 +509,7 @@ fn persist_import_rows(
                 selected,
                 updated_at
             )
-            VALUES (?1, 'agent-session-main', 'Main', '', 'active', 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            VALUES (?1, ?2, ?3, '', 'active', 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
             ON CONFLICT(project_id, agent_session_id) DO UPDATE SET
                 selected = CASE
                     WHEN agent_sessions.status = 'active' THEN 1
@@ -520,7 +520,11 @@ fn persist_import_rows(
                     ELSE agent_sessions.updated_at
                 END
             "#,
-            params![repository.project_id],
+            params![
+                repository.project_id,
+                project_store::DEFAULT_AGENT_SESSION_ID,
+                project_store::DEFAULT_AGENT_SESSION_TITLE
+            ],
         )
         .map_err(|error| {
             CommandError::system_fault(
@@ -641,7 +645,7 @@ fn database_path_for_registered_repo(repo_root: &Path) -> Option<PathBuf> {
     Some(database_path)
 }
 
-fn register_project_database_path(repo_root: &Path, database_path: &Path) {
+pub(crate) fn register_project_database_path(repo_root: &Path, database_path: &Path) {
     let normalized_repo_root = normalize_repo_root(repo_root);
     THREAD_PROJECT_DATABASE_PATH_CONFIG.with(|thread_config| {
         thread_config
@@ -774,6 +778,31 @@ mod tests {
             RuntimeAgentIdDto::Crawl,
         )
         .expect("crawl allowed for brownfield");
+    }
+
+    #[test]
+    fn import_project_seeds_default_agent_session_as_new_chat() {
+        let tempdir = tempdir().expect("tempdir");
+        let repo_root = tempdir.path().join("default-session-repo");
+        fs::create_dir_all(&repo_root).expect("repo root");
+        configure_project_database_paths(&tempdir.path().join("global").join("state.db"));
+
+        let repository = canonical_repository(&repo_root, "project_default_session");
+        let record =
+            import_project(&repository, &ImportFailpoints::default()).expect("import project");
+
+        let sessions = project_store::list_agent_sessions(&repo_root, &record.project.id, false)
+            .expect("list agent sessions");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions[0].agent_session_id,
+            project_store::DEFAULT_AGENT_SESSION_ID
+        );
+        assert_eq!(
+            sessions[0].title,
+            project_store::DEFAULT_AGENT_SESSION_TITLE
+        );
+        assert!(sessions[0].selected);
     }
 
     #[test]

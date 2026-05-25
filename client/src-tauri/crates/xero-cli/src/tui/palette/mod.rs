@@ -210,7 +210,7 @@ impl Category {
 pub(crate) fn category_for(id: &str) -> Category {
     let root = id.split_whitespace().next().unwrap_or("");
     match root {
-        "sessions" | "new" | "session" | "conversation" => Category::Session,
+        "sessions" | "new" | "computer" | "session" | "conversation" => Category::Session,
         "register" | "project" | "project-state" => Category::Project,
         "files" | "file" | "workspace" => Category::Workspace,
         "git" | "commit-message" => Category::Git,
@@ -233,6 +233,7 @@ pub(crate) fn category_for(id: &str) -> Category {
 const ESSENTIALS: &[&str] = &[
     "sessions",
     "new",
+    "computer",
     "model",
     "providers",
     "files",
@@ -280,6 +281,12 @@ static COMMANDS: &[Command] = &[
         title: "new",
         hint: "new session",
         action: CommandAction::Open(new::open),
+    },
+    Command {
+        id: "computer",
+        title: "computer",
+        hint: "open global Computer Use",
+        action: CommandAction::Open(new::open_computer_use),
     },
     Command {
         id: "files",
@@ -2477,6 +2484,7 @@ mod tests {
         for expected in [
             "sessions",
             "new",
+            "computer",
             "files",
             "git",
             "processes",

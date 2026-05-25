@@ -14,7 +14,7 @@ import {
   isCustomThemeId,
   normalizeHexColor,
   pickEditableColors,
-} from "@/src/features/theme/theme-definitions"
+} from "@xero/ui/theme"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"

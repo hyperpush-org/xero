@@ -14,6 +14,7 @@ import { type ReactNode, useCallback, useState } from "react";
 import type { CloudSession } from "#/lib/auth/session";
 import type {
 	RemoteProjectSummary,
+	SessionKind,
 	VisibleSessionSummary,
 } from "#/lib/relay/session-store";
 
@@ -27,7 +28,10 @@ interface SessionDrawerProps {
 	open?: boolean;
 	onOpenChange?: (open: boolean) => void;
 	onSelectSession: (computerId: string, sessionId: string) => void;
-	onSelectProject?: (project: RemoteProjectSummary) => void;
+	onSelectProject?: (
+		project: RemoteProjectSummary,
+		options?: { sessionKind?: SessionKind },
+	) => void;
 	onArchiveSession?: (
 		summary: VisibleSessionSummary,
 	) => boolean | Promise<boolean>;
@@ -60,8 +64,15 @@ export function SessionDrawer({
 		[onOpenChange],
 	);
 	const handleSelectProject = useCallback(
-		(project: RemoteProjectSummary) => {
-			onSelectProject?.(project);
+		(
+			project: RemoteProjectSummary,
+			options?: { sessionKind?: SessionKind },
+		) => {
+			if (options) {
+				onSelectProject?.(project, options);
+			} else {
+				onSelectProject?.(project);
+			}
 			setIsOpen(false);
 		},
 		[onSelectProject, setIsOpen],

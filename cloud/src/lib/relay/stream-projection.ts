@@ -1,5 +1,11 @@
-import type { ConversationTurn } from "@xero/ui/components/transcript/conversation-section";
-import type { RuntimeStreamItemDto } from "@xero/ui/model/runtime-stream";
+import type {
+	ConversationMessageAttachment,
+	ConversationTurn,
+} from "@xero/ui/components/transcript/conversation-section";
+import type {
+	RuntimeStreamItemDto,
+	RuntimeStreamMediaAttachmentDto,
+} from "@xero/ui/model/runtime-stream";
 
 const REMOTE_SESSION_SNAPSHOT_SCHEMA = "xero.remote_session_snapshot.v1";
 const REMOTE_RUNTIME_EVENT_SCHEMA = "xero.remote_runtime_event.v1";
@@ -505,6 +511,11 @@ function remoteToolEventToTurn(
 		title: toolTitle(toolName),
 		detail: remoteToolDetail(payload, toolName, state),
 		detailRows: remoteToolDetailRows(payload),
+		mediaAttachments: runtimeMediaAttachmentsToConversation(
+			arrayField(payload, "mediaAttachments", "media_attachments") as
+				| RuntimeStreamMediaAttachmentDto[]
+				| undefined,
+		),
 		state,
 		...(isCodeEditToolName(toolName) ? { defaultOpen: true } : {}),
 	};
@@ -647,7 +658,9 @@ function isLiveAgentRunStatus(status: string | null): boolean {
 }
 
 function mapTranscript(item: RuntimeStreamItemDto): ConversationTurn | null {
-	if (!item.text || !item.transcriptRole) return null;
+	if ((!item.text && !item.mediaAttachments?.length) || !item.transcriptRole) {
+		return null;
+	}
 	const role = item.transcriptRole;
 	if (role !== "user" && role !== "assistant") return null;
 	return {
@@ -655,7 +668,8 @@ function mapTranscript(item: RuntimeStreamItemDto): ConversationTurn | null {
 		kind: "message",
 		role,
 		sequence: item.sequence,
-		text: item.text,
+		text: item.text ?? "",
+		attachments: runtimeMediaAttachmentsToConversation(item.mediaAttachments),
 	};
 }
 
@@ -670,6 +684,9 @@ function mapTool(item: RuntimeStreamItemDto): ConversationTurn | null {
 		title: toolTitle(item.toolName),
 		detail: item.detail ?? item.text ?? "Tool activity recorded.",
 		detailRows: runtimeToolDetailRows(item),
+		mediaAttachments: runtimeMediaAttachmentsToConversation(
+			item.mediaAttachments,
+		),
 		state: item.toolState ?? null,
 		...(isCodeEditToolName(item.toolName) ? { defaultOpen: true } : {}),
 	};
@@ -777,6 +794,10 @@ function appendProjectedTurn(
 		previous.role === "assistant"
 	) {
 		previous.text = `${previous.text}${turn.text}`;
+		previous.attachments = mergeConversationAttachments(
+			previous.attachments,
+			turn.attachments,
+		);
 		previous.sequence = turn.sequence;
 		return;
 	}
@@ -825,6 +846,9 @@ function expandActionGroups(
 				title: action.title,
 				detail: action.detail,
 				detailRows: cloneActionRows(action.detailRows),
+				mediaAttachments: action.mediaAttachments?.map((attachment) => ({
+					...attachment,
+				})),
 				state: action.state,
 				...(action.defaultOpen ? { defaultOpen: true } : {}),
 			})),
@@ -847,6 +871,9 @@ function cloneConversationTurn(turn: ConversationTurn): ConversationTurn {
 		return {
 			...turn,
 			detailRows: cloneActionRows(turn.detailRows),
+			mediaAttachments: turn.mediaAttachments?.map((attachment) => ({
+				...attachment,
+			})),
 		};
 	}
 	if (turn.kind === "action_group") {
@@ -855,6 +882,9 @@ function cloneConversationTurn(turn: ConversationTurn): ConversationTurn {
 			actions: turn.actions.map((action) => ({
 				...action,
 				detailRows: cloneActionRows(action.detailRows),
+				mediaAttachments: action.mediaAttachments?.map((attachment) => ({
+					...attachment,
+				})),
 			})),
 		};
 	}
@@ -880,6 +910,10 @@ function mergeActionTurn(existing: ActionTurn, incoming: ActionTurn): void {
 		existing.detailRows,
 		incoming.detailRows,
 	);
+	existing.mediaAttachments = mergeConversationAttachments(
+		existing.mediaAttachments,
+		incoming.mediaAttachments,
+	);
 	existing.state = incoming.state ?? existing.state;
 	existing.defaultOpen = incoming.defaultOpen ?? existing.defaultOpen;
 }
@@ -895,6 +929,22 @@ function mergeActionRows(
 		if (seen.has(key)) continue;
 		seen.add(key);
 		merged.push(row);
+	}
+	return merged;
+}
+
+function mergeConversationAttachments(
+	existing: ConversationMessageAttachment[] | undefined,
+	incoming: ConversationMessageAttachment[] | undefined,
+): ConversationMessageAttachment[] | undefined {
+	if (!existing?.length) return incoming;
+	if (!incoming?.length) return existing;
+	const merged = existing.map((attachment) => ({ ...attachment }));
+	const seen = new Set(merged.map((attachment) => attachment.id));
+	for (const attachment of incoming) {
+		if (seen.has(attachment.id)) continue;
+		seen.add(attachment.id);
+		merged.push({ ...attachment });
 	}
 	return merged;
 }
@@ -950,6 +1000,9 @@ function actionGroupTurnFromActions(actions: ActionTurn[]): ConversationTurn {
 			title: action.title,
 			detail: action.detail,
 			detailRows: cloneActionRows(action.detailRows),
+			mediaAttachments: action.mediaAttachments?.map((attachment) => ({
+				...attachment,
+			})),
 			state: action.state ?? null,
 			...(action.defaultOpen ? { defaultOpen: true } : {}),
 		})),
@@ -1036,6 +1089,10 @@ function remoteToolDetailRows(
 	const rows: ActionTurn["detailRows"] = [];
 	const input = payloadValuePreview(payload, "input");
 	if (input) rows.push({ label: "Input", value: input });
+	const hasMedia = Boolean(
+		arrayField(payload, "mediaAttachments", "media_attachments")?.length,
+	);
+	if (hasMedia) return rows;
 	const output =
 		payloadValuePreview(payload, "output") ??
 		payloadValuePreview(payload, "result") ??
@@ -1055,10 +1112,49 @@ function runtimeToolDetailRows(
 			value: item.detail,
 		});
 	}
-	if (item.toolResultPreview) {
+	if (!item.mediaAttachments?.length && item.toolResultPreview) {
 		rows.push({ label: "Output", value: item.toolResultPreview });
 	}
 	return rows;
+}
+
+function runtimeMediaAttachmentsToConversation(
+	attachments: readonly RuntimeStreamMediaAttachmentDto[] | null | undefined,
+): ConversationMessageAttachment[] | undefined {
+	if (!attachments?.length) return undefined;
+	return attachments.map((attachment) => {
+		const originalName =
+			attachment.title?.trim() ||
+			(attachment.source.kind === "app_data_path"
+				? attachment.source.absolutePath.split(/[\\/]/).pop()
+				: null) ||
+			attachment.id;
+		const absolutePath =
+			attachment.source.kind === "app_data_path"
+				? attachment.source.absolutePath
+				: attachment.source.kind === "artifact"
+					? (attachment.source.absolutePath ?? undefined)
+					: undefined;
+		return {
+			id: attachment.id,
+			kind: attachment.kind,
+			mediaType: attachment.mediaType,
+			originalName,
+			sizeBytes: attachment.sizeBytes ?? 0,
+			title: attachment.title ?? null,
+			alt: attachment.alt ?? null,
+			width: attachment.width ?? null,
+			height: attachment.height ?? null,
+			source: attachment.source,
+			renderUrl: attachment.renderUrl ?? null,
+			previewSrc:
+				attachment.renderUrl ??
+				(attachment.source.kind === "data_url"
+					? attachment.source.dataUrl
+					: undefined),
+			absolutePath,
+		};
+	});
 }
 
 function remoteCommandOutputDetail(payload: Record<string, unknown>): string {
@@ -1220,6 +1316,18 @@ function arrayStringField(
 		(item): item is string => typeof item === "string",
 	);
 	return strings.length > 0 ? strings : null;
+}
+
+function arrayField(
+	value: Record<string, unknown> | undefined | null,
+	...keys: string[]
+): unknown[] | null {
+	if (!value) return null;
+	for (const key of keys) {
+		const candidate = value[key];
+		if (Array.isArray(candidate)) return candidate;
+	}
+	return null;
 }
 
 function booleanField(

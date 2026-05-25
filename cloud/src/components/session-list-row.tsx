@@ -1,6 +1,6 @@
 import { Button } from "@xero/ui/components/ui/button";
 import { cn } from "@xero/ui/lib/utils";
-import { Archive, Loader2 } from "lucide-react";
+import { Archive, Loader2, Monitor } from "lucide-react";
 import { type FocusEvent, useEffect, useRef, useState } from "react";
 
 import type { VisibleSessionSummary } from "#/lib/relay/session-store";
@@ -57,16 +57,21 @@ export function SessionListRow({
 
 	const titleBlock = (
 		<div className="flex min-w-0 flex-1 flex-col">
-			<span
-				className={cn(
-					"truncate leading-tight",
-					compact ? "text-[12.5px]" : "text-[13px]",
-					isActive
-						? "font-medium text-foreground"
-						: "font-normal text-foreground/90",
-				)}
-			>
-				{title}
+			<span className="flex min-w-0 items-center gap-1.5">
+				{summary.isComputerUse ? (
+					<Monitor className="size-3.5 shrink-0 text-primary" />
+				) : null}
+				<span
+					className={cn(
+						"truncate leading-tight",
+						compact ? "text-[12.5px]" : "text-[13px]",
+						isActive
+							? "font-medium text-foreground"
+							: "font-normal text-foreground/90",
+					)}
+				>
+					{title}
+				</span>
 			</span>
 			{projectLabel || timeLabel ? (
 				<span className="mt-1 flex items-center gap-1.5 truncate text-[11px] leading-tight text-muted-foreground/75">
@@ -93,14 +98,8 @@ export function SessionListRow({
 	const container = cn(
 		"group relative flex items-center transition-colors",
 		compact
-			? cn(
-					"mx-2 rounded-md",
-					isActive ? "bg-accent/50" : "hover:bg-accent/30",
-				)
-			: cn(
-					"w-full",
-					isActive ? "bg-primary/[0.07]" : "hover:bg-accent/40",
-				),
+			? cn("mx-2 rounded-md", isActive ? "bg-accent/50" : "hover:bg-accent/30")
+			: cn("w-full", isActive ? "bg-primary/[0.07]" : "hover:bg-accent/40"),
 	);
 	const selectButtonClassName = cn(
 		"flex min-w-0 flex-1 items-center text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60 disabled:cursor-not-allowed disabled:opacity-60",

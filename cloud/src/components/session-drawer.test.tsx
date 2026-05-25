@@ -65,8 +65,11 @@ describe("SessionDrawer", () => {
 					{
 						computerId: "desktop-1",
 						sessionId: "agent-session-1",
+						agentSessionId: "agent-session-1",
 						projectId: "project-1",
 						projectName: "Clipstack",
+						sessionKind: "standard",
+						isComputerUse: false,
 						title: "Project Overview",
 						lastActivityAt: "2026-05-17T07:00:00Z",
 						computerName: "Xero TUI",
@@ -112,8 +115,11 @@ describe("SessionDrawer", () => {
 					{
 						computerId: "desktop-1",
 						sessionId: "agent-session-a",
+						agentSessionId: "agent-session-a",
 						projectId: "project-1",
 						projectName: "Clipstack",
+						sessionKind: "standard",
+						isComputerUse: false,
 						title: "Project Overview",
 						lastActivityAt: "2026-05-17T07:00:00Z",
 						computerName: "Xero TUI",
@@ -122,8 +128,11 @@ describe("SessionDrawer", () => {
 					{
 						computerId: "desktop-1",
 						sessionId: "agent-session-b",
+						agentSessionId: "agent-session-b",
 						projectId: "project-1",
 						projectName: "Clipstack",
+						sessionKind: "standard",
+						isComputerUse: false,
 						title: "Refactor auth",
 						lastActivityAt: "2026-05-17T06:30:00Z",
 						computerName: "Xero TUI",
@@ -132,8 +141,11 @@ describe("SessionDrawer", () => {
 					{
 						computerId: "desktop-1",
 						sessionId: "agent-session-c",
+						agentSessionId: "agent-session-c",
 						projectId: "project-2",
 						projectName: "Mesh Lang",
+						sessionKind: "standard",
+						isComputerUse: false,
 						title: "Parse spec",
 						lastActivityAt: "2026-05-17T05:00:00Z",
 						computerName: "Xero TUI",
@@ -182,8 +194,11 @@ describe("SessionDrawer", () => {
 					{
 						computerId: "desktop-1",
 						sessionId: "agent-session-a",
+						agentSessionId: "agent-session-a",
 						projectId: "project-1",
 						projectName: "Clipstack",
+						sessionKind: "standard",
+						isComputerUse: false,
 						title: "Project Overview",
 						lastActivityAt: "2026-05-17T07:00:00Z",
 						computerName: "Xero TUI",
@@ -220,8 +235,11 @@ describe("SessionDrawer", () => {
 					{
 						computerId: "desktop-1",
 						sessionId: "agent-session-3",
+						agentSessionId: "agent-session-3",
 						projectId: "project-1",
 						projectName: "Clipstack",
+						sessionKind: "standard",
+						isComputerUse: false,
 						title: "Project Overview",
 						lastActivityAt: "2026-05-17T07:00:00Z",
 						computerName: "Xero TUI",
@@ -262,8 +280,11 @@ describe("SessionDrawer", () => {
 					{
 						computerId: "desktop-1",
 						sessionId: "agent-session-2",
+						agentSessionId: "agent-session-2",
 						projectId: "project-1",
 						projectName: "Clipstack",
+						sessionKind: "standard",
+						isComputerUse: false,
 						title: "New Chat",
 						lastActivityAt: "2026-05-17T07:00:00Z",
 						computerName: "Xero TUI",
@@ -322,9 +343,9 @@ describe("SessionDrawer", () => {
 			await screen.findByRole("heading", { name: "New session" }),
 		).toBeTruthy();
 		expect(
-			document.querySelector(".cloud-session-drawer-content")?.getAttribute(
-				"data-state",
-			),
+			document
+				.querySelector(".cloud-session-drawer-content")
+				?.getAttribute("data-state"),
 		).toBe("open");
 
 		fireEvent.click(screen.getByRole("button", { name: "Mesh Lang" }));

@@ -9,16 +9,17 @@ use std::{
 use serde::Serialize;
 use tauri::{
     ipc::{Channel, JavaScriptChannelId},
-    AppHandle, Runtime, State, Webview,
+    AppHandle, Manager, Runtime, State, Webview,
 };
 
 use crate::{
+    commands::runtime_media::{extract_runtime_media_attachments, RuntimeMediaExtractionRequest},
     commands::{
         validate_non_empty, BrowserComputerUseActionStatusDto, BrowserComputerUseSurfaceDto,
         BrowserComputerUseToolResultSummaryDto, CodePatchAvailabilityDto, CommandError,
         CommandResult, CommandToolResultSummaryDto, FileToolResultSummaryDto,
         GitToolResultScopeDto, GitToolResultSummaryDto, McpCapabilityKindDto,
-        McpCapabilityToolResultSummaryDto, RuntimeActionAnswerShape,
+        McpCapabilityToolResultSummaryDto, ProjectAssetState, RuntimeActionAnswerShape,
         RuntimeActionRequiredOptionDto, RuntimeStreamIssueDto, RuntimeStreamItemDto,
         RuntimeStreamItemKind, RuntimeStreamPatchDto, RuntimeStreamPlanItemDto,
         RuntimeStreamPlanItemStatus, RuntimeStreamTranscriptRole, RuntimeStreamViewSnapshotDto,
@@ -593,6 +594,7 @@ pub async fn subscribe_runtime_stream<R: Runtime + 'static>(
 
     let item_kinds = parse_requested_item_kinds(&request.item_kinds)?;
     let channel = resolve_channel(&webview, request.channel.as_deref())?;
+    let asset_state = app.state::<ProjectAssetState>().inner().clone();
     let state = state.inner().clone();
 
     tauri::async_runtime::spawn_blocking(move || {
@@ -607,7 +609,14 @@ pub async fn subscribe_runtime_stream<R: Runtime + 'static>(
                     )
                 })?;
 
-        subscribe_owned_runtime_stream(&repo_root, &request, runtime_run, item_kinds, channel)
+        subscribe_owned_runtime_stream(
+            &repo_root,
+            &request,
+            runtime_run,
+            item_kinds,
+            channel,
+            asset_state,
+        )
     })
     .await
     .map_err(|error| {
@@ -664,6 +673,7 @@ fn subscribe_owned_runtime_stream(
     runtime_run: RuntimeRunSnapshotRecord,
     item_kinds: Vec<RuntimeStreamItemKind>,
     channel: Channel<serde_json::Value>,
+    asset_state: ProjectAssetState,
 ) -> CommandResult<SubscribeRuntimeStreamResponseDto> {
     let run_id = runtime_run.run.run_id.clone();
     let runtime_kind = runtime_run.run.runtime_kind.clone();
@@ -692,6 +702,7 @@ fn subscribe_owned_runtime_stream(
         &mut projection,
         request.after_sequence,
         request.replay_limit,
+        &asset_state,
     )?;
 
     if !terminal && !runtime_terminal {
@@ -699,8 +710,11 @@ fn subscribe_owned_runtime_stream(
         let project_id = request.project_id.clone();
         let run_id_for_thread = run_id.clone();
         let session_id_for_thread = session_id.clone();
+        let repo_root_for_thread = repo_root.to_path_buf();
+        let asset_state_for_thread = asset_state.clone();
         thread::spawn(move || {
             stream_live_owned_agent_events(
+                repo_root_for_thread,
                 subscription,
                 channel,
                 project_id,
@@ -709,6 +723,7 @@ fn subscribe_owned_runtime_stream(
                 requested_item_kinds,
                 projection,
                 last_event_id,
+                asset_state_for_thread,
             );
         });
     }
@@ -738,6 +753,7 @@ fn replay_owned_agent_events(
     projection: &mut RuntimeStreamProjection,
     after_sequence: Option<u64>,
     replay_limit: Option<u16>,
+    asset_state: &ProjectAssetState,
 ) -> CommandResult<(i64, bool)> {
     let started = Instant::now();
     let run = match project_store::load_agent_run_record(repo_root, project_id, run_id) {
@@ -769,12 +785,15 @@ fn replay_owned_agent_events(
     )?;
     let replayed_count = events.len();
     let replay_projection = project_owned_agent_replay_events(
+        repo_root,
+        project_id,
         events,
         session_id,
         item_kinds,
         projection,
         after_sequence,
         after_event_id,
+        asset_state,
     );
     let projected_count = replay_projection.projected_count;
     let last_event_id = replay_projection.last_event_id;
@@ -798,12 +817,15 @@ struct OwnedAgentReplayProjectionResult {
 }
 
 fn project_owned_agent_replay_events(
+    repo_root: &Path,
+    project_id: &str,
     events: Vec<AgentEventRecord>,
     session_id: &str,
     item_kinds: &[RuntimeStreamItemKind],
     projection: &mut RuntimeStreamProjection,
     after_sequence: Option<u64>,
     after_event_id: i64,
+    asset_state: &ProjectAssetState,
 ) -> OwnedAgentReplayProjectionResult {
     let mut last_event_id = after_event_id;
     let mut projected_count = 0;
@@ -813,7 +835,14 @@ fn project_owned_agent_replay_events(
 
     for event in events {
         last_event_id = last_event_id.max(event.id);
-        let Some(item) = owned_agent_event_runtime_item(event, session_id, None) else {
+        let Some(item) = owned_agent_event_runtime_item_with_media(
+            repo_root,
+            project_id,
+            event,
+            session_id,
+            None,
+            Some(asset_state),
+        ) else {
             continue;
         };
         if !should_emit_owned_runtime_item(item_kinds, &item.kind) {
@@ -877,6 +906,7 @@ fn load_owned_agent_replay_events(
 
 #[allow(clippy::too_many_arguments)]
 fn stream_live_owned_agent_events(
+    repo_root: std::path::PathBuf,
     subscription: AgentEventSubscription,
     channel: Channel<serde_json::Value>,
     project_id: String,
@@ -885,6 +915,7 @@ fn stream_live_owned_agent_events(
     item_kinds: Vec<RuntimeStreamItemKind>,
     mut projection: RuntimeStreamProjection,
     mut last_event_id: i64,
+    asset_state: ProjectAssetState,
 ) {
     const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
     loop {
@@ -903,7 +934,14 @@ fn stream_live_owned_agent_events(
                 | AgentRunEventKind::RunFailed
         );
         last_event_id = event.id;
-        if let Some(item) = owned_agent_event_runtime_item(event, &session_id, None) {
+        if let Some(item) = owned_agent_event_runtime_item_with_media(
+            &repo_root,
+            &project_id,
+            event,
+            &session_id,
+            None,
+            Some(&asset_state),
+        ) {
             if should_emit_owned_runtime_item(&item_kinds, &item.kind) {
                 let live_item = projection.apply_item_to_projection(item);
                 if send_runtime_stream_item(&channel, live_item).is_err() {
@@ -1128,6 +1166,48 @@ fn truncate_optional_runtime_text(value: &mut Option<String>, max_chars: usize) 
     }
 }
 
+fn owned_agent_event_runtime_item_with_media(
+    repo_root: &Path,
+    project_id: &str,
+    event: AgentEventRecord,
+    session_id: &str,
+    flow_id: Option<String>,
+    asset_state: Option<&ProjectAssetState>,
+) -> Option<RuntimeStreamItemDto> {
+    let event_kind = event.event_kind.clone();
+    let payload = serde_json::from_str::<serde_json::Value>(&event.payload_json).ok();
+    let mut item = owned_agent_event_runtime_item(event, session_id, flow_id)?;
+    if !matches!(event_kind, AgentRunEventKind::ToolCompleted) {
+        return Some(item);
+    }
+    if !matches!(item.tool_state, Some(RuntimeToolCallState::Succeeded)) {
+        return Some(item);
+    }
+    let Some(payload) = payload else {
+        return Some(item);
+    };
+    let Some(output) = payload.get("output") else {
+        return Some(item);
+    };
+
+    let media_attachments = extract_runtime_media_attachments(RuntimeMediaExtractionRequest {
+        repo_root,
+        project_id,
+        run_id: &item.run_id,
+        event_id: item.sequence as i64,
+        tool_call_id: item.tool_call_id.as_deref(),
+        tool_name: item.tool_name.as_deref(),
+        output,
+        asset_state,
+        remote_context: None,
+    });
+    if !media_attachments.is_empty() {
+        item.media_attachments = media_attachments;
+        item.tool_result_preview = None;
+    }
+    Some(item)
+}
+
 fn owned_agent_event_runtime_item(
     event: AgentEventRecord,
     session_id: &str,
@@ -1162,6 +1242,7 @@ fn owned_agent_event_runtime_item(
         code_patch_availability: None,
         tool_summary: None,
         tool_result_preview: None,
+        media_attachments: Vec::new(),
         skill_id: None,
         skill_stage: None,
         skill_result: None,
@@ -2619,6 +2700,7 @@ mod tests {
                 title: "Replay test session".into(),
                 summary: String::new(),
                 selected: true,
+                session_kind: crate::db::project_store::AgentSessionKind::Standard,
             },
         )
         .expect("create replay test session");
@@ -2713,12 +2795,15 @@ mod tests {
             .collect::<Vec<_>>();
 
         let result = project_owned_agent_replay_events(
+            std::path::Path::new("."),
+            "project-1",
             events,
             "owned-agent:run-1",
             &[RuntimeStreamItemKind::Transcript],
             &mut projection,
             None,
             0,
+            &ProjectAssetState::default(),
         );
 
         assert_eq!(result.last_event_id, event_count as i64);
@@ -2761,12 +2846,15 @@ mod tests {
             .collect::<Vec<_>>();
 
         let result = project_owned_agent_replay_events(
+            std::path::Path::new("."),
+            "project-1",
             events,
             "owned-agent:run-1",
             &[RuntimeStreamItemKind::Transcript],
             &mut projection,
             None,
             0,
+            &ProjectAssetState::default(),
         );
 
         let patch = result.patch.clone().expect("replay patch");

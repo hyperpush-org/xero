@@ -225,16 +225,10 @@ fn handle_project_record_command(
         }
         "supersede" => {
             let project_id = required_option(&args[1..], "--project-id", "projectId")?;
-            let superseded = required_option(
-                &args[1..],
-                "--superseded-record-id",
-                "supersededRecordId",
-            )?;
-            let superseding = required_option(
-                &args[1..],
-                "--superseding-record-id",
-                "supersedingRecordId",
-            )?;
+            let superseded =
+                required_option(&args[1..], "--superseded-record-id", "supersededRecordId")?;
+            let superseding =
+                required_option(&args[1..], "--superseding-record-id", "supersedingRecordId")?;
             configure_project_store_paths(state_dir);
             let repo_root = project_root(state_dir, &project_id)?;
             project_store::mark_project_record_superseded_by(
@@ -774,7 +768,9 @@ fn require_apply(args: &[String], operation: &str) -> Result<(), CommandError> {
     }
     Err(CommandError::user_fixable(
         "xero_tui_code_history_apply_required",
-        format!("Applying {operation} changes project files. Re-run with --apply after reviewing the target."),
+        format!(
+            "Applying {operation} changes project files. Re-run with --apply after reviewing the target."
+        ),
     ))
 }
 
@@ -1280,6 +1276,7 @@ fn build_desktop_tui_app(
 fn parse_runtime_agent_id(value: &str) -> RuntimeAgentIdDto {
     match value.trim().replace('-', "_").to_ascii_lowercase().as_str() {
         "ask" => RuntimeAgentIdDto::Ask,
+        "computer_use" | "computer" | "cu" => RuntimeAgentIdDto::ComputerUse,
         "plan" => RuntimeAgentIdDto::Plan,
         "debug" => RuntimeAgentIdDto::Debug,
         "crawl" => RuntimeAgentIdDto::Crawl,
@@ -1783,29 +1780,36 @@ fn handle_environment_service_command(
         "resolve-permissions" => {
             let decisions = option_value(&args[1..], "--decisions-json")
                 .ok_or_else(|| CommandError::invalid_request("decisions"))?;
-            let decisions = serde_json::from_str::<Vec<environment_service::EnvironmentPermissionDecision>>(&decisions)
-                .map_err(|error| {
-                    CommandError::user_fixable(
-                        "xero_tui_environment_decisions_invalid",
-                        format!("Could not parse --decisions-json: {error}"),
-                    )
-                })?;
+            let decisions = serde_json::from_str::<
+                Vec<environment_service::EnvironmentPermissionDecision>,
+            >(&decisions)
+            .map_err(|error| {
+                CommandError::user_fixable(
+                    "xero_tui_environment_decisions_invalid",
+                    format!("Could not parse --decisions-json: {error}"),
+                )
+            })?;
             environment_command_json(
                 "environmentPermissionResolution",
-                environment_service::resolve_environment_permission_requests(&database_path, decisions)?,
+                environment_service::resolve_environment_permission_requests(
+                    &database_path,
+                    decisions,
+                )?,
             )
         }
         "verify-tool" => {
-            let request = request_json_arg::<environment_service::VerifyUserToolRequest>(&args[1..])?
-                .ok_or_else(|| CommandError::invalid_request("requestJson"))?;
+            let request =
+                request_json_arg::<environment_service::VerifyUserToolRequest>(&args[1..])?
+                    .ok_or_else(|| CommandError::invalid_request("requestJson"))?;
             environment_command_json(
                 "environmentToolVerify",
                 environment_service::verify_user_environment_tool(request)?,
             )
         }
         "save-tool-verified" => {
-            let request = request_json_arg::<environment_service::VerifyUserToolRequest>(&args[1..])?
-                .ok_or_else(|| CommandError::invalid_request("requestJson"))?;
+            let request =
+                request_json_arg::<environment_service::VerifyUserToolRequest>(&args[1..])?
+                    .ok_or_else(|| CommandError::invalid_request("requestJson"))?;
             environment_command_json(
                 "environmentToolSaveVerified",
                 environment_service::save_user_environment_tool(&database_path, request)?,
@@ -1850,8 +1854,11 @@ fn handle_terminal_command(state_dir: &Path, args: &[String]) -> Result<JsonValu
     match command {
         "open" | "new" | "shell" => {
             let cwd = terminal_cwd(state_dir, &args[1..])?;
-            let terminal =
-                project_runner::terminal_open_for_cwd(&cwd, option_u16(&args[1..], "--cols")?, option_u16(&args[1..], "--rows")?)?;
+            let terminal = project_runner::terminal_open_for_cwd(
+                &cwd,
+                option_u16(&args[1..], "--cols")?,
+                option_u16(&args[1..], "--rows")?,
+            )?;
             terminal_command_json(
                 "terminalOpen",
                 "Opened project PTY through the shared desktop project runner.",
@@ -1865,11 +1872,12 @@ fn handle_terminal_command(state_dir: &Path, args: &[String]) -> Result<JsonValu
         ),
         "read" | "tail" => {
             let terminal_id = positional_or_option(&args[1..], "--terminal-id", "terminalId")?;
-            let output = project_runner::terminal_read_buffer(project_runner::TerminalReadRequestDto {
-                terminal_id,
-                after_sequence: option_u64(&args[1..], "--after-sequence")?,
-                max_bytes: option_usize(&args[1..], "--max-bytes")?,
-            })?;
+            let output =
+                project_runner::terminal_read_buffer(project_runner::TerminalReadRequestDto {
+                    terminal_id,
+                    after_sequence: option_u64(&args[1..], "--after-sequence")?,
+                    max_bytes: option_usize(&args[1..], "--max-bytes")?,
+                })?;
             terminal_command_json(
                 "terminalRead",
                 "Read retained PTY output from the shared desktop project runner.",
@@ -1999,8 +2007,11 @@ fn handle_skill_sources_command(
         }
         "remove-local-root" | "local-root-remove" => {
             let settings = load_skill_source_settings_from_path(&database_path)?;
-            let updated =
-                settings.remove_local_root(&positional_or_option(&args[1..], "--root-id", "rootId")?)?;
+            let updated = settings.remove_local_root(&positional_or_option(
+                &args[1..],
+                "--root-id",
+                "rootId",
+            )?)?;
             skill_source_command_json(
                 "skillSourceLocalRootRemove",
                 "Removed shared local skill root settings.",
@@ -2013,7 +2024,8 @@ fn handle_skill_sources_command(
             let reference = option_value(&args[1..], "--reference")
                 .or_else(|| option_value(&args[1..], "--ref"))
                 .unwrap_or_else(|| settings.github.reference.clone());
-            let root = option_value(&args[1..], "--root").unwrap_or_else(|| settings.github.root.clone());
+            let root =
+                option_value(&args[1..], "--root").unwrap_or_else(|| settings.github.root.clone());
             let updated = settings.update_github(
                 repo,
                 reference,
@@ -2029,7 +2041,8 @@ fn handle_skill_sources_command(
         "project" | "project-source" => {
             let settings = load_skill_source_settings_from_path(&database_path)?;
             let project_id = required_option(&args[1..], "--project-id", "projectId")?;
-            let updated = settings.update_project(project_id, enabled_from_flags(&args[1..], true))?;
+            let updated =
+                settings.update_project(project_id, enabled_from_flags(&args[1..], true))?;
             skill_source_command_json(
                 "skillSourceProjectUpdate",
                 "Updated shared project skill source settings.",
@@ -2073,8 +2086,11 @@ fn handle_plugin_sources_command(
         }
         "remove-root" | "root-remove" => {
             let settings = load_skill_source_settings_from_path(&database_path)?;
-            let updated =
-                settings.remove_plugin_root(&positional_or_option(&args[1..], "--root-id", "rootId")?)?;
+            let updated = settings.remove_plugin_root(&positional_or_option(
+                &args[1..],
+                "--root-id",
+                "rootId",
+            )?)?;
             skill_source_command_json(
                 "pluginSourceRootRemove",
                 "Removed shared plugin root settings.",
@@ -2543,6 +2559,7 @@ fn agent_memory_review_state_label(value: &project_store::AgentMemoryReviewState
 fn runtime_agent_id_label(value: RuntimeAgentIdDto) -> &'static str {
     match value {
         RuntimeAgentIdDto::Ask => "ask",
+        RuntimeAgentIdDto::ComputerUse => "computer_use",
         RuntimeAgentIdDto::Plan => "plan",
         RuntimeAgentIdDto::Engineer => "engineer",
         RuntimeAgentIdDto::Debug => "debug",

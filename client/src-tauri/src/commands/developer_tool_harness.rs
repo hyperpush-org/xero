@@ -298,6 +298,7 @@ pub fn developer_tool_synthetic_run_service(
                     title: format!("Tool harness — {}", now_timestamp()),
                     summary: "Created by the developer tool harness for synthetic dispatch.".into(),
                     selected: false,
+                    session_kind: crate::db::project_store::AgentSessionKind::Standard,
                 },
             )?;
             session.agent_session_id
@@ -635,6 +636,7 @@ pub fn developer_tool_model_run<R: Runtime + 'static>(
     let runtime_agent_id = match request.runtime_agent_id.as_deref() {
         None | Some("") | Some("engineer") => RuntimeAgentIdDto::Engineer,
         Some("ask") => RuntimeAgentIdDto::Ask,
+        Some("computer_use") | Some("computer") | Some("cu") => RuntimeAgentIdDto::ComputerUse,
         Some("plan") => RuntimeAgentIdDto::Plan,
         Some("crawl") => RuntimeAgentIdDto::Crawl,
         Some("debug") => RuntimeAgentIdDto::Debug,
@@ -662,6 +664,7 @@ pub fn developer_tool_model_run<R: Runtime + 'static>(
                         request.tool_name
                     ),
                     selected: false,
+                    session_kind: crate::db::project_store::AgentSessionKind::Standard,
                 },
             )?;
             session.agent_session_id

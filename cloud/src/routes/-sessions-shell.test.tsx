@@ -121,8 +121,11 @@ const sessions: VisibleSessionSummary[] = [
 	{
 		computerId: "desktop-1",
 		sessionId: "session-1",
+		agentSessionId: "session-1",
 		projectId: "project-1",
 		projectName: "Clipstack",
+		sessionKind: "standard",
+		isComputerUse: false,
 		title: "Project Overview",
 		lastActivityAt: "2026-05-19T10:00:00Z",
 		computerName: "Studio",
@@ -131,8 +134,11 @@ const sessions: VisibleSessionSummary[] = [
 	{
 		computerId: "desktop-1",
 		sessionId: "session-2",
+		agentSessionId: "session-2",
 		projectId: "project-1",
 		projectName: "Clipstack",
+		sessionKind: "standard",
+		isComputerUse: false,
 		title: "Refactor Shell",
 		lastActivityAt: "2026-05-19T11:00:00Z",
 		computerName: "Studio",

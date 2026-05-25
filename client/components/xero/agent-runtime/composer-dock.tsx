@@ -1,4 +1,14 @@
-import { Bug, Compass, ListChecks, MessageCircle, Package, Search, Sparkles, Wrench } from 'lucide-react'
+import {
+  Bug,
+  Compass,
+  ListChecks,
+  MessageCircle,
+  Monitor,
+  Package,
+  Search,
+  Sparkles,
+  Wrench,
+} from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, type ReactNode, type RefObject } from 'react'
 
 import type {
@@ -63,6 +73,8 @@ interface ComposerDockProps {
   composerRuntimeAgentId: RuntimeAgentIdDto
   composerRuntimeAgentLabel: string
   availableRuntimeAgentIds?: readonly RuntimeAgentIdDto[]
+  runtimeAgentLockReason?: string
+  hideAgentSelector?: boolean
   composerAgentDefinitionId?: string | null
   composerAgentSelectionKey?: string
   customAgentDefinitions?: readonly AgentDefinitionSummaryDto[]
@@ -74,6 +86,7 @@ interface ComposerDockProps {
   composerApprovalMode: RuntimeRunApprovalModeDto
   composerApprovalOptions: ComposerApprovalOption[]
   autoCompactEnabled: boolean
+  hideAutoCompact?: boolean
   controlsDisabled: boolean
   runtimeAgentSwitchDisabled: boolean
   runtimeSessionBindInFlight: boolean
@@ -82,7 +95,9 @@ interface ComposerDockProps {
   runtimeRunActionError: OperatorActionErrorView | null
   runtimeRunActionErrorTitle: string
   dictation: ComposerDictationControl
+  hideDictation?: boolean
   contextMeter?: ReactNode
+  hideContextMeter?: boolean
   pendingAttachments?: ComposerPendingAttachment[]
   onAddFiles?: (files: File[]) => void
   onRemoveAttachment?: (id: string) => void
@@ -110,6 +125,8 @@ function getBuiltinAgentIcon(agentId: RuntimeAgentIdDto) {
       return Bug
     case 'crawl':
       return Search
+    case 'computer_use':
+      return Monitor
     case 'agent_create':
       return Sparkles
     case 'engineer':
@@ -150,6 +167,8 @@ export function ComposerDock({
   composerRuntimeAgentId,
   composerRuntimeAgentLabel,
   availableRuntimeAgentIds,
+  runtimeAgentLockReason,
+  hideAgentSelector = false,
   composerAgentDefinitionId = null,
   composerAgentSelectionKey,
   customAgentDefinitions = [],
@@ -160,6 +179,7 @@ export function ComposerDock({
   composerApprovalMode,
   composerApprovalOptions,
   autoCompactEnabled,
+  hideAutoCompact = false,
   controlsDisabled,
   runtimeAgentSwitchDisabled,
   runtimeSessionBindInFlight,
@@ -168,7 +188,9 @@ export function ComposerDock({
   runtimeRunActionError,
   runtimeRunActionErrorTitle,
   dictation,
+  hideDictation = false,
   contextMeter,
+  hideContextMeter = false,
   pendingAttachments,
   onAddFiles,
   onRemoveAttachment,
@@ -291,7 +313,7 @@ export function ComposerDock({
   )
 
   const agentTooltip = runtimeAgentSwitchDisabled
-    ? 'Selected agent is fixed for the current run.'
+    ? (runtimeAgentLockReason ?? 'Selected agent is fixed for the current run.')
     : isCustomAgent
       ? `${agentTriggerLabel} (user custom agent)`
       : `${agentTriggerLabel} agent`
@@ -321,7 +343,7 @@ export function ComposerDock({
       isStopVisible={isStopVisible}
       isStopDisabled={isStopDisabled}
       onStop={onStopRuntimeRun}
-      agentGroups={agentGroups}
+      agentGroups={hideAgentSelector ? [] : agentGroups}
       selectedAgentId={agentSelectorValue}
       onAgentChange={handleAgentChange}
       agentDisabled={isAgentSelectorDisabled}
@@ -340,14 +362,14 @@ export function ComposerDock({
       selectedApprovalId={composerApprovalMode}
       onApprovalChange={(value) => onComposerApprovalModeChange(value as RuntimeRunApprovalModeDto)}
       approvalDisabled={controlsDisabled}
-      autoCompactEnabled={autoCompactEnabled}
-      onAutoCompactEnabledChange={onAutoCompactEnabledChange}
+      autoCompactEnabled={hideAutoCompact ? undefined : autoCompactEnabled}
+      onAutoCompactEnabledChange={hideAutoCompact ? undefined : onAutoCompactEnabledChange}
       autoCompactDisabled={runtimeRunActionStatus === 'running'}
       pendingAttachments={pendingAttachments}
       onAddFiles={onAddFiles}
       onRemoveAttachment={onRemoveAttachment}
-      dictation={dictation}
-      contextMeter={contextMeter}
+      dictation={hideDictation ? { ...dictation, isVisible: false } : dictation}
+      contextMeter={hideContextMeter ? undefined : contextMeter}
       error={composerError}
       onOpenDiagnostics={onOpenDiagnostics}
     />

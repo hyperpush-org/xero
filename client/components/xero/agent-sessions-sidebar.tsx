@@ -20,6 +20,7 @@ import {
   FileText,
   Loader2,
   MessageSquare,
+  Monitor,
   PanelLeftClose,
   PanelLeftOpen,
   Pin,
@@ -1132,6 +1133,9 @@ export const AgentSessionsSidebarItem = memo(function AgentSessionsSidebarItem({
     }
   }, [canArchive, isPending])
 
+  const SessionIcon = session.isComputerUse ? Monitor : MessageSquare
+  const sessionKindLabel = session.isComputerUse ? 'Computer' : null
+
   if (compact === 'icon') {
     return (
       <div {...dragWrapperProps} className="w-full">
@@ -1158,7 +1162,7 @@ export const AgentSessionsSidebarItem = memo(function AgentSessionsSidebarItem({
           {isPending ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
           ) : (
-            <MessageSquare className="h-3.5 w-3.5" />
+            <SessionIcon className="h-3.5 w-3.5" />
           )}
           {isPinned ? (
             <Pin
@@ -1197,7 +1201,7 @@ export const AgentSessionsSidebarItem = memo(function AgentSessionsSidebarItem({
           {isPending ? (
             <Loader2 className="h-3 w-3 animate-spin" />
           ) : (
-            <MessageSquare className="h-2.5 w-2.5" />
+            <SessionIcon className="h-2.5 w-2.5" />
           )}
         </span>
         <span
@@ -1244,7 +1248,14 @@ export const AgentSessionsSidebarItem = memo(function AgentSessionsSidebarItem({
         title={session.title}
         type="button"
       >
-        <div className="flex min-w-0 flex-1 items-center gap-1">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <SessionIcon
+            aria-hidden="true"
+            className={cn(
+              'h-3.5 w-3.5 shrink-0',
+              session.isComputerUse ? 'text-primary' : 'text-muted-foreground/70',
+            )}
+          />
           <span
             className={cn(
               'truncate text-[12.5px] font-medium leading-tight',
@@ -1258,6 +1269,11 @@ export const AgentSessionsSidebarItem = memo(function AgentSessionsSidebarItem({
               aria-hidden
               className="h-2.5 w-2.5 shrink-0 -rotate-45 text-muted-foreground/70"
             />
+          ) : null}
+          {sessionKindLabel ? (
+            <span className="rounded-sm border border-primary/20 bg-primary/10 px-1 text-[9.5px] font-semibold uppercase tracking-[0.12em] text-primary">
+              {sessionKindLabel}
+            </span>
           ) : null}
           {paneNumber != null ? (
             <span
@@ -1392,6 +1408,8 @@ const AgentArchivedSessionsSidebarItem = memo(function AgentArchivedSessionsSide
     }
   }, [isAnyActionPending])
 
+  const SessionIcon = session.isComputerUse ? Monitor : MessageSquare
+
   return (
     <div className="group relative">
       <div
@@ -1402,10 +1420,22 @@ const AgentArchivedSessionsSidebarItem = memo(function AgentArchivedSessionsSide
         )}
         title={session.title}
       >
-        <div className="flex min-w-0 flex-1 items-center gap-1">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <SessionIcon
+            aria-hidden="true"
+            className={cn(
+              'h-3.5 w-3.5 shrink-0',
+              session.isComputerUse ? 'text-primary' : 'text-muted-foreground/70',
+            )}
+          />
           <span className="truncate text-[12.5px] font-medium leading-tight text-foreground/85 group-hover:text-foreground">
             {session.title}
           </span>
+          {session.isComputerUse ? (
+            <span className="rounded-sm border border-primary/20 bg-primary/10 px-1 text-[9.5px] font-semibold uppercase tracking-[0.12em] text-primary">
+              Computer
+            </span>
+          ) : null}
         </div>
       </div>
 

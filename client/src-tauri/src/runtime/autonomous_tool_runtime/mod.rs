@@ -318,6 +318,19 @@ const TOOL_ACCESS_PLANNING_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_TODO,
 ];
 const TOOL_ACCESS_EMULATOR_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_EMULATOR];
+const TOOL_ACCESS_COMPUTER_USE_TOOLS: &[&str] = &[
+    AUTONOMOUS_TOOL_TOOL_ACCESS,
+    AUTONOMOUS_TOOL_TOOL_SEARCH,
+    AUTONOMOUS_TOOL_TODO,
+    AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+    AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+    AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+    AUTONOMOUS_TOOL_BROWSER_CONTROL,
+    AUTONOMOUS_TOOL_BROWSER,
+    AUTONOMOUS_TOOL_EMULATOR,
+    AUTONOMOUS_TOOL_MACOS_AUTOMATION,
+    AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
+];
 const TOOL_ACCESS_SOLANA_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_SOLANA_CLUSTER,
     AUTONOMOUS_TOOL_SOLANA_LOGS,
@@ -923,6 +936,57 @@ impl AutonomousAgentToolPolicy {
                 allowed_subagent_roles: BTreeSet::new(),
                 denied_subagent_roles: BTreeSet::new(),
                 command_allowed: false,
+                destructive_write_allowed: false,
+            },
+            "computer_use" => Self {
+                allowed_effect_classes: BTreeSet::new(),
+                allowed_tools: TOOL_ACCESS_COMPUTER_USE_TOOLS
+                    .iter()
+                    .map(|tool| (*tool).to_owned())
+                    .collect(),
+                denied_tools: [
+                    AUTONOMOUS_TOOL_WRITE,
+                    AUTONOMOUS_TOOL_EDIT,
+                    AUTONOMOUS_TOOL_PATCH,
+                    AUTONOMOUS_TOOL_COPY,
+                    AUTONOMOUS_TOOL_FS_TRANSACTION,
+                    AUTONOMOUS_TOOL_JSON_EDIT,
+                    AUTONOMOUS_TOOL_TOML_EDIT,
+                    AUTONOMOUS_TOOL_YAML_EDIT,
+                    AUTONOMOUS_TOOL_DELETE,
+                    AUTONOMOUS_TOOL_RENAME,
+                    AUTONOMOUS_TOOL_MKDIR,
+                    AUTONOMOUS_TOOL_COMMAND,
+                    AUTONOMOUS_TOOL_COMMAND_RUN,
+                    AUTONOMOUS_TOOL_COMMAND_SESSION,
+                    AUTONOMOUS_TOOL_COMMAND_SESSION_START,
+                    AUTONOMOUS_TOOL_COMMAND_SESSION_READ,
+                    AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
+                    AUTONOMOUS_TOOL_POWERSHELL,
+                    AUTONOMOUS_TOOL_PROCESS_MANAGER,
+                    AUTONOMOUS_TOOL_GIT_STATUS,
+                    AUTONOMOUS_TOOL_GIT_DIFF,
+                    AUTONOMOUS_TOOL_MCP,
+                    AUTONOMOUS_TOOL_MCP_CALL_TOOL,
+                    AUTONOMOUS_TOOL_SKILL,
+                    AUTONOMOUS_TOOL_SUBAGENT,
+                ]
+                .into_iter()
+                .map(ToOwned::to_owned)
+                .collect(),
+                allowed_tool_packs: BTreeSet::new(),
+                denied_tool_packs: BTreeSet::new(),
+                allowed_mcp_servers: BTreeSet::new(),
+                denied_mcp_servers: BTreeSet::new(),
+                allowed_dynamic_tools: BTreeSet::new(),
+                denied_dynamic_tools: BTreeSet::new(),
+                external_service_allowed: false,
+                browser_control_allowed: true,
+                skill_runtime_allowed: false,
+                subagent_allowed: false,
+                allowed_subagent_roles: BTreeSet::new(),
+                denied_subagent_roles: BTreeSet::new(),
+                command_allowed: true,
                 destructive_write_allowed: false,
             },
             _ => Self {
@@ -1688,6 +1752,7 @@ pub fn tool_allowed_for_runtime_agent(agent_id: RuntimeAgentIdDto, tool_name: &s
         }
         RuntimeAgentIdDto::Plan => TOOL_ACCESS_PLANNING_TOOLS.contains(&tool_name),
         RuntimeAgentIdDto::Crawl => TOOL_ACCESS_REPOSITORY_RECON_TOOLS.contains(&tool_name),
+        RuntimeAgentIdDto::ComputerUse => TOOL_ACCESS_COMPUTER_USE_TOOLS.contains(&tool_name),
         RuntimeAgentIdDto::Ask | RuntimeAgentIdDto::AgentCreate => {
             matches!(tool_name, AUTONOMOUS_TOOL_TOOL_ACCESS)
                 || tool_effect_class(tool_name).is_ask_observe_only()
@@ -1710,6 +1775,9 @@ pub fn allowed_runtime_agent_labels(tool_name: &str) -> Vec<&'static str> {
     let mut agents = Vec::new();
     if tool_allowed_for_runtime_agent(RuntimeAgentIdDto::Ask, tool_name) {
         agents.push(RuntimeAgentIdDto::Ask.as_str());
+    }
+    if tool_allowed_for_runtime_agent(RuntimeAgentIdDto::ComputerUse, tool_name) {
+        agents.push(RuntimeAgentIdDto::ComputerUse.as_str());
     }
     if tool_allowed_for_runtime_agent(RuntimeAgentIdDto::Plan, tool_name) {
         agents.push(RuntimeAgentIdDto::Plan.as_str());
@@ -8009,6 +8077,58 @@ mod tests {
                     Some(&policy),
                 ),
                 "planning should block {blocked_tool}"
+            );
+        }
+    }
+
+    #[test]
+    fn computer_use_policy_allows_bounded_ui_control_but_blocks_repo_mutation_and_commands() {
+        let policy = AutonomousAgentToolPolicy::from_policy_label("computer_use");
+
+        for allowed_tool in [
+            AUTONOMOUS_TOOL_TOOL_ACCESS,
+            AUTONOMOUS_TOOL_TOOL_SEARCH,
+            AUTONOMOUS_TOOL_TODO,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+            AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+            AUTONOMOUS_TOOL_BROWSER_CONTROL,
+            AUTONOMOUS_TOOL_BROWSER,
+            AUTONOMOUS_TOOL_EMULATOR,
+            AUTONOMOUS_TOOL_MACOS_AUTOMATION,
+            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
+        ] {
+            assert!(
+                tool_allowed_for_runtime_agent_with_policy(
+                    RuntimeAgentIdDto::ComputerUse,
+                    allowed_tool,
+                    Some(&policy),
+                ),
+                "computer_use should allow {allowed_tool}"
+            );
+        }
+
+        for blocked_tool in [
+            AUTONOMOUS_TOOL_READ,
+            AUTONOMOUS_TOOL_WRITE,
+            AUTONOMOUS_TOOL_EDIT,
+            AUTONOMOUS_TOOL_PATCH,
+            AUTONOMOUS_TOOL_DELETE,
+            AUTONOMOUS_TOOL_COMMAND_RUN,
+            AUTONOMOUS_TOOL_COMMAND_SESSION,
+            AUTONOMOUS_TOOL_PROCESS_MANAGER,
+            AUTONOMOUS_TOOL_GIT_STATUS,
+            AUTONOMOUS_TOOL_MCP_CALL_TOOL,
+            AUTONOMOUS_TOOL_SKILL,
+            AUTONOMOUS_TOOL_SUBAGENT,
+        ] {
+            assert!(
+                !tool_allowed_for_runtime_agent_with_policy(
+                    RuntimeAgentIdDto::ComputerUse,
+                    blocked_tool,
+                    Some(&policy),
+                ),
+                "computer_use should block {blocked_tool}"
             );
         }
     }

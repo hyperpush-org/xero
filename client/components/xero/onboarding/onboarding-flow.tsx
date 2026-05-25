@@ -213,11 +213,20 @@ export function OnboardingFlow({
     "idle" | "saving" | "error"
   >("idle")
   const [environmentPermissionSaveError, setEnvironmentPermissionSaveError] = useState<string | null>(null)
+  const [hasEnvironmentPermissionStep, setHasEnvironmentPermissionStep] = useState(
+    environmentPermissionRequests.length > 0,
+  )
   const directionRef = useRef<1 | -1>(1)
 
+  useEffect(() => {
+    if (environmentPermissionRequests.length > 0) {
+      setHasEnvironmentPermissionStep(true)
+    }
+  }, [environmentPermissionRequests.length])
+
   const stepOrder = useMemo(
-    () => computeStepOrder(launchMode, environmentPermissionRequests.length > 0),
-    [environmentPermissionRequests.length, launchMode],
+    () => computeStepOrder(launchMode, hasEnvironmentPermissionStep),
+    [hasEnvironmentPermissionStep, launchMode],
   )
   const indicatorSteps = useMemo(
     () => stepOrder.filter((step) => step.showIndicator),

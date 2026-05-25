@@ -121,6 +121,30 @@ describe('XeroShell', () => {
     expect(screen.queryByRole('button', { name: 'Settings' })).toBeNull()
   })
 
+  it.each(['macos', 'windows'] as const)('renders the global Computer Use titlebar button in %s', async (platform) => {
+    const onToggleComputerUse = vi.fn()
+    const onSurfacePreload = vi.fn()
+
+    render(
+      <XeroShell
+        activeView="phases"
+        onSurfacePreload={onSurfacePreload}
+        onToggleComputerUse={onToggleComputerUse}
+        onViewChange={() => undefined}
+        platformOverride={platform}
+      >
+        <div>Body</div>
+      </XeroShell>,
+    )
+
+    const button = screen.getByRole('button', { name: 'Open Computer Use' })
+    fireEvent.pointerEnter(button)
+    fireEvent.click(button)
+
+    await waitFor(() => expect(onSurfacePreload).toHaveBeenCalledWith('agent-dock'))
+    expect(onToggleComputerUse).toHaveBeenCalledTimes(1)
+  })
+
   it.each(['macos', 'windows'] as const)('omits the Android emulator from the %s titlebar tools', (platform) => {
     render(
       <XeroShell

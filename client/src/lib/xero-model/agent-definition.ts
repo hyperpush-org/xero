@@ -53,6 +53,7 @@ export type AgentDefinitionLifecycleStateDto = z.infer<
 
 export const agentDefinitionBaseCapabilityProfileSchema = z.enum([
   'observe_only',
+  'computer_use',
   'planning',
   'repository_recon',
   'engineering',
@@ -1695,5 +1696,7 @@ export function getAgentDefinitionBaseCapabilityLabel(
       return 'Debugging'
     case 'agent_builder':
       return 'Agent Builder'
+    case 'computer_use':
+      return 'Computer Use'
   }
 }

@@ -98,6 +98,7 @@ function makeAgentSession(projectId: string) {
   return {
     projectId,
     agentSessionId: 'agent-session-main',
+    sessionKind: 'standard' as const,
     title: 'Main session',
     summary: 'Primary project session',
     status: 'active' as const,

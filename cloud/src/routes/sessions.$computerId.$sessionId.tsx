@@ -1,19 +1,27 @@
 import { createFileRoute } from "@tanstack/react-router";
 import {
 	Composer,
+	type ComposerDictationLike,
 	type ComposerSelectGroup,
 	type ComposerSelectOption,
 	WebComposerContextIndicator,
 	type WebComposerContextIndicatorStatus,
 } from "@xero/ui/components/composer";
 import { EmptySessionState } from "@xero/ui/components/empty-session-state";
-import { ConversationSection } from "@xero/ui/components/transcript/conversation-section";
+import {
+	type ConversationMessageAttachment,
+	ConversationSection,
+	type ConversationTurn,
+} from "@xero/ui/components/transcript/conversation-section";
+import type { Channel } from "phoenix";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LoadingScreen } from "#/components/loading-screen";
+import { decodeRelayFrame } from "#/lib/relay/envelope";
 import {
 	type InboundCommand,
 	pushInboundCommand,
 	requestContextSnapshot,
+	requestRuntimeMediaArtifact,
 	requestSessionSnapshot,
 } from "#/lib/relay/relay-client";
 import {
@@ -44,7 +52,6 @@ function SessionView() {
 		session,
 		visibleSessions,
 		currentComputerOnline,
-		visibleSessionsVersion,
 		reportActiveTargetInvalid,
 	} = shell;
 	const { computerId, sessionId } = Route.useParams();
@@ -62,13 +69,24 @@ function SessionView() {
 	const currentSessionAvailable = visibleSessions.some(
 		(s) => s.computerId === computerId && s.sessionId === sessionId,
 	);
+	const visibleSession =
+		visibleSessions.find(
+			(s) => s.computerId === computerId && s.sessionId === sessionId,
+		) ?? null;
+	const isComputerUseSession = Boolean(visibleSession?.isComputerUse);
 	const { channel, joinRejected } = useSessionStream({
 		computerId,
 		enabled: currentComputerOnline && currentSessionAvailable,
 		sessionId,
 		relayToken: session.relayToken,
 	});
-	const lastSnapshotRequestKey = useRef<string | null>(null);
+	const resolvedTurns = useResolvedRemoteMedia({
+		channel,
+		computerId,
+		deviceId: session.deviceId,
+		sessionId,
+		turns,
+	});
 
 	const [draftPrompt, setDraftPrompt] = useState("");
 	const [selectedControls, setSelectedControls] = useState<{
@@ -97,8 +115,20 @@ function SessionView() {
 	const autoCompactEnabled =
 		selectedAutoCompactEnabled ?? currentAutoCompactEnabled;
 
-	const resolvedAgentId =
-		selectedAgentId ?? currentAgentId ?? availableAgents[0]?.id ?? null;
+	const selectableAgents = useMemo(() => {
+		if (isComputerUseSession) {
+			return [
+				availableAgents.find((agent) => agent.id === "computer_use") ?? {
+					id: "computer_use",
+					label: "Computer Use",
+				},
+			];
+		}
+		return availableAgents.filter((agent) => agent.id !== "computer_use");
+	}, [availableAgents, isComputerUseSession]);
+	const resolvedAgentId = isComputerUseSession
+		? "computer_use"
+		: (selectedAgentId ?? currentAgentId ?? selectableAgents[0]?.id ?? null);
 	const resolvedModelId =
 		selectedModelId ?? currentModelId ?? availableModels[0]?.id ?? null;
 	const resolvedModelOption =
@@ -170,7 +200,7 @@ function SessionView() {
 					? "ready"
 					: "idle";
 	const contextMeter =
-		contextMeterStatus === "idle" ? null : (
+		isComputerUseSession || contextMeterStatus === "idle" ? null : (
 			<WebComposerContextIndicator
 				status={contextMeterStatus}
 				snapshot={contextSnapshot}
@@ -220,13 +250,7 @@ function SessionView() {
 
 	useEffect(() => {
 		if (!channel || !session.deviceId || !currentSessionAvailable) return;
-		if (transcript) {
-			lastSnapshotRequestKey.current = null;
-			return;
-		}
-		const requestKey = `${key}:${visibleSessionsVersion}`;
-		if (lastSnapshotRequestKey.current === requestKey) return;
-		lastSnapshotRequestKey.current = requestKey;
+		if (transcript) return;
 		const requestSnapshot = () => {
 			if (useSessionStore.getState().transcripts[key]) return;
 			requestSessionSnapshot(channel, {
@@ -246,11 +270,11 @@ function SessionView() {
 		session.deviceId,
 		sessionId,
 		transcript,
-		visibleSessionsVersion,
 	]);
 
 	useEffect(() => {
 		if (!channel || !session.deviceId || !transcript || isLive) return;
+		if (isComputerUseSession) return;
 		if (contextRequestSettled) {
 			setPendingContextRequestKey((current) =>
 				current === contextRequestKey ? null : current,
@@ -275,6 +299,7 @@ function SessionView() {
 		contextRequestSettled,
 		debouncedDraftPrompt,
 		isLive,
+		isComputerUseSession,
 		pendingContextRequestKey,
 		resolvedProviderId,
 		resolvedRawModelId,
@@ -293,7 +318,9 @@ function SessionView() {
 	const pushControlUpdate = useCallback(
 		(overrides: ControlUpdateOverrides = {}) => {
 			if (!channel || !session.deviceId) return;
-			const nextAgentId = overrides.agentId ?? resolvedAgentId;
+			const nextAgentId = isComputerUseSession
+				? "computer_use"
+				: (overrides.agentId ?? resolvedAgentId);
 			const nextModelId = overrides.modelId ?? resolvedModelId;
 			if (!nextAgentId || !nextModelId) return;
 			const nextModelOption =
@@ -336,6 +363,7 @@ function SessionView() {
 			resolvedModelId,
 			resolvedModelOption,
 			resolvedThinkingEffort,
+			isComputerUseSession,
 			session.deviceId,
 			sessionId,
 		],
@@ -353,7 +381,7 @@ function SessionView() {
 				payload.attachments = readyAttachments;
 			}
 			if (resolvedAgentId && resolvedModelId) {
-				payload.agent = resolvedAgentId;
+				payload.agent = isComputerUseSession ? "computer_use" : resolvedAgentId;
 				payload.modelId = resolvedModelOption?.modelId ?? resolvedModelId;
 				if (resolvedModelOption?.providerId) {
 					payload.providerId = resolvedModelOption.providerId;
@@ -399,6 +427,7 @@ function SessionView() {
 			resolvedModelId,
 			resolvedModelOption,
 			resolvedThinkingEffort,
+			isComputerUseSession,
 			session.deviceId,
 			sessionId,
 		],
@@ -420,6 +449,7 @@ function SessionView() {
 
 	const handleAgentChange = useCallback(
 		(agentId: string) => {
+			if (isComputerUseSession) return;
 			setSelectedControls((current) => ({
 				key,
 				agentId,
@@ -430,7 +460,7 @@ function SessionView() {
 			}));
 			pushControlUpdate({ agentId });
 		},
-		[key, pushControlUpdate],
+		[isComputerUseSession, key, pushControlUpdate],
 	);
 
 	const handleModelChange = useCallback(
@@ -470,6 +500,18 @@ function SessionView() {
 		[key, pushControlUpdate],
 	);
 
+	const hiddenDictation = useMemo<ComposerDictationLike>(
+		() => ({
+			ariaLabel: "Voice input unavailable",
+			isListening: false,
+			isToggleDisabled: true,
+			phase: "idle",
+			tooltip: "Voice input unavailable",
+			toggle: async () => undefined,
+			isVisible: false,
+		}),
+		[],
+	);
 	const projectLabel = shell.activeProjectLabel;
 
 	return (
@@ -489,13 +531,14 @@ function SessionView() {
 							<div className="flex flex-1 items-center justify-center">
 								<EmptySessionState
 									projectLabel={projectLabel}
+									context={isComputerUseSession ? "computer-use" : "default"}
 									onSelectSuggestion={setDraftPrompt}
 								/>
 							</div>
 						) : (
 							<ConversationSection
 								runtimeRun={null}
-								visibleTurns={turns}
+								visibleTurns={resolvedTurns}
 								streamIssue={null}
 								streamFailure={null}
 								showActivityIndicator={isLive}
@@ -519,9 +562,17 @@ function SessionView() {
 						draftPrompt={draftPrompt}
 						onDraftPromptChange={setDraftPrompt}
 						onSubmit={dispatchSend}
-						autoCompactEnabled={autoCompactEnabled}
-						onAutoCompactEnabledChange={handleAutoCompactEnabledChange}
-						agentGroups={[{ id: "agents", options: availableAgents }]}
+						autoCompactEnabled={
+							isComputerUseSession ? undefined : autoCompactEnabled
+						}
+						onAutoCompactEnabledChange={
+							isComputerUseSession ? undefined : handleAutoCompactEnabledChange
+						}
+						agentGroups={
+							isComputerUseSession
+								? []
+								: [{ id: "agents", options: selectableAgents }]
+						}
 						selectedAgentId={resolvedAgentId}
 						onAgentChange={handleAgentChange}
 						modelGroups={modelGroups}
@@ -534,11 +585,213 @@ function SessionView() {
 						onAddFiles={attachmentsHook.addFiles}
 						onRemoveAttachment={attachmentsHook.removeAttachment}
 						contextMeter={contextMeter}
+						dictation={isComputerUseSession ? hiddenDictation : undefined}
 					/>
 				</div>
 			</div>
 		</div>
 	);
+}
+
+function useResolvedRemoteMedia({
+	channel,
+	computerId,
+	deviceId,
+	sessionId,
+	turns,
+}: {
+	channel: Channel | null;
+	computerId: string;
+	deviceId?: string | null;
+	sessionId: string;
+	turns: readonly ConversationTurn[];
+}): ConversationTurn[] {
+	const requestedRef = useRef(new Set<string>());
+	const objectUrlsRef = useRef(new Map<string, string>());
+	const [resolvedUrls, setResolvedUrls] = useState<Record<string, string>>({});
+
+	useEffect(() => {
+		return () => {
+			for (const url of objectUrlsRef.current.values()) {
+				URL.revokeObjectURL(url);
+			}
+			objectUrlsRef.current.clear();
+		};
+	}, []);
+
+	useEffect(() => {
+		if (!channel) return;
+		const ref = channel.on("frame", (rawFrame: unknown) => {
+			const envelope = decodeRelayFrame(rawFrame);
+			const payload = envelope?.payload;
+			if (!isRuntimeMediaArtifactPayload(payload)) return;
+			if (!payload.ok || !payload.bytesBase64) return;
+			const bytes = base64ToBytes(payload.bytesBase64);
+			const url = URL.createObjectURL(
+				new Blob([bytes], { type: payload.mediaType }),
+			);
+			const previousUrl = objectUrlsRef.current.get(payload.artifactId);
+			if (previousUrl) URL.revokeObjectURL(previousUrl);
+			objectUrlsRef.current.set(payload.artifactId, url);
+			setResolvedUrls((current) => ({
+				...current,
+				[payload.artifactId]: url,
+			}));
+		});
+		return () => {
+			channel.off("frame", ref);
+		};
+	}, [channel]);
+
+	useEffect(() => {
+		if (!channel || !deviceId) return;
+		for (const artifactId of collectMissingRemoteArtifactIds(
+			turns,
+			resolvedUrls,
+		)) {
+			if (requestedRef.current.has(artifactId)) continue;
+			requestedRef.current.add(artifactId);
+			requestRuntimeMediaArtifact(channel, {
+				computerId,
+				sessionId,
+				deviceId,
+				artifactId,
+			});
+		}
+	}, [channel, computerId, deviceId, resolvedUrls, sessionId, turns]);
+
+	return useMemo(
+		() => applyResolvedRemoteMedia(turns, resolvedUrls),
+		[resolvedUrls, turns],
+	);
+}
+
+function collectMissingRemoteArtifactIds(
+	turns: readonly ConversationTurn[],
+	resolvedUrls: Record<string, string>,
+): string[] {
+	const ids = new Set<string>();
+	for (const turn of turns) {
+		for (const attachment of turnMediaAttachments(turn)) {
+			if (
+				attachment.source?.kind === "remote_artifact" &&
+				!attachmentPreviewAvailable(attachment) &&
+				!resolvedUrls[attachment.source.artifactId]
+			) {
+				ids.add(attachment.source.artifactId);
+			}
+		}
+	}
+	return Array.from(ids);
+}
+
+function applyResolvedRemoteMedia(
+	turns: readonly ConversationTurn[],
+	resolvedUrls: Record<string, string>,
+): ConversationTurn[] {
+	return turns.map((turn) => {
+		if (turn.kind === "message") {
+			return {
+				...turn,
+				attachments: resolveAttachments(turn.attachments, resolvedUrls),
+			};
+		}
+		if (turn.kind === "action") {
+			return {
+				...turn,
+				mediaAttachments: resolveAttachments(
+					turn.mediaAttachments,
+					resolvedUrls,
+				),
+			};
+		}
+		if (turn.kind === "action_group") {
+			return {
+				...turn,
+				actions: turn.actions.map((action) => ({
+					...action,
+					mediaAttachments: resolveAttachments(
+						action.mediaAttachments,
+						resolvedUrls,
+					),
+				})),
+			};
+		}
+		if (turn.kind === "subagent_group") {
+			return {
+				...turn,
+				children: applyResolvedRemoteMedia(turn.children, resolvedUrls),
+			};
+		}
+		return turn;
+	});
+}
+
+function resolveAttachments(
+	attachments: ConversationMessageAttachment[] | undefined,
+	resolvedUrls: Record<string, string>,
+): ConversationMessageAttachment[] | undefined {
+	if (!attachments?.length) return attachments;
+	return attachments.map((attachment) => {
+		if (attachment.source?.kind !== "remote_artifact") return attachment;
+		const renderUrl = resolvedUrls[attachment.source.artifactId];
+		if (!renderUrl) return attachment;
+		return {
+			...attachment,
+			renderUrl,
+			previewSrc: renderUrl,
+		};
+	});
+}
+
+function turnMediaAttachments(
+	turn: ConversationTurn,
+): ConversationMessageAttachment[] {
+	if (turn.kind === "message") return turn.attachments ?? [];
+	if (turn.kind === "action") return turn.mediaAttachments ?? [];
+	if (turn.kind === "action_group") {
+		return turn.actions.flatMap((action) => action.mediaAttachments ?? []);
+	}
+	if (turn.kind === "subagent_group") {
+		return turn.children.flatMap(turnMediaAttachments);
+	}
+	return [];
+}
+
+function attachmentPreviewAvailable(
+	attachment: ConversationMessageAttachment,
+): boolean {
+	return Boolean(attachment.previewSrc || attachment.renderUrl);
+}
+
+interface RuntimeMediaArtifactPayload {
+	schema: "xero.remote_runtime_media_artifact.v1";
+	ok: boolean;
+	artifactId: string;
+	mediaType: string;
+	bytesBase64?: string;
+}
+
+function isRuntimeMediaArtifactPayload(
+	value: unknown,
+): value is RuntimeMediaArtifactPayload {
+	if (!value || typeof value !== "object") return false;
+	const payload = value as Partial<RuntimeMediaArtifactPayload>;
+	return (
+		payload.schema === "xero.remote_runtime_media_artifact.v1" &&
+		typeof payload.artifactId === "string" &&
+		typeof payload.mediaType === "string" &&
+		typeof payload.ok === "boolean"
+	);
+}
+
+function base64ToBytes(input: string): Uint8Array {
+	const binary = atob(input);
+	const bytes = new Uint8Array(binary.length);
+	for (let index = 0; index < binary.length; index += 1) {
+		bytes[index] = binary.charCodeAt(index);
+	}
+	return bytes;
 }
 
 function buildComposerModelGroups(

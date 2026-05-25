@@ -825,6 +825,7 @@ describe('AgentRuntime current UI', () => {
             selectedAgentSession: {
               projectId: 'project-1',
               agentSessionId: 'agent-session-main',
+              sessionKind: 'standard',
               title: 'Main chat',
               summary: '',
               status: 'active',
@@ -840,6 +841,7 @@ describe('AgentRuntime current UI', () => {
               lineage: null,
               isActive: true,
               isArchived: false,
+              isComputerUse: false,
             },
           }),
           runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
@@ -3104,6 +3106,58 @@ describe('AgentRuntime current UI', () => {
           }),
         }),
       ),
+    )
+  })
+
+  it('restores mirrored app-state composer controls without a model selection key', () => {
+    window.localStorage.setItem(
+      COMPOSER_SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        modelId: 'xai/grok-4.3',
+        providerProfileId: 'xai-default',
+        runtimeAgentId: 'debug',
+        agentDefinitionId: null,
+        thinkingEffort: 'low',
+        approvalMode: 'yolo',
+        autoCompactEnabled: false,
+      }),
+    )
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          selectedRuntimeAgentId: 'ask',
+          selectedRuntimeAgentLabel: 'Ask',
+          selectedModelId: 'openai_codex',
+          selectedThinkingEffort: 'medium',
+          selectedApprovalMode: 'suggest',
+          composerModelOptions: [
+            makeComposerModelOption(),
+            makeComposerModelOption({
+              selectionKey: 'xai:xai/grok-4.3',
+              profileId: 'xai-default',
+              providerId: 'xai',
+              providerLabel: 'xAI',
+              modelId: 'xai/grok-4.3',
+              displayName: 'Grok 4.3',
+              thinking: { supported: true, effortOptions: ['low', 'medium'], defaultEffort: 'medium' },
+              thinkingEffortOptions: ['low', 'medium'],
+              defaultThinkingEffort: 'medium',
+            }),
+          ],
+        })}
+        onStartRuntimeRun={vi.fn(async () => makeRuntimeRun())}
+      />,
+    )
+
+    expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent('Debug')
+    expect(screen.getByRole('combobox', { name: 'Model selector' })).toHaveTextContent('Grok 4.3')
+    expect(screen.getByRole('combobox', { name: 'Thinking level selector' })).toHaveTextContent('Low')
+    expect(screen.getByRole('button', { name: 'Auto-compact before sending' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
     )
   })
 

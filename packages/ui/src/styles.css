@@ -12,7 +12,7 @@
  * still rendered with sensible colors.
  *
  * To add a new theme:
- *   1. Append an entry to `client/src/features/theme/theme-definitions.ts`.
+ *   1. Append an entry to `packages/ui/src/theme.ts`.
  *   2. Duplicate one of the blocks below and fill in the palette — keep the
  *      variable names identical, only the values change.
  * ------------------------------------------------------------------------- */

@@ -29,6 +29,7 @@ import {
 } from "#/lib/auth/session";
 import {
 	type RemoteProjectSummary,
+	type SessionKind,
 	sessionKey,
 	useSessionStore,
 	type VisibleSessionSummary,
@@ -194,7 +195,10 @@ function useSessionsShellViewModel(
 	);
 
 	const startSession = useCallback(
-		(project: RemoteProjectSummary) => {
+		(
+			project: RemoteProjectSummary,
+			options?: { sessionKind?: SessionKind },
+		) => {
 			if (pendingNewSession) return;
 			const knownSessionIds = new Set(
 				visibleSessions
@@ -205,7 +209,9 @@ function useSessionsShellViewModel(
 					)
 					.map((summary) => summary.sessionId),
 			);
-			const didRequest = remoteSessions.startSession(project);
+			const didRequest = options
+				? remoteSessions.startSession(project, options)
+				: remoteSessions.startSession(project);
 			if (!didRequest) return;
 			setPendingNewSession({
 				requestId: `${Date.now()}:${projectKey(project)}`,
@@ -332,11 +338,7 @@ function useSessionsShellViewModel(
 }
 
 function SessionsIndexContent() {
-	const {
-		visibleSessions,
-		selectSession,
-		archiveSession,
-	} = useSessionsShell();
+	const { visibleSessions, selectSession, archiveSession } = useSessionsShell();
 	const [pendingSessionAction, setPendingSessionAction] = useState<{
 		key: string;
 		action: "archive";

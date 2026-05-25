@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use rusqlite_migration::{Migrations, M};
 
-pub const PROJECT_DATABASE_SCHEMA_VERSION: i64 = 34;
+pub const PROJECT_DATABASE_SCHEMA_VERSION: i64 = 35;
 
 pub fn migrations() -> &'static Migrations<'static> {
     static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
@@ -41,6 +41,7 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(MIGRATION_025_MULTI_AGENT_WORKFLOWS_SQL),
             M::up(MIGRATION_026_AGENT_CREATE_WORKFLOW_DEFINITIONS_SQL),
             M::up(MIGRATION_027_DELIVERY_STATE_SQL),
+            M::up(MIGRATION_028_COMPUTER_USE_MODE_SQL),
         ])
     });
 
@@ -48,6 +49,34 @@ pub fn migrations() -> &'static Migrations<'static> {
 }
 
 const NOOP_SCHEMA_VERSION_MARKER_SQL: &str = "";
+
+const MIGRATION_028_COMPUTER_USE_MODE_SQL: &str = r#"
+    ALTER TABLE agent_sessions ADD COLUMN session_kind TEXT NOT NULL DEFAULT 'standard' CHECK (session_kind IN ('standard', 'computer_use'));
+
+    INSERT OR IGNORE INTO agent_definitions (
+        definition_id,
+        current_version,
+        display_name,
+        short_label,
+        description,
+        scope,
+        lifecycle_state,
+        base_capability_profile,
+        updated_at
+    )
+    VALUES
+        ('computer_use', 1, 'Computer Use', 'Computer', 'Follow direct user instructions by observing and controlling the local computer through bounded automation tools.', 'built_in', 'active', 'computer_use', '2026-05-24T00:00:00Z');
+
+    INSERT OR IGNORE INTO agent_definition_versions (
+        definition_id,
+        version,
+        snapshot_json,
+        validation_report_json,
+        created_at
+    )
+    VALUES
+        ('computer_use', 1, '{"schema":"xero.agent_definition.v1","id":"computer_use","version":1,"displayName":"Computer Use","shortLabel":"Computer","description":"Follow direct user instructions by observing and controlling the local computer through bounded automation tools.","taskPurpose":"Observe visible computer state, perform bounded UI automation, ask before risky actions, and stop immediately when cancelled.","scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"computer_use","defaultApprovalMode":"suggest","allowedApprovalModes":["suggest"],"promptPolicy":"computer_use","toolPolicy":{"allowedTools":["tool_access","tool_search","todo","project_context_search","project_context_get","browser_observe","browser_control","browser","emulator","macos_automation","system_diagnostics_observe"],"deniedTools":["write","edit","patch","copy","fs_transaction","json_edit","toml_edit","yaml_edit","delete","rename","mkdir","command","command_run","command_session","command_session_start","command_session_read","command_session_stop","powershell","process_manager","git_status","git_diff","mcp","mcp_call_tool","skill","subagent"],"allowedEffectClasses":[],"browserControlAllowed":true,"commandAllowed":true,"destructiveWriteAllowed":false,"externalServiceAllowed":false,"skillRuntimeAllowed":false,"subagentAllowed":false},"outputContract":"answer","workflowContract":"","finalResponseContract":"Answer directly with what was done, what still needs user confirmation, or why the requested action was stopped. Do not include secrets.","projectDataPolicy":{"required":true,"recordKinds":["agent_handoff","project_fact","decision","constraint","question","context_note","diagnostic"],"structuredSchemas":["xero.project_record.v1"],"unstructuredScopes":["answer_note","session_summary","troubleshooting_note"],"memoryCandidateKinds":["project_fact","user_preference","decision","session_summary","troubleshooting"]},"attachedSkills":[]}', '{"status":"valid","source":"seed"}', '2026-05-24T00:00:00Z');
+"#;
 
 const MIGRATION_027_DELIVERY_STATE_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS delivery_projects (
@@ -1933,7 +1962,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         CHECK (short_label <> ''),
         CHECK (scope IN ('built_in', 'global_custom', 'project_custom')),
         CHECK (lifecycle_state IN ('draft', 'valid', 'active', 'archived', 'blocked')),
-        CHECK (base_capability_profile IN ('observe_only', 'planning', 'repository_recon', 'engineering', 'debugging', 'agent_builder'))
+        CHECK (base_capability_profile IN ('observe_only', 'computer_use', 'planning', 'repository_recon', 'engineering', 'debugging', 'agent_builder'))
     );
 
     CREATE TABLE IF NOT EXISTS agent_definition_versions (
@@ -2041,6 +2070,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
     )
     VALUES
         ('ask', 1, 'Ask', 'Ask', 'Answer questions about the project without mutating files, app state, processes, or external services.', 'built_in', 'active', 'observe_only', '2026-05-01T00:00:00Z'),
+        ('computer_use', 1, 'Computer Use', 'Computer', 'Follow direct user instructions by observing and controlling the local computer through bounded automation tools.', 'built_in', 'active', 'computer_use', '2026-05-24T00:00:00Z'),
         ('plan', 1, 'Plan', 'Plan', 'Turn ambiguous work into an accepted, durable implementation plan without mutating repository files.', 'built_in', 'active', 'planning', '2026-05-06T00:00:00Z'),
         ('engineer', 1, 'Engineer', 'Build', 'Implement repository changes with the existing software-building toolset and safety gates.', 'built_in', 'active', 'engineering', '2026-05-01T00:00:00Z'),
         ('debug', 1, 'Debug', 'Debug', 'Investigate failures with structured evidence, hypotheses, fixes, verification, and durable debugging memory.', 'built_in', 'active', 'debugging', '2026-05-01T00:00:00Z'),
@@ -2056,6 +2086,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
     )
     VALUES
         ('ask', 1, '{"id":"ask","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"observe_only","label":"Ask","shortLabel":"Ask","attachedSkills":[]}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
+        ('computer_use', 1, '{"schema":"xero.agent_definition.v1","id":"computer_use","version":1,"displayName":"Computer Use","shortLabel":"Computer","description":"Follow direct user instructions by observing and controlling the local computer through bounded automation tools.","taskPurpose":"Observe visible computer state, perform bounded UI automation, ask before risky actions, and stop immediately when cancelled.","scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"computer_use","defaultApprovalMode":"suggest","allowedApprovalModes":["suggest"],"promptPolicy":"computer_use","toolPolicy":{"allowedTools":["tool_access","tool_search","todo","project_context_search","project_context_get","browser_observe","browser_control","browser","emulator","macos_automation","system_diagnostics_observe"],"deniedTools":["write","edit","patch","copy","fs_transaction","json_edit","toml_edit","yaml_edit","delete","rename","mkdir","command","command_run","command_session","command_session_start","command_session_read","command_session_stop","powershell","process_manager","git_status","git_diff","mcp","mcp_call_tool","skill","subagent"],"allowedEffectClasses":[],"browserControlAllowed":true,"commandAllowed":true,"destructiveWriteAllowed":false,"externalServiceAllowed":false,"skillRuntimeAllowed":false,"subagentAllowed":false},"outputContract":"answer","workflowContract":"","finalResponseContract":"Answer directly with what was done, what still needs user confirmation, or why the requested action was stopped. Do not include secrets.","projectDataPolicy":{"required":true,"recordKinds":["agent_handoff","project_fact","decision","constraint","question","context_note","diagnostic"],"structuredSchemas":["xero.project_record.v1"],"unstructuredScopes":["answer_note","session_summary","troubleshooting_note"],"memoryCandidateKinds":["project_fact","user_preference","decision","session_summary","troubleshooting"]},"attachedSkills":[]}', '{"status":"valid","source":"seed"}', '2026-05-24T00:00:00Z'),
         ('plan', 1, '{"schema":"xero.agent_definition.v1","id":"plan","version":1,"displayName":"Plan","shortLabel":"Plan","description":"Turn ambiguous work into an accepted, durable implementation plan without mutating repository files.","taskPurpose":"Interview the user, inspect project context when useful, draft a reproducible Plan Pack, and prepare Engineer handoff.","scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"planning","defaultApprovalMode":"suggest","allowedApprovalModes":["suggest"],"promptPolicy":"plan","toolPolicy":"planning","outputContract":"plan_pack","workflowContract":"Guide a user from vague task intent to an accepted xero.plan_pack.v1 without repository mutation.","finalResponseContract":"Produce the canonical Plan Pack summary and deterministic Engineer handoff prompt after acceptance.","projectDataPolicy":{"required":true,"recordKinds":["agent_handoff","project_fact","decision","constraint","plan","question","context_note","diagnostic"],"structuredSchemas":["xero.project_record.v1","xero.plan_pack.v1"],"unstructuredScopes":["answer_note","session_summary","troubleshooting_note"],"memoryCandidateKinds":["project_fact","user_preference","decision","session_summary","troubleshooting"]},"attachedSkills":[]}', '{"status":"valid","source":"seed"}', '2026-05-06T00:00:00Z'),
         ('engineer', 1, '{"id":"engineer","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"engineering","label":"Engineer","shortLabel":"Build","attachedSkills":[]}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
         ('debug', 1, '{"id":"debug","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"debugging","label":"Debug","shortLabel":"Debug","attachedSkills":[]}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
@@ -3321,10 +3352,12 @@ mod tests {
         }
 
         let session_columns = table_columns(&connection, "agent_sessions");
-        assert!(
-            session_columns.contains(&"remote_visible".to_string()),
-            "agent_sessions should include `remote_visible`"
-        );
+        for column in ["remote_visible", "session_kind"] {
+            assert!(
+                session_columns.contains(&column.to_string()),
+                "agent_sessions should include `{column}`"
+            );
+        }
     }
 
     #[test]
@@ -3341,6 +3374,7 @@ mod tests {
         );
 
         assert!(built_ins.contains(&"agent_create:3:Agent Create".to_string()));
+        assert!(built_ins.contains(&"computer_use:1:Computer Use".to_string()));
         assert!(built_ins.contains(&"debug:2:Debug".to_string()));
         assert!(built_ins.contains(&"engineer:2:Engineer".to_string()));
         assert!(built_ins.contains(&"generalist:1:Agent".to_string()));

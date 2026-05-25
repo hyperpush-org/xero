@@ -34,6 +34,7 @@ pub mod get_runtime_session;
 pub mod get_runtime_settings;
 pub mod git_commit_message;
 pub mod git_operations;
+pub mod global_computer_use;
 pub mod import_mcp_servers;
 pub mod import_repository;
 pub mod list_mcp_servers;
@@ -58,6 +59,7 @@ pub mod remove_mcp_server;
 pub mod remove_project;
 pub mod resolve_operator_action;
 pub mod resume_operator_run;
+pub(crate) mod runtime_media;
 pub mod search_project;
 pub mod session_history;
 pub mod skills;
@@ -194,6 +196,7 @@ pub use git_operations::{
     git_commit, git_discard_changes, git_fetch, git_pull, git_push, git_revert_patch,
     git_stage_paths, git_unstage_paths,
 };
+pub use global_computer_use::{ensure_global_computer_use_session, GlobalComputerUseSessionDto};
 pub use import_mcp_servers::import_mcp_servers;
 pub use import_repository::import_repository;
 pub use list_mcp_servers::{list_mcp_servers, refresh_mcp_server_statuses};
@@ -244,8 +247,9 @@ pub use provider_model_catalog::get_provider_model_catalog;
 pub use provider_preflight::preflight_provider_profile;
 pub use record_notification_dispatch_outcome::record_notification_dispatch_outcome;
 pub use remote_bridge::{
-    bridge_poll_github_login, bridge_revoke_device, bridge_sign_in, bridge_sign_out, bridge_status,
-    BridgePollGithubLoginRequestDto, BridgeRevokeDeviceRequestDto, BridgeStatusResponseDto,
+    bridge_poll_github_login, bridge_publish_theme, bridge_revoke_device, bridge_sign_in,
+    bridge_sign_out, bridge_status, BridgePollGithubLoginRequestDto, BridgeRevokeDeviceRequestDto,
+    BridgeStatusResponseDto, BridgeThemeSyncRequestDto,
 };
 pub use remove_mcp_server::remove_mcp_server;
 pub use remove_project::remove_project;

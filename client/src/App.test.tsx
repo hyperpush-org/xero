@@ -195,6 +195,7 @@ function makeAgentSession(projectId = 'project-1') {
   return {
     projectId,
     agentSessionId: 'agent-session-main',
+    sessionKind: 'standard' as const,
     title: 'Main session',
     summary: 'Primary project session',
     status: 'active' as const,
@@ -206,6 +207,20 @@ function makeAgentSession(projectId = 'project-1') {
     lastRunId: null,
     lastRuntimeKind: null,
     lastProviderId: null,
+  }
+}
+
+const GLOBAL_COMPUTER_USE_PROJECT_ID = 'global-computer-use'
+const GLOBAL_COMPUTER_USE_AGENT_SESSION_ID = 'agent-session-global-computer-use'
+
+function makeComputerUseAgentSession() {
+  return {
+    ...makeAgentSession(GLOBAL_COMPUTER_USE_PROJECT_ID),
+    agentSessionId: GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
+    sessionKind: 'computer_use' as const,
+    title: 'Computer Use',
+    summary: '',
+    remoteVisible: false,
   }
 }
 
@@ -226,6 +241,20 @@ function makeSnapshot(projectId = 'project-1', name = 'Xero'): ProjectSnapshotRe
     verificationRecords: [],
     resumeHistory: [],
     agentSessions: [makeAgentSession(projectId)],
+    notificationDispatches: [],
+    notificationReplyClaims: [],
+  }
+}
+
+function makeComputerUseSnapshot(): ProjectSnapshotResponseDto {
+  return {
+    project: makeProjectSummary(GLOBAL_COMPUTER_USE_PROJECT_ID, 'Computer Use'),
+    repository: null,
+    phases: [],
+    approvalRequests: [],
+    verificationRecords: [],
+    resumeHistory: [],
+    agentSessions: [makeComputerUseAgentSession()],
     notificationDispatches: [],
     notificationReplyClaims: [],
   }
@@ -1349,26 +1378,43 @@ function createAdapter(options?: {
     })
   }
 
-  const queuePendingRuntimeRunSnapshot = (request?: { controls?: RuntimeRunControlInputDto | null; prompt?: string | null }) => {
+  const queuePendingRuntimeRunSnapshot = (request?: {
+    projectId?: string
+    agentSessionId?: string
+    controls?: RuntimeRunControlInputDto | null
+    prompt?: string | null
+  }) => {
     const activeProfile = getActiveProviderProfileSnapshot()
+    const projectId = request?.projectId ?? currentRuntimeRun?.projectId ?? 'project-1'
+    const agentSessionId =
+      request?.agentSessionId ??
+      currentRuntimeRun?.agentSessionId ??
+      (projectId === GLOBAL_COMPUTER_USE_PROJECT_ID
+        ? GLOBAL_COMPUTER_USE_AGENT_SESSION_ID
+        : 'agent-session-main')
 
     currentRuntimeRun = currentRuntimeRun
-      ? makeRuntimeRun('project-1', {
+      ? makeRuntimeRun(projectId, {
           ...currentRuntimeRun,
+          projectId,
+          agentSessionId,
           runtimeKind: getRuntimeKindForProvider(activeProfile.providerId),
           providerId: activeProfile.providerId,
           controls: mergePendingRuntimeRunControls(currentRuntimeRun, request),
           lastHeartbeatAt: '2026-04-22T12:05:30Z',
           updatedAt: '2026-04-22T12:05:30Z',
         })
-      : makeRuntimeRun('project-1', {
+      : makeRuntimeRun(projectId, {
+          agentSessionId,
           runtimeKind: getRuntimeKindForProvider(activeProfile.providerId),
           providerId: activeProfile.providerId,
           controls: buildRuntimeRunControls({
-            base: makeRuntimeRun('project-1').controls.active,
+            base: makeRuntimeRun(projectId).controls.active,
             nextControls: {
               providerProfileId: request?.controls?.providerProfileId ?? activeProfile.profileId,
-              runtimeAgentId: request?.controls?.runtimeAgentId ?? 'ask',
+              runtimeAgentId:
+                request?.controls?.runtimeAgentId ??
+                (projectId === GLOBAL_COMPUTER_USE_PROJECT_ID ? 'computer_use' : 'ask'),
               modelId: request?.controls?.modelId ?? activeProfile.modelId,
               thinkingEffort: request?.controls?.thinkingEffort ?? 'medium',
               approvalMode: request?.controls?.approvalMode ?? 'suggest',
@@ -1388,13 +1434,19 @@ function createAdapter(options?: {
     return currentRuntimeRun
   }
 
-  const startRuntimeRunSnapshot = (options?: { initialControls?: RuntimeRunControlInputDto | null; initialPrompt?: string | null }) => {
+  const startRuntimeRunSnapshot = (
+    projectId = 'project-1',
+    agentSessionId = 'agent-session-main',
+    options?: { initialControls?: RuntimeRunControlInputDto | null; initialPrompt?: string | null },
+  ) => {
     const activeProfile = getActiveProviderProfileSnapshot()
     const activeControls = buildRuntimeRunControls({
-      base: makeRuntimeRun('project-1').controls.active,
+      base: makeRuntimeRun(projectId).controls.active,
       nextControls: {
         providerProfileId: options?.initialControls?.providerProfileId ?? activeProfile.profileId,
-        runtimeAgentId: options?.initialControls?.runtimeAgentId ?? 'ask',
+        runtimeAgentId:
+          options?.initialControls?.runtimeAgentId ??
+          (projectId === GLOBAL_COMPUTER_USE_PROJECT_ID ? 'computer_use' : 'ask'),
         modelId: options?.initialControls?.modelId ?? activeProfile.modelId,
         thinkingEffort: options?.initialControls?.thinkingEffort ?? 'medium',
         approvalMode: options?.initialControls?.approvalMode ?? 'suggest',
@@ -1408,7 +1460,8 @@ function createAdapter(options?: {
       queuedPromptAt: options?.initialPrompt ? '2026-04-22T12:00:30Z' : null,
     })
 
-    currentRuntimeRun = makeRuntimeRun('project-1', {
+    currentRuntimeRun = makeRuntimeRun(projectId, {
+      agentSessionId,
       runtimeKind: getRuntimeKindForProvider(activeProfile.providerId),
       providerId: activeProfile.providerId,
       controls: activeControls,
@@ -1672,8 +1725,8 @@ function createAdapter(options?: {
     return { route }
   })
 
-  const startRuntimeRun = vi.fn(async (_projectId: string, _agentSessionId: string, options?: { initialControls?: RuntimeRunControlInputDto | null; initialPrompt?: string | null }) =>
-    startRuntimeRunSnapshot(options),
+  const startRuntimeRun = vi.fn(async (projectId: string, agentSessionId: string, options?: { initialControls?: RuntimeRunControlInputDto | null; initialPrompt?: string | null }) =>
+    startRuntimeRunSnapshot(projectId, agentSessionId, options),
   )
 
   const updateRuntimeRunControls = vi.fn(async (request?: {
@@ -1778,7 +1831,10 @@ function createAdapter(options?: {
       currentProjects = currentProjects.filter((project) => project.id !== projectId)
       return { projects: currentProjects }
     },
-    getProjectSnapshot: async () => currentSnapshot,
+    getProjectSnapshot: async (projectId) =>
+      projectId === GLOBAL_COMPUTER_USE_PROJECT_ID
+        ? makeComputerUseSnapshot()
+        : currentSnapshot,
     getProjectUsageSummary: async (projectId: string) => ({
       ...currentUsageSummary,
       projectId,
@@ -2193,7 +2249,13 @@ function createAdapter(options?: {
       )
     },
     getAutonomousRun: async () => currentAutonomousState ?? { run: null },
-    getRuntimeRun: async () => currentRuntimeRun,
+    ensureGlobalComputerUseSession: async () => ({
+      projectId: GLOBAL_COMPUTER_USE_PROJECT_ID,
+      agentSessionId: GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
+      session: makeComputerUseAgentSession(),
+    }),
+    getRuntimeRun: async (projectId) =>
+      currentRuntimeRun?.projectId === projectId ? currentRuntimeRun : null,
     listMcpServers,
     upsertMcpServer,
     removeMcpServer,
@@ -2254,7 +2316,10 @@ function createAdapter(options?: {
           runtimeProtocolVersion: 'supervisor-v1',
         },
       }),
-    getRuntimeSession: async () => currentRuntimeSession,
+    getRuntimeSession: async (projectId) =>
+      currentRuntimeSession.projectId === projectId
+        ? currentRuntimeSession
+        : makeRuntimeSession(projectId),
     startOpenAiLogin: async (_options) => {
       return makeProviderAuthSession({
         phase: 'awaiting_browser_callback',
@@ -2279,12 +2344,13 @@ function createAdapter(options?: {
     startXaiDeviceCodeLogin: async () => makeXaiDeviceCodeLogin(),
     pollXaiDeviceCodeLogin: async (request) =>
       makeXaiDeviceCodeLogin({ flowId: request.flowId }),
-    startRuntimeSession: async () => {
-      currentRuntimeSession = makeRuntimeSession('project-1')
+    startRuntimeSession: async (projectId) => {
+      currentRuntimeSession = makeRuntimeSession(projectId)
       return currentRuntimeSession
     },
     stopRuntimeRun: async (_projectId, _agentSessionId, runId) => {
-      currentRuntimeRun = makeRuntimeRun('project-1', {
+      currentRuntimeRun = makeRuntimeRun(_projectId, {
+        agentSessionId: _agentSessionId,
         runId,
         status: 'stopped',
         stoppedAt: '2026-04-15T20:10:00Z',
@@ -2315,8 +2381,8 @@ function createAdapter(options?: {
       }
       return currentAutonomousState
     },
-    logoutRuntimeSession: async () => {
-      currentRuntimeSession = makeRuntimeSession('project-1', {
+    logoutRuntimeSession: async (projectId) => {
+      currentRuntimeSession = makeRuntimeSession(projectId, {
         phase: 'idle',
         sessionId: null,
         accountId: null,
@@ -3112,6 +3178,38 @@ describe('XeroApp current UI', () => {
       ),
     )
     expect(screen.queryByLabelText('Agent authoring canvas')).not.toBeInTheDocument()
+  })
+
+  it('opens Computer Use without selecting the agent dock or changing the active project chrome', async () => {
+    const { adapter } = createAdapter({
+      projects: [makeProjectSummary('project-1', 'mesh-lang')],
+      snapshot: makeSnapshot('project-1', 'mesh-lang'),
+      status: makeStatus('project-1', 'mesh-lang'),
+    })
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+    expect(screen.getAllByText('mesh-lang')[0]).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Computer Use' }))
+
+    const dock = await screen.findByLabelText('Agent dock')
+    await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'false'))
+    expect(screen.getByRole('button', { name: 'Open agent dock' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    )
+    const computerUseTitlebarButton = screen
+      .getAllByRole('button', { name: 'Close Computer Use' })
+      .find((button) => button.getAttribute('aria-pressed') === 'true')
+    expect(computerUseTitlebarButton).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    expect(screen.getAllByText('mesh-lang')[0]).toBeVisible()
   })
 
   it('lazy-activates the agent pane only after the Agent view is opened', async () => {

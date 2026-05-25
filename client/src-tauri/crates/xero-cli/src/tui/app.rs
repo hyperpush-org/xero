@@ -176,6 +176,7 @@ fn default_agent_catalog() -> Vec<AgentEntry> {
     // desktop UI.
     [
         ("ask", "Ask"),
+        ("computer_use", "Computer Use"),
         ("plan", "Plan"),
         ("engineer", "Engineer"),
         ("debug", "Debug"),
@@ -4411,7 +4412,11 @@ mod tests {
                 "session".to_owned(),
                 "create".to_owned(),
                 "--project-id".to_owned(),
-                "project-1".to_owned()
+                "project-1".to_owned(),
+                "--title".to_owned(),
+                "New Chat".to_owned(),
+                "--session-kind".to_owned(),
+                "standard".to_owned()
             ]
         );
     }

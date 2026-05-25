@@ -140,6 +140,8 @@ type Selection =
   | { kind: 'edge'; id: string }
   | null
 
+const WORKFLOW_PANEL_TEXT_WRAP_CLASS = 'break-words [overflow-wrap:anywhere]'
+
 export interface WorkflowDefinitionCanvasStatus {
   editing: boolean
   saving: boolean
@@ -1516,7 +1518,12 @@ function NodeEditor({
       ) : null}
       {node.type === 'state_read' || node.type === 'state_query' ? (
         <>
-          <div className="rounded-md border border-border/45 bg-muted/25 px-2.5 py-2 text-[10.5px] leading-relaxed text-muted-foreground">
+          <div
+            className={cn(
+              'rounded-md border border-border/45 bg-muted/25 px-2.5 py-2 text-[10.5px] leading-relaxed text-muted-foreground',
+              WORKFLOW_PANEL_TEXT_WRAP_CLASS,
+            )}
+          >
             {workflowStateQueryPlainSummary(node.query)}
           </div>
           <Field label="Record type" hint="The durable project state this node reads.">
@@ -1670,7 +1677,12 @@ function NodeEditor({
       ) : null}
       {node.type === 'state_write' || node.type === 'state_patch' ? (
         <>
-          <div className="rounded-md border border-border/45 bg-muted/25 px-2.5 py-2 text-[10.5px] leading-relaxed text-muted-foreground">
+          <div
+            className={cn(
+              'rounded-md border border-border/45 bg-muted/25 px-2.5 py-2 text-[10.5px] leading-relaxed text-muted-foreground',
+              WORKFLOW_PANEL_TEXT_WRAP_CLASS,
+            )}
+          >
             {workflowStateWritePlainSummary(node.operation)}
           </div>
           <Field label="Record type">
@@ -1789,7 +1801,12 @@ function NodeEditor({
       ) : null}
       {node.type === 'collection_loop' ? (
         <>
-          <div className="rounded-md border border-border/45 bg-muted/25 px-2.5 py-2 text-[10.5px] leading-relaxed text-muted-foreground">
+          <div
+            className={cn(
+              'rounded-md border border-border/45 bg-muted/25 px-2.5 py-2 text-[10.5px] leading-relaxed text-muted-foreground',
+              WORKFLOW_PANEL_TEXT_WRAP_CLASS,
+            )}
+          >
             {workflowStateQueryPlainSummary(node.collection)}
           </div>
           <Field label="Collection">
@@ -2756,7 +2773,14 @@ function WorkflowGuidanceCard({
         <div className="min-w-0 flex-1 space-y-2">
           <div className="space-y-0.5">
             <p className="text-[11.5px] font-semibold text-foreground">{help.label}</p>
-            <p className="text-[11px] leading-relaxed text-muted-foreground">{summary}</p>
+            <p
+              className={cn(
+                'text-[11px] leading-relaxed text-muted-foreground',
+                WORKFLOW_PANEL_TEXT_WRAP_CLASS,
+              )}
+            >
+              {summary}
+            </p>
           </div>
           <Tabs defaultValue="guide" className="gap-2">
             <TabsList className="h-7 rounded-md bg-background/45 p-0.5">
@@ -2768,7 +2792,12 @@ function WorkflowGuidanceCard({
               </TabsTrigger>
             </TabsList>
             <TabsContent value="guide" className="mt-0 space-y-1.5">
-              <p className="text-[10.5px] leading-relaxed text-muted-foreground">
+              <p
+                className={cn(
+                  'text-[10.5px] leading-relaxed text-muted-foreground',
+                  WORKFLOW_PANEL_TEXT_WRAP_CLASS,
+                )}
+              >
                 {help.useWhen}
               </p>
               {setup.length > 0 ? (
@@ -2776,14 +2805,19 @@ function WorkflowGuidanceCard({
                   {setup.map((item) => (
                     <li key={item} className="flex gap-1.5 text-[10.5px] leading-relaxed text-foreground/85">
                       <CheckCircle2 className="mt-0.5 size-3 shrink-0 text-primary" aria-hidden="true" />
-                      <span>{item}</span>
+                      <span className={WORKFLOW_PANEL_TEXT_WRAP_CLASS}>{item}</span>
                     </li>
                   ))}
                 </ul>
               ) : null}
             </TabsContent>
             <TabsContent value="terms" className="mt-0">
-              <p className="text-[10.5px] leading-relaxed text-muted-foreground">
+              <p
+                className={cn(
+                  'text-[10.5px] leading-relaxed text-muted-foreground',
+                  WORKFLOW_PANEL_TEXT_WRAP_CLASS,
+                )}
+              >
                 Advanced fields: {advanced.join(', ') || 'none'}.
               </p>
             </TabsContent>
@@ -2881,7 +2915,14 @@ function WorkflowRunRecoveryPanel({
               {humanize(result.kind)}
             </Badge>
           </div>
-          <p className="line-clamp-2 text-[10.5px] text-muted-foreground">{result.summary}</p>
+          <p
+            className={cn(
+              'line-clamp-2 text-[10.5px] text-muted-foreground',
+              WORKFLOW_PANEL_TEXT_WRAP_CLASS,
+            )}
+          >
+            {result.summary}
+          </p>
           <pre className="mt-2 max-h-44 overflow-auto rounded border border-border/35 bg-muted/25 p-2 text-[10px] leading-relaxed text-foreground/80">
             {result.detail}
           </pre>
@@ -3014,7 +3055,12 @@ function WorkflowDetailsPanel({
                 </h3>
                 <div className="rounded-md border border-border/45 bg-background/45 px-2 py-2 text-[11.5px] leading-relaxed">
                   <p className="font-medium text-foreground">{artifact.artifactType} v{artifact.schemaVersion}</p>
-                  <p className="mt-1 max-h-28 overflow-hidden text-muted-foreground [white-space:pre-wrap]">
+                  <p
+                    className={cn(
+                      'mt-1 max-h-28 overflow-hidden text-muted-foreground [white-space:pre-wrap]',
+                      WORKFLOW_PANEL_TEXT_WRAP_CLASS,
+                    )}
+                  >
                     {artifact.renderText ?? summarizeJson(artifact.payload)}
                   </p>
                 </div>
@@ -3047,7 +3093,12 @@ function WorkflowDetailsPanel({
                           </p>
                         ) : null}
                         {childArtifact ? (
-                          <p className="mt-1 line-clamp-2 text-[10.5px] text-muted-foreground">
+                          <p
+                            className={cn(
+                              'mt-1 line-clamp-2 text-[10.5px] text-muted-foreground',
+                              WORKFLOW_PANEL_TEXT_WRAP_CLASS,
+                            )}
+                          >
                             {childArtifact.renderText ?? summarizeJson(childArtifact.payload)}
                           </p>
                         ) : null}
@@ -3246,7 +3297,10 @@ function WorkflowConnectionList({ label, items }: { label: string; items: readon
         {items.map((item) => (
           <li
             key={item}
-            className="rounded-md border border-border/45 bg-background/35 px-2 py-1.5 text-[11px] leading-relaxed text-muted-foreground"
+            className={cn(
+              'rounded-md border border-border/45 bg-background/35 px-2 py-1.5 text-[11px] leading-relaxed text-muted-foreground',
+              WORKFLOW_PANEL_TEXT_WRAP_CLASS,
+            )}
           >
             {item}
           </li>
@@ -3276,7 +3330,12 @@ function WorkflowEventTimeline({ events }: { events: readonly WorkflowEventDto[]
                 {compactTime(event.createdAt)}
               </time>
             </div>
-            <p className="mt-0.5 line-clamp-2 text-[10.5px] text-muted-foreground">
+            <p
+              className={cn(
+                'mt-0.5 line-clamp-2 text-[10.5px] text-muted-foreground',
+                WORKFLOW_PANEL_TEXT_WRAP_CLASS,
+              )}
+            >
               {timelineEventSummary(event)}
             </p>
           </li>
@@ -3368,7 +3427,14 @@ function Field({
           {label}
         </Label>
         {hint ? (
-          <p className="text-[10.5px] leading-relaxed text-muted-foreground/75">{hint}</p>
+          <p
+            className={cn(
+              'text-[10.5px] leading-relaxed text-muted-foreground/75',
+              WORKFLOW_PANEL_TEXT_WRAP_CLASS,
+            )}
+          >
+            {hint}
+          </p>
         ) : null}
       </div>
       {children}
@@ -3382,7 +3448,14 @@ function ReadOnlyRow({ label, value }: { label: string; value: ReactNode }) {
       <dt className="text-[9.5px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
         {label}
       </dt>
-      <dd className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-foreground/90">{value}</dd>
+      <dd
+        className={cn(
+          'whitespace-pre-wrap text-[12px] leading-relaxed text-foreground/90',
+          WORKFLOW_PANEL_TEXT_WRAP_CLASS,
+        )}
+      >
+        {value}
+      </dd>
     </div>
   )
 }

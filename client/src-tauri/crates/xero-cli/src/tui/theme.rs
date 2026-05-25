@@ -1,6 +1,6 @@
 //! Xero Dusk color tokens — the only place that touches `Color::Rgb` for the TUI.
 //!
-//! Values mirror `client/src/features/theme/theme-definitions.ts` so the terminal
+//! Values mirror `packages/ui/src/theme.ts` so the terminal
 //! and desktop builds feel like the same product.
 
 use ratatui::style::{Color, Style};

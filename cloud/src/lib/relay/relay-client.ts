@@ -20,7 +20,8 @@ export interface InboundCommand {
 		| "list_projects"
 		| "stage_attachment"
 		| "discard_attachment"
-		| "update_session_controls";
+		| "update_session_controls"
+		| "fetch_runtime_media_artifact";
 	payload: unknown;
 }
 
@@ -117,6 +118,24 @@ export function requestSessionSnapshot(
 	});
 }
 
+export function requestThemeSnapshot(
+	channel: Channel,
+	options: {
+		computerId: string;
+		deviceId: string;
+	},
+): void {
+	pushInboundCommand(channel, {
+		v: 1,
+		seq: Date.now(),
+		computer_id: options.computerId,
+		session_id: "__theme__",
+		device_id: options.deviceId,
+		kind: "session_attached",
+		payload: { lastSeq: 0 },
+	});
+}
+
 export function requestContextSnapshot(
 	channel: Channel,
 	options: {
@@ -147,6 +166,26 @@ export function requestContextSnapshot(
 	});
 }
 
+export function requestRuntimeMediaArtifact(
+	channel: Channel,
+	options: {
+		computerId: string;
+		sessionId: string;
+		deviceId: string;
+		artifactId: string;
+	},
+): void {
+	pushInboundCommand(channel, {
+		v: 1,
+		seq: Date.now(),
+		computer_id: options.computerId,
+		session_id: options.sessionId,
+		device_id: options.deviceId,
+		kind: "fetch_runtime_media_artifact",
+		payload: { artifactId: options.artifactId },
+	});
+}
+
 export function requestStartSession(
 	channel: Channel,
 	options: {
@@ -155,6 +194,8 @@ export function requestStartSession(
 		deviceId: string;
 		title?: string | null;
 		prompt?: string | null;
+		sessionKind?: "standard" | "computer_use";
+		agent?: string | null;
 	},
 ): void {
 	const payload: Record<string, unknown> = {
@@ -162,6 +203,8 @@ export function requestStartSession(
 		prompt: options.prompt ?? "",
 	};
 	if (options.title?.trim()) payload.title = options.title.trim();
+	if (options.sessionKind) payload.sessionKind = options.sessionKind;
+	if (options.agent?.trim()) payload.agent = options.agent.trim();
 
 	pushInboundCommand(channel, {
 		v: 1,
@@ -235,6 +278,7 @@ export function requestSessionArchive(
 		computerId: string;
 		projectId: string;
 		sessionId: string;
+		agentSessionId: string;
 		deviceId: string;
 	},
 ): void {
@@ -247,7 +291,8 @@ export function requestSessionArchive(
 		kind: "archive_session",
 		payload: {
 			projectId: options.projectId,
-			agentSessionId: options.sessionId,
+			agentSessionId: options.agentSessionId,
+			remoteSessionId: options.sessionId,
 		},
 	});
 }

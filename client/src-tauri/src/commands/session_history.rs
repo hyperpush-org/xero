@@ -13,6 +13,7 @@ use tauri::{AppHandle, Runtime, State};
 
 use crate::{
     auth::now_timestamp,
+    commands::runtime_media::{extract_runtime_media_attachments, RuntimeMediaExtractionRequest},
     commands::{
         context_budget_with_source, estimate_tokens, evaluate_compaction_policy,
         memory_policy_decision, redact_session_context_text, resolve_context_limit,
@@ -29,7 +30,7 @@ use crate::{
         ExportSessionTranscriptRequestDto, ExtractSessionMemoryCandidatesRequestDto,
         ExtractSessionMemoryCandidatesResponseDto, GetSessionContextSnapshotRequestDto,
         GetSessionMemoryReviewQueueRequestDto, GetSessionTranscriptRequestDto,
-        ListSessionMemoriesRequestDto, ListSessionMemoriesResponseDto,
+        ListSessionMemoriesRequestDto, ListSessionMemoriesResponseDto, ProjectAssetState,
         RewindAgentSessionRequestDto, SaveSessionTranscriptExportRequestDto,
         SearchSessionTranscriptsRequestDto, SearchSessionTranscriptsResponseDto,
         SessionCompactionPolicyInput, SessionContextCodeMapDto, SessionContextCodeSymbolDto,
@@ -92,9 +93,11 @@ const MAX_CODE_HISTORY_CONTEXT_TOKENS: u64 = 220;
 pub async fn get_session_transcript<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
+    asset_state: State<'_, ProjectAssetState>,
     request: GetSessionTranscriptRequestDto,
 ) -> CommandResult<SessionTranscriptDto> {
     let state = state.inner().clone();
+    let asset_state = asset_state.inner().clone();
     let jobs = state.backend_jobs().clone();
     let job_key = format!(
         "session-transcript:{}:{}:{}",
@@ -105,7 +108,7 @@ pub async fn get_session_transcript<R: Runtime + 'static>(
 
     jobs.run_blocking_latest(job_key, "session transcript", move |cancellation| {
         cancellation.check_cancelled("session transcript")?;
-        let transcript = get_session_transcript_blocking(&app, &state, request)?;
+        let transcript = get_session_transcript_blocking(&app, &state, &asset_state, request)?;
         cancellation.check_cancelled("session transcript")?;
         Ok(transcript)
     })
@@ -115,6 +118,7 @@ pub async fn get_session_transcript<R: Runtime + 'static>(
 fn get_session_transcript_blocking<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
+    asset_state: &ProjectAssetState,
     request: GetSessionTranscriptRequestDto,
 ) -> CommandResult<SessionTranscriptDto> {
     validate_transcript_request(
@@ -128,6 +132,7 @@ fn get_session_transcript_blocking<R: Runtime>(
         &request.project_id,
         &request.agent_session_id,
         request.run_id.as_deref(),
+        Some(asset_state),
     )
 }
 
@@ -148,6 +153,7 @@ pub fn export_session_transcript<R: Runtime>(
         &request.project_id,
         &request.agent_session_id,
         request.run_id.as_deref(),
+        None,
     )?;
     let generated_at = now_timestamp();
     let scope = if request.run_id.is_some() {
@@ -800,6 +806,7 @@ fn build_session_transcript(
     project_id: &str,
     agent_session_id: &str,
     run_id: Option<&str>,
+    asset_state: Option<&ProjectAssetState>,
 ) -> CommandResult<SessionTranscriptDto> {
     let session = project_store::get_agent_session(repo_root, project_id, agent_session_id)?
         .ok_or_else(|| missing_session_error(project_id, agent_session_id))?;
@@ -817,6 +824,7 @@ fn build_session_transcript(
         agent_session_id,
         run_id,
         &snapshots,
+        asset_state,
     )?;
 
     let transcript = session_transcript_from_runs(&session, runs);
@@ -838,11 +846,13 @@ fn run_transcripts_with_rollback_events(
         AgentRunSnapshotRecord,
         Option<project_store::AgentUsageRecord>,
     )],
+    asset_state: Option<&ProjectAssetState>,
 ) -> CommandResult<Vec<crate::commands::RunTranscriptDto>> {
     let mut runs = snapshots
         .iter()
         .map(|(snapshot, usage)| run_transcript_from_agent_snapshot(snapshot, usage.as_ref()))
         .collect::<Vec<_>>();
+    enrich_runtime_media_transcript_items(repo_root, project_id, snapshots, &mut runs, asset_state);
     append_rollback_transcript_items(repo_root, project_id, agent_session_id, run_id, &mut runs)?;
     append_code_history_operation_transcript_items(
         repo_root,
@@ -854,6 +864,69 @@ fn run_transcripts_with_rollback_events(
     sort_run_transcript_items(&mut runs);
     enrich_code_history_transcript_items(repo_root, project_id, &mut runs)?;
     Ok(runs)
+}
+
+fn enrich_runtime_media_transcript_items(
+    repo_root: &Path,
+    project_id: &str,
+    snapshots: &[(
+        AgentRunSnapshotRecord,
+        Option<project_store::AgentUsageRecord>,
+    )],
+    runs: &mut [crate::commands::RunTranscriptDto],
+    asset_state: Option<&ProjectAssetState>,
+) {
+    for (snapshot, _) in snapshots {
+        let Some(run) = runs
+            .iter_mut()
+            .find(|run| run.run_id == snapshot.run.run_id)
+        else {
+            continue;
+        };
+        for event in &snapshot.events {
+            if event.event_kind != project_store::AgentRunEventKind::ToolCompleted {
+                continue;
+            }
+            let Ok(payload) = serde_json::from_str::<serde_json::Value>(&event.payload_json) else {
+                continue;
+            };
+            if !payload
+                .get("ok")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let Some(output) = payload.get("output") else {
+                continue;
+            };
+            let media_attachments =
+                extract_runtime_media_attachments(RuntimeMediaExtractionRequest {
+                    repo_root,
+                    project_id,
+                    run_id: &event.run_id,
+                    event_id: event.id,
+                    tool_call_id: payload
+                        .get("toolCallId")
+                        .and_then(serde_json::Value::as_str),
+                    tool_name: payload.get("toolName").and_then(serde_json::Value::as_str),
+                    output,
+                    asset_state,
+                    remote_context: None,
+                });
+            if media_attachments.is_empty() {
+                continue;
+            }
+            let source_id = event.id.to_string();
+            if let Some(item) = run
+                .items
+                .iter_mut()
+                .find(|item| item.source_table == "agent_events" && item.source_id == source_id)
+            {
+                item.media_attachments = media_attachments;
+            }
+        }
+    }
 }
 
 fn enrich_code_history_transcript_items(
@@ -1021,6 +1094,7 @@ fn rollback_transcript_item(
         code_patch_availability: None,
         checkpoint_kind: None,
         action_id: None,
+        media_attachments: Vec::new(),
         redaction: text_redaction,
     }
 }
@@ -1148,6 +1222,7 @@ fn code_history_operation_transcript_item(
         code_patch_availability: None,
         checkpoint_kind: None,
         action_id: None,
+        media_attachments: Vec::new(),
         redaction: text_redaction,
     }
 }
@@ -2019,6 +2094,7 @@ fn build_memory_extraction_source(
         agent_session_id,
         run_id,
         snapshots,
+        None,
     )?;
     let code_history_guard =
         CodeHistoryMemoryGuard::for_session(repo_root, project_id, agent_session_id, run_id)?;
@@ -4180,6 +4256,7 @@ fn build_search_rows(
             &session.agent_session_id,
             request.run_id.as_deref(),
             &snapshots,
+            None,
         )?;
         let transcript = session_transcript_from_runs(&session, run_transcripts);
         append_session_search_rows(&mut rows, &session, &transcript);
@@ -4684,6 +4761,7 @@ mod tests {
             code_patch_availability: None,
             checkpoint_kind: None,
             action_id: None,
+            media_attachments: Vec::new(),
             redaction: SessionContextRedactionDto::public(),
         }
     }
@@ -4727,6 +4805,7 @@ mod tests {
         AgentSessionRecord {
             project_id: PROJECT_ID.into(),
             agent_session_id: AGENT_SESSION_ID.into(),
+            session_kind: project_store::AgentSessionKind::Standard,
             title: "History session".into(),
             summary: String::new(),
             status: project_store::AgentSessionStatus::Active,

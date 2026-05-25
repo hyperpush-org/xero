@@ -4,9 +4,31 @@ import {
   createRuntimeStreamView,
   createRuntimeStreamViewFromSnapshot,
   mergeRuntimeStreamEvent,
+  type RuntimeStreamMediaAttachmentDto,
   runtimeStreamItemSchema,
   runtimeStreamPatchSchema,
 } from './runtime-stream'
+
+function makeRuntimeImageAttachment(
+  overrides: Partial<RuntimeStreamMediaAttachmentDto> = {},
+): RuntimeStreamMediaAttachmentDto {
+  return {
+    id: 'media-browser-screenshot',
+    kind: 'image',
+    mediaType: 'image/png',
+    title: 'Browser screenshot',
+    alt: 'Screenshot from browser automation',
+    sizeBytes: 67,
+    width: 1,
+    height: 1,
+    source: {
+      kind: 'app_data_path',
+      absolutePath: '/Users/sn0w/Library/Application Support/Xero/tool-artifacts/conversation-media/media-browser-screenshot.png',
+    },
+    renderUrl: 'xero-project-asset://preview/media-browser-screenshot',
+    ...overrides,
+  }
+}
 
 describe('runtime stream contracts', () => {
   it('hydrates projected runtime stream snapshots from Rust patches', () => {
@@ -375,5 +397,120 @@ describe('runtime stream contracts', () => {
         affectedPaths: ['src/app.ts'],
       },
     })
+  })
+
+  it('accepts image media attachments on runtime tool items', () => {
+    const item = runtimeStreamItemSchema.parse({
+      kind: 'tool',
+      runId: 'run-media-1',
+      sequence: 3,
+      toolCallId: 'call-browser-screenshot',
+      toolName: 'browser',
+      toolState: 'succeeded',
+      detail: 'Browser screenshot captured.',
+      mediaAttachments: [makeRuntimeImageAttachment()],
+      createdAt: '2026-05-06T12:02:00Z',
+    })
+
+    expect(item.mediaAttachments?.[0]).toMatchObject({
+      id: 'media-browser-screenshot',
+      kind: 'image',
+      mediaType: 'image/png',
+      source: {
+        kind: 'app_data_path',
+      },
+    })
+  })
+
+  it('rejects unsupported image data URL media sources', () => {
+    const parsed = runtimeStreamItemSchema.safeParse({
+      kind: 'transcript',
+      runId: 'run-media-2',
+      sequence: 1,
+      transcriptRole: 'assistant',
+      text: null,
+      mediaAttachments: [
+        makeRuntimeImageAttachment({
+          id: 'media-svg',
+          source: {
+            kind: 'data_url',
+            dataUrl: 'data:image/svg+xml;base64,PHN2Zy8+',
+          },
+        }),
+      ],
+      createdAt: '2026-05-06T12:02:00Z',
+    })
+
+    expect(parsed.success).toBe(false)
+    if (parsed.success) {
+      throw new Error('Unsupported image data URL unexpectedly parsed.')
+    }
+    expect(parsed.error.issues.some((issue) => issue.path.join('.') === 'mediaAttachments.0.source.dataUrl')).toBe(true)
+  })
+
+  it('normalizes media-only assistant transcript items and merges later deltas', () => {
+    let stream = createRuntimeStreamView({
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-1',
+      runtimeKind: 'openai_codex',
+      runId: 'run-media-3',
+      sessionId: 'owned-agent:run-media-3',
+      subscribedItemKinds: ['transcript'],
+    })
+
+    stream = mergeRuntimeStreamEvent(stream, {
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-1',
+      runtimeKind: 'openai_codex',
+      runId: 'run-media-3',
+      sessionId: 'owned-agent:run-media-3',
+      flowId: null,
+      subscribedItemKinds: ['transcript'],
+      item: {
+        kind: 'transcript',
+        runId: 'run-media-3',
+        sequence: 1,
+        sessionId: 'owned-agent:run-media-3',
+        text: null,
+        transcriptRole: 'assistant',
+        mediaAttachments: [makeRuntimeImageAttachment()],
+        createdAt: '2026-05-06T12:03:00Z',
+      },
+    })
+    stream = mergeRuntimeStreamEvent(stream, {
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-1',
+      runtimeKind: 'openai_codex',
+      runId: 'run-media-3',
+      sessionId: 'owned-agent:run-media-3',
+      flowId: null,
+      subscribedItemKinds: ['transcript'],
+      item: {
+        kind: 'transcript',
+        runId: 'run-media-3',
+        sequence: 2,
+        sessionId: 'owned-agent:run-media-3',
+        text: 'Screenshot captured.',
+        transcriptRole: 'assistant',
+        mediaAttachments: [
+          makeRuntimeImageAttachment({
+            id: 'media-browser-screenshot-2',
+            title: 'Second screenshot',
+          }),
+        ],
+        createdAt: '2026-05-06T12:03:01Z',
+      },
+    })
+
+    expect(stream.transcriptItems).toHaveLength(1)
+    expect(stream.transcriptItems[0]).toMatchObject({
+      sequence: 1,
+      updatedSequence: 2,
+      text: 'Screenshot captured.',
+    })
+    expect(stream.transcriptItems[0].mediaAttachments.map((attachment) => attachment.id)).toEqual([
+      'media-browser-screenshot',
+      'media-browser-screenshot-2',
+    ])
   })
 })

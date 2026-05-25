@@ -10,6 +10,7 @@
     ".": "./src/index.ts",
     "./styles.css": "./src/styles.css",
     "./styles-extra-themes.css": "./src/styles-extra-themes.css",
+    "./theme": "./src/theme.ts",
     "./lib/utils": "./src/lib/utils.ts",
     "./lib/agent-attachments": "./src/lib/agent-attachments.ts",
     "./lib/byte-budget-cache": "./src/lib/byte-budget-cache.ts",

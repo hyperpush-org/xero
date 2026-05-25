@@ -5,15 +5,15 @@ use std::{
 
 use super::{
     repo_scope::{is_current_directory_path, normalize_relative_path},
-    AutonomousBrowserAction, AutonomousCommandPolicyOutcome, AutonomousCommandPolicyProfile,
-    AutonomousCommandPolicyTrace, AutonomousCommandRequest, AutonomousMcpAction,
-    AutonomousProcessActionRiskLevel, AutonomousProcessManagerAction,
-    AutonomousProcessManagerPolicyTrace, AutonomousProcessOwnershipScope,
-    AutonomousProjectContextAction, AutonomousSafetyApprovalGrant, AutonomousSafetyPolicyAction,
-    AutonomousSafetyPolicyDecision, AutonomousSystemDiagnosticsAction,
-    AutonomousSystemDiagnosticsPolicyTrace, AutonomousToolRequest, AutonomousToolRuntime,
-    AutonomousWorkflowDefinitionAction, AUTONOMOUS_TOOL_COMMAND_PROBE,
-    AUTONOMOUS_TOOL_COMMAND_VERIFY, DEFAULT_COMMAND_TIMEOUT_MS,
+    tool_allowed_for_runtime_agent_with_policy, AutonomousBrowserAction,
+    AutonomousCommandPolicyOutcome, AutonomousCommandPolicyProfile, AutonomousCommandPolicyTrace,
+    AutonomousCommandRequest, AutonomousMcpAction, AutonomousProcessActionRiskLevel,
+    AutonomousProcessManagerAction, AutonomousProcessManagerPolicyTrace,
+    AutonomousProcessOwnershipScope, AutonomousProjectContextAction, AutonomousSafetyApprovalGrant,
+    AutonomousSafetyPolicyAction, AutonomousSafetyPolicyDecision,
+    AutonomousSystemDiagnosticsAction, AutonomousSystemDiagnosticsPolicyTrace,
+    AutonomousToolRequest, AutonomousToolRuntime, AutonomousWorkflowDefinitionAction,
+    AUTONOMOUS_TOOL_COMMAND_PROBE, AUTONOMOUS_TOOL_COMMAND_VERIFY, DEFAULT_COMMAND_TIMEOUT_MS,
 };
 use crate::commands::{
     validate_non_empty, CommandError, CommandErrorClass, CommandResult, RuntimeRunApprovalModeDto,
@@ -64,6 +64,22 @@ impl AutonomousToolRuntime {
             operator_approved,
             input_sha256,
         };
+
+        if !tool_allowed_for_runtime_agent_with_policy(
+            self.active_runtime_agent_id(),
+            tool_name,
+            self.agent_tool_policy.as_ref(),
+        ) {
+            return Ok(safety_decision(
+                AutonomousSafetyPolicyAction::Deny,
+                "policy_denied_tool_for_agent",
+                format!(
+                    "The {} agent is not allowed to call `{tool_name}`.",
+                    self.active_runtime_agent_id().label()
+                ),
+                &context,
+            ));
+        }
 
         if secret_like_tool_input(raw_input) {
             return Ok(safety_decision(

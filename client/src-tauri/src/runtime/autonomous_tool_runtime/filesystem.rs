@@ -1234,14 +1234,12 @@ impl AutonomousToolRuntime {
         } else if find_result.truncated {
             format!(
                 "Found {} path(s) matching `{normalized_pattern}`; page truncated at {} returned path(s).",
-                find_result.returned_matches,
-                max_results
+                find_result.returned_matches, max_results
             )
         } else if traversal_truncated {
             format!(
                 "Found {} path(s) matching `{normalized_pattern}`; traversal omitted {} directorie(s) at maxDepth.",
-                find_result.returned_matches,
-                find_result.omissions.depth_limited_directories
+                find_result.returned_matches, find_result.omissions.depth_limited_directories
             )
         } else {
             format!(
@@ -1409,7 +1407,9 @@ impl AutonomousToolRuntime {
             if request.create_only {
                 return Err(CommandError::user_fixable(
                     "autonomous_tool_write_create_only_exists",
-                    format!("Xero refused to write `{display_path}` because createOnly=true and the file already exists."),
+                    format!(
+                        "Xero refused to write `{display_path}` because createOnly=true and the file already exists."
+                    ),
                 ));
             }
             match request.overwrite {
@@ -1425,7 +1425,9 @@ impl AutonomousToolRuntime {
                 None => {
                     return Err(CommandError::user_fixable(
                         "autonomous_tool_write_overwrite_required",
-                        format!("Xero requires overwrite=true before replacing existing file `{display_path}`."),
+                        format!(
+                            "Xero requires overwrite=true before replacing existing file `{display_path}`."
+                        ),
                     ));
                 }
             }
@@ -1438,7 +1440,9 @@ impl AutonomousToolRuntime {
                 validate_sha256(expected_hash, "expectedHash")?;
                 return Err(CommandError::user_fixable(
                     "autonomous_tool_write_expected_hash_missing_target",
-                    format!("Xero refused to use expectedHash for `{display_path}` because the file does not exist yet."),
+                    format!(
+                        "Xero refused to use expectedHash for `{display_path}` because the file does not exist yet."
+                    ),
                 ));
             }
             None
@@ -1682,7 +1686,9 @@ impl AutonomousToolRuntime {
                 if to_resolved.exists() {
                     return Err(CommandError::user_fixable(
                         "autonomous_tool_copy_directory_target_exists",
-                        format!("Xero refused to copy directory `{from_display}` because target `{to_display}` already exists."),
+                        format!(
+                            "Xero refused to copy directory `{from_display}` because target `{to_display}` already exists."
+                        ),
                     ));
                 }
                 if request.expected_target_hash.is_some() {
@@ -2553,14 +2559,18 @@ impl AutonomousToolRuntime {
                     if digest.as_deref() != Some(expected_digest.trim()) {
                         return Err(CommandError::user_fixable(
                             "autonomous_tool_delete_expected_digest_mismatch",
-                            format!("Xero refused to delete `{display_path}` because expectedDigest no longer matches the current directory plan digest."),
+                            format!(
+                                "Xero refused to delete `{display_path}` because expectedDigest no longer matches the current directory plan digest."
+                            ),
                         ));
                     }
                 }
                 None if !request.preview => {
                     return Err(CommandError::user_fixable(
                         "autonomous_tool_delete_expected_digest_required",
-                        format!("Xero requires expectedDigest from a delete preview before recursively deleting `{display_path}`."),
+                        format!(
+                            "Xero requires expectedDigest from a delete preview before recursively deleting `{display_path}`."
+                        ),
                     ));
                 }
                 None => {}
@@ -2875,13 +2885,17 @@ impl AutonomousToolRuntime {
             if !resolved_path.is_dir() {
                 return Err(CommandError::user_fixable(
                     "autonomous_tool_mkdir_directory_required",
-                    format!("Xero refused mkdir because `{display_path}` already exists but is not a directory."),
+                    format!(
+                        "Xero refused mkdir because `{display_path}` already exists but is not a directory."
+                    ),
                 ));
             }
             if !exist_ok {
                 return Err(CommandError::user_fixable(
                     "autonomous_tool_mkdir_exists",
-                    format!("Xero refused mkdir because `{display_path}` already exists and existOk=false."),
+                    format!(
+                        "Xero refused mkdir because `{display_path}` already exists and existOk=false."
+                    ),
                 ));
             }
         }
@@ -4765,10 +4779,9 @@ fn validate_fs_transaction_apply_guards(
     output: &AutonomousToolOutput,
 ) -> CommandResult<()> {
     match (&operation.action, output) {
-        (
-            AutonomousFsTransactionAction::DeleteDirectory,
-            AutonomousToolOutput::Delete(output),
-        ) if output.recursive && operation.expected_digest.is_none() => {
+        (AutonomousFsTransactionAction::DeleteDirectory, AutonomousToolOutput::Delete(output))
+            if output.recursive && operation.expected_digest.is_none() =>
+        {
             Err(CommandError::user_fixable(
                 "autonomous_tool_fs_transaction_expected_digest_required",
                 "Xero requires expectedDigest from a preview before applying a transaction directory delete.",

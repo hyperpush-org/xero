@@ -8,6 +8,7 @@ import {
 	requestSessionArchive,
 	requestSessionSnapshot,
 	requestStartSession,
+	requestThemeSnapshot,
 } from "./relay-client";
 
 const { MockSocket, socketInstances } = vi.hoisted(() => {
@@ -116,13 +117,35 @@ describe("pushInboundCommand", () => {
 		);
 	});
 
+	it("requests the desktop-selected theme from the read-only theme channel", () => {
+		const push = vi.fn();
+
+		requestThemeSnapshot({ push } as never, {
+			computerId: "desktop-1",
+			deviceId: "web-1",
+		});
+
+		expect(push).toHaveBeenCalledWith(
+			"frame",
+			expect.objectContaining({
+				v: 1,
+				computer_id: "desktop-1",
+				session_id: "__theme__",
+				device_id: "web-1",
+				kind: "session_attached",
+				payload: { lastSeq: 0 },
+			}),
+		);
+	});
+
 	it("requests a desktop-side session archive from the session-list channel", () => {
 		const push = vi.fn();
 
 		requestSessionArchive({ push } as never, {
 			computerId: "desktop-1",
 			projectId: "project-1",
-			sessionId: "session-1",
+			sessionId: "project:9:project-1session-1",
+			agentSessionId: "session-1",
 			deviceId: "web-1",
 		});
 
@@ -137,6 +160,7 @@ describe("pushInboundCommand", () => {
 				payload: {
 					projectId: "project-1",
 					agentSessionId: "session-1",
+					remoteSessionId: "project:9:project-1session-1",
 				},
 			}),
 		);
@@ -162,6 +186,31 @@ describe("pushInboundCommand", () => {
 				payload: {
 					projectId: "project-1",
 					prompt: "",
+				},
+			}),
+		);
+	});
+
+	it("requests a desktop-side Computer Use session when selected", () => {
+		const push = vi.fn();
+
+		requestStartSession({ push } as never, {
+			computerId: "desktop-1",
+			projectId: "project-1",
+			deviceId: "web-1",
+			sessionKind: "computer_use",
+			agent: "computer_use",
+		});
+
+		expect(push).toHaveBeenCalledWith(
+			"frame",
+			expect.objectContaining({
+				kind: "start_session",
+				payload: {
+					projectId: "project-1",
+					prompt: "",
+					sessionKind: "computer_use",
+					agent: "computer_use",
 				},
 			}),
 		);

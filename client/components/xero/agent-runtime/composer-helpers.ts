@@ -176,6 +176,8 @@ export function runtimeAgentIdForCustomBaseCapability(
       return 'crawl'
     case 'agent_builder':
       return 'agent_create'
+    case 'computer_use':
+      return 'computer_use'
     case 'observe_only':
       return 'ask'
   }
@@ -452,6 +454,9 @@ export function getComposerPlaceholder(
   }
 
   if (!runtimeSession) {
+    if (options.selectedRuntimeAgentId === 'computer_use') {
+      return `Tell Xero what to do on this computer with ${providerLabel}.`
+    }
     if (options.selectedRuntimeAgentId === 'plan') {
       return `Describe what you want planned with ${providerLabel}.`
     }
@@ -462,6 +467,9 @@ export function getComposerPlaceholder(
     if (runtimeSession.isLoginInProgress) {
       return `Finish signing in with ${providerLabel} to continue.`
     }
+    if (options.selectedRuntimeAgentId === 'computer_use') {
+      return `Tell Xero what to do on this computer with ${providerLabel}.`
+    }
     if (options.selectedRuntimeAgentId === 'plan') {
       return `Describe what you want planned with ${providerLabel}.`
     }
@@ -469,6 +477,9 @@ export function getComposerPlaceholder(
   }
 
   if (!hasUsableRuntimeRunId(runtimeRun)) {
+    if (options.selectedRuntimeAgentId === 'computer_use') {
+      return 'Tell Xero what to do on this computer.'
+    }
     if (options.selectedRuntimeAgentId === 'plan') {
       return 'Describe the goal, constraints, and what "done" should mean.'
     }
@@ -493,6 +504,9 @@ export function getComposerPlaceholder(
     case 'complete':
     case 'idle':
     case 'live':
+      if (options.selectedRuntimeAgentId === 'computer_use') {
+        return 'Give the next computer instruction...'
+      }
       if (options.selectedRuntimeAgentId === 'plan') {
         return 'Answer the next planning question or revise the plan…'
       }

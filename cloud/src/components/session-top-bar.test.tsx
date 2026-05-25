@@ -21,4 +21,11 @@ describe("SessionTopBar", () => {
 			screen.getByRole("button", { name: "Open sessions list" }),
 		).toBeTruthy();
 	});
+
+	it("renders Computer Use without a header badge", () => {
+		render(<SessionTopBar title="Computer Use" />);
+
+		expect(screen.getByText("Computer Use")).toBeTruthy();
+		expect(screen.queryByText(/^Computer$/i)).toBeNull();
+	});
 });

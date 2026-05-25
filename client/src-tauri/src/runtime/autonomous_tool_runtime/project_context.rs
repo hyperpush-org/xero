@@ -1423,6 +1423,12 @@ fn ensure_context_write_allowed(
             "Agent Create can search and read durable project context, but records agent and Workflow definitions through the definition registry tools.",
         ));
     }
+    if runtime_agent_id == RuntimeAgentIdDto::ComputerUse {
+        return Err(CommandError::user_fixable(
+            "project_context_write_forbidden_for_computer_use",
+            "Computer Use can search and read durable project context, but cannot record or update project context.",
+        ));
+    }
     if runtime_agent_id == RuntimeAgentIdDto::Crawl {
         return Err(CommandError::user_fixable(
             "project_context_write_forbidden_for_crawl",
@@ -2207,6 +2213,7 @@ mod tests {
         let request = plan_pack_request("accepted");
         assert!(ensure_context_write_allowed(RuntimeAgentIdDto::Engineer, &request).is_ok());
         assert!(ensure_context_write_allowed(RuntimeAgentIdDto::AgentCreate, &request).is_err());
+        assert!(ensure_context_write_allowed(RuntimeAgentIdDto::ComputerUse, &request).is_err());
         assert!(ensure_context_write_allowed(RuntimeAgentIdDto::Crawl, &request).is_err());
     }
 }

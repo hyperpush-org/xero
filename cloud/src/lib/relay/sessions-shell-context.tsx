@@ -3,6 +3,7 @@ import { createContext, useContext } from "react";
 import type { CloudSession } from "#/lib/auth/session";
 import type {
 	RemoteProjectSummary,
+	SessionKind,
 	VisibleSessionSummary,
 } from "#/lib/relay/session-store";
 
@@ -25,7 +26,10 @@ export interface SessionsShellContextValue {
 	currentComputerReconciled: boolean;
 	visibleSessionsVersion: number;
 	selectSession: (computerId: string, sessionId: string) => void;
-	startSession: (project: RemoteProjectSummary) => void;
+	startSession: (
+		project: RemoteProjectSummary,
+		options?: { sessionKind?: SessionKind },
+	) => void;
 	archiveSession: (summary: VisibleSessionSummary) => boolean;
 	reportActiveTargetInvalid: (targetKey: string) => void;
 	pendingProjectKey: string | null;
