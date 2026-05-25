@@ -118,7 +118,12 @@ afterEach(() => {
   }
 })
 
-import { XeroApp, useActivatedSurface, useStickyPrewarmedSurface } from './App'
+import {
+  XeroApp,
+  projectRunnerSuggestRequestFromStoredComposerSettings,
+  useActivatedSurface,
+  useStickyPrewarmedSurface,
+} from './App'
 import { XeroDesktopError, type XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 import {
   createXeroDoctorReport,
@@ -2664,6 +2669,44 @@ function StickyPrewarmedSurfaceProbe({
   const mounted = useStickyPrewarmedSurface(active, prewarm)
   return <div data-mounted={mounted ? 'true' : 'false'}>sticky surface</div>
 }
+
+describe('projectRunnerSuggestRequestFromStoredComposerSettings', () => {
+  it('keeps a stored modelSelectionKey provider paired with its model', () => {
+    const request = projectRunnerSuggestRequestFromStoredComposerSettings({
+      version: 1,
+      modelSelectionKey: 'xai:grok-4.3-latest',
+      runtimeAgentId: 'ask',
+      thinkingEffort: 'high',
+    })
+
+    expect(request).toEqual({
+      modelId: 'grok-4.3-latest',
+      providerId: 'xai',
+      providerProfileId: 'xai-default',
+      runtimeAgentId: 'ask',
+      thinkingEffort: 'high',
+    })
+  })
+
+  it('prefers the explicit stored profile over a stale selection key', () => {
+    const request = projectRunnerSuggestRequestFromStoredComposerSettings({
+      version: 1,
+      modelSelectionKey: 'xai:grok-4.3-latest',
+      modelId: 'gpt-5.4',
+      providerProfileId: 'openai_codex-default',
+      runtimeAgentId: 'engineer',
+      thinkingEffort: 'medium',
+    })
+
+    expect(request).toEqual({
+      modelId: 'gpt-5.4',
+      providerId: null,
+      providerProfileId: 'openai_codex-default',
+      runtimeAgentId: 'engineer',
+      thinkingEffort: 'medium',
+    })
+  })
+})
 
 describe('useActivatedSurface', () => {
   it('mounts a prewarmed surface only during the warmup window', () => {

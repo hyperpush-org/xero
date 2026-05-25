@@ -39,6 +39,7 @@ use tauri::{AppHandle, Emitter, Runtime, State};
 use crate::auth::now_timestamp;
 use crate::commands::{
     default_runtime_agent_id,
+    provider_credentials::load_provider_credentials_view,
     runtime_support::{emit_project_updated, resolve_owned_agent_provider_config},
     CommandError, CommandResult, ProjectSummaryDto, ProjectUpdateReason,
     ProviderModelThinkingEffortDto, RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto,
@@ -47,6 +48,7 @@ use crate::commands::{
 };
 use crate::db::{database_path_for_repo, project_store};
 use crate::global_db::open_global_database;
+use crate::provider_credentials::ProviderCredentialsView;
 use crate::runtime::autonomous_tool_runtime::resolve_imported_repo_root;
 use crate::runtime::{
     create_provider_adapter, ProviderMessage, ProviderStreamEvent, ProviderTurnOutcome,
@@ -91,6 +93,11 @@ pub struct UpdateProjectStartTargetsRequestDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SuggestProjectStartTargetsRequestDto {
     pub project_id: String,
+    /// Optional provider id paired with `modelId`. Used when the caller only
+    /// has a composer selection key (`providerId:modelId`) and not an explicit
+    /// provider profile id.
+    #[serde(default)]
+    pub provider_id: Option<String>,
     /// Optional. If empty/missing the active provider profile's default model
     /// is used. This lets the AI suggest button work even before the agent
     /// pane has been opened in this session, as long as a provider profile
@@ -656,6 +663,46 @@ fn normalize_terminal_title(value: &str) -> Option<String> {
     Some(trimmed.chars().take(48).collect())
 }
 
+fn resolve_requested_provider_profile_id<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    provider_id: Option<&str>,
+) -> CommandResult<Option<String>> {
+    let Some(provider_id) = provider_id
+        .map(str::trim)
+        .filter(|provider_id| !provider_id.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    let provider_profiles = load_provider_credentials_view(app, state)?;
+    provider_profile_id_for_provider(&provider_profiles, provider_id)
+}
+
+fn provider_profile_id_for_provider(
+    provider_profiles: &ProviderCredentialsView,
+    provider_id: &str,
+) -> CommandResult<Option<String>> {
+    let provider_id = provider_id.trim();
+    if provider_id.is_empty() {
+        return Ok(None);
+    }
+
+    provider_profiles
+        .profiles()
+        .iter()
+        .find(|profile| profile.provider_id == provider_id)
+        .map(|profile| Some(profile.profile_id.clone()))
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "provider_not_found",
+                format!(
+                    "Xero could not resolve the project-runner suggestion provider because provider `{provider_id}` is missing.",
+                ),
+            )
+        })
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
@@ -726,6 +773,16 @@ fn suggest_project_start_targets_blocking<R: Runtime + 'static>(
     let runtime_agent_id = request
         .runtime_agent_id
         .unwrap_or_else(default_runtime_agent_id);
+    let provider_profile_id = if let Some(provider_profile_id) = request
+        .provider_profile_id
+        .clone()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+    {
+        Some(provider_profile_id)
+    } else {
+        resolve_requested_provider_profile_id(&app, &state, request.provider_id.as_deref())?
+    };
 
     let model_id = request
         .model_id
@@ -736,11 +793,7 @@ fn suggest_project_start_targets_blocking<R: Runtime + 'static>(
     let controls = RuntimeRunControlInputDto {
         runtime_agent_id,
         agent_definition_id: None,
-        provider_profile_id: request
-            .provider_profile_id
-            .clone()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty()),
+        provider_profile_id,
         model_id: model_id.clone(),
         thinking_effort: request.thinking_effort.clone(),
         approval_mode: RuntimeRunApprovalModeDto::Yolo,
@@ -1467,6 +1520,27 @@ mod tests {
         }
     }
 
+    fn test_provider_profile(
+        profile_id: &str,
+        provider_id: &str,
+        model_id: &str,
+    ) -> crate::provider_credentials::ProviderCredentialProfile {
+        crate::provider_credentials::ProviderCredentialProfile {
+            profile_id: profile_id.into(),
+            provider_id: provider_id.into(),
+            runtime_kind: provider_id.into(),
+            label: provider_id.into(),
+            model_id: model_id.into(),
+            preset_id: Some(provider_id.into()),
+            base_url: None,
+            api_version: None,
+            region: None,
+            project_id: None,
+            credential_link: None,
+            updated_at: "2026-05-25T22:00:00Z".into(),
+        }
+    }
+
     #[test]
     fn terminal_process_kill_uses_independent_killer() {
         let kills = Arc::new(AtomicUsize::new(0));
@@ -1495,6 +1569,41 @@ mod tests {
         let incremental = buffer.read_after(Some(0), 64);
         assert_eq!(incremental.len(), 1);
         assert_eq!(incremental[0].sequence, 1);
+    }
+
+    #[test]
+    fn provider_profile_id_for_provider_uses_requested_provider() {
+        let provider_profiles = ProviderCredentialsView::from_projected_profiles_for_tests(
+            "openai_codex-default".into(),
+            vec![
+                test_provider_profile("openai_codex-default", "openai_codex", "gpt-5.4"),
+                test_provider_profile("xai-default", "xai", "grok-4.3-latest"),
+            ],
+            Vec::new(),
+        );
+
+        let profile_id =
+            provider_profile_id_for_provider(&provider_profiles, "xai").expect("profile");
+
+        assert_eq!(profile_id.as_deref(), Some("xai-default"));
+    }
+
+    #[test]
+    fn provider_profile_id_for_provider_rejects_missing_provider() {
+        let provider_profiles = ProviderCredentialsView::from_projected_profiles_for_tests(
+            "openai_codex-default".into(),
+            vec![test_provider_profile(
+                "openai_codex-default",
+                "openai_codex",
+                "gpt-5.4",
+            )],
+            Vec::new(),
+        );
+
+        let error = provider_profile_id_for_provider(&provider_profiles, "xai")
+            .expect_err("missing provider should be rejected");
+
+        assert!(format!("{error:?}").contains("provider_not_found"));
     }
 
     #[test]

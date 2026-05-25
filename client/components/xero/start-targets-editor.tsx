@@ -15,6 +15,15 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import type {
   StartTargetDto,
@@ -24,6 +33,7 @@ import type { RuntimeAgentIdDto } from "@/src/lib/xero-model/runtime"
 
 export interface StartTargetsSuggestRequest {
   modelId: string
+  providerId?: string | null
   providerProfileId: string | null
   runtimeAgentId: RuntimeAgentIdDto | null
   thinkingEffort:
@@ -34,6 +44,22 @@ export interface StartTargetsSuggestRequest {
     | "high"
     | "x_high"
     | null
+}
+
+type StartTargetsThinkingEffort = Exclude<
+  StartTargetsSuggestRequest["thinkingEffort"],
+  null
+>
+
+export interface StartTargetsModelOption {
+  selectionKey: string
+  providerId: string
+  providerProfileId: string | null
+  providerLabel: string
+  modelId: string
+  label: string
+  thinkingEffortOptions: StartTargetsThinkingEffort[]
+  defaultThinkingEffort: StartTargetsSuggestRequest["thinkingEffort"]
 }
 
 export interface SuggestedTarget {
@@ -51,6 +77,7 @@ interface StartTargetsEditorProps {
   onSuggest?: (
     request: StartTargetsSuggestRequest,
   ) => Promise<{ targets: SuggestedTarget[] }>
+  modelOptions?: StartTargetsModelOption[]
   onSaved?: () => void
 }
 
@@ -120,6 +147,77 @@ function validate(rows: RowState[]): string | null {
   return null
 }
 
+function findModelForRequest(
+  options: readonly StartTargetsModelOption[],
+  request: StartTargetsSuggestRequest | null,
+): StartTargetsModelOption | null {
+  const modelId = request?.modelId.trim() ?? ""
+  if (!modelId) return null
+
+  const providerId = request?.providerId?.trim() ?? ""
+  if (providerId) {
+    const model = options.find(
+      (option) => option.providerId === providerId && option.modelId === modelId,
+    )
+    if (model) return model
+  }
+
+  const providerProfileId = request?.providerProfileId?.trim() ?? ""
+  if (providerProfileId) {
+    const model = options.find(
+      (option) =>
+        option.providerProfileId === providerProfileId &&
+        option.modelId === modelId,
+    )
+    if (model) return model
+  }
+
+  return options.find((option) => option.modelId === modelId) ?? null
+}
+
+function resolveInitialModelSelectionKey(
+  options: readonly StartTargetsModelOption[],
+  request: StartTargetsSuggestRequest | null,
+): string | null {
+  return findModelForRequest(options, request)?.selectionKey ?? options[0]?.selectionKey ?? null
+}
+
+function normalizeThinkingEffortForModel(
+  option: StartTargetsModelOption,
+  thinkingEffort: StartTargetsSuggestRequest["thinkingEffort"],
+): StartTargetsSuggestRequest["thinkingEffort"] {
+  if (thinkingEffort && option.thinkingEffortOptions.includes(thinkingEffort)) {
+    return thinkingEffort
+  }
+  return option.defaultThinkingEffort ?? null
+}
+
+function requestWithModelOption(
+  request: StartTargetsSuggestRequest | null,
+  option: StartTargetsModelOption | null,
+): StartTargetsSuggestRequest | null {
+  if (!option) return request
+  return {
+    modelId: option.modelId,
+    providerId: option.providerId,
+    providerProfileId: option.providerProfileId,
+    runtimeAgentId: request?.runtimeAgentId ?? null,
+    thinkingEffort: normalizeThinkingEffortForModel(
+      option,
+      request?.thinkingEffort ?? option.defaultThinkingEffort ?? null,
+    ),
+  }
+}
+
+function formatRequestModelLabel(
+  request: StartTargetsSuggestRequest | null,
+): string {
+  const modelId = request?.modelId.trim() ?? ""
+  if (!modelId) return "Provider default"
+  const provider = request?.providerId?.trim() || request?.providerProfileId?.trim()
+  return provider ? `${provider} · ${modelId}` : modelId
+}
+
 export function StartTargetsEditor({
   initialTargets,
   saveLabel = "Save",
@@ -128,11 +226,16 @@ export function StartTargetsEditor({
   onSave,
   resolveSuggestRequest,
   onSuggest,
+  modelOptions = [],
   onSaved,
 }: StartTargetsEditorProps) {
   const [rows, setRows] = useState<RowState[]>(() =>
     initialTargets.length > 0 ? initialTargets.map(toRow) : [blankRow()],
   )
+  const initialSuggestRequest = resolveSuggestRequest?.() ?? null
+  const [selectedModelSelectionKey, setSelectedModelSelectionKey] = useState<
+    string | null
+  >(() => resolveInitialModelSelectionKey(modelOptions, initialSuggestRequest))
   const [error, setError] = useState<string | null>(null)
   const [saveMessage, setSaveMessage] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -149,8 +252,46 @@ export function StartTargetsEditor({
     setSaveMessage(null)
   }, [initialTargets])
 
+  useEffect(() => {
+    setSelectedModelSelectionKey((current) => {
+      if (current && modelOptions.some((option) => option.selectionKey === current)) {
+        return current
+      }
+      return resolveInitialModelSelectionKey(
+        modelOptions,
+        resolveSuggestRequest?.() ?? null,
+      )
+    })
+  }, [modelOptions, resolveSuggestRequest])
+
   const busy = saving || suggesting
   const aiEnabled = Boolean(onSuggest && resolveSuggestRequest)
+  const selectedModel =
+    modelOptions.find((option) => option.selectionKey === selectedModelSelectionKey) ??
+    null
+  const currentSuggestRequest = resolveSuggestRequest?.() ?? null
+  const visibleModel = selectedModel ?? findModelForRequest(modelOptions, currentSuggestRequest)
+  const visibleModelLabel = visibleModel
+    ? `${visibleModel.providerLabel} · ${visibleModel.label}`
+    : formatRequestModelLabel(currentSuggestRequest)
+  const modelGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      { providerLabel: string; options: StartTargetsModelOption[] }
+    >()
+    for (const option of modelOptions) {
+      const existing = groups.get(option.providerLabel)
+      if (existing) {
+        existing.options.push(option)
+      } else {
+        groups.set(option.providerLabel, {
+          providerLabel: option.providerLabel,
+          options: [option],
+        })
+      }
+    }
+    return Array.from(groups.values())
+  }, [modelOptions])
   const pristine = useMemo(
     () => rowsEqualToInitial(rows, initialTargets),
     [rows, initialTargets],
@@ -172,7 +313,8 @@ export function StartTargetsEditor({
 
   const handleSuggest = async () => {
     if (!onSuggest || !resolveSuggestRequest) return
-    const request = resolveSuggestRequest()
+    const baseRequest = resolveSuggestRequest()
+    const request = requestWithModelOption(baseRequest, selectedModel)
     if (!request) {
       setError("Configure a model in the Agent pane before using AI suggest.")
       return
@@ -325,6 +467,48 @@ export function StartTargetsEditor({
           subdirectory.
         </p>
       )}
+
+      {aiEnabled ? (
+        <div className="rounded-md border border-border/60 bg-secondary/15 px-2.5 py-2">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+                AI model
+              </div>
+              <div className="truncate text-[12.5px] text-foreground" title={visibleModelLabel}>
+                {visibleModelLabel}
+              </div>
+            </div>
+            {modelOptions.length > 0 ? (
+              <Select
+                value={selectedModelSelectionKey ?? undefined}
+                onValueChange={(value) => setSelectedModelSelectionKey(value)}
+                disabled={busy}
+              >
+                <SelectTrigger
+                  aria-label="AI suggestion model"
+                  className="h-8 w-full text-[12px] sm:w-[260px]"
+                  size="sm"
+                >
+                  <SelectValue placeholder="Select model" />
+                </SelectTrigger>
+                <SelectContent className="max-h-[320px]">
+                  {modelGroups.map((group) => (
+                    <SelectGroup key={group.providerLabel}>
+                      <SelectLabel>{group.providerLabel}</SelectLabel>
+                      {group.options.map((option) => (
+                        <SelectItem key={option.selectionKey} value={option.selectionKey}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       <div className="flex items-center justify-between gap-2">
         <Button

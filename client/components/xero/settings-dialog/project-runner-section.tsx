@@ -4,6 +4,7 @@ import { PlaySquare } from "lucide-react"
 
 import {
   StartTargetsEditor,
+  type StartTargetsModelOption,
   type StartTargetsSuggestRequest,
   type SuggestedTarget,
 } from "@/components/xero/start-targets-editor"
@@ -23,6 +24,7 @@ interface ProjectRunnerSectionProps {
   onSuggest?: (
     request: ProjectRunnerSuggestRequest,
   ) => Promise<{ targets: SuggestedTarget[] }>
+  modelOptions?: StartTargetsModelOption[]
 }
 
 export function ProjectRunnerSection({
@@ -32,6 +34,7 @@ export function ProjectRunnerSection({
   onSave,
   resolveSuggestRequest,
   onSuggest,
+  modelOptions,
 }: ProjectRunnerSectionProps) {
   if (!projectId) {
     return (
@@ -67,6 +70,7 @@ export function ProjectRunnerSection({
         }}
         resolveSuggestRequest={resolveSuggestRequest}
         onSuggest={onSuggest}
+        modelOptions={modelOptions}
       />
     </div>
   )

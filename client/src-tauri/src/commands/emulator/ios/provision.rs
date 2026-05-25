@@ -11,6 +11,9 @@
 //!
 //! Progress is streamed to the frontend on [`EMULATOR_IOS_PROVISION_EVENT`].
 
+use std::ffi::CString;
+use std::mem::MaybeUninit;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -26,6 +29,13 @@ use super::xcrun;
 pub const EMULATOR_IOS_PROVISION_EVENT: &str = "emulator:ios_provision";
 
 static PROVISIONING: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "macos")]
+const IOS_RUNTIME_DOWNLOAD_MIN_FREE_BYTES: u64 = 9_000_000_000;
+#[cfg(target_os = "macos")]
+const IOS_RUNTIME_STORAGE_PATH: &str = "/Library/Developer/CoreSimulator";
+#[cfg(target_os = "macos")]
+const MAX_COMMAND_DETAIL_CHARS: usize = 900;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -169,6 +179,7 @@ fn run_provision<R: Runtime>(app: &AppHandle<R>) -> CommandResult<()> {
         } else {
             "universal"
         };
+        ensure_runtime_download_disk_space()?;
         emit_provision(
             app,
             IosProvisionEvent::phase(IosProvisionPhase::DownloadingRuntime)
@@ -181,6 +192,9 @@ fn run_provision<R: Runtime>(app: &AppHandle<R>) -> CommandResult<()> {
             "ios_runtime_download_failed",
         )
         .or_else(|first_error| {
+            if first_error.code == "ios_runtime_disk_space_low" {
+                return Err(first_error);
+            }
             // Some Xcode releases are pickier about architecture variants;
             // retry once with Xcode's default resolver before giving up.
             run_command(
@@ -230,6 +244,24 @@ fn run_provision<R: Runtime>(app: &AppHandle<R>) -> CommandResult<()> {
 #[cfg(target_os = "macos")]
 fn ensure_xcode_cli_available() -> CommandResult<()> {
     run_command("xcrun", &["--find", "simctl"], "ios_simctl_missing").map(|_| ())
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_runtime_download_disk_space() -> CommandResult<()> {
+    let required = RequiredSpace {
+        label: "about 9 GB".to_string(),
+        bytes: IOS_RUNTIME_DOWNLOAD_MIN_FREE_BYTES,
+    };
+    let Some((path, available)) = runtime_storage_available_bytes() else {
+        return Ok(());
+    };
+    if available < required.bytes {
+        return Err(CommandError::user_fixable(
+            "ios_runtime_disk_space_low",
+            disk_space_error_message(Some(required), Some((path, available))),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -307,7 +339,20 @@ fn run_command(binary: &str, args: &[&str], code: &'static str) -> CommandResult
     } else {
         format!("{stderr}\n{stdout}")
     };
-    Err(CommandError::user_fixable(
+    Err(command_error(binary, args, code, &detail))
+}
+
+#[cfg(target_os = "macos")]
+fn command_error(binary: &str, args: &[&str], code: &'static str, detail: &str) -> CommandError {
+    if detail.to_ascii_lowercase().contains("insufficient space") {
+        return CommandError::user_fixable(
+            "ios_runtime_disk_space_low",
+            disk_space_error_message(parse_required_space(detail), runtime_storage_available_bytes()),
+        );
+    }
+
+    let detail = compact_command_detail(detail);
+    CommandError::user_fixable(
         code,
         format!(
             "`{binary} {}` failed{}",
@@ -318,5 +363,158 @@ fn run_command(binary: &str, args: &[&str], code: &'static str) -> CommandResult
                 format!(": {detail}")
             },
         ),
-    ))
+    )
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RequiredSpace {
+    label: String,
+    bytes: u64,
+}
+
+#[cfg(target_os = "macos")]
+fn parse_required_space(detail: &str) -> Option<RequiredSpace> {
+    let marker = "Requires ";
+    let start = detail.find(marker)? + marker.len();
+    let mut parts = detail[start..].split_whitespace();
+    let raw_amount = parts.next()?;
+    let raw_unit = parts.next()?;
+    let amount = raw_amount
+        .trim_matches(|c: char| !c.is_ascii_digit() && c != '.')
+        .parse::<f64>()
+        .ok()?;
+    let unit = raw_unit.trim_matches(|c: char| !c.is_ascii_alphabetic());
+    let multiplier = match unit {
+        "GB" => 1_000_000_000.0,
+        "GiB" => 1_073_741_824.0,
+        "MB" => 1_000_000.0,
+        "MiB" => 1_048_576.0,
+        _ => return None,
+    };
+    Some(RequiredSpace {
+        label: format!("{raw_amount} {unit}"),
+        bytes: (amount * multiplier).ceil() as u64,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn disk_space_error_message(
+    required: Option<RequiredSpace>,
+    available: Option<(String, u64)>,
+) -> String {
+    let required = required.unwrap_or_else(|| RequiredSpace {
+        label: "additional disk space".to_string(),
+        bytes: IOS_RUNTIME_DOWNLOAD_MIN_FREE_BYTES,
+    });
+    let Some((path, available_bytes)) = available else {
+        return format!(
+            "Xcode does not have enough disk space to install the iOS Simulator runtime. It requires {}. Free disk space, then try again.",
+            required.label
+        );
+    };
+
+    let shortfall = required.bytes.saturating_sub(available_bytes);
+    let shortfall = if shortfall > 0 {
+        format!(" Free at least {} more, then try again.", format_bytes(shortfall))
+    } else {
+        " Free more disk space, then try again.".to_string()
+    };
+    format!(
+        "Xcode does not have enough disk space to install the iOS Simulator runtime. It requires {}, but {} only has {} available.{}",
+        required.label,
+        path,
+        format_bytes(available_bytes),
+        shortfall
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn runtime_storage_available_bytes() -> Option<(String, u64)> {
+    let path = if Path::new(IOS_RUNTIME_STORAGE_PATH).exists() {
+        IOS_RUNTIME_STORAGE_PATH
+    } else {
+        "/"
+    };
+    available_bytes(path).ok().map(|bytes| (path.to_string(), bytes))
+}
+
+#[cfg(target_os = "macos")]
+fn available_bytes(path: &str) -> std::io::Result<u64> {
+    let c_path = CString::new(path.as_bytes()).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path contains nul byte")
+    })?;
+    let mut stat = MaybeUninit::<libc::statfs>::uninit();
+    let rc = unsafe { libc::statfs(c_path.as_ptr(), stat.as_mut_ptr()) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let stat = unsafe { stat.assume_init() };
+    Ok((stat.f_bavail as u64).saturating_mul(stat.f_bsize as u64))
+}
+
+#[cfg(target_os = "macos")]
+fn compact_command_detail(detail: &str) -> String {
+    let compact = detail.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= MAX_COMMAND_DETAIL_CHARS {
+        return compact;
+    }
+
+    let mut truncated = compact
+        .chars()
+        .take(MAX_COMMAND_DETAIL_CHARS)
+        .collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
+#[cfg(target_os = "macos")]
+fn format_bytes(bytes: u64) -> String {
+    let gb = bytes as f64 / 1_000_000_000.0;
+    if gb >= 1.0 {
+        return format!("{gb:.1} GB");
+    }
+    let mb = bytes as f64 / 1_000_000.0;
+    format!("{mb:.0} MB")
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_xcode_required_space_error() {
+        let parsed = parse_required_space("Insufficient space available. Requires 8.39 GB Finding content.")
+            .expect("required space");
+
+        assert_eq!(parsed.label, "8.39 GB");
+        assert_eq!(parsed.bytes, 8_390_000_000);
+    }
+
+    #[test]
+    fn builds_compact_low_disk_message() {
+        let message = disk_space_error_message(
+            Some(RequiredSpace {
+                label: "8.39 GB".to_string(),
+                bytes: 8_390_000_000,
+            }),
+            Some((
+                "/Library/Developer/CoreSimulator".to_string(),
+                3_700_000_000,
+            )),
+        );
+
+        assert!(message.contains("requires 8.39 GB"));
+        assert!(message.contains("3.7 GB available"));
+        assert!(message.contains("4.7 GB more"));
+    }
+
+    #[test]
+    fn truncates_repeated_command_output() {
+        let detail = "Downloading iOS Simulator: Preparing to download...".repeat(100);
+        let compact = compact_command_detail(&detail);
+
+        assert!(compact.len() < detail.len());
+        assert!(compact.ends_with("..."));
+    }
 }

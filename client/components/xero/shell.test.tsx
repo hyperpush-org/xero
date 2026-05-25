@@ -113,11 +113,8 @@ describe('XeroShell', () => {
     expect(screen.queryByRole('button', { name: 'Sign in with GitHub' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Open browser' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Open Solana workbench' })).toBeVisible()
-    if (platform === 'macos') {
-      expect(screen.getByRole('button', { name: 'Open iOS simulator' })).toBeVisible()
-    } else {
-      expect(screen.queryByRole('button', { name: /iOS simulator/i })).toBeNull()
-    }
+    expect(screen.queryByRole('button', { name: /iOS simulator/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Install Xcode' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Settings' })).toBeNull()
   })
 
@@ -145,7 +142,7 @@ describe('XeroShell', () => {
     expect(onToggleComputerUse).toHaveBeenCalledTimes(1)
   })
 
-  it.each(['macos', 'windows'] as const)('omits the Android emulator from the %s titlebar tools', (platform) => {
+  it.each(['macos', 'windows'] as const)('omits mobile emulator tools from the %s titlebar', (platform) => {
     render(
       <XeroShell
         activeView="phases"
@@ -157,11 +154,14 @@ describe('XeroShell', () => {
     )
 
     expect(screen.getByRole('button', { name: 'Open browser' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: /iOS simulator/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Install Xcode' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Android emulator/i })).not.toBeInTheDocument()
+    expect(screen.queryByText('iOS Simulator')).not.toBeInTheDocument()
     expect(screen.queryByText('Android Emulator')).not.toBeInTheDocument()
   })
 
-  it('flips the iOS titlebar button to an Install Xcode CTA when Xcode is missing', async () => {
+  it('does not show the iOS install CTA while mobile emulator surfaces are hidden', async () => {
     isTauriMock.mockReturnValue(true)
     invokeMock.mockResolvedValue({
       android: { present: true },
@@ -180,18 +180,13 @@ describe('XeroShell', () => {
       </XeroShell>,
     )
 
-    const ctaItem = await screen.findByRole('button', { name: 'Install Xcode' })
-    fireEvent.click(ctaItem)
-    await waitFor(() =>
-      expect(openUrlMock).toHaveBeenCalledWith('https://apps.apple.com/app/xcode/id497799835'),
-    )
-    // Clicking the CTA never toggles the iOS sidebar — opening an
-    // empty panel would just repeat the same "Install Xcode" message.
+    expect(screen.queryByRole('button', { name: 'Install Xcode' })).toBeNull()
     expect(onToggleIos).not.toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: /Open iOS simulator/ })).toBeNull()
+    await waitFor(() => expect(openUrlMock).not.toHaveBeenCalled())
   })
 
-  it('renders the iOS titlebar button only on macOS', async () => {
+  it('does not render the iOS titlebar button on any platform while mobile emulator surfaces are hidden', () => {
     const onToggleIos = vi.fn()
 
     const { rerender } = render(
@@ -205,9 +200,7 @@ describe('XeroShell', () => {
       </XeroShell>,
     )
 
-    expect(screen.getByRole('button', { name: 'Open iOS simulator' })).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: 'Open iOS simulator' }))
-    await waitFor(() => expect(onToggleIos).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('button', { name: /iOS simulator/ })).toBeNull()
 
     for (const platform of ['windows', 'linux'] as const) {
       rerender(
@@ -222,6 +215,8 @@ describe('XeroShell', () => {
       )
       expect(screen.queryByRole('button', { name: /iOS simulator/ })).toBeNull()
     }
+
+    expect(onToggleIos).not.toHaveBeenCalled()
   })
 
   it('does not render the iOS titlebar button when macOS preview runs on a non-macOS host', () => {

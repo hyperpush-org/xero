@@ -31,6 +31,7 @@ import { UpdateScreen } from '@/components/xero/update-screen'
 import {
   XeroShell,
   detectPlatform,
+  MOBILE_EMULATOR_SURFACES_ENABLED,
   type PlatformVariant,
   type SurfacePreloadTarget,
 } from '@/components/xero/shell'
@@ -38,6 +39,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core'
 import type { StatusFooterProps } from '@/components/xero/status-footer'
 import type { SettingsSection } from '@/components/xero/settings-dialog'
 import type { TerminalSidebarHandle } from '@/components/xero/terminal-sidebar'
+import type { StartTargetsModelOption } from '@/components/xero/start-targets-editor'
 import type { VcsCommitMessageModel } from '@/components/xero/vcs-sidebar'
 import type { EditorTerminalTaskRequest } from '@/components/xero/execution-view/editor-tasks'
 import {
@@ -271,7 +273,7 @@ const BASE_STARTUP_SURFACE_PRELOAD_TARGETS: SurfacePreloadTarget[] = [
 ]
 
 function shouldIncludeIosSurface(): boolean {
-  return detectPlatform() === 'macos'
+  return MOBILE_EMULATOR_SURFACES_ENABLED && detectPlatform() === 'macos'
 }
 
 function withPlatformSurfacePreloads(
@@ -650,6 +652,45 @@ function getVcsCommitMessageModel(
   }
 }
 
+function getProjectRunnerModelOptions(
+  agent: AgentPaneView | null,
+): StartTargetsModelOption[] {
+  return (agent?.composerModelOptions ?? []).map((option) => ({
+    selectionKey: option.selectionKey,
+    providerId: option.providerId,
+    providerProfileId: option.profileId,
+    providerLabel: option.providerLabel,
+    modelId: option.modelId,
+    label: option.displayName,
+    thinkingEffortOptions: option.thinkingEffortOptions,
+    defaultThinkingEffort: option.defaultThinkingEffort,
+  }))
+}
+
+function projectRunnerSuggestControlsFromRequest(
+  request: {
+    modelId: string
+    providerProfileId?: string | null
+    runtimeAgentId: RuntimeAgentIdDto | null
+    thinkingEffort: RuntimeRunControlInputDto['thinkingEffort']
+  },
+  currentControls: RuntimeRunControlInputDto | null,
+): RuntimeRunControlInputDto | null {
+  const modelId = normalizeComposerSettingsText(request.modelId)
+  if (!modelId) return null
+
+  return {
+    runtimeAgentId: request.runtimeAgentId ?? currentControls?.runtimeAgentId ?? 'ask',
+    agentDefinitionId: currentControls?.agentDefinitionId ?? null,
+    providerProfileId: request.providerProfileId ?? null,
+    modelId,
+    thinkingEffort: request.thinkingEffort ?? null,
+    approvalMode: currentControls?.approvalMode ?? 'suggest',
+    planModeRequired: false,
+    autoCompactEnabled: currentControls?.autoCompactEnabled ?? true,
+  }
+}
+
 function sameRuntimeRunControlInput(
   left: RuntimeRunControlInputDto | null,
   right: RuntimeRunControlInputDto | null,
@@ -741,22 +782,71 @@ function composerSettingsValueFromControls(
   }
 }
 
+function parseComposerModelSelectionKey(value: unknown): {
+  providerId: string | null
+  modelId: string | null
+} {
+  const selectionKey = normalizeComposerSettingsText(value)
+  if (!selectionKey) {
+    return { providerId: null, modelId: null }
+  }
+
+  const separatorIndex = selectionKey.indexOf(':')
+  if (separatorIndex <= 0 || separatorIndex === selectionKey.length - 1) {
+    return { providerId: null, modelId: selectionKey }
+  }
+
+  return {
+    providerId: selectionKey.slice(0, separatorIndex),
+    modelId: selectionKey.slice(separatorIndex + 1),
+  }
+}
+
+function composerModelRouteFromSettingsValue(value: unknown): {
+  modelId: string
+  providerProfileId: string | null
+  providerId: string | null
+} | null {
+  if (!isComposerSettingsRecord(value) || value.version !== COMPOSER_SETTINGS_VERSION) {
+    return null
+  }
+
+  const selection = parseComposerModelSelectionKey(value.modelSelectionKey)
+  const storedModelId = normalizeComposerSettingsText(value.modelId)
+  const modelId = storedModelId ?? selection.modelId
+  if (!modelId) {
+    return null
+  }
+
+  const selectionProviderId =
+    selection.modelId === modelId ? selection.providerId : null
+  const providerProfileId =
+    normalizeComposerSettingsText(value.providerProfileId) ??
+    getCloudProviderDefaultProfileId(selectionProviderId)
+
+  return {
+    modelId,
+    providerProfileId,
+    providerId: selectionProviderId,
+  }
+}
+
 function runtimeControlsFromComposerSettingsValue(
   value: unknown,
 ): RuntimeRunControlInputDto | null {
   if (!isComposerSettingsRecord(value) || value.version !== COMPOSER_SETTINGS_VERSION) {
     return null
   }
-  const modelId = normalizeComposerSettingsText(value.modelId)
-  if (!modelId || !isComposerRuntimeAgentId(value.runtimeAgentId)) {
+  const route = composerModelRouteFromSettingsValue(value)
+  if (!route || !isComposerRuntimeAgentId(value.runtimeAgentId)) {
     return null
   }
 
   return {
     runtimeAgentId: value.runtimeAgentId,
     agentDefinitionId: normalizeComposerSettingsText(value.agentDefinitionId),
-    providerProfileId: normalizeComposerSettingsText(value.providerProfileId),
-    modelId,
+    providerProfileId: route.providerProfileId,
+    modelId: route.modelId,
     thinkingEffort: isComposerThinkingEffort(value.thinkingEffort)
       ? value.thinkingEffort
       : null,
@@ -766,6 +856,38 @@ function runtimeControlsFromComposerSettingsValue(
     planModeRequired: false,
     autoCompactEnabled:
       typeof value.autoCompactEnabled === 'boolean' ? value.autoCompactEnabled : true,
+  }
+}
+
+export function projectRunnerSuggestRequestFromStoredComposerSettings(value: unknown): {
+  modelId: string
+  providerId?: string | null
+  providerProfileId: string | null
+  runtimeAgentId: RuntimeAgentIdDto | null
+  thinkingEffort: NonNullable<RuntimeRunControlInputDto['thinkingEffort']> | null
+} | null {
+  if (!isComposerSettingsRecord(value) || value.version !== COMPOSER_SETTINGS_VERSION) {
+    return null
+  }
+
+  const route = composerModelRouteFromSettingsValue(value)
+  if (!route) {
+    return null
+  }
+
+  const runtimeAgentId =
+    isComposerRuntimeAgentId(value.runtimeAgentId) && value.runtimeAgentId !== 'computer_use'
+      ? value.runtimeAgentId
+      : null
+
+  return {
+    modelId: route.modelId,
+    providerId: route.providerId,
+    providerProfileId: route.providerProfileId,
+    runtimeAgentId,
+    thinkingEffort: isComposerThinkingEffort(value.thinkingEffort)
+      ? value.thinkingEffort
+      : null,
   }
 }
 
@@ -2273,6 +2395,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const handleSuggestProjectStartTargets = useCallback(
     async (request: {
       modelId: string
+      providerId?: string | null
       providerProfileId: string | null
       runtimeAgentId: RuntimeAgentIdDto | null
       thinkingEffort:
@@ -2290,91 +2413,73 @@ export function XeroApp({ adapter }: XeroAppProps) {
       if (!resolvedAdapter.suggestProjectStartTargets) {
         throw new Error('AI suggest is unavailable.')
       }
+      const controls = projectRunnerSuggestControlsFromRequest(
+        request,
+        agentComposerControls,
+      )
+      if (controls) {
+        persistComposerSettings(controls)
+        setAgentComposerControls((current) =>
+          sameRuntimeRunControlInput(current, controls) ? current : controls,
+        )
+      }
       const result = await resolvedAdapter.suggestProjectStartTargets({
         projectId: activeProjectId,
         modelId: request.modelId,
+        providerId: request.providerId ?? null,
         providerProfileId: request.providerProfileId,
         runtimeAgentId: request.runtimeAgentId,
         thinkingEffort: request.thinkingEffort,
       })
       return { targets: result.targets }
     },
-    [activeProjectId, resolvedAdapter],
+    [
+      activeProjectId,
+      agentComposerControls,
+      persistComposerSettings,
+      resolvedAdapter,
+      setAgentComposerControls,
+    ],
   )
 
-  // Build the suggest request from the best available source. Priority:
-  //   1. Live composer controls (set after the agent pane runs at least once
-  //      this session).
-  //   2. localStorage composer settings from a previous session (key
-  //      `xero.agent.composer.settings.v1` — written by
-  //      use-agent-runtime-controller after every send).
-  //   3. Empty fallback — the Rust resolver picks the active provider
-  //      profile's default model when modelId is empty.
+  // Build the suggest request from the best available model route. The
+  // provider profile travels with the model so an xAI model cannot be sent
+  // through the OpenAI Codex profile when the agent pane has not mounted yet.
   const resolveProjectRunnerSuggestRequest = useCallback(() => {
     const controls = agentComposerControls
     if (controls && controls.modelId) {
       return {
         modelId: controls.modelId,
+        providerId: null,
         providerProfileId: controls.providerProfileId ?? null,
         runtimeAgentId: controls.runtimeAgentId,
         thinkingEffort: controls.thinkingEffort ?? null,
       }
     }
-    // Fall back to persisted composer settings from prior sessions. Note
-    // that `modelSelectionKey` is `${providerId}:${modelId}` where
-    // `providerId` is the runtime provider *type* (e.g. `openai_codex`),
-    // NOT the user's configured `providerProfileId`. We extract only the
-    // model id from it and let the Rust resolver use the active provider
-    // profile.
-    let storedModelId: string | null = null
-    let storedRuntimeAgentId:
-      | RuntimeAgentIdDto
-      | null = null
-    let storedThinkingEffort:
-      | 'none'
-      | 'minimal'
-      | 'low'
-      | 'medium'
-      | 'high'
-      | 'x_high'
-      | null = null
+    const selectedModelOption = agentView?.selectedModelOption
+    if (selectedModelOption?.modelId) {
+      return {
+        modelId: selectedModelOption.modelId,
+        providerId: selectedModelOption.providerId,
+        providerProfileId:
+          selectedModelOption.profileId ??
+          getCloudProviderDefaultProfileId(selectedModelOption.providerId),
+        runtimeAgentId: agentView?.selectedRuntimeAgentId ?? null,
+        thinkingEffort:
+          agentView?.selectedThinkingEffort ??
+          selectedModelOption.defaultThinkingEffort ??
+          null,
+      }
+    }
+
     try {
       if (typeof window !== 'undefined') {
         const raw = window.localStorage?.getItem?.('xero.agent.composer.settings.v1')
         if (raw) {
           const parsed = JSON.parse(raw) as Record<string, unknown>
-          const selectionKey =
-            typeof parsed.modelSelectionKey === 'string' ? parsed.modelSelectionKey.trim() : ''
-          if (selectionKey) {
-            const sep = selectionKey.indexOf(':')
-            storedModelId = sep > 0 ? selectionKey.slice(sep + 1) || null : selectionKey
-          }
-          if (typeof parsed.runtimeAgentId === 'string') {
-            const id = parsed.runtimeAgentId
-            if (
-              id === 'ask' ||
-              id === 'generalist' ||
-              id === 'plan' ||
-              id === 'engineer' ||
-              id === 'debug' ||
-              id === 'crawl' ||
-              id === 'agent_create'
-            ) {
-              storedRuntimeAgentId = id
-            }
-          }
-          if (typeof parsed.thinkingEffort === 'string') {
-            const eff = parsed.thinkingEffort
-            if (
-              eff === 'none' ||
-              eff === 'minimal' ||
-              eff === 'low' ||
-              eff === 'medium' ||
-              eff === 'high' ||
-              eff === 'x_high'
-            ) {
-              storedThinkingEffort = eff
-            }
+          const request = projectRunnerSuggestRequestFromStoredComposerSettings(parsed)
+          if (request) {
+            return request
           }
         }
       }
@@ -2382,12 +2487,18 @@ export function XeroApp({ adapter }: XeroAppProps) {
       /* localStorage unavailable — fall through to empty defaults. */
     }
     return {
-      modelId: storedModelId ?? '',
+      modelId: '',
+      providerId: null,
       providerProfileId: null,
-      runtimeAgentId: storedRuntimeAgentId,
-      thinkingEffort: storedThinkingEffort,
+      runtimeAgentId: null,
+      thinkingEffort: null,
     }
-  }, [agentComposerControls])
+  }, [
+    agentComposerControls,
+    agentView?.selectedModelOption,
+    agentView?.selectedRuntimeAgentId,
+    agentView?.selectedThinkingEffort,
+  ])
 
   // ── Properties-panel ↔ sidebar coordination ──────────────────────────────
   // The inline node properties / details panel sits over the canvas on the
@@ -2619,6 +2730,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const vcsCommitMessageModel = useMemo(
     () => getVcsCommitMessageModel(agentView, agentComposerControls),
     [agentComposerControls, agentView],
+  )
+  const projectRunnerModelOptions = useMemo(
+    () => getProjectRunnerModelOptions(agentView),
+    [agentView],
   )
   const memoryReviewAdapter = useMemo(() => {
     if (
@@ -4754,10 +4869,12 @@ export function XeroApp({ adapter }: XeroAppProps) {
               />
             </Suspense>
           </LazyPrerenderedSurface>
-          <IosEmulatorSurface
-            open={iosOpen}
-            prewarm={startupSurfacePrewarm.shouldMount && shouldIncludeIosSurface()}
-          />
+          {MOBILE_EMULATOR_SURFACES_ENABLED ? (
+            <IosEmulatorSurface
+              open={iosOpen}
+              prewarm={startupSurfacePrewarm.shouldMount && shouldIncludeIosSurface()}
+            />
+          ) : null}
           <SolanaWorkbenchSurface
             open={solanaOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
@@ -5013,6 +5130,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onUpdateProjectStartTargets={handleUpdateProjectStartTargets}
                 resolveProjectRunnerSuggestRequest={resolveProjectRunnerSuggestRequest}
                 onSuggestProjectStartTargets={handleSuggestProjectStartTargets}
+                projectRunnerModelOptions={projectRunnerModelOptions}
                 onUpsertNotificationRoute={(request) =>
                   upsertNotificationRoute({ ...request, updatedAt: new Date().toISOString() })
                 }
@@ -5086,6 +5204,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 }}
                 resolveSuggestRequest={resolveProjectRunnerSuggestRequest}
                 onSuggest={handleSuggestProjectStartTargets}
+                modelOptions={projectRunnerModelOptions}
               />
             ) : null}
           </Suspense>

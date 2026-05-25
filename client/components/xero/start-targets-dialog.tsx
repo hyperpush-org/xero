@@ -11,12 +11,14 @@ import {
 } from "@/components/ui/dialog"
 import {
   StartTargetsEditor,
+  type StartTargetsModelOption,
   type StartTargetsSuggestRequest,
   type SuggestedTarget,
 } from "@/components/xero/start-targets-editor"
 import type { StartTargetDto, StartTargetInputDto } from "@/src/lib/xero-desktop"
 
 export type StartTargetsDialogSuggestRequest = StartTargetsSuggestRequest
+export type StartTargetsDialogModelOption = StartTargetsModelOption
 
 interface StartTargetsDialogProps {
   open: boolean
@@ -28,6 +30,7 @@ interface StartTargetsDialogProps {
   onSuggest?: (
     request: StartTargetsSuggestRequest,
   ) => Promise<{ targets: SuggestedTarget[] }>
+  modelOptions?: StartTargetsModelOption[]
 }
 
 export function StartTargetsDialog({
@@ -38,6 +41,7 @@ export function StartTargetsDialog({
   onSubmit,
   resolveSuggestRequest,
   onSuggest,
+  modelOptions,
 }: StartTargetsDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -72,6 +76,7 @@ export function StartTargetsDialog({
             onSaved={() => onOpenChange(false)}
             resolveSuggestRequest={resolveSuggestRequest}
             onSuggest={onSuggest}
+            modelOptions={modelOptions}
           />
         </div>
       </DialogContent>

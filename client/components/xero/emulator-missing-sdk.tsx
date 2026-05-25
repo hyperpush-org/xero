@@ -612,7 +612,7 @@ function IosProvisionCard({
           : "Xero can create a default iPhone simulator from the installed runtime."}
       </div>
       {failure ? (
-        <div className="flex items-start gap-1.5 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-destructive">
+        <div className="flex max-h-40 items-start gap-1.5 overflow-y-auto rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-destructive">
           <XCircle className="mt-[2px] h-3 w-3 shrink-0" />
           <span className="break-words">{failure}</span>
         </div>

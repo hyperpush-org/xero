@@ -54,6 +54,8 @@ export type SurfacePreloadTarget =
   | "vcs"
   | "workflows"
 
+export const MOBILE_EMULATOR_SURFACES_ENABLED: boolean = false
+
 export function detectPlatform(): PlatformVariant {
   if (typeof navigator === "undefined") return "linux"
   const ua = navigator.userAgent
@@ -281,7 +283,7 @@ export function XeroShell({
   const desktopRuntime = isTauri()
   const detectedPlatform = useDesktopPlatform(desktopRuntime)
   const platform = platformOverride ?? detectedPlatform
-  const emulatorSdk = useEmulatorSdkSignal(desktopRuntime)
+  const emulatorSdk = useEmulatorSdkSignal(desktopRuntime && MOBILE_EMULATOR_SURFACES_ENABLED)
   const projectSelectionPreview = useProjectSelectionPreview()
 
   const handleWindowAction = async (action: WindowAction) => {
@@ -543,7 +545,7 @@ export function XeroShell({
       tone === "warning" && "text-warning/90 hover:bg-warning/15 hover:text-warning",
     )
 
-  const IosToolBtn = iosSupportedOnHost ? (
+  const IosToolBtn = MOBILE_EMULATOR_SURFACES_ENABLED && iosSupportedOnHost ? (
     xcodeKnownMissing ? (
       <Tooltip>
         <TooltipTrigger asChild>

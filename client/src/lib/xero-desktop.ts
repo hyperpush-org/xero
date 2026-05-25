@@ -946,6 +946,7 @@ export interface OpenTerminalRequestDto {
 export interface SuggestProjectStartTargetsRequestDto {
   projectId: string
   modelId: string
+  providerId?: string | null
   providerProfileId?: string | null
   runtimeAgentId?: RuntimeAgentIdDto | null
   thinkingEffort?:
@@ -2441,6 +2442,7 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
         request: {
           projectId: request.projectId,
           modelId: trimmedModel.length > 0 ? trimmedModel : null,
+          providerId: request.providerId ?? null,
           providerProfileId: request.providerProfileId ?? null,
           runtimeAgentId: request.runtimeAgentId ?? null,
           thinkingEffort: request.thinkingEffort ?? null,

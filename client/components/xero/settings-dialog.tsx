@@ -55,6 +55,7 @@ import type {
   XaiDeviceCodeLoginDto,
 } from "@/src/lib/xero-model"
 import type { StartTargetDto, StartTargetInputDto } from "@/src/lib/xero-desktop"
+import type { StartTargetsModelOption } from "@/components/xero/start-targets-editor"
 import type { ToolCallGroupingPreference } from "@/src/features/xero/tool-call-grouping-preference"
 import type { PlatformVariant } from "@/components/xero/shell"
 import type {
@@ -384,6 +385,7 @@ export interface SettingsDialogProps {
   ) => Promise<void>
   resolveProjectRunnerSuggestRequest?: () => {
     modelId: string
+    providerId?: string | null
     providerProfileId: string | null
     runtimeAgentId: RuntimeAgentIdDto | null
     thinkingEffort:
@@ -397,6 +399,7 @@ export interface SettingsDialogProps {
   } | null
   onSuggestProjectStartTargets?: (request: {
     modelId: string
+    providerId?: string | null
     providerProfileId: string | null
     runtimeAgentId: RuntimeAgentIdDto | null
     thinkingEffort:
@@ -408,6 +411,7 @@ export interface SettingsDialogProps {
       | "x_high"
       | null
   }) => Promise<{ targets: { name: string; command: string }[] }>
+  projectRunnerModelOptions?: StartTargetsModelOption[]
   onUpsertNotificationRoute?: (req: Omit<UpsertNotificationRouteRequestDto, "projectId" | "updatedAt">) => Promise<unknown>
   mcpRegistry?: McpRegistryDto | null
   mcpImportDiagnostics?: McpImportDiagnosticDto[]
@@ -509,6 +513,7 @@ export function SettingsDialog({
   onUpdateProjectStartTargets,
   resolveProjectRunnerSuggestRequest,
   onSuggestProjectStartTargets,
+  projectRunnerModelOptions = [],
   onUpsertNotificationRoute,
   mcpRegistry = null,
   mcpImportDiagnostics = [],
@@ -867,6 +872,7 @@ export function SettingsDialog({
           onSave={onUpdateProjectStartTargets}
           resolveSuggestRequest={resolveProjectRunnerSuggestRequest}
           onSuggest={onSuggestProjectStartTargets}
+          modelOptions={projectRunnerModelOptions}
         />
       )
     }
