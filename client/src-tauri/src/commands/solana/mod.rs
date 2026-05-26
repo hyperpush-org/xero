@@ -818,18 +818,28 @@ pub fn solana_toolchain_install_status<R: Runtime>(
 }
 
 #[tauri::command]
-pub fn solana_toolchain_install<R: Runtime>(
+pub async fn solana_toolchain_install<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
     request: ToolchainInstallRequest,
 ) -> CommandResult<ToolchainInstallStatus> {
-    let status = toolchain::install(&app, request)?;
-    if let Ok(database_path) = state.global_db_path(&app) {
-        if let Err(error) = environment_service::refresh_environment_discovery(database_path) {
-            eprintln!("[environment] refresh after Solana toolchain install failed: {error}");
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let status = toolchain::install(&app, request)?;
+        if let Ok(database_path) = state.global_db_path(&app) {
+            if let Err(error) = environment_service::refresh_environment_discovery(database_path) {
+                eprintln!("[environment] refresh after Solana toolchain install failed: {error}");
+            }
         }
-    }
-    Ok(status)
+        Ok(status)
+    })
+    .await
+    .map_err(|error| {
+        CommandError::system_fault(
+            "solana_toolchain_install_task_failed",
+            format!("Xero could not finish background Solana toolchain install: {error}"),
+        )
+    })?
 }
 
 #[tauri::command]

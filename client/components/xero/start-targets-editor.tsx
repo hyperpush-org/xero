@@ -495,13 +495,7 @@ export function StartTargetsEditor({
           </p>
         ) : saveMessage ? (
           <p className="text-[12px] text-success">{saveMessage}</p>
-        ) : (
-          <p className="text-[12px] text-muted-foreground">
-            One target = single root command. Add more for monorepos. Use{" "}
-            <code className="font-mono">cd path && cmd</code> to run from a
-            subdirectory.
-          </p>
-        )}
+        ) : null}
 
         {aiEnabled ? (
           <div className="rounded-md border border-border/60 bg-secondary/15 px-2.5 py-2">

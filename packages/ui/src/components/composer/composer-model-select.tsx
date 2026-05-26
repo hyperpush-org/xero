@@ -1,4 +1,4 @@
-import { CheckIcon, ChevronDown, Cpu } from "lucide-react";
+import { Brain, CheckIcon, ChevronDown, Cpu } from "lucide-react";
 import { Fragment, type ReactNode, memo, useMemo, useState } from "react";
 import { cn } from "../../lib/utils";
 import {
@@ -10,18 +10,34 @@ import {
 	CommandList,
 	CommandSeparator,
 } from "../ui/command";
-import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuRadioGroup,
+	DropdownMenuRadioItem,
+	DropdownMenuSub,
+	DropdownMenuSubContent,
+	DropdownMenuSubTrigger,
+	DropdownMenuTrigger,
+} from "../ui/dropdown-menu";
 import {
 	ComposerInlineTrigger,
 	composerInlineSelectContentClassName,
 } from "./composer-inline-trigger";
-import type { ComposerSelectGroup } from "./composer-types";
+import type { ComposerSelectGroup, ComposerSelectOption } from "./composer-types";
 
 export interface ComposerModelSelectProps {
 	groups: readonly ComposerSelectGroup[];
 	value: string | null;
 	onChange: (value: string) => void;
 	disabled?: boolean;
+	thinkingOptions?: readonly ComposerSelectOption[];
+	selectedThinkingId?: string | null;
+	onThinkingChange?: (value: string) => void;
+	thinkingDisabled?: boolean;
+	thinkingPlaceholder?: string;
+	thinkingLabel?: string;
 	/** "pill" (inline toolbar) or "field" (full-width, for the settings menu). */
 	variant?: "pill" | "field";
 	triggerClassName?: string;
@@ -40,10 +56,16 @@ export const ComposerModelSelect = memo(function ComposerModelSelect({
 	value,
 	onChange,
 	disabled,
+	thinkingOptions,
+	selectedThinkingId,
+	onThinkingChange,
+	thinkingDisabled,
+	thinkingPlaceholder = "Thinking",
+	thinkingLabel = "Thinking",
 	variant = "pill",
 	triggerClassName,
 	icon,
-	ariaLabel = "Model selector",
+	ariaLabel = onThinkingChange ? "Model and thinking selector" : "Model selector",
 	placeholder = "Model not configured",
 	searchPlaceholder = "Search models...",
 	emptyText = "No models found.",
@@ -56,10 +78,83 @@ export const ComposerModelSelect = memo(function ComposerModelSelect({
 		}
 		return null;
 	}, [groups, value]);
+	const selectedThinkingLabel = useMemo(
+		() =>
+			thinkingOptions?.find((option) => option.id === selectedThinkingId)?.label ??
+			null,
+		[thinkingOptions, selectedThinkingId],
+	);
+	const hasThinkingOptions = Boolean(thinkingOptions && thinkingOptions.length > 0);
+	const showThinking = typeof onThinkingChange === "function";
+	const triggerLabel =
+		showThinking && selectedThinkingLabel ? (
+			<span className="flex min-w-0 items-center gap-1.5">
+				<span className="min-w-0 truncate">{selectedLabel ?? placeholder}</span>
+				<span className="text-muted-foreground/45">·</span>
+				<span className="shrink-0 text-muted-foreground/75">
+					{selectedThinkingLabel}
+				</span>
+			</span>
+		) : (
+			selectedLabel ?? placeholder
+		);
+	const thinkingControlDisabled =
+		Boolean(thinkingDisabled) || !hasThinkingOptions || !onThinkingChange;
+
+	const thinkingMenu =
+		showThinking && hasThinkingOptions && thinkingOptions ? (
+			<DropdownMenuSub>
+				<DropdownMenuSubTrigger
+					disabled={thinkingControlDisabled}
+					className="mx-1 h-8 gap-1.5 rounded-md px-2 text-[12px]"
+				>
+					<Brain aria-hidden="true" className="size-3.5" />
+					<span className="min-w-0 flex-1 truncate">{thinkingLabel}</span>
+					<span className="truncate text-muted-foreground/75">
+						{selectedThinkingLabel ?? thinkingPlaceholder}
+					</span>
+				</DropdownMenuSubTrigger>
+				<DropdownMenuSubContent
+					sideOffset={6}
+					className="min-w-36 border-border/70 bg-card/95 text-foreground shadow-xl backdrop-blur supports-[backdrop-filter]:bg-card/90"
+				>
+					<DropdownMenuRadioGroup
+						value={selectedThinkingId ?? undefined}
+						onValueChange={(nextValue) => {
+							if (!nextValue) return;
+							onThinkingChange?.(nextValue);
+							setOpen(false);
+						}}
+					>
+						{thinkingOptions.map((option) => (
+							<DropdownMenuRadioItem
+								key={option.id}
+								value={option.id}
+								disabled={thinkingControlDisabled || option.disabled}
+								className="text-[12px]"
+							>
+								{option.label}
+							</DropdownMenuRadioItem>
+						))}
+					</DropdownMenuRadioGroup>
+				</DropdownMenuSubContent>
+			</DropdownMenuSub>
+		) : showThinking ? (
+			<DropdownMenuItem
+				disabled
+				className="mx-1 h-8 gap-1.5 rounded-md px-2 text-[12px]"
+			>
+				<Brain aria-hidden="true" className="size-3.5" />
+				<span className="min-w-0 flex-1 truncate">{thinkingLabel}</span>
+				<span className="truncate text-muted-foreground/75">
+					{thinkingPlaceholder}
+				</span>
+			</DropdownMenuItem>
+		) : null;
 
 	return (
-		<Popover open={open} onOpenChange={setOpen}>
-			<PopoverTrigger asChild>
+		<DropdownMenu open={open} onOpenChange={setOpen} modal={false}>
+			<DropdownMenuTrigger asChild>
 				{variant === "field" ? (
 					<button
 						type="button"
@@ -70,9 +165,7 @@ export const ComposerModelSelect = memo(function ComposerModelSelect({
 						disabled={disabled}
 						className={cn(fieldTriggerClassName, triggerClassName)}
 					>
-						<span className="line-clamp-1 truncate">
-							{selectedLabel ?? placeholder}
-						</span>
+						<span className="line-clamp-1 min-w-0 truncate">{triggerLabel}</span>
 						<ChevronDown
 							aria-hidden="true"
 							className="size-3.5 text-muted-foreground/70"
@@ -87,18 +180,28 @@ export const ComposerModelSelect = memo(function ComposerModelSelect({
 						className={triggerClassName}
 						disabled={disabled}
 						icon={icon ?? <Cpu aria-hidden="true" className="size-3" />}
-						label={selectedLabel ?? placeholder}
+						label={triggerLabel}
 					/>
 				)}
-			</PopoverTrigger>
+			</DropdownMenuTrigger>
 			{open ? (
-				<PopoverContent
+				<DropdownMenuContent
 					align="start"
-					className={cn("w-72 p-0", composerInlineSelectContentClassName)}
+					className={cn(
+						composerInlineSelectContentClassName,
+						"max-h-none w-72 overflow-visible p-0",
+					)}
 				>
 					<Command>
 						<CommandInput placeholder={searchPlaceholder} />
-						<CommandList>
+						{thinkingMenu ? (
+							<>
+								<div className="border-b border-border/60 py-1">
+									{thinkingMenu}
+								</div>
+							</>
+						) : null}
+						<CommandList className="max-h-[min(18rem,calc(var(--radix-dropdown-menu-content-available-height)_-_5rem))]">
 							<CommandEmpty>{emptyText}</CommandEmpty>
 							{groups.map((group, index) => (
 								<Fragment key={group.id}>
@@ -111,7 +214,9 @@ export const ComposerModelSelect = memo(function ComposerModelSelect({
 												disabled={option.disabled}
 												onSelect={() => {
 													onChange(option.id);
-													setOpen(false);
+													if (!showThinking) {
+														setOpen(false);
+													}
 												}}
 											>
 												{option.icon ? (
@@ -133,8 +238,8 @@ export const ComposerModelSelect = memo(function ComposerModelSelect({
 							))}
 						</CommandList>
 					</Command>
-				</PopoverContent>
+				</DropdownMenuContent>
 			) : null}
-		</Popover>
+		</DropdownMenu>
 	);
 });

@@ -49,6 +49,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }))
 
 import { SolanaWorkbenchSidebar } from "./solana-workbench-sidebar"
+import { SolanaMissingToolchain } from "./solana-missing-toolchain"
 
 function installLocalStorage() {
   const store = new Map<string, string>()
@@ -94,6 +95,38 @@ function readyToolchain() {
     solanaVerify: present,
     installSupported: true,
     installableComponents: [],
+  }
+}
+
+function missingSolanaToolchain() {
+  const ready = readyToolchain()
+  const missing = { present: false, path: null, version: null }
+  return {
+    ...ready,
+    solanaCli: missing,
+    cargoBuildSbf: missing,
+    installableComponents: [
+      {
+        component: "agave",
+        label: "Agave Solana tools",
+        detail: "solana, solana-test-validator, cargo-build-sbf, and spl-token",
+        installed: false,
+        installable: true,
+        required: true,
+        path: null,
+        version: null,
+      },
+      {
+        component: "anchor",
+        label: "Anchor CLI",
+        detail: "anchor build and anchor idl publishing",
+        installed: true,
+        installable: true,
+        required: true,
+        path: "/usr/bin/tool",
+        version: "1.0.0",
+      },
+    ],
   }
 }
 
@@ -270,6 +303,50 @@ describe("SolanaWorkbenchSidebar", () => {
     expect(
       screen.queryByRole("tab", { name: /Wallet, 5/i }),
     ).not.toBeInTheDocument()
+  })
+
+  it("shows a single install action when the Solana CLI is missing", async () => {
+    registerInvoke("solana_toolchain_status", missingSolanaToolchain)
+
+    render(<SolanaWorkbenchSidebar open />)
+
+    expect(await screen.findByText("Solana CLI not found")).toBeVisible()
+    expect(
+      screen.getByRole("button", { name: /^Install$/i }),
+    ).toBeEnabled()
+    expect(screen.queryByRole("button", { name: /Docs/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /Re-detect/i })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Agave/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Anchor CLI/i)).not.toBeInTheDocument()
+  })
+
+  it("replaces the install action with a small progress indicator while installing", () => {
+    render(
+      <SolanaMissingToolchain
+        installEvent={{
+          component: "agave",
+          phase: "downloading",
+          message: "Downloading Agave installer.",
+          progress: 0.42,
+          error: null,
+        }}
+        installing
+        loading={false}
+        onInstall={vi.fn()}
+        onRefresh={vi.fn()}
+        status={missingSolanaToolchain()}
+      />,
+    )
+
+    expect(screen.getByText("Solana CLI not found")).toBeVisible()
+    expect(screen.getByText("Installing")).toBeVisible()
+    expect(screen.getByText("42%")).toBeVisible()
+    expect(
+      screen.getByRole("progressbar", {
+        name: "Solana toolchain install progress",
+      }),
+    ).toHaveAttribute("aria-valuenow", "42")
+    expect(screen.queryByRole("button", { name: /^Install$/i })).not.toBeInTheDocument()
   })
 
   it("keeps the width transition enabled when closing", () => {

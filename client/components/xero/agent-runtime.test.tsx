@@ -22,6 +22,75 @@ if (!HTMLElement.prototype.releasePointerCapture) {
   HTMLElement.prototype.releasePointerCapture = () => {}
 }
 
+function makeResizeContentRect(width: number, height = 640): DOMRectReadOnly {
+  return {
+    x: 0,
+    y: 0,
+    width,
+    height,
+    top: 0,
+    right: width,
+    bottom: height,
+    left: 0,
+    toJSON: () => ({}),
+  } as DOMRectReadOnly
+}
+
+function installResizeObserverMock(width: number): () => void {
+  const previousWindowResizeObserver = window.ResizeObserver
+  const previousGlobalResizeObserver = globalThis.ResizeObserver
+
+  class MockResizeObserver implements ResizeObserver {
+    private readonly callback: ResizeObserverCallback
+
+    constructor(callback: ResizeObserverCallback) {
+      this.callback = callback
+    }
+
+    observe(target: Element, _options?: ResizeObserverOptions): void {
+      this.callback(
+        [
+          {
+            target,
+            contentRect: makeResizeContentRect(width),
+            borderBoxSize: [],
+            contentBoxSize: [],
+            devicePixelContentBoxSize: [],
+          } as unknown as ResizeObserverEntry,
+        ],
+        this,
+      )
+    }
+
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+
+  Object.defineProperty(window, 'ResizeObserver', {
+    configurable: true,
+    writable: true,
+    value: MockResizeObserver,
+  })
+  Object.defineProperty(globalThis, 'ResizeObserver', {
+    configurable: true,
+    writable: true,
+    value: MockResizeObserver,
+  })
+
+  return () => {
+    Object.defineProperty(window, 'ResizeObserver', {
+      configurable: true,
+      writable: true,
+      value: previousWindowResizeObserver,
+    })
+    Object.defineProperty(globalThis, 'ResizeObserver', {
+      configurable: true,
+      writable: true,
+      value: previousGlobalResizeObserver,
+    })
+  }
+}
+
 import {
   AgentRuntime,
   type AgentRuntimeDesktopAdapter,
@@ -2925,7 +2994,8 @@ describe('AgentRuntime current UI', () => {
     )
 
     expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent('Debug')
-    expect(screen.getByRole('combobox', { name: 'Approval mode selector' })).toHaveTextContent('Auto edit')
+    fireEvent.click(screen.getByRole('button', { name: 'Composer settings' }))
+    expect(screen.getByRole('combobox', { name: 'Approval mode' })).toHaveTextContent('Auto edit')
   })
 
   it('renders Agent Create as a built-in suggest-only composer agent', () => {
@@ -3080,13 +3150,15 @@ describe('AgentRuntime current UI', () => {
     )
 
     expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent('Debug')
-    expect(screen.getByRole('combobox', { name: 'Model selector' })).toHaveTextContent('Claude 3.5 Haiku')
-    expect(screen.getByRole('combobox', { name: 'Thinking level selector' })).toHaveTextContent('Low')
-    expect(screen.getByRole('combobox', { name: 'Approval mode selector' })).toHaveTextContent('YOLO')
-    expect(screen.getByRole('button', { name: 'Auto-compact before sending' })).toHaveAttribute(
-      'aria-pressed',
+    expect(screen.getByRole('combobox', { name: 'Model and thinking selector' })).toHaveTextContent('Claude 3.5 Haiku')
+    expect(screen.getByRole('combobox', { name: 'Model and thinking selector' })).toHaveTextContent('Low')
+    fireEvent.click(screen.getByRole('button', { name: 'Composer settings' }))
+    expect(screen.getByRole('combobox', { name: 'Approval mode' })).toHaveTextContent('YOLO')
+    expect(screen.getByRole('switch', { name: 'Auto-compact before sending' })).toHaveAttribute(
+      'aria-checked',
       'true',
     )
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
 
     fireEvent.change(screen.getByLabelText('Agent input'), {
       target: { value: 'Use the restored controls.' },
@@ -3153,10 +3225,11 @@ describe('AgentRuntime current UI', () => {
     )
 
     expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent('Debug')
-    expect(screen.getByRole('combobox', { name: 'Model selector' })).toHaveTextContent('Grok 4.3')
-    expect(screen.getByRole('combobox', { name: 'Thinking level selector' })).toHaveTextContent('Low')
-    expect(screen.getByRole('button', { name: 'Auto-compact before sending' })).toHaveAttribute(
-      'aria-pressed',
+    expect(screen.getByRole('combobox', { name: 'Model and thinking selector' })).toHaveTextContent('Grok 4.3')
+    expect(screen.getByRole('combobox', { name: 'Model and thinking selector' })).toHaveTextContent('Low')
+    fireEvent.click(screen.getByRole('button', { name: 'Composer settings' }))
+    expect(screen.getByRole('switch', { name: 'Auto-compact before sending' })).toHaveAttribute(
+      'aria-checked',
       'false',
     )
   })
@@ -3189,9 +3262,10 @@ describe('AgentRuntime current UI', () => {
 
     fireEvent.click(screen.getByRole('combobox', { name: 'Agent selector' }))
     fireEvent.click(await screen.findByRole('option', { name: /Engineer/i }))
-    fireEvent.click(screen.getByRole('combobox', { name: 'Approval mode selector' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Composer settings' }))
+    fireEvent.click(screen.getByRole('combobox', { name: 'Approval mode' }))
     fireEvent.click(await screen.findByRole('option', { name: 'YOLO' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Auto-compact before sending' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Auto-compact before sending' }))
 
     await waitFor(() => {
       const raw = window.localStorage.getItem(COMPOSER_SETTINGS_STORAGE_KEY)
@@ -3370,9 +3444,10 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    expect(screen.getByRole('combobox', { name: 'Model selector' })).toBeEnabled()
-    expect(screen.getByRole('combobox', { name: 'Thinking level selector' })).toBeEnabled()
-    expect(screen.getByRole('combobox', { name: 'Approval mode selector' })).toBeEnabled()
+    expect(screen.getByRole('combobox', { name: 'Model and thinking selector' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Composer settings' }))
+    expect(screen.getByRole('combobox', { name: 'Approval mode' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
     expect(screen.queryByText('Queued prompt pending the next model-call boundary.')).not.toBeInTheDocument()
     expect(screen.queryByText('Approval pending · YOLO')).not.toBeInTheDocument()
@@ -3528,8 +3603,7 @@ describe('AgentRuntime current UI', () => {
     )
 
     expect(screen.queryByText('Configure agent runtime')).not.toBeInTheDocument()
-    expect(screen.getByRole('combobox', { name: 'Model selector' })).toBeEnabled()
-    expect(screen.getByRole('combobox', { name: 'Thinking level selector' })).toBeEnabled()
+    expect(screen.getByRole('combobox', { name: 'Model and thinking selector' })).toBeEnabled()
     expect(screen.getByLabelText('Agent input')).toHaveAttribute(
       'placeholder',
       'Ask anything to get started with OpenRouter.',
@@ -3669,7 +3743,8 @@ describe('AgentRuntime current UI', () => {
       }),
     )
     await waitFor(() => expect(screen.getByLabelText('Agent input')).toHaveValue(''))
-    expect(screen.getByRole('combobox', { name: 'Approval mode selector' })).toHaveTextContent('YOLO')
+    fireEvent.click(screen.getByRole('button', { name: 'Composer settings' }))
+    expect(screen.getByRole('combobox', { name: 'Approval mode' })).toHaveTextContent('YOLO')
   })
 
   it('queues runtime agent changes against the active run controls', async () => {
@@ -3731,7 +3806,8 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Auto-compact before sending' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Composer settings' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Auto-compact before sending' }))
 
     await waitFor(() => {
       expect(onUpdateRuntimeRunControls).toHaveBeenCalledWith(
@@ -4367,9 +4443,61 @@ describe('AgentRuntime current UI', () => {
         />,
       )
 
-      // Compact agent panes adopt the sidebar's dense inline pills, not a gear popover.
-      expect(screen.queryByRole('button', { name: 'Composer settings' })).not.toBeInTheDocument()
-      expect(screen.getByLabelText('Thinking level selector')).toBeVisible()
+      // Compact agent panes keep primary choices inline while secondary controls sit behind settings.
+      expect(screen.getByRole('button', { name: 'Composer settings' })).toBeVisible()
+      expect(screen.getByLabelText('Model and thinking selector')).toBeVisible()
+    })
+
+    it('keeps a solo pane comfortable above the narrow-pane breakpoint', async () => {
+      const restoreResizeObserver = installResizeObserverMock(540)
+      try {
+        render(
+          <AgentRuntime
+            agent={makeAgent({
+              runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+            })}
+            density="comfortable"
+            paneCount={1}
+            paneNumber={1}
+          />,
+        )
+
+        await waitFor(() => {
+          expect(
+            screen.getByRole('heading', { name: /What can we build together/i }),
+          ).toBeVisible()
+        })
+      } finally {
+        restoreResizeObserver()
+      }
+    })
+
+    it('switches a solo pane to the condensed empty state when the pane becomes narrow', async () => {
+      const restoreResizeObserver = installResizeObserverMock(470)
+      try {
+        render(
+          <AgentRuntime
+            agent={makeAgent({
+              runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+            })}
+            density="comfortable"
+            paneCount={1}
+            paneNumber={1}
+          />,
+        )
+
+        const viewport = screen.getByLabelText('Agent conversation viewport')
+
+        await waitFor(() => {
+          expect(
+            screen.queryByRole('heading', { name: /What can we build together/i }),
+          ).not.toBeInTheDocument()
+        })
+        expect(within(viewport).getByRole('heading', { name: 'Xero' })).toBeVisible()
+        expect(within(viewport).getByRole('button', { name: 'Explore the codebase' })).toBeVisible()
+      } finally {
+        restoreResizeObserver()
+      }
     })
 
     it('uses the condensed transcript font scale when density is compact', () => {
@@ -4488,7 +4616,7 @@ describe('AgentRuntime current UI', () => {
       expect(within(viewport).getByRole('button', { name: 'Explore the codebase' })).toBeVisible()
     })
 
-    it('renders the comfortable composer variant with inline thinking selector when density is comfortable', () => {
+    it('renders the comfortable composer variant with inline model and thinking selector when density is comfortable', () => {
       render(
         <AgentRuntime
           agent={makeAgent({
@@ -4500,8 +4628,8 @@ describe('AgentRuntime current UI', () => {
         />,
       )
 
-      expect(screen.queryByRole('button', { name: 'Composer settings' })).not.toBeInTheDocument()
-      expect(screen.getByLabelText('Thinking level selector')).toBeVisible()
+      expect(screen.getByRole('button', { name: 'Composer settings' })).toBeVisible()
+      expect(screen.getByLabelText('Model and thinking selector')).toBeVisible()
     })
   })
 

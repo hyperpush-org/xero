@@ -1,6 +1,16 @@
 "use client"
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type WheelEvent } from 'react'
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+  type WheelEvent,
+} from 'react'
 import {
   ArrowDown,
   Check,
@@ -257,6 +267,7 @@ const FOREGROUND_WORK_DEFER_MS = 32
 const STREAMING_TOOL_OUTPUT_MAX_CHARS = 24_000
 const CONTEXT_METER_REFRESH_IDLE_TIMEOUT_MS = 1200
 const CONTEXT_METER_REFRESH_FALLBACK_DELAY_MS = 220
+const COMPACT_PANE_WIDTH_PX = 490
 const CODE_EDIT_TOOL_NAMES = new Set(['edit', 'patch', 'write', 'apply_patch', 'notebook_edit'])
 
 export interface AgentPaneCloseState {
@@ -632,6 +643,40 @@ function useDeferredForegroundWork(active: boolean): boolean {
   }, [active, ready])
 
   return active && ready
+}
+
+function shouldUseCompactPaneWidth(width: number): boolean {
+  return width > 0 && width < COMPACT_PANE_WIDTH_PX
+}
+
+function useCompactPaneWidth(elementRef: RefObject<HTMLElement | null>): boolean {
+  const [isCompactWidth, setIsCompactWidth] = useState(false)
+
+  useLayoutEffect(() => {
+    const element = elementRef.current
+    if (!element || typeof ResizeObserver === 'undefined') {
+      return
+    }
+
+    const updateWidth = (width: number) => {
+      const nextCompactWidth = shouldUseCompactPaneWidth(width)
+      setIsCompactWidth((current) =>
+        current === nextCompactWidth ? current : nextCompactWidth,
+      )
+    }
+
+    updateWidth(element.getBoundingClientRect().width)
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      updateWidth(entry?.contentRect.width ?? element.getBoundingClientRect().width)
+    })
+    observer.observe(element)
+
+    return () => observer.disconnect()
+  }, [elementRef])
+
+  return isCompactWidth
 }
 
 function isActionLikeTurn(
@@ -1833,6 +1878,10 @@ export const AgentRuntime = memo(function AgentRuntime({
   browserContextLoading = false,
   toolCallGroupingPreference = 'grouped',
 }: AgentRuntimeProps) {
+  const paneRootRef = useRef<HTMLDivElement | null>(null)
+  const isCompactWidth = useCompactPaneWidth(paneRootRef)
+  const effectiveDensity: NonNullable<AgentRuntimeProps['density']> =
+    density === 'compact' || isCompactWidth ? 'compact' : 'comfortable'
   const runtimeSession = agent.runtimeSession ?? null
   const runtimeRun = agent.runtimeRun ?? null
   const renderableRuntimeRun = hasUsableRuntimeRunId(runtimeRun) ? runtimeRun : null
@@ -3017,7 +3066,7 @@ export const AgentRuntime = memo(function AgentRuntime({
     setShowJumpToLatest(hasConversationViewportContent && !isNearBottom)
   }, [conversationScrollKey, foregroundWorkReady, hasConversationViewportContent, scrollToLatest])
 
-  const isCompact = density === 'compact'
+  const isCompact = effectiveDensity === 'compact'
   const isDense = isCompact || paneCount >= 4 || useBackgroundPaneFastPath
   const showPaneNumberChip = paneCount > 1 && paneNumber != null
   const showCloseButton = paneCount > 1 && typeof onClosePane === 'function'
@@ -3054,7 +3103,7 @@ export const AgentRuntime = memo(function AgentRuntime({
       enabled={Boolean(stageAgentAttachment)}
       onFilesDropped={handleAddFiles}
     >
-      <div className="flex min-h-0 min-w-0 flex-1">
+      <div ref={paneRootRef} className="flex min-h-0 min-w-0 flex-1">
         <div className="relative flex min-w-0 flex-1 flex-col">
         <div className="pointer-events-none absolute inset-x-0 top-0 z-20">
           <div
@@ -3340,10 +3389,10 @@ export const AgentRuntime = memo(function AgentRuntime({
           ) : null}
         </div>
 
-        <PlanTray plan={runtimeStream?.plan ?? null} density={density} />
+        <PlanTray plan={runtimeStream?.plan ?? null} density={effectiveDensity} />
 
         <ComposerDock
-          density={density}
+          density={effectiveDensity}
           inSidebar={inSidebar}
           composerRuntimeAgentId={controller.composerRuntimeAgentId}
           composerRuntimeAgentLabel={getRuntimeAgentLabel(controller.composerRuntimeAgentId)}

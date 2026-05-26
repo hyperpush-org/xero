@@ -1,5 +1,5 @@
 import * as SelectPrimitive from "@radix-ui/react-select";
-import { Activity, Brain, ChevronDown, Cpu, MessageCircle, Settings, ShieldCheck } from "lucide-react";
+import { Activity, Brain, ChevronDown, Cpu, MessageCircle, Settings, ShieldCheck, Sparkles } from "lucide-react";
 import {
 	type ChangeEvent,
 	Fragment,
@@ -8,6 +8,7 @@ import {
 	type RefObject,
 	useCallback,
 	useEffect,
+	useId,
 	useLayoutEffect,
 	useMemo,
 	useRef,
@@ -19,14 +20,21 @@ import {
 } from "../../lib/agent-attachments";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogHeader,
+	DialogTitle,
+} from "../ui/dialog";
 import { Drawer, DrawerContent } from "../ui/drawer";
 import { Select, SelectContent, SelectItem } from "../ui/select";
+import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { useIsMobile } from "../ui/use-mobile";
 import {
 	ComposerAttachButton,
-	ComposerAutoCompactToggle,
 	ComposerMicButton,
 	ComposerSendButton,
 	ComposerStopButton,
@@ -35,9 +43,6 @@ import {
 	ComposerAttachmentChips,
 	type ComposerPendingAttachment,
 } from "./composer-attachment-chips";
-import {
-	ComposerInlinePillSelect,
-} from "./composer-inline-pill-select";
 import {
 	ComposerInlineTrigger,
 	composerInlineSelectContentClassName,
@@ -105,6 +110,7 @@ export interface ComposerProps {
 	selectedThinkingId?: string | null;
 	onThinkingChange?: (id: string) => void;
 	thinkingDisabled?: boolean;
+	thinkingPlaceholder?: string;
 
 	approvalOptions?: readonly ComposerSelectOption[];
 	selectedApprovalId?: string | null;
@@ -208,6 +214,7 @@ export function Composer({
 	selectedThinkingId,
 	onThinkingChange,
 	thinkingDisabled,
+	thinkingPlaceholder = "Thinking unavailable",
 	approvalOptions,
 	selectedApprovalId,
 	onApprovalChange,
@@ -234,6 +241,7 @@ export function Composer({
 	const internalTextareaRef = useRef<HTMLTextAreaElement>(null);
 	const textareaRef = promptInputRef ?? internalTextareaRef;
 	const fileInputRef = useRef<HTMLInputElement>(null);
+	const autoCompactSwitchId = useId();
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [classificationError, setClassificationError] = useState<string | null>(
 		null,
@@ -256,7 +264,6 @@ export function Composer({
 
 	// Compact agent panes adopt the sidebar's flush, dense chrome.
 	const dense = inSidebar || density === "compact";
-	// The settings menu is mobile-only; every desktop surface shows inline pills.
 	const useDrawer = isMobile;
 	const showInlinePills = !useDrawer;
 
@@ -354,9 +361,6 @@ export function Composer({
 	);
 
 	const hasThinkingOptions = Boolean(thinkingOptions && thinkingOptions.length > 0);
-	// Keep the thinking control visible (disabled when empty) so the toolbar layout
-	// stays stable across models, matching the desktop composer.
-	const showThinking = typeof onThinkingChange === "function";
 	const thinkingControlDisabled = Boolean(thinkingDisabled) || !hasThinkingOptions;
 	const showApproval = Boolean(
 		approvalOptions && approvalOptions.length > 1 && onApprovalChange,
@@ -409,51 +413,26 @@ export function Composer({
 			value={selectedModelId}
 			onChange={onModelChange}
 			disabled={modelDisabled}
+			thinkingOptions={thinkingOptions}
+			selectedThinkingId={selectedThinkingId}
+			onThinkingChange={onThinkingChange}
+			thinkingDisabled={thinkingControlDisabled}
+			thinkingPlaceholder={thinkingPlaceholder}
 			triggerClassName={inlineTriggerClassName}
 		/>
 	);
-
-	const thinkingPill =
-		showThinking && onThinkingChange ? (
-			<ComposerInlinePillSelect
-				ariaLabel="Thinking level selector"
-				icon={<Brain aria-hidden="true" className="size-3" />}
-				options={thinkingOptions ?? []}
-				value={selectedThinkingId ?? null}
-				onChange={onThinkingChange}
-				disabled={thinkingControlDisabled}
-				tooltip="Thinking effort"
-				placeholder="Thinking"
-				triggerClassName={inlineTriggerClassName}
-			/>
-		) : null;
-
-	const approvalPill =
-		showApproval && approvalOptions && onApprovalChange ? (
-			<ComposerInlinePillSelect
-				ariaLabel="Approval mode selector"
-				icon={<ShieldCheck aria-hidden="true" className="size-3" />}
-				options={approvalOptions}
-				value={selectedApprovalId ?? null}
-				onChange={onApprovalChange}
-				disabled={approvalDisabled}
-				tooltip="Approval mode"
-				placeholder="Approval"
-				triggerClassName={inlineTriggerClassName}
-			/>
-		) : null;
 
 	const inlinePills = (
 		<div className="flex min-w-0 items-center gap-0.5 overflow-x-auto pb-0.5">
 			{agentPill}
 			{modelPill}
-			{thinkingPill}
-			{approvalPill}
 		</div>
 	);
 
-	const hasSettingsFields = hasAgents || hasModels || hasThinkingOptions || showApproval;
-	const settingsBody = (
+	const hasDrawerSettingsFields =
+		hasAgents || hasModels || typeof onThinkingChange === "function" || showApproval || supportsAutoCompact;
+	const hasDesktopSettingsFields = showApproval || supportsAutoCompact;
+	const drawerSettingsBody = (
 		<div className="flex flex-col gap-3">
 			{hasAgents ? (
 				<SettingsField
@@ -480,24 +459,62 @@ export function Composer({
 					/>
 				</label>
 			) : null}
-			{hasThinkingOptions && thinkingOptions && onThinkingChange ? (
+			{typeof onThinkingChange === "function" ? (
 				<SettingsField
 					label="Thinking"
 					icon={<Brain aria-hidden="true" className="size-3.5" />}
-					groups={[{ id: "thinking", options: thinkingOptions }]}
+					groups={[{ id: "thinking", options: thinkingOptions ?? [] }]}
 					value={selectedThinkingId ?? null}
 					onChange={onThinkingChange}
 					contentClassName={drawerSelectContentClassName}
+					disabled={thinkingControlDisabled}
+					placeholder={thinkingPlaceholder}
 				/>
 			) : null}
 			{showApproval && approvalOptions && onApprovalChange ? (
 				<SettingsField
-					label="Approval"
+					label="Approval mode"
 					icon={<ShieldCheck aria-hidden="true" className="size-3.5" />}
 					groups={[{ id: "approval", options: approvalOptions }]}
 					value={selectedApprovalId ?? null}
 					onChange={onApprovalChange}
 					contentClassName={drawerSelectContentClassName}
+					disabled={approvalDisabled}
+				/>
+			) : null}
+			{supportsAutoCompact ? (
+				<SettingsSwitchRow
+					id={autoCompactSwitchId}
+					label="Auto-compact before sending"
+					icon={<Sparkles aria-hidden="true" className="size-3.5" />}
+					checked={autoCompactEnabled === true}
+					disabled={autoCompactDisabled}
+					onCheckedChange={onAutoCompactEnabledChange ?? (() => undefined)}
+				/>
+			) : null}
+		</div>
+	);
+	const desktopSettingsBody = (
+		<div className="flex flex-col gap-3">
+			{showApproval && approvalOptions && onApprovalChange ? (
+				<SettingsField
+					label="Approval mode"
+					icon={<ShieldCheck aria-hidden="true" className="size-3.5" />}
+					groups={[{ id: "approval", options: approvalOptions }]}
+					value={selectedApprovalId ?? null}
+					onChange={onApprovalChange}
+					contentClassName={drawerSelectContentClassName}
+					disabled={approvalDisabled}
+				/>
+			) : null}
+			{supportsAutoCompact ? (
+				<SettingsSwitchRow
+					id={autoCompactSwitchId}
+					label="Auto-compact before sending"
+					icon={<Sparkles aria-hidden="true" className="size-3.5" />}
+					checked={autoCompactEnabled === true}
+					disabled={autoCompactDisabled}
+					onCheckedChange={onAutoCompactEnabledChange ?? (() => undefined)}
 				/>
 			) : null}
 		</div>
@@ -593,24 +610,46 @@ export function Composer({
 						<Drawer open={settingsOpen} onOpenChange={setSettingsOpen}>
 							<SettingsTriggerButton
 								open={settingsOpen}
-								disabled={!hasSettingsFields}
+								disabled={!hasDrawerSettingsFields}
 								onClick={() => setSettingsOpen((open) => !open)}
 							/>
 							<DrawerContent className="data-[vaul-drawer-direction=bottom]:rounded-t-3xl border-t border-border/60 px-1.5 pb-[max(env(safe-area-inset-bottom),0.75rem)]">
-								<div className="px-3 pb-3 pt-4">{settingsBody}</div>
+								<div className="px-3 pb-3 pt-4">{drawerSettingsBody}</div>
 							</DrawerContent>
 						</Drawer>
 					) : null}
 				</div>
 				<div className="ml-auto flex shrink-0 items-center gap-1">
 					{contextMeter ? <div className="shrink-0">{contextMeter}</div> : null}
-					{supportsAutoCompact ? (
-						<ComposerAutoCompactToggle
-							density={actionDensity}
-							disabled={autoCompactDisabled}
-							enabled={autoCompactEnabled === true}
-							onChange={onAutoCompactEnabledChange ?? (() => undefined)}
-						/>
+					{!useDrawer && hasDesktopSettingsFields ? (
+						<Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+							<SettingsTriggerButton
+								open={settingsOpen}
+								disabled={!hasDesktopSettingsFields}
+								onClick={() => setSettingsOpen((open) => !open)}
+								className={actionDensity === "md" ? "h-8 w-8" : undefined}
+							/>
+							<DialogContent className="gap-0 overflow-hidden border-border/70 bg-background p-0 text-foreground sm:max-w-[420px]">
+								<div
+									aria-hidden="true"
+									className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-primary/[0.06] to-transparent"
+								/>
+								<div className="relative px-5 pb-2 pt-5">
+									<DialogHeader className="gap-1 pr-7">
+										<div className="flex items-center gap-2.5">
+											<span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-primary/30 bg-primary/10 text-primary">
+												<Settings aria-hidden="true" className="h-4 w-4" />
+											</span>
+											<DialogTitle className="text-[15px]">Composer settings</DialogTitle>
+										</div>
+									</DialogHeader>
+									<DialogDescription className="sr-only">
+										Adjust approval mode and auto-compact.
+									</DialogDescription>
+								</div>
+								<div className="relative px-5 pb-5 pt-3">{desktopSettingsBody}</div>
+							</DialogContent>
+						</Dialog>
 					) : null}
 					{dictationVisible ? (
 						<ComposerMicButton density={actionDensity} dictation={dictation} />
@@ -712,6 +751,8 @@ interface SettingsFieldProps {
 	value: string | null;
 	onChange: (id: string) => void;
 	contentClassName: string;
+	disabled?: boolean;
+	placeholder?: string;
 }
 
 function SettingsField({
@@ -721,22 +762,38 @@ function SettingsField({
 	value,
 	onChange,
 	contentClassName,
+	disabled,
+	placeholder,
 }: SettingsFieldProps) {
-	const selectedLabel = findOption(groups, value)?.label ?? label;
+	const selectedLabel = findOption(groups, value)?.label ?? placeholder ?? label;
 	return (
-		<label className="flex flex-col gap-1 text-left">
+		<label className="flex flex-col gap-2 text-left">
 			<span className="flex items-center gap-1.5 px-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
 				{icon}
 				{label}
 			</span>
-			<Select value={value ?? undefined} onValueChange={onChange}>
+			<Select
+				disabled={disabled}
+				value={value ?? undefined}
+				onValueChange={onChange}
+			>
 				<SelectPrimitive.Trigger asChild>
 					<button
 						type="button"
 						aria-label={label}
+						disabled={disabled}
 						className="flex h-9 w-full items-center justify-between gap-2 rounded-md border border-border/60 bg-background px-2.5 text-[13px] font-medium text-foreground shadow-none transition-colors hover:bg-muted/50 focus-visible:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/15 data-[state=open]:border-primary/40 data-[state=open]:bg-muted/50"
 					>
-						<span className="line-clamp-1 truncate">{selectedLabel}</span>
+						<span
+							className={cn(
+								"line-clamp-1 truncate",
+								disabled && !findOption(groups, value)
+									? "text-muted-foreground"
+									: null,
+							)}
+						>
+							{selectedLabel}
+						</span>
 						<ChevronDown
 							aria-hidden="true"
 							className="size-3.5 text-muted-foreground/70"
@@ -748,6 +805,43 @@ function SettingsField({
 				</SelectContent>
 			</Select>
 		</label>
+	);
+}
+
+interface SettingsSwitchRowProps {
+	id: string;
+	label: string;
+	icon: ReactNode;
+	checked: boolean;
+	disabled?: boolean;
+	onCheckedChange: (next: boolean) => void;
+}
+
+function SettingsSwitchRow({
+	id,
+	label,
+	icon,
+	checked,
+	disabled,
+	onCheckedChange,
+}: SettingsSwitchRowProps) {
+	return (
+			<div className="flex items-center justify-between gap-3 px-1 py-1.5">
+			<label
+				htmlFor={id}
+				className="flex min-w-0 items-center gap-2 text-[13px] font-medium text-foreground"
+			>
+				<span className="text-muted-foreground">{icon}</span>
+				<span className="truncate">{label}</span>
+			</label>
+			<Switch
+				id={id}
+				aria-label={label}
+				checked={checked}
+				disabled={disabled}
+				onCheckedChange={onCheckedChange}
+			/>
+		</div>
 	);
 }
 
@@ -797,12 +891,14 @@ interface SettingsTriggerButtonProps {
 	open: boolean;
 	disabled?: boolean;
 	onClick?: () => void;
+	className?: string;
 }
 
 function SettingsTriggerButton({
 	open,
 	disabled,
 	onClick,
+	className,
 }: SettingsTriggerButtonProps) {
 	return (
 		<Tooltip>
@@ -811,7 +907,10 @@ function SettingsTriggerButton({
 					type="button"
 					variant="ghost"
 					size="icon"
-					className="h-7 w-7 rounded-md text-muted-foreground/80 hover:text-foreground data-[state=open]:bg-muted/60 data-[state=open]:text-foreground"
+					className={cn(
+						"h-7 w-7 rounded-md text-muted-foreground/80 hover:text-foreground data-[state=open]:bg-muted/60 data-[state=open]:text-foreground",
+						className,
+					)}
 					aria-label="Composer settings"
 					aria-haspopup="dialog"
 					aria-expanded={open}

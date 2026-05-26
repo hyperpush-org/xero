@@ -1,10 +1,15 @@
 "use client"
 
-import { Download, ExternalLink, Loader2, RefreshCw } from "lucide-react"
+import { useId } from "react"
+import {
+  AlertCircle,
+  CheckCircle2,
+  Download,
+  Loader2,
+  TerminalSquare,
+} from "lucide-react"
 import { cn } from "@/lib/utils"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Progress } from "@/components/ui/progress"
 import type {
   ToolchainInstallEvent,
   ToolchainStatus,
@@ -19,17 +24,15 @@ interface Props {
   onRefresh: () => void
 }
 
-// Panel shown above the cluster picker when the host is missing the
-// minimum Solana toolchain (the Solana CLI). Other tools are only flagged
-// if they would be actively used by the current cluster flow.
+// Strip shown above the cluster picker when the host is missing the minimum
+// Solana toolchain needed by the active flow.
 export function SolanaMissingToolchain({
   status,
-  loading,
   installing,
   installEvent,
   onInstall,
-  onRefresh,
 }: Props) {
+  const titleId = useId()
   if (!status) return null
   const panel = buildPanel(status)
   if (!panel) return null
@@ -38,114 +41,167 @@ export function SolanaMissingToolchain({
       ? Math.round(installEvent.progress * 100)
       : null
   const canInstall = Boolean(status.installSupported ?? true)
+  const installEventSucceeded =
+    installEvent?.phase === "completed" || installEvent?.phase === "skipped"
+  const InstallEventIcon = installEventSucceeded ? CheckCircle2 : AlertCircle
+  const failed = Boolean(installEvent?.error)
+  const showProgress = installing || installEvent
 
   return (
-    <div
+    <section
+      aria-labelledby={titleId}
       aria-live="polite"
-      className="flex shrink-0 flex-col gap-2 border-b border-border/60 bg-warning/10 px-3 py-2 text-[11px] leading-relaxed"
+      className={cn(
+        "flex shrink-0 flex-col gap-1.5 border-b px-3 py-2 text-[11px]",
+        failed
+          ? "border-destructive/40 bg-destructive/10"
+          : installEventSucceeded
+            ? "border-success/35 bg-success/10"
+            : "border-border/70 bg-warning/[0.075]",
+      )}
       role="region"
     >
-      <div className="font-medium text-warning">{panel.title}</div>
-      <div className="text-muted-foreground">{panel.detail}</div>
-      <div className="flex flex-wrap items-center gap-1.5">
-        {(status.installableComponents ?? []).map((component) => (
-          <Badge
+      <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <TerminalSquare
             className={cn(
-              "h-5 border-border/70 bg-background/50 px-1.5 text-[10px]",
-              component.installed
-                ? "text-success"
-                : "text-warning",
+              "h-3.5 w-3.5 shrink-0",
+              failed
+                ? "text-destructive"
+                : installEventSucceeded
+                  ? "text-success"
+                  : "text-warning",
             )}
-            key={component.component}
-            variant="outline"
+            aria-hidden="true"
+          />
+          <h2
+            className={cn(
+              "min-w-0 truncate text-[12px] font-semibold leading-5",
+              failed
+                ? "text-destructive"
+                : installEventSucceeded
+                  ? "text-success"
+                  : "text-warning",
+            )}
+            id={titleId}
           >
-            {component.label}
-          </Badge>
-        ))}
-      </div>
-      {installing || installEvent ? (
-        <div className="space-y-1">
-          <div className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
-            {installing ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-            <span>
-              {installEvent?.error ??
-                installEvent?.message ??
-                "Preparing managed Solana tools"}
-            </span>
-          </div>
-          {installing ? (
-            <Progress
-              className={cn("h-1.5", progress == null && "opacity-70")}
-              value={progress ?? 0}
-            />
-          ) : null}
+            {panel.title}
+          </h2>
         </div>
-      ) : null}
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          className="h-7 px-2 text-[11px]"
-          disabled={!canInstall || installing}
-          onClick={onInstall}
-          size="sm"
-          type="button"
-          variant="default"
-        >
-          {installing ? (
-            <Loader2 className="h-3 w-3 animate-spin" />
-          ) : (
-            <Download className="h-3 w-3" />
-          )}
-          Install managed tools
-        </Button>
-        {panel.actions.map((action) => (
+        {showProgress ? (
+          <div className="ml-auto flex min-w-0 items-center gap-1.5">
+            {installing ? (
+              <Loader2 className="h-3 w-3 shrink-0 animate-spin text-warning" />
+            ) : (
+              <InstallEventIcon
+                className={cn(
+                  "h-3 w-3 shrink-0",
+                  failed
+                    ? "text-destructive"
+                    : installEventSucceeded
+                      ? "text-success"
+                      : "text-muted-foreground",
+                )}
+              />
+            )}
+            <span
+              className={cn(
+                "truncate text-[10.5px]",
+                failed
+                  ? "text-destructive"
+                  : installEventSucceeded
+                    ? "text-success"
+                    : "text-muted-foreground",
+              )}
+            >
+              {failed
+                ? "Failed"
+                : installEventSucceeded
+                  ? "Installed"
+                  : "Installing"}
+            </span>
+            {progress != null && installing ? (
+              <span className="shrink-0 text-[10.5px] text-muted-foreground">
+                {progress}%
+              </span>
+            ) : null}
+          </div>
+        ) : (
           <Button
-            asChild
-            className="h-7 px-2 text-[11px]"
-            key={action.label}
+            className={cn(
+              "ml-auto h-6 min-w-0 px-2 text-[10.5px]",
+              !canInstall && "text-muted-foreground",
+            )}
+            disabled={!canInstall}
+            onClick={onInstall}
             size="sm"
-            variant="outline"
+            type="button"
+            variant="default"
           >
-            <a href={action.href} rel="noreferrer" target="_blank">
-              {action.label}
-              <ExternalLink className="h-3 w-3" />
-            </a>
+            <Download className="h-3 w-3" />
+            <span className="truncate">
+              {canInstall ? "Install" : "Unavailable"}
+            </span>
           </Button>
-        ))}
-        <Button
-          aria-label="Re-detect toolchain"
-          className="h-7 px-2 text-[11px]"
-          disabled={loading}
-          onClick={onRefresh}
-          size="sm"
-          type="button"
-          variant="outline"
-        >
-          <RefreshCw className={cn("h-3 w-3", loading && "animate-spin")} />
-          Re-detect
-        </Button>
+        )}
       </div>
-    </div>
+      {showProgress ? (
+        <>
+          <div className="h-1 w-full overflow-hidden rounded-full bg-border/70">
+            <div
+              aria-label="Solana toolchain install progress"
+              aria-valuemax={100}
+              aria-valuemin={0}
+              aria-valuenow={progress ?? undefined}
+              className={cn(
+                "h-full motion-progress",
+                failed
+                  ? "bg-destructive"
+                  : installEventSucceeded
+                    ? "bg-success"
+                    : progress != null
+                      ? "bg-warning"
+                      : "animate-pulse bg-warning/60",
+              )}
+              style={{
+                transform: `scaleX(${
+                  progress != null
+                    ? Math.max(0, Math.min(100, progress)) / 100
+                    : 1
+                })`,
+              }}
+              role="progressbar"
+            />
+          </div>
+          {installEvent?.error ? (
+            <div
+              className="truncate text-[10.5px] text-destructive"
+              title={installEvent.error}
+            >
+              {installEvent.error}
+            </div>
+          ) : installEvent?.message ? (
+            <div
+              className="truncate text-[10.5px] text-muted-foreground"
+              title={installEvent.message}
+            >
+              {installEvent.message}
+            </div>
+          ) : null}
+        </>
+      ) : null}
+    </section>
   )
 }
 
 interface Panel {
   title: string
-  detail: string
-  actions: Array<{ label: string; href: string }>
 }
 
 function buildPanel(status: ToolchainStatus): Panel | null {
   if (!status.solanaCli.present) {
     return {
       title: "Solana CLI not found",
-      detail:
-        "Install the managed Solana tool suite so Xero can spin up local validators and submit transactions without relying on a host PATH setup.",
-      actions: [
-        {
-          label: "Solana CLI docs",
-          href: "https://docs.solanalabs.com/cli/install",
-        },
-      ],
     }
   }
 
@@ -154,12 +210,6 @@ function buildPanel(status: ToolchainStatus): Panel | null {
   if (!status.anchor.present && !status.cargoBuildSbf.present) {
     return {
       title: "Program build tooling not found",
-      detail:
-        "Install the managed build tools so Xero can run Anchor or cargo-build-sbf for deployable .so artifacts.",
-      actions: [
-        { label: "Anchor docs", href: "https://www.anchor-lang.com/docs/installation" },
-        { label: "Solana CLI docs", href: "https://docs.solanalabs.com/cli/install" },
-      ],
     }
   }
 

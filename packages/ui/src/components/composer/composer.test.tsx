@@ -41,6 +41,30 @@ function stubMatchMedia(matches: boolean) {
 	});
 }
 
+function stubResizeObserver() {
+	class MockResizeObserver {
+		observe() {}
+		unobserve() {}
+		disconnect() {}
+	}
+
+	Object.defineProperty(window, "ResizeObserver", {
+		configurable: true,
+		writable: true,
+		value: MockResizeObserver,
+	});
+	Object.defineProperty(globalThis, "ResizeObserver", {
+		configurable: true,
+		writable: true,
+		value: MockResizeObserver,
+	});
+	Object.defineProperty(Element.prototype, "scrollIntoView", {
+		configurable: true,
+		writable: true,
+		value: vi.fn(),
+	});
+}
+
 type RenderOverrides = Partial<Omit<ComposerProps, "draftPrompt" | "onDraftPromptChange">> & {
 	initialDraft?: string;
 };
@@ -73,6 +97,7 @@ describe("Composer", () => {
 	beforeEach(() => {
 		setViewportWidth(1280);
 		stubMatchMedia(false);
+		stubResizeObserver();
 	});
 
 	afterEach(() => {
@@ -90,6 +115,106 @@ describe("Composer", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
 		await waitFor(() => expect(onSubmit).toHaveBeenCalledWith("Ship it"));
+	});
+
+	it("combines model and thinking into one selector", () => {
+		const onThinkingChange = vi.fn();
+		renderComposer({
+			thinkingOptions: [
+				{ id: "low", label: "Low" },
+				{ id: "high", label: "High" },
+			],
+			selectedThinkingId: "low",
+			onThinkingChange,
+		});
+
+		const selector = screen.getByRole("combobox", {
+			name: "Model and thinking selector",
+		});
+		expect(selector).toHaveTextContent("GPT");
+		expect(selector).toHaveTextContent("Low");
+		expect(screen.queryByLabelText("Thinking level selector")).toBeNull();
+
+		fireEvent.pointerDown(selector, { button: 0 });
+		const thinkingItem = screen.getByRole("menuitem", { name: /Thinking/i });
+		fireEvent.keyDown(thinkingItem, { key: "ArrowRight" });
+		fireEvent.click(screen.getByRole("menuitemradio", { name: "High" }));
+
+		expect(onThinkingChange).toHaveBeenCalledWith("high");
+	});
+
+	it("keeps only the model list scrollable when many models are available", () => {
+		renderComposer({
+			modelGroups: [
+				{
+					id: "openai",
+					label: "OpenAI",
+					options: Array.from({ length: 40 }, (_, index) => ({
+						id: `model-${index}`,
+						label: `Model ${index}`,
+					})),
+				},
+			],
+			selectedModelId: "model-0",
+			thinkingOptions: [{ id: "low", label: "Low" }],
+			selectedThinkingId: "low",
+			onThinkingChange: vi.fn(),
+		});
+
+		fireEvent.pointerDown(
+			screen.getByRole("combobox", { name: "Model and thinking selector" }),
+			{ button: 0 },
+		);
+
+		const dropdown = document.querySelector('[data-slot="dropdown-menu-content"]');
+		const modelList = document.querySelector('[data-slot="command-list"]');
+
+		expect(dropdown).toHaveClass("overflow-visible");
+		expect(dropdown).not.toHaveClass("overflow-y-auto");
+		expect(modelList).toHaveClass(
+			"max-h-[min(18rem,calc(var(--radix-dropdown-menu-content-available-height)_-_5rem))]",
+		);
+		expect(modelList).toHaveClass("overflow-y-auto");
+	});
+
+	it("keeps the combined selector open after choosing a model so thinking can be adjusted", () => {
+		const onModelChange = vi.fn();
+		const onThinkingChange = vi.fn();
+		renderComposer({
+			modelGroups: [
+				{
+					id: "models",
+					options: [
+						{ id: "gpt", label: "GPT" },
+						{ id: "grok", label: "Grok" },
+					],
+				},
+			],
+			selectedModelId: "gpt",
+			onModelChange,
+			thinkingOptions: [
+				{ id: "low", label: "Low" },
+				{ id: "high", label: "High" },
+			],
+			selectedThinkingId: "low",
+			onThinkingChange,
+		});
+
+		const selector = screen.getByRole("combobox", {
+			name: "Model and thinking selector",
+		});
+		fireEvent.pointerDown(selector, { button: 0 });
+		fireEvent.click(screen.getByRole("option", { name: "Grok" }));
+
+		expect(onModelChange).toHaveBeenCalledWith("grok");
+		expect(screen.getByRole("menuitem", { name: /Thinking/i })).toBeVisible();
+
+		fireEvent.keyDown(screen.getByRole("menuitem", { name: /Thinking/i }), {
+			key: "ArrowRight",
+		});
+		fireEvent.click(screen.getByRole("menuitemradio", { name: "High" }));
+
+		expect(onThinkingChange).toHaveBeenCalledWith("high");
 	});
 
 	it("keeps the send button disabled until there is text or an attachment", () => {
@@ -119,7 +244,27 @@ describe("Composer", () => {
 			selectedApprovalId: "suggest",
 			onApprovalChange: vi.fn(),
 		});
-		expect(screen.getByLabelText("Approval mode selector")).toBeVisible();
+		expect(screen.queryByLabelText("Approval mode selector")).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Composer settings" }));
+		expect(screen.getByRole("combobox", { name: "Approval mode" })).toBeVisible();
+	});
+
+	it("moves auto compact into the desktop composer settings dialog", () => {
+		const onAutoCompactEnabledChange = vi.fn();
+		renderComposer({
+			autoCompactEnabled: true,
+			onAutoCompactEnabledChange,
+		});
+
+		expect(screen.queryByRole("button", { name: "Auto-compact before sending" })).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Composer settings" }));
+
+		const autoCompactSwitch = screen.getByRole("switch", {
+			name: "Auto-compact before sending",
+		});
+		expect(autoCompactSwitch).toHaveAttribute("aria-checked", "true");
+		fireEvent.click(autoCompactSwitch);
+		expect(onAutoCompactEnabledChange).toHaveBeenCalledWith(false);
 	});
 
 	it("shows the attach button only when an add-files handler is provided", () => {
@@ -148,5 +293,28 @@ describe("Composer", () => {
 		renderComposer();
 		expect(screen.getByRole("button", { name: "Composer settings" })).toBeVisible();
 		expect(screen.queryByLabelText("Agent selector")).toBeNull();
+	});
+
+	it("keeps model, thinking, and auto compact as separate controls in the mobile drawer", () => {
+		setViewportWidth(375);
+		stubMatchMedia(true);
+		renderComposer({
+			thinkingOptions: [
+				{ id: "low", label: "Low" },
+				{ id: "high", label: "High" },
+			],
+			selectedThinkingId: "low",
+			onThinkingChange: vi.fn(),
+			autoCompactEnabled: false,
+			onAutoCompactEnabledChange: vi.fn(),
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "Composer settings" }));
+
+		expect(screen.getByRole("combobox", { name: "Agent" })).toBeVisible();
+		expect(screen.getByRole("combobox", { name: "Model selector" })).toBeVisible();
+		expect(screen.getByRole("combobox", { name: "Thinking" })).toBeVisible();
+		expect(screen.getByRole("switch", { name: "Auto-compact before sending" })).toBeVisible();
+		expect(screen.queryByRole("combobox", { name: "Model and thinking selector" })).toBeNull();
 	});
 });

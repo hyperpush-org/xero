@@ -176,6 +176,7 @@ export function ComposerDock({
   composerModelGroups,
   composerThinkingLevel,
   composerThinkingOptions,
+  composerThinkingPlaceholder,
   composerApprovalMode,
   composerApprovalOptions,
   autoCompactEnabled,
@@ -358,6 +359,7 @@ export function ComposerDock({
       selectedThinkingId={composerThinkingLevel}
       onThinkingChange={(value) => onComposerThinkingLevelChange(value as ProviderModelThinkingEffortDto)}
       thinkingDisabled={thinkingComposerOptions.length === 0 || controlsDisabled}
+      thinkingPlaceholder={composerThinkingPlaceholder}
       approvalOptions={showApprovalSelector ? approvalComposerOptions : undefined}
       selectedApprovalId={composerApprovalMode}
       onApprovalChange={(value) => onComposerApprovalModeChange(value as RuntimeRunApprovalModeDto)}
