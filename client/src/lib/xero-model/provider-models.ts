@@ -7,6 +7,8 @@ import {
   sessionContextLimitSourceSchema,
 } from './session-context'
 
+export const CURSOR_AUTO_MODEL_ID = 'cursor-auto' as const
+
 export const providerModelCatalogSourceSchema = z.enum(['live', 'cache', 'manual', 'unavailable'])
 export const providerModelThinkingEffortSchema = z.enum(['none', 'minimal', 'low', 'medium', 'high', 'x_high'])
 export const providerCapabilityStatusSchema = z.enum([
@@ -286,6 +288,14 @@ function validateRuntimeProviderModel(
   payload: { providerId: z.infer<typeof runtimeProviderIdSchema>; modelId: string },
   ctx: z.RefinementCtx,
 ): void {
+  if (isCursorAutoModelId(payload.modelId) && payload.providerId !== 'external_cursor_sdk') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['modelId'],
+      message: 'Cursor Auto sentinel is only valid for Cursor provider catalogs.',
+    })
+  }
+
   if (payload.providerId === 'openai_codex' && payload.modelId.trim().length === 0) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -456,6 +466,10 @@ export function getProviderModelById(
   }
 
   return catalog.models.find((model) => model.modelId === trimmedModelId) ?? null
+}
+
+export function isCursorAutoModelId(modelId: string | null | undefined): boolean {
+  return modelId?.trim() === CURSOR_AUTO_MODEL_ID
 }
 
 export function getProviderModelThinkingEffortLabel(

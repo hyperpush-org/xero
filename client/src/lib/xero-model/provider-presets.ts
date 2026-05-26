@@ -150,7 +150,7 @@ const CLOUD_PROVIDER_PRESETS: CloudProviderPreset[] = [
     providerId: 'external_cursor_sdk',
     runtimeKind: 'cursor_sdk',
     label: 'Cursor',
-    description: "Use Cursor's SDK-backed agent through Xero's local harness with a saved app-local API key.",
+    description: "Use Cursor's SDK-backed agent through Xero's local harness with Auto, Composer Latest, and catalog-discovered model choices.",
     defaultProfileId: 'external_cursor_sdk-default',
     defaultProfileLabel: 'Cursor',
     defaultModelId: 'composer-latest',
@@ -162,7 +162,7 @@ const CLOUD_PROVIDER_PRESETS: CloudProviderPreset[] = [
     projectIdMode: 'none',
     manualModelAllowed: false,
     supportsCatalogRefresh: true,
-    connectionHint: 'Uses the local Cursor SDK bridge and Xero tool-registry MCP harness.',
+    connectionHint: 'Uses the local Cursor SDK bridge, validates Auto/default routing from Cursor catalog data, and attaches the Xero tool-registry MCP harness.',
   },
   {
     providerId: 'github_models',

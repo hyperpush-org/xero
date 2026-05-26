@@ -16,6 +16,7 @@ use crate::{
         ProviderModelCatalogDiagnostic, ProviderModelCatalogSource, ProviderModelRecord,
         ProviderModelThinkingCapability, ProviderModelThinkingEffort,
     },
+    runtime::{CURSOR_AUTO_MODEL_ID, CURSOR_PROVIDER_ID},
     state::DesktopState,
 };
 
@@ -82,6 +83,15 @@ fn validate_provider_model_catalog_contract(
             &["configuredModelId"],
         ));
     }
+    if catalog.provider_id != CURSOR_PROVIDER_ID
+        && catalog.configured_model_id.trim() == CURSOR_AUTO_MODEL_ID
+    {
+        diagnostics.push(provider_catalog_contract_diagnostic(
+            "provider_model_catalog_cursor_auto_provider_mismatch",
+            "Cursor Auto sentinel is only valid for Cursor provider catalogs.",
+            &["configuredModelId"],
+        ));
+    }
 
     let mut model_ids = BTreeSet::new();
     for (index, model) in catalog.models.iter().enumerate() {
@@ -100,6 +110,15 @@ fn validate_provider_model_catalog_contract(
             diagnostics.push(provider_catalog_contract_diagnostic(
                 "provider_model_catalog_model_id_required",
                 "Xero requires model ids for provider `openai_codex`.",
+                &["models", &index.to_string(), "modelId"],
+            ));
+        }
+        if catalog.provider_id != CURSOR_PROVIDER_ID
+            && model.model_id.trim() == CURSOR_AUTO_MODEL_ID
+        {
+            diagnostics.push(provider_catalog_contract_diagnostic(
+                "provider_model_catalog_cursor_auto_provider_mismatch",
+                "Cursor Auto sentinel is only valid for Cursor provider catalogs.",
                 &["models", &index.to_string(), "modelId"],
             ));
         }
@@ -391,5 +410,37 @@ mod tests {
         assert!(codes.contains("provider_model_catalog_unsupported_thinking_efforts"));
         assert!(codes.contains("provider_model_catalog_unsupported_default_effort"));
         assert!(codes.contains("provider_model_catalog_last_success_after_fetch"));
+    }
+
+    #[test]
+    fn provider_model_catalog_rejects_cursor_auto_for_non_cursor_providers() {
+        let catalog = ProviderModelCatalog {
+            profile_id: "openrouter-default".into(),
+            provider_id: "openrouter".into(),
+            configured_model_id: CURSOR_AUTO_MODEL_ID.into(),
+            source: ProviderModelCatalogSource::Manual,
+            fetched_at: Some("2026-04-21T12:00:00Z".into()),
+            last_success_at: Some("2026-04-21T12:00:00Z".into()),
+            last_refresh_error: None,
+            models: vec![model(
+                CURSOR_AUTO_MODEL_ID,
+                ProviderModelThinkingCapability {
+                    supported: false,
+                    effort_options: Vec::new(),
+                    default_effort: None,
+                },
+            )],
+        };
+
+        let dto = map_provider_model_catalog(catalog);
+        let mismatch_count = dto
+            .contract_diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.code == "provider_model_catalog_cursor_auto_provider_mismatch"
+            })
+            .count();
+
+        assert_eq!(mismatch_count, 2);
     }
 }

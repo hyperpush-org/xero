@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   ALL_RUNTIME_AGENT_DESCRIPTORS,
+  CURSOR_AUTO_MODEL_ID,
   getRuntimeAgentAvailability,
   getRuntimeAgentDescriptor,
   getRuntimeAgentDescriptorsForAvailability,
@@ -10,6 +11,7 @@ import {
   runtimeAgentIsSelectableForProjectOrigin,
   runtimeAgentIdSchema,
   runtimeProviderIdSchema,
+  runtimeSettingsSchema,
   runtimeRunSchema,
   startRuntimeRunRequestSchema,
   updateRuntimeRunControlsRequestSchema,
@@ -75,6 +77,17 @@ describe('runtime run control schemas', () => {
 
   it('accepts Cursor as an external agent runtime provider id', () => {
     expect(runtimeProviderIdSchema.parse('external_cursor_sdk')).toBe('external_cursor_sdk')
+  })
+
+  it('rejects the Cursor Auto sentinel for generic runtime settings providers', () => {
+    expect(() =>
+      runtimeSettingsSchema.parse({
+        providerId: 'openrouter',
+        modelId: CURSOR_AUTO_MODEL_ID,
+        openrouterApiKeyConfigured: true,
+        anthropicApiKeyConfigured: false,
+      }),
+    ).toThrow(/Cursor Auto sentinel/)
   })
 
   it('registers built-in runtime agents as descriptor-backed entries', () => {

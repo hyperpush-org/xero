@@ -15,6 +15,7 @@ import {
   getCloudProviderLabel,
   isKnownCloudProviderId,
 } from '@/src/lib/xero-model/provider-presets'
+import { CURSOR_AUTO_MODEL_ID } from '@/src/lib/xero-model/provider-models'
 
 export type SelectedRuntimeProviderSource =
   | 'runtime_run'
@@ -124,6 +125,9 @@ export function displayNameForProviderModel(
   providerId: ProviderCredentialDto['providerId'],
   model: Pick<ProviderModelDto, 'modelId' | 'displayName'>,
 ): string {
+  if (providerId === 'external_cursor_sdk' && model.modelId === CURSOR_AUTO_MODEL_ID) {
+    return 'Auto'
+  }
   if (providerId === 'xai') {
     return xaiModelDisplayName(model.modelId)
   }

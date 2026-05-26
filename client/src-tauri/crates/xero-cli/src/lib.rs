@@ -69,6 +69,7 @@ const MCP_SERVER_NAME: &str = "xero-local-harness";
 const MCP_TOOLS_SERVER_NAME: &str = "xero-tool-registry-v2";
 const CURSOR_PROVIDER_ID: &str = "external_cursor_sdk";
 const CURSOR_DEFAULT_MODEL_ID: &str = "composer-latest";
+const CURSOR_AUTO_MODEL_ID: &str = "cursor-auto";
 const CURSOR_BRIDGE_VERSION: &str = "xero-cursor-sdk-bridge.v1";
 const CURSOR_BRIDGE_SCRIPT_RELATIVE: &str = "../../../scripts/cursor-sdk-bridge.mjs";
 const TOOL_REGISTRY_MCP_RUNTIME: &str = "cursor_sdk_xero_mcp";
@@ -2635,6 +2636,23 @@ impl CursorContainmentMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CursorModelRoute {
+    Auto,
+    ComposerLatest,
+    Explicit,
+}
+
+impl CursorModelRoute {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::ComposerLatest => "composer_latest",
+            Self::Explicit => "explicit",
+        }
+    }
+}
+
 #[derive(Debug)]
 struct CursorAgentRunRequest {
     project_id: String,
@@ -2657,6 +2675,41 @@ struct CursorAgentRunRequest {
     approval_source: ExternalAgentApprovalSource,
 }
 
+fn parse_cursor_model_id(value: Option<String>) -> Result<String, CliError> {
+    let raw = value.unwrap_or_else(|| CURSOR_DEFAULT_MODEL_ID.into());
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(CliError::usage("Cursor model cannot be empty."));
+    }
+    let normalized = trimmed.replace('_', "-").to_ascii_lowercase();
+    if matches!(
+        normalized.as_str(),
+        "auto" | "default" | CURSOR_AUTO_MODEL_ID
+    ) {
+        return Ok(CURSOR_AUTO_MODEL_ID.into());
+    }
+    if normalized == CURSOR_DEFAULT_MODEL_ID {
+        return Ok(CURSOR_DEFAULT_MODEL_ID.into());
+    }
+    Ok(trimmed.into())
+}
+
+fn cursor_model_route(model_id: &str) -> CursorModelRoute {
+    match model_id.trim().to_ascii_lowercase().as_str() {
+        CURSOR_AUTO_MODEL_ID => CursorModelRoute::Auto,
+        CURSOR_DEFAULT_MODEL_ID => CursorModelRoute::ComposerLatest,
+        _ => CursorModelRoute::Explicit,
+    }
+}
+
+fn cursor_requested_model_id(model_id: &str) -> Option<&str> {
+    if cursor_model_route(model_id) == CursorModelRoute::Auto {
+        None
+    } else {
+        Some(model_id)
+    }
+}
+
 fn command_agent_cursor(
     globals: GlobalOptions,
     mut args: Vec<String>,
@@ -2664,7 +2717,7 @@ fn command_agent_cursor(
     if take_help(&args) {
         return Ok(response(
             &globals,
-            "Usage: xero agent cursor [PROMPT] [--repo PATH] [--project-id ID] [--model MODEL] [--mode observe-only|workspace-write|command-enabled] [--allow-writes] [--allow-commands] --allow-subprocess\nRuns Cursor through the Cursor SDK bridge as a Xero external-agent adapter.",
+            "Usage: xero agent cursor [PROMPT] [--repo PATH] [--project-id ID] [--model auto|default|composer-latest|MODEL] [--mode observe-only|workspace-write|command-enabled] [--allow-writes] [--allow-commands] --allow-subprocess\nRuns Cursor through the Cursor SDK bridge as a Xero external-agent adapter.",
             json!({ "command": "agent cursor" }),
         ));
     }
@@ -2674,8 +2727,7 @@ fn command_agent_cursor(
     let agent_session_id =
         take_option(&mut args, "--session-id")?.unwrap_or_else(|| generate_id("cursor-session"));
     let run_id = take_option(&mut args, "--run-id")?.unwrap_or_else(|| generate_id("cursor-run"));
-    let model_id =
-        take_option(&mut args, "--model")?.unwrap_or_else(|| CURSOR_DEFAULT_MODEL_ID.into());
+    let model_id = parse_cursor_model_id(take_option(&mut args, "--model")?)?;
     let api_key_env = take_option(&mut args, "--api-key-env")?;
     let timeout_ms = take_option(&mut args, "--timeout-ms")?
         .map(|value| parse_positive_u64(&value, "--timeout-ms"))
@@ -8349,6 +8401,8 @@ fn host_cursor_agent_run(
                 "status": "starting",
                 "providerId": CURSOR_PROVIDER_ID,
                 "modelId": request.model_id,
+                "requestedModelRoute": cursor_model_route(&request.model_id).as_str(),
+                "requestedModelId": cursor_requested_model_id(&request.model_id),
                 "execution": "external_agent_adapter",
                 "provenance": cursor_agent_provenance(&request),
                 "mcp": {
@@ -8477,6 +8531,9 @@ fn host_cursor_agent_run(
                     "code": "cursor_run_cancelled",
                     "message": "Cursor SDK bridge was cancelled by Xero.",
                     "provenance": cursor_agent_provenance(&request),
+                    "requestedModelRoute": bridge.requested_model_route.as_deref().unwrap_or(cursor_model_route(&request.model_id).as_str()),
+                    "requestedModelId": bridge.requested_model_id.as_deref(),
+                    "resolvedModel": bridge.resolved_model.as_deref(),
                     "reconciliation": reconciliation.report,
                 }),
             })
@@ -8502,6 +8559,9 @@ fn host_cursor_agent_run(
                     "code": code,
                     "message": message,
                     "provenance": cursor_agent_provenance(&request),
+                    "requestedModelRoute": bridge.requested_model_route.as_deref().unwrap_or(cursor_model_route(&request.model_id).as_str()),
+                    "requestedModelId": bridge.requested_model_id.as_deref(),
+                    "resolvedModel": bridge.resolved_model.as_deref(),
                     "reconciliation": reconciliation.report,
                 }),
             })
@@ -8528,6 +8588,9 @@ fn host_cursor_agent_run(
                     "provenance": cursor_agent_provenance(&request),
                     "cursorAgentId": bridge.cursor_agent_id,
                     "cursorRunId": bridge.cursor_run_id,
+                    "requestedModelRoute": bridge.requested_model_route.as_deref().unwrap_or(cursor_model_route(&request.model_id).as_str()),
+                    "requestedModelId": bridge.requested_model_id.as_deref(),
+                    "resolvedModel": bridge.resolved_model.as_deref(),
                     "reconciliation": reconciliation.report,
                 }),
             })
@@ -8626,6 +8689,13 @@ fn cursor_agent_provenance(request: &CursorAgentRunRequest) -> JsonValue {
         "adapterLabel": "Cursor",
         "providerId": CURSOR_PROVIDER_ID,
         "modelId": request.model_id,
+        "requestedModelRoute": cursor_model_route(&request.model_id).as_str(),
+        "requestedModelId": cursor_requested_model_id(&request.model_id),
+        "cursorModelSentinel": if cursor_model_route(&request.model_id) == CursorModelRoute::Auto {
+            Some(CURSOR_AUTO_MODEL_ID)
+        } else {
+            None
+        },
         "bridgeVersion": CURSOR_BRIDGE_VERSION,
         "sdkRuntime": "local",
         "nativeToolPolicy": request.native_tool_policy.as_str(),
@@ -8666,6 +8736,9 @@ struct CursorBridgeRunReport {
     stderr: String,
     cursor_agent_id: Option<String>,
     cursor_run_id: Option<String>,
+    requested_model_route: Option<String>,
+    requested_model_id: Option<String>,
+    resolved_model: Option<String>,
     tool_call_count: u64,
     command_call_count: u64,
     native_tool_count: u64,
@@ -8915,36 +8988,7 @@ fn run_cursor_bridge_process(
     effective_repo_root: &Path,
     sandbox_metadata: &SandboxExecutionMetadata,
 ) -> Result<CursorBridgeRunReport, CliError> {
-    let mut argv = vec![
-        "node".to_string(),
-        request.bridge_path.display().to_string(),
-        "--prompt".into(),
-        request.prompt.clone(),
-        "--repo-root".into(),
-        effective_repo_root.display().to_string(),
-        "--project-id".into(),
-        request.project_id.clone(),
-        "--run-id".into(),
-        request.run_id.clone(),
-        "--session-id".into(),
-        request.agent_session_id.clone(),
-        "--model".into(),
-        request.model_id.clone(),
-        "--xero-cli-path".into(),
-        request.xero_cli_path.display().to_string(),
-        "--xero-state-dir".into(),
-        globals.state_dir.display().to_string(),
-        "--mcp-mode".into(),
-        request.mcp_mode.as_str().into(),
-    ];
-    if let Some(api_key_env) = request.api_key_env.as_deref() {
-        argv.push("--api-key-env".into());
-        argv.push(api_key_env.into());
-    }
-    if let Some(fixture) = request.fixture.as_deref() {
-        argv.push("--fixture".into());
-        argv.push(fixture.display().to_string());
-    }
+    let argv = cursor_bridge_argv(globals, request, effective_repo_root);
     let output = SandboxedProcessRunner::new().run(
         SandboxedProcessRequest {
             argv,
@@ -9003,6 +9047,44 @@ fn run_cursor_bridge_process(
         }
     }
     Ok(report)
+}
+
+fn cursor_bridge_argv(
+    globals: &GlobalOptions,
+    request: &CursorAgentRunRequest,
+    effective_repo_root: &Path,
+) -> Vec<String> {
+    let mut argv = vec![
+        "node".to_string(),
+        request.bridge_path.display().to_string(),
+        "--prompt".into(),
+        request.prompt.clone(),
+        "--repo-root".into(),
+        effective_repo_root.display().to_string(),
+        "--project-id".into(),
+        request.project_id.clone(),
+        "--run-id".into(),
+        request.run_id.clone(),
+        "--session-id".into(),
+        request.agent_session_id.clone(),
+        "--model".into(),
+        request.model_id.clone(),
+        "--xero-cli-path".into(),
+        request.xero_cli_path.display().to_string(),
+        "--xero-state-dir".into(),
+        globals.state_dir.display().to_string(),
+        "--mcp-mode".into(),
+        request.mcp_mode.as_str().into(),
+    ];
+    if let Some(api_key_env) = request.api_key_env.as_deref() {
+        argv.push("--api-key-env".into());
+        argv.push(api_key_env.into());
+    }
+    if let Some(fixture) = request.fixture.as_deref() {
+        argv.push("--fixture".into());
+        argv.push(fixture.display().to_string());
+    }
+    argv
 }
 
 fn cursor_run_cancelled(store: &CliAgentStore, request: &CursorAgentRunRequest) -> bool {
@@ -9067,6 +9149,15 @@ fn process_cursor_bridge_event(
     }
     if let Some(cursor_run_id) = event.get("cursorRunId").and_then(JsonValue::as_str) {
         report.cursor_run_id = Some(cursor_run_id.to_owned());
+    }
+    if let Some(route) = event.get("requestedModelRoute").and_then(JsonValue::as_str) {
+        report.requested_model_route = Some(route.to_owned());
+    }
+    if let Some(model_id) = event.get("requestedModelId").and_then(JsonValue::as_str) {
+        report.requested_model_id = Some(model_id.to_owned());
+    }
+    if let Some(resolved_model) = event.get("resolvedModel").and_then(JsonValue::as_str) {
+        report.resolved_model = Some(resolved_model.to_owned());
     }
     match event_type {
         "delta" => {
@@ -16151,6 +16242,77 @@ mod tests {
 
         assert!(!serialized.contains("cursor-secret-value"));
         assert!(support_bundle.redaction_report.redacted_value_count > 0);
+    }
+
+    #[test]
+    fn cursor_model_parser_accepts_auto_default_and_keeps_composer_default() {
+        assert_eq!(
+            parse_cursor_model_id(None).expect("default model"),
+            CURSOR_DEFAULT_MODEL_ID
+        );
+        assert_eq!(
+            parse_cursor_model_id(Some("composer-latest".into())).expect("composer"),
+            CURSOR_DEFAULT_MODEL_ID
+        );
+        assert_eq!(
+            parse_cursor_model_id(Some("auto".into())).expect("auto"),
+            CURSOR_AUTO_MODEL_ID
+        );
+        assert_eq!(
+            parse_cursor_model_id(Some("default".into())).expect("default"),
+            CURSOR_AUTO_MODEL_ID
+        );
+        assert_eq!(
+            cursor_model_route(CURSOR_AUTO_MODEL_ID),
+            CursorModelRoute::Auto
+        );
+        assert_eq!(
+            cursor_model_route(CURSOR_DEFAULT_MODEL_ID),
+            CursorModelRoute::ComposerLatest
+        );
+    }
+
+    #[test]
+    fn cursor_bridge_argv_preserves_auto_sentinel_without_forcing_composer_latest() {
+        let state_dir = unique_temp_dir("cursor-argv-state");
+        let repo_dir = unique_temp_dir("cursor-argv-repo");
+        let globals = GlobalOptions {
+            output_mode: OutputMode::Json,
+            ci: false,
+            state_dir: state_dir.clone(),
+            tui_adapter: None,
+        };
+        let request = CursorAgentRunRequest {
+            project_id: "project-cursor-argv".into(),
+            agent_session_id: "session-cursor-argv".into(),
+            run_id: "run-cursor-argv".into(),
+            prompt: "test".into(),
+            model_id: CURSOR_AUTO_MODEL_ID.into(),
+            repo_root: repo_dir.clone(),
+            bridge_path: PathBuf::from("bridge"),
+            xero_cli_path: PathBuf::from("xero"),
+            api_key_env: None,
+            timeout_ms: 1000,
+            max_tool_calls: None,
+            max_command_calls: None,
+            runtime_agent_id: "engineer".into(),
+            mcp_mode: ToolRegistryMcpMode::ObserveOnly,
+            native_tool_policy: CursorNativeToolPolicy::Recover,
+            containment: CursorContainmentMode::Copy,
+            fixture: None,
+            approval_source: ExternalAgentApprovalSource::OperatorFlag,
+        };
+
+        let argv = cursor_bridge_argv(&globals, &request, &repo_dir);
+        let model_flag = argv
+            .windows(2)
+            .find(|pair| pair[0] == "--model")
+            .map(|pair| pair[1].as_str());
+
+        assert_eq!(model_flag, Some(CURSOR_AUTO_MODEL_ID));
+        assert!(!argv
+            .windows(2)
+            .any(|pair| pair[0] == "--model" && pair[1] == CURSOR_DEFAULT_MODEL_ID));
     }
 
     fn seed_registered_project(state_dir: &Path, project_id: &str, repo_root: &Path) {

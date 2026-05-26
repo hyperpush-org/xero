@@ -643,6 +643,14 @@ fn cost_hint_capability(
     provider: ProviderStaticCapability,
     catalog_source: &str,
 ) -> ProviderFeatureCapability {
+    if provider.provider_id == "external_cursor_sdk" {
+        return feature(
+            "supported",
+            "static",
+            "Cursor SDK usage follows Cursor account pricing and dashboard SDK-tagged usage; Auto/default and explicit models can resolve to account-dependent billing pools.",
+        );
+    }
+
     if provider.provider_id == "openrouter" && catalog_source == "live" {
         return feature(
             "supported",
@@ -669,6 +677,7 @@ fn provider_request_preview(
         "anthropic" => "POST /v1/messages",
         "bedrock" => "aws bedrock-runtime invoke-model",
         "vertex" => "POST /v1/projects/{project}/locations/{region}/publishers/anthropic/models/{model}:rawPredict",
+        "external_cursor_sdk" => "Cursor SDK Agent.create",
         id if id.starts_with("external_") => "external-agent-cli",
         _ => "POST /chat/completions",
     }
@@ -727,6 +736,14 @@ fn provider_known_limitations(
     if provider.external_agent_adapter {
         limitations.push(
             "External agent adapters are isolated from normal model-provider credentials.".into(),
+        );
+    }
+    if provider.provider_id == "external_cursor_sdk" {
+        limitations.push(
+            "Cursor Auto/default is represented by the cursor-auto sentinel and translated by the bridge; it is never forwarded to the SDK as a model id.".into(),
+        );
+        limitations.push(
+            "Local Cursor Auto requires omitted-model support or a catalog-confirmed Auto/default alias; otherwise choose Composer Latest or a concrete Cursor model.".into(),
         );
     }
     if provider.provider_id == "deepseek" {
@@ -831,6 +848,30 @@ mod tests {
         assert_eq!(catalog.transport_mode, "external_agent_cli");
         assert_eq!(catalog.capabilities.tool_calls.status, "not_applicable");
         assert_eq!(catalog.request_preview.route, "external-agent-cli");
+    }
+
+    #[test]
+    fn cursor_capabilities_describe_auto_sentinel_and_cost_hints() {
+        let mut input = input("external_cursor_sdk");
+        input.model_id = "cursor-auto".into();
+        input.thinking_supported = false;
+        input.thinking_efforts = Vec::new();
+        input.thinking_default_effort = None;
+
+        let catalog = provider_capability_catalog(input);
+
+        assert_eq!(catalog.default_model_id, "composer-latest");
+        assert_eq!(catalog.request_preview.route, "Cursor SDK Agent.create");
+        assert_eq!(catalog.request_preview.model_id, "cursor-auto");
+        assert_eq!(catalog.capabilities.cost_hints.status, "supported");
+        assert!(catalog
+            .known_limitations
+            .iter()
+            .any(|limitation| limitation.contains("cursor-auto sentinel")));
+        assert!(catalog
+            .known_limitations
+            .iter()
+            .any(|limitation| limitation.contains("Composer Latest")));
     }
 
     #[test]

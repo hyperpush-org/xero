@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CURSOR_AUTO_MODEL_ID,
   createProviderModelCatalogRequest,
   createUnavailableProviderModelCatalog,
   estimateProviderModelCatalogBytes,
@@ -8,6 +9,7 @@ import {
   getProviderModelCatalogConfiguredModel,
   getProviderModelThinkingEffortLabel,
   hasProviderModelCatalogSnapshot,
+  isCursorAutoModelId,
   providerCapabilityCatalogSchema,
   providerPreflightSnapshotSchema,
   providerModelCatalogSchema,
@@ -146,6 +148,15 @@ function makeCursorCatalog() {
     lastRefreshError: null,
     models: [
       {
+        modelId: CURSOR_AUTO_MODEL_ID,
+        displayName: 'Auto',
+        thinking: {
+          supported: false,
+          effortOptions: [] as const,
+          defaultEffort: null,
+        },
+      },
+      {
         modelId: 'composer-latest',
         displayName: 'Composer Latest',
         thinking: {
@@ -186,8 +197,30 @@ describe('provider-models', () => {
 
     expect(catalog.providerId).toBe('external_cursor_sdk')
     expect(catalog.configuredModelId).toBe('composer-latest')
+    expect(catalog.models.map((model) => model.modelId)).toEqual([CURSOR_AUTO_MODEL_ID, 'composer-latest'])
     expect(getCloudProviderPreset('external_cursor_sdk')?.label).toBe('Cursor')
     expect(getProviderModelCatalogConfiguredModel(catalog)?.modelId).toBe('composer-latest')
+    expect(isCursorAutoModelId(catalog.models[0]?.modelId)).toBe(true)
+  })
+
+  it('rejects the Cursor Auto sentinel for non-Cursor provider catalogs', () => {
+    const payload = {
+      ...makeOpenRouterCatalog(),
+      configuredModelId: CURSOR_AUTO_MODEL_ID,
+      models: [
+        {
+          modelId: CURSOR_AUTO_MODEL_ID,
+          displayName: 'Auto',
+          thinking: {
+            supported: false,
+            effortOptions: [] as const,
+            defaultEffort: null,
+          },
+        },
+      ],
+    }
+
+    expect(() => providerModelCatalogSchema.parse(payload)).toThrow(/Cursor Auto sentinel/)
   })
 
   it('accepts first-party DeepSeek V4 provider catalogs and preset defaults', () => {

@@ -43,6 +43,7 @@ export const runtimeProviderIdSchema = z.enum([
   'vertex',
 ])
 export const writableRuntimeSettingsProviderIdSchema = z.enum(['openrouter', 'openai_codex', 'anthropic'])
+export const CURSOR_AUTO_MODEL_ID = 'cursor-auto' as const
 
 export const runtimeRunThinkingEffortSchema = z.enum(['none', 'minimal', 'low', 'medium', 'high', 'x_high'])
 export const runtimeRunApprovalModeSchema = z.enum(['suggest', 'auto_edit', 'yolo'])
@@ -494,6 +495,14 @@ function validateRuntimeSettingsProviderModel(
   payload: { providerId: z.infer<typeof runtimeProviderIdSchema>; modelId: string },
   ctx: z.RefinementCtx,
 ): void {
+  if (payload.modelId.trim() === CURSOR_AUTO_MODEL_ID && payload.providerId !== 'external_cursor_sdk') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['modelId'],
+      message: 'Cursor Auto sentinel is only valid for Cursor runtime provider settings.',
+    })
+  }
+
   if (payload.providerId === 'openai_codex' && payload.modelId.trim().length === 0) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,

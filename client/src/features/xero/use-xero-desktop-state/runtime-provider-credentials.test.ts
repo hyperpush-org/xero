@@ -6,6 +6,7 @@ import type {
   RuntimeRunControlSelectionView,
   RuntimeRunView,
 } from '@/src/lib/xero-model'
+import { CURSOR_AUTO_MODEL_ID } from '@/src/lib/xero-model/provider-models'
 import {
   buildComposerModelOptions,
   buildComposerModelSelectionKey,
@@ -349,18 +350,24 @@ describe('buildComposerModelOptions', () => {
     ])
     const catalogs = {
       'external_cursor_sdk-default': makeCatalog('external_cursor_sdk', [
+        { modelId: CURSOR_AUTO_MODEL_ID, displayName: 'Auto' },
         { modelId: 'composer-latest', displayName: 'Composer Latest' },
       ]),
     }
 
     const options = buildComposerModelOptions(credentials, catalogs)
 
-    expect(options).toHaveLength(1)
+    expect(options).toHaveLength(2)
     expect(options[0]).toMatchObject({
-      selectionKey: 'external_cursor_sdk:composer-latest',
+      selectionKey: `external_cursor_sdk:${CURSOR_AUTO_MODEL_ID}`,
       profileId: 'external_cursor_sdk-default',
       providerId: 'external_cursor_sdk',
       providerLabel: 'Cursor',
+      modelId: CURSOR_AUTO_MODEL_ID,
+      displayName: 'Auto',
+    })
+    expect(options[1]).toMatchObject({
+      selectionKey: 'external_cursor_sdk:composer-latest',
       modelId: 'composer-latest',
       displayName: 'Composer Latest',
     })

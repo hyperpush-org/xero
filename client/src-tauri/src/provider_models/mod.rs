@@ -1,6 +1,7 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
+    process::Command,
     sync::{Arc, Condvar, Mutex},
 };
 
@@ -37,10 +38,11 @@ use crate::{
     },
     runtime::{
         is_supported_xai_text_model_id, ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID,
-        BEDROCK_PROVIDER_ID, CURSOR_DEFAULT_MODEL_ID, CURSOR_PROVIDER_ID, DEEPSEEK_PROVIDER_ID,
-        GEMINI_AI_STUDIO_PROVIDER_ID, GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID,
-        OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENAI_CODEX_SUPPORTED_MODEL_IDS,
-        OPENROUTER_PROVIDER_ID, VERTEX_PROVIDER_ID, XAI_DEFAULT_MODEL_ID, XAI_PROVIDER_ID,
+        BEDROCK_PROVIDER_ID, CURSOR_AUTO_MODEL_ID, CURSOR_DEFAULT_MODEL_ID, CURSOR_PROVIDER_ID,
+        DEEPSEEK_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID, GITHUB_MODELS_PROVIDER_ID,
+        OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
+        OPENAI_CODEX_SUPPORTED_MODEL_IDS, OPENROUTER_PROVIDER_ID, VERTEX_PROVIDER_ID,
+        XAI_DEFAULT_MODEL_ID, XAI_PROVIDER_ID,
     },
     state::DesktopState,
 };
@@ -357,7 +359,7 @@ pub fn load_provider_model_catalog<R: Runtime>(
     let expected_scope = refresh_target.cache_scope(&profile);
     let cache_supported = !matches!(
         refresh_target,
-        ProviderModelCatalogRefreshTarget::OpenAiCodex | ProviderModelCatalogRefreshTarget::Cursor
+        ProviderModelCatalogRefreshTarget::OpenAiCodex
     );
     let cached_row = if cache_supported {
         cache_load.requested_cache_row(&profile, &expected_scope)
@@ -421,7 +423,21 @@ fn refresh_provider_model_catalog(
 ) -> ProviderModelCatalog {
     let live_models = match refresh_target {
         ProviderModelCatalogRefreshTarget::OpenAiCodex => Ok(openai_codex_projection()),
-        ProviderModelCatalogRefreshTarget::Cursor => Ok(cursor_projection()),
+        ProviderModelCatalogRefreshTarget::Cursor => {
+            let Some(secret) =
+                provider_profiles.matched_api_key_credential_for_profile(&profile.profile_id)
+            else {
+                let diagnostic = missing_cursor_credential_diagnostic(profile);
+                return match refresh_context.cached_row.as_ref() {
+                    Some(cached) => catalog_from_cached_row(profile, cached, Some(diagnostic)),
+                    None => {
+                        unavailable_or_manual_catalog(profile, refresh_target, Some(diagnostic))
+                    }
+                };
+            };
+
+            fetch_cursor_models(&secret.api_key).map(normalize_cursor_models)
+        }
         ProviderModelCatalogRefreshTarget::Xai => {
             let Some(token) = xai_catalog_bearer_token(profile, provider_profiles) else {
                 let diagnostic = missing_xai_credential_diagnostic(profile);
@@ -524,8 +540,7 @@ fn refresh_provider_model_catalog(
                 .collect::<Vec<_>>();
             let source = if matches!(
                 refresh_target,
-                ProviderModelCatalogRefreshTarget::Cursor
-                    | ProviderModelCatalogRefreshTarget::AnthropicAmbient
+                ProviderModelCatalogRefreshTarget::AnthropicAmbient
                     | ProviderModelCatalogRefreshTarget::OpenAiCompatible(
                         ResolvedOpenAiCompatibleEndpoint {
                             model_list_strategy: OpenAiCompatibleModelListStrategy::Manual,
@@ -616,14 +631,227 @@ fn xai_projection() -> Vec<ProviderModelRecord> {
 }
 
 fn cursor_projection() -> Vec<ProviderModelRecord> {
-    vec![provider_model_record(
+    vec![
+        provider_model_record(
+            CURSOR_PROVIDER_ID,
+            CURSOR_AUTO_MODEL_ID.into(),
+            "Auto".into(),
+            unsupported_thinking_capability(),
+            None,
+            None,
+        ),
+        provider_model_record(
+            CURSOR_PROVIDER_ID,
+            CURSOR_DEFAULT_MODEL_ID.into(),
+            "Composer Latest".into(),
+            unsupported_thinking_capability(),
+            None,
+            None,
+        ),
+    ]
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CursorDiscoveredModel {
+    id: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    aliases: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CursorBridgeModelListEvent {
+    #[serde(rename = "type")]
+    event_type: String,
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    models: Vec<CursorDiscoveredModel>,
+}
+
+fn fetch_cursor_models(
+    api_key: &str,
+) -> Result<Vec<CursorDiscoveredModel>, ProviderModelCatalogDiagnostic> {
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
+        return Err(ProviderModelCatalogDiagnostic {
+            code: "cursor_auth_missing".into(),
+            message: "Xero cannot refresh Cursor models because the saved Cursor API key is empty."
+                .into(),
+            retryable: false,
+        });
+    }
+
+    let bridge_path = default_cursor_bridge_path();
+    if !bridge_path.is_file() {
+        return Err(ProviderModelCatalogDiagnostic {
+            code: "cursor_model_catalog_unavailable".into(),
+            message: format!(
+                "Xero cannot refresh Cursor models because the Cursor SDK bridge script `{}` was not found.",
+                bridge_path.display()
+            ),
+            retryable: false,
+        });
+    }
+
+    let output = Command::new("node")
+        .arg(&bridge_path)
+        .arg("--list-models")
+        .env("CURSOR_API_KEY", api_key)
+        .output()
+        .map_err(|error| ProviderModelCatalogDiagnostic {
+            code: "cursor_model_catalog_unavailable".into(),
+            message: format!(
+                "Xero could not run the Cursor SDK bridge model listing command: {error}"
+            ),
+            retryable: true,
+        })?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let event = cursor_bridge_model_list_event(&stdout);
+    if output.status.success() {
+        if let Some(event) = event {
+            if event.event_type == "completed" {
+                return Ok(event.models);
+            }
+        }
+        return Err(ProviderModelCatalogDiagnostic {
+            code: "cursor_model_catalog_unavailable".into(),
+            message: "Cursor model listing completed without a model catalog payload.".into(),
+            retryable: true,
+        });
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(ProviderModelCatalogDiagnostic {
+        code: event
+            .as_ref()
+            .and_then(|event| event.code.clone())
+            .unwrap_or_else(|| "cursor_model_catalog_unavailable".into()),
+        message: event.and_then(|event| event.message).unwrap_or_else(|| {
+            let combined = format!("{}{}", stdout.trim(), stderr.trim());
+            if combined.trim().is_empty() {
+                format!(
+                    "Cursor model listing exited with status {:?}.",
+                    output.status.code()
+                )
+            } else {
+                truncate_chars(combined.trim(), 2048)
+            }
+        }),
+        retryable: true,
+    })
+}
+
+fn default_cursor_bridge_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scripts/cursor-sdk-bridge.mjs")
+}
+
+fn cursor_bridge_model_list_event(stdout: &str) -> Option<CursorBridgeModelListEvent> {
+    stdout.lines().rev().find_map(|line| {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        serde_json::from_str::<CursorBridgeModelListEvent>(trimmed).ok()
+    })
+}
+
+fn normalize_cursor_models(models: Vec<CursorDiscoveredModel>) -> Vec<ProviderModelRecord> {
+    let mut records = cursor_projection();
+    let mut seen = records
+        .iter()
+        .map(|model| model.model_id.clone())
+        .collect::<BTreeSet<_>>();
+
+    for model in models {
+        let model_id = model.id.trim();
+        if !model_id.is_empty()
+            && !is_cursor_auto_alias(model_id)
+            && model_id != CURSOR_DEFAULT_MODEL_ID
+            && !seen.contains(model_id)
+        {
+            seen.insert(model_id.to_owned());
+            records.push(cursor_model_record(
+                model_id,
+                cursor_catalog_display_name(model_id, &model.display_name),
+            ));
+        }
+
+        for alias in model.aliases {
+            let alias = alias.trim();
+            if alias.is_empty()
+                || is_cursor_auto_alias(alias)
+                || alias == CURSOR_DEFAULT_MODEL_ID
+                || seen.contains(alias)
+            {
+                continue;
+            }
+            seen.insert(alias.to_owned());
+            records.push(cursor_model_record(
+                alias,
+                cursor_catalog_display_name(alias, alias),
+            ));
+        }
+    }
+
+    records.sort_by(|left, right| {
+        cursor_model_sort_rank(&left.model_id)
+            .cmp(&cursor_model_sort_rank(&right.model_id))
+            .then(left.display_name.cmp(&right.display_name))
+            .then(left.model_id.cmp(&right.model_id))
+    });
+    records
+}
+
+fn cursor_model_record(model_id: &str, display_name: String) -> ProviderModelRecord {
+    provider_model_record(
         CURSOR_PROVIDER_ID,
-        CURSOR_DEFAULT_MODEL_ID.into(),
-        "Composer Latest".into(),
+        model_id.into(),
+        display_name,
         unsupported_thinking_capability(),
         None,
         None,
-    )]
+    )
+}
+
+fn cursor_catalog_display_name(model_id: &str, display_name: &str) -> String {
+    let trimmed = display_name.trim();
+    if !trimmed.is_empty() {
+        return trimmed.into();
+    }
+    model_id.into()
+}
+
+fn is_cursor_auto_alias(model_id: &str) -> bool {
+    matches!(
+        model_id
+            .trim()
+            .replace('_', "-")
+            .to_ascii_lowercase()
+            .as_str(),
+        "auto" | "default" | CURSOR_AUTO_MODEL_ID
+    )
+}
+
+fn cursor_model_sort_rank(model_id: &str) -> u8 {
+    match model_id {
+        CURSOR_AUTO_MODEL_ID => 0,
+        CURSOR_DEFAULT_MODEL_ID => 1,
+        _ => 2,
+    }
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.into();
+    }
+    value.chars().take(max_chars).collect()
 }
 
 fn xai_model_record(model_id: String) -> ProviderModelRecord {
@@ -1933,15 +2161,68 @@ mod tests {
     }
 
     #[test]
-    fn cursor_projection_exposes_composer_latest_without_owned_model_capabilities() {
+    fn cursor_projection_exposes_auto_and_composer_latest_without_owned_model_capabilities() {
         let models = cursor_projection();
-        assert_eq!(models.len(), 1);
-        let composer = &models[0];
+        assert_eq!(models.len(), 2);
+        let auto = &models[0];
+        let composer = &models[1];
 
+        assert_eq!(auto.model_id, CURSOR_AUTO_MODEL_ID);
+        assert_eq!(auto.display_name, "Auto");
+        assert!(!auto.thinking.supported);
+        assert!(auto.thinking.effort_options.is_empty());
         assert_eq!(composer.model_id, CURSOR_DEFAULT_MODEL_ID);
         assert_eq!(composer.display_name, "Composer Latest");
         assert!(!composer.thinking.supported);
         assert!(composer.thinking.effort_options.is_empty());
+    }
+
+    #[test]
+    fn cursor_catalog_normalization_keeps_auto_and_composer_first() {
+        let models = normalize_cursor_models(vec![
+            CursorDiscoveredModel {
+                id: "router".into(),
+                display_name: "Cursor Router".into(),
+                aliases: vec!["auto".into(), "default".into(), "claude-4-sonnet".into()],
+            },
+            CursorDiscoveredModel {
+                id: "composer-latest".into(),
+                display_name: "Composer Latest".into(),
+                aliases: vec![],
+            },
+            CursorDiscoveredModel {
+                id: "gpt-5.4".into(),
+                display_name: "GPT-5.4".into(),
+                aliases: vec!["cursor_auto".into()],
+            },
+        ]);
+        let model_ids = models
+            .iter()
+            .map(|model| model.model_id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            &model_ids[0..2],
+            &[CURSOR_AUTO_MODEL_ID, CURSOR_DEFAULT_MODEL_ID]
+        );
+        assert!(model_ids.contains(&"claude-4-sonnet"));
+        assert!(model_ids.contains(&"gpt-5.4"));
+        assert!(model_ids.contains(&"router"));
+        assert_eq!(models[0].display_name, "Auto");
+        assert_eq!(models[1].display_name, "Composer Latest");
+    }
+
+    #[test]
+    fn cursor_bridge_model_list_event_accepts_sdk_catalog_metadata() {
+        let event = cursor_bridge_model_list_event(
+            r#"{"type":"completed","bridgeVersion":"xero-cursor-sdk-bridge.v1","modelCount":1,"catalogSource":"cursor.models.list","autoAliases":["auto"],"models":[{"id":"router","displayName":"Router","description":"Account router","aliases":["auto"],"parameters":[],"variants":[]}]}"#,
+        )
+        .expect("bridge model-list event");
+
+        assert_eq!(event.event_type, "completed");
+        assert_eq!(event.models.len(), 1);
+        assert_eq!(event.models[0].id, "router");
+        assert_eq!(event.models[0].aliases, vec!["auto"]);
     }
 
     #[test]

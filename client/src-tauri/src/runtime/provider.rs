@@ -44,6 +44,7 @@ pub const ANTHROPIC_RUNTIME_KIND: &str = ANTHROPIC_PROVIDER_ID;
 pub const OPENAI_CODEX_DEFAULT_MODEL_ID: &str = "gpt-5.5";
 pub const XAI_DEFAULT_MODEL_ID: &str = "grok-4.3";
 pub const CURSOR_DEFAULT_MODEL_ID: &str = "composer-latest";
+pub const CURSOR_AUTO_MODEL_ID: &str = "cursor-auto";
 pub const XAI_SUPPORTED_TEXT_MODEL_IDS: &[&str] = &["grok-4.3", "grok-4.3-latest"];
 pub const OPENAI_CODEX_SUPPORTED_MODEL_IDS: &[&str] = &[
     "gpt-5.2",
