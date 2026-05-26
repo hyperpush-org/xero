@@ -90,6 +90,9 @@ export interface AgentDockSidebarProps {
   pendingInitialRuntimeAgentId?: AgentRuntimeProps["pendingInitialRuntimeAgentId"]
   pendingInitialAgentDefinitionId?: AgentRuntimeProps["pendingInitialAgentDefinitionId"]
   onPendingInitialRuntimeAgentIdConsumed?: AgentRuntimeProps["onPendingInitialRuntimeAgentIdConsumed"]
+  pendingComposerInsert?: AgentRuntimeProps["pendingComposerInsert"]
+  onPendingComposerInsertConsumed?: AgentRuntimeProps["onPendingComposerInsertConsumed"]
+  browserContextLoading?: AgentRuntimeProps["browserContextLoading"]
 }
 
 export function AgentDockSidebar({

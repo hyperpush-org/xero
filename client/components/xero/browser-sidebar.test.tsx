@@ -54,8 +54,11 @@ vi.mock("@tauri-apps/api/event", () => ({
 }))
 
 import {
+  buildBrowserToolActivationScript,
   buildBrowserToolAgentPrompt,
+  buildBrowserToolVisiblePrompt,
   type BrowserAgentContextRequest,
+  type BrowserToolTheme,
 } from "./browser-tool-injection"
 import { BrowserSidebar, createBrowserEventCoalescer } from "./browser-sidebar"
 
@@ -681,10 +684,10 @@ describe("BrowserSidebar", () => {
     await waitFor(() => expect(screen.queryByLabelText("Sketch on page")).toBeNull())
   })
 
-  it("captures submitted browser tool context and forwards it to the agent", async () => {
-    const submittedRequests: BrowserAgentContextRequest[] = []
-    const onSubmitAgentContext = vi.fn(async (request: BrowserAgentContextRequest) => {
-      submittedRequests.push(request)
+  it("captures submitted browser tool context and adds it to the agent composer", async () => {
+    const addedRequests: BrowserAgentContextRequest[] = []
+    const onAddAgentContext = vi.fn(async (request: BrowserAgentContextRequest) => {
+      addedRequests.push(request)
     })
     registerInvoke("browser_tab_list", async () => [
       {
@@ -698,12 +701,9 @@ describe("BrowserSidebar", () => {
         active: true,
       },
     ])
-    registerInvoke("browser_eval", async (args) => {
-      if (String(args?.js ?? "").includes("captureImage")) return "aGVsbG8="
-      return null
-    })
+    registerInvoke("browser_screenshot", async () => "aGVsbG8=")
 
-    render(<BrowserSidebar open onSubmitAgentContext={onSubmitAgentContext} />)
+    render(<BrowserSidebar open onAddAgentContext={onAddAgentContext} />)
     fireEvent.click(await screen.findByLabelText("Inspect element"))
 
     await act(async () => {
@@ -728,16 +728,17 @@ describe("BrowserSidebar", () => {
       })
     })
 
-    await waitFor(() => expect(onSubmitAgentContext).toHaveBeenCalledTimes(1))
-    const request = submittedRequests[0]!
+    await waitFor(() => expect(onAddAgentContext).toHaveBeenCalledTimes(1))
+    const request = addedRequests[0]!
     expect(request.prompt).toContain("Browser element inspection context")
     expect(request.prompt).toContain("local dev server /")
     expect(request.prompt).not.toContain("localhost:")
     expect(request.prompt).toContain("Selector: button.cta")
-    expect(request.prompt).toContain("Tighten the spacing here")
+    expect(request.prompt).not.toContain("Tighten the spacing here")
+    expect(request.visiblePrompt).toBe("Tighten the spacing here")
     expect(Array.from(request.image.bytes)).toEqual([104, 101, 108, 108, 111])
     expect(request.image.originalName).toMatch(/^browser-inspect-/)
-    expect(invokeCalls.some((call) => call.command === "browser_screenshot")).toBe(false)
+    expect(invokeCalls.some((call) => call.command === "browser_screenshot")).toBe(true)
   })
 
   it("redacts local dev-server URLs from browser tool prompts", () => {
@@ -752,5 +753,54 @@ describe("BrowserSidebar", () => {
     expect(prompt).toContain("Local App (local dev server /oauth/callback)")
     expect(prompt).not.toContain("localhost:")
     expect(prompt).not.toContain("code=abc")
+  })
+
+  it("keeps browser tool notes as the only visible composer text", () => {
+    const visiblePrompt = buildBrowserToolVisiblePrompt({
+      kind: "pen",
+      note: "Make the heading tighter",
+      page: { url: "http://localhost:5173/oauth/callback?code=abc", title: "Local App" },
+      strokeCount: 1,
+      viewport: { width: 800, height: 600 },
+    })
+
+    expect(visiblePrompt).toBe("Make the heading tighter")
+  })
+
+  it("renders pen strokes with blended rainbow gradients", () => {
+    const theme: BrowserToolTheme = {
+      background: "#09090b",
+      foreground: "#fafafa",
+      card: "#18181b",
+      cardForeground: "#fafafa",
+      popover: "#18181b",
+      popoverForeground: "#fafafa",
+      primary: "#fafafa",
+      primaryForeground: "#18181b",
+      secondary: "#27272a",
+      secondaryForeground: "#fafafa",
+      muted: "#27272a",
+      mutedForeground: "#a1a1aa",
+      accent: "#f97316",
+      accentForeground: "#111827",
+      destructive: "#ef4444",
+      destructiveForeground: "#fafafa",
+      border: "#3f3f46",
+      input: "#3f3f46",
+      ring: "#f97316",
+    }
+
+    const script = buildBrowserToolActivationScript({
+      mode: "pen",
+      pageLabel: "Local App",
+      theme,
+    })
+
+    expect(script).toContain("linearGradient")
+    expect(script).toContain('gradient.setAttribute("gradientUnits", "userSpaceOnUse")')
+    expect(script).toContain("#ff2d55")
+    expect(script).toContain("#34c759")
+    expect(script).toContain("#ff2dff")
+    expect(script).toContain('path.style.stroke = "url(#" + gradientId + ")"')
   })
 })

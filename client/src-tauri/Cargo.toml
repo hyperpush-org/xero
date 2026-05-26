@@ -129,8 +129,10 @@ portable-pty = "0.8"
 core-graphics = { version = "0.23", features = ["elcapitan"] }
 core-foundation = "0.9"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSRunningApplication", "NSWorkspace", "libc"] }
-objc2-foundation = { version = "0.3", features = ["NSArray", "NSData", "NSString", "NSURL", "libc"] }
+block2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSBitmapImageRep", "NSImage", "NSImageRep", "NSRunningApplication", "NSView", "NSWorkspace", "libc"] }
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSData", "NSDictionary", "NSError", "NSString", "NSURL", "libc"] }
+objc2-web-kit = { version = "0.3", features = ["WKSnapshotConfiguration", "WKWebView", "block2", "objc2-app-kit", "objc2-core-foundation"] }
 
 [dev-dependencies]
 tempfile = "3"

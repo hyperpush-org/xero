@@ -76,6 +76,7 @@ export interface BrowserToolClosedEventPayload {
 
 export interface BrowserAgentContextRequest {
   prompt: string
+  visiblePrompt: string
   image: {
     bytes: Uint8Array
     mediaType: "image/png"
@@ -168,6 +169,15 @@ const BROWSER_TOOL_RUNTIME = String.raw`
   var ROOT_ID = "__xero-browser-tool-root";
   var DEFAULT_THEME = ${JSON.stringify(DEFAULT_BROWSER_TOOL_THEME)};
   var THEME_KEYS = Object.keys(DEFAULT_THEME);
+  var RAINBOW_STOPS = [
+    ["0%", "#ff2d55"],
+    ["16%", "#ff9500"],
+    ["32%", "#ffcc00"],
+    ["50%", "#34c759"],
+    ["66%", "#00c7ff"],
+    ["82%", "#5856d6"],
+    ["100%", "#ff2dff"]
+  ];
 
   function bridgeEmit(kind, payload) {
     try {
@@ -191,14 +201,6 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       width: Math.round(window.innerWidth || 0),
       height: Math.round(window.innerHeight || 0)
     };
-  }
-
-  function nextFrame() {
-    return new Promise(function (resolve) {
-      requestAnimationFrame(function () {
-        requestAnimationFrame(resolve);
-      });
-    });
   }
 
   function round(value) {
@@ -320,196 +322,47 @@ const BROWSER_TOOL_RUNTIME = String.raw`
     while (node.firstChild) node.removeChild(node.firstChild);
   }
 
-  function htmlEscape(value) {
-    return String(value || "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
+  function createPenDefs(svg) {
+    var defs = createSvgNode("defs");
+    svg.appendChild(defs);
+    return defs;
   }
 
-  function cssTextFromPage() {
-    var chunks = [];
-    for (var index = 0; index < document.styleSheets.length; index += 1) {
-      var sheet = document.styleSheets[index];
-      try {
-        var rules = sheet.cssRules || [];
-        for (var ruleIndex = 0; ruleIndex < rules.length; ruleIndex += 1) {
-          chunks.push(rules[ruleIndex].cssText);
-        }
-      } catch (_error) {
-        // Cross-origin stylesheets are skipped; visible annotations are drawn separately.
-      }
+  function createRainbowGradient(defs, id) {
+    var gradient = createSvgNode("linearGradient");
+    gradient.setAttribute("id", id);
+    gradient.setAttribute("gradientUnits", "userSpaceOnUse");
+    for (var index = 0; index < RAINBOW_STOPS.length; index += 1) {
+      var stop = createSvgNode("stop");
+      stop.setAttribute("offset", RAINBOW_STOPS[index][0]);
+      stop.setAttribute("stop-color", RAINBOW_STOPS[index][1]);
+      gradient.appendChild(stop);
     }
-    chunks.push("script,noscript,style[data-xero-browser-tool-skip]{display:none!important}");
-    return chunks.join("\n");
+    defs.appendChild(gradient);
+    return gradient;
   }
 
-  function currentBackground() {
-    var candidates = [document.body, document.documentElement];
-    for (var index = 0; index < candidates.length; index += 1) {
-      var node = candidates[index];
-      if (!node) continue;
-      var color = "";
-      try {
-        color = getComputedStyle(node).backgroundColor;
-      } catch (_error) {
-        color = "";
-      }
-      if (color && color !== "transparent" && color !== "rgba(0, 0, 0, 0)") return color;
+  function updateRainbowGradient(stroke) {
+    if (!stroke || !stroke.gradient || !stroke.points || stroke.points.length === 0) return;
+    var first = stroke.points[0];
+    var last = stroke.points[stroke.points.length - 1] || first;
+    var x1 = first.x;
+    var y1 = first.y;
+    var x2 = last.x;
+    var y2 = last.y;
+    if (Math.hypot(x2 - x1, y2 - y1) < 8) {
+      x1 = stroke.minX;
+      y1 = stroke.minY;
+      x2 = stroke.maxX;
+      y2 = stroke.maxY;
     }
-    return "#0a0a0a";
-  }
-
-  function loadImage(url) {
-    return new Promise(function (resolve, reject) {
-      var image = new Image();
-      image.onload = function () { resolve(image); };
-      image.onerror = function () { reject(new Error("snapshot image failed to load")); };
-      image.src = url;
-    });
-  }
-
-  async function renderPageToCanvas(ctx, width, height) {
-    var bodyClone = document.body ? document.body.cloneNode(true) : document.createElement("body");
-    var toolRoot = bodyClone.querySelector("#" + ROOT_ID);
-    if (toolRoot && toolRoot.parentNode) toolRoot.parentNode.removeChild(toolRoot);
-    var scripts = bodyClone.querySelectorAll("script");
-    for (var scriptIndex = 0; scriptIndex < scripts.length; scriptIndex += 1) {
-      scripts[scriptIndex].remove();
+    if (Math.hypot(x2 - x1, y2 - y1) < 1) {
+      x2 = x1 + 1;
     }
-    var pageWidth = Math.max(
-      width,
-      document.documentElement ? document.documentElement.scrollWidth || 0 : 0,
-      document.body ? document.body.scrollWidth || 0 : 0
-    );
-    var pageHeight = Math.max(
-      height,
-      document.documentElement ? document.documentElement.scrollHeight || 0 : 0,
-      document.body ? document.body.scrollHeight || 0 : 0
-    );
-    var x = Math.max(0, Math.round(window.scrollX || window.pageXOffset || 0));
-    var y = Math.max(0, Math.round(window.scrollY || window.pageYOffset || 0));
-    var styles = cssTextFromPage();
-    var serializer = new XMLSerializer();
-    var bodyMarkup = "";
-    for (var childIndex = 0; childIndex < bodyClone.childNodes.length; childIndex += 1) {
-      try {
-        bodyMarkup += serializer.serializeToString(bodyClone.childNodes[childIndex]);
-      } catch (_error) {
-        // Skip nodes that cannot be serialized into an image snapshot.
-      }
-    }
-    var markup =
-      "<div xmlns=\"http://www.w3.org/1999/xhtml\" style=\"position:relative;width:" + pageWidth + "px;min-height:" + pageHeight + "px;transform:translate(" + (-x) + "px," + (-y) + "px);transform-origin:0 0;background:" + htmlEscape(currentBackground()) + ";\">" +
-      "<style>" + htmlEscape(styles) + "</style>" +
-      bodyMarkup +
-      "</div>";
-    var svg =
-      "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" + width + "\" height=\"" + height + "\" viewBox=\"0 0 " + width + " " + height + "\">" +
-      "<foreignObject x=\"0\" y=\"0\" width=\"" + width + "\" height=\"" + height + "\">" +
-      markup +
-      "</foreignObject></svg>";
-    var url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
-    try {
-      var image = await loadImage(url);
-      ctx.drawImage(image, 0, 0, width, height);
-    } finally {
-      URL.revokeObjectURL(url);
-    }
-  }
-
-  function drawFallbackSnapshot(ctx, state, width, height) {
-    ctx.fillStyle = currentBackground();
-    ctx.fillRect(0, 0, width, height);
-    ctx.fillStyle = themeValue(null, "mutedForeground");
-    ctx.font = "12px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
-    ctx.fillText(state.mode === "inspect" ? "Browser element context" : "Browser sketch context", 20, 28);
-    ctx.fillText(pageContext().title || pageContext().url || "Local dev page", 20, 48);
-  }
-
-  function drawPenAnnotations(ctx, state) {
-    if (!state.strokes || state.strokes.length === 0) return;
-    var penColor = getComputedStyle(state.host).getPropertyValue("--xero-tool-pen").trim() || "#f97316";
-    ctx.save();
-    ctx.strokeStyle = penColor;
-    ctx.lineWidth = 3;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    for (var index = 0; index < state.strokes.length; index += 1) {
-      var stroke = state.strokes[index];
-      if (!stroke.points || stroke.points.length < 2) continue;
-      ctx.beginPath();
-      ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
-      for (var pointIndex = 1; pointIndex < stroke.points.length; pointIndex += 1) {
-        ctx.lineTo(stroke.points[pointIndex].x, stroke.points[pointIndex].y);
-      }
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
-
-  function drawInspectAnnotation(ctx, state) {
-    var context = state.selectedContext || (state.selectedElement ? elementContext(state.selectedElement) : null);
-    if (!context || !context.rect) return;
-    var rect = context.rect;
-    if (rect.width <= 0 || rect.height <= 0) return;
-    var selectionColor = getComputedStyle(state.host).getPropertyValue("--xero-tool-selection").trim() || "#f97316";
-    ctx.save();
-    ctx.strokeStyle = selectionColor;
-    ctx.fillStyle = "rgba(249,115,22,0.10)";
-    ctx.lineWidth = 2;
-    ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
-    ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
-    var label = context.selector || context.tagName || "selected element";
-    ctx.font = "700 11px ui-monospace, SFMono-Regular, Menlo, monospace";
-    var labelWidth = Math.min(360, Math.ceil(ctx.measureText(label).width) + 12);
-    var labelY = Math.max(4, rect.y - 24);
-    ctx.fillStyle = selectionColor;
-    ctx.fillRect(rect.x, labelY, labelWidth, 20);
-    ctx.fillStyle = themeValue(null, "accentForeground");
-    ctx.fillText(label.slice(0, 64), rect.x + 6, labelY + 14);
-    ctx.restore();
-  }
-
-  async function captureImage(state) {
-    if (!state) return null;
-    state.captureMode = true;
-    if (state.root) state.root.setAttribute("data-capture", "true");
-    await nextFrame();
-    var width = Math.max(1, Math.round(window.innerWidth || 1));
-    var height = Math.max(1, Math.round(window.innerHeight || 1));
-    var dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
-    var canvas = document.createElement("canvas");
-    canvas.width = Math.round(width * dpr);
-    canvas.height = Math.round(height * dpr);
-    var ctx = canvas.getContext("2d");
-    if (!ctx) return null;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    try {
-      await renderPageToCanvas(ctx, width, height);
-    } catch (_error) {
-      drawFallbackSnapshot(ctx, state, width, height);
-    }
-    if (state.mode === "inspect") {
-      drawInspectAnnotation(ctx, state);
-    } else {
-      drawPenAnnotations(ctx, state);
-    }
-    try {
-      return canvas.toDataURL("image/png");
-    } catch (_error) {
-      var fallback = document.createElement("canvas");
-      fallback.width = Math.round(width * dpr);
-      fallback.height = Math.round(height * dpr);
-      var fallbackCtx = fallback.getContext("2d");
-      if (!fallbackCtx) return null;
-      fallbackCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      drawFallbackSnapshot(fallbackCtx, state, width, height);
-      if (state.mode === "inspect") drawInspectAnnotation(fallbackCtx, state);
-      if (state.mode === "pen") drawPenAnnotations(fallbackCtx, state);
-      return fallback.toDataURL("image/png");
-    }
+    stroke.gradient.setAttribute("x1", String(round(x1)));
+    stroke.gradient.setAttribute("y1", String(round(y1)));
+    stroke.gradient.setAttribute("x2", String(round(x2)));
+    stroke.gradient.setAttribute("y2", String(round(y2)));
   }
 
   function themeValue(theme, key) {
@@ -582,9 +435,9 @@ const BROWSER_TOOL_RUNTIME = String.raw`
 
     var footer = createNode("div", "composer-footer");
     var hint = createNode("span", "composer-hint", options.footer || "");
-    var send = createNode("button", "send-button", "Send");
+    var send = createNode("button", "send-button", "Add");
     send.type = "button";
-    send.setAttribute("aria-label", "Send browser context");
+    send.setAttribute("aria-label", "Add browser context to composer");
     footer.appendChild(hint);
     footer.appendChild(send);
 
@@ -662,8 +515,10 @@ const BROWSER_TOOL_RUNTIME = String.raw`
 
   function setupPen(state) {
     var svg = createSvgNode("svg", "pen-layer");
+    var defs = createPenDefs(svg);
     var active = null;
     var rafId = 0;
+    var strokeIndex = 0;
     state.strokes = [];
     state.layer.appendChild(svg);
     state.penLayer = svg;
@@ -689,6 +544,7 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       rafId = 0;
       if (!active || !active.path) return;
       active.path.setAttribute("d", pathData(active.points));
+      updateRainbowGradient(active);
     }
 
     function scheduleActivePathUpdate() {
@@ -697,17 +553,24 @@ const BROWSER_TOOL_RUNTIME = String.raw`
     }
 
     function createStroke(start) {
+      var gradientId = "xero-pen-rainbow-" + Date.now().toString(36) + "-" + strokeIndex;
+      strokeIndex += 1;
+      var gradient = createRainbowGradient(defs, gradientId);
       var path = createSvgNode("path", "pen-path active");
       path.setAttribute("d", pathData([start]));
+      path.style.stroke = "url(#" + gradientId + ")";
       svg.appendChild(path);
-      return {
+      var stroke = {
         points: [start],
         minX: start.x,
         maxX: start.x,
         minY: start.y,
         maxY: start.y,
+        gradient: gradient,
         path: path
       };
+      updateRainbowGradient(stroke);
+      return stroke;
     }
 
     function point(event) {
@@ -739,6 +602,7 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       state.composer = null;
       state.composerInput = null;
       clearNode(svg);
+      defs = createPenDefs(svg);
     };
 
     svg.addEventListener("pointerdown", function (event) {
@@ -771,6 +635,7 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       appendPoint(event, true);
       var finished = active;
       finished.path.setAttribute("d", pathData(finished.points));
+      updateRainbowGradient(finished);
       finished.path.setAttribute("class", "pen-path");
       active = null;
       if (finished.points.length > 1) {
@@ -1001,9 +866,6 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       if (state.root) state.root.setAttribute("data-capture", "true");
       return state.pendingContext || null;
     },
-    captureImage: function () {
-      return captureImage(api.state);
-    },
     restoreCapture: function () {
       var state = api.state;
       if (!state) return false;
@@ -1056,13 +918,6 @@ if (window.__xeroBrowserTool && typeof window.__xeroBrowserTool.prepareCapture =
 }
 `
 
-export const BROWSER_TOOL_CAPTURE_IMAGE_SCRIPT = `
-if (window.__xeroBrowserTool && typeof window.__xeroBrowserTool.captureImage === "function") {
-  return window.__xeroBrowserTool.captureImage();
-}
-return null;
-`
-
 export const BROWSER_TOOL_RESTORE_CAPTURE_SCRIPT = `
 if (window.__xeroBrowserTool && typeof window.__xeroBrowserTool.restoreCapture === "function") {
   window.__xeroBrowserTool.restoreCapture();
@@ -1102,14 +957,12 @@ function sanitizedBrowserToolPromptUrl(rawUrl: string): string {
 
 export function buildBrowserToolAgentPrompt(context: BrowserToolContext): string {
   const pageLine = browserToolPromptPageReference(context.page)
-  const note = context.note.trim() || "No additional note provided."
 
   if (context.kind === "pen") {
     return [
       "Browser sketch context:",
       `Page: ${pageLine}`,
       `Drawing: ${context.strokeCount} stroke${context.strokeCount === 1 ? "" : "s"} on the attached browser screenshot.`,
-      `User note: ${note}`,
     ].join("\n")
   }
 
@@ -1131,6 +984,9 @@ export function buildBrowserToolAgentPrompt(context: BrowserToolContext): string
     "Selected element:",
     ...details.map((line) => `- ${line}`),
     "The attached browser screenshot highlights this selection.",
-    `User note: ${note}`,
   ].join("\n")
+}
+
+export function buildBrowserToolVisiblePrompt(context: BrowserToolContext): string {
+  return context.note.trim()
 }

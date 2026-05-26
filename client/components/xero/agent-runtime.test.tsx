@@ -3810,6 +3810,84 @@ describe('AgentRuntime current UI', () => {
     )
   })
 
+  it('adds external browser context to the composer without queueing the prompt', async () => {
+    const dictation = createDictationAdapter()
+    const onUpdateRuntimeRunControls = vi.fn(async () => makeRuntimeRun())
+    const stageAgentAttachment = vi.fn(async (request: {
+      bytes: Uint8Array
+      mediaType: string
+      originalName: string
+      projectId: string
+      runId: string
+    }) => ({
+      kind: 'image' as const,
+      absolutePath: '/tmp/browser-context.png',
+      mediaType: request.mediaType,
+      originalName: request.originalName,
+      sizeBytes: request.bytes.byteLength,
+    }))
+    const onPendingComposerInsertConsumed = vi.fn()
+    const imageBytes = new Uint8Array([104, 101, 108, 108, 111])
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun(),
+        })}
+        desktopAdapter={{
+          ...dictation.adapter,
+          stageAgentAttachment,
+        }}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+        pendingComposerInsert={{
+          id: 'browser-context-1',
+          prompt: 'Tighten the hero spacing.',
+          hiddenPrompt: 'Browser sketch context:\nPage: Local App\nDrawing: 1 stroke on the attached browser screenshot.',
+          image: {
+            bytes: imageBytes,
+            mediaType: 'image/png',
+            originalName: 'browser-pen.png',
+          },
+        }}
+        onPendingComposerInsertConsumed={onPendingComposerInsertConsumed}
+      />,
+    )
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('Agent input')).toHaveValue('Tighten the hero spacing.'),
+    )
+    expect(onUpdateRuntimeRunControls).not.toHaveBeenCalled()
+    expect(onPendingComposerInsertConsumed).toHaveBeenCalledWith('browser-context-1')
+    await waitFor(() =>
+      expect(stageAgentAttachment).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        runId: 'run-1',
+        originalName: 'browser-pen.png',
+        mediaType: 'image/png',
+        bytes: imageBytes,
+      }),
+    )
+
+    fireEvent.keyDown(screen.getByLabelText('Agent input'), { key: 'Enter' })
+
+    await waitFor(() =>
+      expect(onUpdateRuntimeRunControls).toHaveBeenCalledWith({
+        prompt:
+          'Tighten the hero spacing.\n\nBrowser sketch context:\nPage: Local App\nDrawing: 1 stroke on the attached browser screenshot.',
+        attachments: [
+          {
+            kind: 'image',
+            absolutePath: '/tmp/browser-context.png',
+            mediaType: 'image/png',
+            originalName: 'browser-pen.png',
+            sizeBytes: imageBytes.byteLength,
+          },
+        ],
+      }),
+    )
+  })
+
   it('streams dictated partials into the composer without duplicating revised fragments', async () => {
     const dictation = createDictationAdapter()
 

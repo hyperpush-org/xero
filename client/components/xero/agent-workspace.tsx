@@ -139,6 +139,9 @@ export interface AgentWorkspaceProps
       | 'pendingInitialRuntimeAgentId'
       | 'pendingInitialAgentDefinitionId'
       | 'onPendingInitialRuntimeAgentIdConsumed'
+      | 'pendingComposerInsert'
+      | 'onPendingComposerInsertConsumed'
+      | 'browserContextLoading'
     >,
     PaneAwareRuntimeHandlers {
   active?: boolean
@@ -158,6 +161,9 @@ export interface AgentWorkspaceProps
     agentDefinitionId?: string | null
   } | null
   onClearPendingInitialRuntimeAgent?: (agentSessionId: string) => void
+  pendingComposerInsert?: AgentRuntimeProps['pendingComposerInsert']
+  onPendingComposerInsertConsumed?: AgentRuntimeProps['onPendingComposerInsertConsumed']
+  browserContextLoading?: AgentRuntimeProps['browserContextLoading']
 }
 
 export const AgentWorkspace = memo(function AgentWorkspace({
@@ -188,6 +194,9 @@ export const AgentWorkspace = memo(function AgentWorkspace({
   onUpsertNotificationRoute,
   pendingInitialRuntimeAgent = null,
   onClearPendingInitialRuntimeAgent,
+  pendingComposerInsert = null,
+  onPendingComposerInsertConsumed,
+  browserContextLoading = false,
   ...runtimeProps
 }: AgentWorkspaceProps) {
   const stableRuntimeProps = useShallowStableRecord(runtimeProps)
@@ -266,6 +275,9 @@ export const AgentWorkspace = memo(function AgentWorkspace({
           onUpsertNotificationRoute={onUpsertNotificationRoute}
           pendingInitialRuntimeAgent={pendingInitialRuntimeAgent}
           onClearPendingInitialRuntimeAgent={onClearPendingInitialRuntimeAgent}
+          pendingComposerInsert={slot.isFocused ? pendingComposerInsert : null}
+          onPendingComposerInsertConsumed={onPendingComposerInsertConsumed}
+          browserContextLoading={slot.isFocused ? browserContextLoading : false}
         />
       )
     },
@@ -275,6 +287,8 @@ export const AgentWorkspace = memo(function AgentWorkspace({
       highChurnStore,
       onCancelAutonomousRun,
       onClearPendingInitialRuntimeAgent,
+      onPendingComposerInsertConsumed,
+      browserContextLoading,
       onClosePane,
       onComposerControlsChange,
       onFocusPane,
@@ -296,6 +310,7 @@ export const AgentWorkspace = memo(function AgentWorkspace({
       paneCount,
       panes,
       pendingInitialRuntimeAgent,
+      pendingComposerInsert,
       spawnPaneDisabled,
       stableRuntimeProps,
     ],
@@ -363,6 +378,9 @@ interface PaneRuntimeWrapperProps extends PaneAwareRuntimeHandlers {
     | 'pendingInitialRuntimeAgentId'
     | 'pendingInitialAgentDefinitionId'
     | 'onPendingInitialRuntimeAgentIdConsumed'
+    | 'pendingComposerInsert'
+    | 'onPendingComposerInsertConsumed'
+    | 'browserContextLoading'
   >
   highChurnStore: XeroHighChurnStore
   pendingInitialRuntimeAgent?: {
@@ -371,6 +389,9 @@ interface PaneRuntimeWrapperProps extends PaneAwareRuntimeHandlers {
     agentDefinitionId?: string | null
   } | null
   onClearPendingInitialRuntimeAgent?: (agentSessionId: string) => void
+  pendingComposerInsert?: AgentRuntimeProps['pendingComposerInsert']
+  onPendingComposerInsertConsumed?: AgentRuntimeProps['onPendingComposerInsertConsumed']
+  browserContextLoading?: AgentRuntimeProps['browserContextLoading']
 }
 
 const PaneRuntime = memo(function PaneRuntime({
@@ -404,6 +425,9 @@ const PaneRuntime = memo(function PaneRuntime({
   onUpsertNotificationRoute,
   pendingInitialRuntimeAgent,
   onClearPendingInitialRuntimeAgent,
+  pendingComposerInsert = null,
+  onPendingComposerInsertConsumed,
+  browserContextLoading = false,
   dragHandle,
 }: PaneRuntimeWrapperProps) {
   const paneId = pane.paneId
@@ -551,6 +575,9 @@ const PaneRuntime = memo(function PaneRuntime({
       pendingInitialRuntimeAgentId={pendingInitialRuntimeAgentId}
       pendingInitialAgentDefinitionId={pendingInitialAgentDefinitionId}
       onPendingInitialRuntimeAgentIdConsumed={handlePendingInitialRuntimeAgentIdConsumed}
+      pendingComposerInsert={pendingComposerInsert}
+      onPendingComposerInsertConsumed={onPendingComposerInsertConsumed}
+      browserContextLoading={browserContextLoading}
     />
   )
 })

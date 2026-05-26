@@ -9,7 +9,11 @@ import {
   Suspense,
   type ReactNode,
 } from 'react'
-import type { AgentPaneCloseState, AgentRuntimeProps } from '@/components/xero/agent-runtime'
+import type {
+  AgentComposerInsert,
+  AgentPaneCloseState,
+  AgentRuntimeProps,
+} from '@/components/xero/agent-runtime'
 import { SetupEmptyState } from '@/components/xero/agent-runtime/setup-empty-state'
 import { AgentWorkspace } from '@/components/xero/agent-workspace'
 import { AgentSessionsSidebar } from '@/components/xero/agent-sessions-sidebar'
@@ -272,6 +276,13 @@ const BASE_STARTUP_SURFACE_PRELOAD_TARGETS: SurfacePreloadTarget[] = [
   'vcs',
   'workflows',
 ]
+
+type BrowserComposerInsertTarget = 'agent-view' | 'agent-dock'
+
+interface PendingBrowserComposerInsert {
+  target: BrowserComposerInsertTarget
+  insert: AgentComposerInsert
+}
 
 function shouldIncludeIosSurface(): boolean {
   return MOBILE_EMULATOR_SURFACES_ENABLED && detectPlatform() === 'macos'
@@ -1670,6 +1681,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const [usageOpen, setUsageOpen] = useState(false)
   const [agentDockOpen, setAgentDockOpen] = useState(false)
   const [computerUseOpen, setComputerUseOpen] = useState(false)
+  const [pendingBrowserComposerInsert, setPendingBrowserComposerInsert] =
+    useState<PendingBrowserComposerInsert | null>(null)
+  const [browserComposerInsertLoadingTarget, setBrowserComposerInsertLoadingTarget] =
+    useState<BrowserComposerInsertTarget | null>(null)
   const [computerUseProject, setComputerUseProject] = useState<ProjectDetailView | null>(null)
   const [computerUseRuntimeSession, setComputerUseRuntimeSession] =
     useState<RuntimeSessionView | null>(null)
@@ -3996,46 +4011,55 @@ export function XeroApp({ adapter }: XeroAppProps) {
       updateRuntimeRunControls,
     ],
   )
-  const handleSendBrowserContextToAgent = useCallback(
+  const handleAddBrowserContextToAgentComposer = useCallback(
     async (request: BrowserAgentContextRequest) => {
       if (!activeProject) {
-        throw new Error('Select a project before sending browser context to an agent.')
+        throw new Error('Select a project before adding browser context to an agent.')
       }
 
-      const activeRuntimeRun = agentView?.runtimeRun ?? null
-      const targetRunId = activeRuntimeRun && !activeRuntimeRun.isTerminal
-        ? activeRuntimeRun.runId
-        : 'pending'
-      const staged = await resolvedAdapter.stageAgentAttachment({
-        projectId: activeProject.id,
-        runId: targetRunId,
-        originalName: request.image.originalName,
-        mediaType: request.image.mediaType,
-        bytes: request.image.bytes,
+      const target: BrowserComposerInsertTarget =
+        activeView === 'agent' ? 'agent-view' : 'agent-dock'
+      setPendingBrowserComposerInsert({
+        target,
+        insert: {
+          id: `browser-context-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          prompt: request.visiblePrompt,
+          hiddenPrompt: request.prompt,
+          image: request.image,
+        },
       })
 
-      const attachments: StagedAgentAttachmentDto[] = [staged]
-      if (activeRuntimeRun && !activeRuntimeRun.isTerminal) {
-        await updateRuntimeRunControls({ prompt: request.prompt, attachments })
-      } else {
-        await startRuntimeRun({
-          controls: agentComposerControls,
-          prompt: request.prompt,
-          attachments,
-        })
+      if (target === 'agent-dock') {
+        preloadSurfaceChunk('agent-dock')
+        setBrowserOpen(false)
+        setIosOpen(false)
+        setSolanaOpen(false)
+        setVcsOpen(false)
+        setWorkflowsOpen(false)
+        setUsageOpen(false)
+        setTerminalOpen(false)
+        setComputerUseOpen(false)
+        setAgentDockOpen(true)
       }
-      setActiveView('agent')
     },
     [
       activeProject,
-      agentComposerControls,
-      agentView?.runtimeRun,
-      resolvedAdapter,
-      setActiveView,
-      startRuntimeRun,
-      updateRuntimeRunControls,
+      activeView,
     ],
   )
+  const handleBrowserContextLoadingChange = useCallback(
+    (loading: boolean) => {
+      setBrowserComposerInsertLoadingTarget(
+        loading ? (activeView === 'agent' ? 'agent-view' : 'agent-dock') : null,
+      )
+    },
+    [activeView],
+  )
+  const handleBrowserComposerInsertConsumed = useCallback((id: string) => {
+    setPendingBrowserComposerInsert((current) =>
+      current?.insert.id === id ? null : current,
+    )
+  }, [])
   const handleAgentComposerControlsChange = useCallback((
     _paneId: string,
     controls: RuntimeRunControlInputDto | null,
@@ -4605,6 +4629,13 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onSubmitManualCallback={handleAgentSubmitManualCallback}
                 onUpsertNotificationRoute={handleAgentUpsertNotificationRoute}
                 onCodeUndoApplied={handleAgentCodeUndoApplied}
+                pendingComposerInsert={
+                  pendingBrowserComposerInsert?.target === 'agent-view'
+                    ? pendingBrowserComposerInsert.insert
+                    : null
+                }
+                onPendingComposerInsertConsumed={handleBrowserComposerInsertConsumed}
+                browserContextLoading={browserComposerInsertLoadingTarget === 'agent-view'}
               />
             </LazyActivityPane>
           ) : null}
@@ -4886,7 +4917,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
             >
               <LazyBrowserSidebar
                 open={browserOpen}
-                onSubmitAgentContext={handleSendBrowserContextToAgent}
+                onAddAgentContext={handleAddBrowserContextToAgentComposer}
+                onAddAgentContextLoadingChange={handleBrowserContextLoadingChange}
               />
             </Suspense>
           </LazyPrerenderedSurface>
@@ -5099,6 +5131,15 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 pendingInitialAgentDefinitionId={
                   computerUseOpen ? null : pendingAgentDockAgentDefinitionId
                 }
+                pendingComposerInsert={
+                  !computerUseOpen && pendingBrowserComposerInsert?.target === 'agent-dock'
+                    ? pendingBrowserComposerInsert.insert
+                    : null
+                }
+                browserContextLoading={
+                  !computerUseOpen && browserComposerInsertLoadingTarget === 'agent-dock'
+                }
+                onPendingComposerInsertConsumed={handleBrowserComposerInsertConsumed}
                 onPendingInitialRuntimeAgentIdConsumed={() => {
                   if (!computerUseOpen && activeProject?.selectedAgentSessionId) {
                     handleClearPendingInitialRuntimeAgent(activeProject.selectedAgentSessionId)

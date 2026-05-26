@@ -114,6 +114,16 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return fallback
 }
 
+function appendComposerPrompt(currentPrompt: string, addition: string): string {
+  const nextPrompt = addition.trim()
+  if (nextPrompt.length === 0) {
+    return currentPrompt
+  }
+
+  const current = currentPrompt.trimEnd()
+  return current.length > 0 ? `${current}\n\n${nextPrompt}` : nextPrompt
+}
+
 const AUTO_COMPACT_STORAGE_KEY = 'xero.agent.autoCompact.enabled'
 export const COMPOSER_SETTINGS_STORAGE_KEY = 'xero.agent.composer.settings.v1'
 export const COMPOSER_SETTINGS_APP_STATE_KEY = COMPOSER_SETTINGS_STORAGE_KEY
@@ -479,6 +489,7 @@ export function useAgentRuntimeController({
   const lastSeenProjectIdRef = useRef(projectId)
   const lastSeenRuntimeRunIdRef = useRef<string | null>(renderableRuntimeRun?.runId ?? null)
   const draftPromptRef = useRef(draftPrompt)
+  const hiddenDraftPromptsRef = useRef<string[]>([])
   const lastReportedComposerControlsRef = useRef<RuntimeRunControlInputDto | null | undefined>(undefined)
   const hasUserComposerSettingsRef = useRef(getInitialComposerSettings().fromStoredControls)
 
@@ -524,6 +535,9 @@ export function useAgentRuntimeController({
   )
 
   const trimmedDraftPrompt = draftPrompt.trim()
+  const hasReadyPendingAttachments = (getPendingAttachments?.() ?? []).some(
+    (attachment) => attachment.absolutePath != null,
+  )
   const hasQueuedPrompt = selectedPrompt.hasQueuedPrompt
   const canPrepareFirstRun = Boolean(
     !renderableRuntimeRun &&
@@ -554,7 +568,7 @@ export function useAgentRuntimeController({
   const canSubmitPrompt = Boolean(
     !runtimeMutationInFlight &&
       !hasQueuedPrompt &&
-      trimmedDraftPrompt.length > 0 &&
+      (trimmedDraftPrompt.length > 0 || hasReadyPendingAttachments) &&
       (canStartNewRuntimeRun ||
         (activeRuntimeRun &&
           onUpdateRuntimeRunControls)),
@@ -769,6 +783,7 @@ export function useAgentRuntimeController({
       lastSeenProjectIdRef.current = projectId
       lastSeenRuntimeRunIdRef.current = renderableRuntimeRun?.runId ?? null
       setDraftPrompt('')
+      hiddenDraftPromptsRef.current = []
       setQueuedDraftAcknowledgement(null)
       setRecentRunReplacement(null)
       return
@@ -840,7 +855,19 @@ export function useAgentRuntimeController({
 
   function clearSubmittedDraft() {
     draftPromptRef.current = ''
+    hiddenDraftPromptsRef.current = []
     setDraftPrompt('')
+  }
+
+  function promptWithHiddenContext(visiblePrompt: string): string {
+    const hiddenPrompt = hiddenDraftPromptsRef.current
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0)
+      .join('\n\n')
+    if (!hiddenPrompt) {
+      return visiblePrompt
+    }
+    return visiblePrompt.length > 0 ? `${visiblePrompt}\n\n${hiddenPrompt}` : hiddenPrompt
   }
 
   async function handleStartRuntimeRun(): Promise<boolean> {
@@ -876,7 +903,8 @@ export function useAgentRuntimeController({
         return false
       }
 
-      const promptToSubmit = draftPromptRef.current.trim()
+      const visiblePromptToSubmit = draftPromptRef.current.trim()
+      const promptToSubmit = promptWithHiddenContext(visiblePromptToSubmit)
       const attachmentsToSubmit = (getPendingAttachments?.() ?? []).filter(
         (attachment) => attachment.absolutePath != null,
       )
@@ -910,7 +938,14 @@ export function useAgentRuntimeController({
       return false
     }
 
-    if (trimmedDraftPrompt.length === 0 || hasQueuedPrompt || runtimeRunActionStatus === 'running') {
+    const attachmentsToSubmit = (getPendingAttachments?.() ?? []).filter(
+      (attachment) => attachment.absolutePath != null,
+    )
+    if (
+      (trimmedDraftPrompt.length === 0 && attachmentsToSubmit.length === 0) ||
+      hasQueuedPrompt ||
+      runtimeRunActionStatus === 'running'
+    ) {
       return false
     }
 
@@ -921,20 +956,20 @@ export function useAgentRuntimeController({
         return false
       }
 
-      const promptToSubmit = draftPromptRef.current.trim()
-      if (promptToSubmit.length === 0) {
+      const visiblePromptToSubmit = draftPromptRef.current.trim()
+      const promptToSubmit = promptWithHiddenContext(visiblePromptToSubmit)
+      if (promptToSubmit.length === 0 && attachmentsToSubmit.length === 0) {
         return false
       }
 
-      const attachmentsToSubmit = (getPendingAttachments?.() ?? []).filter(
-        (attachment) => attachment.absolutePath != null,
-      )
       await onUpdateRuntimeRunControls({
-        prompt: promptToSubmit,
+        ...(promptToSubmit.length > 0 ? { prompt: promptToSubmit } : {}),
         ...(attachmentsToSubmit.length > 0 ? { attachments: attachmentsToSubmit } : {}),
       })
       clearSubmittedDraft()
-      setQueuedDraftAcknowledgement(promptToSubmit)
+      if (promptToSubmit.length > 0) {
+        setQueuedDraftAcknowledgement(promptToSubmit)
+      }
       onSubmitAttachmentsSettled?.()
       return true
     } catch (error) {
@@ -961,6 +996,22 @@ export function useAgentRuntimeController({
   function handleDraftPromptChange(value: string) {
     draftPromptRef.current = value
     setDraftPrompt(value)
+  }
+
+  function handleAppendDraftPrompt(value: string) {
+    setDraftPrompt((currentDraft) => {
+      const nextDraft = appendComposerPrompt(currentDraft, value)
+      draftPromptRef.current = nextDraft
+      return nextDraft
+    })
+  }
+
+  function handleAppendHiddenDraftPrompt(value: string) {
+    const nextPrompt = value.trim()
+    if (nextPrompt.length === 0) {
+      return
+    }
+    hiddenDraftPromptsRef.current = [...hiddenDraftPromptsRef.current, nextPrompt]
   }
 
   function handleAutoCompactEnabledChange(value: boolean) {
@@ -1229,6 +1280,8 @@ export function useAgentRuntimeController({
     dictation,
     promptInputRef,
     handleDraftPromptChange,
+    handleAppendDraftPrompt,
+    handleAppendHiddenDraftPrompt,
     handleAutoCompactEnabledChange,
     handleSubmitDraftPrompt,
     handleComposerModelChange,

@@ -236,6 +236,12 @@ export interface AgentRuntimeProps {
   pendingInitialAgentDefinitionId?: string | null
   /** Called once the pending initial runtime agent has been applied. */
   onPendingInitialRuntimeAgentIdConsumed?: () => void
+  /** One-shot text/image context to append to the visible composer without submitting it. */
+  pendingComposerInsert?: AgentComposerInsert | null
+  /** Called once the pending composer insert has been applied locally. */
+  onPendingComposerInsertConsumed?: (id: string) => void
+  /** True while browser tooling is preparing context for this composer. */
+  browserContextLoading?: boolean
   /** Display preference for compacting adjacent completed tool calls. */
   toolCallGroupingPreference?: ToolCallGroupingPreference
 }
@@ -257,6 +263,19 @@ export interface AgentPaneCloseState {
   hasRunningRun: boolean
   hasUnsavedComposerText: boolean
   sessionTitle: string
+}
+
+export interface AgentComposerInsert {
+  id: string
+  /** Text the user should see and edit in the composer. */
+  prompt: string
+  /** Extra context submitted with the next prompt, hidden from the composer draft. */
+  hiddenPrompt?: string | null
+  image?: {
+    bytes: Uint8Array
+    mediaType: 'image/png'
+    originalName: string
+  } | null
 }
 
 export function isRuntimeConversationNearBottom(
@@ -1809,6 +1828,9 @@ export const AgentRuntime = memo(function AgentRuntime({
   pendingInitialRuntimeAgentId = null,
   pendingInitialAgentDefinitionId = null,
   onPendingInitialRuntimeAgentIdConsumed,
+  pendingComposerInsert = null,
+  onPendingComposerInsertConsumed,
+  browserContextLoading = false,
   toolCallGroupingPreference = 'grouped',
 }: AgentRuntimeProps) {
   const runtimeSession = agent.runtimeSession ?? null
@@ -2110,8 +2132,12 @@ export const AgentRuntime = memo(function AgentRuntime({
   )
 
   const [pendingAttachments, setPendingAttachments] = useState<ComposerPendingAttachment[]>([])
+  const [externalComposerInsertLoadingIds, setExternalComposerInsertLoadingIds] = useState<Set<string>>(
+    () => new Set(),
+  )
   const pendingAttachmentsRef = useRef<ComposerPendingAttachment[]>([])
   pendingAttachmentsRef.current = pendingAttachments
+  const consumedComposerInsertIdsRef = useRef<Set<string>>(new Set())
 
   const stageAgentAttachment = desktopAdapter?.stageAgentAttachment
   const discardAgentAttachment = desktopAdapter?.discardAgentAttachment
@@ -2183,6 +2209,87 @@ export const AgentRuntime = memo(function AgentRuntime({
             )
           })
       }
+    },
+    [projectIdForAttachments, runIdForAttachments, stageAgentAttachment],
+  )
+
+  const stageExternalComposerAttachment = useCallback(
+    (insertId: string, image: NonNullable<AgentComposerInsert['image']>) => {
+      if (!stageAgentAttachment) return
+
+      const classification = classifyAttachment({
+        name: image.originalName,
+        type: image.mediaType,
+        size: image.bytes.byteLength,
+      })
+      if (classification.kind === null) {
+        return
+      }
+
+      const id = `composer-insert-${insertId}`
+      const previewUrl =
+        classification.kind === 'image' && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function'
+          ? URL.createObjectURL(new Blob([image.bytes.slice().buffer as ArrayBuffer], { type: image.mediaType }))
+          : undefined
+      const optimistic: ComposerPendingAttachment = {
+        id,
+        kind: classification.kind,
+        originalName: image.originalName,
+        mediaType: classification.mediaType,
+        sizeBytes: image.bytes.byteLength,
+        status: 'staging',
+        previewUrl,
+      }
+
+      setPendingAttachments((prev) =>
+        prev.some((attachment) => attachment.id === id) ? prev : [...prev, optimistic],
+      )
+      setExternalComposerInsertLoadingIds((current) => {
+        const next = new Set(current)
+        next.add(id)
+        return next
+      })
+
+      void stageAgentAttachment({
+        projectId: projectIdForAttachments,
+        runId: runIdForAttachments,
+        originalName: image.originalName,
+        mediaType: classification.mediaType,
+        bytes: image.bytes,
+      })
+        .then((staged) => {
+          setPendingAttachments((prev) =>
+            prev.map((attachment) =>
+              attachment.id === id
+                ? {
+                    ...attachment,
+                    status: 'ready',
+                    absolutePath: staged.absolutePath,
+                    sizeBytes: staged.sizeBytes,
+                    mediaType: staged.mediaType,
+                  }
+                : attachment,
+            ),
+          )
+        })
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : 'Upload failed'
+          setPendingAttachments((prev) =>
+            prev.map((attachment) =>
+              attachment.id === id
+                ? { ...attachment, status: 'error', errorMessage: message }
+                : attachment,
+            ),
+          )
+        })
+        .finally(() => {
+          setExternalComposerInsertLoadingIds((current) => {
+            if (!current.has(id)) return current
+            const next = new Set(current)
+            next.delete(id)
+            return next
+          })
+        })
     },
     [projectIdForAttachments, runIdForAttachments, stageAgentAttachment],
   )
@@ -2284,6 +2391,32 @@ export const AgentRuntime = memo(function AgentRuntime({
     getPendingAttachments,
     onSubmitAttachmentsSettled: handleSubmitAttachmentsSettled,
   })
+
+  useEffect(() => {
+    if (!pendingComposerInsert) {
+      return
+    }
+    if (consumedComposerInsertIdsRef.current.has(pendingComposerInsert.id)) {
+      return
+    }
+
+    consumedComposerInsertIdsRef.current.add(pendingComposerInsert.id)
+    controller.handleAppendDraftPrompt(pendingComposerInsert.prompt)
+    controller.handleAppendHiddenDraftPrompt(pendingComposerInsert.hiddenPrompt ?? '')
+    if (pendingComposerInsert.image) {
+      stageExternalComposerAttachment(pendingComposerInsert.id, pendingComposerInsert.image)
+    }
+    onPendingComposerInsertConsumed?.(pendingComposerInsert.id)
+
+    const focusComposer = () => {
+      controller.promptInputRef.current?.focus()
+    }
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(focusComposer)
+      return
+    }
+    window.setTimeout(focusComposer, 0)
+  }, [controller, onPendingComposerInsertConsumed, pendingComposerInsert, stageExternalComposerAttachment])
 
   useEffect(() => {
     if (!optimisticPromptTurn) {
@@ -2895,6 +3028,7 @@ export const AgentRuntime = memo(function AgentRuntime({
       hasLiveRuntimeStream,
   )
   const isStoppingRuntimeRun = runtimeRunActionStatus === 'running' && pendingRuntimeRunAction === 'stop'
+  const showBrowserContextLoadingOverlay = browserContextLoading || externalComposerInsertLoadingIds.size > 0
   const closeState = useMemo<AgentPaneCloseState>(
     () => ({
       hasRunningRun: Boolean(renderableRuntimeRun && !renderableRuntimeRun.isTerminal),
@@ -3266,6 +3400,24 @@ export const AgentRuntime = memo(function AgentRuntime({
           sendButtonLabel={sendButtonLabel}
           onOpenDiagnostics={onOpenDiagnostics}
         />
+        {showBrowserContextLoadingOverlay ? (
+          <div
+            aria-label="Adding browser context"
+            aria-live="polite"
+            className="absolute inset-0 z-50 flex items-center justify-center bg-background/95 backdrop-blur-sm"
+            role="status"
+          >
+            <div className="flex flex-col items-center gap-3 rounded-lg border border-border/70 bg-card px-5 py-4 text-center shadow-xl">
+              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <Loader2 className="h-4 w-4 animate-spin" />
+              </span>
+              <div className="space-y-1">
+                <p className="text-[13px] font-semibold text-foreground">Adding browser context</p>
+                <p className="text-[11.5px] text-muted-foreground">Preparing the note and screenshot.</p>
+              </div>
+            </div>
+          </div>
+        ) : null}
         </div>
       </div>
       <HandoffContextDialog

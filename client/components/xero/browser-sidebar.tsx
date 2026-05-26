@@ -26,13 +26,14 @@ import {
 } from "./browser-cookie-import"
 import {
   BROWSER_TOOL_CLOSED_EVENT,
-  BROWSER_TOOL_CAPTURE_IMAGE_SCRIPT,
   BROWSER_TOOL_CONTEXT_EVENT,
   BROWSER_TOOL_DEACTIVATE_SCRIPT,
+  BROWSER_TOOL_PREPARE_CAPTURE_SCRIPT,
   BROWSER_TOOL_RESTORE_CAPTURE_SCRIPT,
   browserScreenshotBytesFromBase64,
   buildBrowserToolActivationScript,
   buildBrowserToolAgentPrompt,
+  buildBrowserToolVisiblePrompt,
   isDevServerUrl,
   readBrowserToolTheme,
   type BrowserAgentContextRequest,
@@ -57,10 +58,12 @@ const COOKIE_IMPORT_PROMPTED_KEY = "xero.browser.cookieImportPrompted"
 // captured by the webview and the sidebar would become impossible to resize
 // once a URL had been loaded.
 const RESIZE_HANDLE_INSET = 6
+const TOOL_CAPTURE_SETTLE_MS = 50
 
 interface BrowserSidebarProps {
   open: boolean
-  onSubmitAgentContext?: (request: BrowserAgentContextRequest) => Promise<void>
+  onAddAgentContext?: (request: BrowserAgentContextRequest) => Promise<void>
+  onAddAgentContextLoadingChange?: (loading: boolean) => void
 }
 
 interface BrowserTabMeta {
@@ -243,7 +246,17 @@ function imageNameForContext(context: BrowserToolContext): string {
   return `browser-${context.kind}-${timestamp}.png`
 }
 
-export function BrowserSidebar({ open, onSubmitAgentContext }: BrowserSidebarProps) {
+function waitForBrowserToolPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, TOOL_CAPTURE_SETTLE_MS)
+  })
+}
+
+export function BrowserSidebar({
+  open,
+  onAddAgentContext,
+  onAddAgentContextLoadingChange,
+}: BrowserSidebarProps) {
   const [width, setWidth] = useState(viewportDefaultWidth)
   const [maxWidth, setMaxWidth] = useState(viewportMaxWidth)
   const [isResizing, setIsResizing] = useState(false)
@@ -254,6 +267,7 @@ export function BrowserSidebar({ open, onSubmitAgentContext }: BrowserSidebarPro
   const [navError, setNavError] = useState<string | null>(null)
   const [showCookieBanner, setShowCookieBanner] = useState(false)
   const [toolMode, setToolMode] = useState<ToolMode>(null)
+  const [toolSubmitting, setToolSubmitting] = useState(false)
   const [toolSubmitError, setToolSubmitError] = useState<string | null>(null)
   const motionOpen = useSidebarOpenMotion(open)
   const targetWidth = motionOpen ? width : 0
@@ -275,12 +289,14 @@ export function BrowserSidebar({ open, onSubmitAgentContext }: BrowserSidebarPro
   const toolModeRef = useRef(toolMode)
   const injectedToolModeRef = useRef<ToolMode>(null)
   const toolActivationRequestRef = useRef(0)
-  const onSubmitAgentContextRef = useRef(onSubmitAgentContext)
+  const onAddAgentContextRef = useRef(onAddAgentContext)
+  const onAddAgentContextLoadingChangeRef = useRef(onAddAgentContextLoadingChange)
 
   openRef.current = open
   activeTabIdRef.current = activeTabId
   toolModeRef.current = toolMode
-  onSubmitAgentContextRef.current = onSubmitAgentContext
+  onAddAgentContextRef.current = onAddAgentContext
+  onAddAgentContextLoadingChangeRef.current = onAddAgentContextLoadingChange
 
   const resizeScheduler = useMemo(
     () =>
@@ -328,25 +344,27 @@ export function BrowserSidebar({ open, onSubmitAgentContext }: BrowserSidebarPro
     })
   }, [])
 
-  const submitBrowserToolContext = useCallback(
+  const addBrowserToolContextToAgent = useCallback(
     async (payload: BrowserToolContextEventPayload) => {
       if (payload.tabId !== activeTabIdRef.current) return
       if (!isBrowserToolContext(payload.context)) return
 
       const context = payload.context
       setToolSubmitError(null)
+      setToolSubmitting(true)
+      onAddAgentContextLoadingChangeRef.current?.(true)
       try {
-        const screenshotBase64 = await invoke<string | null>("browser_eval", {
-          js: BROWSER_TOOL_CAPTURE_IMAGE_SCRIPT,
-          timeout_ms: 8_000,
+        await waitForBrowserToolPaint()
+        await invoke("browser_eval_fire_and_forget", {
+          js: BROWSER_TOOL_PREPARE_CAPTURE_SCRIPT,
         })
-        if (!screenshotBase64) {
-          throw new Error("Xero could not render this browser context image.")
-        }
-        const submit = onSubmitAgentContextRef.current
-        if (submit) {
-          await submit({
+        await waitForBrowserToolPaint()
+        const screenshotBase64 = await invoke<string>("browser_screenshot")
+        const add = onAddAgentContextRef.current
+        if (add) {
+          await add({
             prompt: buildBrowserToolAgentPrompt(context),
+            visiblePrompt: buildBrowserToolVisiblePrompt(context),
             image: {
               bytes: browserScreenshotBytesFromBase64(screenshotBase64),
               mediaType: "image/png",
@@ -358,9 +376,12 @@ export function BrowserSidebar({ open, onSubmitAgentContext }: BrowserSidebarPro
         setToolMode(null)
       } catch (error) {
         setToolSubmitError(
-          getToolErrorMessage(error, "Xero could not send this browser context to the agent."),
+          getToolErrorMessage(error, "Xero could not add this browser context to the agent composer."),
         )
         await restoreInjectedToolCapture()
+      } finally {
+        setToolSubmitting(false)
+        onAddAgentContextLoadingChangeRef.current?.(false)
       }
     },
     [deactivateInjectedTool, restoreInjectedToolCapture],
@@ -557,7 +578,7 @@ export function BrowserSidebar({ open, onSubmitAgentContext }: BrowserSidebarPro
     trackUnlisten(
       listen<BrowserToolContextEventPayload>(BROWSER_TOOL_CONTEXT_EVENT, (event) => {
         recordIpcPayloadSample({ boundary: "event", name: BROWSER_TOOL_CONTEXT_EVENT, payload: event.payload })
-        void submitBrowserToolContext(event.payload)
+        void addBrowserToolContextToAgent(event.payload)
       }),
     )
 
@@ -576,7 +597,7 @@ export function BrowserSidebar({ open, onSubmitAgentContext }: BrowserSidebarPro
       coalescer.dispose()
       unsubs.forEach((unsub) => unsub())
     }
-  }, [submitBrowserToolContext])
+  }, [addBrowserToolContextToAgent])
 
   // Hydrate tabs when sidebar opens
   useEffect(() => {
@@ -950,6 +971,7 @@ export function BrowserSidebar({ open, onSubmitAgentContext }: BrowserSidebarPro
                   ? "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary"
                   : null,
               )}
+              disabled={toolSubmitting}
               onClick={() => {
                 setToolSubmitError(null)
                 setToolMode((current) => (current === "pen" ? null : "pen"))
@@ -968,6 +990,7 @@ export function BrowserSidebar({ open, onSubmitAgentContext }: BrowserSidebarPro
                   ? "bg-success/15 text-success hover:bg-success/20 hover:text-success"
                   : null,
               )}
+              disabled={toolSubmitting}
               onClick={() => {
                 setToolSubmitError(null)
                 setToolMode((current) => (current === "inspect" ? null : "inspect"))
@@ -977,6 +1000,19 @@ export function BrowserSidebar({ open, onSubmitAgentContext }: BrowserSidebarPro
             >
               <MousePointerSquareDashed className="h-3.5 w-3.5" />
             </button>
+          </div>
+        ) : null}
+        {toolSubmitting ? (
+          <div
+            aria-live="polite"
+            aria-label="Adding browser context"
+            className="absolute inset-0 z-20 flex items-center justify-center bg-background/90 backdrop-blur-sm"
+            role="status"
+          >
+            <div className="flex items-center gap-2 rounded-md border border-border/70 bg-card px-3 py-2 text-[12px] font-medium text-foreground shadow-lg">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+              <span>Adding browser context…</span>
+            </div>
           </div>
         ) : null}
       </div>
