@@ -4500,6 +4500,59 @@ describe('AgentRuntime current UI', () => {
       }
     })
 
+    it('keeps sidebar panes comfortable above the sidebar compact breakpoint', async () => {
+      const restoreResizeObserver = installResizeObserverMock(470)
+      try {
+        render(
+          <AgentRuntime
+            agent={makeAgent({
+              runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+            })}
+            density="comfortable"
+            inSidebar
+            paneCount={1}
+            paneNumber={1}
+          />,
+        )
+
+        await waitFor(() => {
+          expect(
+            screen.getByRole('heading', { name: /What can we build together/i }),
+          ).toBeVisible()
+        })
+      } finally {
+        restoreResizeObserver()
+      }
+    })
+
+    it('switches sidebar panes to condensed below the sidebar compact breakpoint', async () => {
+      const restoreResizeObserver = installResizeObserverMock(390)
+      try {
+        render(
+          <AgentRuntime
+            agent={makeAgent({
+              runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+            })}
+            density="comfortable"
+            inSidebar
+            paneCount={1}
+            paneNumber={1}
+          />,
+        )
+
+        const viewport = screen.getByLabelText('Agent conversation viewport')
+
+        await waitFor(() => {
+          expect(
+            screen.queryByRole('heading', { name: /What can we build together/i }),
+          ).not.toBeInTheDocument()
+        })
+        expect(within(viewport).getByRole('heading', { name: 'Xero' })).toBeVisible()
+      } finally {
+        restoreResizeObserver()
+      }
+    })
+
     it('uses the condensed transcript font scale when density is compact', () => {
       render(
         <AgentRuntime

@@ -180,6 +180,14 @@ const loadWorkflowsSidebar = () => import('@/components/xero/workflows-sidebar')
 const loadAgentDockSidebar = () => import('@/components/xero/agent-dock-sidebar')
 const loadTerminalSidebar = () => import('@/components/xero/terminal-sidebar')
 const loadStartTargetsDialog = () => import('@/components/xero/start-targets-dialog')
+
+function preloadSolanaWorkbenchSurface() {
+  return loadSolanaWorkbenchSidebar().then((module) => {
+    void module.preloadSolanaWorkbenchPanels().catch(() => undefined)
+    return module
+  })
+}
+
 const ACTIVE_VIEW_APP_STATE_KEY = 'app.activeView.v1'
 const GLOBAL_COMPUTER_USE_PROJECT_ID = 'global-computer-use'
 const GLOBAL_COMPUTER_USE_AGENT_SESSION_ID = 'agent-session-global-computer-use'
@@ -366,7 +374,7 @@ function preloadSurfaceChunk(target: SurfacePreloadTarget): void {
     return
   }
   if (target === 'solana') {
-    void loadSolanaWorkbenchSidebar()
+    void preloadSolanaWorkbenchSurface()
     return
   }
   if (target === 'terminal') {
@@ -479,7 +487,7 @@ async function preloadStartupSurfaceChunks(): Promise<void> {
     loadAgentRuntime(),
     loadExecutionView(),
     loadBrowserSidebar(),
-    loadSolanaWorkbenchSidebar(),
+    preloadSolanaWorkbenchSurface(),
     loadSettingsDialog().then((module) => {
       void module.preloadSettingsSectionChunks().catch(() => undefined)
     }),
@@ -596,7 +604,7 @@ const LazyIosEmulatorSidebar = lazy(() =>
   loadIosEmulatorSidebar().then((module) => ({ default: module.IosEmulatorSidebar })),
 )
 const LazySolanaWorkbenchSidebar = lazy(() =>
-  loadSolanaWorkbenchSidebar().then((module) => ({ default: module.SolanaWorkbenchSidebar })),
+  preloadSolanaWorkbenchSurface().then((module) => ({ default: module.SolanaWorkbenchSidebar })),
 )
 const LazySettingsDialog = lazy(() =>
   loadSettingsDialog().then((module) => ({ default: module.SettingsDialog })),

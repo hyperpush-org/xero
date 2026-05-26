@@ -95,6 +95,10 @@ import {
 } from '@xero/ui/components/transcript/routing-suggestion-card'
 import { ComposerDock, type ComposerPendingAttachment } from './agent-runtime/composer-dock'
 import { PlanTray } from './agent-runtime/plan-tray'
+import {
+  AGENT_PANE_COMPACT_WIDTH_PX,
+  SIDEBAR_AGENT_PANE_COMPACT_WIDTH_PX,
+} from './agent-runtime/density'
 import { AgentPaneDropOverlay } from './agent-runtime/agent-pane-drop-overlay'
 import { AgentCreateDraftSection } from './agent-runtime/agent-create-draft-section'
 import {
@@ -267,7 +271,6 @@ const FOREGROUND_WORK_DEFER_MS = 32
 const STREAMING_TOOL_OUTPUT_MAX_CHARS = 24_000
 const CONTEXT_METER_REFRESH_IDLE_TIMEOUT_MS = 1200
 const CONTEXT_METER_REFRESH_FALLBACK_DELAY_MS = 220
-const COMPACT_PANE_WIDTH_PX = 490
 const CODE_EDIT_TOOL_NAMES = new Set(['edit', 'patch', 'write', 'apply_patch', 'notebook_edit'])
 
 export interface AgentPaneCloseState {
@@ -645,11 +648,14 @@ function useDeferredForegroundWork(active: boolean): boolean {
   return active && ready
 }
 
-function shouldUseCompactPaneWidth(width: number): boolean {
-  return width > 0 && width < COMPACT_PANE_WIDTH_PX
+function shouldUseCompactPaneWidth(width: number, compactWidthPx: number): boolean {
+  return width > 0 && width < compactWidthPx
 }
 
-function useCompactPaneWidth(elementRef: RefObject<HTMLElement | null>): boolean {
+function useCompactPaneWidth(
+  elementRef: RefObject<HTMLElement | null>,
+  compactWidthPx: number,
+): boolean {
   const [isCompactWidth, setIsCompactWidth] = useState(false)
 
   useLayoutEffect(() => {
@@ -659,7 +665,7 @@ function useCompactPaneWidth(elementRef: RefObject<HTMLElement | null>): boolean
     }
 
     const updateWidth = (width: number) => {
-      const nextCompactWidth = shouldUseCompactPaneWidth(width)
+      const nextCompactWidth = shouldUseCompactPaneWidth(width, compactWidthPx)
       setIsCompactWidth((current) =>
         current === nextCompactWidth ? current : nextCompactWidth,
       )
@@ -674,7 +680,7 @@ function useCompactPaneWidth(elementRef: RefObject<HTMLElement | null>): boolean
     observer.observe(element)
 
     return () => observer.disconnect()
-  }, [elementRef])
+  }, [compactWidthPx, elementRef])
 
   return isCompactWidth
 }
@@ -1879,7 +1885,10 @@ export const AgentRuntime = memo(function AgentRuntime({
   toolCallGroupingPreference = 'grouped',
 }: AgentRuntimeProps) {
   const paneRootRef = useRef<HTMLDivElement | null>(null)
-  const isCompactWidth = useCompactPaneWidth(paneRootRef)
+  const compactPaneWidthPx = inSidebar
+    ? SIDEBAR_AGENT_PANE_COMPACT_WIDTH_PX
+    : AGENT_PANE_COMPACT_WIDTH_PX
+  const isCompactWidth = useCompactPaneWidth(paneRootRef, compactPaneWidthPx)
   const effectiveDensity: NonNullable<AgentRuntimeProps['density']> =
     density === 'compact' || isCompactWidth ? 'compact' : 'comfortable'
   const runtimeSession = agent.runtimeSession ?? null

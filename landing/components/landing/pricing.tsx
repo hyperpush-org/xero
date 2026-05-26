@@ -2,6 +2,7 @@ import Link from "next/link"
 import type { ElementType } from "react"
 import { Check, Github, Rocket, Smartphone } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import {
   Card,
   CardContent,
@@ -15,6 +16,9 @@ type AddOn = {
   name: string
   price: string
   period: string
+  statusBadge?: string
+  priceBadge?: string
+  previousPrice?: string
   icon: ElementType
   description: string
   features: string[]
@@ -25,6 +29,7 @@ const addOns: AddOn[] = [
     name: "Solana Bundle",
     price: "$50",
     period: "/ month",
+    statusBadge: "Soon",
     icon: Rocket,
     description: "Premium RPC and indexer, hosted forks, deploy guardrails, and program monitoring, bundled into one subscription.",
     features: [
@@ -36,8 +41,10 @@ const addOns: AddOn[] = [
   },
   {
     name: "Mobile Companion",
-    price: "$10",
-    period: "/ month",
+    price: "Free",
+    period: "for a limited time",
+    priceBadge: "Limited-time offer",
+    previousPrice: "$10 / month",
     icon: Smartphone,
     description: "Drive the agent on your desktop from a dedicated iOS or Android app. Review, redirect, and approve without opening a laptop.",
     features: [
@@ -111,12 +118,14 @@ export function Pricing() {
                 key={t.name}
                 className="relative flex flex-col overflow-hidden rounded-2xl border-dashed border-border/70 px-1 py-1"
               >
-                <span className="absolute right-5 top-5 inline-flex items-center gap-1.5 rounded-full border border-border/70 bg-background px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                  <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                  Soon
-                </span>
+                {t.statusBadge ? (
+                  <span className="absolute right-5 top-5 inline-flex items-center gap-1.5 rounded-full border border-border/70 bg-background px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                    <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                    {t.statusBadge}
+                  </span>
+                ) : null}
 
-                <CardHeader className="gap-0 px-5 pt-5">
+                <CardHeader className="gap-0 px-5 pt-5 md:min-h-[13rem]">
                   <div className="flex items-center gap-2.5">
                     <div className="flex h-7 w-7 items-center justify-center rounded-md bg-muted text-muted-foreground">
                       <Icon className="h-3.5 w-3.5" />
@@ -124,10 +133,24 @@ export function Pricing() {
                     <CardTitle className="text-sm font-medium">{t.name}</CardTitle>
                   </div>
 
-                  <div className="mt-3 flex items-baseline gap-1.5">
+                  <div className="mt-3 flex flex-wrap items-baseline gap-x-2 gap-y-1">
                     <span className="text-3xl font-medium tracking-tight">{t.price}</span>
                     <span className="text-xs text-muted-foreground">{t.period}</span>
+                    {t.previousPrice ? (
+                      <span className="text-xs text-muted-foreground/60 line-through">
+                        {t.previousPrice}
+                      </span>
+                    ) : null}
                   </div>
+
+                  {t.priceBadge ? (
+                    <Badge
+                      variant="secondary"
+                      className="mt-2 border border-primary/20 bg-primary/10 text-primary"
+                    >
+                      {t.priceBadge}
+                    </Badge>
+                  ) : null}
 
                   <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
                     {t.description}

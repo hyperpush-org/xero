@@ -6,6 +6,7 @@ import { Bot, Plus } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { createFrameCoalescer } from "@/lib/frame-governance"
 import { useSidebarOpenMotion, useSidebarWidthMotion } from "@/lib/sidebar-motion"
+import { SIDEBAR_AGENT_PANE_COMPACT_WIDTH_PX } from "@/components/xero/agent-runtime/density"
 import type {
   AgentRuntimeDesktopAdapter,
   AgentRuntimeProps,
@@ -23,7 +24,6 @@ import type {
 const MIN_WIDTH = 320
 const MAX_WIDTH = 720
 const DEFAULT_WIDTH = 560
-const COMPACT_WIDTH_THRESHOLD = 400
 const WIDTH_STORAGE_KEY = "xero.agentDock.width"
 
 function readPersistedWidth(): number | null {
@@ -207,7 +207,7 @@ export function AgentDockSidebar({
               active={open}
               agent={agent}
               highChurnStore={highChurnStore}
-              density={width < COMPACT_WIDTH_THRESHOLD ? "compact" : "comfortable"}
+              density={width < SIDEBAR_AGENT_PANE_COMPACT_WIDTH_PX ? "compact" : "comfortable"}
               onCreateSession={onCreateSession}
               isCreatingSession={isCreatingSession}
               inSidebar

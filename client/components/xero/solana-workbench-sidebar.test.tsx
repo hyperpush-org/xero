@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 type ListenerHandle = () => void
@@ -257,12 +257,62 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  cleanup()
   resetBridge()
   vi.restoreAllMocks()
   storage?.clear()
 })
 
 describe("SolanaWorkbenchSidebar", () => {
+  it("defers backend probes until the opening reveal has settled", async () => {
+    const originalRequestAnimationFrame = window.requestAnimationFrame
+    const originalCancelAnimationFrame = window.cancelAnimationFrame
+    const frames: FrameRequestCallback[] = []
+
+    Object.defineProperty(window, "requestAnimationFrame", {
+      configurable: true,
+      value: (callback: FrameRequestCallback) => {
+        frames.push(callback)
+        return frames.length
+      },
+    })
+    Object.defineProperty(window, "cancelAnimationFrame", {
+      configurable: true,
+      value: vi.fn(),
+    })
+
+    try {
+      render(<SolanaWorkbenchSidebar open />)
+
+      await Promise.resolve()
+      expect(invokedCommands).toEqual([])
+
+      await act(async () => {
+        frames.splice(0).forEach((callback) => callback(performance.now()))
+        await new Promise((resolve) => setTimeout(resolve, 200))
+        await Promise.resolve()
+      })
+      expect(invokedCommands).toEqual([])
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+        await Promise.resolve()
+      })
+      expect(invokedCommands).toContain("solana_cluster_list")
+      expect(invokedCommands).toContain("solana_toolchain_status")
+      expect(invokedCommands).toContain("solana_cluster_status")
+    } finally {
+      Object.defineProperty(window, "requestAnimationFrame", {
+        configurable: true,
+        value: originalRequestAnimationFrame,
+      })
+      Object.defineProperty(window, "cancelAnimationFrame", {
+        configurable: true,
+        value: originalCancelAnimationFrame,
+      })
+    }
+  })
+
   it("does not activate backend probes while mounted only for prewarm", async () => {
     render(<SolanaWorkbenchSidebar open={false} prewarm />)
 
@@ -366,17 +416,27 @@ describe("SolanaWorkbenchSidebar", () => {
     expect(aside).toHaveClass("sidebar-motion-island")
   })
 
-  it("mounts non-active workbench panels only after the user opens their tab", async () => {
+  it("preloads non-active workbench panels so tab switches avoid the fallback", async () => {
     render(<SolanaWorkbenchSidebar open />)
 
     expect(screen.queryByText("New persona")).not.toBeInTheDocument()
 
+    await waitFor(() => {
+      expect(screen.getByText("New persona")).not.toBeVisible()
+    })
+    expect(
+      screen.queryByLabelText("Loading workbench panel"),
+    ).not.toBeInTheDocument()
+
     fireEvent.click(screen.getByRole("tab", { name: "Personas" }))
 
-    expect(await screen.findByText("New persona")).toBeVisible()
+    expect(screen.getByText("New persona")).toBeVisible()
+    expect(
+      screen.queryByLabelText("Loading workbench panel"),
+    ).not.toBeInTheDocument()
   })
 
-  it("refreshes personas once when the Personas tab mounts", async () => {
+  it("refreshes personas once when the Personas tab is preloaded", async () => {
     let personaListCalls = 0
     registerInvoke("solana_persona_list", () => {
       personaListCalls += 1
@@ -395,13 +455,13 @@ describe("SolanaWorkbenchSidebar", () => {
 
     render(<SolanaWorkbenchSidebar open />)
 
-    fireEvent.click(screen.getByRole("tab", { name: "Personas" }))
-
-    expect(await screen.findByText("New persona")).toBeVisible()
-
     await waitFor(() => {
       expect(personaListCalls).toBe(1)
     })
+
+    fireEvent.click(screen.getByRole("tab", { name: "Personas" }))
+
+    expect(screen.getByText("New persona")).toBeVisible()
 
     await new Promise((resolve) => setTimeout(resolve, 25))
 

@@ -7,6 +7,7 @@ import { createXeroHighChurnStore } from '@/src/features/xero/use-xero-desktop-s
 import type { AgentSessionView } from '@/src/lib/xero-model'
 
 interface CapturedRuntimeProps {
+  density?: 'comfortable' | 'compact'
   inSidebar?: boolean
   sidebarSessions?: readonly AgentSessionView[]
   onCloseSidebar?: () => void
@@ -20,6 +21,7 @@ interface CapturedRuntimeProps {
 vi.mock('@/components/xero/agent-runtime/live-agent-runtime', () => ({
   LiveAgentRuntimeView: ({
     agent,
+    density,
     inSidebar,
     sidebarSessions,
     onCloseSidebar,
@@ -32,6 +34,7 @@ vi.mock('@/components/xero/agent-runtime/live-agent-runtime', () => ({
     if (!agent) return null
     return (
       <div data-testid="live-agent-runtime">
+        <div data-testid="live-agent-runtime-density">{density}</div>
         <div data-testid="live-agent-runtime-in-sidebar">{inSidebar ? 'true' : 'false'}</div>
         <div data-testid="live-agent-runtime-session-count">{sidebarSessions?.length ?? 0}</div>
         <div data-testid="live-agent-runtime-canvas-included">
@@ -147,6 +150,22 @@ describe('AgentDockSidebar', () => {
     expect(screen.getByTestId('live-agent-runtime')).toBeInTheDocument()
     expect(screen.getByTestId('live-agent-runtime-in-sidebar')).toHaveTextContent('true')
     expect(screen.getByTestId('live-agent-runtime-session-count')).toHaveTextContent('2')
+  })
+
+  it('keeps the runtime comfortable until the sidebar is below the compact breakpoint', () => {
+    window.localStorage.setItem('xero.agentDock.width', '420')
+
+    renderDock()
+
+    expect(screen.getByTestId('live-agent-runtime-density')).toHaveTextContent('comfortable')
+  })
+
+  it('passes compact density when the sidebar is below the compact breakpoint', () => {
+    window.localStorage.setItem('xero.agentDock.width', '360')
+
+    renderDock()
+
+    expect(screen.getByTestId('live-agent-runtime-density')).toHaveTextContent('compact')
   })
 
   it('shows the empty state when no agent is available', () => {

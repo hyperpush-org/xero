@@ -59,6 +59,7 @@ const MIN_WIDTH = 360
 const DEFAULT_WIDTH = 440
 const MAX_WIDTH = 900
 const STORAGE_KEY = "xero.solana.workbench.width"
+const BACKEND_ACTIVATION_AFTER_REVEAL_MS = 220
 
 const loadSolanaAuditPanel = () => import("./solana-audit-panel")
 const loadSolanaDeployPanel = () => import("./solana-deploy-panel")
@@ -71,22 +72,6 @@ const loadSolanaScenarioPanel = () => import("./solana-scenario-panel")
 const loadSolanaTokenPanel = () => import("./solana-token-panel")
 const loadSolanaTxInspector = () => import("./solana-tx-inspector")
 const loadSolanaWalletPanel = () => import("./solana-wallet-panel")
-
-export async function preloadSolanaWorkbenchPanels(): Promise<void> {
-  await Promise.all([
-    loadSolanaAuditPanel(),
-    loadSolanaDeployPanel(),
-    loadSolanaIdlPanel(),
-    loadSolanaIndexerPanel(),
-    loadSolanaLogFeed(),
-    loadSolanaPersonaPanel(),
-    loadSolanaSafetyPanel(),
-    loadSolanaScenarioPanel(),
-    loadSolanaTokenPanel(),
-    loadSolanaTxInspector(),
-    loadSolanaWalletPanel(),
-  ])
-}
 
 const LazySolanaAuditPanel = lazy(() =>
   loadSolanaAuditPanel().then((module) => ({ default: module.SolanaAuditPanel })),
@@ -137,6 +122,68 @@ type TabId =
   | "safety"
   | "rpc"
 
+const PRELOADABLE_TAB_IDS = [
+  "personas",
+  "scenarios",
+  "tx",
+  "logs",
+  "indexer",
+  "idl",
+  "deploy",
+  "audit",
+  "token",
+  "wallet",
+  "safety",
+] as const satisfies readonly TabId[]
+
+const ALL_WORKBENCH_TAB_IDS = [
+  "cluster",
+  ...PRELOADABLE_TAB_IDS,
+  "rpc",
+] as const satisfies readonly TabId[]
+
+const SOLANA_PANEL_PRELOADERS: Record<
+  (typeof PRELOADABLE_TAB_IDS)[number],
+  () => Promise<unknown>
+> = {
+  audit: loadSolanaAuditPanel,
+  deploy: loadSolanaDeployPanel,
+  idl: loadSolanaIdlPanel,
+  indexer: loadSolanaIndexerPanel,
+  logs: loadSolanaLogFeed,
+  personas: loadSolanaPersonaPanel,
+  safety: loadSolanaSafetyPanel,
+  scenarios: loadSolanaScenarioPanel,
+  token: loadSolanaTokenPanel,
+  tx: loadSolanaTxInspector,
+  wallet: loadSolanaWalletPanel,
+}
+
+let solanaWorkbenchPanelsPreload: Promise<void> | null = null
+
+export function preloadSolanaWorkbenchPanels(): Promise<void> {
+  if (!solanaWorkbenchPanelsPreload) {
+    solanaWorkbenchPanelsPreload = Promise.all(
+      PRELOADABLE_TAB_IDS.map((tabId) => SOLANA_PANEL_PRELOADERS[tabId]()),
+    )
+      .then(() => undefined)
+      .catch((error) => {
+        solanaWorkbenchPanelsPreload = null
+        throw error
+      })
+  }
+
+  return solanaWorkbenchPanelsPreload
+}
+
+export function preloadSolanaWorkbenchPanel(tabId: TabId): Promise<void> {
+  if (tabId === "cluster" || tabId === "rpc") {
+    return Promise.resolve()
+  }
+
+  return SOLANA_PANEL_PRELOADERS[tabId]().then(() => undefined)
+}
+
 interface SolanaWorkbenchSidebarProps {
   active?: boolean
   open: boolean
@@ -164,6 +211,52 @@ function writePersistedWidth(value: number) {
   } catch {
     /* storage unavailable — default next session */
   }
+}
+
+function useRevealSettledBackendActive(visible: boolean): boolean {
+  const [backendActive, setBackendActive] = useState(false)
+
+  useEffect(() => {
+    if (!visible) {
+      setBackendActive(false)
+      return
+    }
+
+    if (typeof window === "undefined") {
+      setBackendActive(true)
+      return
+    }
+
+    let cancelled = false
+    let timeout: number | null = null
+    let frame: number | null = null
+
+    const activate = () => {
+      timeout = window.setTimeout(() => {
+        if (!cancelled) {
+          setBackendActive(true)
+        }
+      }, BACKEND_ACTIVATION_AFTER_REVEAL_MS)
+    }
+
+    if (typeof window.requestAnimationFrame === "function") {
+      frame = window.requestAnimationFrame(activate)
+    } else {
+      activate()
+    }
+
+    return () => {
+      cancelled = true
+      if (frame !== null) {
+        window.cancelAnimationFrame?.(frame)
+      }
+      if (timeout !== null) {
+        window.clearTimeout(timeout)
+      }
+    }
+  }, [visible])
+
+  return backendActive
 }
 
 function SolanaPanelFallback() {
@@ -232,7 +325,8 @@ export const SolanaWorkbenchSidebar = memo(function SolanaWorkbenchSidebar({
 }: SolanaWorkbenchSidebarProps) {
   const [width, setWidth] = useState<number>(() => readPersistedWidth() ?? DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
-  const workbenchActive = open && (active ?? open)
+  const workbenchVisible = open && (active ?? open)
+  const workbenchActive = useRevealSettledBackendActive(workbenchVisible)
   const motionOpen = useSidebarOpenMotion(open, { instantOpen: openImmediately })
   const targetWidth = motionOpen ? width : 0
   const widthMotion = useSidebarWidthMotion(targetWidth, {
@@ -261,6 +355,37 @@ export const SolanaWorkbenchSidebar = memo(function SolanaWorkbenchSidebar({
     (tabId: TabId) => activeTab === tabId || mountedTabs.has(tabId),
     [activeTab, mountedTabs],
   )
+
+  useEffect(() => {
+    if (!workbenchVisible) return
+    void preloadSolanaWorkbenchPanels().catch(() => undefined)
+  }, [workbenchVisible])
+
+  useEffect(() => {
+    if (!workbenchActive) return
+    let cancelled = false
+
+    void preloadSolanaWorkbenchPanels()
+      .then(() => {
+        if (cancelled) return
+        setMountedTabs((current) => {
+          let changed = false
+          const next = new Set(current)
+          for (const tabId of ALL_WORKBENCH_TAB_IDS) {
+            if (!next.has(tabId)) {
+              next.add(tabId)
+              changed = true
+            }
+          }
+          return changed ? next : current
+        })
+      })
+      .catch(() => undefined)
+
+    return () => {
+      cancelled = true
+    }
+  }, [workbenchActive])
 
   useEffect(() => {
     if (!workbench.clusters.length) return
@@ -319,9 +444,25 @@ export const SolanaWorkbenchSidebar = memo(function SolanaWorkbenchSidebar({
     void workbench.stop()
   }, [workbench.stop])
 
+  const handleTabPreload = useCallback((tabId: TabId) => {
+    void preloadSolanaWorkbenchPanel(tabId).catch(() => undefined)
+  }, [])
+
+  const handleTabSelect = useCallback(
+    (tabId: TabId) => {
+      handleTabPreload(tabId)
+      setActiveTab(tabId)
+    },
+    [handleTabPreload],
+  )
+
   const selectedCluster = useMemo(
     () => workbench.clusters.find((c) => c.kind === selectedKind) ?? null,
     [workbench.clusters, selectedKind],
+  )
+  const personaNames = useMemo(
+    () => workbench.personas.map((persona) => persona.name),
+    [workbench.personas],
   )
 
   const clusterRunning = workbench.status.running && workbench.status.kind === selectedKind
@@ -824,7 +965,8 @@ export const SolanaWorkbenchSidebar = memo(function SolanaWorkbenchSidebar({
               key={tab.id}
               tab={tab}
               active={activeTab === tab.id}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => handleTabSelect(tab.id)}
+              onPreload={() => handleTabPreload(tab.id)}
             />
           ))}
         </div>
@@ -1074,7 +1216,7 @@ export const SolanaWorkbenchSidebar = memo(function SolanaWorkbenchSidebar({
                 lastPublishReport={workbench.lastPublishReport}
                 lastDeployProgress={workbench.lastDeployProgress}
                 activeWatches={workbench.activeIdlWatches}
-                personaNames={workbench.personas.map((p) => p.name)}
+                personaNames={personaNames}
                 onLoad={workbench.loadIdl}
                 onFetch={handleIdlFetch}
                 onDrift={handleIdlDrift}
@@ -1096,7 +1238,7 @@ export const SolanaWorkbenchSidebar = memo(function SolanaWorkbenchSidebar({
                 busy={workbench.programBusy}
                 cluster={selectedKind}
                 clusterRunning={clusterRunning}
-                personaNames={workbench.personas.map((p) => p.name)}
+                personaNames={personaNames}
                 lastBuildReport={workbench.lastBuildReport}
                 lastUpgradeSafety={workbench.lastUpgradeSafety}
                 lastDeployResult={workbench.lastDeployResult}
@@ -1151,7 +1293,7 @@ export const SolanaWorkbenchSidebar = memo(function SolanaWorkbenchSidebar({
                 cluster={selectedKind}
                 clusterRunning={clusterRunning}
                 busy={workbench.tokenBusy}
-                personaNames={workbench.personas.map((p) => p.name)}
+                personaNames={personaNames}
                 matrix={workbench.extensionMatrix}
                 lastTokenCreate={workbench.lastTokenCreate}
                 lastMetaplexMint={workbench.lastMetaplexMint}
@@ -1237,10 +1379,12 @@ function TabButton({
   tab,
   active,
   onClick,
+  onPreload,
 }: {
   tab: TabDescriptor
   active: boolean
   onClick: () => void
+  onPreload: () => void
 }) {
   const Icon = tab.icon
   const tooltip = tab.notification
@@ -1254,7 +1398,10 @@ function TabButton({
       aria-label={tab.notification ? `${tab.label}, ${tab.notification.label}` : tab.label}
       title={tooltip}
       type="button"
+      onFocus={onPreload}
       onClick={onClick}
+      onPointerDown={onPreload}
+      onPointerEnter={onPreload}
       className={cn(
         "group relative inline-flex h-10 w-10 shrink-0 items-center justify-center transition-colors",
         active
