@@ -102,14 +102,16 @@ pub fn spawn(launch: HelperLaunch, startup_timeout: Duration) -> Result<Helper> 
     })
 }
 
-/// Locate the helper binary. Check (in order):
-///   1. Tauri resource directory (bundled builds)
-///   2. Adjacent to the running executable (dev builds)
-///   3. $PATH
+/// Locate the helper binary. Dev builds prefer the helper copied next to the
+/// running executable; bundled builds prefer the Tauri resource directory.
 pub fn resolve_helper_binary<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
     const BINARY_NAME: &str = "xero-ios-helper";
 
-    // 1. Tauri resource directory.
+    #[cfg(debug_assertions)]
+    if let Some(candidate) = adjacent_helper_binary(BINARY_NAME) {
+        return Some(candidate);
+    }
+
     if let Ok(resource_dir) = app.path().resource_dir() {
         let candidate: PathBuf = resource_dir.join(BINARY_NAME);
         if candidate.is_file() {
@@ -117,17 +119,11 @@ pub fn resolve_helper_binary<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> 
         }
     }
 
-    // 2. Next to the running executable (cargo build puts it in target/<profile>/).
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join(BINARY_NAME);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
+    #[cfg(not(debug_assertions))]
+    if let Some(candidate) = adjacent_helper_binary(BINARY_NAME) {
+        return Some(candidate);
     }
 
-    // 3. $PATH lookup.
     if let Ok(output) = Command::new("which").arg(BINARY_NAME).output() {
         if output.status.success() {
             let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -141,6 +137,13 @@ pub fn resolve_helper_binary<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> 
     None
 }
 
+fn adjacent_helper_binary(binary_name: &str) -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let candidate = dir.join(binary_name);
+    candidate.is_file().then_some(candidate)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,13 +155,13 @@ mod tests {
             .socket_path
             .to_str()
             .unwrap()
-            .contains("xero-ios-helper-AAAA-BBBB-CCCC.sock"));
+            .contains("/tmp/xero-ih-AAAA-BBB.sock"));
     }
 
     #[test]
     fn helper_launch_cleans_stale_socket() {
         let udid = "test-stale-socket-cleanup";
-        let path = std::env::temp_dir().join(format!("xero-ios-helper-{udid}.sock"));
+        let path = PathBuf::from("/tmp/xero-ih-test-sta.sock");
         // Create a fake stale file.
         std::fs::write(&path, b"stale").ok();
         assert!(path.exists());

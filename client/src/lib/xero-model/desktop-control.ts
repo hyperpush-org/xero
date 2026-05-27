@@ -76,6 +76,11 @@ const desktopCapabilitiesSchema = z
     menuSelect: z.boolean(),
     webrtcStream: z.boolean(),
     screenshotFallbackStream: z.boolean(),
+    nativeVideoTrack: z.boolean(),
+    preferredCodec: z.string().nullable().default(null),
+    captureBackends: z.array(z.string().min(1)).default([]),
+    encoderBackends: z.array(z.string().min(1)).default([]),
+    hardwareEncoding: z.boolean(),
     manualCloudControl: z.boolean(),
   })
   .strict()

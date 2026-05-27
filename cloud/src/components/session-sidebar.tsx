@@ -26,6 +26,7 @@ interface SessionSidebarProps {
 	) => boolean | Promise<boolean>;
 	onSignOut: () => void;
 	pendingProjectKey?: string | null;
+	isSessionDirectoryLoading?: boolean;
 	className?: string;
 }
 
@@ -39,6 +40,7 @@ export function SessionSidebar({
 	onArchiveSession,
 	onSignOut,
 	pendingProjectKey,
+	isSessionDirectoryLoading = false,
 	className,
 }: SessionSidebarProps) {
 	return (
@@ -59,6 +61,7 @@ export function SessionSidebar({
 				onArchiveSession={onArchiveSession}
 				onSignOut={onSignOut}
 				pendingProjectKey={pendingProjectKey}
+				isSessionDirectoryLoading={isSessionDirectoryLoading}
 				showCount={false}
 				inlineProjectActions
 				titleSlot={

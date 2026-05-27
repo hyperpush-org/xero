@@ -7,6 +7,12 @@ import {
 	WebComposerContextIndicator,
 	type WebComposerContextIndicatorStatus,
 } from "@xero/ui/components/composer";
+import {
+	ComputerUseSidebar,
+	ComputerUseSidebarContent,
+	type ComputerUseSidebarDensity,
+	ComputerUseSidebarHeader,
+} from "@xero/ui/components/computer-use-sidebar";
 import { EmptySessionState } from "@xero/ui/components/empty-session-state";
 import {
 	type ConversationMessageAttachment,
@@ -14,6 +20,14 @@ import {
 	type ConversationTurn,
 } from "@xero/ui/components/transcript/conversation-section";
 import { Button } from "@xero/ui/components/ui/button";
+import {
+	Dialog,
+	DialogClose,
+	DialogContent,
+	DialogDescription,
+	DialogTitle,
+	DialogTrigger,
+} from "@xero/ui/components/ui/dialog";
 import {
 	getRuntimeAgentDescriptor,
 	getRuntimeRunApprovalModeDescription,
@@ -23,23 +37,29 @@ import {
 	runtimeAgentIdSchema,
 } from "@xero/ui/model/runtime";
 import {
+	GripVertical,
 	Monitor,
 	MousePointer2,
-	OctagonX,
-	RefreshCw,
+	SendHorizontal,
 	Square,
+	X,
 } from "lucide-react";
 import type { Channel } from "phoenix";
 import {
+	type CSSProperties,
+	type FormEvent,
 	type KeyboardEvent,
 	type PointerEvent,
+	type ReactNode,
 	useCallback,
 	useEffect,
+	useId,
 	useMemo,
 	useRef,
 	useState,
 	type WheelEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import { LoadingScreen } from "#/components/loading-screen";
 import { decodeRelayFrame } from "#/lib/relay/envelope";
 import {
@@ -53,7 +73,6 @@ import {
 	requestComputerUseStreamKeyframe,
 	requestComputerUseStreamStatus,
 	requestContextSnapshot,
-	requestRunCancel,
 	requestRuntimeMediaArtifact,
 	requestSessionSnapshot,
 	sendComputerUseManualInput,
@@ -64,6 +83,7 @@ import {
 import {
 	type SessionModelOption,
 	type SessionThinkingEffort,
+	type SessionTranscript,
 	sessionKey,
 	useSessionStore,
 } from "#/lib/relay/session-store";
@@ -71,6 +91,7 @@ import { useSessionsShell } from "#/lib/relay/sessions-shell-context";
 import { useConversationAutoFollow } from "#/lib/relay/use-conversation-auto-follow";
 import { useRemoteAttachments } from "#/lib/relay/use-remote-attachments";
 import { useSessionStream } from "#/lib/relay/use-session-stream";
+import { cn } from "#/lib/utils";
 
 export const Route = createFileRoute("/sessions/$computerId/$sessionId")({
 	component: SessionView,
@@ -84,6 +105,19 @@ interface ControlUpdateOverrides {
 	autoCompactEnabled?: boolean | null;
 }
 
+const COMPUTER_USE_EMPTY_TRANSCRIPT: SessionTranscript = {
+	turns: [],
+	lastSeq: 0,
+	isLive: false,
+	availableAgents: [{ id: "computer_use", label: "Computer Use" }],
+	availableModels: [],
+	currentAgentId: "computer_use",
+	currentModelId: null,
+	currentThinkingEffort: null,
+	currentApprovalMode: "suggest",
+	currentAutoCompactEnabled: true,
+};
+
 function SessionView() {
 	const shell = useSessionsShell();
 	const {
@@ -95,15 +129,7 @@ function SessionView() {
 	const { computerId, sessionId } = Route.useParams();
 	const key = sessionKey(computerId, sessionId);
 
-	const transcript = useSessionStore((state) => state.transcripts[key]);
-	const turns = transcript?.turns ?? [];
-	const availableAgents = transcript?.availableAgents ?? [];
-	const availableModels = transcript?.availableModels ?? [];
-	const currentAgentId = transcript?.currentAgentId ?? null;
-	const currentModelId = transcript?.currentModelId ?? null;
-	const contextSnapshot = transcript?.contextSnapshot ?? null;
-	const contextSnapshotError = transcript?.contextSnapshotError ?? null;
-	const isLive = transcript?.isLive ?? false;
+	const storedTranscript = useSessionStore((state) => state.transcripts[key]);
 	const currentSessionAvailable = visibleSessions.some(
 		(s) => s.computerId === computerId && s.sessionId === sessionId,
 	);
@@ -112,6 +138,17 @@ function SessionView() {
 			(s) => s.computerId === computerId && s.sessionId === sessionId,
 		) ?? null;
 	const isComputerUseSession = Boolean(visibleSession?.isComputerUse);
+	const transcript =
+		storedTranscript ??
+		(isComputerUseSession ? COMPUTER_USE_EMPTY_TRANSCRIPT : null);
+	const turns = transcript?.turns ?? [];
+	const availableAgents = transcript?.availableAgents ?? [];
+	const availableModels = transcript?.availableModels ?? [];
+	const currentAgentId = transcript?.currentAgentId ?? null;
+	const currentModelId = transcript?.currentModelId ?? null;
+	const contextSnapshot = transcript?.contextSnapshot ?? null;
+	const contextSnapshotError = transcript?.contextSnapshotError ?? null;
+	const isLive = transcript?.isLive ?? false;
 	const { channel, iceServers, joinRejected, streamRunId, streamToken } =
 		useSessionStream({
 			computerId,
@@ -314,7 +351,7 @@ function SessionView() {
 
 	useEffect(() => {
 		if (!channel || !session.deviceId || !currentSessionAvailable) return;
-		if (transcript) return;
+		if (storedTranscript) return;
 		const requestSnapshot = () => {
 			if (useSessionStore.getState().transcripts[key]) return;
 			requestSessionSnapshot(channel, {
@@ -333,7 +370,7 @@ function SessionView() {
 		key,
 		session.deviceId,
 		sessionId,
-		transcript,
+		storedTranscript,
 	]);
 
 	useEffect(() => {
@@ -615,41 +652,42 @@ function SessionView() {
 		[],
 	);
 	const projectLabel = shell.activeProjectLabel;
-	const computerUseDesktopViewport = isComputerUseSession ? (
-		<ComputerUseDesktopViewport
-			channel={channel}
-			computerId={computerId}
-			deviceId={session.deviceId}
-			iceServers={iceServers}
-			isOnline={currentComputerOnline}
-			isRunLive={isLive}
-			previewUrl={desktopPreviewUrl}
-			sessionId={sessionId}
-			streamRunId={streamRunId}
-			streamToken={streamToken}
-		/>
-	) : null;
-
-	return (
-		<div className="relative min-h-0 flex-1">
-			<div
-				ref={conversationViewportRef}
-				onScroll={handleConversationScroll}
-				onWheel={handleConversationWheel}
-				className="absolute inset-0 overflow-y-auto px-4 pt-4 sm:px-6"
-			>
+	const [desktopControlsOpen, setDesktopControlsOpen] = useState(false);
+	const [computerUseSidebarDensity, setComputerUseSidebarDensity] =
+		useState<ComputerUseSidebarDensity>("comfortable");
+	const renderConversationPane = (
+		surface: "main" | "sidebar" = "main",
+		density: ComputerUseSidebarDensity = "comfortable",
+	) => {
+		const isSidebarSurface = surface === "sidebar";
+		const isCompactSidebar = isSidebarSurface && density === "compact";
+		return (
+			<div className="relative min-h-0 flex-1">
 				<div
-					ref={conversationContentRef}
-					className="mx-auto flex min-h-full max-w-3xl flex-col gap-4 pb-24 lg:max-w-[47rem]"
+					ref={conversationViewportRef}
+					onScroll={handleConversationScroll}
+					onWheel={handleConversationWheel}
+					className={cn(
+						"absolute inset-0 overflow-y-auto",
+						isCompactSidebar ? "px-2 pt-2" : "px-4 pt-4 sm:px-6",
+					)}
 				>
-					{transcript ? (
-						<>
-							{computerUseDesktopViewport}
-							{turns.length === 0 ? (
+					<div
+						ref={conversationContentRef}
+						className={cn(
+							"mx-auto flex min-h-full flex-col",
+							isCompactSidebar
+								? "max-w-full gap-1 pb-20"
+								: "max-w-3xl gap-4 pb-24 lg:max-w-[47rem]",
+						)}
+					>
+						{transcript ? (
+							turns.length === 0 ? (
 								<div className="flex flex-1 items-center justify-center">
 									<EmptySessionState
 										projectLabel={projectLabel}
 										context={isComputerUseSession ? "computer-use" : "default"}
+										variant={isCompactSidebar ? "dense" : "default"}
 										onSelectSuggestion={setDraftPrompt}
 									/>
 								</div>
@@ -662,60 +700,114 @@ function SessionView() {
 									showActivityIndicator={isLive}
 									accountAvatarUrl={session.avatarUrl ?? null}
 									accountLogin={session.githubLogin}
+									variant={isCompactSidebar ? "dense" : "default"}
 								/>
-							)}
-						</>
-					) : (
-						<LoadingScreen className="flex-1" />
+							)
+						) : (
+							<LoadingScreen className="flex-1" />
+						)}
+						<div aria-hidden="true" className="h-1 shrink-0" />
+					</div>
+				</div>
+				<div
+					aria-hidden="true"
+					className={cn(
+						"pointer-events-none absolute inset-x-0 top-0 z-10 h-7 bg-gradient-to-b to-transparent",
+						isSidebarSurface ? "from-sidebar" : "from-background",
 					)}
-					<div aria-hidden="true" className="h-1 shrink-0" />
+				/>
+				<div
+					className={cn(
+						"pointer-events-none absolute inset-x-0 bottom-0 px-3 sm:px-6",
+						isCompactSidebar
+							? "pb-[max(env(safe-area-inset-bottom),0.5rem)]"
+							: "pb-[max(env(safe-area-inset-bottom),0.75rem)]",
+						isSidebarSurface ? "bg-sidebar" : "bg-background",
+					)}
+				>
+					<div
+						className={cn(
+							"pointer-events-auto mx-auto",
+							isCompactSidebar ? "max-w-none" : "max-w-3xl",
+						)}
+					>
+						<Composer
+							draftPrompt={draftPrompt}
+							onDraftPromptChange={setDraftPrompt}
+							onSubmit={dispatchSend}
+							density={isSidebarSurface ? density : undefined}
+							autoCompactEnabled={
+								isComputerUseSession ? undefined : autoCompactEnabled
+							}
+							onAutoCompactEnabledChange={
+								isComputerUseSession
+									? undefined
+									: handleAutoCompactEnabledChange
+							}
+							agentGroups={
+								isComputerUseSession
+									? []
+									: [{ id: "agents", options: selectableAgents }]
+							}
+							selectedAgentId={resolvedAgentId}
+							onAgentChange={handleAgentChange}
+							modelGroups={modelGroups}
+							selectedModelId={resolvedModelId}
+							onModelChange={handleModelChange}
+							thinkingOptions={thinkingComposerOptions}
+							selectedThinkingId={resolvedThinkingEffort}
+							onThinkingChange={handleThinkingChange}
+							approvalOptions={
+								isComputerUseSession ? undefined : approvalComposerOptions
+							}
+							selectedApprovalId={resolvedApprovalMode}
+							onApprovalChange={
+								isComputerUseSession ? undefined : handleApprovalModeChange
+							}
+							pendingAttachments={attachmentsHook.pendingAttachments}
+							onAddFiles={attachmentsHook.addFiles}
+							onRemoveAttachment={attachmentsHook.removeAttachment}
+							contextMeter={contextMeter}
+							dictation={isComputerUseSession ? hiddenDictation : undefined}
+						/>
+					</div>
 				</div>
 			</div>
-			<div
-				aria-hidden="true"
-				className="pointer-events-none absolute inset-x-0 top-0 z-10 h-7 bg-gradient-to-b from-background to-background/0"
-			/>
-			<div className="pointer-events-none absolute inset-x-0 bottom-0 bg-background px-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] sm:px-6">
-				<div className="pointer-events-auto mx-auto max-w-3xl">
-					<Composer
-						draftPrompt={draftPrompt}
-						onDraftPromptChange={setDraftPrompt}
-						onSubmit={dispatchSend}
-						autoCompactEnabled={
-							isComputerUseSession ? undefined : autoCompactEnabled
-						}
-						onAutoCompactEnabledChange={
-							isComputerUseSession ? undefined : handleAutoCompactEnabledChange
-						}
-						agentGroups={
-							isComputerUseSession
-								? []
-								: [{ id: "agents", options: selectableAgents }]
-						}
-						selectedAgentId={resolvedAgentId}
-						onAgentChange={handleAgentChange}
-						modelGroups={modelGroups}
-						selectedModelId={resolvedModelId}
-						onModelChange={handleModelChange}
-						thinkingOptions={thinkingComposerOptions}
-						selectedThinkingId={resolvedThinkingEffort}
-						onThinkingChange={handleThinkingChange}
-						approvalOptions={
-							isComputerUseSession ? undefined : approvalComposerOptions
-						}
-						selectedApprovalId={resolvedApprovalMode}
-						onApprovalChange={
-							isComputerUseSession ? undefined : handleApprovalModeChange
-						}
-						pendingAttachments={attachmentsHook.pendingAttachments}
-						onAddFiles={attachmentsHook.addFiles}
-						onRemoveAttachment={attachmentsHook.removeAttachment}
-						contextMeter={contextMeter}
-						dictation={isComputerUseSession ? hiddenDictation : undefined}
-					/>
-				</div>
-			</div>
-		</div>
+		);
+	};
+	const conversationPane = renderConversationPane();
+	const computerUseDesktopDialog =
+		isComputerUseSession && shell.topBarAccessoryElement
+			? createPortal(
+					<ComputerUseDesktopDialog
+						open={desktopControlsOpen}
+						onOpenChange={setDesktopControlsOpen}
+						agentSidebar={renderConversationPane(
+							"sidebar",
+							computerUseSidebarDensity,
+						)}
+						onAgentSidebarDensityChange={setComputerUseSidebarDensity}
+						channel={channel}
+						computerId={computerId}
+						deviceId={session.deviceId}
+						iceServers={iceServers}
+						isOnline={currentComputerOnline}
+						isAgentWorking={isLive}
+						onPromptSubmit={dispatchSend}
+						previewUrl={desktopPreviewUrl}
+						sessionId={sessionId}
+						streamRunId={streamRunId}
+						streamToken={streamToken}
+					/>,
+					shell.topBarAccessoryElement,
+				)
+			: null;
+
+	return (
+		<>
+			{computerUseDesktopDialog}
+			{desktopControlsOpen && isComputerUseSession ? null : conversationPane}
+		</>
 	);
 }
 
@@ -729,9 +821,97 @@ type DesktopViewportState =
 	| "offline";
 
 type DesktopStreamQuality = "low" | "balanced" | "high";
+type DesktopControlPresentationOverride = "auto" | "desktop" | "mobile";
 
 const DESKTOP_STREAM_DATA_CHANNEL_LABEL = "xero-desktop-stream";
 const DESKTOP_STREAM_MAX_BUFFERED_FRAMES = 24;
+const DESKTOP_CONTROL_BAR_MARGIN = 12;
+const DESKTOP_CONTROL_BAR_DEFAULT_TOP = 24;
+const DESKTOP_KEYFRAME_REFRESH_MS = 10_000;
+const DESKTOP_STREAM_STATUS_INTERVAL_MS = 5_000;
+const DESKTOP_STREAM_FALLBACK_RECOVERY_COOLDOWN_MS = 2_500;
+const DESKTOP_ADAPTIVE_QUALITY_DOWNGRADE_COOLDOWN_MS = 6_000;
+const DESKTOP_ADAPTIVE_QUALITY_UPGRADE_COOLDOWN_MS = 30_000;
+const DESKTOP_ADAPTIVE_QUALITY_STABLE_SAMPLES = 3;
+const DESKTOP_ADAPTIVE_QUALITY_POOR_LOSS_RATIO = 0.03;
+const DESKTOP_ADAPTIVE_QUALITY_GOOD_LOSS_RATIO = 0.005;
+const DESKTOP_CONTROL_MOBILE_BREAKPOINT = 768;
+const DESKTOP_CONTROL_COARSE_POINTER_MAX_WIDTH = 900;
+const DESKTOP_CONTROL_PRESENTATION_QUERY_PARAM = "desktopControlPresentation";
+const DESKTOP_CONTROL_PRESENTATION_STORAGE_KEY =
+	"xero.cloud.desktopControlPresentation";
+const STOPPABLE_DESKTOP_STATES = new Set<DesktopViewportState>([
+	"connecting",
+	"live",
+	"degraded",
+	"manual",
+]);
+const MANUAL_CONTROL_DESKTOP_STATES = new Set<DesktopViewportState>([
+	"live",
+	"degraded",
+	"manual",
+]);
+const KEYFRAME_REFRESH_STATES = new Set<DesktopViewportState>([
+	"connecting",
+	"live",
+	"degraded",
+	"manual",
+]);
+const STREAM_STATUS_STATES = new Set<DesktopViewportState>([
+	"connecting",
+	"live",
+	"degraded",
+	"manual",
+]);
+const DESKTOP_STREAM_QUALITY_ORDER: DesktopStreamQuality[] = [
+	"low",
+	"balanced",
+	"high",
+];
+const DESKTOP_STREAM_QUALITY_MIN_AVAILABLE_BITRATE_BPS: Record<
+	DesktopStreamQuality,
+	number
+> = {
+	low: 0,
+	balanced: 2_200_000,
+	high: 5_500_000,
+};
+const DESKTOP_STREAM_QUALITY_UPGRADE_AVAILABLE_BITRATE_BPS: Record<
+	DesktopStreamQuality,
+	number
+> = {
+	low: 3_000_000,
+	balanced: 8_500_000,
+	high: Number.POSITIVE_INFINITY,
+};
+const DESKTOP_TOOLBAR_BUTTON_CLASS =
+	"h-7 gap-1 rounded-md border border-transparent bg-transparent px-2 text-[12px] font-medium text-muted-foreground shadow-none hover:border-border/70 hover:bg-muted/70 hover:text-foreground disabled:opacity-35";
+const DESKTOP_TOOLBAR_DANGER_BUTTON_CLASS =
+	"h-7 gap-1 rounded-md border border-red-500/30 bg-red-500/10 px-2 text-[12px] font-medium text-red-200 shadow-none hover:border-red-400/50 hover:bg-red-500/15 hover:text-red-100 disabled:opacity-35";
+
+interface DesktopControlBarPosition {
+	x: number;
+	y: number;
+}
+
+interface DesktopSurfaceSize {
+	height: number;
+	width: number;
+}
+
+interface DesktopControlBarDrag {
+	pointerId: number;
+	startClientX: number;
+	startClientY: number;
+	originX: number;
+	originY: number;
+}
+
+interface DesktopControlPresentation {
+	isMobile: boolean;
+	override: DesktopControlPresentationOverride;
+	rotateDesktop: boolean;
+}
 
 interface DesktopStreamDetails {
 	status?: string | null;
@@ -739,31 +919,431 @@ interface DesktopStreamDetails {
 	quality?: DesktopStreamQuality | null;
 	maxWidth?: number | null;
 	maxFrameRate?: number | null;
+	metrics?: DesktopStreamMetrics | null;
 	message?: string | null;
 }
 
-function ComputerUseDesktopViewport({
-	channel,
-	computerId,
-	deviceId,
-	iceServers,
-	isOnline,
-	isRunLive,
-	previewUrl,
-	sessionId,
-	streamRunId,
-	streamToken,
-}: {
+interface DesktopStreamMetrics {
+	captureBackend?: string | null;
+	encoderBackend?: string | null;
+	encoderHardware?: boolean | null;
+	preferredCodec?: string | null;
+	fallbackReason?: string | null;
+	captureFrameRate?: number | null;
+	captureDroppedFrames?: number | null;
+	encodeFrameRate?: number | null;
+	encodeLatencyMs?: number | null;
+	outboundBitrateBps?: number | null;
+	availableOutgoingBitrateBps?: number | null;
+	packetsSent?: number | null;
+	bytesSent?: number | null;
+	packetLoss?: number | null;
+	roundTripTimeMs?: number | null;
+	retransmits?: number | null;
+	keyframes?: number | null;
+}
+
+interface DesktopAdaptiveStreamQualityInput {
+	currentQuality: DesktopStreamQuality;
+	lastChangedAt: number;
+	metrics: DesktopStreamMetrics | null;
+	now: number;
+	previousMetrics: DesktopStreamMetrics | null;
+	stableSamples: number;
+	state: DesktopViewportState;
+}
+
+interface DesktopAdaptiveStreamQualityDecision {
+	quality: DesktopStreamQuality;
+	stableSamples: number;
+}
+
+interface ComputerUseDesktopViewportProps {
 	channel: Channel | null;
 	computerId: string;
 	deviceId?: string | null;
 	iceServers: RTCIceServer[];
+	isAgentWorking: boolean;
 	isOnline: boolean;
-	isRunLive: boolean;
+	onPromptSubmit: (message: string) => void;
 	previewUrl: string | null;
 	sessionId: string;
 	streamRunId: string | null;
 	streamToken: string | null;
+}
+
+interface ComputerUseDesktopControlsProps
+	extends ComputerUseDesktopViewportProps {
+	agentSidebar: ReactNode;
+	onAgentSidebarDensityChange: (density: ComputerUseSidebarDensity) => void;
+	onOpenChange: (open: boolean) => void;
+	open: boolean;
+}
+
+function ComputerUseDesktopDialog({
+	agentSidebar,
+	onAgentSidebarDensityChange,
+	onOpenChange,
+	open,
+	...props
+}: ComputerUseDesktopControlsProps) {
+	const presentation = useDesktopControlPresentation();
+	const trigger = (
+		<Button
+			type="button"
+			variant="secondary"
+			size="sm"
+			aria-label="Open desktop controls"
+			className="h-8 gap-2 px-2.5"
+			onClick={presentation.isMobile ? undefined : () => onOpenChange(true)}
+		>
+			<Monitor className="h-4 w-4" aria-hidden="true" />
+			<span className="hidden sm:inline">Desktop</span>
+		</Button>
+	);
+
+	if (!presentation.isMobile) {
+		return (
+			<>
+				{trigger}
+				<ComputerUseDesktopFullscreen
+					open={open}
+					onOpenChange={onOpenChange}
+					agentSidebar={agentSidebar}
+					onAgentSidebarDensityChange={onAgentSidebarDensityChange}
+					presentation={presentation}
+					viewportProps={props}
+				/>
+			</>
+		);
+	}
+
+	return (
+		<Dialog open={open} onOpenChange={onOpenChange}>
+			<DialogTrigger asChild>{trigger}</DialogTrigger>
+			<DialogContent
+				showCloseButton={false}
+				className="grid h-[100dvh] max-h-none w-screen max-w-none grid-rows-[minmax(0,1fr)] gap-0 overflow-hidden rounded-none border-0 bg-background p-0 text-foreground shadow-none sm:max-w-none"
+			>
+				<ComputerUseDesktopViewport
+					{...props}
+					closeControl={
+						<DialogClose asChild>
+							<DesktopControlCloseButton />
+						</DialogClose>
+					}
+					presentation={presentation}
+				/>
+			</DialogContent>
+		</Dialog>
+	);
+}
+
+function ComputerUseDesktopFullscreen({
+	agentSidebar,
+	onAgentSidebarDensityChange,
+	onOpenChange,
+	open,
+	presentation,
+	viewportProps,
+}: {
+	agentSidebar: ReactNode;
+	onAgentSidebarDensityChange: (density: ComputerUseSidebarDensity) => void;
+	onOpenChange: (open: boolean) => void;
+	open: boolean;
+	presentation: DesktopControlPresentation;
+	viewportProps: ComputerUseDesktopViewportProps;
+}) {
+	useEffect(() => {
+		if (!open) return;
+		const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+			if (event.key !== "Escape") return;
+			event.preventDefault();
+			onOpenChange(false);
+		};
+		document.addEventListener("keydown", handleKeyDown);
+		return () => document.removeEventListener("keydown", handleKeyDown);
+	}, [onOpenChange, open]);
+
+	if (!open || typeof document === "undefined") return null;
+
+	return createPortal(
+		<section
+			aria-label="Desktop controls"
+			className="fixed inset-0 z-[90] flex bg-background text-foreground"
+		>
+			<main className="min-w-0 flex-1 bg-zinc-950">
+				<ComputerUseDesktopViewport
+					{...viewportProps}
+					closeControl={
+						<DesktopControlCloseButton onClick={() => onOpenChange(false)} />
+					}
+					presentation={presentation}
+				/>
+			</main>
+			<ComputerUseSidebar
+				onDensityChange={onAgentSidebarDensityChange}
+				resizable
+				widthStorageKey="xero.cloud.computerUseSidebar.width.v1"
+			>
+				<ComputerUseSidebarHeader />
+				<ComputerUseSidebarContent>{agentSidebar}</ComputerUseSidebarContent>
+			</ComputerUseSidebar>
+		</section>,
+		document.body,
+	);
+}
+
+function DesktopControlCloseButton({ onClick }: { onClick?: () => void }) {
+	return (
+		<Button
+			type="button"
+			size="icon"
+			variant="ghost"
+			aria-label="Close desktop controls"
+			onClick={onClick}
+			className="h-8 w-8 rounded-md text-muted-foreground hover:border-border/70 hover:bg-muted/70 hover:text-foreground"
+		>
+			<X className="h-3.5 w-3.5" aria-hidden="true" />
+		</Button>
+	);
+}
+
+function useDesktopControlPresentation(): DesktopControlPresentation {
+	const [presentation, setPresentation] = useState<DesktopControlPresentation>(
+		() => readDesktopControlPresentation(),
+	);
+
+	useEffect(() => {
+		const updatePresentation = () => {
+			setPresentation(readDesktopControlPresentation());
+		};
+		const mediaQueries =
+			typeof window !== "undefined" && typeof window.matchMedia === "function"
+				? [
+						window.matchMedia(
+							`(max-width: ${DESKTOP_CONTROL_MOBILE_BREAKPOINT - 1}px)`,
+						),
+						window.matchMedia("(hover: none) and (pointer: coarse)"),
+					]
+				: [];
+		updatePresentation();
+		window.addEventListener("resize", updatePresentation);
+		window.addEventListener("orientationchange", updatePresentation);
+		window.addEventListener("popstate", updatePresentation);
+		window.addEventListener("storage", updatePresentation);
+		for (const mediaQuery of mediaQueries) {
+			mediaQuery.addEventListener("change", updatePresentation);
+		}
+		return () => {
+			window.removeEventListener("resize", updatePresentation);
+			window.removeEventListener("orientationchange", updatePresentation);
+			window.removeEventListener("popstate", updatePresentation);
+			window.removeEventListener("storage", updatePresentation);
+			for (const mediaQuery of mediaQueries) {
+				mediaQuery.removeEventListener("change", updatePresentation);
+			}
+		};
+	}, []);
+
+	return presentation;
+}
+
+export function readDesktopControlPresentation(): DesktopControlPresentation {
+	if (typeof window === "undefined") {
+		return { isMobile: false, override: "auto", rotateDesktop: false };
+	}
+	const override = readDesktopControlPresentationOverride();
+	const width =
+		window.innerWidth || document.documentElement.clientWidth || 1024;
+	const height =
+		window.innerHeight || document.documentElement.clientHeight || 768;
+	const coarsePointer =
+		typeof window.matchMedia === "function" &&
+		window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+	const mobileViewport =
+		width < DESKTOP_CONTROL_MOBILE_BREAKPOINT ||
+		(coarsePointer && width < DESKTOP_CONTROL_COARSE_POINTER_MAX_WIDTH);
+	const isMobile =
+		override === "mobile" || (override === "auto" && mobileViewport);
+	return {
+		isMobile,
+		override,
+		rotateDesktop: isMobile && height > width,
+	};
+}
+
+function readDesktopControlPresentationOverride(): DesktopControlPresentationOverride {
+	const queryOverride = parseDesktopControlPresentationOverride(
+		new URLSearchParams(window.location.search).get(
+			DESKTOP_CONTROL_PRESENTATION_QUERY_PARAM,
+		),
+	);
+	if (queryOverride) return queryOverride;
+	try {
+		return (
+			parseDesktopControlPresentationOverride(
+				window.localStorage.getItem(DESKTOP_CONTROL_PRESENTATION_STORAGE_KEY),
+			) ?? "auto"
+		);
+	} catch {
+		return "auto";
+	}
+}
+
+function parseDesktopControlPresentationOverride(
+	value: string | null,
+): DesktopControlPresentationOverride | null {
+	if (value === "auto" || value === "desktop" || value === "mobile") {
+		return value;
+	}
+	return null;
+}
+
+export function chooseDesktopAdaptiveStreamQuality({
+	currentQuality,
+	lastChangedAt,
+	metrics,
+	now,
+	previousMetrics,
+	stableSamples,
+	state,
+}: DesktopAdaptiveStreamQualityInput): DesktopAdaptiveStreamQualityDecision {
+	if (
+		desktopStreamNetworkIsPoor(currentQuality, metrics, previousMetrics, state)
+	) {
+		const quality = lowerDesktopStreamQuality(currentQuality);
+		if (
+			quality !== currentQuality &&
+			now - lastChangedAt >= DESKTOP_ADAPTIVE_QUALITY_DOWNGRADE_COOLDOWN_MS
+		) {
+			return { quality, stableSamples: 0 };
+		}
+		return { quality: currentQuality, stableSamples: 0 };
+	}
+
+	const nextStableSamples = desktopStreamNetworkIsStrong(
+		currentQuality,
+		metrics,
+		previousMetrics,
+		state,
+	)
+		? stableSamples + 1
+		: 0;
+	const quality = higherDesktopStreamQuality(currentQuality);
+	if (
+		quality !== currentQuality &&
+		nextStableSamples >= DESKTOP_ADAPTIVE_QUALITY_STABLE_SAMPLES &&
+		now - lastChangedAt >= DESKTOP_ADAPTIVE_QUALITY_UPGRADE_COOLDOWN_MS
+	) {
+		return { quality, stableSamples: 0 };
+	}
+	return { quality: currentQuality, stableSamples: nextStableSamples };
+}
+
+function desktopStreamNetworkIsPoor(
+	quality: DesktopStreamQuality,
+	metrics: DesktopStreamMetrics | null,
+	previousMetrics: DesktopStreamMetrics | null,
+	state: DesktopViewportState,
+): boolean {
+	if (state === "degraded") return true;
+	if (!metrics) return false;
+	const lossRatio = desktopStreamPacketLossRatio(metrics, previousMetrics);
+	const availableBitrate = metrics.availableOutgoingBitrateBps;
+	const minimumBitrate =
+		DESKTOP_STREAM_QUALITY_MIN_AVAILABLE_BITRATE_BPS[quality];
+	return (
+		(metrics.roundTripTimeMs ?? 0) >= 350 ||
+		(lossRatio !== null &&
+			lossRatio >= DESKTOP_ADAPTIVE_QUALITY_POOR_LOSS_RATIO) ||
+		(typeof availableBitrate === "number" &&
+			minimumBitrate > 0 &&
+			availableBitrate < minimumBitrate) ||
+		(metrics.encodeLatencyMs ?? 0) >= 120
+	);
+}
+
+function desktopStreamNetworkIsStrong(
+	quality: DesktopStreamQuality,
+	metrics: DesktopStreamMetrics | null,
+	previousMetrics: DesktopStreamMetrics | null,
+	state: DesktopViewportState,
+): boolean {
+	if (!metrics || state === "degraded" || quality === "high") return false;
+	const availableBitrate = metrics.availableOutgoingBitrateBps;
+	if (typeof availableBitrate !== "number") return false;
+	const lossRatio = desktopStreamPacketLossRatio(metrics, previousMetrics);
+	return (
+		availableBitrate >=
+			DESKTOP_STREAM_QUALITY_UPGRADE_AVAILABLE_BITRATE_BPS[quality] &&
+		(metrics.roundTripTimeMs ?? 0) <= 120 &&
+		(lossRatio === null ||
+			lossRatio <= DESKTOP_ADAPTIVE_QUALITY_GOOD_LOSS_RATIO) &&
+		(metrics.encodeLatencyMs ?? 0) <= 60
+	);
+}
+
+function desktopStreamPacketLossRatio(
+	metrics: DesktopStreamMetrics,
+	previousMetrics: DesktopStreamMetrics | null,
+): number | null {
+	const packetsSent = metrics.packetsSent;
+	const packetsLost = Math.max(0, metrics.packetLoss ?? 0);
+	if (
+		previousMetrics &&
+		typeof packetsSent === "number" &&
+		typeof previousMetrics.packetsSent === "number"
+	) {
+		const sentDelta = packetsSent - previousMetrics.packetsSent;
+		const lostDelta = Math.max(
+			0,
+			packetsLost - Math.max(0, previousMetrics.packetLoss ?? 0),
+		);
+		const totalDelta = sentDelta + lostDelta;
+		if (sentDelta >= 0 && totalDelta > 0) return lostDelta / totalDelta;
+	}
+	if (typeof packetsSent === "number" && packetsSent > 0) {
+		return packetsLost / (packetsSent + packetsLost);
+	}
+	return null;
+}
+
+function lowerDesktopStreamQuality(
+	quality: DesktopStreamQuality,
+): DesktopStreamQuality {
+	const index = DESKTOP_STREAM_QUALITY_ORDER.indexOf(quality);
+	return DESKTOP_STREAM_QUALITY_ORDER[Math.max(0, index - 1)] ?? quality;
+}
+
+function higherDesktopStreamQuality(
+	quality: DesktopStreamQuality,
+): DesktopStreamQuality {
+	const index = DESKTOP_STREAM_QUALITY_ORDER.indexOf(quality);
+	return (
+		DESKTOP_STREAM_QUALITY_ORDER[
+			Math.min(DESKTOP_STREAM_QUALITY_ORDER.length - 1, index + 1)
+		] ?? quality
+	);
+}
+
+function ComputerUseDesktopViewport({
+	channel,
+	closeControl,
+	computerId,
+	deviceId,
+	iceServers,
+	isAgentWorking,
+	isOnline,
+	onPromptSubmit,
+	previewUrl,
+	sessionId,
+	streamRunId,
+	streamToken,
+	presentation,
+}: ComputerUseDesktopViewportProps & {
+	closeControl?: ReactNode;
+	presentation: DesktopControlPresentation;
 }) {
 	const [state, setState] = useState<DesktopViewportState>(
 		isOnline ? "waiting" : "offline",
@@ -773,11 +1353,10 @@ function ComputerUseDesktopViewport({
 	const [fallbackPreviewUrl, setFallbackPreviewUrl] = useState<string | null>(
 		null,
 	);
-	const [selectedQuality, setSelectedQuality] =
+	const [streamQuality, setStreamQuality] =
 		useState<DesktopStreamQuality>("balanced");
-	const [streamDetails, setStreamDetails] =
-		useState<DesktopStreamDetails | null>(null);
 	const [hasLiveVideo, setHasLiveVideo] = useState(false);
+	const [toolbarPromptPending, setToolbarPromptPending] = useState(false);
 	const videoRef = useRef<HTMLVideoElement | null>(null);
 	const imageRef = useRef<HTMLImageElement | null>(null);
 	const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
@@ -787,8 +1366,33 @@ function ComputerUseDesktopViewport({
 		new Map<string, DesktopFrameChunkBuffer>(),
 	);
 	const lastPointerMoveAtRef = useRef(0);
+	const desktopSurfaceRef = useRef<HTMLElement | null>(null);
+	const controlBarRef = useRef<HTMLDivElement | null>(null);
+	const controlBarDragRef = useRef<DesktopControlBarDrag | null>(null);
 	const streamIdRef = useRef<string | null>(null);
-	const resolvedPreviewUrl = fallbackPreviewUrl ?? previewUrl;
+	const streamQualityRef = useRef<DesktopStreamQuality>("balanced");
+	const adaptiveQualityMetricsRef = useRef<DesktopStreamMetrics | null>(null);
+	const adaptiveQualityStableSamplesRef = useRef(0);
+	const adaptiveQualityLastChangedAtRef = useRef(0);
+	const liveVideoSeenRef = useRef(false);
+	const fallbackRecoveryLastAttemptAtRef = useRef(0);
+	const streamStopRequestedRef = useRef(false);
+	const [controlBarPosition, setControlBarPosition] =
+		useState<DesktopControlBarPosition | null>(null);
+	const [desktopSurfaceSize, setDesktopSurfaceSize] =
+		useState<DesktopSurfaceSize | null>(null);
+	const resolvedPreviewUrl =
+		state === "paused" ? null : (fallbackPreviewUrl ?? previewUrl);
+	const hasVisibleDesktopMedia = hasLiveVideo || Boolean(resolvedPreviewUrl);
+	const shouldRotateDesktopContent =
+		presentation.rotateDesktop && hasVisibleDesktopMedia;
+	const presentationModeKey = `${presentation.isMobile}:${shouldRotateDesktopContent}`;
+
+	useEffect(() => {
+		setControlBarPosition((position) =>
+			presentationModeKey && position ? null : position,
+		);
+	}, [presentationModeKey]);
 
 	useEffect(() => {
 		return () => {
@@ -809,9 +1413,75 @@ function ComputerUseDesktopViewport({
 	}, [streamId]);
 
 	useEffect(() => {
+		streamQualityRef.current = streamQuality;
+	}, [streamQuality]);
+
+	useEffect(() => {
+		const surface = desktopSurfaceRef.current;
+		if (!surface || typeof ResizeObserver === "undefined") return;
+		const updateSurfaceSize = () => {
+			const rect = surface.getBoundingClientRect();
+			const width = rect.width || surface.clientWidth;
+			const height = rect.height || surface.clientHeight;
+			if (width <= 0 || height <= 0) return;
+			setDesktopSurfaceSize({
+				height,
+				width,
+			});
+		};
+		updateSurfaceSize();
+		const observer = new ResizeObserver(updateSurfaceSize);
+		observer.observe(surface);
+		return () => observer.disconnect();
+	}, []);
+
+	useEffect(() => {
 		if (!isOnline) setState("offline");
 		else if (state === "offline") setState("waiting");
 	}, [isOnline, state]);
+
+	useEffect(() => {
+		if (!toolbarPromptPending) return;
+		if (isAgentWorking) {
+			setToolbarPromptPending(false);
+			return;
+		}
+		const handle = window.setTimeout(() => {
+			setToolbarPromptPending(false);
+		}, 3000);
+		return () => window.clearTimeout(handle);
+	}, [isAgentWorking, toolbarPromptPending]);
+
+	const clearFallbackPreview = useCallback(() => {
+		if (fallbackPreviewObjectUrlRef.current) {
+			URL.revokeObjectURL(fallbackPreviewObjectUrlRef.current);
+			fallbackPreviewObjectUrlRef.current = null;
+		}
+		setFallbackPreviewUrl(null);
+	}, []);
+
+	const clearDesktopStreamMedia = useCallback(
+		({
+			clearPreview = false,
+			clearStreamId = false,
+		}: {
+			clearPreview?: boolean;
+			clearStreamId?: boolean;
+		} = {}) => {
+			closeDesktopPeerConnection(peerConnectionRef.current);
+			peerConnectionRef.current = null;
+			pendingMediaStreamRef.current = null;
+			dataChannelFramesRef.current.clear();
+			if (videoRef.current) videoRef.current.srcObject = null;
+			setHasLiveVideo(false);
+			if (clearPreview) clearFallbackPreview();
+			if (clearStreamId) {
+				streamIdRef.current = null;
+				setStreamId(null);
+			}
+		},
+		[clearFallbackPreview],
+	);
 
 	const showDesktopDataChannelFrame = useCallback(
 		(bytesBase64: string, mediaType: string) => {
@@ -828,13 +1498,14 @@ function ComputerUseDesktopViewport({
 			if (videoRef.current) videoRef.current.srcObject = null;
 			setFallbackPreviewUrl(objectUrl);
 			setHasLiveVideo(false);
-			setState((current) => (current === "manual" ? current : "live"));
+			setState((current) => (current === "manual" ? current : "degraded"));
 		},
 		[],
 	);
 
 	const handleDesktopDataChannelMessage = useCallback(
 		(event: MessageEvent) => {
+			if (streamStopRequestedRef.current) return;
 			const chunk = desktopFrameChunkFromMessage(event.data);
 			if (!chunk) return;
 			const activeStreamId = streamIdRef.current;
@@ -887,7 +1558,7 @@ function ComputerUseDesktopViewport({
 			}
 			event.channel.onmessage = handleDesktopDataChannelMessage;
 			event.channel.onopen = () => {
-				setState((current) => (current === "manual" ? current : "live"));
+				setState((current) => (current === "manual" ? current : "degraded"));
 			};
 			event.channel.onclose = () => {
 				setState((current) =>
@@ -904,6 +1575,9 @@ function ComputerUseDesktopViewport({
 			if (!mediaStream) return;
 			pendingMediaStreamRef.current = mediaStream;
 			if (videoRef.current) videoRef.current.srcObject = mediaStream;
+			liveVideoSeenRef.current = true;
+			fallbackRecoveryLastAttemptAtRef.current = 0;
+			clearFallbackPreview();
 			setHasLiveVideo(true);
 			setState("live");
 		};
@@ -934,6 +1608,7 @@ function ComputerUseDesktopViewport({
 		return peerConnection;
 	}, [
 		channel,
+		clearFallbackPreview,
 		computerId,
 		deviceId,
 		fallbackPreviewUrl,
@@ -974,21 +1649,106 @@ function ComputerUseDesktopViewport({
 					await peerConnectionRef.current.addIceCandidate(candidate);
 				}
 			} catch {
-				closeDesktopPeerConnection(peerConnectionRef.current);
-				peerConnectionRef.current = null;
-				pendingMediaStreamRef.current = null;
-				dataChannelFramesRef.current.clear();
-				if (videoRef.current) videoRef.current.srcObject = null;
-				setHasLiveVideo(false);
+				clearDesktopStreamMedia();
 				setState(fallbackPreviewUrl ? "degraded" : "waiting");
 			}
 		},
 		[
 			channel,
+			clearDesktopStreamMedia,
 			computerId,
 			deviceId,
 			ensurePeerConnection,
 			fallbackPreviewUrl,
+			sessionId,
+			streamRunId,
+			streamToken,
+		],
+	);
+	const applyAdaptiveStreamQuality = useCallback(
+		(
+			metrics: DesktopStreamMetrics | null,
+			sampleState: DesktopViewportState,
+		) => {
+			const activeStreamId = streamIdRef.current;
+			if (!channel || !deviceId || !activeStreamId) return;
+			const now = Date.now();
+			const decision = chooseDesktopAdaptiveStreamQuality({
+				currentQuality: streamQualityRef.current,
+				lastChangedAt: adaptiveQualityLastChangedAtRef.current,
+				metrics,
+				now,
+				previousMetrics: adaptiveQualityMetricsRef.current,
+				stableSamples: adaptiveQualityStableSamplesRef.current,
+				state: sampleState,
+			});
+			adaptiveQualityMetricsRef.current = metrics;
+			adaptiveQualityStableSamplesRef.current = decision.stableSamples;
+			if (decision.quality === streamQualityRef.current) return;
+			streamQualityRef.current = decision.quality;
+			adaptiveQualityLastChangedAtRef.current = now;
+			setStreamQuality(decision.quality);
+			setComputerUseStreamQuality(channel, {
+				computerId,
+				sessionId,
+				deviceId,
+				runId: streamRunId,
+				streamId: activeStreamId,
+				quality: decision.quality,
+				streamToken,
+			});
+			requestComputerUseStreamKeyframe(channel, {
+				computerId,
+				sessionId,
+				deviceId,
+				runId: streamRunId,
+				streamId: activeStreamId,
+				streamToken,
+			});
+		},
+		[channel, computerId, deviceId, sessionId, streamRunId, streamToken],
+	);
+	const recoverDesktopWebRtcStream = useCallback(
+		(activeStreamId: string | null) => {
+			if (
+				!channel ||
+				!deviceId ||
+				!isOnline ||
+				streamStopRequestedRef.current
+			) {
+				return false;
+			}
+			const streamIdForRestart = activeStreamId ?? streamIdRef.current;
+			if (!streamIdForRestart) return false;
+			const now = Date.now();
+			if (
+				now - fallbackRecoveryLastAttemptAtRef.current <
+				DESKTOP_STREAM_FALLBACK_RECOVERY_COOLDOWN_MS
+			) {
+				return true;
+			}
+			fallbackRecoveryLastAttemptAtRef.current = now;
+			clearDesktopStreamMedia({ clearPreview: true });
+			setState("connecting");
+			requestComputerUseStream(channel, {
+				computerId,
+				sessionId,
+				deviceId,
+				streamId: streamIdForRestart,
+				quality: streamQualityRef.current,
+				runId: streamRunId,
+				streamToken,
+				iceServers,
+			});
+			return true;
+		},
+		[
+			channel,
+			clearDesktopStreamMedia,
+			computerId,
+			deviceId,
+			iceServers,
+			isOnline,
 			sessionId,
 			streamRunId,
 			streamToken,
@@ -1001,16 +1761,45 @@ function ComputerUseDesktopViewport({
 			const envelope = decodeRelayFrame(rawFrame);
 			const payload = envelope?.payload;
 			if (!isComputerUseDesktopPayload(payload)) return;
+			const isStreamStopPayload =
+				payload.schema === "xero.computer_use_stream_stop.v1";
+			if (streamStopRequestedRef.current && !isStreamStopPayload) return;
+			if (isStreamStopPayload) {
+				clearDesktopStreamMedia({ clearPreview: true, clearStreamId: true });
+				adaptiveQualityMetricsRef.current = null;
+				adaptiveQualityStableSamplesRef.current = 0;
+				setState("paused");
+				return;
+			}
 			if (payload.streamId) {
 				streamIdRef.current = payload.streamId;
 				setStreamId(payload.streamId);
 			}
 			const nextStreamDetails = desktopStreamDetails(payload);
+			const shouldRecoverFromFallback = shouldRecoverDesktopWebRtcAfterFallback(
+				nextStreamDetails,
+				liveVideoSeenRef.current,
+			);
 			if (nextStreamDetails) {
-				setStreamDetails(nextStreamDetails);
 				if (nextStreamDetails.quality) {
-					setSelectedQuality(nextStreamDetails.quality);
+					streamQualityRef.current = nextStreamDetails.quality;
+					setStreamQuality(nextStreamDetails.quality);
 				}
+				if (!shouldRecoverFromFallback) {
+					applyAdaptiveStreamQuality(
+						nextStreamDetails.metrics ?? null,
+						nextStreamDetails.status === "degraded" ||
+							nextStreamDetails.transport === "screenshot_fallback"
+							? "degraded"
+							: state,
+					);
+				}
+			}
+			if (
+				shouldRecoverFromFallback &&
+				recoverDesktopWebRtcStream(payload.streamId ?? streamIdRef.current)
+			) {
+				return;
 			}
 			if (payload.manualControlId) setManualControlId(payload.manualControlId);
 			void handleWebRtcSignal(payload);
@@ -1028,16 +1817,9 @@ function ComputerUseDesktopViewport({
 				fallbackPreviewObjectUrlRef.current = objectUrl;
 				setFallbackPreviewUrl(objectUrl);
 				setHasLiveVideo(false);
+				setState((current) => (current === "manual" ? current : "degraded"));
 			}
-			if (payload.schema === "xero.computer_use_stream_stop.v1") {
-				closeDesktopPeerConnection(peerConnectionRef.current);
-				peerConnectionRef.current = null;
-				pendingMediaStreamRef.current = null;
-				dataChannelFramesRef.current.clear();
-				if (videoRef.current) videoRef.current.srcObject = null;
-				setHasLiveVideo(false);
-				setState("paused");
-			} else if (
+			if (
 				payload.schema.startsWith("xero.computer_use_stream_") &&
 				payload.schema !== "xero.computer_use_stream_offer.v1" &&
 				state !== "live" &&
@@ -1065,7 +1847,15 @@ function ComputerUseDesktopViewport({
 		return () => {
 			channel.off("frame", ref);
 		};
-	}, [channel, handleWebRtcSignal, state, streamId]);
+	}, [
+		applyAdaptiveStreamQuality,
+		channel,
+		clearDesktopStreamMedia,
+		handleWebRtcSignal,
+		recoverDesktopWebRtcStream,
+		state,
+		streamId,
+	]);
 
 	useEffect(() => {
 		if (!channel || !deviceId || state !== "manual" || !manualControlId) return;
@@ -1096,7 +1886,11 @@ function ComputerUseDesktopViewport({
 
 	useEffect(() => {
 		if (!channel || !deviceId || !streamId) return;
-		if (state !== "degraded" && state !== "manual") return;
+		if (!STREAM_STATUS_STATES.has(state)) return;
+		const intervalMs =
+			state === "degraded" || state === "manual"
+				? fallbackFrameIntervalMs(streamQuality)
+				: DESKTOP_STREAM_STATUS_INTERVAL_MS;
 		const handle = window.setInterval(() => {
 			requestComputerUseStreamStatus(channel, {
 				computerId,
@@ -1106,13 +1900,13 @@ function ComputerUseDesktopViewport({
 				streamId,
 				streamToken,
 			});
-		}, fallbackFrameIntervalMs(selectedQuality));
+		}, intervalMs);
 		return () => window.clearInterval(handle);
 	}, [
 		channel,
 		computerId,
 		deviceId,
-		selectedQuality,
+		streamQuality,
 		sessionId,
 		state,
 		streamId,
@@ -1121,39 +1915,11 @@ function ComputerUseDesktopViewport({
 	]);
 
 	const canSend = Boolean(channel && deviceId && isOnline);
+	const canStopDesktop = canSend && STOPPABLE_DESKTOP_STATES.has(state);
+	const canUseManualControl =
+		canSend && MANUAL_CONTROL_DESKTOP_STATES.has(state);
 	const status = desktopViewportStatusLabel(state, resolvedPreviewUrl);
-	useEffect(() => {
-		if (!hasLiveVideo || !videoRef.current || !pendingMediaStreamRef.current)
-			return;
-		videoRef.current.srcObject = pendingMediaStreamRef.current;
-	}, [hasLiveVideo]);
-	const startStream = () => {
-		if (!channel || !deviceId) return;
-		setState("connecting");
-		requestComputerUseStream(channel, {
-			computerId,
-			sessionId,
-			deviceId,
-			quality: selectedQuality,
-			runId: streamRunId,
-			streamToken,
-			iceServers,
-		});
-	};
-	const updateQuality = (quality: DesktopStreamQuality) => {
-		setSelectedQuality(quality);
-		if (!channel || !deviceId || !streamId) return;
-		setComputerUseStreamQuality(channel, {
-			computerId,
-			sessionId,
-			deviceId,
-			runId: streamRunId,
-			streamId,
-			quality,
-			streamToken,
-		});
-	};
-	const requestKeyframe = () => {
+	const requestStreamKeyframe = useCallback(() => {
 		if (!channel || !deviceId || !streamId) return;
 		requestComputerUseStreamKeyframe(channel, {
 			computerId,
@@ -1163,54 +1929,82 @@ function ComputerUseDesktopViewport({
 			streamId,
 			streamToken,
 		});
+	}, [
+		channel,
+		computerId,
+		deviceId,
+		sessionId,
+		streamId,
+		streamRunId,
+		streamToken,
+	]);
+	useEffect(() => {
+		if (!hasLiveVideo || !videoRef.current || !pendingMediaStreamRef.current)
+			return;
+		videoRef.current.srcObject = pendingMediaStreamRef.current;
+	}, [hasLiveVideo]);
+
+	useEffect(() => {
+		if (!canSend || !streamId || !KEYFRAME_REFRESH_STATES.has(state)) return;
+		const firstRequest = window.setTimeout(requestStreamKeyframe, 250);
+		const recurringRequest = window.setInterval(
+			requestStreamKeyframe,
+			DESKTOP_KEYFRAME_REFRESH_MS,
+		);
+		return () => {
+			window.clearTimeout(firstRequest);
+			window.clearInterval(recurringRequest);
+		};
+	}, [canSend, requestStreamKeyframe, state, streamId]);
+
+	const startStream = () => {
+		if (!channel || !deviceId) return;
+		streamStopRequestedRef.current = false;
+		liveVideoSeenRef.current = false;
+		fallbackRecoveryLastAttemptAtRef.current = 0;
+		streamIdRef.current = null;
+		streamQualityRef.current = "balanced";
+		adaptiveQualityMetricsRef.current = null;
+		adaptiveQualityStableSamplesRef.current = 0;
+		adaptiveQualityLastChangedAtRef.current = Date.now();
+		clearDesktopStreamMedia({ clearPreview: true, clearStreamId: true });
+		setStreamQuality("balanced");
+		setState("connecting");
+		requestComputerUseStream(channel, {
+			computerId,
+			sessionId,
+			deviceId,
+			quality: "balanced",
+			runId: streamRunId,
+			streamToken,
+			iceServers,
+		});
 	};
 	const stopStream = () => {
 		if (!channel || !deviceId) return;
-		closeDesktopPeerConnection(peerConnectionRef.current);
-		peerConnectionRef.current = null;
-		pendingMediaStreamRef.current = null;
-		dataChannelFramesRef.current.clear();
-		if (videoRef.current) videoRef.current.srcObject = null;
-		setHasLiveVideo(false);
+		const activeStreamId = streamIdRef.current ?? streamId;
+		streamStopRequestedRef.current = true;
+		clearDesktopStreamMedia({ clearPreview: true, clearStreamId: true });
+		adaptiveQualityMetricsRef.current = null;
+		adaptiveQualityStableSamplesRef.current = 0;
+		if (state === "manual" || manualControlId) {
+			releaseComputerUseManualControl(channel, {
+				computerId,
+				sessionId,
+				deviceId,
+				manualControlId,
+				runId: streamRunId,
+				streamToken,
+			});
+			setManualControlId(null);
+		}
 		stopComputerUseStream(channel, {
 			computerId,
 			sessionId,
 			deviceId,
 			runId: streamRunId,
-			streamId,
+			streamId: activeStreamId,
 			streamToken,
-		});
-		setState("paused");
-	};
-	const emergencyStop = () => {
-		if (!channel || !deviceId) return;
-		closeDesktopPeerConnection(peerConnectionRef.current);
-		peerConnectionRef.current = null;
-		pendingMediaStreamRef.current = null;
-		dataChannelFramesRef.current.clear();
-		if (videoRef.current) videoRef.current.srcObject = null;
-		setHasLiveVideo(false);
-		releaseComputerUseManualControl(channel, {
-			computerId,
-			sessionId,
-			deviceId,
-			manualControlId,
-			runId: streamRunId,
-			streamToken,
-		});
-		stopComputerUseStream(channel, {
-			computerId,
-			sessionId,
-			deviceId,
-			runId: streamRunId,
-			streamId,
-			streamToken,
-		});
-		requestRunCancel(channel, {
-			computerId,
-			sessionId,
-			deviceId,
-			reason: "cloud_emergency_stop",
 		});
 		setState("paused");
 	};
@@ -1236,6 +2030,7 @@ function ComputerUseDesktopViewport({
 			runId: streamRunId,
 			streamToken,
 		});
+		setManualControlId(null);
 		setState(streamId ? "degraded" : "waiting");
 	};
 	const sendManualInput = useCallback(
@@ -1263,21 +2058,33 @@ function ComputerUseDesktopViewport({
 			streamToken,
 		],
 	);
-	const pointFromPointerEvent = useCallback((event: PointerEvent) => {
-		const image = imageRef.current;
-		const video = videoRef.current;
-		const target = image ?? video;
-		const sourceWidth = image?.naturalWidth ?? video?.videoWidth ?? 0;
-		const sourceHeight = image?.naturalHeight ?? video?.videoHeight ?? 0;
-		if (!target || sourceWidth <= 0 || sourceHeight <= 0) return null;
-		const rect = target.getBoundingClientRect();
-		const scaleX = sourceWidth / rect.width;
-		const scaleY = sourceHeight / rect.height;
-		const x = Math.round((event.clientX - rect.left) * scaleX);
-		const y = Math.round((event.clientY - rect.top) * scaleY);
-		if (x < 0 || y < 0 || x > sourceWidth || y > sourceHeight) return null;
-		return { x, y };
-	}, []);
+	const pointFromPointerEvent = useCallback(
+		(event: PointerEvent) => {
+			const image = imageRef.current;
+			const video = videoRef.current;
+			const target = image ?? video;
+			const sourceWidth = image?.naturalWidth ?? video?.videoWidth ?? 0;
+			const sourceHeight = image?.naturalHeight ?? video?.videoHeight ?? 0;
+			if (!target || sourceWidth <= 0 || sourceHeight <= 0) return null;
+			const rect = target.getBoundingClientRect();
+			const relativeX = (event.clientX - rect.left) / rect.width;
+			const relativeY = (event.clientY - rect.top) / rect.height;
+			if (relativeX < 0 || relativeY < 0 || relativeX > 1 || relativeY > 1) {
+				return null;
+			}
+			if (shouldRotateDesktopContent) {
+				return {
+					x: Math.round(relativeY * sourceWidth),
+					y: Math.round((1 - relativeX) * sourceHeight),
+				};
+			}
+			return {
+				x: Math.round(relativeX * sourceWidth),
+				y: Math.round(relativeY * sourceHeight),
+			};
+		},
+		[shouldRotateDesktopContent],
+	);
 	const handlePointerDown = useCallback(
 		(event: PointerEvent<HTMLElement>) => {
 			if (state !== "manual") return;
@@ -1342,123 +2149,424 @@ function ComputerUseDesktopViewport({
 		},
 		[sendManualInput, state],
 	);
+	const clampControlBarPosition = useCallback(
+		(position: DesktopControlBarPosition): DesktopControlBarPosition => {
+			const surface = desktopSurfaceRef.current;
+			const controlBar = controlBarRef.current;
+			if (!surface || !controlBar) return position;
+			const maxX = Math.max(
+				DESKTOP_CONTROL_BAR_MARGIN,
+				surface.clientWidth -
+					controlBar.offsetWidth -
+					DESKTOP_CONTROL_BAR_MARGIN,
+			);
+			const maxY = Math.max(
+				DESKTOP_CONTROL_BAR_MARGIN,
+				surface.clientHeight -
+					controlBar.offsetHeight -
+					DESKTOP_CONTROL_BAR_MARGIN,
+			);
+			return {
+				x: Math.min(maxX, Math.max(DESKTOP_CONTROL_BAR_MARGIN, position.x)),
+				y: Math.min(maxY, Math.max(DESKTOP_CONTROL_BAR_MARGIN, position.y)),
+			};
+		},
+		[],
+	);
+	const startControlBarDrag = useCallback(
+		(event: PointerEvent<HTMLButtonElement>) => {
+			if (event.button !== 0) return;
+			const surface = desktopSurfaceRef.current;
+			const controlBar = controlBarRef.current;
+			if (!surface || !controlBar) return;
+			const surfaceRect = surface.getBoundingClientRect();
+			const controlBarRect = controlBar.getBoundingClientRect();
+			const origin = clampControlBarPosition({
+				x: controlBarRect.left - surfaceRect.left,
+				y: controlBarRect.top - surfaceRect.top,
+			});
+			controlBarDragRef.current = {
+				pointerId: event.pointerId,
+				startClientX: event.clientX,
+				startClientY: event.clientY,
+				originX: origin.x,
+				originY: origin.y,
+			};
+			setControlBarPosition(origin);
+			event.currentTarget.setPointerCapture(event.pointerId);
+			event.preventDefault();
+			event.stopPropagation();
+		},
+		[clampControlBarPosition],
+	);
+	const moveControlBarDrag = useCallback(
+		(event: PointerEvent<HTMLButtonElement>) => {
+			const drag = controlBarDragRef.current;
+			if (!drag || drag.pointerId !== event.pointerId) return;
+			setControlBarPosition(
+				clampControlBarPosition({
+					x: drag.originX + event.clientX - drag.startClientX,
+					y: drag.originY + event.clientY - drag.startClientY,
+				}),
+			);
+			event.preventDefault();
+			event.stopPropagation();
+		},
+		[clampControlBarPosition],
+	);
+	const endControlBarDrag = useCallback(
+		(event: PointerEvent<HTMLButtonElement>) => {
+			const drag = controlBarDragRef.current;
+			if (!drag || drag.pointerId !== event.pointerId) return;
+			controlBarDragRef.current = null;
+			event.currentTarget.releasePointerCapture(event.pointerId);
+			event.preventDefault();
+			event.stopPropagation();
+		},
+		[],
+	);
+	const controlBarStyle: CSSProperties = controlBarPosition
+		? {
+				left: controlBarPosition.x,
+				top: controlBarPosition.y,
+			}
+		: shouldRotateDesktopContent
+			? {
+					right: `calc(env(safe-area-inset-right) + ${DESKTOP_CONTROL_BAR_MARGIN}px)`,
+					top: "50%",
+					transform: "translateY(-50%)",
+				}
+			: {
+					left: "50%",
+					top: presentation.isMobile
+						? `calc(env(safe-area-inset-top) + ${DESKTOP_CONTROL_BAR_MARGIN}px)`
+						: DESKTOP_CONTROL_BAR_DEFAULT_TOP,
+					transform: "translateX(-50%)",
+				};
+	const desktopMediaClassName = cn(
+		"object-contain",
+		shouldRotateDesktopContent
+			? "absolute left-1/2 top-1/2 max-w-none -translate-x-1/2 -translate-y-1/2 rotate-90"
+			: "h-full w-full",
+	);
+	const desktopMediaStyle: CSSProperties | undefined =
+		shouldRotateDesktopContent
+			? desktopSurfaceSize
+				? {
+						height: desktopSurfaceSize.width,
+						width: desktopSurfaceSize.height,
+					}
+				: {
+						height: "100dvw",
+						width: "100dvh",
+					}
+			: undefined;
+	const toolbarButtonClassName = cn(
+		DESKTOP_TOOLBAR_BUTTON_CLASS,
+		presentation.isMobile && "h-8 w-8 px-0",
+	);
+	const toolbarDangerButtonClassName = cn(
+		DESKTOP_TOOLBAR_DANGER_BUTTON_CLASS,
+		presentation.isMobile && "h-8 w-8 px-0",
+	);
+	const toolbarIconClassName = cn(
+		"h-3.5 w-3.5 transition-transform",
+		shouldRotateDesktopContent && "rotate-90",
+	);
+	const toolbarLabelClassName = presentation.isMobile ? "sr-only" : undefined;
+	const showMobilePrompt = presentation.isMobile && hasLiveVideo;
+	const toolbarWorking = isAgentWorking || toolbarPromptPending;
 
 	return (
-		<section
-			aria-label="Desktop"
-			tabIndex={state === "manual" ? 0 : -1}
-			onPointerDown={handlePointerDown}
-			onPointerMove={handlePointerMove}
-			onWheel={handleWheel}
-			onKeyDown={handleKeyDown}
-			className="overflow-hidden rounded-md border bg-background"
-		>
-			<div className="flex min-h-[13rem] items-center justify-center bg-zinc-950 text-zinc-100">
-				{hasLiveVideo ? (
-					<video
-						ref={videoRef}
-						autoPlay
-						muted
-						playsInline
-						className="max-h-[18rem] w-full object-contain"
-					/>
-				) : resolvedPreviewUrl ? (
-					<img
-						ref={imageRef}
-						src={resolvedPreviewUrl}
-						alt="Desktop"
-						className="max-h-[18rem] w-full object-contain"
-						draggable={false}
-					/>
-				) : (
-					<div className="flex flex-col items-center gap-2 text-sm text-zinc-300">
-						<Monitor className="h-8 w-8" aria-hidden="true" />
-						<span>{status}</span>
+		<>
+			{presentation.isMobile ? (
+				<div className="sr-only">
+					<DialogTitle>Desktop controls</DialogTitle>
+					<DialogDescription>
+						View and control the paired desktop for this Computer Use session.
+					</DialogDescription>
+				</div>
+			) : null}
+			<div className="h-full min-h-0">
+				<section
+					ref={desktopSurfaceRef}
+					aria-label="Desktop"
+					tabIndex={state === "manual" ? 0 : -1}
+					onPointerDown={handlePointerDown}
+					onPointerMove={handlePointerMove}
+					onWheel={handleWheel}
+					onKeyDown={handleKeyDown}
+					className="relative flex h-full min-h-0 overflow-hidden bg-zinc-950"
+				>
+					<div className="relative flex min-h-0 flex-1 items-center justify-center bg-zinc-950 text-zinc-100">
+						{hasLiveVideo ? (
+							<video
+								ref={videoRef}
+								autoPlay
+								muted
+								playsInline
+								className={desktopMediaClassName}
+								style={desktopMediaStyle}
+							/>
+						) : resolvedPreviewUrl ? (
+							<img
+								ref={imageRef}
+								src={resolvedPreviewUrl}
+								alt="Desktop"
+								className={desktopMediaClassName}
+								style={desktopMediaStyle}
+								draggable={false}
+							/>
+						) : (
+							<DesktopViewportEmptyState state={state} status={status} />
+						)}
 					</div>
-				)}
+					<div
+						ref={controlBarRef}
+						role="toolbar"
+						aria-label="Desktop stream controls"
+						style={controlBarStyle}
+						onPointerDown={(event) => event.stopPropagation()}
+						onKeyDown={(event) => event.stopPropagation()}
+						onWheel={(event) => event.stopPropagation()}
+						aria-busy={toolbarWorking || undefined}
+						className={cn(
+							"absolute z-20 flex items-center gap-1 rounded-xl border border-white/10 bg-background/70 p-1 text-foreground shadow-[0_18px_45px_rgba(0,0,0,0.45)] backdrop-blur-xl supports-[backdrop-filter]:bg-background/55",
+							shouldRotateDesktopContent && "flex-col",
+							toolbarWorking && "desktop-control-toolbar-working",
+						)}
+					>
+						<button
+							type="button"
+							aria-label="Move desktop controls"
+							className="flex h-7 w-6 touch-none cursor-grab items-center justify-center rounded-md text-muted-foreground hover:bg-white/10 hover:text-foreground active:cursor-grabbing"
+							onPointerDown={startControlBarDrag}
+							onPointerMove={moveControlBarDrag}
+							onPointerUp={endControlBarDrag}
+							onPointerCancel={endControlBarDrag}
+						>
+							<GripVertical
+								className={toolbarIconClassName}
+								aria-hidden="true"
+							/>
+						</button>
+						<div
+							className={cn(
+								"bg-border/60",
+								shouldRotateDesktopContent ? "h-px w-5" : "h-5 w-px",
+							)}
+							aria-hidden="true"
+						/>
+						{showMobilePrompt ? (
+							<>
+								<DesktopToolbarPromptForm
+									canSend={canSend}
+									isAgentWorking={isAgentWorking}
+									onPromptAccepted={() => setToolbarPromptPending(true)}
+									onSubmit={onPromptSubmit}
+									rotated={shouldRotateDesktopContent}
+								/>
+								<div
+									className={cn(
+										"bg-border/60",
+										shouldRotateDesktopContent ? "h-px w-5" : "h-5 w-px",
+									)}
+									aria-hidden="true"
+								/>
+							</>
+						) : null}
+						<Button
+							type="button"
+							size="sm"
+							variant="ghost"
+							className={toolbarButtonClassName}
+							disabled={!canSend || state === "connecting"}
+							onClick={startStream}
+						>
+							<Monitor className={toolbarIconClassName} aria-hidden="true" />
+							<span className={toolbarLabelClassName}>Start</span>
+						</Button>
+						<Button
+							type="button"
+							size="sm"
+							variant="ghost"
+							className={toolbarButtonClassName}
+							disabled={!canUseManualControl}
+							onClick={state === "manual" ? releaseManual : requestManual}
+						>
+							<MousePointer2
+								className={toolbarIconClassName}
+								aria-hidden="true"
+							/>
+							<span className={toolbarLabelClassName}>
+								{state === "manual" ? "Release" : "Manual"}
+							</span>
+						</Button>
+						<Button
+							type="button"
+							size="sm"
+							variant="ghost"
+							className={toolbarDangerButtonClassName}
+							disabled={!canStopDesktop}
+							onClick={stopStream}
+						>
+							<Square className={toolbarIconClassName} aria-hidden="true" />
+							<span className={toolbarLabelClassName}>Stop</span>
+						</Button>
+						{closeControl ? (
+							<>
+								<div
+									className={cn(
+										"bg-border/60",
+										shouldRotateDesktopContent ? "h-px w-5" : "h-5 w-px",
+									)}
+									aria-hidden="true"
+								/>
+								<span
+									className={cn(
+										"inline-flex",
+										shouldRotateDesktopContent && "[&_svg]:rotate-90",
+									)}
+								>
+									{closeControl}
+								</span>
+							</>
+						) : null}
+					</div>
+				</section>
 			</div>
-			<div className="flex flex-wrap items-center justify-between gap-2 border-t px-3 py-2">
-				<div className="min-w-0">
-					<div className="text-sm font-medium">{status}</div>
-					{streamDetails ? (
-						<div className="truncate text-xs text-muted-foreground">
-							{desktopStreamDetailsLabel(streamDetails)}
-						</div>
-					) : null}
-				</div>
-				<div className="flex items-center gap-2">
-					<label className="sr-only" htmlFor="desktop-stream-quality">
-						Stream quality
-					</label>
-					<select
-						id="desktop-stream-quality"
-						value={selectedQuality}
-						disabled={!canSend}
-						onChange={(event) =>
-							updateQuality(event.currentTarget.value as DesktopStreamQuality)
-						}
-						className="h-8 rounded-md border bg-background px-2 text-sm text-foreground disabled:opacity-50"
-					>
-						<option value="low">Low</option>
-						<option value="balanced">Balanced</option>
-						<option value="high">High</option>
-					</select>
-					<Button
-						type="button"
-						size="sm"
-						variant="secondary"
-						disabled={!canSend || state === "connecting"}
-						onClick={startStream}
-					>
-						<Monitor className="mr-2 h-4 w-4" aria-hidden="true" />
-						Start
-					</Button>
-					<Button
-						type="button"
-						size="sm"
-						variant="secondary"
-						disabled={!canSend}
-						onClick={state === "manual" ? releaseManual : requestManual}
-					>
-						<MousePointer2 className="mr-2 h-4 w-4" aria-hidden="true" />
-						{state === "manual" ? "Release" : "Manual"}
-					</Button>
-					<Button
-						type="button"
-						size="sm"
-						variant="destructive"
-						disabled={!canSend}
-						onClick={stopStream}
-					>
-						<Square className="mr-2 h-4 w-4" aria-hidden="true" />
-						Stop
-					</Button>
-					<Button
-						type="button"
-						size="sm"
-						variant="destructive"
-						disabled={
-							!canSend || (!isRunLive && state !== "manual" && !streamId)
-						}
-						onClick={emergencyStop}
-					>
-						<OctagonX className="mr-2 h-4 w-4" aria-hidden="true" />
-						Emergency Stop
-					</Button>
-					<Button
-						type="button"
-						size="sm"
-						variant="secondary"
-						disabled={!canSend || !streamId}
-						onClick={requestKeyframe}
-					>
-						<RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
-						Refresh
-					</Button>
-				</div>
-			</div>
-		</section>
+		</>
 	);
+}
+
+export interface DesktopToolbarPromptFormProps {
+	canSend: boolean;
+	isAgentWorking: boolean;
+	onPromptAccepted?: () => void;
+	onSubmit: (message: string) => void;
+	rotated: boolean;
+}
+
+export function DesktopToolbarPromptForm({
+	canSend,
+	isAgentWorking,
+	onPromptAccepted,
+	onSubmit,
+	rotated,
+}: DesktopToolbarPromptFormProps) {
+	const inputId = useId();
+	const [prompt, setPrompt] = useState("");
+	const submitDisabled =
+		!canSend || isAgentWorking || prompt.trim().length === 0;
+
+	const handleSubmit = useCallback(
+		(event: FormEvent<HTMLFormElement>) => {
+			event.preventDefault();
+			event.stopPropagation();
+			const message = prompt.trim();
+			if (!message || !canSend || isAgentWorking) return;
+			onSubmit(message);
+			setPrompt("");
+			onPromptAccepted?.();
+		},
+		[canSend, isAgentWorking, onPromptAccepted, onSubmit, prompt],
+	);
+
+	const form = (
+		<form
+			aria-label="Computer Use prompt"
+			className={cn(
+				"desktop-control-mobile-prompt flex min-w-0 items-center gap-1 rounded-lg border border-white/10 bg-black/25 px-1.5 py-1 shadow-inner shadow-black/20",
+				rotated
+					? "desktop-control-mobile-prompt-rotated absolute left-1/2 top-1/2 h-8 w-[clamp(9rem,34dvh,18rem)] -translate-x-1/2 -translate-y-1/2 rotate-90"
+					: "w-[min(20rem,calc(100dvw-14rem))]",
+			)}
+			onSubmit={handleSubmit}
+			onPointerDown={(event) => event.stopPropagation()}
+			onKeyDown={(event) => event.stopPropagation()}
+			onWheel={(event) => event.stopPropagation()}
+		>
+			<label className="sr-only" htmlFor={inputId}>
+				Tell Computer Use what to do
+			</label>
+			<input
+				id={inputId}
+				type="text"
+				value={prompt}
+				disabled={!canSend}
+				onChange={(event) => setPrompt(event.currentTarget.value)}
+				placeholder={
+					isAgentWorking ? "Xero is working..." : "Tell Xero what to do..."
+				}
+				className="h-7 min-w-0 flex-1 bg-transparent px-1 text-[12px] text-foreground outline-none placeholder:text-muted-foreground/70 disabled:cursor-not-allowed disabled:opacity-50"
+			/>
+			<Button
+				type="submit"
+				size="icon"
+				variant="ghost"
+				aria-label="Send Computer Use prompt"
+				disabled={submitDisabled}
+				className="h-7 w-7 shrink-0 rounded-md text-primary hover:bg-primary/10 hover:text-primary disabled:opacity-35"
+			>
+				<SendHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
+			</Button>
+		</form>
+	);
+
+	if (rotated) {
+		return (
+			<div className="desktop-control-mobile-prompt-slot relative h-[clamp(9rem,34dvh,18rem)] w-8 shrink-0 overflow-hidden">
+				{form}
+			</div>
+		);
+	}
+
+	return form;
+}
+
+function DesktopViewportEmptyState({
+	state,
+	status,
+}: {
+	state: DesktopViewportState;
+	status: string;
+}) {
+	return (
+		<div className="relative flex max-w-sm flex-col items-center px-6 text-center">
+			<div className="flex size-14 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-zinc-200 shadow-[0_18px_50px_rgba(0,0,0,0.35)]">
+				<Monitor className="h-6 w-6" aria-hidden="true" />
+			</div>
+			<h3 className="mt-4 text-[15px] font-semibold tracking-tight text-zinc-100">
+				{status}
+			</h3>
+			<p className="mt-1.5 text-[12px] leading-relaxed text-zinc-400">
+				{desktopViewportEmptyDescription(state)}
+			</p>
+			<div className="mt-4 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.035] px-3 py-1 text-[11px] font-medium text-zinc-400">
+				<span
+					className="size-1.5 rounded-full bg-primary/70"
+					aria-hidden="true"
+				/>
+				{desktopViewportEmptyBadge(state)}
+			</div>
+		</div>
+	);
+}
+
+function desktopViewportEmptyDescription(state: DesktopViewportState): string {
+	if (state === "offline")
+		return "This computer is not connected to Xero Cloud.";
+	if (state === "connecting") return "Opening the live desktop stream.";
+	if (state === "paused")
+		return "The desktop stream is stopped for this session.";
+	return "Start desktop viewing when you are ready.";
+}
+
+function desktopViewportEmptyBadge(state: DesktopViewportState): string {
+	if (state === "offline") return "offline";
+	if (state === "connecting") return "connecting";
+	if (state === "paused") return "paused";
+	return "ready";
 }
 
 function desktopViewportStatusLabel(
@@ -1486,16 +2594,53 @@ function desktopStreamDetails(
 		maxWidth: typeof stream.maxWidth === "number" ? stream.maxWidth : null,
 		maxFrameRate:
 			typeof stream.maxFrameRate === "number" ? stream.maxFrameRate : null,
+		metrics: desktopStreamMetrics(stream.metrics),
 		message: typeof stream.message === "string" ? stream.message : null,
 	};
 }
 
-function desktopStreamDetailsLabel(details: DesktopStreamDetails): string {
-	const transport = details.transport?.replace(/_/g, " ") ?? "stream";
-	const quality = details.quality ?? "balanced";
-	const width = details.maxWidth ? `${details.maxWidth}px` : null;
-	const frameRate = details.maxFrameRate ? `${details.maxFrameRate} fps` : null;
-	return [transport, quality, width, frameRate].filter(Boolean).join(" · ");
+export function shouldRecoverDesktopWebRtcAfterFallback(
+	stream: DesktopStreamDetails | null,
+	liveVideoSeen: boolean,
+): boolean {
+	return liveVideoSeen && stream?.transport === "screenshot_fallback";
+}
+
+function desktopStreamMetrics(value: unknown): DesktopStreamMetrics | null {
+	if (!value || typeof value !== "object") return null;
+	const metrics = value as Record<string, unknown>;
+	return {
+		captureBackend: stringOrNull(metrics.captureBackend),
+		encoderBackend: stringOrNull(metrics.encoderBackend),
+		encoderHardware:
+			typeof metrics.encoderHardware === "boolean"
+				? metrics.encoderHardware
+				: null,
+		preferredCodec: stringOrNull(metrics.preferredCodec),
+		fallbackReason: stringOrNull(metrics.fallbackReason),
+		captureFrameRate: numberOrNull(metrics.captureFrameRate),
+		captureDroppedFrames: numberOrNull(metrics.captureDroppedFrames),
+		encodeFrameRate: numberOrNull(metrics.encodeFrameRate),
+		encodeLatencyMs: numberOrNull(metrics.encodeLatencyMs),
+		outboundBitrateBps: numberOrNull(metrics.outboundBitrateBps),
+		availableOutgoingBitrateBps: numberOrNull(
+			metrics.availableOutgoingBitrateBps,
+		),
+		packetsSent: numberOrNull(metrics.packetsSent),
+		bytesSent: numberOrNull(metrics.bytesSent),
+		packetLoss: numberOrNull(metrics.packetLoss),
+		roundTripTimeMs: numberOrNull(metrics.roundTripTimeMs),
+		retransmits: numberOrNull(metrics.retransmits),
+		keyframes: numberOrNull(metrics.keyframes),
+	};
+}
+
+function stringOrNull(value: unknown): string | null {
+	return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function numberOrNull(value: unknown): number | null {
+	return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function fallbackFrameIntervalMs(quality: DesktopStreamQuality): number {
@@ -1524,6 +2669,7 @@ interface ComputerUseDesktopPayload {
 			quality?: unknown;
 			maxWidth?: unknown;
 			maxFrameRate?: unknown;
+			metrics?: unknown;
 			message?: unknown;
 		} | null;
 	} | null;

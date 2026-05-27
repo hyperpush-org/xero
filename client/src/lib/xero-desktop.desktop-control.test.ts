@@ -57,8 +57,13 @@ describe('XeroDesktopAdapter desktop control', () => {
         clipboard: true,
         accessibilityActions: true,
         menuSelect: true,
-        webrtcStream: false,
+        webrtcStream: true,
         screenshotFallbackStream: true,
+        nativeVideoTrack: true,
+        preferredCodec: 'video/H264',
+        captureBackends: ['screencapturekit'],
+        encoderBackends: ['videotoolbox'],
+        hardwareEncoding: true,
         manualCloudControl: true,
       },
       permissions: [
@@ -99,6 +104,13 @@ describe('XeroDesktopAdapter desktop control', () => {
     })
 
     await expect(XeroDesktopAdapter.desktopControlStatus?.()).resolves.toMatchObject({
+      capabilities: {
+        nativeVideoTrack: true,
+        preferredCodec: 'video/H264',
+        captureBackends: ['screencapturekit'],
+        encoderBackends: ['videotoolbox'],
+        hardwareEncoding: true,
+      },
       permissions: [
         {
           name: 'Accessibility',

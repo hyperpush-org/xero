@@ -297,11 +297,15 @@ fn compile_ios_helper() {
         );
     }
 
-    // Also copy to resources/ for Tauri bundling.
-    let resources_dir = manifest_dir.join("resources");
-    let res_destination = resources_dir.join("xero-ios-helper");
-    if let Err(e) = std::fs::copy(&output, &res_destination) {
-        println!("cargo:warning=failed to copy xero-ios-helper to resources/: {e}");
+    if should_copy_generated_resource_binaries() {
+        // Also copy to resources/ for Tauri bundling. Avoid this during
+        // `tauri dev`; the dev watcher observes bundle resources and would
+        // restart when the build script refreshes this generated binary.
+        let resources_dir = manifest_dir.join("resources");
+        let res_destination = resources_dir.join("xero-ios-helper");
+        if let Err(e) = copy_file_if_changed(&output, &res_destination) {
+            println!("cargo:warning=failed to copy xero-ios-helper to resources/: {e}");
+        }
     }
 }
 
@@ -508,12 +512,14 @@ fn prepare_desktop_sidecar() {
     }
 
     copy_desktop_sidecar(&target, &profile_dir.join(desktop_sidecar_binary_name()));
-    copy_desktop_sidecar(
-        &target,
-        &manifest_dir
-            .join("resources")
-            .join(desktop_sidecar_binary_name()),
-    );
+    if should_copy_generated_resource_binaries() {
+        copy_desktop_sidecar(
+            &target,
+            &manifest_dir
+                .join("resources")
+                .join(desktop_sidecar_binary_name()),
+        );
+    }
 }
 
 fn desktop_sidecar_binary_name() -> &'static str {
@@ -528,21 +534,40 @@ fn copy_desktop_sidecar(source: &Path, destination: &Path) {
     if source == destination {
         return;
     }
-    if let Some(parent) = destination.parent() {
-        if let Err(error) = std::fs::create_dir_all(parent) {
-            println!(
-                "cargo:warning=failed to create desktop sidecar directory {}: {error}",
-                parent.display()
-            );
-            return;
-        }
-    }
-    if let Err(error) = std::fs::copy(source, destination) {
+    if let Err(error) = copy_file_if_changed(source, destination) {
         println!(
             "cargo:warning=failed to copy xero-desktop-sidecar to {}: {error}",
             destination.display()
         );
     }
+}
+
+fn should_copy_generated_resource_binaries() -> bool {
+    std::env::var("PROFILE").as_deref() != Ok("debug")
+}
+
+fn copy_file_if_changed(source: &Path, destination: &Path) -> std::io::Result<()> {
+    if files_have_same_contents(source, destination)? {
+        return Ok(());
+    }
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(source, destination)?;
+    Ok(())
+}
+
+fn files_have_same_contents(source: &Path, destination: &Path) -> std::io::Result<bool> {
+    let source_metadata = std::fs::metadata(source)?;
+    let Ok(destination_metadata) = std::fs::metadata(destination) else {
+        return Ok(false);
+    };
+    if source_metadata.len() != destination_metadata.len() {
+        return Ok(false);
+    }
+    std::fs::read(source).and_then(|source_bytes| {
+        std::fs::read(destination).map(|destination_bytes| source_bytes == destination_bytes)
+    })
 }
 
 fn binary_name() -> &'static str {

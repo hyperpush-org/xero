@@ -24,6 +24,8 @@ export interface SessionsShellContextValue {
 	computerPresenceKnown: boolean;
 	currentComputerOnline: boolean;
 	currentComputerReconciled: boolean;
+	isSessionDirectoryLoading: boolean;
+	topBarAccessoryElement: HTMLDivElement | null;
 	visibleSessionsVersion: number;
 	selectSession: (computerId: string, sessionId: string) => void;
 	startSession: (

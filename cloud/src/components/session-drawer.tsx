@@ -37,6 +37,7 @@ interface SessionDrawerProps {
 	) => boolean | Promise<boolean>;
 	onSignOut: () => void;
 	pendingProjectKey?: string | null;
+	isSessionDirectoryLoading?: boolean;
 	trigger?: ReactNode;
 }
 
@@ -52,6 +53,7 @@ export function SessionDrawer({
 	onArchiveSession,
 	onSignOut,
 	pendingProjectKey,
+	isSessionDirectoryLoading = false,
 	trigger,
 }: SessionDrawerProps) {
 	const [internalOpen, setInternalOpen] = useState(false);
@@ -108,6 +110,7 @@ export function SessionDrawer({
 					onArchiveSession={onArchiveSession}
 					onSignOut={onSignOut}
 					pendingProjectKey={pendingProjectKey}
+					isSessionDirectoryLoading={isSessionDirectoryLoading}
 					alwaysShowRowActions
 					onAfterSelectSession={() => setIsOpen(false)}
 					closeSlot={

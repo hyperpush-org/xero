@@ -1,6 +1,6 @@
 import { Button } from "@xero/ui/components/ui/button";
 import { ChevronRight, Menu } from "lucide-react";
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 
 import { BrandLogo } from "#/components/brand-logo";
 
@@ -8,12 +8,14 @@ interface SessionTopBarProps {
 	title: string;
 	projectLabel?: string;
 	drawerTrigger?: ReactNode;
+	accessorySlotRef?: Ref<HTMLDivElement>;
 }
 
 export function SessionTopBar({
 	title,
 	projectLabel,
 	drawerTrigger,
+	accessorySlotRef,
 }: SessionTopBarProps) {
 	return (
 		<header className="sticky top-0 z-20 flex items-center justify-between gap-1.5 bg-background px-3.5 lg:px-5 pb-2 pt-[max(env(safe-area-inset-top),0.5rem)] lg:py-4">
@@ -50,6 +52,10 @@ export function SessionTopBar({
 				</span>
 			</div>
 			<div className="relative flex shrink-0 items-center gap-1">
+				<div
+					ref={accessorySlotRef}
+					className="flex shrink-0 items-center gap-1"
+				/>
 				{drawerTrigger ?? (
 					<Button
 						type="button"

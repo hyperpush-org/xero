@@ -4495,6 +4495,55 @@ describe('AgentRuntime current UI', () => {
       }
     })
 
+    it('uses the shared Computer Use sidebar header in sidebar mode', () => {
+      const onCloseSidebar = vi.fn()
+
+      render(
+        <AgentRuntime
+          agent={makeAgent({
+            project: makeProject({
+              selectedAgentSession: {
+                projectId: 'project-1',
+                agentSessionId: 'computer-use-session',
+                sessionKind: 'computer_use',
+                title: 'Computer Use',
+                summary: '',
+                status: 'active',
+                statusLabel: 'Active',
+                selected: true,
+                remoteVisible: false,
+                createdAt: '2026-05-01T11:00:00Z',
+                updatedAt: '2026-05-01T11:00:00Z',
+                archivedAt: null,
+                lastRunId: null,
+                lastRuntimeKind: null,
+                lastProviderId: null,
+                lineage: null,
+                isActive: true,
+                isArchived: false,
+                isComputerUse: true,
+              },
+            }),
+            runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          })}
+          density="comfortable"
+          inSidebar
+          onCloseSidebar={onCloseSidebar}
+          paneCount={1}
+          paneNumber={1}
+        />,
+      )
+
+      const closeButton = screen.getByRole('button', { name: 'Close Computer Use' })
+      const header = closeButton.parentElement
+      expect(header?.className).toContain('h-10')
+      expect(header?.textContent).toContain('Computer Use')
+      expect(screen.queryByRole('button', { name: 'Close agent dock' })).not.toBeInTheDocument()
+
+      fireEvent.click(closeButton)
+      expect(onCloseSidebar).toHaveBeenCalledTimes(1)
+    })
+
     it('switches sidebar panes to condensed below the sidebar compact breakpoint', async () => {
       const restoreResizeObserver = installResizeObserverMock(390)
       try {

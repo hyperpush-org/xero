@@ -127,8 +127,7 @@ fn past(seconds: i64) -> String {
 fn sidecar_ipc_handles_authenticated_capabilities_and_stream_fallback() {
     let mut sidecar = SidecarHarness::spawn();
 
-    let capabilities_response =
-        sidecar.request(DesktopSidecarOperation::Capabilities, json!({}));
+    let capabilities_response = sidecar.request(DesktopSidecarOperation::Capabilities, json!({}));
     assert!(capabilities_response.ok, "capabilities response");
     let capabilities = serde_json::from_value::<DesktopSidecarCapabilities>(
         capabilities_response.result.expect("capabilities payload"),
@@ -154,14 +153,25 @@ fn sidecar_ipc_handles_authenticated_capabilities_and_stream_fallback() {
 
     let stream_capabilities_response =
         sidecar.request(DesktopSidecarOperation::StreamCapabilities, json!({}));
-    assert!(stream_capabilities_response.ok, "stream capabilities response");
+    assert!(
+        stream_capabilities_response.ok,
+        "stream capabilities response"
+    );
     let stream_capabilities = serde_json::from_value::<DesktopSidecarStreamCapabilitiesPayload>(
         stream_capabilities_response
             .result
             .expect("stream capabilities payload"),
     )
     .expect("decode stream capabilities");
-    assert!(stream_capabilities.webrtc_stream);
+    assert_eq!(stream_capabilities.webrtc_stream, cfg!(target_os = "macos"));
+    assert_eq!(
+        stream_capabilities.native_video_track,
+        cfg!(target_os = "macos")
+    );
+    assert_eq!(
+        stream_capabilities.preferred_codec.as_deref(),
+        Some("video/H264")
+    );
 
     let stream_start_response = sidecar.request(
         DesktopSidecarOperation::StreamStart,
@@ -175,12 +185,29 @@ fn sidecar_ipc_handles_authenticated_capabilities_and_stream_fallback() {
             "quality": "balanced"
         }),
     );
+    if !cfg!(target_os = "macos") {
+        assert!(
+            !stream_start_response.ok,
+            "unsupported host should reject native stream start"
+        );
+        assert_eq!(
+            stream_start_response
+                .error
+                .expect("stream start unsupported error")
+                .code,
+            "stream_native_publisher_unavailable"
+        );
+        return;
+    }
     assert!(stream_start_response.ok, "stream start should offer");
     let stream_start = serde_json::from_value::<DesktopSidecarStreamPayload>(
         stream_start_response.result.expect("stream start payload"),
     )
     .expect("decode stream start");
-    assert_eq!(stream_start.transport, DesktopSidecarStreamTransport::WebRtc);
+    assert_eq!(
+        stream_start.transport,
+        DesktopSidecarStreamTransport::WebRtc
+    );
     assert_eq!(stream_start.status, DesktopSidecarStreamStatus::Starting);
     assert_eq!(
         stream_start
@@ -190,6 +217,10 @@ fn sidecar_ipc_handles_authenticated_capabilities_and_stream_fallback() {
         Some("offer")
     );
     assert!(stream_start
+        .session_description
+        .as_ref()
+        .is_some_and(|description| description.sdp.contains("m=video")));
+    assert!(!stream_start
         .session_description
         .as_ref()
         .is_some_and(|description| description.sdp.contains("m=application")));
@@ -231,10 +262,7 @@ fn sidecar_ipc_handles_authenticated_capabilities_and_stream_fallback() {
         stream_stop_response.result.expect("stream stop payload"),
     )
     .expect("decode stream stop");
-    assert_eq!(
-        stream_stop.status,
-        DesktopSidecarStreamStatus::Stopped
-    );
+    assert_eq!(stream_stop.status, DesktopSidecarStreamStatus::Stopped);
 }
 
 #[test]
@@ -260,12 +288,8 @@ fn sidecar_ipc_rejects_expired_request() {
     let mut sidecar = SidecarHarness::spawn();
 
     let token = sidecar.token.clone();
-    let response = sidecar.request_with_auth(
-        DesktopSidecarOperation::Health,
-        json!({}),
-        token,
-        past(30),
-    );
+    let response =
+        sidecar.request_with_auth(DesktopSidecarOperation::Health, json!({}), token, past(30));
 
     assert!(!response.ok, "expired request should fail");
     assert_eq!(

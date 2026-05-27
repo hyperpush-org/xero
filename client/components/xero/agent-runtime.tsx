@@ -72,6 +72,7 @@ import {
   classifyAttachment,
   classificationRejectionMessage,
 } from '@/lib/agent-attachments'
+import { ComputerUseSidebarHeader } from '@xero/ui/components/computer-use-sidebar'
 
 import {
   AgentContextMeter,
@@ -3109,177 +3110,177 @@ export const AgentRuntime = memo(function AgentRuntime({
     >
       <div ref={paneRootRef} className="flex min-h-0 min-w-0 flex-1">
         <div className="relative flex min-w-0 flex-1 flex-col">
-        <div className="pointer-events-none absolute inset-x-0 top-0 z-20">
-          <div
-            ref={dragHandle?.setActivatorNodeRef}
-            {...(dragHandleAttributes ?? {})}
-            {...(dragHandle?.listeners ?? {})}
-            className={cn(
-              'flex items-center justify-between gap-1.5 px-3.5',
-              isDense ? 'py-1.5' : 'py-2',
-              inSidebar ? 'bg-sidebar' : 'bg-background',
-              dragHandle ? 'pointer-events-auto cursor-grab active:cursor-grabbing select-none' : null,
-            )}
-          >
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-20">
             {isComputerUseSidebar ? (
-              <div className="pointer-events-auto flex min-w-0 items-center gap-2 text-[12.5px]">
-                <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-                  <Monitor className="h-3.5 w-3.5" />
-                </span>
-                <span className="truncate font-semibold text-foreground">{sessionLabel}</span>
-              </div>
+              <ComputerUseSidebarHeader
+                label={sessionLabel}
+                closeLabel="Close Computer Use"
+                onClose={onCloseSidebar}
+                className="pointer-events-auto"
+              />
             ) : (
-              <div className="pointer-events-auto flex min-w-0 items-center gap-1.5 text-[12.5px] text-muted-foreground">
-                {showPaneNumberChip ? (
-                  <span
-                    aria-label={`Pane ${paneNumber}`}
-                    className="inline-flex h-[18px] shrink-0 items-center justify-center rounded-sm border border-border/60 bg-muted/40 px-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
-                  >
-                    P{paneNumber}
-                  </span>
-                ) : null}
-                <span className="truncate font-semibold text-foreground">{projectLabel}</span>
-                <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground/70" />
-                {inSidebar && sidebarSessions && sidebarSessions.length > 0 && onSelectSidebarSession ? (
-                  <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <button
-                      type="button"
-                      aria-label="Switch agent session"
-                      title={sessionLabel}
-                      className={cn(
-                        'inline-flex min-w-0 max-w-full items-center gap-1 rounded-md px-1 py-0.5 text-left font-medium text-muted-foreground transition-colors',
-                        'hover:bg-secondary/50 hover:text-foreground data-[state=open]:bg-secondary/70 data-[state=open]:text-foreground',
-                      )}
+              <div
+                ref={dragHandle?.setActivatorNodeRef}
+                {...(dragHandleAttributes ?? {})}
+                {...(dragHandle?.listeners ?? {})}
+                className={cn(
+                  'flex items-center justify-between gap-1.5 px-3.5',
+                  isDense ? 'py-1.5' : 'py-2',
+                  inSidebar ? 'bg-sidebar' : 'bg-background',
+                  dragHandle ? 'pointer-events-auto cursor-grab active:cursor-grabbing select-none' : null,
+                )}
+              >
+                <div className="pointer-events-auto flex min-w-0 items-center gap-1.5 text-[12.5px] text-muted-foreground">
+                  {showPaneNumberChip ? (
+                    <span
+                      aria-label={`Pane ${paneNumber}`}
+                      className="inline-flex h-[18px] shrink-0 items-center justify-center rounded-sm border border-border/60 bg-muted/40 px-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
                     >
-                      <span className="truncate">{sessionLabel}</span>
+                      P{paneNumber}
+                    </span>
+                  ) : null}
+                  <span className="truncate font-semibold text-foreground">{projectLabel}</span>
+                  <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground/70" />
+                  {inSidebar && sidebarSessions && sidebarSessions.length > 0 && onSelectSidebarSession ? (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          type="button"
+                          aria-label="Switch agent session"
+                          title={sessionLabel}
+                          className={cn(
+                            'inline-flex min-w-0 max-w-full items-center gap-1 rounded-md px-1 py-0.5 text-left font-medium text-muted-foreground transition-colors',
+                            'hover:bg-secondary/50 hover:text-foreground data-[state=open]:bg-secondary/70 data-[state=open]:text-foreground',
+                          )}
+                        >
+                          <span className="truncate">{sessionLabel}</span>
+                          {isComputerUseSession ? (
+                            <span className="inline-flex h-[18px] shrink-0 items-center gap-1 rounded-sm border border-primary/20 bg-primary/10 px-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-primary">
+                              <Monitor className="h-3 w-3" />
+                              Computer
+                            </span>
+                          ) : null}
+                          <ChevronDown className="h-3 w-3 shrink-0 opacity-60" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start" className="w-64" sideOffset={6}>
+                        {onCreateSession ? (
+                          <>
+                            <DropdownMenuItem
+                              disabled={isCreatingSession}
+                              onSelect={(event) => {
+                                event.preventDefault()
+                                onCreateSession()
+                              }}
+                            >
+                              <Plus className="h-3.5 w-3.5" />
+                              <span>New session</span>
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                          </>
+                        ) : null}
+                        {sidebarSessions.map((session) => {
+                          const isSelected = session.agentSessionId === selectedAgentSessionId
+                          const label = session.title?.trim() || 'Untitled'
+                          return (
+                            <DropdownMenuItem
+                              key={session.agentSessionId}
+                              onSelect={() => onSelectSidebarSession(session.agentSessionId)}
+                            >
+                              <Check
+                                aria-hidden="true"
+                                className={cn(
+                                  'h-3.5 w-3.5',
+                                  isSelected ? 'text-primary' : 'opacity-0',
+                                )}
+                              />
+                              <span className="min-w-0 flex-1 truncate">{label}</span>
+                              {session.isComputerUse ? (
+                                <Monitor className="h-3.5 w-3.5 text-primary" />
+                              ) : null}
+                            </DropdownMenuItem>
+                          )
+                        })}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  ) : (
+                    <span className="inline-flex min-w-0 items-center gap-1">
+                      <span className="truncate font-medium">{sessionLabel}</span>
                       {isComputerUseSession ? (
                         <span className="inline-flex h-[18px] shrink-0 items-center gap-1 rounded-sm border border-primary/20 bg-primary/10 px-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-primary">
                           <Monitor className="h-3 w-3" />
                           Computer
                         </span>
                       ) : null}
-                      <ChevronDown className="h-3 w-3 shrink-0 opacity-60" />
-                    </button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start" className="w-64" sideOffset={6}>
-                    {onCreateSession ? (
-                      <>
-                        <DropdownMenuItem
-                          disabled={isCreatingSession}
-                          onSelect={(event) => {
-                            event.preventDefault()
-                            onCreateSession()
-                          }}
-                        >
-                          <Plus className="h-3.5 w-3.5" />
-                          <span>New session</span>
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                      </>
-                    ) : null}
-                    {sidebarSessions.map((session) => {
-                      const isSelected = session.agentSessionId === selectedAgentSessionId
-                      const label = session.title?.trim() || 'Untitled'
-                      return (
-                        <DropdownMenuItem
-                          key={session.agentSessionId}
-                          onSelect={() => onSelectSidebarSession(session.agentSessionId)}
-                        >
-                          <Check
-                            aria-hidden="true"
-                            className={cn(
-                              'h-3.5 w-3.5',
-                              isSelected ? 'text-primary' : 'opacity-0',
-                            )}
-                          />
-                          <span className="min-w-0 flex-1 truncate">{label}</span>
-                          {session.isComputerUse ? (
-                            <Monitor className="h-3.5 w-3.5 text-primary" />
-                          ) : null}
-                        </DropdownMenuItem>
-                      )
-                    })}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              ) : (
-                <span className="inline-flex min-w-0 items-center gap-1">
-                  <span className="truncate font-medium">{sessionLabel}</span>
-                  {isComputerUseSession ? (
-                    <span className="inline-flex h-[18px] shrink-0 items-center gap-1 rounded-sm border border-primary/20 bg-primary/10 px-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-primary">
-                      <Monitor className="h-3 w-3" />
-                      Computer
                     </span>
+                  )}
+                </div>
+                <div className="pointer-events-auto flex items-center gap-1">
+                  {onCreateSession && paneCount === 1 ? (
+                    <button
+                      type="button"
+                      aria-label="New session"
+                      onClick={onCreateSession}
+                      disabled={isCreatingSession}
+                      className={cn(
+                        'inline-flex h-[30px] items-center gap-1.5 rounded-md px-2 text-[12.5px] font-semibold text-muted-foreground transition-colors',
+                        'hover:bg-primary/10 hover:text-primary',
+                        'disabled:cursor-not-allowed disabled:opacity-50',
+                      )}
+                    >
+                      {isCreatingSession ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Plus className="h-3.5 w-3.5" />
+                      )}
+                      <span>{inSidebar ? 'New' : 'New Session'}</span>
+                    </button>
                   ) : null}
-                </span>
-              )}
+                  {onSpawnPane ? (
+                    <button
+                      type="button"
+                      aria-label={spawnPaneDisabled ? 'Pane limit reached' : 'Spawn agent pane'}
+                      title={spawnPaneDisabled ? 'Pane limit reached' : 'Spawn agent pane'}
+                      onClick={onSpawnPane}
+                      disabled={spawnPaneDisabled}
+                      className={cn(
+                        'inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-muted-foreground transition-colors',
+                        'hover:bg-primary/10 hover:text-primary',
+                        'disabled:cursor-not-allowed disabled:opacity-40',
+                      )}
+                    >
+                      <SplitSquareHorizontal className="h-3.5 w-3.5" />
+                    </button>
+                  ) : null}
+                  {showCloseButton ? (
+                    <button
+                      type="button"
+                      aria-label="Close pane"
+                      onClick={onClosePane}
+                      className={cn(
+                        'inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-muted-foreground transition-colors',
+                        'hover:bg-destructive/10 hover:text-destructive',
+                      )}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  ) : null}
+                  {inSidebar && onCloseSidebar ? (
+                    <button
+                      type="button"
+                      aria-label="Close agent dock"
+                      onClick={onCloseSidebar}
+                      className={cn(
+                        'inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-muted-foreground transition-colors',
+                        'hover:bg-secondary/50 hover:text-foreground',
+                      )}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  ) : null}
+                </div>
               </div>
             )}
-            <div className="pointer-events-auto flex items-center gap-1">
-              {!isComputerUseSidebar && onCreateSession && paneCount === 1 ? (
-                <button
-                  type="button"
-                  aria-label="New session"
-                  onClick={onCreateSession}
-                  disabled={isCreatingSession}
-                  className={cn(
-                    'inline-flex h-[30px] items-center gap-1.5 rounded-md px-2 text-[12.5px] font-semibold text-muted-foreground transition-colors',
-                    'hover:bg-primary/10 hover:text-primary',
-                    'disabled:cursor-not-allowed disabled:opacity-50',
-                  )}
-                >
-                  {isCreatingSession ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Plus className="h-3.5 w-3.5" />
-                  )}
-                  <span>{inSidebar ? 'New' : 'New Session'}</span>
-                </button>
-              ) : null}
-              {!isComputerUseSidebar && onSpawnPane ? (
-                <button
-                  type="button"
-                  aria-label={spawnPaneDisabled ? 'Pane limit reached' : 'Spawn agent pane'}
-                  title={spawnPaneDisabled ? 'Pane limit reached' : 'Spawn agent pane'}
-                  onClick={onSpawnPane}
-                  disabled={spawnPaneDisabled}
-                  className={cn(
-                    'inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-muted-foreground transition-colors',
-                    'hover:bg-primary/10 hover:text-primary',
-                    'disabled:cursor-not-allowed disabled:opacity-40',
-                  )}
-                >
-                  <SplitSquareHorizontal className="h-3.5 w-3.5" />
-                </button>
-              ) : null}
-              {!isComputerUseSidebar && showCloseButton ? (
-                <button
-                  type="button"
-                  aria-label="Close pane"
-                  onClick={onClosePane}
-                  className={cn(
-                    'inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-muted-foreground transition-colors',
-                    'hover:bg-destructive/10 hover:text-destructive',
-                  )}
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              ) : null}
-              {inSidebar && onCloseSidebar ? (
-                <button
-                  type="button"
-                  aria-label={isComputerUseSidebar ? 'Close Computer Use' : 'Close agent dock'}
-                  onClick={onCloseSidebar}
-                  className={cn(
-                    'inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-muted-foreground transition-colors',
-                    'hover:bg-secondary/50 hover:text-foreground',
-                  )}
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              ) : null}
-            </div>
-          </div>
           <div
             aria-hidden="true"
             className={cn(

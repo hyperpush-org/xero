@@ -24,6 +24,7 @@
     "./components/composer": "./src/components/composer/index.ts",
     "./components/composer/*": "./src/components/composer/*.tsx",
     "./components/cloud-account-card": "./src/components/cloud-account-card.tsx",
+    "./components/computer-use-sidebar": "./src/components/computer-use-sidebar.tsx",
     "./components/app-logo": "./src/components/app-logo.tsx",
     "./components/empty-session-state": "./src/components/empty-session-state.tsx"
   },

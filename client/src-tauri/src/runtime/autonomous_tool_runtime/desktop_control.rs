@@ -27,7 +27,8 @@ use xero_desktop_control_ipc::{
     DesktopSidecarPermissionsPayload, DesktopSidecarPointRequest, DesktopSidecarRedactionMode,
     DesktopSidecarRedactionRequest, DesktopSidecarRegion, DesktopSidecarRequest,
     DesktopSidecarResponse, DesktopSidecarScreenshotPayload, DesktopSidecarScreenshotRequest,
-    DesktopSidecarSessionDescription, DesktopSidecarStreamPayload, DesktopSidecarStreamQuality,
+    DesktopSidecarSessionDescription, DesktopSidecarStreamCapabilitiesPayload,
+    DesktopSidecarStreamMetrics, DesktopSidecarStreamPayload, DesktopSidecarStreamQuality,
     DesktopSidecarStreamRequest, DesktopSidecarStreamStatus, DesktopSidecarStreamTransport,
     DesktopSidecarWindow, DesktopSidecarWindowListPayload, DESKTOP_SIDECAR_PROTOCOL,
     DESKTOP_SIDECAR_SCHEMA_VERSION,
@@ -394,6 +395,16 @@ pub struct AutonomousDesktopCapabilities {
     pub menu_select: bool,
     pub webrtc_stream: bool,
     pub screenshot_fallback_stream: bool,
+    #[serde(default)]
+    pub native_video_track: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_codec: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capture_backends: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub encoder_backends: Vec<String>,
+    #[serde(default)]
+    pub hardware_encoding: bool,
     pub manual_cloud_control: bool,
 }
 
@@ -489,7 +500,48 @@ pub struct AutonomousDesktopStreamState {
     pub max_width: u32,
     pub max_frame_rate: u32,
     pub include_cursor: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<AutonomousDesktopStreamMetrics>,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousDesktopStreamMetrics {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoder_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoder_hardware: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_codec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_frame_rate: Option<u32>,
+    #[serde(default)]
+    pub capture_dropped_frames: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encode_frame_rate: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encode_latency_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbound_bitrate_bps: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_outgoing_bitrate_bps: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packets_sent: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_sent: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packet_loss: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round_trip_time_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retransmits: Option<u64>,
+    #[serde(default)]
+    pub keyframes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -668,8 +720,27 @@ impl From<DesktopSidecarCapabilities> for AutonomousDesktopCapabilities {
             menu_select: capabilities.menu_select,
             webrtc_stream: capabilities.webrtc_stream,
             screenshot_fallback_stream: capabilities.screenshot_fallback_stream,
+            native_video_track: false,
+            preferred_codec: None,
+            capture_backends: Vec::new(),
+            encoder_backends: Vec::new(),
+            hardware_encoding: false,
             manual_cloud_control: capabilities.manual_cloud_control,
         }
+    }
+}
+
+impl From<DesktopSidecarStreamCapabilitiesPayload> for AutonomousDesktopCapabilities {
+    fn from(capabilities: DesktopSidecarStreamCapabilitiesPayload) -> Self {
+        let mut output = disabled_desktop_capabilities();
+        output.webrtc_stream = capabilities.webrtc_stream;
+        output.screenshot_fallback_stream = capabilities.screenshot_fallback_stream;
+        output.native_video_track = capabilities.native_video_track;
+        output.preferred_codec = capabilities.preferred_codec;
+        output.capture_backends = capabilities.capture_backends;
+        output.encoder_backends = capabilities.encoder_backends;
+        output.hardware_encoding = capabilities.hardware_encoding;
+        output
     }
 }
 
@@ -785,6 +856,30 @@ impl From<DesktopSidecarStreamTransport> for AutonomousDesktopStreamTransport {
     }
 }
 
+impl From<DesktopSidecarStreamMetrics> for AutonomousDesktopStreamMetrics {
+    fn from(metrics: DesktopSidecarStreamMetrics) -> Self {
+        Self {
+            capture_backend: metrics.capture_backend,
+            encoder_backend: metrics.encoder_backend,
+            encoder_hardware: metrics.encoder_hardware,
+            preferred_codec: metrics.preferred_codec,
+            fallback_reason: metrics.fallback_reason,
+            capture_frame_rate: metrics.capture_frame_rate,
+            capture_dropped_frames: metrics.capture_dropped_frames,
+            encode_frame_rate: metrics.encode_frame_rate,
+            encode_latency_ms: metrics.encode_latency_ms,
+            outbound_bitrate_bps: metrics.outbound_bitrate_bps,
+            available_outgoing_bitrate_bps: metrics.available_outgoing_bitrate_bps,
+            packets_sent: metrics.packets_sent,
+            bytes_sent: metrics.bytes_sent,
+            packet_loss: metrics.packet_loss,
+            round_trip_time_ms: metrics.round_trip_time_ms,
+            retransmits: metrics.retransmits,
+            keyframes: metrics.keyframes,
+        }
+    }
+}
+
 impl From<DesktopSidecarStreamPayload> for AutonomousDesktopStreamState {
     fn from(payload: DesktopSidecarStreamPayload) -> Self {
         Self {
@@ -796,6 +891,7 @@ impl From<DesktopSidecarStreamPayload> for AutonomousDesktopStreamState {
             max_width: payload.max_width,
             max_frame_rate: payload.max_frame_rate,
             include_cursor: payload.include_cursor,
+            metrics: payload.metrics.map(Into::into),
             message: payload.message,
         }
     }
@@ -817,6 +913,7 @@ impl From<DesktopSidecarStreamPayload> for AutonomousDesktopStreamSidecarOutput 
             max_width: payload.max_width,
             max_frame_rate: payload.max_frame_rate,
             include_cursor: payload.include_cursor,
+            metrics: payload.metrics.map(Into::into),
             message: payload.message,
         };
         let signal = if payload.session_description.is_some() || payload.ice_candidate.is_some() {
@@ -2629,6 +2726,7 @@ impl AutonomousToolRuntime {
             "maxWidth": stream.max_width,
             "maxFrameRate": stream.max_frame_rate,
             "includeCursor": stream.include_cursor,
+            "metrics": stream.metrics.as_ref(),
             "action": output.action,
             "auditId": output.audit_id.as_deref(),
             "errorCode": output.error.as_ref().map(|error| error.code.as_str()),
@@ -3935,19 +4033,31 @@ fn read_sidecar_response(
 }
 
 fn desktop_capabilities() -> AutonomousDesktopCapabilities {
-    if let Ok(payload) = sidecar_json_result(
+    let mut capabilities = if let Ok(payload) = sidecar_json_result(
         DesktopSidecarOperation::Capabilities,
         json!({}),
         "desktop_sidecar_capabilities",
     ) {
         if let Ok(capabilities) = serde_json::from_value::<DesktopSidecarCapabilities>(payload) {
-            return merge_desktop_capabilities(
-                capabilities.into(),
-                in_process_desktop_capabilities(),
-            );
+            merge_desktop_capabilities(capabilities.into(), in_process_desktop_capabilities())
+        } else {
+            in_process_desktop_capabilities()
+        }
+    } else {
+        in_process_desktop_capabilities()
+    };
+    if let Ok(payload) = sidecar_json_result(
+        DesktopSidecarOperation::StreamCapabilities,
+        json!({}),
+        "desktop_sidecar_stream_capabilities",
+    ) {
+        if let Ok(stream_capabilities) =
+            serde_json::from_value::<DesktopSidecarStreamCapabilitiesPayload>(payload)
+        {
+            capabilities = merge_desktop_capabilities(capabilities, stream_capabilities.into());
         }
     }
-    in_process_desktop_capabilities()
+    capabilities
 }
 
 fn merge_desktop_capabilities(
@@ -3973,8 +4083,28 @@ fn merge_desktop_capabilities(
         webrtc_stream: sidecar.webrtc_stream || fallback.webrtc_stream,
         screenshot_fallback_stream: sidecar.screenshot_fallback_stream
             || fallback.screenshot_fallback_stream,
+        native_video_track: sidecar.native_video_track || fallback.native_video_track,
+        preferred_codec: sidecar.preferred_codec.or(fallback.preferred_codec),
+        capture_backends: merge_desktop_capability_list(
+            sidecar.capture_backends,
+            fallback.capture_backends,
+        ),
+        encoder_backends: merge_desktop_capability_list(
+            sidecar.encoder_backends,
+            fallback.encoder_backends,
+        ),
+        hardware_encoding: sidecar.hardware_encoding || fallback.hardware_encoding,
         manual_cloud_control: sidecar.manual_cloud_control || fallback.manual_cloud_control,
     }
+}
+
+fn merge_desktop_capability_list(mut primary: Vec<String>, fallback: Vec<String>) -> Vec<String> {
+    for value in fallback {
+        if !primary.contains(&value) {
+            primary.push(value);
+        }
+    }
+    primary
 }
 
 fn in_process_desktop_capabilities() -> AutonomousDesktopCapabilities {
@@ -3996,6 +4126,11 @@ fn in_process_desktop_capabilities() -> AutonomousDesktopCapabilities {
         menu_select: false,
         webrtc_stream: false,
         screenshot_fallback_stream: true,
+        native_video_track: false,
+        preferred_codec: None,
+        capture_backends: Vec::new(),
+        encoder_backends: Vec::new(),
+        hardware_encoding: false,
         manual_cloud_control: cfg!(target_os = "macos"),
     }
 }
@@ -4019,6 +4154,11 @@ fn disabled_desktop_capabilities() -> AutonomousDesktopCapabilities {
         menu_select: false,
         webrtc_stream: false,
         screenshot_fallback_stream: false,
+        native_video_track: false,
+        preferred_codec: None,
+        capture_backends: Vec::new(),
+        encoder_backends: Vec::new(),
+        hardware_encoding: false,
         manual_cloud_control: false,
     }
 }
@@ -4814,6 +4954,7 @@ fn default_stream_state() -> AutonomousDesktopStreamState {
         max_width: 1280,
         max_frame_rate: 2,
         include_cursor: true,
+        metrics: None,
         message: "Desktop stream is idle.".into(),
     }
 }
@@ -5035,7 +5176,32 @@ fn degraded_stream_state(
             .unwrap_or(profile.max_frame_rate)
             .clamp(1, 30),
         include_cursor: request.include_cursor.unwrap_or(true),
+        metrics: native_error.map(degraded_stream_metrics),
         message: degraded_stream_message(native_error),
+    }
+}
+
+fn degraded_stream_metrics(
+    native_error: &DesktopSidecarErrorBody,
+) -> AutonomousDesktopStreamMetrics {
+    AutonomousDesktopStreamMetrics {
+        capture_backend: None,
+        encoder_backend: None,
+        encoder_hardware: None,
+        preferred_codec: Some("video/H264".into()),
+        fallback_reason: Some(native_error.code.clone()),
+        capture_frame_rate: None,
+        capture_dropped_frames: 0,
+        encode_frame_rate: None,
+        encode_latency_ms: None,
+        outbound_bitrate_bps: None,
+        available_outgoing_bitrate_bps: None,
+        packets_sent: None,
+        bytes_sent: None,
+        packet_loss: None,
+        round_trip_time_ms: None,
+        retransmits: None,
+        keyframes: 0,
     }
 }
 
@@ -5117,6 +5283,24 @@ fn refresh_native_stream_state(
         Some(current),
         policy_decision_id,
     ) {
+        Ok(native)
+            if native.stream.status == AutonomousDesktopStreamStatus::Failed
+                && capabilities.screenshot_fallback_stream =>
+        {
+            let mut stream = native.stream;
+            stream.status = AutonomousDesktopStreamStatus::Degraded;
+            stream.transport = AutonomousDesktopStreamTransport::ScreenshotFallback;
+            if let Some(reason) = stream
+                .metrics
+                .as_ref()
+                .and_then(|metrics| metrics.fallback_reason.as_deref())
+            {
+                stream.message = format!(
+                    "Native WebRTC publisher failed ({reason}); screenshot fallback is available through desktop_observe.screenshot."
+                );
+            }
+            Ok(stream)
+        }
         Ok(native) => Ok(native.stream),
         Err(error) if capabilities.screenshot_fallback_stream => {
             let mut stream = current.clone();
@@ -6248,12 +6432,66 @@ mod tests {
             include_cursor: true,
             session_description: None,
             ice_candidate: None,
+            metrics: Some(DesktopSidecarStreamMetrics {
+                capture_backend: Some("screencapturekit".into()),
+                encoder_backend: Some("videotoolbox_h264".into()),
+                encoder_hardware: Some(true),
+                preferred_codec: Some("video/H264".into()),
+                fallback_reason: None,
+                capture_frame_rate: Some(24),
+                capture_dropped_frames: 0,
+                encode_frame_rate: Some(24),
+                encode_latency_ms: Some(4),
+                outbound_bitrate_bps: Some(3_500_000),
+                available_outgoing_bitrate_bps: Some(5_000_000),
+                packets_sent: Some(10),
+                bytes_sent: Some(12_000),
+                packet_loss: Some(0),
+                round_trip_time_ms: Some(12),
+                retransmits: None,
+                keyframes: 1,
+            }),
             message: "Native stream is live.".into(),
         });
 
         assert_eq!(state.transport, AutonomousDesktopStreamTransport::WebRtc);
         assert_eq!(state.status, AutonomousDesktopStreamStatus::Live);
         assert_eq!(state.quality, AutonomousDesktopStreamQuality::High);
+        assert_eq!(
+            state
+                .metrics
+                .as_ref()
+                .and_then(|metrics| metrics.encoder_backend.as_deref()),
+            Some("videotoolbox_h264")
+        );
+    }
+
+    #[test]
+    fn sidecar_stream_capabilities_map_native_video_contract() {
+        let capabilities =
+            AutonomousDesktopCapabilities::from(DesktopSidecarStreamCapabilitiesPayload {
+                webrtc_stream: true,
+                screenshot_fallback_stream: true,
+                native_video_track: true,
+                preferred_codec: Some("video/H264".into()),
+                capture_backends: vec!["screencapturekit".into()],
+                encoder_backends: vec!["videotoolbox_h264".into()],
+                hardware_encoding: true,
+                supported_qualities: vec![
+                    DesktopSidecarStreamQuality::Low,
+                    DesktopSidecarStreamQuality::Balanced,
+                    DesktopSidecarStreamQuality::High,
+                ],
+                max_width: 1920,
+                max_frame_rate: 30,
+                message: "Native stream is available.".into(),
+            });
+
+        assert!(capabilities.webrtc_stream);
+        assert!(capabilities.native_video_track);
+        assert_eq!(capabilities.preferred_codec.as_deref(), Some("video/H264"));
+        assert_eq!(capabilities.capture_backends, vec!["screencapturekit"]);
+        assert!(capabilities.hardware_encoding);
     }
 
     #[test]
@@ -6379,6 +6617,7 @@ mod tests {
                 max_width: 1280,
                 max_frame_rate: 24,
                 include_cursor: true,
+                metrics: None,
                 message: "Native stream is live.".into(),
             },
         )

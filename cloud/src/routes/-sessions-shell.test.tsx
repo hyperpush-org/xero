@@ -20,6 +20,11 @@ import {
 } from "#/lib/relay/session-store";
 import { getRouter } from "#/router";
 import { activeSessionTargetFromPathname } from "./sessions";
+import {
+	chooseDesktopAdaptiveStreamQuality,
+	readDesktopControlPresentation,
+	shouldRecoverDesktopWebRtcAfterFallback,
+} from "./sessions.$computerId.$sessionId";
 
 const streamMock = vi.hoisted(() => ({
 	sessions: [] as VisibleSessionSummary[],
@@ -29,7 +34,14 @@ const streamMock = vi.hoisted(() => ({
 	composerProps: [] as Array<Record<string, unknown>>,
 	accountHookMounts: 0,
 	accountHookUnmounts: 0,
+	channel: null as null | {
+		on: ReturnType<typeof vi.fn>;
+		off: ReturnType<typeof vi.fn>;
+	},
 }));
+
+const DESKTOP_CONTROL_PRESENTATION_STORAGE_KEY =
+	"xero.cloud.desktopControlPresentation";
 
 vi.mock("#/lib/auth/session", () => ({
 	getCachedCurrentSession: vi.fn(async () => cloudSession),
@@ -96,7 +108,7 @@ vi.mock("#/lib/relay/use-session-stream", async () => {
 			};
 		},
 		useSessionStream: () => ({
-			channel: null,
+			channel: streamMock.channel,
 			iceServers: [],
 			joinRejected: false,
 			streamRunId: null,
@@ -164,6 +176,16 @@ const projects: RemoteProjectSummary[] = [
 ];
 
 beforeEach(() => {
+	Object.defineProperty(window, "innerWidth", {
+		configurable: true,
+		writable: true,
+		value: 1024,
+	});
+	Object.defineProperty(window, "innerHeight", {
+		configurable: true,
+		writable: true,
+		value: 768,
+	});
 	Object.defineProperty(window, "matchMedia", {
 		writable: true,
 		value: (query: string) => ({
@@ -181,6 +203,19 @@ beforeEach(() => {
 		writable: true,
 		value: vi.fn(),
 	});
+	const localStorageValues = new Map<string, string>();
+	Object.defineProperty(window, "localStorage", {
+		configurable: true,
+		writable: true,
+		value: {
+			clear: vi.fn(() => localStorageValues.clear()),
+			getItem: vi.fn((key: string) => localStorageValues.get(key) ?? null),
+			removeItem: vi.fn((key: string) => localStorageValues.delete(key)),
+			setItem: vi.fn((key: string, value: string) => {
+				localStorageValues.set(key, value);
+			}),
+		},
+	});
 	streamMock.sessions = sessions;
 	streamMock.projects = projects;
 	streamMock.startSession.mockClear();
@@ -188,6 +223,8 @@ beforeEach(() => {
 	streamMock.composerProps = [];
 	streamMock.accountHookMounts = 0;
 	streamMock.accountHookUnmounts = 0;
+	streamMock.channel = null;
+	window.localStorage.removeItem(DESKTOP_CONTROL_PRESENTATION_STORAGE_KEY);
 	useSessionStore.setState({
 		transcripts: {},
 		visibleSessions: sessions,
@@ -201,6 +238,9 @@ beforeEach(() => {
 
 afterEach(() => {
 	cleanup();
+	document.body.innerHTML = "";
+	document.body.removeAttribute("style");
+	document.documentElement.removeAttribute("style");
 	useSessionStore.setState({
 		transcripts: {},
 		visibleSessions: [],
@@ -210,9 +250,10 @@ afterEach(() => {
 		onlineComputerIds: {},
 		computerPresenceKnown: false,
 	});
+	window.localStorage.removeItem(DESKTOP_CONTROL_PRESENTATION_STORAGE_KEY);
 });
 
-describe("cloud sessions shell", () => {
+describe.sequential("cloud sessions shell", () => {
 	it("resolves active session targets from session URLs", () => {
 		expect(
 			activeSessionTargetFromPathname("/sessions/desktop-1/session-1"),
@@ -229,6 +270,141 @@ describe("cloud sessions shell", () => {
 			sessionId: "session/with/slashes",
 		});
 		expect(activeSessionTargetFromPathname("/sessions")).toBeNull();
+	});
+
+	it("detects the mobile desktop-control presentation from the developer override", () => {
+		Object.defineProperty(window, "innerWidth", {
+			configurable: true,
+			writable: true,
+			value: 390,
+		});
+		Object.defineProperty(window, "innerHeight", {
+			configurable: true,
+			writable: true,
+			value: 844,
+		});
+		window.localStorage.setItem(
+			DESKTOP_CONTROL_PRESENTATION_STORAGE_KEY,
+			"mobile",
+		);
+
+		expect(readDesktopControlPresentation()).toMatchObject({
+			isMobile: true,
+			override: "mobile",
+			rotateDesktop: true,
+		});
+
+		window.localStorage.setItem(
+			DESKTOP_CONTROL_PRESENTATION_STORAGE_KEY,
+			"desktop",
+		);
+		expect(readDesktopControlPresentation()).toMatchObject({
+			isMobile: false,
+			override: "desktop",
+			rotateDesktop: false,
+		});
+	});
+
+	it("adapts desktop stream quality from transport metrics", () => {
+		expect(
+			chooseDesktopAdaptiveStreamQuality({
+				currentQuality: "high",
+				lastChangedAt: 0,
+				metrics: {
+					availableOutgoingBitrateBps: 1_600_000,
+					packetLoss: 8,
+					packetsSent: 120,
+					roundTripTimeMs: 420,
+				},
+				now: 7_000,
+				previousMetrics: {
+					packetLoss: 0,
+					packetsSent: 100,
+				},
+				stableSamples: 2,
+				state: "live",
+			}),
+		).toEqual({ quality: "balanced", stableSamples: 0 });
+
+		expect(
+			chooseDesktopAdaptiveStreamQuality({
+				currentQuality: "balanced",
+				lastChangedAt: 0,
+				metrics: {
+					availableOutgoingBitrateBps: 9_500_000,
+					encodeLatencyMs: 24,
+					packetLoss: 0,
+					packetsSent: 2_000,
+					roundTripTimeMs: 42,
+				},
+				now: 31_000,
+				previousMetrics: {
+					packetLoss: 0,
+					packetsSent: 1_000,
+				},
+				stableSamples: 2,
+				state: "live",
+			}),
+		).toEqual({ quality: "high", stableSamples: 0 });
+
+		expect(
+			chooseDesktopAdaptiveStreamQuality({
+				currentQuality: "balanced",
+				lastChangedAt: 0,
+				metrics: null,
+				now: 7_000,
+				previousMetrics: null,
+				stableSamples: 2,
+				state: "degraded",
+			}),
+		).toEqual({ quality: "low", stableSamples: 0 });
+	});
+
+	it("recovers WebRTC instead of accepting screenshot fallback after live video", () => {
+		expect(
+			shouldRecoverDesktopWebRtcAfterFallback(
+				{
+					status: "degraded",
+					transport: "screenshot_fallback",
+					quality: "balanced",
+					maxWidth: 1280,
+					maxFrameRate: 24,
+					metrics: null,
+					message: null,
+				},
+				true,
+			),
+		).toBe(true);
+
+		expect(
+			shouldRecoverDesktopWebRtcAfterFallback(
+				{
+					status: "degraded",
+					transport: "screenshot_fallback",
+					quality: "balanced",
+					maxWidth: 1280,
+					maxFrameRate: 24,
+					metrics: null,
+					message: null,
+				},
+				false,
+			),
+		).toBe(false);
+
+		expect(
+			shouldRecoverDesktopWebRtcAfterFallback(
+				{
+					status: "live",
+					transport: "web_rtc",
+					quality: "balanced",
+					maxWidth: 1280,
+					maxFrameRate: 24,
+					metrics: null,
+					message: null,
+				},
+				true,
+			),
+		).toBe(false);
 	});
 
 	it("keeps the same sidebar and account directory subscription across session switches", async () => {
@@ -328,25 +504,170 @@ describe("cloud sessions shell", () => {
 		expect(typeof props?.onApprovalChange).toBe("function");
 	});
 
-	it("renders Computer Use desktop controls before any prompt is sent", async () => {
-		const computerUseSession: VisibleSessionSummary = {
-			computerId: "desktop-1",
-			sessionId: REMOTE_COMPUTER_USE_SESSION_ID,
-			agentSessionId: REMOTE_COMPUTER_USE_SESSION_ID,
-			projectId: "global-computer-use",
-			projectName: null,
-			sessionKind: "computer_use",
-			isComputerUse: true,
-			title: "Computer Use",
-			lastActivityAt: null,
-			computerName: "Studio",
-			remoteVisible: true,
+	it("opens Computer Use desktop controls from the session header", async () => {
+		setupComputerUseSession();
+		streamMock.channel = {
+			on: vi.fn(() => "frame-ref"),
+			off: vi.fn(),
 		};
-		streamMock.sessions = [computerUseSession, ...sessions];
-		useSessionStore.setState({
-			visibleSessions: [computerUseSession, ...sessions],
-			visibleSessionsVersion: 2,
+
+		renderCloudRoute(`/sessions/desktop-1/${REMOTE_COMPUTER_USE_SESSION_ID}`);
+
+		expect(screen.queryByLabelText("Desktop")).toBeNull();
+		fireEvent.click(
+			await screen.findByRole("button", { name: "Open desktop controls" }),
+		);
+		const controls = await screen.findByRole("region", {
+			name: "Desktop controls",
 		});
+		expect(
+			screen.queryByRole("dialog", { name: "Desktop controls" }),
+		).toBeNull();
+		const desktop = within(controls).getByLabelText("Desktop");
+		expect(desktop).toBeTruthy();
+		expect(controls.className).toContain("fixed");
+		const toolbar = within(desktop).getByRole("toolbar", {
+			name: "Desktop stream controls",
+		});
+		expect(toolbar.getAttribute("style")).toContain("left: 50%");
+		expect(toolbar.getAttribute("style")).toContain("top: 24px");
+		expect(
+			within(toolbar).getByRole("button", { name: /start/i }),
+		).toBeTruthy();
+		const manualButton = within(toolbar).getByRole("button", {
+			name: /manual/i,
+		});
+		expect(manualButton).toBeTruthy();
+		expect(manualButton.hasAttribute("disabled")).toBe(true);
+		expect(
+			within(toolbar)
+				.getByRole("button", { name: /stop/i })
+				.hasAttribute("disabled"),
+		).toBe(true);
+		expect(
+			within(toolbar).queryByRole("button", { name: /refresh/i }),
+		).toBeNull();
+		expect(
+			within(toolbar).queryByRole("combobox", {
+				name: "Stream quality",
+			}),
+		).toBeNull();
+		expect(within(toolbar).queryByText("Balanced")).toBeNull();
+		expect(
+			within(toolbar).getByRole("button", {
+				name: "Move desktop controls",
+			}),
+		).toBeTruthy();
+		const closeButton = within(toolbar).getByRole("button", {
+			name: "Close desktop controls",
+		});
+		expect(closeButton).toBeTruthy();
+		expect(
+			within(controls).queryByRole("button", { name: /emergency stop/i }),
+		).toBeNull();
+		expect(
+			within(controls).getByText("Start desktop viewing when you are ready."),
+		).toBeTruthy();
+		const agentSidebar = within(controls).getByLabelText("Computer Use agent");
+		expect(agentSidebar).toBeTruthy();
+		expect(agentSidebar.className).not.toContain("shadow");
+		expect(agentSidebar.lastElementChild?.className).toContain("flex-col");
+		const agentSidebarTitle = within(agentSidebar).getAllByRole("heading", {
+			name: "Computer Use",
+		})[0];
+		expect(agentSidebarTitle.parentElement?.parentElement?.className).toContain(
+			"h-10",
+		);
+		const resizeHandle = within(agentSidebar).getByRole("separator", {
+			name: "Resize Computer Use sidebar",
+		});
+		expect(resizeHandle.getAttribute("aria-valuenow")).toBe("560");
+		expect(screen.getByTestId("composer")).toBeTruthy();
+		expect(streamMock.composerProps.at(-1)?.density).toBe("comfortable");
+		for (let index = 0; index < 6; index += 1) {
+			fireEvent.keyDown(resizeHandle, { key: "ArrowRight", shiftKey: true });
+		}
+		await waitFor(() => {
+			expect(streamMock.composerProps.at(-1)?.density).toBe("compact");
+		});
+		fireEvent.click(closeButton);
+		await waitFor(() => {
+			expect(
+				screen.queryByRole("region", { name: "Desktop controls" }),
+			).toBeNull();
+		});
+	});
+
+	it("renders Computer Use after reload before the synthetic session has a transcript snapshot", async () => {
+		setupComputerUseSession({ withSnapshot: false });
+
+		renderCloudRoute(`/sessions/desktop-1/${REMOTE_COMPUTER_USE_SESSION_ID}`);
+
+		expect(
+			await screen.findByRole("button", { name: "Open desktop controls" }),
+		).toBeTruthy();
+		expect(screen.queryByLabelText("Loading")).toBeNull();
+		expect(screen.getByRole("heading", { name: "Computer Use" })).toBeTruthy();
+		expect(
+			screen.getByText(
+				"Give a concrete instruction and Xero will operate the visible computer with bounded UI control.",
+			),
+		).toBeTruthy();
+		expect(screen.getByTestId("composer")).toBeTruthy();
+	});
+
+	it("shows session directory skeletons while normal desktop sessions reconcile", async () => {
+		setupComputerUseSession({
+			withSnapshot: false,
+			includeStandardSessions: false,
+		});
+		useSessionStore.setState({
+			visibleSessionsByComputerVersion: {},
+		});
+
+		renderCloudRoute(`/sessions/desktop-1/${REMOTE_COMPUTER_USE_SESSION_ID}`);
+
+		expect(
+			await screen.findByRole("button", { name: "Open desktop controls" }),
+		).toBeTruthy();
+		expect(
+			screen.getAllByRole("status", {
+				name: "Loading desktop sessions",
+			}).length,
+		).toBeGreaterThan(0);
+		expect(screen.queryByText("No sessions yet")).toBeNull();
+	});
+});
+
+function setupComputerUseSession({
+	withSnapshot = true,
+	includeStandardSessions = true,
+}: {
+	withSnapshot?: boolean;
+	includeStandardSessions?: boolean;
+} = {}) {
+	const computerUseSession: VisibleSessionSummary = {
+		computerId: "desktop-1",
+		sessionId: REMOTE_COMPUTER_USE_SESSION_ID,
+		agentSessionId: REMOTE_COMPUTER_USE_SESSION_ID,
+		projectId: "global-computer-use",
+		projectName: null,
+		sessionKind: "computer_use",
+		isComputerUse: true,
+		title: "Computer Use",
+		lastActivityAt: null,
+		computerName: "Studio",
+		remoteVisible: true,
+	};
+	const nextSessions = includeStandardSessions
+		? [computerUseSession, ...sessions]
+		: [computerUseSession];
+	streamMock.sessions = nextSessions;
+	useSessionStore.setState({
+		visibleSessions: nextSessions,
+		visibleSessionsVersion: 2,
+	});
+	if (withSnapshot) {
 		useSessionStore
 			.getState()
 			.replaceWithSnapshot(`desktop-1:${REMOTE_COMPUTER_USE_SESSION_ID}`, {
@@ -361,19 +682,9 @@ describe("cloud sessions shell", () => {
 				currentApprovalMode: "suggest",
 				currentAutoCompactEnabled: true,
 			});
-
-		renderCloudRoute(`/sessions/desktop-1/${REMOTE_COMPUTER_USE_SESSION_ID}`);
-
-		const desktop = await screen.findByLabelText("Desktop");
-		expect(
-			within(desktop).getByRole("button", { name: /start/i }),
-		).toBeTruthy();
-		expect(
-			within(desktop).getByRole("button", { name: /manual/i }),
-		).toBeTruthy();
-		expect(screen.getByTestId("composer")).toBeTruthy();
-	});
-});
+	}
+	return computerUseSession;
+}
 
 function renderCloudRoute(path: string) {
 	const router = getRouter({

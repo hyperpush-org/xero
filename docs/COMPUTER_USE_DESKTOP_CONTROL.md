@@ -2,7 +2,7 @@
 
 This document captures the production contract for Computer Use desktop observation, control, cloud viewing, and manual cloud control.
 
-The companion threat model is in [COMPUTER_USE_DESKTOP_CONTROL_THREAT_MODEL.md](COMPUTER_USE_DESKTOP_CONTROL_THREAT_MODEL.md).
+The companion threat model is in [COMPUTER_USE_DESKTOP_CONTROL_THREAT_MODEL.md](COMPUTER_USE_DESKTOP_CONTROL_THREAT_MODEL.md). The native media-track streaming replacement plan is in [COMPUTER_USE_DESKTOP_VIDEO_STREAMING_PLAN.md](COMPUTER_USE_DESKTOP_VIDEO_STREAMING_PLAN.md).
 
 ## Safety Boundary
 

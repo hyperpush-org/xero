@@ -211,6 +211,7 @@ export function requestComputerUseStream(
 		sessionId: string;
 		deviceId: string;
 		displayId?: string | null;
+		streamId?: string | null;
 		quality?: "low" | "balanced" | "high";
 		iceServers?: RTCIceServer[];
 	} & StreamTokenOptions,
@@ -224,6 +225,7 @@ export function requestComputerUseStream(
 		kind: "computer_use_stream_request",
 		payload: {
 			displayId: options.displayId ?? null,
+			streamId: options.streamId ?? null,
 			quality: options.quality ?? "balanced",
 			includeCursor: true,
 			iceServers: options.iceServers ?? [],

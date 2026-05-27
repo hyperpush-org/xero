@@ -606,7 +606,48 @@ pub struct DesktopSidecarStreamPayload {
     pub session_description: Option<DesktopSidecarSessionDescription>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ice_candidate: Option<DesktopSidecarIceCandidate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<DesktopSidecarStreamMetrics>,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DesktopSidecarStreamMetrics {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoder_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoder_hardware: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_codec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_frame_rate: Option<u32>,
+    #[serde(default)]
+    pub capture_dropped_frames: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encode_frame_rate: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encode_latency_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbound_bitrate_bps: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_outgoing_bitrate_bps: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packets_sent: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_sent: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packet_loss: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round_trip_time_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retransmits: Option<u64>,
+    #[serde(default)]
+    pub keyframes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -614,6 +655,14 @@ pub struct DesktopSidecarStreamPayload {
 pub struct DesktopSidecarStreamCapabilitiesPayload {
     pub webrtc_stream: bool,
     pub screenshot_fallback_stream: bool,
+    pub native_video_track: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_codec: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capture_backends: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub encoder_backends: Vec<String>,
+    pub hardware_encoding: bool,
     pub supported_qualities: Vec<DesktopSidecarStreamQuality>,
     pub max_width: u32,
     pub max_frame_rate: u32,
@@ -756,9 +805,7 @@ pub enum DesktopSidecarContractError {
     #[error("sidecar request expires after the active lease")]
     RequestOutlivesLease,
     #[error("sidecar operation `{operation:?}` is not allowed by the active lease")]
-    OperationNotAllowed {
-        operation: DesktopSidecarOperation,
-    },
+    OperationNotAllowed { operation: DesktopSidecarOperation },
     #[error("sidecar request payload is too large")]
     PayloadTooLarge,
     #[error("sidecar request payload contains forbidden key `{key}`")]
@@ -891,7 +938,11 @@ pub fn validate_sidecar_response(
             actual: response.operation,
         });
     }
-    match (response.ok, response.result.is_some(), response.error.is_some()) {
+    match (
+        response.ok,
+        response.result.is_some(),
+        response.error.is_some(),
+    ) {
         (true, true, false) | (false, false, true) => Ok(()),
         (true, false, false) => Err(DesktopSidecarContractError::ResponseMissingResult),
         (false, false, false) => Err(DesktopSidecarContractError::ResponseMissingError),
@@ -926,10 +977,7 @@ fn validate_protocol(actual: &str) -> Result<(), DesktopSidecarContractError> {
     }
 }
 
-fn validate_non_empty(
-    value: &str,
-    field: &'static str,
-) -> Result<(), DesktopSidecarContractError> {
+fn validate_non_empty(value: &str, field: &'static str) -> Result<(), DesktopSidecarContractError> {
     if value.trim().is_empty() {
         Err(DesktopSidecarContractError::EmptyField { field })
     } else {
@@ -1116,9 +1164,8 @@ mod tests {
     fn rejects_response_request_mismatch() {
         let response =
             DesktopSidecarResponse::ok("req_2", DesktopSidecarOperation::Health, json!({}));
-        let error =
-            validate_sidecar_response(&response, "req_1", DesktopSidecarOperation::Health)
-                .expect_err("request mismatch");
+        let error = validate_sidecar_response(&response, "req_1", DesktopSidecarOperation::Health)
+            .expect_err("request mismatch");
         assert_eq!(error.code(), "sidecar_response_invalid");
     }
 
@@ -1133,9 +1180,8 @@ mod tests {
             result: None,
             error: None,
         };
-        let error =
-            validate_sidecar_response(&response, "req_1", DesktopSidecarOperation::Health)
-                .expect_err("missing result");
+        let error = validate_sidecar_response(&response, "req_1", DesktopSidecarOperation::Health)
+            .expect_err("missing result");
         assert_eq!(error, DesktopSidecarContractError::ResponseMissingResult);
     }
 
@@ -1186,7 +1232,10 @@ mod tests {
         assert_eq!(request.keys, vec!["command".to_string(), "a".to_string()]);
         assert_eq!(request.text.as_deref(), Some("hello"));
         assert_eq!(request.value.as_deref(), Some("updated"));
-        assert_eq!(request.menu_path, vec!["File".to_string(), "New".to_string()]);
+        assert_eq!(
+            request.menu_path,
+            vec!["File".to_string(), "New".to_string()]
+        );
     }
 
     #[test]
@@ -1236,7 +1285,10 @@ mod tests {
 
         assert!(payload.available);
         assert_eq!(
-            payload.element.as_ref().map(|element| element.role.as_deref()),
+            payload
+                .element
+                .as_ref()
+                .map(|element| element.role.as_deref()),
             Some(Some("AXButton"))
         );
     }
@@ -1357,7 +1409,10 @@ mod tests {
         assert_eq!(request.quality, Some(DesktopSidecarStreamQuality::Balanced));
         assert_eq!(request.ice_servers.len(), 1);
         assert_eq!(
-            request.session_description.as_ref().map(|value| value.sdp.as_str()),
+            request
+                .session_description
+                .as_ref()
+                .map(|value| value.sdp.as_str()),
             Some("v=0")
         );
         assert_eq!(
@@ -1380,6 +1435,24 @@ mod tests {
             "maxWidth": 1920,
             "maxFrameRate": 30,
             "includeCursor": true,
+            "metrics": {
+                "captureBackend": "screencapturekit",
+                "encoderBackend": "videotoolbox_h264",
+                "encoderHardware": true,
+                "preferredCodec": "video/H264",
+                "captureFrameRate": 24,
+                "captureDroppedFrames": 1,
+                "encodeFrameRate": 24,
+                "encodeLatencyMs": 4,
+                "outboundBitrateBps": 3500000,
+                "availableOutgoingBitrateBps": 5000000,
+                "packetsSent": 100,
+                "bytesSent": 120000,
+                "packetLoss": 0,
+                "roundTripTimeMs": 12,
+                "retransmits": 2,
+                "keyframes": 1
+            },
             "message": "Native stream is starting."
         }))
         .expect("stream payload");
@@ -1388,6 +1461,13 @@ mod tests {
         assert_eq!(payload.transport, DesktopSidecarStreamTransport::WebRtc);
         assert_eq!(payload.status, DesktopSidecarStreamStatus::Starting);
         assert_eq!(payload.quality, DesktopSidecarStreamQuality::High);
+        let metrics = payload.metrics.expect("stream metrics");
+        assert_eq!(
+            metrics.encoder_backend.as_deref(),
+            Some("videotoolbox_h264")
+        );
+        assert_eq!(metrics.available_outgoing_bitrate_bps, Some(5_000_000));
+        assert_eq!(metrics.retransmits, Some(2));
     }
 
     #[test]
@@ -1395,6 +1475,11 @@ mod tests {
         let payload = serde_json::from_value::<DesktopSidecarStreamCapabilitiesPayload>(json!({
             "webrtcStream": true,
             "screenshotFallbackStream": true,
+            "nativeVideoTrack": true,
+            "preferredCodec": "video/H264",
+            "captureBackends": ["screencapturekit"],
+            "encoderBackends": ["videotoolbox_h264"],
+            "hardwareEncoding": true,
             "supportedQualities": ["low", "balanced", "high"],
             "maxWidth": 1920,
             "maxFrameRate": 30,

@@ -16,6 +16,7 @@ import {
 	requestThemeSnapshot,
 	sendComputerUseStreamIceCandidate,
 	setComputerUseStreamQuality,
+	stopComputerUseStream,
 } from "./relay-client";
 
 const { MockSocket, socketInstances } = vi.hoisted(() => {
@@ -258,6 +259,7 @@ describe("pushInboundCommand", () => {
 			sessionId: "session-1",
 			deviceId: "web-1",
 			displayId: "display-2",
+			streamId: "stream-1",
 			quality: "high",
 			runId: "run-1",
 			streamToken: "stream-token-1",
@@ -279,6 +281,7 @@ describe("pushInboundCommand", () => {
 				kind: "computer_use_stream_request",
 				payload: {
 					displayId: "display-2",
+					streamId: "stream-1",
 					quality: "high",
 					includeCursor: true,
 					runId: "run-1",
@@ -324,6 +327,34 @@ describe("pushInboundCommand", () => {
 						sdpMid: "0",
 						sdpMLineIndex: 0,
 					},
+				},
+			}),
+		);
+	});
+
+	it("stops the active Computer Use desktop stream with the latest stream id", () => {
+		const push = vi.fn();
+
+		stopComputerUseStream({ push } as never, {
+			computerId: "desktop-1",
+			sessionId: "session-1",
+			deviceId: "web-1",
+			streamId: "stream-1",
+			runId: "run-1",
+			streamToken: "stream-token-1",
+		});
+
+		expect(push).toHaveBeenCalledWith(
+			"frame",
+			expect.objectContaining({
+				computer_id: "desktop-1",
+				session_id: "session-1",
+				device_id: "web-1",
+				kind: "computer_use_stream_stop",
+				payload: {
+					streamId: "stream-1",
+					runId: "run-1",
+					streamToken: "stream-token-1",
 				},
 			}),
 		);

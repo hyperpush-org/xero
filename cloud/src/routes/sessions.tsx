@@ -14,6 +14,7 @@ import {
 	EmptyMedia,
 	EmptyTitle,
 } from "@xero/ui/components/ui/empty";
+import { Skeleton } from "@xero/ui/components/ui/skeleton";
 import { Menu } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -77,9 +78,18 @@ function SessionsShell() {
 	);
 	const topBarTitle = shell.activeSession?.title ?? "Desktop sessions";
 	const topBarProjectLabel = shell.activeSession?.projectName ?? undefined;
+	const [topBarAccessoryElement, setTopBarAccessoryElement] =
+		useState<HTMLDivElement | null>(null);
+	const shellContext = useMemo<SessionsShellContextValue>(
+		() => ({
+			...shell,
+			topBarAccessoryElement,
+		}),
+		[shell, topBarAccessoryElement],
+	);
 
 	return (
-		<SessionsShellContext.Provider value={shell}>
+		<SessionsShellContext.Provider value={shellContext}>
 			<div className="flex h-dvh bg-background text-foreground">
 				<SessionSidebar
 					session={session as CloudSession}
@@ -91,11 +101,13 @@ function SessionsShell() {
 					onArchiveSession={shell.archiveSession}
 					onSignOut={handleSignOut}
 					pendingProjectKey={shell.pendingProjectKey}
+					isSessionDirectoryLoading={shell.isSessionDirectoryLoading}
 				/>
 				<main className="flex h-dvh min-w-0 flex-1 flex-col">
 					<SessionTopBar
 						title={topBarTitle}
 						projectLabel={topBarProjectLabel}
+						accessorySlotRef={setTopBarAccessoryElement}
 						drawerTrigger={
 							<SessionDrawer
 								session={session as CloudSession}
@@ -107,6 +119,7 @@ function SessionsShell() {
 								onArchiveSession={shell.archiveSession}
 								onSignOut={handleSignOut}
 								pendingProjectKey={shell.pendingProjectKey}
+								isSessionDirectoryLoading={shell.isSessionDirectoryLoading}
 								trigger={
 									<Button
 										type="button"
@@ -173,6 +186,31 @@ function useSessionsShellViewModel(
 			? Boolean(state.visibleSessionsByComputerVersion[activeComputerId])
 			: false,
 	);
+	const desktopDeviceIds = useMemo(
+		() =>
+			session.devices
+				.filter((device) => device.kind === "desktop" && !device.revoked_at)
+				.map((device) => device.id),
+		[session.devices],
+	);
+	const onlineComputerIds = useSessionStore((state) => state.onlineComputerIds);
+	const visibleSessionsByComputerVersion = useSessionStore(
+		(state) => state.visibleSessionsByComputerVersion,
+	);
+	const isSessionDirectoryLoading = useMemo(() => {
+		if (desktopDeviceIds.length === 0) return false;
+		if (!computerPresenceKnown) return true;
+		return desktopDeviceIds.some(
+			(computerId) =>
+				onlineComputerIds[computerId] &&
+				!visibleSessionsByComputerVersion[computerId],
+		);
+	}, [
+		computerPresenceKnown,
+		desktopDeviceIds,
+		onlineComputerIds,
+		visibleSessionsByComputerVersion,
+	]);
 	const visibleSessionsVersion = useSessionStore(
 		(state) => state.visibleSessionsVersion,
 	);
@@ -309,6 +347,8 @@ function useSessionsShellViewModel(
 			computerPresenceKnown,
 			currentComputerOnline,
 			currentComputerReconciled,
+			isSessionDirectoryLoading,
+			topBarAccessoryElement: null,
 			visibleSessionsVersion,
 			selectSession,
 			startSession,
@@ -325,6 +365,7 @@ function useSessionsShellViewModel(
 			computerPresenceKnown,
 			currentComputerOnline,
 			currentComputerReconciled,
+			isSessionDirectoryLoading,
 			pendingNewSession,
 			remoteSessions,
 			reportActiveTargetInvalid,
@@ -338,7 +379,12 @@ function useSessionsShellViewModel(
 }
 
 function SessionsIndexContent() {
-	const { visibleSessions, selectSession, archiveSession } = useSessionsShell();
+	const {
+		visibleSessions,
+		selectSession,
+		archiveSession,
+		isSessionDirectoryLoading,
+	} = useSessionsShell();
 	const [pendingSessionAction, setPendingSessionAction] = useState<{
 		key: string;
 		action: "archive";
@@ -362,11 +408,22 @@ function SessionsIndexContent() {
 		<div className="relative flex min-h-0 w-full flex-1 items-center justify-center px-6 py-12">
 			<Empty className="border-0">
 				<EmptyHeader>
-					<EmptyMedia className="cloud-halo size-16 border-0 bg-transparent">
-						<BrandLogo className="size-10" aria-label="Xero" />
-					</EmptyMedia>
+					{isSessionDirectoryLoading ? (
+						<EmptyMedia
+							variant="icon"
+							className="cloud-halo-soft size-16 border-border/60 bg-card/40"
+						>
+							<Skeleton className="size-8 rounded-[6px] bg-primary/25" />
+						</EmptyMedia>
+					) : (
+						<EmptyMedia className="cloud-halo size-16 border-0 bg-transparent">
+							<BrandLogo className="size-10" aria-label="Xero" />
+						</EmptyMedia>
+					)}
 					<EmptyTitle className="font-display mt-4 text-[26px] font-medium leading-tight tracking-[-0.02em] text-foreground">
-						{hasSessions ? (
+						{isSessionDirectoryLoading ? (
+							<>Loading desktop sessions</>
+						) : hasSessions ? (
 							<>
 								Open a{" "}
 								<em className="font-display-italic text-primary">
@@ -381,12 +438,25 @@ function SessionsIndexContent() {
 						)}
 					</EmptyTitle>
 					<EmptyDescription className="mx-auto mt-1 max-w-sm text-[13px] leading-relaxed text-muted-foreground">
-						{hasSessions
-							? "Conversation content stays on the desktop until you open a session."
-							: "Open Xero on your desktop to make your coding sessions available here."}
+						{isSessionDirectoryLoading
+							? "Your desktop sessions will appear here as soon as Xero finishes syncing."
+							: hasSessions
+								? "Conversation content stays on the desktop until you open a session."
+								: "Open Xero on your desktop to make your coding sessions available here."}
 					</EmptyDescription>
 				</EmptyHeader>
-				{hasSessions ? (
+				{isSessionDirectoryLoading ? (
+					<EmptyContent>
+						<output
+							aria-label="Loading desktop sessions"
+							className="flex w-[min(28rem,calc(100vw-2rem))] flex-col gap-2 rounded-md border border-border/70 bg-card/35 p-2 backdrop-blur-sm lg:hidden"
+						>
+							<Skeleton className="h-10 rounded-md bg-accent/45" />
+							<Skeleton className="h-10 rounded-md bg-accent/35" />
+							<Skeleton className="h-10 rounded-md bg-accent/30" />
+						</output>
+					</EmptyContent>
+				) : hasSessions ? (
 					<EmptyContent>
 						<ul className="flex w-[min(28rem,calc(100vw-2rem))] flex-col gap-1 overflow-hidden rounded-xl border border-border/70 bg-card/40 p-1 backdrop-blur-sm lg:hidden">
 							{visibleSessions.map((summary) => {

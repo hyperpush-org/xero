@@ -3,21 +3,34 @@ use std::{
     io::{self, BufRead, Cursor, Write},
     process,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use base64::Engine as _;
-use image::{codecs::jpeg::JpegEncoder, imageops::FilterType, DynamicImage, ImageFormat, Rgba, RgbaImage};
+use image::{ImageFormat, Rgba, RgbaImage};
 use serde_json::json;
 use time::format_description::well_known::Rfc3339;
 use webrtc::{
-    api::{media_engine::MediaEngine, APIBuilder},
-    data_channel::{data_channel_state::RTCDataChannelState, RTCDataChannel},
+    api::{
+        media_engine::{MediaEngine, MIME_TYPE_H264},
+        APIBuilder,
+    },
     ice_transport::{ice_candidate::RTCIceCandidateInit, ice_server::RTCIceServer},
-    peer_connection::{configuration::RTCConfiguration, sdp::session_description::RTCSessionDescription, RTCPeerConnection},
+    media::Sample,
+    peer_connection::{
+        configuration::RTCConfiguration, sdp::session_description::RTCSessionDescription,
+        RTCPeerConnection,
+    },
+    rtcp::payload_feedbacks::{
+        full_intra_request::FullIntraRequest, picture_loss_indication::PictureLossIndication,
+    },
+    rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
+    rtp_transceiver::rtp_sender::RTCRtpSender,
+    stats::StatsReportType,
+    track::track_local::{track_local_static_sample::TrackLocalStaticSample, TrackLocal},
 };
 use xcap::{Monitor, Window};
 use xero_desktop_control_ipc::{
@@ -33,17 +46,15 @@ use xero_desktop_control_ipc::{
     DesktopSidecarPermissionsPayload, DesktopSidecarPointRequest, DesktopSidecarRequest,
     DesktopSidecarResponse, DesktopSidecarScreenshotPayload, DesktopSidecarScreenshotRequest,
     DesktopSidecarSessionDescription, DesktopSidecarStreamCapabilitiesPayload,
-    DesktopSidecarStreamPayload, DesktopSidecarStreamQuality, DesktopSidecarStreamRequest,
-    DesktopSidecarStreamStatus, DesktopSidecarStreamTransport, DesktopSidecarWindow,
-    DesktopSidecarWindowListPayload,
+    DesktopSidecarStreamMetrics, DesktopSidecarStreamPayload, DesktopSidecarStreamQuality,
+    DesktopSidecarStreamRequest, DesktopSidecarStreamStatus, DesktopSidecarStreamTransport,
+    DesktopSidecarWindow, DesktopSidecarWindowListPayload,
 };
 
-const WEBRTC_DATA_CHANNEL_LABEL: &str = "xero-desktop-stream";
 const WEBRTC_MAX_WIDTH: u32 = 1920;
-const WEBRTC_MAX_FRAME_RATE: u32 = 10;
-const WEBRTC_JPEG_QUALITY: u8 = 70;
-const WEBRTC_FRAME_CHUNK_CHARS: usize = 48 * 1024;
+const WEBRTC_MAX_FRAME_RATE: u32 = 30;
 const WEBRTC_ICE_GATHER_TIMEOUT: Duration = Duration::from_secs(5);
+const H264_ANNEX_B_START_CODE: &[u8; 4] = b"\x00\x00\x00\x01";
 
 #[derive(Clone)]
 struct WebRtcStreamConfig {
@@ -59,21 +70,40 @@ struct WebRtcStreamConfig {
 #[derive(Clone)]
 struct ActiveWebRtcStream {
     peer_connection: Arc<RTCPeerConnection>,
-    data_channel: Arc<RTCDataChannel>,
+    video_track: Arc<TrackLocalStaticSample>,
+    rtp_sender: Arc<RTCRtpSender>,
     stop: Arc<AtomicBool>,
-    opened: Arc<AtomicBool>,
+    media_started: Arc<AtomicBool>,
     keyframe_requested: Arc<AtomicBool>,
     config: Arc<Mutex<WebRtcStreamConfig>>,
+    metrics: Arc<StreamTelemetry>,
 }
 
-struct EncodedWebRtcFrame {
+#[derive(Default)]
+struct StreamTelemetry {
+    capture_backend: Mutex<Option<String>>,
+    encoder_backend: Mutex<Option<String>>,
+    encoder_hardware: AtomicBool,
+    fallback_reason: Mutex<Option<String>>,
+    capture_frames: AtomicU64,
+    capture_dropped_frames: AtomicU64,
+    encode_frames: AtomicU64,
+    encode_latency_total_ms: AtomicU64,
+    bytes_sent: AtomicU64,
+    available_outgoing_bitrate_bps: AtomicU64,
+    packets_sent: AtomicU64,
+    packets_lost: AtomicI64,
+    round_trip_time_ms: AtomicU64,
+    retransmits: AtomicU64,
+    keyframes: AtomicU64,
+    started_at: OnceLock<Instant>,
+}
+
+struct EncodedVideoSample {
     bytes: Vec<u8>,
-    media_type: &'static str,
-    width: u32,
-    height: u32,
-    scale_factor: f32,
-    redactions_applied: usize,
-    captured_at: String,
+    duration: Duration,
+    encode_latency_ms: u64,
+    keyframe: bool,
 }
 
 fn main() {
@@ -147,11 +177,9 @@ fn handle_request(lease: &DesktopSidecarLease, line: &str) -> DesktopSidecarResp
             request.operation,
             sidecar_capabilities(),
         ),
-        DesktopSidecarOperation::PermissionsStatus => json_response(
-            request.request_id,
-            request.operation,
-            sidecar_permissions(),
-        ),
+        DesktopSidecarOperation::PermissionsStatus => {
+            json_response(request.request_id, request.operation, sidecar_permissions())
+        }
         DesktopSidecarOperation::DisplayList => match sidecar_displays() {
             Ok(payload) => json_response(request.request_id, request.operation, payload),
             Err(error) => sidecar_error_response(request.request_id, request.operation, error),
@@ -172,10 +200,12 @@ fn handle_request(lease: &DesktopSidecarLease, line: &str) -> DesktopSidecarResp
             Ok(payload) => json_response(request.request_id, request.operation, payload),
             Err(error) => sidecar_error_response(request.request_id, request.operation, error),
         },
-        DesktopSidecarOperation::ElementAtPoint => match sidecar_element_at_point(request.payload) {
-            Ok(payload) => json_response(request.request_id, request.operation, payload),
-            Err(error) => sidecar_error_response(request.request_id, request.operation, error),
-        },
+        DesktopSidecarOperation::ElementAtPoint => {
+            match sidecar_element_at_point(request.payload) {
+                Ok(payload) => json_response(request.request_id, request.operation, payload),
+                Err(error) => sidecar_error_response(request.request_id, request.operation, error),
+            }
+        }
         DesktopSidecarOperation::AccessibilitySnapshot => {
             match sidecar_accessibility_snapshot(request.payload) {
                 Ok(payload) => json_response(request.request_id, request.operation, payload),
@@ -278,17 +308,37 @@ fn sidecar_capabilities() -> DesktopSidecarCapabilities {
         window_list: true,
         app_list: true,
         foreground_state: true,
-        cursor_state: cfg!(any(target_os = "macos", target_os = "windows", target_os = "linux")),
+        cursor_state: cfg!(any(
+            target_os = "macos",
+            target_os = "windows",
+            target_os = "linux"
+        )),
         accessibility_snapshot: cfg!(target_os = "macos"),
         ocr_snapshot: cfg!(target_os = "macos"),
-        mouse_input: cfg!(any(target_os = "macos", target_os = "windows", target_os = "linux")),
-        keyboard_input: cfg!(any(target_os = "macos", target_os = "windows", target_os = "linux")),
-        clipboard: cfg!(any(target_os = "macos", target_os = "windows", target_os = "linux")),
+        mouse_input: cfg!(any(
+            target_os = "macos",
+            target_os = "windows",
+            target_os = "linux"
+        )),
+        keyboard_input: cfg!(any(
+            target_os = "macos",
+            target_os = "windows",
+            target_os = "linux"
+        )),
+        clipboard: cfg!(any(
+            target_os = "macos",
+            target_os = "windows",
+            target_os = "linux"
+        )),
         accessibility_actions: cfg!(target_os = "macos"),
         menu_select: cfg!(target_os = "macos"),
-        webrtc_stream: true,
+        webrtc_stream: native_webrtc_stream_available(),
         screenshot_fallback_stream: true,
-        manual_cloud_control: cfg!(any(target_os = "macos", target_os = "windows", target_os = "linux")),
+        manual_cloud_control: cfg!(any(
+            target_os = "macos",
+            target_os = "windows",
+            target_os = "linux"
+        )),
     }
 }
 
@@ -424,8 +474,8 @@ fn sidecar_apps() -> Result<DesktopSidecarAppListPayload, DesktopSidecarErrorBod
     })
 }
 
-fn sidecar_foreground_state() -> Result<DesktopSidecarForegroundStatePayload, DesktopSidecarErrorBody>
-{
+fn sidecar_foreground_state(
+) -> Result<DesktopSidecarForegroundStatePayload, DesktopSidecarErrorBody> {
     sidecar_window_rows().map(|windows| DesktopSidecarForegroundStatePayload {
         foreground: windows.into_iter().find(|window| window.focused),
     })
@@ -476,14 +526,15 @@ fn sidecar_cursor_state() -> Result<DesktopSidecarCursorStatePayload, DesktopSid
 fn sidecar_element_at_point(
     payload: serde_json::Value,
 ) -> Result<DesktopSidecarElementAtPointPayload, DesktopSidecarErrorBody> {
-    let request = serde_json::from_value::<DesktopSidecarPointRequest>(payload).map_err(|error| {
-        DesktopSidecarErrorBody::new(
-            "sidecar_schema_invalid",
-            format!("Element-at-point request payload was malformed: {error}"),
-            false,
-            false,
-        )
-    })?;
+    let request =
+        serde_json::from_value::<DesktopSidecarPointRequest>(payload).map_err(|error| {
+            DesktopSidecarErrorBody::new(
+                "sidecar_schema_invalid",
+                format!("Element-at-point request payload was malformed: {error}"),
+                false,
+                false,
+            )
+        })?;
     if request.x < 0 || request.y < 0 {
         return Err(DesktopSidecarErrorBody::new(
             "sidecar_schema_invalid",
@@ -498,17 +549,15 @@ fn sidecar_element_at_point(
 fn sidecar_accessibility_snapshot(
     payload: serde_json::Value,
 ) -> Result<DesktopSidecarAccessibilitySnapshotPayload, DesktopSidecarErrorBody> {
-    let request =
-        serde_json::from_value::<DesktopSidecarAccessibilitySnapshotRequest>(payload).map_err(
-            |error| {
-                DesktopSidecarErrorBody::new(
-                    "sidecar_schema_invalid",
-                    format!("Accessibility snapshot request payload was malformed: {error}"),
-                    false,
-                    false,
-                )
-            },
-        )?;
+    let request = serde_json::from_value::<DesktopSidecarAccessibilitySnapshotRequest>(payload)
+        .map_err(|error| {
+            DesktopSidecarErrorBody::new(
+                "sidecar_schema_invalid",
+                format!("Accessibility snapshot request payload was malformed: {error}"),
+                false,
+                false,
+            )
+        })?;
     if request.limit.is_some_and(|limit| limit == 0 || limit > 500) {
         return Err(DesktopSidecarErrorBody::new(
             "sidecar_schema_invalid",
@@ -636,8 +685,13 @@ fn sidecar_screenshot(
 
 fn sidecar_stream_capabilities() -> DesktopSidecarStreamCapabilitiesPayload {
     DesktopSidecarStreamCapabilitiesPayload {
-        webrtc_stream: true,
+        webrtc_stream: native_webrtc_stream_available(),
         screenshot_fallback_stream: true,
+        native_video_track: native_webrtc_stream_available(),
+        preferred_codec: Some(MIME_TYPE_H264.into()),
+        capture_backends: native_capture_backends(),
+        encoder_backends: native_encoder_backends(),
+        hardware_encoding: native_webrtc_stream_available(),
         supported_qualities: vec![
             DesktopSidecarStreamQuality::Low,
             DesktopSidecarStreamQuality::Balanced,
@@ -645,7 +699,7 @@ fn sidecar_stream_capabilities() -> DesktopSidecarStreamCapabilitiesPayload {
         ],
         max_width: WEBRTC_MAX_WIDTH,
         max_frame_rate: WEBRTC_MAX_FRAME_RATE,
-        message: "Native WebRTC desktop streaming is available through an authenticated sidecar data channel with screenshot fallback.".into(),
+        message: "Native WebRTC desktop streaming publishes an H.264 video track with screenshot fallback available only for degraded mode.".into(),
     }
 }
 
@@ -653,16 +707,15 @@ fn sidecar_stream(
     operation: DesktopSidecarOperation,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, DesktopSidecarErrorBody> {
-    let request = serde_json::from_value::<DesktopSidecarStreamRequest>(payload).map_err(
-        |error| {
+    let request =
+        serde_json::from_value::<DesktopSidecarStreamRequest>(payload).map_err(|error| {
             DesktopSidecarErrorBody::new(
                 "sidecar_schema_invalid",
                 format!("Stream request payload was malformed: {error}"),
                 false,
                 false,
             )
-        },
-    )?;
+        })?;
     validate_stream_request(operation, &request)?;
     let response = match operation {
         DesktopSidecarOperation::StreamStart => start_webrtc_stream(request)?,
@@ -672,14 +725,12 @@ fn sidecar_stream(
         DesktopSidecarOperation::StreamStatus => webrtc_stream_status(request)?,
         DesktopSidecarOperation::StreamSetQuality => update_webrtc_stream_quality(request)?,
         DesktopSidecarOperation::StreamRequestKeyframe => request_webrtc_stream_keyframe(request)?,
-        DesktopSidecarOperation::StreamOffer => {
-            return Err(DesktopSidecarErrorBody::new(
-                "stream_offer_not_supported",
-                "This sidecar publishes desktop streams and expects the browser to answer its offer.",
-                false,
-                false,
-            ))
-        }
+        DesktopSidecarOperation::StreamOffer => return Err(DesktopSidecarErrorBody::new(
+            "stream_offer_not_supported",
+            "This sidecar publishes desktop streams and expects the browser to answer its offer.",
+            false,
+            false,
+        )),
         _ => return Err(unimplemented_operation()),
     };
     serde_json::to_value(response).map_err(|error| {
@@ -695,20 +746,19 @@ fn sidecar_stream(
 fn start_webrtc_stream(
     request: DesktopSidecarStreamRequest,
 ) -> Result<DesktopSidecarStreamPayload, DesktopSidecarErrorBody> {
+    if !native_webrtc_stream_available() {
+        return Err(native_webrtc_unavailable_error());
+    }
     let stream_id = required_stream_id(&request)?;
     stop_webrtc_stream_by_id(&stream_id)?;
     let config = Arc::new(Mutex::new(webrtc_stream_config(&request, &stream_id)));
     let stop = Arc::new(AtomicBool::new(false));
-    let opened = Arc::new(AtomicBool::new(false));
+    let media_started = Arc::new(AtomicBool::new(false));
     let keyframe_requested = Arc::new(AtomicBool::new(true));
+    let metrics = Arc::new(StreamTelemetry::default());
     let runtime = webrtc_runtime()?;
-    let (peer_connection, data_channel, session_description) = runtime.block_on(create_webrtc_offer(
-        &request,
-        Arc::clone(&config),
-        Arc::clone(&stop),
-        Arc::clone(&opened),
-        Arc::clone(&keyframe_requested),
-    ))?;
+    let (peer_connection, video_track, rtp_sender, session_description) =
+        runtime.block_on(create_webrtc_offer(&request))?;
 
     active_webrtc_streams()
         .lock()
@@ -717,11 +767,13 @@ fn start_webrtc_stream(
             stream_id.clone(),
             ActiveWebRtcStream {
                 peer_connection,
-                data_channel,
+                video_track,
+                rtp_sender,
                 stop,
-                opened,
+                media_started,
                 keyframe_requested,
                 config: Arc::clone(&config),
+                metrics: Arc::clone(&metrics),
             },
         );
 
@@ -737,21 +789,22 @@ fn start_webrtc_stream(
 
 async fn create_webrtc_offer(
     request: &DesktopSidecarStreamRequest,
-    config: Arc<Mutex<WebRtcStreamConfig>>,
-    stop: Arc<AtomicBool>,
-    opened: Arc<AtomicBool>,
-    keyframe_requested: Arc<AtomicBool>,
 ) -> Result<
     (
         Arc<RTCPeerConnection>,
-        Arc<RTCDataChannel>,
+        Arc<TrackLocalStaticSample>,
+        Arc<RTCRtpSender>,
         DesktopSidecarSessionDescription,
     ),
     DesktopSidecarErrorBody,
 > {
     let mut media_engine = MediaEngine::default();
     media_engine.register_default_codecs().map_err(|error| {
-        stream_webrtc_error("stream_webrtc_failed", "could not register WebRTC codecs", error)
+        stream_webrtc_error(
+            "stream_webrtc_failed",
+            "could not register WebRTC codecs",
+            error,
+        )
     })?;
     let api = APIBuilder::new().with_media_engine(media_engine).build();
     let peer_connection = Arc::new(
@@ -761,32 +814,41 @@ async fn create_webrtc_offer(
         })
         .await
         .map_err(|error| {
-            stream_webrtc_error("stream_webrtc_failed", "could not create peer connection", error)
+            stream_webrtc_error(
+                "stream_webrtc_failed",
+                "could not create peer connection",
+                error,
+            )
         })?,
     );
-
-    let data_channel = peer_connection
-        .create_data_channel(WEBRTC_DATA_CHANNEL_LABEL, None)
+    let video_track = Arc::new(TrackLocalStaticSample::new(
+        RTCRtpCodecCapability {
+            mime_type: MIME_TYPE_H264.to_owned(),
+            clock_rate: 90_000,
+            sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
+                .into(),
+            ..Default::default()
+        },
+        "desktop-video".into(),
+        "xero-desktop".into(),
+    ));
+    let rtp_sender = peer_connection
+        .add_track(Arc::clone(&video_track) as Arc<dyn TrackLocal + Send + Sync>)
         .await
         .map_err(|error| {
-            stream_webrtc_error("stream_webrtc_failed", "could not create stream data channel", error)
+            stream_webrtc_error(
+                "stream_webrtc_failed",
+                "could not add WebRTC video track",
+                error,
+            )
         })?;
-    let data_channel_for_open = Arc::clone(&data_channel);
-    data_channel.on_open(Box::new(move || {
-        let data_channel = Arc::clone(&data_channel_for_open);
-        let config = Arc::clone(&config);
-        let stop = Arc::clone(&stop);
-        let opened = Arc::clone(&opened);
-        let keyframe_requested = Arc::clone(&keyframe_requested);
-        Box::pin(async move {
-            opened.store(true, Ordering::SeqCst);
-            run_webrtc_frame_loop(data_channel, config, stop, keyframe_requested).await;
-            opened.store(false, Ordering::SeqCst);
-        })
-    }));
 
     let offer = peer_connection.create_offer(None).await.map_err(|error| {
-        stream_webrtc_error("stream_webrtc_failed", "could not create WebRTC offer", error)
+        stream_webrtc_error(
+            "stream_webrtc_failed",
+            "could not create WebRTC offer",
+            error,
+        )
     })?;
     let mut gather_complete = peer_connection.gathering_complete_promise().await;
     peer_connection
@@ -811,7 +873,8 @@ async fn create_webrtc_offer(
 
     Ok((
         peer_connection,
-        data_channel,
+        video_track,
+        rtp_sender,
         DesktopSidecarSessionDescription {
             sdp_type: "offer".into(),
             sdp: description.sdp,
@@ -853,6 +916,7 @@ fn apply_webrtc_stream_answer(
                 )
             })
     })?;
+    start_webrtc_media_publisher(&active)?;
     Ok(active_webrtc_stream_payload(
         &stream_id,
         "Browser WebRTC answer was applied.",
@@ -996,22 +1060,27 @@ fn stop_webrtc_stream_by_id(
             stream_id: stream_id.into(),
             display_id: None,
             max_width: 1280,
-            max_frame_rate: 2,
+            max_frame_rate: 24,
             include_cursor: true,
             quality: DesktopSidecarStreamQuality::Balanced,
             redaction: None,
         });
     };
     active.stop.store(true, Ordering::SeqCst);
-    let config = active.config.lock().map_err(|_| stream_state_error())?.clone();
+    active.media_started.store(false, Ordering::SeqCst);
+    let config = active
+        .config
+        .lock()
+        .map_err(|_| stream_state_error())?
+        .clone();
     webrtc_runtime()?.block_on(async {
-        active
-            .peer_connection
-            .close()
-            .await
-            .map_err(|error| {
-                stream_webrtc_error("stream_webrtc_failed", "could not close WebRTC stream", error)
-            })
+        active.peer_connection.close().await.map_err(|error| {
+            stream_webrtc_error(
+                "stream_webrtc_failed",
+                "could not close WebRTC stream",
+                error,
+            )
+        })
     })?;
     Ok(config)
 }
@@ -1021,15 +1090,28 @@ fn active_webrtc_stream_payload(
     message: &'static str,
 ) -> Result<DesktopSidecarStreamPayload, DesktopSidecarErrorBody> {
     let active = active_webrtc_stream(stream_id)?;
-    let config = active.config.lock().map_err(|_| stream_state_error())?;
-    let status = if active.opened.load(Ordering::SeqCst)
-        || active.data_channel.ready_state() == RTCDataChannelState::Open
-    {
+    let config = active
+        .config
+        .lock()
+        .map_err(|_| stream_state_error())?
+        .clone();
+    refresh_webrtc_transport_metrics(&active);
+    let metrics = stream_metrics_payload(&active.metrics);
+    let status = if metrics.fallback_reason.is_some() {
+        DesktopSidecarStreamStatus::Failed
+    } else if active.media_started.load(Ordering::SeqCst) {
         DesktopSidecarStreamStatus::Live
     } else {
         DesktopSidecarStreamStatus::Starting
     };
-    Ok(webrtc_stream_payload(&config, status, message, None, None))
+    Ok(webrtc_stream_payload_with_metrics(
+        &config,
+        status,
+        message,
+        None,
+        None,
+        Some(metrics),
+    ))
 }
 
 fn webrtc_stream_payload(
@@ -1038,6 +1120,24 @@ fn webrtc_stream_payload(
     message: impl Into<String>,
     session_description: Option<DesktopSidecarSessionDescription>,
     ice_candidate: Option<xero_desktop_control_ipc::DesktopSidecarIceCandidate>,
+) -> DesktopSidecarStreamPayload {
+    webrtc_stream_payload_with_metrics(
+        config,
+        status,
+        message,
+        session_description,
+        ice_candidate,
+        None,
+    )
+}
+
+fn webrtc_stream_payload_with_metrics(
+    config: &WebRtcStreamConfig,
+    status: DesktopSidecarStreamStatus,
+    message: impl Into<String>,
+    session_description: Option<DesktopSidecarSessionDescription>,
+    ice_candidate: Option<xero_desktop_control_ipc::DesktopSidecarIceCandidate>,
+    metrics: Option<DesktopSidecarStreamMetrics>,
 ) -> DesktopSidecarStreamPayload {
     DesktopSidecarStreamPayload {
         stream_id: Some(config.stream_id.clone()),
@@ -1050,6 +1150,7 @@ fn webrtc_stream_payload(
         include_cursor: config.include_cursor,
         session_description,
         ice_candidate,
+        metrics,
         message: message.into(),
     }
 }
@@ -1111,8 +1212,8 @@ fn apply_webrtc_stream_request_to_config(
 
 fn sidecar_stream_quality_profile(quality: DesktopSidecarStreamQuality) -> (u32, u32) {
     match quality {
-        DesktopSidecarStreamQuality::Low => (960, 2),
-        DesktopSidecarStreamQuality::Balanced => (1280, 4),
+        DesktopSidecarStreamQuality::Low => (960, 15),
+        DesktopSidecarStreamQuality::Balanced => (1280, 24),
         DesktopSidecarStreamQuality::High => (WEBRTC_MAX_WIDTH, WEBRTC_MAX_FRAME_RATE),
     }
 }
@@ -1135,142 +1236,873 @@ fn webrtc_ice_servers(
         .collect()
 }
 
-async fn run_webrtc_frame_loop(
-    data_channel: Arc<RTCDataChannel>,
-    config: Arc<Mutex<WebRtcStreamConfig>>,
+fn start_webrtc_media_publisher(
+    active: &ActiveWebRtcStream,
+) -> Result<(), DesktopSidecarErrorBody> {
+    if active.media_started.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    let _ = active.metrics.started_at.set(Instant::now());
+    let track = Arc::clone(&active.video_track);
+    let rtp_sender = Arc::clone(&active.rtp_sender);
+    let peer_connection = Arc::clone(&active.peer_connection);
+    let config = Arc::clone(&active.config);
+    let stop = Arc::clone(&active.stop);
+    let keyframe_requested = Arc::clone(&active.keyframe_requested);
+    let metrics = Arc::clone(&active.metrics);
+    let media_started = Arc::clone(&active.media_started);
+    let rtcp_stop = Arc::clone(&stop);
+    let rtcp_keyframe_requested = Arc::clone(&keyframe_requested);
+    webrtc_runtime()?.spawn(async move {
+        drain_webrtc_rtcp(rtp_sender, rtcp_stop, rtcp_keyframe_requested).await;
+    });
+    webrtc_runtime()?.spawn(async move {
+        if let Err(error) = run_webrtc_media_loop(
+            track,
+            peer_connection,
+            config,
+            stop,
+            keyframe_requested,
+            Arc::clone(&metrics),
+        )
+        .await
+        {
+            set_stream_metric_string(&metrics.fallback_reason, Some(error.message));
+        }
+        media_started.store(false, Ordering::SeqCst);
+    });
+    Ok(())
+}
+
+async fn drain_webrtc_rtcp(
+    rtp_sender: Arc<RTCRtpSender>,
     stop: Arc<AtomicBool>,
     keyframe_requested: Arc<AtomicBool>,
 ) {
     while !stop.load(Ordering::SeqCst) {
-        let frame_config = match config.lock() {
-            Ok(config) => config.clone(),
-            Err(_) => break,
-        };
-        let frame = tokio::task::spawn_blocking(move || capture_webrtc_frame(&frame_config)).await;
-        if let Ok(Ok(frame)) = frame {
-            let stream_id = match config.lock() {
-                Ok(config) => config.stream_id.clone(),
-                Err(_) => break,
-            };
-            let _ = send_webrtc_frame(&data_channel, &stream_id, frame).await;
-        }
-        let frame_rate = match config.lock() {
-            Ok(config) => config.max_frame_rate.max(1),
-            Err(_) => break,
-        };
-        let interval = Duration::from_millis((1_000 / frame_rate.max(1) as u64).max(100));
-        let mut slept = Duration::from_millis(0);
-        while slept < interval && !stop.load(Ordering::SeqCst) {
-            if keyframe_requested.swap(false, Ordering::SeqCst) {
-                break;
+        match tokio::time::timeout(Duration::from_secs(1), rtp_sender.read_rtcp()).await {
+            Ok(Ok((packets, _attributes))) => {
+                if packets
+                    .iter()
+                    .any(|packet| rtcp_packet_requests_keyframe(packet.as_ref()))
+                {
+                    keyframe_requested.store(true, Ordering::SeqCst);
+                }
             }
-            let step = Duration::from_millis(50);
-            tokio::time::sleep(step).await;
-            slept += step;
+            Ok(Err(_)) => break,
+            Err(_) => {}
         }
     }
 }
 
-fn capture_webrtc_frame(
-    config: &WebRtcStreamConfig,
-) -> Result<EncodedWebRtcFrame, DesktopSidecarErrorBody> {
-    let capture = capture_desktop_image(&DesktopSidecarScreenshotRequest {
-        display_id: config.display_id.clone(),
-        region: None,
-        redaction: config.redaction.clone(),
-    })?;
-    encode_webrtc_frame(capture, config.max_width)
+fn rtcp_packet_requests_keyframe(
+    packet: &(dyn webrtc::rtcp::packet::Packet + Send + Sync),
+) -> bool {
+    packet.as_any().is::<PictureLossIndication>() || packet.as_any().is::<FullIntraRequest>()
 }
 
-fn encode_webrtc_frame(
-    capture: CapturedDesktopImage,
-    max_width: u32,
-) -> Result<EncodedWebRtcFrame, DesktopSidecarErrorBody> {
-    let source_width = capture.image.width();
-    let source_height = capture.image.height();
-    let image = if source_width > max_width {
-        let target_height = ((source_height as u64 * max_width as u64) / source_width as u64)
-            .max(1)
-            .min(u32::MAX as u64) as u32;
-        image::imageops::resize(
-            &capture.image,
-            max_width,
-            target_height,
-            FilterType::Triangle,
+async fn run_webrtc_media_loop(
+    track: Arc<TrackLocalStaticSample>,
+    peer_connection: Arc<RTCPeerConnection>,
+    config: Arc<Mutex<WebRtcStreamConfig>>,
+    stop: Arc<AtomicBool>,
+    keyframe_requested: Arc<AtomicBool>,
+    metrics: Arc<StreamTelemetry>,
+) -> Result<(), DesktopSidecarErrorBody> {
+    #[cfg(target_os = "macos")]
+    {
+        run_macos_webrtc_media_loop(
+            track,
+            peer_connection,
+            config,
+            stop,
+            keyframe_requested,
+            metrics,
         )
-    } else {
-        capture.image
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (track, peer_connection, config, stop, keyframe_requested);
+        set_stream_metric_string(
+            &metrics.capture_backend,
+            Some("native_publisher_unavailable".into()),
+        );
+        Err(native_webrtc_unavailable_error())
+    }
+}
+
+fn stream_metrics_payload(metrics: &StreamTelemetry) -> DesktopSidecarStreamMetrics {
+    let started_at = metrics.started_at.get().copied();
+    DesktopSidecarStreamMetrics {
+        capture_backend: stream_metric_string(&metrics.capture_backend),
+        encoder_backend: stream_metric_string(&metrics.encoder_backend),
+        encoder_hardware: Some(metrics.encoder_hardware.load(Ordering::Relaxed)),
+        preferred_codec: Some(MIME_TYPE_H264.into()),
+        fallback_reason: stream_metric_string(&metrics.fallback_reason),
+        capture_frame_rate: stream_metric_rate(
+            metrics.capture_frames.load(Ordering::Relaxed),
+            started_at,
+        ),
+        capture_dropped_frames: metrics.capture_dropped_frames.load(Ordering::Relaxed),
+        encode_frame_rate: stream_metric_rate(
+            metrics.encode_frames.load(Ordering::Relaxed),
+            started_at,
+        ),
+        encode_latency_ms: stream_metric_average(
+            metrics.encode_latency_total_ms.load(Ordering::Relaxed),
+            metrics.encode_frames.load(Ordering::Relaxed),
+        ),
+        outbound_bitrate_bps: stream_metric_bitrate(
+            metrics.bytes_sent.load(Ordering::Relaxed),
+            started_at,
+        ),
+        available_outgoing_bitrate_bps: stream_metric_nonzero_u64(
+            metrics
+                .available_outgoing_bitrate_bps
+                .load(Ordering::Relaxed),
+        ),
+        packets_sent: Some(metrics.packets_sent.load(Ordering::Relaxed)),
+        bytes_sent: Some(metrics.bytes_sent.load(Ordering::Relaxed)),
+        packet_loss: Some(metrics.packets_lost.load(Ordering::Relaxed)),
+        round_trip_time_ms: Some(metrics.round_trip_time_ms.load(Ordering::Relaxed) as u32),
+        retransmits: Some(metrics.retransmits.load(Ordering::Relaxed)),
+        keyframes: metrics.keyframes.load(Ordering::Relaxed),
+    }
+}
+
+fn stream_metric_string(value: &Mutex<Option<String>>) -> Option<String> {
+    value.lock().ok().and_then(|value| value.clone())
+}
+
+fn set_stream_metric_string(value: &Mutex<Option<String>>, next: Option<String>) {
+    if let Ok(mut value) = value.lock() {
+        *value = next;
+    }
+}
+
+fn stream_metric_rate(total: u64, started_at: Option<Instant>) -> Option<u32> {
+    let started_at = started_at?;
+    let elapsed = started_at.elapsed().as_secs_f64();
+    if elapsed <= 0.0 {
+        return None;
+    }
+    Some((total as f64 / elapsed).round().clamp(0.0, u32::MAX as f64) as u32)
+}
+
+fn stream_metric_bitrate(total_bytes: u64, started_at: Option<Instant>) -> Option<u64> {
+    let started_at = started_at?;
+    let elapsed = started_at.elapsed().as_secs_f64();
+    if elapsed <= 0.0 {
+        return None;
+    }
+    Some(((total_bytes as f64 * 8.0) / elapsed).round().max(0.0) as u64)
+}
+
+fn stream_metric_average(total: u64, count: u64) -> Option<u32> {
+    if count == 0 {
+        return None;
+    }
+    Some((total / count).min(u32::MAX as u64) as u32)
+}
+
+fn stream_metric_nonzero_u64(value: u64) -> Option<u64> {
+    (value > 0).then_some(value)
+}
+
+fn refresh_webrtc_transport_metrics(active: &ActiveWebRtcStream) {
+    let peer_connection = Arc::clone(&active.peer_connection);
+    let metrics = Arc::clone(&active.metrics);
+    let Ok(runtime) = webrtc_runtime() else {
+        return;
     };
-    let width = image.width();
-    let height = image.height();
-    let rgb = DynamicImage::ImageRgba8(image).to_rgb8();
-    let mut bytes = Vec::new();
-    JpegEncoder::new_with_quality(&mut bytes, WEBRTC_JPEG_QUALITY)
-        .encode_image(&DynamicImage::ImageRgb8(rgb))
-        .map_err(|error| {
+    runtime.block_on(async move {
+        let stats = peer_connection.get_stats().await;
+        for report in stats.reports.values() {
+            match report {
+                StatsReportType::OutboundRTP(outbound) if outbound.kind == "video" => {
+                    metrics
+                        .packets_sent
+                        .store(outbound.packets_sent, Ordering::Relaxed);
+                    metrics
+                        .bytes_sent
+                        .store(outbound.bytes_sent, Ordering::Relaxed);
+                }
+                StatsReportType::RemoteInboundRTP(remote) if remote.kind == "video" => {
+                    metrics
+                        .packets_lost
+                        .store(remote.packets_lost, Ordering::Relaxed);
+                    if let Some(rtt) = remote.round_trip_time {
+                        metrics
+                            .round_trip_time_ms
+                            .store((rtt * 1_000.0).round().max(0.0) as u64, Ordering::Relaxed);
+                    }
+                }
+                StatsReportType::CandidatePair(candidate_pair) => {
+                    metrics
+                        .retransmits
+                        .store(candidate_pair.retransmissions_sent, Ordering::Relaxed);
+                    if candidate_pair.available_outgoing_bitrate.is_finite()
+                        && candidate_pair.available_outgoing_bitrate > 0.0
+                    {
+                        metrics.available_outgoing_bitrate_bps.store(
+                            candidate_pair.available_outgoing_bitrate.round() as u64,
+                            Ordering::Relaxed,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+}
+
+fn native_capture_backends() -> Vec<String> {
+    if native_webrtc_stream_available() {
+        vec!["screencapturekit".into()]
+    } else {
+        Vec::new()
+    }
+}
+
+fn native_encoder_backends() -> Vec<String> {
+    if native_webrtc_stream_available() {
+        vec!["videotoolbox_h264".into()]
+    } else {
+        Vec::new()
+    }
+}
+
+fn native_webrtc_stream_available() -> bool {
+    cfg!(target_os = "macos")
+}
+
+fn native_webrtc_unavailable_error() -> DesktopSidecarErrorBody {
+    DesktopSidecarErrorBody::new(
+        "stream_native_publisher_unavailable",
+        "Native WebRTC media-track desktop publishing is not implemented on this platform yet.",
+        true,
+        false,
+    )
+}
+
+fn stream_capture_bitrate(quality: DesktopSidecarStreamQuality) -> i32 {
+    match quality {
+        DesktopSidecarStreamQuality::Low => 1_200_000,
+        DesktopSidecarStreamQuality::Balanced => 3_500_000,
+        DesktopSidecarStreamQuality::High => 8_000_000,
+    }
+}
+
+fn stream_target_bitrate(quality: DesktopSidecarStreamQuality, metrics: &StreamTelemetry) -> i32 {
+    let base = stream_capture_bitrate(quality);
+    let packets_lost = metrics.packets_lost.load(Ordering::Relaxed).max(0);
+    let rtt_ms = metrics.round_trip_time_ms.load(Ordering::Relaxed);
+    let congestion_scale = if rtt_ms >= 500 || packets_lost >= 50 {
+        0.5
+    } else if rtt_ms >= 250 || packets_lost > 0 {
+        0.75
+    } else {
+        1.0
+    };
+    let available_ceiling = match metrics
+        .available_outgoing_bitrate_bps
+        .load(Ordering::Relaxed)
+    {
+        0 => base,
+        available => ((available as f64) * 0.85)
+            .round()
+            .clamp(300_000.0, base as f64) as i32,
+    };
+    ((base as f64) * congestion_scale)
+        .round()
+        .clamp(300_000.0, available_ceiling as f64) as i32
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NativeVideoTarget {
+    display_id: Option<String>,
+    max_width: u32,
+    fps: u32,
+    include_cursor: bool,
+    quality: DesktopSidecarStreamQuality,
+}
+
+#[cfg(target_os = "macos")]
+impl NativeVideoTarget {
+    fn from_config(config: &WebRtcStreamConfig) -> Self {
+        Self {
+            display_id: config.display_id.clone(),
+            max_width: config.max_width,
+            fps: config.max_frame_rate.max(1).min(WEBRTC_MAX_FRAME_RATE),
+            include_cursor: config.include_cursor,
+            quality: config.quality,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct MacosScreenFrame {
+    surface: apple_cf::iosurface::IOSurface,
+}
+
+#[cfg(target_os = "macos")]
+struct MacosCaptureLease {
+    stream: screencapturekit::stream::SCStream,
+    receiver: tokio::sync::mpsc::Receiver<MacosScreenFrame>,
+    target: NativeVideoTarget,
+    width: u32,
+    height: u32,
+}
+
+#[cfg(target_os = "macos")]
+impl MacosCaptureLease {
+    fn start(
+        target: NativeVideoTarget,
+        metrics: Arc<StreamTelemetry>,
+    ) -> Result<Self, DesktopSidecarErrorBody> {
+        use screencapturekit::{
+            cm::{CMSampleBufferExt, CMSampleBufferSCExt},
+            prelude::*,
+            stream::configuration::PixelFormat,
+        };
+
+        let content = SCShareableContent::get().map_err(|error| {
             DesktopSidecarErrorBody::new(
-                "stream_frame_encode_failed",
-                format!("Desktop sidecar could not encode a WebRTC stream frame: {error}"),
+                "permission_screen_recording_denied",
+                format!("ScreenCaptureKit could not enumerate shareable displays: {error}"),
                 true,
-                false,
+                true,
             )
         })?;
-    Ok(EncodedWebRtcFrame {
-        bytes,
-        media_type: "image/jpeg",
-        width,
-        height,
-        scale_factor: capture.scale_factor,
-        redactions_applied: capture.redactions_applied,
-        captured_at: capture.captured_at,
+        let displays = content.displays();
+        let display = select_screencapturekit_display(&displays, target.display_id.as_deref())?;
+        let (width, height) =
+            scaled_even_dimensions(display.width(), display.height(), target.max_width);
+        let filter = SCContentFilter::create()
+            .with_display(&display)
+            .with_excluding_windows(&[])
+            .build();
+        let config = SCStreamConfiguration::new()
+            .with_width(width)
+            .with_height(height)
+            .with_pixel_format(PixelFormat::BGRA)
+            .with_queue_depth(3)
+            .with_fps(target.fps)
+            .with_shows_cursor(target.include_cursor)
+            .with_scales_to_fit(true);
+        let (sender, receiver) = tokio::sync::mpsc::channel(3);
+        let metrics_for_handler = Arc::clone(&metrics);
+        let mut stream = SCStream::new(&filter, &config);
+        stream.add_output_handler(
+            move |sample: screencapturekit::cm::CMSampleBuffer,
+                  output_type: screencapturekit::stream::output_type::SCStreamOutputType| {
+                if output_type != SCStreamOutputType::Screen {
+                    return;
+                }
+                if sample
+                    .frame_status()
+                    .is_some_and(|status| !status.has_content())
+                {
+                    metrics_for_handler
+                        .capture_dropped_frames
+                        .fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+                let Some(image_buffer) = sample.image_buffer() else {
+                    metrics_for_handler
+                        .capture_dropped_frames
+                        .fetch_add(1, Ordering::Relaxed);
+                    return;
+                };
+                let Some(surface) = image_buffer.io_surface() else {
+                    metrics_for_handler
+                        .capture_dropped_frames
+                        .fetch_add(1, Ordering::Relaxed);
+                    return;
+                };
+                metrics_for_handler
+                    .capture_frames
+                    .fetch_add(1, Ordering::Relaxed);
+                if sender.try_send(MacosScreenFrame { surface }).is_err() {
+                    metrics_for_handler
+                        .capture_dropped_frames
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+            },
+            SCStreamOutputType::Screen,
+        );
+        stream.start_capture().map_err(|error| {
+            DesktopSidecarErrorBody::new(
+                "stream_capture_failed",
+                format!("ScreenCaptureKit capture could not start: {error}"),
+                true,
+                true,
+            )
+        })?;
+        set_stream_metric_string(&metrics.capture_backend, Some("screencapturekit".into()));
+        Ok(Self {
+            stream,
+            receiver,
+            target,
+            width,
+            height,
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for MacosCaptureLease {
+    fn drop(&mut self) {
+        let _ = self.stream.stop_capture();
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn select_screencapturekit_display(
+    displays: &[screencapturekit::shareable_content::SCDisplay],
+    display_id: Option<&str>,
+) -> Result<screencapturekit::shareable_content::SCDisplay, DesktopSidecarErrorBody> {
+    if let Some(display_id) = display_id {
+        if let Some(display) = displays
+            .iter()
+            .find(|display| display.display_id().to_string() == display_id)
+        {
+            return Ok(display.clone());
+        }
+    }
+    displays.first().cloned().ok_or_else(|| {
+        DesktopSidecarErrorBody::new(
+            "stream_capture_unavailable",
+            "ScreenCaptureKit did not report any displays to capture.",
+            true,
+            true,
+        )
     })
 }
 
-async fn send_webrtc_frame(
-    data_channel: &RTCDataChannel,
-    stream_id: &str,
-    frame: EncodedWebRtcFrame,
-) -> Result<(), DesktopSidecarErrorBody> {
-    let frame_id = format!("frame_{}", now_millis());
-    let encoded = base64::engine::general_purpose::STANDARD.encode(frame.bytes);
-    let total = encoded.len().div_ceil(WEBRTC_FRAME_CHUNK_CHARS).max(1);
-    for (seq, chunk) in encoded.as_bytes().chunks(WEBRTC_FRAME_CHUNK_CHARS).enumerate() {
-        let data = std::str::from_utf8(chunk).map_err(|error| {
+#[cfg(target_os = "macos")]
+fn scaled_even_dimensions(source_width: u32, source_height: u32, max_width: u32) -> (u32, u32) {
+    let width = source_width.min(max_width).max(2);
+    let height = ((source_height as u64 * width as u64) / source_width.max(1) as u64)
+        .max(2)
+        .min(u32::MAX as u64) as u32;
+    (make_even(width), make_even(height))
+}
+
+#[cfg(target_os = "macos")]
+fn make_even(value: u32) -> u32 {
+    if value % 2 == 0 {
+        value
+    } else {
+        value.saturating_sub(1).max(2)
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct MacosVideoToolboxEncoder {
+    session: videotoolbox::CompressionSession,
+    width: u32,
+    height: u32,
+    fps: u32,
+    bitrate: i32,
+    parameter_sets: Vec<Vec<u8>>,
+    nal_length_size: usize,
+}
+
+#[cfg(target_os = "macos")]
+impl MacosVideoToolboxEncoder {
+    fn new(
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate: i32,
+    ) -> Result<Self, DesktopSidecarErrorBody> {
+        let session = videotoolbox::CompressionSession::builder(
+            width as i32,
+            height as i32,
+            videotoolbox::Codec::H264,
+        )
+        .with_real_time(true)
+        .with_allow_frame_reordering(false)
+        .with_average_bit_rate(bitrate)
+        .with_expected_frame_rate(fps as f64)
+        .with_max_keyframe_interval(fps as i32)
+        .with_profile_level(videotoolbox::ProfileLevel::H264ConstrainedBaselineAutoLevel)
+        .build()
+        .map_err(|error| {
             DesktopSidecarErrorBody::new(
-                "stream_frame_encode_failed",
-                format!("Desktop sidecar could not chunk a WebRTC frame: {error}"),
+                "stream_encoder_failed",
+                format!("VideoToolbox H.264 encoder could not start: {error}"),
                 true,
                 false,
             )
         })?;
-        data_channel
-            .send_text(
-                json!({
-                    "schema": "xero.desktop_stream_frame_chunk.v1",
-                    "streamId": stream_id,
-                    "frameId": frame_id,
-                    "seq": seq,
-                    "total": total,
-                    "mediaType": frame.media_type,
-                    "width": frame.width,
-                    "height": frame.height,
-                    "scaleFactor": frame.scale_factor,
-                    "redactionsApplied": frame.redactions_applied,
-                    "capturedAt": frame.captured_at,
-                    "data": data,
-                })
-                .to_string(),
+        Ok(Self {
+            session,
+            width,
+            height,
+            fps,
+            bitrate,
+            parameter_sets: Vec::new(),
+            nal_length_size: 4,
+        })
+    }
+
+    fn matches(&self, width: u32, height: u32, fps: u32, bitrate: i32) -> bool {
+        self.width == width && self.height == height && self.fps == fps && self.bitrate == bitrate
+    }
+
+    fn encode(
+        &mut self,
+        frame: MacosScreenFrame,
+        frame_index: i64,
+        force_keyframe: bool,
+    ) -> Result<EncodedVideoSample, DesktopSidecarErrorBody> {
+        let started_at = Instant::now();
+        let encoded = self
+            .session
+            .encode(&frame.surface, (frame_index, self.fps as i32))
+            .map_err(|error| {
+                DesktopSidecarErrorBody::new(
+                    "stream_frame_encode_failed",
+                    format!("VideoToolbox could not encode a desktop frame: {error}"),
+                    true,
+                    false,
+                )
+            })?;
+        if encoded.data.is_empty() {
+            return Err(DesktopSidecarErrorBody::new(
+                "stream_frame_dropped",
+                "VideoToolbox dropped a desktop frame before emitting H.264 bytes.",
+                true,
+                false,
+            ));
+        }
+        if let Some(sample_buffer) = encoded.cm_sample_buffer() {
+            if let Ok((parameter_sets, nal_length_size)) =
+                h264_parameter_sets_from_sample_buffer(sample_buffer)
+            {
+                if !parameter_sets.is_empty() {
+                    self.parameter_sets = parameter_sets;
+                    self.nal_length_size = nal_length_size;
+                }
+            }
+        }
+        let include_parameter_sets = force_keyframe || frame_index == 0;
+        let (bytes, contains_idr) = h264_sample_to_annex_b(
+            &encoded.data,
+            self.nal_length_size,
+            if include_parameter_sets {
+                &self.parameter_sets
+            } else {
+                &[]
+            },
+        )?;
+        Ok(EncodedVideoSample {
+            bytes,
+            duration: Duration::from_micros(1_000_000 / self.fps.max(1) as u64),
+            encode_latency_ms: started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            keyframe: force_keyframe || contains_idr,
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn run_macos_webrtc_media_loop(
+    track: Arc<TrackLocalStaticSample>,
+    peer_connection: Arc<RTCPeerConnection>,
+    config: Arc<Mutex<WebRtcStreamConfig>>,
+    stop: Arc<AtomicBool>,
+    keyframe_requested: Arc<AtomicBool>,
+    metrics: Arc<StreamTelemetry>,
+) -> Result<(), DesktopSidecarErrorBody> {
+    set_stream_metric_string(&metrics.encoder_backend, Some("videotoolbox_h264".into()));
+    metrics.encoder_hardware.store(true, Ordering::Relaxed);
+    let mut capture: Option<MacosCaptureLease> = None;
+    let mut encoder: Option<MacosVideoToolboxEncoder> = None;
+    let mut frame_index = 0_i64;
+    while !stop.load(Ordering::SeqCst) {
+        let frame_config = config.lock().map_err(|_| stream_state_error())?.clone();
+        let target = NativeVideoTarget::from_config(&frame_config);
+        if capture
+            .as_ref()
+            .is_none_or(|capture| capture.target != target)
+        {
+            drop(capture.take());
+            encoder = None;
+            capture = Some(MacosCaptureLease::start(target, Arc::clone(&metrics))?);
+        }
+        let Some(capture_lease) = capture.as_mut() else {
+            continue;
+        };
+        let Some(frame) = capture_lease.receiver.recv().await else {
+            return Err(DesktopSidecarErrorBody::new(
+                "stream_capture_failed",
+                "ScreenCaptureKit capture ended before the stream was stopped.",
+                true,
+                true,
+            ));
+        };
+        let bitrate = stream_target_bitrate(frame_config.quality, &metrics);
+        let force_keyframe = keyframe_requested.swap(false, Ordering::SeqCst);
+        if force_keyframe
+            || encoder.as_ref().is_none_or(|encoder| {
+                !encoder.matches(
+                    capture_lease.width,
+                    capture_lease.height,
+                    capture_lease.target.fps,
+                    bitrate,
+                )
+            })
+        {
+            encoder = Some(MacosVideoToolboxEncoder::new(
+                capture_lease.width,
+                capture_lease.height,
+                capture_lease.target.fps,
+                bitrate,
+            )?);
+        }
+        let mut active_encoder = encoder.take().ok_or_else(stream_state_error)?;
+        let encoded = tokio::task::spawn_blocking(move || {
+            let result = active_encoder.encode(frame, frame_index, force_keyframe);
+            (active_encoder, result)
+        })
+        .await
+        .map_err(|error| {
+            DesktopSidecarErrorBody::new(
+                "stream_frame_encode_failed",
+                format!("VideoToolbox encoder task failed: {error}"),
+                true,
+                false,
             )
+        })?;
+        encoder = Some(encoded.0);
+        let sample = match encoded.1 {
+            Ok(sample) => sample,
+            Err(error) if error.code == "stream_frame_dropped" => {
+                metrics
+                    .capture_dropped_frames
+                    .fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        if sample.keyframe {
+            metrics.keyframes.fetch_add(1, Ordering::Relaxed);
+        }
+        metrics.encode_frames.fetch_add(1, Ordering::Relaxed);
+        metrics
+            .encode_latency_total_ms
+            .fetch_add(sample.encode_latency_ms, Ordering::Relaxed);
+        metrics
+            .bytes_sent
+            .fetch_add(sample.bytes.len() as u64, Ordering::Relaxed);
+        track
+            .write_sample(&Sample {
+                data: sample.bytes.into(),
+                duration: sample.duration,
+                ..Default::default()
+            })
             .await
             .map_err(|error| {
                 stream_webrtc_error(
                     "stream_webrtc_failed",
-                    "could not send a WebRTC desktop frame",
+                    "could not write H.264 sample to WebRTC video track",
                     error,
                 )
             })?;
+        frame_index += 1;
+        if frame_index % i64::from(capture_lease.target.fps.max(1)) == 0 {
+            refresh_webrtc_transport_metrics_for_peer(&peer_connection, &metrics).await;
+        }
     }
     Ok(())
+}
+
+async fn refresh_webrtc_transport_metrics_for_peer(
+    peer_connection: &RTCPeerConnection,
+    metrics: &StreamTelemetry,
+) {
+    let stats = peer_connection.get_stats().await;
+    for report in stats.reports.values() {
+        match report {
+            StatsReportType::OutboundRTP(outbound) if outbound.kind == "video" => {
+                metrics
+                    .packets_sent
+                    .store(outbound.packets_sent, Ordering::Relaxed);
+                metrics
+                    .bytes_sent
+                    .store(outbound.bytes_sent, Ordering::Relaxed);
+            }
+            StatsReportType::RemoteInboundRTP(remote) if remote.kind == "video" => {
+                metrics
+                    .packets_lost
+                    .store(remote.packets_lost, Ordering::Relaxed);
+                if let Some(rtt) = remote.round_trip_time {
+                    metrics
+                        .round_trip_time_ms
+                        .store((rtt * 1_000.0).round().max(0.0) as u64, Ordering::Relaxed);
+                }
+            }
+            StatsReportType::CandidatePair(candidate_pair) => {
+                metrics
+                    .retransmits
+                    .store(candidate_pair.retransmissions_sent, Ordering::Relaxed);
+                if candidate_pair.available_outgoing_bitrate.is_finite()
+                    && candidate_pair.available_outgoing_bitrate > 0.0
+                {
+                    metrics.available_outgoing_bitrate_bps.store(
+                        candidate_pair.available_outgoing_bitrate.round() as u64,
+                        Ordering::Relaxed,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn h264_parameter_sets_from_sample_buffer(
+    sample_buffer: &apple_cf::cm::CMSampleBuffer,
+) -> Result<(Vec<Vec<u8>>, usize), DesktopSidecarErrorBody> {
+    let description = sample_buffer.format_description().ok_or_else(|| {
+        DesktopSidecarErrorBody::new(
+            "stream_encoder_failed",
+            "VideoToolbox H.264 sample did not include a format description.",
+            true,
+            false,
+        )
+    })?;
+    let mut count = 0_usize;
+    let mut nal_length_size = 4_i32;
+    let mut sets = Vec::new();
+    for index in 0..2 {
+        let mut pointer: *const u8 = std::ptr::null();
+        let mut size = 0_usize;
+        let status = unsafe {
+            apple_cf::raw::CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+                description.as_ptr().cast(),
+                index,
+                &mut pointer,
+                &mut size,
+                &mut count,
+                &mut nal_length_size,
+            )
+        };
+        if status != 0 {
+            if index == 0 {
+                return Err(DesktopSidecarErrorBody::new(
+                    "stream_encoder_failed",
+                    format!("VideoToolbox H.264 parameter sets were unavailable: {status}"),
+                    true,
+                    false,
+                ));
+            }
+            break;
+        }
+        if !pointer.is_null() && size > 0 {
+            sets.push(unsafe { std::slice::from_raw_parts(pointer, size) }.to_vec());
+        }
+        if count <= index + 1 {
+            break;
+        }
+    }
+    Ok((
+        sets,
+        usize::try_from(nal_length_size).unwrap_or(4).clamp(1, 4),
+    ))
+}
+
+fn h264_sample_to_annex_b(
+    data: &[u8],
+    nal_length_size: usize,
+    parameter_sets: &[Vec<u8>],
+) -> Result<(Vec<u8>, bool), DesktopSidecarErrorBody> {
+    let mut output =
+        Vec::with_capacity(data.len() + parameter_sets.iter().map(Vec::len).sum::<usize>() + 32);
+    for set in parameter_sets {
+        append_annex_b_nal(&mut output, set);
+    }
+    if h264_annex_b_starts(data) {
+        output.extend_from_slice(data);
+        return Ok((output, h264_annex_b_contains_idr(data)));
+    }
+    let mut offset = 0_usize;
+    let mut contains_idr = false;
+    while offset < data.len() {
+        if offset + nal_length_size > data.len() {
+            return Err(DesktopSidecarErrorBody::new(
+                "stream_frame_encode_failed",
+                "VideoToolbox emitted a truncated H.264 length-prefixed sample.",
+                true,
+                false,
+            ));
+        }
+        let mut nal_size = 0_usize;
+        for byte in &data[offset..offset + nal_length_size] {
+            nal_size = (nal_size << 8) | usize::from(*byte);
+        }
+        offset += nal_length_size;
+        if nal_size == 0 {
+            continue;
+        }
+        if offset + nal_size > data.len() {
+            return Err(DesktopSidecarErrorBody::new(
+                "stream_frame_encode_failed",
+                "VideoToolbox emitted an H.264 NAL unit larger than its sample buffer.",
+                true,
+                false,
+            ));
+        }
+        let nal = &data[offset..offset + nal_size];
+        if nal.first().is_some_and(|byte| byte & 0x1f == 5) {
+            contains_idr = true;
+        }
+        append_annex_b_nal(&mut output, nal);
+        offset += nal_size;
+    }
+    Ok((output, contains_idr))
+}
+
+fn append_annex_b_nal(output: &mut Vec<u8>, nal: &[u8]) {
+    output.extend_from_slice(H264_ANNEX_B_START_CODE);
+    output.extend_from_slice(nal);
+}
+
+fn h264_annex_b_starts(data: &[u8]) -> bool {
+    data.starts_with(H264_ANNEX_B_START_CODE) || data.starts_with(b"\x00\x00\x01")
+}
+
+fn h264_annex_b_contains_idr(data: &[u8]) -> bool {
+    let mut index = 0;
+    while let Some((start, prefix_len)) = next_annex_b_start(data, index) {
+        let nal_start = start + prefix_len;
+        let next_start = next_annex_b_start(data, nal_start)
+            .map(|(next, _)| next)
+            .unwrap_or(data.len());
+        if nal_start < next_start && data[nal_start] & 0x1f == 5 {
+            return true;
+        }
+        index = next_start;
+    }
+    false
+}
+
+fn next_annex_b_start(data: &[u8], from: usize) -> Option<(usize, usize)> {
+    let mut index = from;
+    while index + 3 <= data.len() {
+        if index + 4 <= data.len() && &data[index..index + 4] == H264_ANNEX_B_START_CODE {
+            return Some((index, 4));
+        }
+        if &data[index..index + 3] == b"\x00\x00\x01" {
+            return Some((index, 3));
+        }
+        index += 1;
+    }
+    None
 }
 
 fn required_stream_id(
@@ -1351,7 +2183,10 @@ fn validate_stream_request(
             return Err(schema_error("sessionDescription"));
         };
         if description.sdp.trim().is_empty()
-            || !matches!(description.sdp_type.as_str(), "offer" | "answer" | "pranswer")
+            || !matches!(
+                description.sdp_type.as_str(),
+                "offer" | "answer" | "pranswer"
+            )
         {
             return Err(schema_error("sessionDescription"));
         }
@@ -1411,9 +2246,7 @@ fn capture_desktop_image(
                 .map_err(|error| {
                     DesktopSidecarErrorBody::new(
                         "coordinates_out_of_bounds",
-                        format!(
-                            "Desktop sidecar could not capture the requested region: {error}"
-                        ),
+                        format!("Desktop sidecar could not capture the requested region: {error}"),
                         false,
                         false,
                     )
@@ -1454,12 +2287,7 @@ fn encode_png(
     image
         .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
         .map_err(|error| {
-            DesktopSidecarErrorBody::new(
-                code,
-                format!("{message}: {error}"),
-                false,
-                false,
-            )
+            DesktopSidecarErrorBody::new(code, format!("{message}: {error}"), false, false)
         })?;
     Ok(bytes)
 }
@@ -1587,9 +2415,10 @@ fn platform_control(
             };
             cross_platform_input::mouse_click(point, button, clicks)
         }
-        DesktopSidecarOperation::MouseDrag => {
-            cross_platform_input::mouse_drag(required_point(&request)?, required_target_point(&request)?)
-        }
+        DesktopSidecarOperation::MouseDrag => cross_platform_input::mouse_drag(
+            required_point(&request)?,
+            required_target_point(&request)?,
+        ),
         DesktopSidecarOperation::Scroll => {
             let delta_x = request.delta_x.unwrap_or(0);
             let delta_y = request.delta_y.unwrap_or(0);
@@ -1786,13 +2615,6 @@ fn now_timestamp() -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
 }
 
-fn now_millis() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or_default()
-}
-
 #[cfg(target_os = "macos")]
 mod macos_accessibility {
     use std::{ffi::c_void, ptr, thread, time::Duration};
@@ -1840,11 +2662,9 @@ mod macos_accessibility {
         let mut context = SnapshotContext {
             rows: Vec::new(),
             limit: request.limit.unwrap_or(120),
-            max_depth: request.max_depth.unwrap_or(if request.include_children {
-                5
-            } else {
-                0
-            }),
+            max_depth: request
+                .max_depth
+                .unwrap_or(if request.include_children { 5 } else { 0 }),
             include_children: request.include_children,
             truncated: false,
             redacted: false,
@@ -1977,14 +2797,15 @@ mod macos_accessibility {
                 false,
             )
         })?;
-        let focused_app = ax_element_attribute(&system_wide, "AXFocusedApplication").ok_or_else(|| {
-            DesktopSidecarErrorBody::new(
-                "desktop_menu_select_failed",
-                "macOS Accessibility did not return a focused application for menu selection.",
-                true,
-                false,
-            )
-        })?;
+        let focused_app =
+            ax_element_attribute(&system_wide, "AXFocusedApplication").ok_or_else(|| {
+                DesktopSidecarErrorBody::new(
+                    "desktop_menu_select_failed",
+                    "macOS Accessibility did not return a focused application for menu selection.",
+                    true,
+                    false,
+                )
+            })?;
         let mut current = ax_element_attribute(&focused_app, "AXMenuBar").ok_or_else(|| {
             DesktopSidecarErrorBody::new(
                 "desktop_menu_select_failed",
@@ -2012,7 +2833,9 @@ mod macos_accessibility {
                 .or_else(|| {
                     ax_element_array_attribute(&target, "AXChildren")
                         .into_iter()
-                        .find(|child| ax_string_attribute(child, "AXRole").as_deref() == Some("AXMenu"))
+                        .find(|child| {
+                            ax_string_attribute(child, "AXRole").as_deref() == Some("AXMenu")
+                        })
                 })
                 .ok_or_else(|| {
                     DesktopSidecarErrorBody::new(
@@ -2251,9 +3074,16 @@ mod macos_accessibility {
                     false,
                 )
             })?;
-            let window_title = window.title().ok().map(|title| redact_sensitive_label(&title));
-            let app_name = window.app_name().ok().map(|name| redact_sensitive_label(&name));
-            let target_window = find_matching_window(&app, window_title.as_deref(), window_bounds(&window));
+            let window_title = window
+                .title()
+                .ok()
+                .map(|title| redact_sensitive_label(&title));
+            let app_name = window
+                .app_name()
+                .ok()
+                .map(|name| redact_sensitive_label(&name));
+            let target_window =
+                find_matching_window(&app, window_title.as_deref(), window_bounds(&window));
             return Ok(SnapshotTarget {
                 app,
                 window: target_window,
@@ -2266,7 +3096,9 @@ mod macos_accessibility {
         }
         Err(DesktopSidecarErrorBody::new(
             "desktop_accessibility_window_not_found",
-            format!("Desktop sidecar could not find window `{window_id}` for Accessibility snapshot."),
+            format!(
+                "Desktop sidecar could not find window `{window_id}` for Accessibility snapshot."
+            ),
             false,
             true,
         ))
@@ -2774,7 +3606,9 @@ mod cross_platform_input {
             .map_err(input_error)?;
         let button = mouse_button(button);
         for _ in 0..clicks {
-            enigo.button(button, Direction::Click).map_err(input_error)?;
+            enigo
+                .button(button, Direction::Click)
+                .map_err(input_error)?;
         }
         Ok(())
     }
@@ -3018,14 +3852,10 @@ mod macos_input {
             _ => (CGEventType::LeftMouseDown, CGEventType::LeftMouseUp),
         };
         for _ in 0..clicks {
-            let source_down =
-                CGEventSource::new(CGEventSourceStateID::HIDSystemState).map_err(|_| {
-                    input_source_error()
-                })?;
-            let source_up =
-                CGEventSource::new(CGEventSourceStateID::HIDSystemState).map_err(|_| {
-                    input_source_error()
-                })?;
+            let source_down = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+                .map_err(|_| input_source_error())?;
+            let source_up = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+                .map_err(|_| input_source_error())?;
             let location = CGPoint::new(point.0 as f64, point.1 as f64);
             let down_event = CGEvent::new_mouse_event(source_down, down, location, cg_button)
                 .map_err(|_| event_error("mouse down"))?;
@@ -3330,8 +4160,11 @@ mod macos_ocr {
         let option_objects: [&AnyObject; 0] = [];
         let options =
             NSDictionary::<VNImageOption, AnyObject>::from_slices(&option_keys, &option_objects);
-        let handler =
-            VNImageRequestHandler::initWithData_options(VNImageRequestHandler::alloc(), &image_data, &options);
+        let handler = VNImageRequestHandler::initWithData_options(
+            VNImageRequestHandler::alloc(),
+            &image_data,
+            &options,
+        );
         let request = VNRecognizeTextRequest::new();
         request.setRecognitionLevel(VNRequestTextRecognitionLevel::Accurate);
         request.setUsesLanguageCorrection(true);
@@ -3339,11 +4172,14 @@ mod macos_ocr {
 
         let request_ref: &VNRequest = request.as_ref();
         let requests = NSArray::from_slice(&[request_ref]);
-        handler
-            .performRequests_error(&requests)
-            .map_err(|error| vision_error("desktop_ocr_failed", "macOS Vision OCR failed", &error))?;
+        handler.performRequests_error(&requests).map_err(|error| {
+            vision_error("desktop_ocr_failed", "macOS Vision OCR failed", &error)
+        })?;
 
-        let observations = request.results().map(|results| results.to_vec()).unwrap_or_default();
+        let observations = request
+            .results()
+            .map(|results| results.to_vec())
+            .unwrap_or_default();
         let truncated = observations.len() > limit;
         let mut text_blocks = Vec::new();
         let mut redacted = false;
@@ -3411,9 +4247,8 @@ mod macos_ocr {
         let x = capture
             .origin_x
             .saturating_add((origin_x.clamp(0.0, 1.0) * image_width).round() as i32);
-        let y_from_top = image_height
-            - (origin_y.clamp(0.0, 1.0) * image_height)
-            - block_height as f64;
+        let y_from_top =
+            image_height - (origin_y.clamp(0.0, 1.0) * image_height) - block_height as f64;
         let y = capture
             .origin_y
             .saturating_add(y_from_top.round().max(0.0) as i32);
@@ -3543,8 +4378,11 @@ mod tests {
         assert!(capabilities.app_list);
         assert!(capabilities.foreground_state);
         assert!(capabilities.screenshot);
-        let native_input_platform =
-            cfg!(any(target_os = "macos", target_os = "windows", target_os = "linux"));
+        let native_input_platform = cfg!(any(
+            target_os = "macos",
+            target_os = "windows",
+            target_os = "linux"
+        ));
         assert_eq!(capabilities.cursor_state, native_input_platform);
         assert_eq!(
             capabilities.accessibility_snapshot,
@@ -3556,9 +4394,12 @@ mod tests {
         assert_eq!(capabilities.keyboard_input, native_input_platform);
         assert_eq!(capabilities.clipboard, native_input_platform);
         assert_eq!(capabilities.manual_cloud_control, native_input_platform);
-        assert_eq!(capabilities.accessibility_actions, cfg!(target_os = "macos"));
+        assert_eq!(
+            capabilities.accessibility_actions,
+            cfg!(target_os = "macos")
+        );
         assert_eq!(capabilities.menu_select, cfg!(target_os = "macos"));
-        assert!(capabilities.webrtc_stream);
+        assert_eq!(capabilities.webrtc_stream, cfg!(target_os = "macos"));
     }
 
     #[test]
@@ -3596,31 +4437,81 @@ mod tests {
     fn sidecar_stream_capabilities_report_native_webrtc_publisher() {
         let capabilities = sidecar_stream_capabilities();
 
-        assert!(capabilities.webrtc_stream);
+        assert_eq!(capabilities.webrtc_stream, cfg!(target_os = "macos"));
         assert!(capabilities.screenshot_fallback_stream);
+        assert_eq!(capabilities.native_video_track, cfg!(target_os = "macos"));
+        assert_eq!(
+            capabilities.preferred_codec.as_deref(),
+            Some(MIME_TYPE_H264)
+        );
+        assert_eq!(
+            capabilities
+                .capture_backends
+                .iter()
+                .any(|backend| backend == "screencapturekit"),
+            cfg!(target_os = "macos")
+        );
+        assert_eq!(
+            capabilities
+                .encoder_backends
+                .iter()
+                .any(|backend| backend == "videotoolbox_h264"),
+            cfg!(target_os = "macos")
+        );
+        assert_eq!(capabilities.hardware_encoding, cfg!(target_os = "macos"));
         assert_eq!(capabilities.max_width, WEBRTC_MAX_WIDTH);
         assert_eq!(capabilities.max_frame_rate, WEBRTC_MAX_FRAME_RATE);
     }
 
     #[test]
+    fn stream_target_bitrate_clamps_when_transport_is_congested() {
+        let metrics = StreamTelemetry::default();
+        assert_eq!(
+            stream_target_bitrate(DesktopSidecarStreamQuality::Balanced, &metrics),
+            3_500_000
+        );
+
+        metrics.round_trip_time_ms.store(300, Ordering::Relaxed);
+        assert_eq!(
+            stream_target_bitrate(DesktopSidecarStreamQuality::Balanced, &metrics),
+            2_625_000
+        );
+
+        metrics
+            .available_outgoing_bitrate_bps
+            .store(1_000_000, Ordering::Relaxed);
+        assert_eq!(
+            stream_target_bitrate(DesktopSidecarStreamQuality::Balanced, &metrics),
+            850_000
+        );
+    }
+
+    #[test]
     fn sidecar_stream_rejects_invalid_payload_shape() {
-        let error = sidecar_stream(DesktopSidecarOperation::StreamStart, json!({ "maxWidth": 10 }))
-            .expect_err("invalid stream request");
+        let error = sidecar_stream(
+            DesktopSidecarOperation::StreamStart,
+            json!({ "maxWidth": 10 }),
+        )
+        .expect_err("invalid stream request");
 
         assert_eq!(error.code, "sidecar_schema_invalid");
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn sidecar_stream_starts_native_webrtc_offer() {
-        let payload = sidecar_stream(DesktopSidecarOperation::StreamStart, json!({
-            "sessionId": "session-1",
-            "runId": "run-1",
-            "streamId": "stream-1",
-            "maxWidth": 1280,
-            "maxFrameRate": 24,
-            "includeCursor": true,
-            "quality": "balanced"
-        }))
+        let payload = sidecar_stream(
+            DesktopSidecarOperation::StreamStart,
+            json!({
+                "sessionId": "session-1",
+                "runId": "run-1",
+                "streamId": "stream-1",
+                "maxWidth": 1280,
+                "maxFrameRate": 24,
+                "includeCursor": true,
+                "quality": "balanced"
+            }),
+        )
         .expect("stream starts with a native offer");
         let payload =
             serde_json::from_value::<DesktopSidecarStreamPayload>(payload).expect("stream payload");
@@ -3638,17 +4529,138 @@ mod tests {
         assert!(payload
             .session_description
             .as_ref()
+            .is_some_and(|description| description.sdp.contains("m=video")));
+        assert!(!payload
+            .session_description
+            .as_ref()
             .is_some_and(|description| description.sdp.contains("m=application")));
 
-        let stopped = sidecar_stream(DesktopSidecarOperation::StreamStop, json!({
-            "sessionId": "session-1",
-            "runId": "run-1",
-            "streamId": "stream-1"
-        }))
+        let stopped = sidecar_stream(
+            DesktopSidecarOperation::StreamStop,
+            json!({
+                "sessionId": "session-1",
+                "runId": "run-1",
+                "streamId": "stream-1"
+            }),
+        )
         .expect("stream stops");
         let stopped =
             serde_json::from_value::<DesktopSidecarStreamPayload>(stopped).expect("stream payload");
         assert_eq!(stopped.status, DesktopSidecarStreamStatus::Stopped);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn sidecar_stream_start_rejects_unsupported_native_publisher() {
+        let error = sidecar_stream(
+            DesktopSidecarOperation::StreamStart,
+            json!({
+                "sessionId": "session-1",
+                "runId": "run-1",
+                "streamId": "stream-1",
+                "quality": "balanced"
+            }),
+        )
+        .expect_err("unsupported native stream should fail");
+
+        assert_eq!(error.code, "stream_native_publisher_unavailable");
+    }
+
+    #[test]
+    fn native_webrtc_offer_negotiates_h264_video_track() {
+        webrtc_runtime().expect("webrtc runtime").block_on(async {
+            let request = DesktopSidecarStreamRequest {
+                session_id: Some("session-negotiation".into()),
+                run_id: Some("run-negotiation".into()),
+                display_id: None,
+                stream_id: Some("stream-negotiation".into()),
+                max_width: Some(1280),
+                max_frame_rate: Some(24),
+                include_cursor: Some(true),
+                quality: Some(DesktopSidecarStreamQuality::Balanced),
+                redaction: None,
+                ice_servers: Vec::new(),
+                session_description: None,
+                ice_candidate: None,
+            };
+            let (offerer, video_track, _rtp_sender, offer) =
+                create_webrtc_offer(&request).await.expect("sidecar offer");
+
+            let mut media_engine = MediaEngine::default();
+            media_engine
+                .register_default_codecs()
+                .expect("answerer codecs");
+            let answerer = Arc::new(
+                APIBuilder::new()
+                    .with_media_engine(media_engine)
+                    .build()
+                    .new_peer_connection(RTCConfiguration::default())
+                    .await
+                    .expect("answerer peer connection"),
+            );
+            let (track_tx, mut track_rx) = tokio::sync::mpsc::channel(1);
+            answerer.on_track(Box::new(move |track, _, _| {
+                let track_tx = track_tx.clone();
+                Box::pin(async move {
+                    let _ = track_tx
+                        .send(track.codec().capability.mime_type.clone())
+                        .await;
+                })
+            }));
+            let (connected_tx, mut connected_rx) = tokio::sync::mpsc::channel(1);
+            answerer.on_peer_connection_state_change(Box::new(move |state| {
+                let connected_tx = connected_tx.clone();
+                Box::pin(async move {
+                    if state
+                        == webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected
+                    {
+                        let _ = connected_tx.send(()).await;
+                    }
+                })
+            }));
+
+            answerer
+                .set_remote_description(RTCSessionDescription::offer(offer.sdp).expect("offer sdp"))
+                .await
+                .expect("answerer remote description");
+            let answer = answerer.create_answer(None).await.expect("answer");
+            let mut gather_complete = answerer.gathering_complete_promise().await;
+            answerer
+                .set_local_description(answer)
+                .await
+                .expect("answerer local description");
+            let _ = tokio::time::timeout(WEBRTC_ICE_GATHER_TIMEOUT, gather_complete.recv()).await;
+            offerer
+                .set_remote_description(
+                    answerer
+                        .local_description()
+                        .await
+                        .expect("answerer local description"),
+                )
+                .await
+                .expect("offerer remote description");
+            tokio::time::timeout(Duration::from_secs(5), connected_rx.recv())
+                .await
+                .expect("peer connection")
+                .expect("connected state");
+
+            video_track
+                .write_sample(&Sample {
+                    data: vec![0, 0, 0, 1, 0x65, 0x88, 0x84].into(),
+                    duration: Duration::from_millis(42),
+                    ..Default::default()
+                })
+                .await
+                .expect("write h264 sample");
+
+            let mime = tokio::time::timeout(Duration::from_secs(5), track_rx.recv())
+                .await
+                .expect("track callback")
+                .expect("video track mime");
+            assert_eq!(mime, MIME_TYPE_H264);
+            offerer.close().await.expect("close offerer");
+            answerer.close().await.expect("close answerer");
+        });
     }
 
     #[test]

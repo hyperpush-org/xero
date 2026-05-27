@@ -16,6 +16,7 @@ import {
 	EmptyMedia,
 	EmptyTitle,
 } from "@xero/ui/components/ui/empty";
+import { Skeleton } from "@xero/ui/components/ui/skeleton";
 import { cn } from "@xero/ui/lib/utils";
 import {
 	ArrowUpRight,
@@ -65,6 +66,7 @@ interface SessionListPanelProps {
 	showCount?: boolean;
 	headerClassName?: string;
 	alwaysShowRowActions?: boolean;
+	isSessionDirectoryLoading?: boolean;
 	/** Desktop sidebar: drop the header picker and add a per-project new-session button. */
 	inlineProjectActions?: boolean;
 }
@@ -162,6 +164,7 @@ export function SessionListPanel({
 	showCount = true,
 	headerClassName,
 	alwaysShowRowActions = false,
+	isSessionDirectoryLoading = false,
 	inlineProjectActions = false,
 }: SessionListPanelProps) {
 	const [pendingSessionAction, setPendingSessionAction] = useState<{
@@ -271,7 +274,7 @@ export function SessionListPanel({
 			</div>
 
 			<div className="flex flex-1 flex-col overflow-y-auto overscroll-contain">
-				{total === 0 ? (
+				{total === 0 && !isSessionDirectoryLoading ? (
 					<div className="flex min-h-full w-full flex-1 items-center justify-center px-6 py-8">
 						<Empty className="border-0">
 							<EmptyHeader>
@@ -313,6 +316,7 @@ export function SessionListPanel({
 								})}
 							</ul>
 						) : null}
+						{isSessionDirectoryLoading ? <SessionDirectorySkeleton /> : null}
 						{projectGroups.map((group, groupIndex) => {
 							const userCollapsed = collapsedGroups[group.key] === true;
 							const isOpen = group.containsActive || !userCollapsed;
@@ -475,6 +479,50 @@ export function SessionListPanel({
 				</div>
 			</footer>
 		</>
+	);
+}
+
+function SessionDirectorySkeleton() {
+	const groups = [
+		{ key: "first", rows: ["full", "short"] },
+		{ key: "second", rows: ["medium"] },
+		{ key: "third", rows: ["long", "medium"] },
+	] as const;
+
+	return (
+		<output
+			aria-label="Loading desktop sessions"
+			className="flex flex-col gap-3 px-3 py-3"
+		>
+			{groups.map((group) => (
+				<div key={group.key} className="space-y-1.5">
+					<div className="flex items-center justify-between gap-3 px-1">
+						<Skeleton className="h-3 w-20 rounded-[4px] bg-accent/50" />
+						<Skeleton className="size-4 rounded-[4px] bg-accent/35" />
+					</div>
+					<div className="space-y-1">
+						{group.rows.map((row) => (
+							<div
+								key={row}
+								className="flex items-center gap-2 rounded-md px-3 py-2"
+							>
+								<Skeleton className="size-3.5 shrink-0 rounded-[4px] bg-accent/45" />
+								<Skeleton
+									className={cn(
+										"h-3.5 rounded-[4px] bg-accent/45",
+										row === "short"
+											? "w-20"
+											: row === "medium"
+												? "w-28"
+												: "w-36",
+									)}
+								/>
+							</div>
+						))}
+					</div>
+				</div>
+			))}
+		</output>
 	);
 }
 
