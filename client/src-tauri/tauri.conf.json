@@ -89,7 +89,8 @@
     "resources": [
       "resources/scrcpy-server-v2.7.jar",
       "resources/solana-toolchain/**/*",
-      "resources/xero-ios-helper"
+      "resources/xero-ios-helper",
+      "resources/xero-desktop-sidecar*"
     ]
   }
 }

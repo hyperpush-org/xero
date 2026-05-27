@@ -496,6 +496,23 @@ jobs:
             fi
           done
 
+      - name: Build desktop sidecar
+        working-directory: client/src-tauri
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.platform_key }}" in
+            darwin-aarch64)
+              cargo build --release --package xero-desktop-sidecar --target aarch64-apple-darwin
+              ;;
+            darwin-x86_64)
+              cargo build --release --package xero-desktop-sidecar --target x86_64-apple-darwin
+              ;;
+            *)
+              cargo build --release --package xero-desktop-sidecar
+              ;;
+          esac
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:

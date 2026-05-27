@@ -163,6 +163,7 @@ import { useSidebarOpenMotion, useSidebarWidthMotion } from '@/lib/sidebar-motio
 import { cn } from '@/lib/utils'
 import { FloatingRightSidebarFrame } from '@/components/xero/floating-right-sidebar-frame'
 import type { BrowserAgentContextRequest } from '@/components/xero/browser-tool-injection'
+import { DesktopControlBanner } from '@/components/xero/desktop-control-banner'
 
 export interface XeroAppProps {
   adapter?: XeroDesktopAdapter
@@ -5232,6 +5233,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onRemoveUserEnvironmentTool={(id) => removeUserEnvironmentTool(id)}
                 onRunDoctorReport={(request) => runDoctorReport(request)}
                 dictationAdapter={resolvedAdapter}
+                desktopControlAdapter={resolvedAdapter}
                 soulAdapter={resolvedAdapter}
                 agentToolingAdapter={resolvedAdapter}
                 powerAdapter={resolvedAdapter}
@@ -5321,6 +5323,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
             ) : null}
           </Suspense>
         </XeroShell>
+        <DesktopControlBanner
+          adapter={resolvedAdapter}
+          onOpenSettings={() => openSettings('desktopControl')}
+        />
       </div>
       <AppBootLoadingOverlay active={showAppBootLoading} />
     </>

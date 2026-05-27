@@ -43,11 +43,6 @@ It combines:
 - `landing/`: separate website, run on port `3001` in root dev workflow
 - `server/`: Phoenix 1.8 service, local Postgres, GitHub auth callback/session support, Oban jobs
 
-### Non-runtime/reference content
-
-- `.tmp-gsd2-ref/`: reference snapshot directory (ignored by build workflows)
-- `.xero/`: legacy repo-local state. New app/project state belongs under the OS app-data directory.
-
 ---
 
 ## Tech Stack

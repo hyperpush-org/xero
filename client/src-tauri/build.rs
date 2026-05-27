@@ -20,6 +20,7 @@ const IDB_COMPANION_SHA256: &str =
 const IDB_COMPANION_DIR: &str = "idb-companion.universal";
 const BUILD_COOKIE_IMPORTER_ENV: &str = "XERO_BUILD_COOKIE_IMPORTER";
 const SKIP_COOKIE_IMPORTER_ENV: &str = "XERO_SKIP_COOKIE_IMPORTER";
+const SKIP_DESKTOP_SIDECAR_ENV: &str = "XERO_SKIP_DESKTOP_SIDECAR";
 const SKIP_SIDECAR_FETCH_ENV: &str = "XERO_SKIP_SIDECAR_FETCH";
 #[cfg(target_os = "macos")]
 const SKIP_IDB_COMPANION_FETCH_ENV: &str = "XERO_SKIP_IDB_COMPANION_FETCH";
@@ -31,6 +32,7 @@ fn main() {
     configure_xai_oauth_build_env();
     fetch_scrcpy_server();
     fetch_idb_companion();
+    prepare_desktop_sidecar();
     tauri_build::build();
     compile_dictation_shim();
     compile_ios_helper();
@@ -467,6 +469,80 @@ fn copy_cookie_importer(helper_target: &Path, destination: &Path) {
     std::fs::copy(helper_target, destination).unwrap_or_else(|error| {
         panic!("failed to copy cookie-importer to {destination:?}: {error}")
     });
+}
+
+fn prepare_desktop_sidecar() {
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    println!("cargo:rerun-if-changed=crates/xero-desktop-sidecar/Cargo.toml");
+    println!("cargo:rerun-if-changed=crates/xero-desktop-sidecar/src/main.rs");
+    println!("cargo:rerun-if-changed=crates/xero-desktop-control-ipc/Cargo.toml");
+    println!("cargo:rerun-if-changed=crates/xero-desktop-control-ipc/src/lib.rs");
+    println!("cargo:rerun-if-env-changed={SKIP_DESKTOP_SIDECAR_ENV}");
+
+    if std::env::var_os(SKIP_DESKTOP_SIDECAR_ENV).is_some() {
+        return;
+    }
+
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let profile_dir = out_dir
+        .ancestors()
+        .nth(3)
+        .expect("OUT_DIR should be inside target/<profile>/build/<pkg>/out")
+        .to_path_buf();
+    let target = profile_dir.join(desktop_sidecar_binary_name());
+
+    if !target.exists() {
+        println!("cargo:rustc-env=XERO_BUNDLED_DESKTOP_SIDECAR_SHA256=");
+        println!(
+            "cargo:warning=xero-desktop-sidecar not found at {}; build it before packaging with `cargo build --package xero-desktop-sidecar`.",
+            target.display()
+        );
+        return;
+    }
+    match sha256_of(&target) {
+        Ok(hash) => println!("cargo:rustc-env=XERO_BUNDLED_DESKTOP_SIDECAR_SHA256={hash}"),
+        Err(error) => println!(
+            "cargo:warning=failed to hash xero-desktop-sidecar at {}: {error}",
+            target.display()
+        ),
+    }
+
+    copy_desktop_sidecar(&target, &profile_dir.join(desktop_sidecar_binary_name()));
+    copy_desktop_sidecar(
+        &target,
+        &manifest_dir
+            .join("resources")
+            .join(desktop_sidecar_binary_name()),
+    );
+}
+
+fn desktop_sidecar_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "xero-desktop-sidecar.exe"
+    } else {
+        "xero-desktop-sidecar"
+    }
+}
+
+fn copy_desktop_sidecar(source: &Path, destination: &Path) {
+    if source == destination {
+        return;
+    }
+    if let Some(parent) = destination.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            println!(
+                "cargo:warning=failed to create desktop sidecar directory {}: {error}",
+                parent.display()
+            );
+            return;
+        }
+    }
+    if let Err(error) = std::fs::copy(source, destination) {
+        println!(
+            "cargo:warning=failed to copy xero-desktop-sidecar to {}: {error}",
+            destination.display()
+        );
+    }
 }
 
 fn binary_name() -> &'static str {

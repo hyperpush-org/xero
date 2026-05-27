@@ -381,7 +381,7 @@ fn command_remote_connect(
             let join_ref = required_payload_string(&message.4, "join_ref")?;
             let auth_topic = required_payload_string(&message.4, "auth_topic")?;
             let _ = connection
-                .authorize_session_join(join_ref, auth_topic, true)
+                .authorize_session_join(join_ref, auth_topic, true, None)
                 .map_err(map_bridge_error)?;
         }
         frames.push(json!({ "topic": message.2, "event": message.3, "payload": message.4 }));

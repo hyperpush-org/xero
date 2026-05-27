@@ -716,7 +716,7 @@ pub(crate) fn base_policy_fragment(runtime_agent_id: RuntimeAgentIdDto) -> Strin
         RuntimeAgentIdDto::ComputerUse => [
             "You are Xero's Computer Use agent. Follow the user's direct instructions by observing and controlling the visible local computer through bounded UI automation tools.",
             "",
-            "Computer Use is for direct computer interaction, not repository engineering. You may use browser, emulator, macOS automation, system-diagnostics observe, tool discovery/access, todo, and read-only durable project context when those tools are available. Do not read repository files, edit files, run shell commands, manage processes outside the bounded automation tools, use git, invoke MCP servers, install or invoke skills, spawn subagents, or extract secrets. Do not request approval to escape this boundary.",
+            "Computer Use is for direct computer interaction, not repository engineering. You may use browser, emulator, desktop observe/control/stream, macOS automation, system-diagnostics observe, tool discovery/access, todo, and read-only durable project context when those tools are available. Do not read repository files, edit files, run shell commands, manage processes outside the bounded automation tools, use git, invoke MCP servers, install or invoke skills, spawn subagents, or extract secrets. Do not request approval to escape this boundary.",
             "",
             "Interaction contract: keep actions scoped to the visible task, ask before risky actions such as purchases, account changes, sending messages, deleting data, or changing system settings, and stop immediately if the user cancels. Treat passwords, tokens, recovery codes, and payment details as secrets: do not reveal, persist, or summarize them.",
             "",
@@ -1301,7 +1301,7 @@ fn tool_policy_fragment(
             "Available observe-only tools: {tool_names}\n\nUse tools only to inspect project information needed to answer. Use `project_context_search` and `project_context_get` to read durable context; Ask's default surface does not expose durable-context writes. If the user explicitly asks to save a note, use only an approved context-write action when Xero exposes one for this turn. `tool_search` and `tool_access` are filtered to Ask-safe observe-only capabilities; do not ask for repo mutation, command, browser-control, MCP, skill, subagent, device, or external-service tools.{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::ComputerUse => format!(
-            "Available Computer Use tools: {tool_names}\n\nUse tools only for bounded visible-computer interaction and read-only project context. Prefer browser/emulator/macOS automation and system-diagnostics observe over shell or file access, which are not part of this agent's surface. `tool_search` and `tool_access` are filtered to Computer Use capabilities; do not ask for repository read/write, shell commands, git, MCP, skill, subagent, external-service, or durable-context write tools.{browser_control_guidance}"
+            "Available Computer Use tools: {tool_names}\n\nUse tools only for bounded visible-computer interaction and read-only project context. Prefer desktop_observe before desktop_control, use desktop_stream only for approved live viewing or degraded screenshot fallback, and keep browser/emulator/macOS automation/system-diagnostics observe inside their bounded UI surfaces. Shell and file access are not part of this agent's surface. `tool_search` and `tool_access` are filtered to Computer Use capabilities; do not ask for repository read/write, shell commands, git, MCP, skill, subagent, external-service, or durable-context write tools.{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::Plan => format!(
             "Available planning tools: {tool_names}\n\nUse repository read/read_many/result_page/stat/search/find/list/list_tree/directory_digest/hash, safe git status/diff, workspace index, durable context search/get, tool discovery, and `todo` for runtime-owned planning state. Use context retrieval before drafting when prior plans, decisions, constraints, project facts, questions, or handoffs may matter. Use `project_context_record` only after explicit acceptance, with `recordKind: \"plan\"` and `contentJson.schema: \"xero.plan_pack.v1\"`; Plan cannot use it for generic notes, drafts, or non-plan records. `tool_search` and `tool_access` are filtered to planning-safe capabilities; do not ask for repo mutation, shell commands, browser-control, MCP, skill, subagent, device, network, external-service, branch, stash, commit, push, deploy, or other durable-context write tools.{browser_control_guidance}"
@@ -1569,16 +1569,7 @@ fn should_visit_instruction_entry(entry: &ignore::DirEntry) -> bool {
     };
     !matches!(
         name,
-        ".git"
-            | ".xero"
-            | ".next"
-            | ".turbo"
-            | ".tmp-gsd2-ref"
-            | "coverage"
-            | "node_modules"
-            | "target"
-            | "dist"
-            | "build"
+        ".git" | ".next" | ".turbo" | "coverage" | "node_modules" | "target" | "dist" | "build"
     )
 }
 
@@ -4094,6 +4085,21 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
             macos_automation_schema(),
         ),
         descriptor(
+            AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
+            "Computer Use desktop observation: permissions, displays, windows, apps, foreground state, screenshots, cursor state, OCR/Accessibility placeholders, element lookup, and health.",
+            desktop_observe_schema(),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_DESKTOP_CONTROL,
+            "Approval-gated Computer Use native desktop control with controller lock, audit, pointer, keyboard, app/window, Accessibility, clipboard, menu, and cancel actions.",
+            desktop_control_schema(),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_DESKTOP_STREAM,
+            "Approval-gated Computer Use desktop streaming state and degraded screenshot fallback control.",
+            desktop_stream_schema(),
+        ),
+        descriptor(
             AUTONOMOUS_TOOL_MCP_LIST,
             "List connected MCP servers, tools, resources, and prompts through the app-local registry without invoking capabilities.",
             mcp_list_schema(),
@@ -5914,6 +5920,177 @@ fn macos_automation_schema() -> JsonValue {
                 "screenshotTarget",
                 enum_schema("Screenshot target kind.", &["screen", "window"]),
             ),
+        ],
+    )
+}
+
+fn desktop_observe_schema() -> JsonValue {
+    object_schema(
+        &["action"],
+        &[
+            (
+                "action",
+                enum_schema(
+                    "Desktop observation action. Screenshots, OCR, Accessibility snapshots, and element lookup require operator approval.",
+                    &[
+                        "permissions_status",
+                        "display_list",
+                        "window_list",
+                        "app_list",
+                        "foreground_state",
+                        "screenshot",
+                        "cursor_state",
+                        "accessibility_snapshot",
+                        "ocr_snapshot",
+                        "element_at_point",
+                        "health",
+                    ],
+                ),
+            ),
+            ("displayId", string_schema("Display id from display_list.")),
+            ("windowId", string_schema("Window id from window_list.")),
+            (
+                "region",
+                json!({
+                    "type": "object",
+                    "description": "Optional display-relative capture region.",
+                    "additionalProperties": false,
+                    "properties": {
+                        "x": { "type": "integer", "minimum": 0 },
+                        "y": { "type": "integer", "minimum": 0 },
+                        "width": { "type": "integer", "minimum": 1 },
+                        "height": { "type": "integer", "minimum": 1 }
+                    }
+                }),
+            ),
+            (
+                "redaction",
+                json!({
+                    "type": "object",
+                    "description": "Screenshot/OCR redaction request.",
+                    "additionalProperties": false,
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": ["off", "balanced", "auto", "strict"]
+                        },
+                        "privateRegions": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                    "x": { "type": "integer", "minimum": 0 },
+                                    "y": { "type": "integer", "minimum": 0 },
+                                    "width": { "type": "integer", "minimum": 1 },
+                                    "height": { "type": "integer", "minimum": 1 }
+                                }
+                            }
+                        }
+                    }
+                }),
+            ),
+            ("x", integer_schema("Display x coordinate for element_at_point.")),
+            ("y", integer_schema("Display y coordinate for element_at_point.")),
+        ],
+    )
+}
+
+fn desktop_control_schema() -> JsonValue {
+    object_schema(
+        &["action"],
+        &[
+            (
+                "action",
+                enum_schema(
+                    "Desktop control action. All native input except cancel_current_action requires operator approval.",
+                    &[
+                        "mouse_move",
+                        "mouse_click",
+                        "mouse_double_click",
+                        "mouse_right_click",
+                        "mouse_drag",
+                        "scroll",
+                        "key_press",
+                        "hotkey",
+                        "type_text",
+                        "paste_text",
+                        "focus_window",
+                        "activate_app",
+                        "launch_app",
+                        "quit_app",
+                        "ax_press",
+                        "ax_set_value",
+                        "ax_focus",
+                        "menu_select",
+                        "cancel_current_action",
+                    ],
+                ),
+            ),
+            ("displayId", string_schema("Display id from desktop_observe.display_list.")),
+            ("windowId", string_schema("Window id from desktop_observe.window_list.")),
+            ("appName", string_schema("Target visible app name.")),
+            ("bundleId", string_schema("Target app bundle/package identifier when available.")),
+            ("elementId", string_schema("Target Accessibility/UI Automation element id.")),
+            ("x", integer_schema("Source or click x coordinate in desktop coordinates.")),
+            ("y", integer_schema("Source or click y coordinate in desktop coordinates.")),
+            ("toX", integer_schema("Drag target x coordinate in desktop coordinates.")),
+            ("toY", integer_schema("Drag target y coordinate in desktop coordinates.")),
+            ("deltaX", integer_schema("Horizontal scroll delta.")),
+            ("deltaY", integer_schema("Vertical scroll delta.")),
+            ("button", enum_schema("Mouse button.", &["left", "right", "middle"])),
+            ("clicks", integer_schema("Click count.")),
+            ("key", string_schema("Single key name for key_press.")),
+            (
+                "keys",
+                json!({
+                    "type": "array",
+                    "description": "Hotkey keys, such as [\"cmd\", \"l\"].",
+                    "items": { "type": "string" }
+                }),
+            ),
+            ("text", string_schema("Text for type_text or paste_text. Do not include secrets.")),
+            ("value", string_schema("Value for ax_set_value. Do not include secrets.")),
+            (
+                "menuPath",
+                json!({
+                    "type": "array",
+                    "description": "Menu path for menu_select.",
+                    "items": { "type": "string" }
+                }),
+            ),
+            ("reason", string_schema("Operator-visible reason for the desktop action.")),
+            ("sensitivity", enum_schema("Text sensitivity.", &["normal", "sensitive", "secret"])),
+        ],
+    )
+}
+
+fn desktop_stream_schema() -> JsonValue {
+    object_schema(
+        &["action"],
+        &[
+            (
+                "action",
+                enum_schema(
+                    "Desktop stream action. Starting or changing stream exposure requires operator approval.",
+                    &[
+                        "stream_capabilities",
+                        "stream_start",
+                        "stream_stop",
+                        "stream_status",
+                        "stream_set_quality",
+                        "stream_request_keyframe",
+                    ],
+                ),
+            ),
+            ("sessionId", string_schema("Computer Use session id.")),
+            ("runId", string_schema("Computer Use run id.")),
+            ("displayId", string_schema("Display id to stream.")),
+            ("streamId", string_schema("Existing stream id.")),
+            ("maxWidth", integer_schema("Maximum encoded/fallback frame width.")),
+            ("maxFrameRate", integer_schema("Maximum stream or fallback frame rate.")),
+            ("includeCursor", boolean_schema("Include cursor in the stream when supported.")),
+            ("quality", enum_schema("Stream quality.", &["low", "balanced", "high"])),
         ],
     )
 }

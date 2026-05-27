@@ -98,6 +98,10 @@ export interface AccountRemoteSessionsState {
 const UNRECONCILED_REMOTE_LIST_RETRY_MS = 2_000;
 const RECONCILED_REMOTE_LIST_REFRESH_MS = 15_000;
 
+type RelayIceServer = RTCIceServer & {
+	credentialType?: "password" | "oauth";
+};
+
 /**
  * Connects to a remote session channel and pushes decoded snapshot/event frames
  * into the Zustand session store. Returns the underlying channel so callers can
@@ -110,10 +114,16 @@ export function useSessionStream({
 	relayToken,
 }: UseSessionStreamOptions): {
 	channel: Channel | null;
+	iceServers: RTCIceServer[];
 	joinRejected: boolean;
+	streamRunId: string | null;
+	streamToken: string | null;
 } {
 	const [channel, setChannel] = useState<Channel | null>(null);
+	const [iceServers, setIceServers] = useState<RTCIceServer[]>([]);
 	const [joinRejected, setJoinRejected] = useState(false);
+	const [streamRunId, setStreamRunId] = useState<string | null>(null);
+	const [streamToken, setStreamToken] = useState<string | null>(null);
 	const replaceWithSnapshot = useSessionStore((s) => s.replaceWithSnapshot);
 	const appendTurn = useSessionStore((s) => s.appendTurn);
 	const updateControls = useSessionStore((s) => s.updateControls);
@@ -125,7 +135,10 @@ export function useSessionStream({
 	useEffect(() => {
 		if (!enabled) {
 			setChannel(null);
+			setIceServers([]);
 			setJoinRejected(false);
+			setStreamRunId(null);
+			setStreamToken(null);
 			return;
 		}
 		let disposed = false;
@@ -140,13 +153,19 @@ export function useSessionStream({
 			computerId,
 			sessionId,
 			initialLastSeq,
-			(joinedChannel) => {
+			(joinedChannel, payload) => {
+				setIceServers(iceServersFromJoinPayload(payload));
+				setStreamRunId(streamRunIdFromJoinPayload(payload));
+				setStreamToken(streamTokenFromJoinPayload(payload));
 				if (!disposed) setChannel(joinedChannel);
 			},
 			() => {
 				if (disposed) return;
 				removeVisibleSession(computerId, sessionId);
 				setLive(key, false);
+				setIceServers([]);
+				setStreamRunId(null);
+				setStreamToken(null);
 				setJoinRejected(true);
 				setChannel((current) => (current === sessionChannel ? null : current));
 			},
@@ -238,6 +257,8 @@ export function useSessionStream({
 		return () => {
 			disposed = true;
 			setLive(key, false);
+			setStreamRunId(null);
+			setStreamToken(null);
 			sessionChannel.leave();
 			setChannel((current) => (current === sessionChannel ? null : current));
 		};
@@ -254,7 +275,52 @@ export function useSessionStream({
 		updateControls,
 	]);
 
-	return { channel, joinRejected };
+	return { channel, iceServers, joinRejected, streamRunId, streamToken };
+}
+
+export function streamRunIdFromJoinPayload(payload: unknown): string | null {
+	if (!payload || typeof payload !== "object") return null;
+	const record = payload as Record<string, unknown>;
+	const runId = record.stream_run_id ?? record.streamRunId;
+	return typeof runId === "string" && runId.trim() ? runId.trim() : null;
+}
+
+export function streamTokenFromJoinPayload(payload: unknown): string | null {
+	if (!payload || typeof payload !== "object") return null;
+	const record = payload as Record<string, unknown>;
+	const token = record.stream_token ?? record.streamToken;
+	return typeof token === "string" && token.trim() ? token.trim() : null;
+}
+
+export function iceServersFromJoinPayload(payload: unknown): RTCIceServer[] {
+	if (!payload || typeof payload !== "object") return [];
+	const record = payload as Record<string, unknown>;
+	const value = record.ice_servers ?? record.iceServers;
+	if (!Array.isArray(value)) return [];
+	return value.flatMap((candidate): RTCIceServer[] => {
+		if (!candidate || typeof candidate !== "object") return [];
+		const server = candidate as Record<string, unknown>;
+		const urls = iceServerUrls(server.urls);
+		if (!urls) return [];
+		const parsed: RelayIceServer = { urls };
+		if (typeof server.username === "string") parsed.username = server.username;
+		if (typeof server.credential === "string")
+			parsed.credential = server.credential;
+		const credentialType = server.credentialType ?? server.credential_type;
+		if (credentialType === "password" || credentialType === "oauth") {
+			parsed.credentialType = credentialType;
+		}
+		return [parsed];
+	});
+}
+
+function iceServerUrls(value: unknown): string | string[] | null {
+	if (typeof value === "string" && value.trim()) return value.trim();
+	if (!Array.isArray(value)) return null;
+	const urls = value.flatMap((url) =>
+		typeof url === "string" && url.trim().length > 0 ? [url.trim()] : [],
+	);
+	return urls.length > 0 ? urls : null;
 }
 
 /** Subscribe account presence and request visible sessions from online desktops. */

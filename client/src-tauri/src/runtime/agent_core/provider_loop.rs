@@ -1028,6 +1028,11 @@ fn registered_model_visible_projection(
         "macos_automation" => Some(ModelVisibleProjection::CompactJson {
             format: "macos_automation_summary_json",
         }),
+        "desktop_observe" | "desktop_control" | "desktop_stream" => {
+            Some(ModelVisibleProjection::CompactJson {
+                format: "desktop_control_summary_json",
+            })
+        }
         "mcp" => Some(ModelVisibleProjection::CompactJson {
             format: "mcp_untrusted_summary_json",
         }),
@@ -2178,6 +2183,9 @@ fn compact_tool_result_output(tool_name: &str, output: &JsonValue) -> JsonValue 
         "process_manager" => compact_process_manager_output(actual_output),
         "system_diagnostics" => compact_system_diagnostics_output(actual_output),
         "macos_automation" => compact_macos_automation_output(actual_output),
+        "desktop_observe" | "desktop_control" | "desktop_stream" => {
+            compact_desktop_control_output(actual_output)
+        }
         "mcp" => compact_mcp_output(actual_output),
         "subagent" => compact_subagent_output(actual_output),
         "todo" => compact_todo_output(actual_output),
@@ -3324,6 +3332,49 @@ fn compact_macos_automation_output(output: &JsonValue) -> JsonValue {
         "permissions",
         compact_array_field(output, "permissions"),
     );
+    compact
+}
+
+fn compact_desktop_control_output(output: &JsonValue) -> JsonValue {
+    let mut compact = compact_fields(
+        output,
+        &[
+            "kind",
+            "tool",
+            "action",
+            "status",
+            "platform",
+            "sidecar",
+            "capabilities",
+            "foreground",
+            "cursor",
+            "screenshot",
+            "stream",
+            "controllerLock",
+            "auditId",
+            "error",
+            "message",
+        ],
+    );
+    insert_array(
+        &mut compact,
+        "permissions",
+        compact_array_field(output, "permissions"),
+    );
+    insert_array(
+        &mut compact,
+        "displays",
+        compact_array_field(output, "displays"),
+    );
+    insert_array(
+        &mut compact,
+        "windows",
+        compact_array_field(output, "windows"),
+    );
+    insert_array(&mut compact, "apps", compact_array_field(output, "apps"));
+    if let Some(policy) = output.get("policy") {
+        insert_value(&mut compact, "policy", compact_json_for_model(policy, 0));
+    }
     compact
 }
 

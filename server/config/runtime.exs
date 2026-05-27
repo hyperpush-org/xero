@@ -76,6 +76,30 @@ if remote_jwt_signing_key = System.get_env("XERO_REMOTE_JWT_SIGNING_KEY") do
   config :xero, Xero.Remote.Jwt, signing_key: remote_jwt_signing_key
 end
 
+webrtc_stun_urls =
+  System.get_env("XERO_WEBRTC_STUN_URLS", "")
+  |> String.split(",", trim: true)
+  |> Enum.map(&String.trim/1)
+  |> Enum.reject(&(&1 == ""))
+
+webrtc_turn_urls =
+  System.get_env("XERO_TURN_URLS", "")
+  |> String.split(",", trim: true)
+  |> Enum.map(&String.trim/1)
+  |> Enum.reject(&(&1 == ""))
+
+turn_ttl_seconds =
+  case Integer.parse(System.get_env("XERO_TURN_TTL_SECONDS", "600")) do
+    {seconds, ""} -> seconds
+    _ -> 600
+  end
+
+config :xero, Xero.Remote.Turn,
+  stun_urls: webrtc_stun_urls,
+  turn_urls: webrtc_turn_urls,
+  shared_secret: System.get_env("XERO_TURN_SHARED_SECRET"),
+  ttl_seconds: turn_ttl_seconds
+
 # --- Oban background jobs ---
 if config_env() == :test do
   config :xero, Oban,

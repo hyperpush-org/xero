@@ -420,6 +420,22 @@ fn route_inbound_command(
             "remote_runtime_media_unavailable",
             "Runtime media artifact fetches are only supported by the desktop app.",
         )),
+        InboundCommandKind::ComputerUseStreamRequest
+        | InboundCommandKind::ComputerUseStreamOffer
+        | InboundCommandKind::ComputerUseStreamAnswer
+        | InboundCommandKind::ComputerUseStreamIceCandidate
+        | InboundCommandKind::ComputerUseStreamStop
+        | InboundCommandKind::ComputerUseStreamStatus
+        | InboundCommandKind::ComputerUseStreamSetQuality
+        | InboundCommandKind::ComputerUseStreamRequestKeyframe
+        | InboundCommandKind::ComputerUseManualControlRequest
+        | InboundCommandKind::ComputerUseManualControlGrant
+        | InboundCommandKind::ComputerUseManualControlHeartbeat
+        | InboundCommandKind::ComputerUseManualControlInput
+        | InboundCommandKind::ComputerUseManualControlRelease => Err(CliError::user_fixable(
+            "remote_desktop_control_unavailable",
+            "Computer Use desktop streaming and manual control are only supported by the desktop app.",
+        )),
     }
 }
 
@@ -452,7 +468,7 @@ fn route_authorize_session_join(
     let authorized = ensure_known_web_device(bridge, &command.device_id).is_ok()
         && locate_remote_session(globals, &session_id).is_ok();
     bridge
-        .authorize_session_join(join_ref, auth_topic, &session_id, authorized)
+        .authorize_session_join(join_ref, auth_topic, &session_id, authorized, None)
         .map_err(map_bridge_error)
 }
 

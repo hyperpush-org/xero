@@ -95,6 +95,7 @@ pub enum AgentToolEffectClassDto {
     ProcessControl,
     BrowserControl,
     DeviceControl,
+    DesktopControl,
     ExternalService,
     SkillRuntime,
     AgentDelegation,

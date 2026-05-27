@@ -150,6 +150,7 @@ fn collect_tool_output_images(output: &JsonValue, images: &mut Vec<ExtractedImag
         Some("browser") => collect_browser_image(output, images),
         Some("read") => collect_read_image(output, images),
         Some("macos_automation") => collect_macos_image(output, images),
+        Some("desktop_observe") => collect_desktop_image(output, images),
         Some("mcp") => collect_mcp_output_images(output, images),
         _ => collect_mcp_content_images(output, images),
     }
@@ -242,6 +243,35 @@ fn collect_macos_image(output: &JsonValue, images: &mut Vec<ExtractedImage>) {
         bytes,
         title: Some("macOS screenshot".into()),
         alt: Some("macOS screenshot".into()),
+        width,
+        height,
+    });
+}
+
+fn collect_desktop_image(output: &JsonValue, images: &mut Vec<ExtractedImage>) {
+    let Some(screenshot) = output.get("screenshot").and_then(JsonValue::as_object) else {
+        return;
+    };
+    let Some(path) = screenshot.get("path").and_then(JsonValue::as_str) else {
+        return;
+    };
+    let Ok(bytes) = fs::read(path) else {
+        return;
+    };
+    if bytes.len() > MAX_RUNTIME_IMAGE_BYTES {
+        return;
+    }
+    let Some(media_type) = image_media_type_from_bytes(&bytes) else {
+        return;
+    };
+    let (detected_width, detected_height) = image_dimensions(&bytes);
+    let width = json_u32_object(screenshot, &["width"]).or(detected_width);
+    let height = json_u32_object(screenshot, &["height"]).or(detected_height);
+    images.push(ExtractedImage {
+        media_type: media_type.to_string(),
+        bytes,
+        title: Some("Desktop screenshot".into()),
+        alt: Some("Desktop screenshot".into()),
         width,
         height,
     });

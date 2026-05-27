@@ -716,70 +716,20 @@ function makeSettingsDialogProps(overrides: Partial<SettingsDialogProps> & Recor
 describe('SettingsDialog', () => {
   beforeEach(() => {
     invokeMock.mockReset()
-    invokeMock.mockImplementation((command: string, args?: Record<string, unknown>) => {
-      if (command === 'developer_storage_overview') {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'developer_tool_catalog') {
         return Promise.resolve({
-          globalSqlite: {
-            path: '/Users/sn0w/Library/Application Support/dev.sn0w.xero/xero.db',
-            tables: [
-              {
-                name: 'provider_credentials',
-                columns: [
-                  { name: 'provider_id', typeLabel: 'TEXT' },
-                  { name: 'api_key', typeLabel: 'TEXT' },
-                ],
-                rowCount: 1,
-              },
-            ],
-          },
-          projectLance: [
-            {
-              projectId: 'project-1',
-              projectName: 'Xero',
-              repositoryRoot: '/tmp/Xero',
-              stateDatabasePath: '/Users/sn0w/Library/Application Support/dev.sn0w.xero/projects/project-1/state.db',
-              lancePath: '/Users/sn0w/Library/Application Support/dev.sn0w.xero/projects/project-1/lance',
-              exists: true,
-              tables: [
-                {
-                  name: 'agent_memories',
-                  columns: [
-                    { name: 'memory_id', typeLabel: 'TEXT' },
-                    { name: 'text', typeLabel: 'TEXT' },
-                  ],
-                  rowCount: 1,
-                },
-              ],
-            },
-          ],
+          hostOs: 'macos',
+          hostOsLabel: 'macOS',
+          skillToolEnabled: true,
+          entries: [],
         })
       }
-      if (command === 'developer_storage_read_table') {
-        const request = args?.request as { revealSensitive?: boolean; tableName?: string } | undefined
+      if (command === 'developer_tool_harness_project') {
         return Promise.resolve({
-          source: { kind: 'global_sqlite', projectId: null },
-          tableName: request?.tableName ?? 'provider_credentials',
-          path: '/Users/sn0w/Library/Application Support/dev.sn0w.xero/xero.db',
-          columns: [
-            { name: 'provider_id', typeLabel: 'TEXT' },
-            { name: 'api_key', typeLabel: 'TEXT' },
-          ],
-          rows: [
-            {
-              values: {
-                provider_id: 'openrouter',
-                api_key: request?.revealSensitive ? 'sk-test' : '[redacted]',
-              },
-              displayValues: {
-                provider_id: 'openrouter',
-                api_key: request?.revealSensitive ? 'sk-test' : '[redacted]',
-              },
-            },
-          ],
-          rowCount: 1,
-          limit: 50,
-          offset: 0,
-          redacted: !request?.revealSensitive,
+          projectId: 'xero-developer-tool-harness-fixture',
+          displayName: 'Tool harness fixture',
+          rootPath: '/tmp/harness-fixture',
         })
       }
       if (command === 'browser_control_settings') {
@@ -822,34 +772,36 @@ describe('SettingsDialog', () => {
     }
   })
 
-  it('shows local storage data from the development section with sensitive values redacted by default', async () => {
+  it('renders development controls without storage tabs or the storage inspector', async () => {
     render(
       <SettingsDialog
         {...makeSettingsDialogProps({
           initialSection: 'development',
+          onStartOnboarding: vi.fn(),
         })}
       />,
     )
 
-    expect(await screen.findByText('Local storage', {}, { timeout: 5000 })).toBeVisible()
-    expect(await screen.findByText('provider_credentials')).toBeVisible()
-    expect(await screen.findByText('[redacted]')).toBeVisible()
-    expect(screen.queryByText('sk-test')).not.toBeInTheDocument()
+    const onboardingHeading = await screen.findByRole('heading', { name: 'Onboarding' })
+    const toolbarHeading = await screen.findByRole('heading', { name: 'Toolbar platform' })
+    const harnessHeading = await screen.findByRole('heading', { name: 'Tool harness' })
+    expect(screen.getByRole('button', { name: 'Start onboarding' })).toBeEnabled()
+    expect(await screen.findByText(/Harness fixture: Tool harness fixture/)).toBeVisible()
 
-    fireEvent.click(screen.getByLabelText('Reveal sensitive storage values'))
-
-    await waitFor(() =>
-      expect(invokeMock).toHaveBeenLastCalledWith('developer_storage_read_table', {
-        request: {
-          source: { kind: 'global_sqlite', projectId: null },
-          tableName: 'provider_credentials',
-          limit: 50,
-          offset: 0,
-          revealSensitive: true,
-        },
-      }),
-    )
-    expect(await screen.findByText('sk-test')).toBeVisible()
+    expect(
+      onboardingHeading.compareDocumentPosition(toolbarHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(
+      toolbarHeading.compareDocumentPosition(harnessHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(screen.queryByRole('tab', { name: 'Storage' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Storage inspector')).not.toBeInTheDocument()
+    expect(screen.queryByText('Local storage')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Reveal sensitive storage values')).not.toBeInTheDocument()
+    expect(invokeMock).not.toHaveBeenCalledWith('developer_storage_overview')
+    expect(invokeMock).not.toHaveBeenCalledWith('developer_storage_read_table', expect.anything())
   })
 
   it('renders doctor reports from the diagnostics section and runs extended checks explicitly', async () => {

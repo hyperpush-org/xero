@@ -48,6 +48,7 @@ const EXECUTE_EFFECTS = new Set<AgentToolEffectClassDto>([
   'process_control',
   'browser_control',
   'device_control',
+  'desktop_control',
   'external_service',
   'agent_delegation',
 ])

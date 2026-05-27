@@ -18,6 +18,7 @@ import type {
   DangerZoneProject,
 } from "@/components/xero/settings-dialog/account-danger-zone"
 import type { DictationSettingsAdapter } from "@/components/xero/settings-dialog/dictation-section"
+import type { DesktopControlSettingsAdapter } from "@/components/xero/settings-dialog/desktop-control-section"
 import type { MemoryReviewAdapter } from "@/components/xero/settings-dialog/memory-review-section"
 import type { PowerSettingsAdapter } from "@/components/xero/settings-dialog/power-section"
 import type { ProjectStateAdapter } from "@/components/xero/settings-dialog/project-state-section"
@@ -62,7 +63,7 @@ import type {
   GitHubAuthStatus,
   GitHubSessionView,
 } from "@/src/lib/github-auth"
-import { Activity, ArrowLeft, Bot, Brain, Cloud, Code2, Database, Globe, HardDrive, Heart, Keyboard, KeyRound, Mic, Palette, PlaySquare, Plug, PlugZap, Power, UserRound, WandSparkles, Wrench } from "lucide-react"
+import { Activity, ArrowLeft, Bot, Brain, Cloud, Code2, Database, Globe, HardDrive, Heart, Keyboard, KeyRound, Mic, Monitor, Palette, PlaySquare, Plug, PlugZap, Power, UserRound, WandSparkles, Wrench } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -85,6 +86,7 @@ export type SettingsSection =
   | "memory"
   | "plugins"
   | "browser"
+  | "desktopControl"
   | "power"
   | "workspaceIndex"
   | "projectState"
@@ -107,6 +109,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   "skills",
   "plugins",
   "browser",
+  "desktopControl",
   "power",
   "workspaceIndex",
   "projectState",
@@ -135,6 +138,10 @@ const loadAgentToolingSection = () =>
 const loadBrowserSection = () =>
   import("@/components/xero/settings-dialog/browser-section").then((module) => ({
     default: module.BrowserSection,
+  }))
+const loadDesktopControlSection = () =>
+  import("@/components/xero/settings-dialog/desktop-control-section").then((module) => ({
+    default: module.DesktopControlSection,
   }))
 const loadPowerSection = () =>
   import("@/components/xero/settings-dialog/power-section").then((module) => ({
@@ -202,6 +209,7 @@ const LazyCloudAccountSection = lazy(loadCloudAccountSection)
 const LazyAgentsSection = lazy(loadAgentsSection)
 const LazyAgentToolingSection = lazy(loadAgentToolingSection)
 const LazyBrowserSection = lazy(loadBrowserSection)
+const LazyDesktopControlSection = lazy(loadDesktopControlSection)
 const LazyPowerSection = lazy(loadPowerSection)
 const LazyDevelopmentSection = lazy(loadDevelopmentSection)
 const LazyDictationSection = lazy(loadDictationSection)
@@ -232,6 +240,7 @@ const SETTINGS_SECTION_LOADERS: Record<SettingsSection, () => Promise<unknown>> 
   skills: loadSkillsSection,
   plugins: loadPluginsSection,
   browser: loadBrowserSection,
+  desktopControl: loadDesktopControlSection,
   power: loadPowerSection,
   workspaceIndex: loadWorkspaceIndexSection,
   projectState: loadProjectStateSection,
@@ -295,6 +304,7 @@ const WORKSPACE_GROUP: NavGroup = {
     { id: "skills", label: "Skills", icon: WandSparkles },
     { id: "plugins", label: "Plugins", icon: Plug },
     { id: "browser", label: "Browser", icon: Globe },
+    { id: "desktopControl", label: "Desktop Control", icon: Monitor },
     { id: "power", label: "Power", icon: Power },
     { id: "workspaceIndex", label: "Workspace Index", icon: Database },
     { id: "projectState", label: "Project State", icon: HardDrive },
@@ -360,6 +370,7 @@ export interface SettingsDialogProps {
   onRemoveUserEnvironmentTool?: (id: string) => Promise<EnvironmentProbeReportDto | null>
   onRunDoctorReport?: (request?: Partial<RunDoctorReportRequestDto>) => Promise<XeroDoctorReportDto>
   dictationAdapter?: DictationSettingsAdapter
+  desktopControlAdapter?: DesktopControlSettingsAdapter
   soulAdapter?: SoulSettingsAdapter
   agentToolingAdapter?: AgentToolingSettingsAdapter
   powerAdapter?: PowerSettingsAdapter
@@ -489,6 +500,7 @@ export function SettingsDialog({
   onRemoveUserEnvironmentTool,
   onRunDoctorReport,
   dictationAdapter,
+  desktopControlAdapter,
   soulAdapter,
   agentToolingAdapter,
   powerAdapter,
@@ -813,6 +825,10 @@ export function SettingsDialog({
 
     if (renderedSection === "browser") {
       return <LazyBrowserSection />
+    }
+
+    if (renderedSection === "desktopControl") {
+      return <LazyDesktopControlSection adapter={desktopControlAdapter} />
     }
 
     if (renderedSection === "power") {

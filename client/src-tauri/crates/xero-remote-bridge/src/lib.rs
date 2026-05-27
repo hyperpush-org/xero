@@ -399,6 +399,19 @@ pub enum InboundCommandKind {
     DiscardAttachment,
     UpdateSessionControls,
     FetchRuntimeMediaArtifact,
+    ComputerUseStreamRequest,
+    ComputerUseStreamOffer,
+    ComputerUseStreamAnswer,
+    ComputerUseStreamIceCandidate,
+    ComputerUseStreamStop,
+    ComputerUseStreamStatus,
+    ComputerUseStreamSetQuality,
+    ComputerUseStreamRequestKeyframe,
+    ComputerUseManualControlRequest,
+    ComputerUseManualControlGrant,
+    ComputerUseManualControlHeartbeat,
+    ComputerUseManualControlInput,
+    ComputerUseManualControlRelease,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -473,6 +486,7 @@ impl DesktopRelayConnection {
         join_ref: &str,
         auth_topic: &str,
         authorized: bool,
+        run_id: Option<&str>,
     ) -> BridgeResult<JsonValue> {
         self.client.push_and_wait(
             &format!("desktop:{}", self.desktop_device_id),
@@ -481,6 +495,7 @@ impl DesktopRelayConnection {
                 "join_ref": join_ref,
                 "auth_topic": auth_topic,
                 "authorized": authorized,
+                "run_id": run_id,
             }),
         )
     }
@@ -729,6 +744,7 @@ enum OutboundFrame {
         auth_topic: String,
         session_id: String,
         authorized: bool,
+        run_id: Option<String>,
     },
 }
 
@@ -975,12 +991,14 @@ where
         auth_topic: &str,
         session_id: &str,
         authorized: bool,
+        run_id: Option<&str>,
     ) -> BridgeResult<()> {
         let _ = self.outbound_tx.send(OutboundFrame::SessionAuthorization {
             join_ref: join_ref.to_owned(),
             auth_topic: auth_topic.to_owned(),
             session_id: session_id.to_owned(),
             authorized,
+            run_id: run_id.map(ToOwned::to_owned),
         });
         Ok(())
     }
@@ -1328,7 +1346,7 @@ where
                 let join_ref = required_json_string(&message.4, "join_ref")?;
                 let auth_topic = required_json_string(&message.4, "auth_topic")?;
                 if is_control_session_id(session_id) {
-                    connection.authorize_session_join(join_ref, auth_topic, true)?;
+                    connection.authorize_session_join(join_ref, auth_topic, true, None)?;
                     if joined_sessions.insert(session_id.to_owned()) {
                         let _reply = connection.join_session(session_id)?;
                     }
@@ -1419,8 +1437,14 @@ where
                     auth_topic,
                     session_id,
                     authorized,
+                    run_id,
                 } => {
-                    connection.authorize_session_join(&join_ref, &auth_topic, authorized)?;
+                    connection.authorize_session_join(
+                        &join_ref,
+                        &auth_topic,
+                        authorized,
+                        run_id.as_deref(),
+                    )?;
                     if authorized && joined_sessions.insert(session_id.clone()) {
                         connection.join_session(&session_id)?;
                     }
@@ -1692,6 +1716,21 @@ mod tests {
         let parsed: InboundCommandKind =
             serde_json::from_str("\"context_snapshot\"").expect("deserialize context snapshot");
         assert_eq!(parsed, InboundCommandKind::ContextSnapshot);
+
+        let parsed: InboundCommandKind = serde_json::from_str(
+            "\"computer_use_manual_control_input\"",
+        )
+        .expect("deserialize manual control input");
+        assert_eq!(parsed, InboundCommandKind::ComputerUseManualControlInput);
+
+        let parsed: InboundCommandKind = serde_json::from_str(
+            "\"computer_use_manual_control_heartbeat\"",
+        )
+        .expect("deserialize manual control heartbeat");
+        assert_eq!(
+            parsed,
+            InboundCommandKind::ComputerUseManualControlHeartbeat
+        );
     }
 
     #[test]

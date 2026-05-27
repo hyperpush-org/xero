@@ -213,6 +213,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
                 commands::dictation::shutdown_on_close(window.app_handle());
                 commands::emulator::shutdown::shutdown_on_close(window.app_handle());
                 commands::remote_bridge::shutdown_on_close(window.app_handle());
+                runtime::shutdown_desktop_control_sidecar();
             }
         })
         .plugin(tauri_plugin_dialog::init())
@@ -257,6 +258,10 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::remote_bridge::bridge_sign_out,
             commands::remote_bridge::bridge_revoke_device,
             commands::remote_bridge::bridge_publish_theme,
+            commands::desktop_control::desktop_control_status,
+            commands::desktop_control::desktop_control_update_settings,
+            commands::desktop_control::desktop_control_stop,
+            commands::desktop_control::desktop_control_open_permission_settings,
             commands::project_records::list_project_context_records,
             commands::project_records::delete_project_context_record,
             commands::project_records::supersede_project_context_record,

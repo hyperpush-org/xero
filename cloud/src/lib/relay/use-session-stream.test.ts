@@ -6,12 +6,60 @@ import {
 	REMOTE_COMPUTER_USE_SESSION_ID,
 } from "./session-store";
 import {
+	iceServersFromJoinPayload,
 	remoteSnapshotControlSelection,
+	streamRunIdFromJoinPayload,
+	streamTokenFromJoinPayload,
 	withGlobalComputerUseSessions,
 } from "./use-session-stream";
 import { remoteVisibleSessionUpdateFromEnvelope } from "./visible-sessions";
 
 describe("remoteVisibleSessionUpdateFromEnvelope", () => {
+	it("normalizes relay ICE servers from session join payloads", () => {
+		expect(
+			iceServersFromJoinPayload({
+				ice_servers: [
+					{ urls: ["stun:stun.example.test:3478"] },
+					{
+						urls: ["turn:turn.example.test:3478?transport=udp"],
+						username: "1710000600:test",
+						credential: "credential",
+						credential_type: "password",
+					},
+					{ urls: [] },
+				],
+			}),
+		).toEqual([
+			{ urls: ["stun:stun.example.test:3478"] },
+			{
+				urls: ["turn:turn.example.test:3478?transport=udp"],
+				username: "1710000600:test",
+				credential: "credential",
+				credentialType: "password",
+			},
+		]);
+	});
+
+	it("normalizes short-lived stream tokens from session joins", () => {
+		expect(
+			streamTokenFromJoinPayload({
+				stream_token: " token-1 ",
+			}),
+		).toBe("token-1");
+		expect(streamTokenFromJoinPayload({ streamToken: "token-2" })).toBe(
+			"token-2",
+		);
+		expect(streamTokenFromJoinPayload({ stream_token: "" })).toBeNull();
+	});
+
+	it("normalizes stream run ids from session joins", () => {
+		expect(streamRunIdFromJoinPayload({ stream_run_id: " run-1 " })).toBe(
+			"run-1",
+		);
+		expect(streamRunIdFromJoinPayload({ streamRunId: "run-2" })).toBe("run-2");
+		expect(streamRunIdFromJoinPayload({ stream_run_id: "" })).toBeNull();
+	});
+
 	it("uses durable composer settings when a snapshot has no active runtime run", () => {
 		expect(
 			remoteSnapshotControlSelection({

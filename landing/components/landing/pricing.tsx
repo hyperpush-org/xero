@@ -1,6 +1,6 @@
 import Link from "next/link"
 import type { ElementType } from "react"
-import { Check, Github, Rocket, Smartphone } from "lucide-react"
+import { Check, Cloud, Github, Rocket } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -40,18 +40,18 @@ const addOns: AddOn[] = [
     ],
   },
   {
-    name: "Mobile Companion",
+    name: "Remote sessions",
     price: "Free",
     period: "for a limited time",
     priceBadge: "Limited-time offer",
     previousPrice: "$10 / month",
-    icon: Smartphone,
-    description: "Drive the agent on your desktop from a dedicated iOS or Android app. Review, redirect, and approve without opening a laptop.",
+    icon: Cloud,
+    description: "Drive a desktop agent run from the Xero cloud browser app. Review, redirect, and approve from any signed-in browser.",
     features: [
-      "Approve, redirect, and review remotely",
+      "Approve, redirect, and review in browser",
       "Live activity stream and diffs",
-      "Companion approval inbox",
-      "End-to-end encrypted phone ↔ desktop",
+      "Remote session approval inbox",
+      "End-to-end encrypted browser-to-desktop relay",
     ],
   },
 ]
@@ -116,24 +116,27 @@ export function Pricing() {
             return (
               <Card
                 key={t.name}
-                className="relative flex flex-col overflow-hidden rounded-2xl border-dashed border-border/70 px-1 py-1"
+                className="relative flex h-full flex-col gap-0 overflow-hidden rounded-2xl border-dashed border-border/70 px-1 py-1"
               >
-                {t.statusBadge ? (
-                  <span className="absolute right-5 top-5 inline-flex items-center gap-1.5 rounded-full border border-border/70 bg-background px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                    <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                    {t.statusBadge}
-                  </span>
-                ) : null}
-
-                <CardHeader className="gap-0 px-5 pt-5 md:min-h-[13rem]">
-                  <div className="flex items-center gap-2.5">
-                    <div className="flex h-7 w-7 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                      <Icon className="h-3.5 w-3.5" />
+                <CardHeader className="gap-0 px-5 pb-0 pt-5">
+                  <div className="flex min-h-10 items-start justify-between gap-4">
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                        <Icon className="h-3.5 w-3.5" />
+                      </div>
+                      <CardTitle className="truncate text-sm font-medium">
+                        {t.name}
+                      </CardTitle>
                     </div>
-                    <CardTitle className="text-sm font-medium">{t.name}</CardTitle>
+                    {t.statusBadge ? (
+                      <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border/70 bg-background px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                        <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                        {t.statusBadge}
+                      </span>
+                    ) : null}
                   </div>
 
-                  <div className="mt-3 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                  <div className="flex min-h-[5rem] flex-wrap items-end gap-x-2 gap-y-1 pt-6">
                     <span className="text-3xl font-medium tracking-tight">{t.price}</span>
                     <span className="text-xs text-muted-foreground">{t.period}</span>
                     {t.previousPrice ? (
@@ -143,22 +146,24 @@ export function Pricing() {
                     ) : null}
                   </div>
 
-                  {t.priceBadge ? (
-                    <Badge
-                      variant="secondary"
-                      className="mt-2 border border-primary/20 bg-primary/10 text-primary"
-                    >
-                      {t.priceBadge}
-                    </Badge>
-                  ) : null}
+                  <div className="mt-3 flex min-h-8 items-start">
+                    {t.priceBadge ? (
+                      <Badge
+                        variant="secondary"
+                        className="border border-primary/20 bg-primary/10 text-primary"
+                      >
+                        {t.priceBadge}
+                      </Badge>
+                    ) : null}
+                  </div>
 
-                  <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                  <p className="mt-2 min-h-[5.25rem] text-sm leading-relaxed text-muted-foreground">
                     {t.description}
                   </p>
                 </CardHeader>
 
-                <CardContent className="flex flex-1 flex-col px-5 pb-5">
-                  <ul className="mt-3 flex flex-1 flex-col gap-2 border-t border-border/50 pt-4">
+                <CardContent className="flex flex-1 flex-col px-5 pb-5 pt-0">
+                  <ul className="mt-5 flex flex-1 flex-col gap-2 border-t border-border/50 pt-4">
                     {t.features.map((f) => (
                       <li key={f} className="flex items-start gap-2 text-sm">
                         <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />

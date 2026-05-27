@@ -80,6 +80,10 @@ jobs:
             fi
           done
 
+      - name: Build desktop sidecar
+        working-directory: client/src-tauri
+        run: cargo build --release --package xero-desktop-sidecar --target ${{ matrix.target }}
+
       - name: Build signed Tauri app
         uses: tauri-apps/tauri-action@v0
         env:

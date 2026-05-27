@@ -20,11 +20,11 @@ export function Hero() {
       <div className="mx-auto w-full max-w-7xl px-4 pb-16 pt-20 sm:px-6 sm:pt-28 lg:px-8 lg:pb-24">
         <div className="mx-auto max-w-3xl text-center">
           <Link
-            href="#capabilities"
+            href="#cloud"
             className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-secondary/40 px-3 py-1 text-xs text-muted-foreground backdrop-blur hover:border-border hover:bg-secondary/70 hover:text-foreground"
           >
             <span className="inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
-            Beta · agents · workflows · mobile approvals
+            Beta · agents · remote sessions · browser approvals
             <ArrowRight className="h-3 w-3" />
           </Link>
 

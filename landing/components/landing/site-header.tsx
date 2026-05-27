@@ -10,7 +10,6 @@ import { siteConfig } from "@/lib/site"
 
 const nav = [
   { label: "Product", href: "/#product" },
-  { label: "Capabilities", href: "/#capabilities" },
   { label: "Cloud", href: "/#cloud" },
   { label: "Models", href: "/#models" },
   { label: "Pricing", href: "/#pricing" },

@@ -30,7 +30,5 @@ tsconfig.tsbuildinfo
 deck
 video
 .bg-shell
-.gsd
-.tmp-gsd2-ref
 tmp
 vendor

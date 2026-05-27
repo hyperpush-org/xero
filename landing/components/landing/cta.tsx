@@ -52,10 +52,6 @@ export function CTA() {
             <TuiInstall targets={installTargets} />
 
             <div className="mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-xs text-muted-foreground/80">
-              <span className="inline-flex items-center gap-1.5">
-                <ShieldCheck className="h-3.5 w-3.5 text-primary" />
-                SHA-256 checksummed builds
-              </span>
               <Link
                 href="/install.sh"
                 className="underline-offset-4 transition-colors hover:text-foreground hover:underline"

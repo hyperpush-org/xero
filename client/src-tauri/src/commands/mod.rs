@@ -13,6 +13,7 @@ pub mod cancel_autonomous_run;
 pub mod code_rollback;
 pub mod complete_oauth_callback;
 pub mod create_repository;
+pub mod desktop_control;
 pub mod developer_tool_harness;
 pub mod development_storage;
 pub mod dictation;
@@ -140,6 +141,11 @@ pub use cancel_autonomous_run::cancel_autonomous_run;
 pub use code_rollback::{apply_selective_undo, apply_session_rollback};
 pub use complete_oauth_callback::complete_oauth_callback;
 pub use create_repository::create_repository;
+pub use desktop_control::{
+    desktop_control_open_permission_settings, desktop_control_status, desktop_control_stop,
+    desktop_control_update_settings, DesktopControlOpenPermissionSettingsRequestDto,
+    DesktopControlSettingsDto, DesktopControlStatusDto, UpsertDesktopControlSettingsRequestDto,
+};
 pub use developer_tool_harness::{
     developer_tool_catalog, developer_tool_dry_run, developer_tool_harness_project,
     developer_tool_model_run, developer_tool_sequence_delete, developer_tool_sequence_list,

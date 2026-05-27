@@ -2614,6 +2614,14 @@ fn answered_tool_replay_kind(
         return Ok(Some(AnsweredToolReplayKind::OperatorApprovedCommand));
     }
 
+    if tool_call.state == AgentToolCallState::Succeeded
+        && desktop_approval_action_id_for_tool_call(tool_call)?
+            .as_deref()
+            .is_some_and(|action_id| answered_tool_action_ids.contains(action_id))
+    {
+        return Ok(Some(AnsweredToolReplayKind::OperatorApprovedCommand));
+    }
+
     Ok(None)
 }
 
@@ -2707,6 +2715,38 @@ fn system_diagnostics_approval_action_id_for_tool_call(
     Ok(Some(sanitize_action_id(
         &system_diagnostics_action_approval_id(&output),
     )))
+}
+
+fn desktop_approval_action_id_for_tool_call(
+    tool_call: &project_store::AgentToolCallRecord,
+) -> CommandResult<Option<String>> {
+    let Some(result_json) = tool_call.result_json.as_deref() else {
+        return Ok(None);
+    };
+    let result = serde_json::from_str::<AutonomousToolResult>(result_json).map_err(|error| {
+        CommandError::system_fault(
+            "agent_tool_replay_result_decode_failed",
+            format!(
+                "Xero could not decode tool call `{}` while checking desktop-control approval replay state: {error}",
+                tool_call.tool_call_id
+            ),
+        )
+    })?;
+
+    let output = match result.output {
+        AutonomousToolOutput::DesktopObserve(output)
+        | AutonomousToolOutput::DesktopControl(output)
+        | AutonomousToolOutput::DesktopStream(output) => output,
+        _ => return Ok(None),
+    };
+    if !matches!(output.status, AutonomousDesktopToolStatus::ApprovalRequired)
+        || !output.policy.approval_required
+    {
+        return Ok(None);
+    }
+    Ok(Some(sanitize_action_id(&desktop_action_approval_id(
+        &output,
+    ))))
 }
 
 fn mark_interrupted_tool_calls_before_continuation(

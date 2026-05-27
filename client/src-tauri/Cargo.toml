@@ -1,5 +1,12 @@
 [workspace]
-members = [".", "crates/xero-agent-core", "crates/xero-cli", "crates/xero-remote-bridge"]
+members = [
+    ".",
+    "crates/xero-agent-core",
+    "crates/xero-cli",
+    "crates/xero-desktop-control-ipc",
+    "crates/xero-desktop-sidecar",
+    "crates/xero-remote-bridge",
+]
 exclude = ["crates/cookie-importer"]
 resolver = "2"
 
@@ -120,13 +127,14 @@ tar = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 xero-agent-core = { path = "crates/xero-agent-core" }
 xero-cli = { path = "crates/xero-cli" }
+xero-desktop-control-ipc = { path = "crates/xero-desktop-control-ipc" }
 xero-remote-bridge = { path = "crates/xero-remote-bridge" }
 tauri-plugin-updater = { version = "2.10", default-features = false, features = ["rustls-tls"] }
 tauri-plugin-process = "2.3"
 portable-pty = "0.8"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-core-graphics = { version = "0.23", features = ["elcapitan"] }
+core-graphics = { version = "0.23", features = ["elcapitan", "highsierra"] }
 core-foundation = "0.9"
 objc2 = "0.6"
 block2 = "0.6"

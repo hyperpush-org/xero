@@ -118,6 +118,329 @@ defmodule XeroWeb.RemoteChannelTest do
     end)
   end
 
+  test "session joins include short-lived WebRTC ICE servers", %{conn: conn} do
+    original_turn_config = Application.get_env(:xero, Xero.Remote.Turn)
+
+    Application.put_env(:xero, Xero.Remote.Turn,
+      stun_urls: ["stun:stun.example.test:3478"],
+      turn_urls: ["turn:turn.example.test:3478?transport=udp"],
+      shared_secret: "relay-secret",
+      ttl_seconds: 600
+    )
+
+    on_exit(fn ->
+      case original_turn_config do
+        nil -> Application.delete_env(:xero, Xero.Remote.Turn)
+        value -> Application.put_env(:xero, Xero.Remote.Turn, value)
+      end
+    end)
+
+    with_github_env(fn ->
+      desktop = desktop_login!(conn)
+      web = web_login!(conn)
+
+      {:ok, desktop_socket} =
+        connect(XeroWeb.RemoteDesktopSocket, %{"token" => desktop["desktop_jwt"]})
+
+      {:ok, _desktop_reply, desktop_socket} =
+        subscribe_and_join(desktop_socket, "desktop:#{desktop["desktop_device_id"]}", %{})
+
+      {:ok, _desktop_session_reply, _desktop_session} =
+        subscribe_and_join(
+          desktop_socket,
+          "session:#{desktop["desktop_device_id"]}:session-1",
+          %{}
+        )
+
+      {:ok, web_socket} =
+        connect(XeroWeb.RemoteWebSocket, %{"token" => web["web_jwt"]})
+
+      join_task =
+        Task.async(fn ->
+          subscribe_and_join(web_socket, "session:#{desktop["desktop_device_id"]}:session-1", %{
+            "join_ref" => "join-ice"
+          })
+        end)
+
+      assert_push "session_join_requested", %{auth_topic: auth_topic, join_ref: "join-ice"}
+
+      ref =
+        push(desktop_socket, "session_authorized", %{
+          "join_ref" => "join-ice",
+          "auth_topic" => auth_topic,
+          "authorized" => true,
+          "run_id" => "run-ice"
+        })
+
+      assert_reply ref, :ok
+      {:ok, web_session_reply, _web_session} = Task.await(join_task)
+
+      assert [
+               %{urls: ["stun:stun.example.test:3478"]},
+               %{
+                 urls: ["turn:turn.example.test:3478?transport=udp"],
+                 username: username,
+                 credential: credential,
+                 credential_type: "password",
+                 ttl_seconds: 600
+               }
+             ] = web_session_reply.ice_servers
+
+      assert credential == :crypto.mac(:hmac, :sha, "relay-secret", username) |> Base.encode64()
+      assert is_binary(web_session_reply.stream_token)
+      assert web_session_reply.stream_run_id == "run-ice"
+    end)
+  end
+
+  test "web stream and manual-control commands require the session stream token", %{conn: conn} do
+    with_github_env(fn ->
+      desktop = desktop_login!(conn)
+      web = web_login!(conn)
+
+      {:ok, desktop_socket} =
+        connect(XeroWeb.RemoteDesktopSocket, %{"token" => desktop["desktop_jwt"]})
+
+      {:ok, _desktop_reply, desktop_socket} =
+        subscribe_and_join(desktop_socket, "desktop:#{desktop["desktop_device_id"]}", %{})
+
+      {:ok, _desktop_session_reply, _desktop_session} =
+        subscribe_and_join(
+          desktop_socket,
+          "session:#{desktop["desktop_device_id"]}:session-1",
+          %{}
+        )
+
+      {:ok, web_socket} =
+        connect(XeroWeb.RemoteWebSocket, %{"token" => web["web_jwt"]})
+
+      join_task =
+        Task.async(fn ->
+          subscribe_and_join(web_socket, "session:#{desktop["desktop_device_id"]}:session-1", %{
+            "join_ref" => "join-stream-token"
+          })
+        end)
+
+      assert_push "session_join_requested", %{
+        auth_topic: auth_topic,
+        join_ref: "join-stream-token"
+      }
+
+      ref =
+        push(desktop_socket, "session_authorized", %{
+          "join_ref" => "join-stream-token",
+          "auth_topic" => auth_topic,
+          "authorized" => true,
+          "run_id" => "run-1"
+        })
+
+      assert_reply ref, :ok
+      {:ok, web_session_reply, web_session} = Task.await(join_task)
+      assert is_binary(web_session_reply.stream_token)
+      assert web_session_reply.stream_run_id == "run-1"
+      attach_remote_command_telemetry(self())
+
+      missing_token_ref =
+        push(web_session, "frame", %{
+          "kind" => "computer_use_stream_request",
+          "payload" => %{"quality" => "balanced"}
+        })
+
+      assert_reply missing_token_ref, :error, %{reason: "invalid_stream_token"}
+
+      assert_receive {:remote_command_telemetry,
+                      [:xero, :remote, :computer_use, :command, :rejected],
+                      %{count: 1, bytes: rejected_bytes},
+                      %{
+                        family: :stream,
+                        kind: "computer_use_stream_request",
+                        direction: :web_to_desktop,
+                        reason: "invalid_stream_token"
+                      }}
+
+      assert rejected_bytes > 0
+
+      valid_ref =
+        push(web_session, "frame", %{
+          "kind" => "computer_use_stream_request",
+          "payload" => %{
+            "quality" => "balanced",
+            "streamToken" => web_session_reply.stream_token
+          }
+        })
+
+      assert_reply valid_ref, :error, %{reason: "invalid_stream_token"}
+
+      assert_receive {:remote_command_telemetry,
+                      [:xero, :remote, :computer_use, :command, :rejected],
+                      %{count: 1, bytes: run_mismatch_bytes},
+                      %{
+                        family: :stream,
+                        kind: "computer_use_stream_request",
+                        direction: :web_to_desktop,
+                        reason: "invalid_stream_token"
+                      }}
+
+      assert run_mismatch_bytes > 0
+
+      valid_ref =
+        push(web_session, "frame", %{
+          "kind" => "computer_use_stream_request",
+          "payload" => %{
+            "quality" => "balanced",
+            "runId" => "run-1",
+            "streamToken" => web_session_reply.stream_token
+          }
+        })
+
+      assert_reply valid_ref, :ok
+
+      assert_receive {:remote_command_telemetry,
+                      [:xero, :remote, :computer_use, :command, :forwarded],
+                      %{count: 1, bytes: stream_bytes},
+                      %{
+                        family: :stream,
+                        kind: "computer_use_stream_request",
+                        direction: :web_to_desktop,
+                        reason: "none"
+                      }}
+
+      assert stream_bytes > 0
+
+      assert_push "frame", %{
+        from_kind: "web",
+        direction: "web_to_desktop",
+        payload: %{
+          "kind" => "computer_use_stream_request",
+          "payload" => %{
+            "quality" => "balanced",
+            "runId" => "run-1",
+            "streamToken" => stream_token
+          }
+        }
+      }
+
+      assert stream_token == web_session_reply.stream_token
+
+      manual_ref =
+        push(web_session, "frame", %{
+          "kind" => "computer_use_manual_control_input",
+          "payload" => %{
+            "runId" => "run-1",
+            "streamToken" => web_session_reply.stream_token,
+            "input" => %{"type" => "mouse_move", "x" => 32, "y" => 64}
+          }
+        })
+
+      assert_reply manual_ref, :ok
+
+      assert_receive {:remote_command_telemetry,
+                      [:xero, :remote, :computer_use, :command, :forwarded],
+                      %{count: 1, bytes: manual_bytes},
+                      %{
+                        family: :manual_control,
+                        kind: "computer_use_manual_control_input",
+                        direction: :web_to_desktop,
+                        reason: "none"
+                      }}
+
+      assert manual_bytes > 0
+    end)
+  end
+
+  test "computer-use command telemetry reports rate-limit rejections", %{conn: conn} do
+    with_github_env(fn ->
+      desktop = desktop_login!(conn)
+      web = web_login!(conn)
+      original_rate_limit_config = Application.get_env(:xero, Xero.RateLimiter, [])
+      Application.put_env(:xero, Xero.RateLimiter, per_minute: 1)
+
+      on_exit(fn ->
+        Application.put_env(:xero, Xero.RateLimiter, original_rate_limit_config)
+      end)
+
+      {:ok, desktop_socket} =
+        connect(XeroWeb.RemoteDesktopSocket, %{"token" => desktop["desktop_jwt"]})
+
+      {:ok, _desktop_reply, desktop_socket} =
+        subscribe_and_join(desktop_socket, "desktop:#{desktop["desktop_device_id"]}", %{})
+
+      {:ok, _desktop_session_reply, _desktop_session} =
+        subscribe_and_join(
+          desktop_socket,
+          "session:#{desktop["desktop_device_id"]}:session-1",
+          %{}
+        )
+
+      {:ok, web_socket} =
+        connect(XeroWeb.RemoteWebSocket, %{"token" => web["web_jwt"]})
+
+      join_task =
+        Task.async(fn ->
+          subscribe_and_join(web_socket, "session:#{desktop["desktop_device_id"]}:session-1", %{
+            "join_ref" => "join-command-rate-limit"
+          })
+        end)
+
+      assert_push "session_join_requested", %{
+        auth_topic: auth_topic,
+        join_ref: "join-command-rate-limit"
+      }
+
+      ref =
+        push(desktop_socket, "session_authorized", %{
+          "join_ref" => "join-command-rate-limit",
+          "auth_topic" => auth_topic,
+          "authorized" => true,
+          "run_id" => "run-rate-limit"
+        })
+
+      assert_reply ref, :ok
+      {:ok, web_session_reply, web_session} = Task.await(join_task)
+      attach_remote_command_telemetry(self())
+
+      first_ref =
+        push(web_session, "frame", %{
+          "kind" => "computer_use_stream_status",
+          "payload" => %{
+            "runId" => "run-rate-limit",
+            "streamToken" => web_session_reply.stream_token
+          }
+        })
+
+      second_ref =
+        push(web_session, "frame", %{
+          "kind" => "computer_use_stream_status",
+          "payload" => %{
+            "runId" => "run-rate-limit",
+            "streamToken" => web_session_reply.stream_token
+          }
+        })
+
+      assert_reply first_ref, :ok
+      assert_reply second_ref, :error, %{reason: "rate_limited", retry_after_ms: retry_after_ms}
+      assert retry_after_ms > 0
+
+      assert_receive {:remote_command_telemetry,
+                      [:xero, :remote, :computer_use, :command, :forwarded], %{count: 1},
+                      %{
+                        family: :stream,
+                        kind: "computer_use_stream_status",
+                        reason: "none"
+                      }}
+
+      assert_receive {:remote_command_telemetry,
+                      [:xero, :remote, :computer_use, :command, :rejected],
+                      %{count: 1, bytes: rejected_bytes},
+                      %{
+                        family: :stream,
+                        kind: "computer_use_stream_status",
+                        reason: "rate_limited"
+                      }}
+
+      assert rejected_bytes > 0
+    end)
+  end
+
   test "web clients can subscribe to a desktop theme channel and notify the desktop", %{
     conn: conn
   } do
@@ -305,5 +628,24 @@ defmodule XeroWeb.RemoteChannelTest do
                  %{}
                )
     end)
+  end
+
+  defp attach_remote_command_telemetry(test_pid) do
+    handler_id = {:remote_command_telemetry, self(), System.unique_integer([:positive])}
+
+    :ok =
+      :telemetry.attach_many(
+        handler_id,
+        [
+          [:xero, :remote, :computer_use, :command, :forwarded],
+          [:xero, :remote, :computer_use, :command, :rejected]
+        ],
+        fn event, measurements, metadata, _config ->
+          send(test_pid, {:remote_command_telemetry, event, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
   end
 end

@@ -80,6 +80,7 @@ export const agentToolEffectClassSchema = z.enum([
   'process_control',
   'browser_control',
   'device_control',
+  'desktop_control',
   'external_service',
   'skill_runtime',
   'agent_delegation',

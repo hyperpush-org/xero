@@ -589,6 +589,14 @@ import {
   type VerifyUserToolRequestDto,
   type VerifyUserToolResponseDto,
 } from '@/src/lib/xero-model/environment'
+import {
+  desktopControlOpenPermissionSettingsRequestSchema,
+  desktopControlStatusSchema,
+  upsertDesktopControlSettingsRequestSchema,
+  type DesktopControlOpenPermissionSettingsRequestDto,
+  type DesktopControlStatusDto,
+  type UpsertDesktopControlSettingsRequestDto,
+} from '@/src/lib/xero-model/desktop-control'
 
 const COMMANDS = {
   importRepository: 'import_repository',
@@ -600,6 +608,10 @@ const COMMANDS = {
   readAppUiState: 'read_app_ui_state',
   writeAppUiState: 'write_app_ui_state',
   bridgePublishTheme: 'bridge_publish_theme',
+  desktopControlStatus: 'desktop_control_status',
+  desktopControlUpdateSettings: 'desktop_control_update_settings',
+  desktopControlStop: 'desktop_control_stop',
+  desktopControlOpenPermissionSettings: 'desktop_control_open_permission_settings',
   readProjectUiState: 'read_project_ui_state',
   writeProjectUiState: 'write_project_ui_state',
   createProjectStateBackup: 'create_project_state_backup',
@@ -1431,6 +1443,14 @@ export interface XeroDesktopAdapter {
   browserControlUpdateSettings?(
     request: UpsertBrowserControlSettingsRequestDto,
   ): Promise<BrowserControlSettingsDto>
+  desktopControlStatus?(): Promise<DesktopControlStatusDto>
+  desktopControlUpdateSettings?(
+    request: UpsertDesktopControlSettingsRequestDto,
+  ): Promise<DesktopControlStatusDto>
+  desktopControlStop?(): Promise<DesktopControlStatusDto>
+  desktopControlOpenPermissionSettings?(
+    request: DesktopControlOpenPermissionSettingsRequestDto,
+  ): Promise<void>
   adrenalineModeSettings?(): Promise<AdrenalineModeSettingsDto>
   adrenalineModeUpdateSettings?(
     request: UpsertAdrenalineModeSettingsRequestDto,
@@ -3653,6 +3673,28 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
   browserControlUpdateSettings(request) {
     const parsedRequest = upsertBrowserControlSettingsRequestSchema.parse(request)
     return invokeTyped(COMMANDS.browserControlUpdateSettings, browserControlSettingsSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  desktopControlStatus() {
+    return invokeTyped(COMMANDS.desktopControlStatus, desktopControlStatusSchema)
+  },
+
+  desktopControlUpdateSettings(request) {
+    const parsedRequest = upsertDesktopControlSettingsRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.desktopControlUpdateSettings, desktopControlStatusSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  desktopControlStop() {
+    return invokeTyped(COMMANDS.desktopControlStop, desktopControlStatusSchema)
+  },
+
+  desktopControlOpenPermissionSettings(request) {
+    const parsedRequest = desktopControlOpenPermissionSettingsRequestSchema.parse(request)
+    return invokeRaw(COMMANDS.desktopControlOpenPermissionSettings, {
       request: parsedRequest,
     })
   },

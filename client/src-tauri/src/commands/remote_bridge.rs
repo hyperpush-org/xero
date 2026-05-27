@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeSet,
+    fs,
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -23,6 +24,7 @@ use crate::{
     commands::{
         agent_run_dto,
         agent_session::{agent_session_dto, stop_idle_owned_runtime_run_before_archive},
+        desktop_control::load_desktop_control_settings,
         global_computer_use::{
             ensure_global_computer_use_session_record, GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
             GLOBAL_COMPUTER_USE_PROJECT_ID, REMOTE_COMPUTER_USE_SESSION_ID,
@@ -62,6 +64,16 @@ use crate::{
     registry::{
         read_project_summaries, read_registry, RegistryProjectRecord, RegistryProjectSummaryRecord,
     },
+    runtime::{
+        AutonomousDesktopControlAction, AutonomousDesktopControlRequest,
+        AutonomousDesktopIceCandidate, AutonomousDesktopIceServer, AutonomousDesktopMouseButton,
+        AutonomousDesktopObserveAction, AutonomousDesktopObserveRequest,
+        AutonomousDesktopRedactionRequest, AutonomousDesktopScreenshot,
+        AutonomousDesktopSessionDescription, AutonomousDesktopStreamAction,
+        AutonomousDesktopStreamQuality, AutonomousDesktopStreamRequest,
+        AutonomousDesktopStreamTransport, AutonomousDesktopToolOutput, AutonomousToolOutput,
+        AutonomousToolRuntime,
+    },
     state::DesktopState,
 };
 
@@ -76,6 +88,8 @@ const COMPOSER_SETTINGS_APP_STATE_KEY: &str = "xero.agent.composer.settings.v1";
 const COMPOSER_SETTINGS_UPDATED_EVENT: &str = "agent:composer_settings_updated";
 const COMPOSER_SETTINGS_VERSION: u64 = 1;
 const PROJECT_REMOTE_SESSION_ID_PREFIX: &str = "project:";
+const STREAM_FALLBACK_FRAME_MAX_BYTES: usize = 5 * 1024 * 1024;
+const STREAM_FALLBACK_JPEG_QUALITY: u8 = 74;
 
 type AppRemoteBridge = RemoteBridge<FileIdentityStore>;
 
@@ -647,6 +661,23 @@ fn route_inbound_command<R: Runtime + 'static>(
         InboundCommandKind::FetchRuntimeMediaArtifact => {
             route_fetch_runtime_media_artifact(app, state, &bridge, command)
         }
+        InboundCommandKind::ComputerUseStreamRequest
+        | InboundCommandKind::ComputerUseStreamOffer
+        | InboundCommandKind::ComputerUseStreamAnswer
+        | InboundCommandKind::ComputerUseStreamIceCandidate
+        | InboundCommandKind::ComputerUseStreamStop
+        | InboundCommandKind::ComputerUseStreamStatus
+        | InboundCommandKind::ComputerUseStreamSetQuality
+        | InboundCommandKind::ComputerUseStreamRequestKeyframe => {
+            route_computer_use_stream_command(app, state, &bridge, command)
+        }
+        InboundCommandKind::ComputerUseManualControlRequest
+        | InboundCommandKind::ComputerUseManualControlGrant
+        | InboundCommandKind::ComputerUseManualControlHeartbeat
+        | InboundCommandKind::ComputerUseManualControlInput
+        | InboundCommandKind::ComputerUseManualControlRelease => {
+            route_computer_use_manual_control_command(app, state, &bridge, command)
+        }
     }
 }
 
@@ -674,11 +705,15 @@ fn route_authorize_session_join<R: Runtime>(
     let session_id = required_command_session(&command)?.to_string();
     let join_ref = required_payload_string(&command.payload, &["joinRef", "join_ref"])?;
     let auth_topic = required_payload_string(&command.payload, &["authTopic", "auth_topic"])?;
-    let authorized = ensure_known_web_device(bridge, &command.device_id).is_ok()
-        && locate_remote_session(app, state, &session_id).is_ok();
+    let located = locate_remote_session(app, state, &session_id).ok();
+    let authorized =
+        ensure_known_web_device(bridge, &command.device_id).is_ok() && located.as_ref().is_some();
+    let run_id = located
+        .as_ref()
+        .and_then(|located| located.session.last_run_id.as_deref());
 
     bridge
-        .authorize_session_join(join_ref, auth_topic, &session_id, authorized)
+        .authorize_session_join(join_ref, auth_topic, &session_id, authorized, run_id)
         .map_err(map_bridge_error)
 }
 
@@ -1453,6 +1488,784 @@ fn route_fetch_runtime_media_artifact<R: Runtime>(
         .forward_control_event(&session_id, payload)
         .map_err(map_bridge_error)?;
     Ok(())
+}
+
+fn route_computer_use_stream_command<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    bridge: &AppRemoteBridge,
+    command: InboundCommand,
+) -> CommandResult<()> {
+    let session_id = required_command_session(&command)?.to_string();
+    let located = locate_remote_session(app, state, &session_id)?;
+    ensure_computer_use_remote_session(&located)?;
+    let schema = computer_use_stream_schema(&command.kind);
+    let stream_id =
+        payload_string(&command.payload, &["streamId", "stream_id"]).map(ToOwned::to_owned);
+    let settings = load_desktop_control_settings(app, state)?;
+    let redaction = settings.redaction_request();
+    let desktop_output = match command.kind {
+        InboundCommandKind::ComputerUseStreamRequest => {
+            if !settings.cloud_streaming_enabled {
+                return forward_computer_use_desktop_rejection(
+                    bridge,
+                    &session_id,
+                    schema,
+                    command.seq,
+                    Some(command.device_id.as_str()),
+                    stream_id.as_deref(),
+                    None,
+                    "cloud_streaming_disabled",
+                    "Cloud desktop viewing is disabled in the local desktop app.",
+                    command.payload,
+                );
+            }
+            Some(run_desktop_stream_command(
+                &located,
+                &command,
+                AutonomousDesktopStreamAction::StreamStart,
+                redaction.clone(),
+            )?)
+        }
+        InboundCommandKind::ComputerUseStreamStop => Some(run_desktop_stream_command(
+            &located,
+            &command,
+            AutonomousDesktopStreamAction::StreamStop,
+            redaction.clone(),
+        )?),
+        InboundCommandKind::ComputerUseStreamStatus => Some(run_desktop_stream_command(
+            &located,
+            &command,
+            AutonomousDesktopStreamAction::StreamStatus,
+            redaction.clone(),
+        )?),
+        InboundCommandKind::ComputerUseStreamSetQuality => Some(run_desktop_stream_command(
+            &located,
+            &command,
+            AutonomousDesktopStreamAction::StreamSetQuality,
+            redaction.clone(),
+        )?),
+        InboundCommandKind::ComputerUseStreamRequestKeyframe => Some(run_desktop_stream_command(
+            &located,
+            &command,
+            AutonomousDesktopStreamAction::StreamRequestKeyframe,
+            redaction.clone(),
+        )?),
+        InboundCommandKind::ComputerUseStreamOffer => Some(run_desktop_stream_command(
+            &located,
+            &command,
+            AutonomousDesktopStreamAction::StreamOffer,
+            redaction.clone(),
+        )?),
+        InboundCommandKind::ComputerUseStreamAnswer => Some(run_desktop_stream_command(
+            &located,
+            &command,
+            AutonomousDesktopStreamAction::StreamAnswer,
+            redaction.clone(),
+        )?),
+        InboundCommandKind::ComputerUseStreamIceCandidate => Some(run_desktop_stream_command(
+            &located,
+            &command,
+            AutonomousDesktopStreamAction::StreamIceCandidate,
+            redaction.clone(),
+        )?),
+        _ => None,
+    };
+    let desktop_frame = if let Some(output) = desktop_output.as_ref() {
+        fallback_frame_for_stream_output(&located, &command, output, redaction.clone())?
+    } else {
+        None
+    };
+    let stream_id = desktop_output
+        .as_ref()
+        .and_then(|output| output.stream.as_ref())
+        .and_then(|stream| stream.stream_id.clone())
+        .or(stream_id);
+    let stream_signal_payload = desktop_output
+        .as_ref()
+        .and_then(stream_signal_payload_for_output);
+    let forwarded_schema = desktop_output
+        .as_ref()
+        .and_then(stream_signal_schema_for_output)
+        .unwrap_or(schema);
+    let forwarded_payload = stream_signal_payload
+        .unwrap_or_else(|| remote_stream_payload_for_forward(&command.kind, command.payload));
+    bridge
+        .forward_control_event(
+            &session_id,
+            json!({
+                "schema": forwarded_schema,
+                "ok": true,
+                "commandSeq": command.seq,
+                "deviceId": command.device_id,
+                "sessionId": session_id,
+                "streamId": stream_id,
+                "receivedAt": crate::auth::now_timestamp(),
+                "payload": forwarded_payload,
+                "desktop": desktop_output,
+                "desktopFrame": desktop_frame,
+            }),
+        )
+        .map_err(map_bridge_error)?;
+    Ok(())
+}
+
+fn route_computer_use_manual_control_command<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    bridge: &AppRemoteBridge,
+    command: InboundCommand,
+) -> CommandResult<()> {
+    let session_id = required_command_session(&command)?.to_string();
+    let located = locate_remote_session(app, state, &session_id)?;
+    ensure_computer_use_remote_session(&located)?;
+    let schema = computer_use_manual_control_schema(&command.kind);
+    let settings = load_desktop_control_settings(app, state)?;
+    let manual_control_id =
+        payload_string(&command.payload, &["manualControlId", "manual_control_id"])
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| format!("manual_{}_{}", command.seq, crate::auth::now_timestamp()));
+    let desktop_output = match command.kind {
+        InboundCommandKind::ComputerUseManualControlRequest
+        | InboundCommandKind::ComputerUseManualControlGrant => {
+            if !settings.manual_cloud_control_enabled {
+                return forward_computer_use_desktop_rejection(
+                    bridge,
+                    &session_id,
+                    schema,
+                    command.seq,
+                    Some(command.device_id.as_str()),
+                    None,
+                    Some(manual_control_id.as_str()),
+                    "manual_cloud_control_disabled",
+                    "Cloud manual control is disabled in the local desktop app.",
+                    command.payload,
+                );
+            }
+            let runtime = desktop_runtime_for_located(&located, &command)?;
+            Some(runtime.desktop_acquire_manual_control(
+                &manual_control_id,
+                payload_string(&command.payload, &["reason"]),
+            )?)
+        }
+        InboundCommandKind::ComputerUseManualControlHeartbeat => {
+            if !settings.manual_cloud_control_enabled {
+                return forward_computer_use_desktop_rejection(
+                    bridge,
+                    &session_id,
+                    schema,
+                    command.seq,
+                    Some(command.device_id.as_str()),
+                    None,
+                    Some(manual_control_id.as_str()),
+                    "manual_cloud_control_disabled",
+                    "Cloud manual control is disabled in the local desktop app.",
+                    command.payload,
+                );
+            }
+            let runtime = desktop_runtime_for_located(&located, &command)?;
+            Some(
+                runtime.desktop_refresh_manual_control(
+                    &manual_control_id,
+                    payload_string(&command.payload, &["reason"])
+                        .unwrap_or("cloud_manual_control_heartbeat"),
+                )?,
+            )
+        }
+        InboundCommandKind::ComputerUseManualControlInput => {
+            if !settings.manual_cloud_control_enabled {
+                return forward_computer_use_desktop_rejection(
+                    bridge,
+                    &session_id,
+                    schema,
+                    command.seq,
+                    Some(command.device_id.as_str()),
+                    None,
+                    Some(manual_control_id.as_str()),
+                    "manual_cloud_control_disabled",
+                    "Cloud manual control is disabled in the local desktop app.",
+                    command.payload,
+                );
+            }
+            let request = manual_control_input_request(&command.payload)?;
+            let runtime = desktop_runtime_for_located(&located, &command)?;
+            let result = runtime.desktop_control_as_manual_control_with_operator_approval(
+                request,
+                &manual_control_id,
+            )?;
+            Some(desktop_control_output_from_result(result.output)?)
+        }
+        InboundCommandKind::ComputerUseManualControlRelease => {
+            let runtime = desktop_runtime_for_located(&located, &command)?;
+            Some(runtime.desktop_release_manual_control(
+                Some(&manual_control_id),
+                "cloud_manual_control_release",
+            )?)
+        }
+        _ => None,
+    };
+    bridge
+        .forward_control_event(
+            &session_id,
+            json!({
+                "schema": schema,
+                "ok": true,
+                "commandSeq": command.seq,
+                "deviceId": command.device_id,
+                "sessionId": session_id,
+                "manualControlId": manual_control_id,
+                "receivedAt": crate::auth::now_timestamp(),
+                "payload": remote_desktop_payload_for_forward(command.payload),
+                "desktop": desktop_output,
+                "brokered": true,
+            }),
+        )
+        .map_err(map_bridge_error)?;
+    Ok(())
+}
+
+fn run_desktop_stream_command(
+    located: &LocatedRemoteSession,
+    command: &InboundCommand,
+    action: AutonomousDesktopStreamAction,
+    redaction: Option<AutonomousDesktopRedactionRequest>,
+) -> CommandResult<AutonomousDesktopToolOutput> {
+    let request = AutonomousDesktopStreamRequest {
+        action,
+        session_id: Some(located.remote_session_id.clone()),
+        run_id: payload_string(&command.payload, &["runId", "run_id"]).map(ToOwned::to_owned),
+        display_id: payload_string(&command.payload, &["displayId", "display_id"])
+            .map(ToOwned::to_owned),
+        stream_id: payload_string(&command.payload, &["streamId", "stream_id"])
+            .map(ToOwned::to_owned),
+        max_width: payload_u64(&command.payload, &["maxWidth", "max_width"])
+            .and_then(|value| u32::try_from(value).ok()),
+        max_frame_rate: payload_u64(&command.payload, &["maxFrameRate", "max_frame_rate"])
+            .and_then(|value| u32::try_from(value).ok()),
+        include_cursor: payload_bool(&command.payload, &["includeCursor", "include_cursor"]),
+        quality: payload_string(&command.payload, &["quality"]).and_then(stream_quality_from_str),
+        redaction,
+        ice_servers: desktop_stream_ice_servers_from_payload(&command.payload)?,
+        session_description: desktop_stream_session_description_from_payload(&command.payload)?,
+        ice_candidate: desktop_stream_ice_candidate_from_payload(&command.payload)?,
+    };
+    let runtime = desktop_runtime_for_located(located, command)?;
+    let result = runtime.desktop_stream_with_operator_approval(request)?;
+    desktop_control_output_from_result(result.output)
+}
+
+fn remote_stream_payload_for_forward(kind: &InboundCommandKind, payload: JsonValue) -> JsonValue {
+    let mut payload = remote_desktop_payload_for_forward(payload);
+    if matches!(
+        kind,
+        InboundCommandKind::ComputerUseStreamOffer
+            | InboundCommandKind::ComputerUseStreamAnswer
+            | InboundCommandKind::ComputerUseStreamIceCandidate
+    ) {
+        strip_sensitive_keys(
+            &mut payload,
+            &[
+                "type",
+                "sdp",
+                "candidate",
+                "sessionDescription",
+                "session_description",
+                "iceCandidate",
+                "ice_candidate",
+            ],
+        );
+    }
+    payload
+}
+
+fn stream_signal_schema_for_output(output: &AutonomousDesktopToolOutput) -> Option<&'static str> {
+    let signal = output.stream_signal.as_ref()?;
+    if let Some(description) = signal.session_description.as_ref() {
+        return match description.sdp_type.as_str() {
+            "offer" => Some("xero.computer_use_stream_offer.v1"),
+            "answer" | "pranswer" => Some("xero.computer_use_stream_answer.v1"),
+            _ => None,
+        };
+    }
+    signal
+        .ice_candidate
+        .as_ref()
+        .map(|_| "xero.computer_use_stream_ice_candidate.v1")
+}
+
+fn stream_signal_payload_for_output(output: &AutonomousDesktopToolOutput) -> Option<JsonValue> {
+    let signal = output.stream_signal.as_ref()?;
+    if let Some(description) = signal.session_description.as_ref() {
+        return Some(json!({
+            "type": description.sdp_type.as_str(),
+            "sdp": description.sdp.as_str(),
+        }));
+    }
+    let candidate = signal.ice_candidate.as_ref()?;
+    Some(json!({
+        "candidate": {
+            "candidate": candidate.candidate,
+            "sdpMid": candidate.sdp_mid.as_deref(),
+            "sdpMLineIndex": candidate.sdp_m_line_index,
+            "usernameFragment": candidate.username_fragment.as_deref(),
+        }
+    }))
+}
+
+fn desktop_stream_ice_servers_from_payload(
+    payload: &JsonValue,
+) -> CommandResult<Vec<AutonomousDesktopIceServer>> {
+    let Some(value) = payload_value(payload, &["iceServers", "ice_servers"]) else {
+        return Ok(Vec::new());
+    };
+    let value = normalize_webrtc_field_aliases(value.clone());
+    serde_json::from_value::<Vec<AutonomousDesktopIceServer>>(value).map_err(|error| {
+        CommandError::user_fixable(
+            "invalid_request",
+            format!("Field `iceServers` is invalid: {error}"),
+        )
+    })
+}
+
+fn desktop_stream_session_description_from_payload(
+    payload: &JsonValue,
+) -> CommandResult<Option<AutonomousDesktopSessionDescription>> {
+    if let Some(value) = payload_value(payload, &["sessionDescription", "session_description"]) {
+        let value = normalize_webrtc_field_aliases(value.clone());
+        return serde_json::from_value::<AutonomousDesktopSessionDescription>(value)
+            .map(Some)
+            .map_err(|error| {
+                CommandError::user_fixable(
+                    "invalid_request",
+                    format!("Field `sessionDescription` is invalid: {error}"),
+                )
+            });
+    }
+    let Some(sdp) = payload_string(payload, &["sdp"]) else {
+        return Ok(None);
+    };
+    Ok(Some(AutonomousDesktopSessionDescription {
+        sdp_type: payload_string(payload, &["type"])
+            .unwrap_or("answer")
+            .to_string(),
+        sdp: sdp.to_string(),
+    }))
+}
+
+fn desktop_stream_ice_candidate_from_payload(
+    payload: &JsonValue,
+) -> CommandResult<Option<AutonomousDesktopIceCandidate>> {
+    let Some(value) = payload_value(payload, &["iceCandidate", "ice_candidate", "candidate"])
+    else {
+        return Ok(None);
+    };
+    if let Some(candidate) = value.as_str() {
+        return Ok(Some(AutonomousDesktopIceCandidate {
+            candidate: candidate.to_string(),
+            sdp_mid: None,
+            sdp_m_line_index: None,
+            username_fragment: None,
+        }));
+    }
+    let value = normalize_webrtc_field_aliases(value.clone());
+    serde_json::from_value::<AutonomousDesktopIceCandidate>(value)
+        .map(Some)
+        .map_err(|error| {
+            CommandError::user_fixable(
+                "invalid_request",
+                format!("Field `iceCandidate` is invalid: {error}"),
+            )
+        })
+}
+
+fn normalize_webrtc_field_aliases(value: JsonValue) -> JsonValue {
+    match value {
+        JsonValue::Array(values) => JsonValue::Array(
+            values
+                .into_iter()
+                .map(normalize_webrtc_field_aliases)
+                .collect(),
+        ),
+        JsonValue::Object(mut object) => {
+            rename_json_field(&mut object, "credential_type", "credentialType");
+            rename_json_field(&mut object, "sdp_mid", "sdpMid");
+            rename_json_field(&mut object, "sdp_m_line_index", "sdpMLineIndex");
+            rename_json_field(&mut object, "username_fragment", "usernameFragment");
+            JsonValue::Object(object)
+        }
+        other => other,
+    }
+}
+
+fn rename_json_field(object: &mut JsonMap<String, JsonValue>, from: &str, to: &str) {
+    if object.contains_key(to) {
+        return;
+    }
+    if let Some(value) = object.remove(from) {
+        object.insert(to.to_string(), value);
+    }
+}
+
+fn fallback_frame_for_stream_output(
+    located: &LocatedRemoteSession,
+    command: &InboundCommand,
+    output: &AutonomousDesktopToolOutput,
+    redaction: Option<AutonomousDesktopRedactionRequest>,
+) -> CommandResult<Option<JsonValue>> {
+    let Some(stream) = output.stream.as_ref() else {
+        return Ok(None);
+    };
+    if stream.transport != AutonomousDesktopStreamTransport::ScreenshotFallback {
+        return Ok(None);
+    }
+    if !matches!(
+        command.kind,
+        InboundCommandKind::ComputerUseStreamRequest
+            | InboundCommandKind::ComputerUseStreamStatus
+            | InboundCommandKind::ComputerUseStreamSetQuality
+            | InboundCommandKind::ComputerUseStreamRequestKeyframe
+    ) {
+        return Ok(None);
+    }
+    capture_desktop_stream_fallback_frame(located, command, stream.max_width, redaction)
+}
+
+fn capture_desktop_stream_fallback_frame(
+    located: &LocatedRemoteSession,
+    command: &InboundCommand,
+    max_width: u32,
+    redaction: Option<AutonomousDesktopRedactionRequest>,
+) -> CommandResult<Option<JsonValue>> {
+    let request = AutonomousDesktopObserveRequest {
+        action: AutonomousDesktopObserveAction::Screenshot,
+        display_id: payload_string(&command.payload, &["displayId", "display_id"])
+            .map(ToOwned::to_owned),
+        window_id: None,
+        region: None,
+        redaction,
+        x: None,
+        y: None,
+    };
+    let runtime = desktop_runtime_for_located(located, command)?;
+    let result = runtime.desktop_observe_with_operator_approval(request)?;
+    let output = desktop_control_output_from_result(result.output)?;
+    let Some(screenshot) = output.screenshot else {
+        return Ok(None);
+    };
+    let path = Path::new(&screenshot.path);
+    let bytes = fs::read(path).map_err(|error| {
+        CommandError::system_fault(
+            "stream_fallback_frame_read_failed",
+            format!("Xero could not read the desktop fallback frame: {error}"),
+        )
+    })?;
+    let _ = fs::remove_file(path);
+    let encoded = encode_stream_fallback_frame(&bytes, &screenshot, max_width)?;
+    if encoded.bytes.len() > STREAM_FALLBACK_FRAME_MAX_BYTES {
+        return Ok(Some(json!({
+            "schema": "xero.computer_use_stream_frame.v1",
+            "ok": false,
+            "transport": "screenshot_fallback",
+            "error": {
+                "code": "stream_fallback_frame_too_large",
+                "message": "The desktop fallback frame exceeded the relay size budget."
+            },
+            "mediaType": encoded.media_type,
+            "sizeBytes": encoded.bytes.len(),
+            "maxSizeBytes": STREAM_FALLBACK_FRAME_MAX_BYTES,
+            "width": encoded.width,
+            "height": encoded.height,
+            "capturedAt": screenshot.captured_at,
+        })));
+    }
+    let size_bytes = encoded.bytes.len();
+    let bytes_base64 = {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(encoded.bytes)
+    };
+    Ok(Some(json!({
+        "schema": "xero.computer_use_stream_frame.v1",
+        "ok": true,
+        "transport": "screenshot_fallback",
+        "mediaType": encoded.media_type,
+        "bytesBase64": bytes_base64,
+        "sizeBytes": size_bytes,
+        "width": encoded.width,
+        "height": encoded.height,
+        "scaleFactor": encoded.scale_factor,
+        "redactionsApplied": screenshot.redactions_applied,
+        "capturedAt": screenshot.captured_at,
+    })))
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct EncodedStreamFallbackFrame {
+    bytes: Vec<u8>,
+    media_type: &'static str,
+    width: u32,
+    height: u32,
+    scale_factor: f32,
+}
+
+fn encode_stream_fallback_frame(
+    source_bytes: &[u8],
+    screenshot: &AutonomousDesktopScreenshot,
+    max_width: u32,
+) -> CommandResult<EncodedStreamFallbackFrame> {
+    let image = image::load_from_memory(source_bytes).map_err(|error| {
+        CommandError::system_fault(
+            "stream_fallback_frame_decode_failed",
+            format!("Xero could not decode the desktop fallback frame: {error}"),
+        )
+    })?;
+    let source_width = image.width();
+    let source_height = image.height();
+    if source_width == 0 || source_height == 0 {
+        return Err(CommandError::system_fault(
+            "stream_fallback_frame_empty",
+            "Xero captured an empty desktop fallback frame.",
+        ));
+    }
+
+    let (target_width, target_height) =
+        stream_fallback_dimensions(source_width, source_height, max_width);
+    let frame = if target_width == source_width && target_height == source_height {
+        image
+    } else {
+        image.resize_exact(
+            target_width,
+            target_height,
+            image::imageops::FilterType::Triangle,
+        )
+    };
+    let rgb = frame.to_rgb8();
+    let mut bytes = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, STREAM_FALLBACK_JPEG_QUALITY)
+        .encode(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            image::ColorType::Rgb8.into(),
+        )
+        .map_err(|error| {
+            CommandError::system_fault(
+                "stream_fallback_frame_encode_failed",
+                format!("Xero could not encode the desktop fallback frame: {error}"),
+            )
+        })?;
+
+    let scale_ratio = rgb.width() as f32 / source_width as f32;
+    Ok(EncodedStreamFallbackFrame {
+        bytes,
+        media_type: "image/jpeg",
+        width: rgb.width(),
+        height: rgb.height(),
+        scale_factor: screenshot.scale_factor * scale_ratio,
+    })
+}
+
+fn stream_fallback_dimensions(source_width: u32, source_height: u32, max_width: u32) -> (u32, u32) {
+    let target_width = source_width.min(max_width.max(1));
+    if target_width == source_width {
+        return (source_width, source_height);
+    }
+
+    let target_height = (u64::from(source_height) * u64::from(target_width))
+        .div_ceil(u64::from(source_width))
+        .clamp(1, u64::from(u32::MAX)) as u32;
+    (target_width, target_height)
+}
+
+fn desktop_runtime_for_located(
+    located: &LocatedRemoteSession,
+    command: &InboundCommand,
+) -> CommandResult<AutonomousToolRuntime> {
+    let run_id = payload_string(&command.payload, &["runId", "run_id"])
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("remote-desktop-{}", command.seq));
+    AutonomousToolRuntime::new(&located.repo_root).map(|runtime| {
+        runtime.with_agent_run_context(
+            located.project_id.clone(),
+            local_agent_session_id(located).to_owned(),
+            run_id,
+        )
+    })
+}
+
+fn desktop_control_output_from_result(
+    output: AutonomousToolOutput,
+) -> CommandResult<AutonomousDesktopToolOutput> {
+    match output {
+        AutonomousToolOutput::DesktopControl(output)
+        | AutonomousToolOutput::DesktopStream(output) => Ok(output),
+        AutonomousToolOutput::DesktopObserve(output) => Ok(output),
+        _ => Err(CommandError::system_fault(
+            "desktop_control_output_mismatch",
+            "Xero could not decode the desktop broker output.",
+        )),
+    }
+}
+
+fn manual_control_input_request(
+    payload: &JsonValue,
+) -> CommandResult<AutonomousDesktopControlRequest> {
+    let action = required_payload_string(payload, &["action"])?;
+    let action =
+        serde_json::from_value::<AutonomousDesktopControlAction>(json!(action)).map_err(|_| {
+            CommandError::user_fixable(
+                "remote_manual_control_action_invalid",
+                format!("Remote manual-control action `{action}` is not supported."),
+            )
+        })?;
+    Ok(AutonomousDesktopControlRequest {
+        action,
+        display_id: payload_string(payload, &["displayId", "display_id"]).map(ToOwned::to_owned),
+        window_id: payload_string(payload, &["windowId", "window_id"]).map(ToOwned::to_owned),
+        app_name: payload_string(payload, &["appName", "app_name"]).map(ToOwned::to_owned),
+        bundle_id: payload_string(payload, &["bundleId", "bundle_id"]).map(ToOwned::to_owned),
+        element_id: payload_string(payload, &["elementId", "element_id"]).map(ToOwned::to_owned),
+        x: payload_i32(payload, &["x"]),
+        y: payload_i32(payload, &["y"]),
+        to_x: payload_i32(payload, &["toX", "to_x"]),
+        to_y: payload_i32(payload, &["toY", "to_y"]),
+        delta_x: payload_i32(payload, &["deltaX", "delta_x"]),
+        delta_y: payload_i32(payload, &["deltaY", "delta_y"]),
+        button: payload_string(payload, &["button"]).and_then(mouse_button_from_str),
+        clicks: payload_u64(payload, &["clicks"]).and_then(|value| u8::try_from(value).ok()),
+        key: payload_string(payload, &["key"]).map(ToOwned::to_owned),
+        keys: payload_string_array(payload, &["keys"]),
+        text: payload_string(payload, &["text"]).map(ToOwned::to_owned),
+        value: payload_string(payload, &["value"]).map(ToOwned::to_owned),
+        menu_path: payload_string_array(payload, &["menuPath", "menu_path"]),
+        reason: payload_string(payload, &["reason"])
+            .map(ToOwned::to_owned)
+            .or_else(|| Some("cloud_manual_control_input".into())),
+        sensitivity: None,
+    })
+}
+
+fn stream_quality_from_str(value: &str) -> Option<AutonomousDesktopStreamQuality> {
+    match value {
+        "low" => Some(AutonomousDesktopStreamQuality::Low),
+        "balanced" => Some(AutonomousDesktopStreamQuality::Balanced),
+        "high" => Some(AutonomousDesktopStreamQuality::High),
+        _ => None,
+    }
+}
+
+fn mouse_button_from_str(value: &str) -> Option<AutonomousDesktopMouseButton> {
+    match value {
+        "left" => Some(AutonomousDesktopMouseButton::Left),
+        "right" => Some(AutonomousDesktopMouseButton::Right),
+        "middle" => Some(AutonomousDesktopMouseButton::Middle),
+        _ => None,
+    }
+}
+
+fn remote_desktop_payload_for_forward(payload: JsonValue) -> JsonValue {
+    let JsonValue::Object(mut object) = payload else {
+        return payload;
+    };
+    object.remove("streamToken");
+    object.remove("stream_token");
+    JsonValue::Object(object)
+}
+
+fn strip_sensitive_keys(payload: &mut JsonValue, keys: &[&str]) {
+    let JsonValue::Object(object) = payload else {
+        return;
+    };
+    for key in keys {
+        object.remove(*key);
+    }
+}
+
+fn forward_computer_use_desktop_rejection(
+    bridge: &AppRemoteBridge,
+    session_id: &str,
+    schema: &str,
+    command_seq: u64,
+    device_id: Option<&str>,
+    stream_id: Option<&str>,
+    manual_control_id: Option<&str>,
+    code: &str,
+    message: &str,
+    payload: JsonValue,
+) -> CommandResult<()> {
+    bridge
+        .forward_control_event(
+            session_id,
+            json!({
+                "schema": schema,
+                "ok": false,
+                "commandSeq": command_seq,
+                "deviceId": device_id,
+                "sessionId": session_id,
+                "streamId": stream_id,
+                "manualControlId": manual_control_id,
+                "receivedAt": crate::auth::now_timestamp(),
+                "payload": remote_desktop_payload_for_forward(payload),
+                "error": {
+                    "code": code,
+                    "message": message,
+                },
+            }),
+        )
+        .map(|_| ())
+        .map_err(map_bridge_error)
+}
+
+fn ensure_computer_use_remote_session(located: &LocatedRemoteSession) -> CommandResult<()> {
+    if matches!(
+        located.session.session_kind,
+        project_store::AgentSessionKind::ComputerUse
+    ) {
+        return Ok(());
+    }
+    Err(CommandError::policy_denied(
+        "Remote desktop stream and manual control commands require a Computer Use session.",
+    ))
+}
+
+fn computer_use_stream_schema(kind: &InboundCommandKind) -> &'static str {
+    match kind {
+        InboundCommandKind::ComputerUseStreamRequest => "xero.computer_use_stream_request.v1",
+        InboundCommandKind::ComputerUseStreamOffer => "xero.computer_use_stream_offer.v1",
+        InboundCommandKind::ComputerUseStreamAnswer => "xero.computer_use_stream_answer.v1",
+        InboundCommandKind::ComputerUseStreamIceCandidate => {
+            "xero.computer_use_stream_ice_candidate.v1"
+        }
+        InboundCommandKind::ComputerUseStreamStop => "xero.computer_use_stream_stop.v1",
+        InboundCommandKind::ComputerUseStreamStatus => "xero.computer_use_stream_status.v1",
+        InboundCommandKind::ComputerUseStreamSetQuality => {
+            "xero.computer_use_stream_set_quality.v1"
+        }
+        InboundCommandKind::ComputerUseStreamRequestKeyframe => {
+            "xero.computer_use_stream_request_keyframe.v1"
+        }
+        _ => "xero.computer_use_stream_unknown.v1",
+    }
+}
+
+fn computer_use_manual_control_schema(kind: &InboundCommandKind) -> &'static str {
+    match kind {
+        InboundCommandKind::ComputerUseManualControlRequest => {
+            "xero.computer_use_manual_control_request.v1"
+        }
+        InboundCommandKind::ComputerUseManualControlGrant => {
+            "xero.computer_use_manual_control_grant.v1"
+        }
+        InboundCommandKind::ComputerUseManualControlHeartbeat => {
+            "xero.computer_use_manual_control_heartbeat.v1"
+        }
+        InboundCommandKind::ComputerUseManualControlInput => {
+            "xero.computer_use_manual_control_input.v1"
+        }
+        InboundCommandKind::ComputerUseManualControlRelease => {
+            "xero.computer_use_manual_control_release.v1"
+        }
+        _ => "xero.computer_use_manual_control_unknown.v1",
+    }
 }
 
 fn attachment_staged_payload(attachment_id: &str, staged: &StagedAgentAttachmentDto) -> JsonValue {
@@ -2481,6 +3294,10 @@ fn payload_string<'a>(payload: &'a JsonValue, keys: &[&str]) -> Option<&'a str> 
         .filter(|value| !value.is_empty())
 }
 
+fn payload_value<'a>(payload: &'a JsonValue, keys: &[&str]) -> Option<&'a JsonValue> {
+    keys.iter().find_map(|key| payload.get(*key))
+}
+
 fn json_string_field<'a>(payload: &'a JsonValue, key: &str) -> Option<&'a str> {
     payload
         .get(key)
@@ -2494,9 +3311,33 @@ fn payload_u64(payload: &JsonValue, keys: &[&str]) -> Option<u64> {
         .find_map(|key| payload.get(*key).and_then(JsonValue::as_u64))
 }
 
+fn payload_i32(payload: &JsonValue, keys: &[&str]) -> Option<i32> {
+    keys.iter().find_map(|key| {
+        payload
+            .get(*key)
+            .and_then(JsonValue::as_i64)
+            .and_then(|value| i32::try_from(value).ok())
+    })
+}
+
 fn payload_bool(payload: &JsonValue, keys: &[&str]) -> Option<bool> {
     keys.iter()
         .find_map(|key| payload.get(*key).and_then(JsonValue::as_bool))
+}
+
+fn payload_string_array(payload: &JsonValue, keys: &[&str]) -> Vec<String> {
+    keys.iter()
+        .find_map(|key| payload.get(*key).and_then(JsonValue::as_array))
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn new_bridge_for_app<R: Runtime>(
@@ -2553,7 +3394,7 @@ fn map_bridge_error(error: BridgeError) -> CommandError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, path::Path};
+    use std::{fs, io::Cursor, path::Path};
 
     use rusqlite::{params, Connection};
 
@@ -2632,6 +3473,28 @@ mod tests {
                 start_targets: Vec::new(),
             },
         }
+    }
+
+    fn fallback_screenshot(width: u32, height: u32) -> AutonomousDesktopScreenshot {
+        AutonomousDesktopScreenshot {
+            path: "/tmp/xero-fallback.png".into(),
+            width,
+            height,
+            scale_factor: 2.0,
+            captured_at: "2026-05-26T10:00:00Z".into(),
+            redactions_applied: 3,
+        }
+    }
+
+    fn sample_png(width: u32, height: u32) -> Vec<u8> {
+        let image = image::RgbaImage::from_fn(width, height, |x, y| {
+            image::Rgba([(x % 251) as u8, (y % 241) as u8, ((x + y) % 239) as u8, 255])
+        });
+        let mut cursor = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut cursor, image::ImageFormat::Png)
+            .expect("encode sample png");
+        cursor.into_inner()
     }
 
     fn fallback_controls(model_id: &str) -> RuntimeRunControlInputDto {
@@ -2980,5 +3843,277 @@ mod tests {
         .expect_err("all-stale project list should remain an error");
 
         assert_eq!(error.code, "project_registry_mismatch");
+    }
+
+    #[test]
+    fn manual_control_input_payload_maps_to_desktop_control_request() {
+        let request = manual_control_input_request(&json!({
+            "action": "mouse_click",
+            "x": 42,
+            "y": 64,
+            "button": "right",
+            "clicks": 1,
+        }))
+        .expect("manual input request");
+
+        assert_eq!(request.action, AutonomousDesktopControlAction::MouseClick);
+        assert_eq!(request.x, Some(42));
+        assert_eq!(request.y, Some(64));
+        assert_eq!(request.button, Some(AutonomousDesktopMouseButton::Right));
+        assert_eq!(
+            request.reason.as_deref(),
+            Some("cloud_manual_control_input")
+        );
+    }
+
+    #[test]
+    fn manual_control_rejects_unknown_desktop_action() {
+        let error = manual_control_input_request(&json!({
+            "action": "shell_exec",
+        }))
+        .expect_err("unsupported desktop action must be rejected");
+
+        assert_eq!(error.code, "remote_manual_control_action_invalid");
+    }
+
+    #[test]
+    fn stream_fallback_encoder_downscales_png_to_jpeg() {
+        let png = sample_png(320, 160);
+        let screenshot = fallback_screenshot(320, 160);
+
+        let frame =
+            encode_stream_fallback_frame(&png, &screenshot, 160).expect("encoded fallback frame");
+
+        assert_eq!(frame.media_type, "image/jpeg");
+        assert_eq!(frame.width, 160);
+        assert_eq!(frame.height, 80);
+        assert_eq!(frame.scale_factor, 1.0);
+        assert_eq!(
+            image::guess_format(&frame.bytes).expect("encoded image format"),
+            image::ImageFormat::Jpeg
+        );
+    }
+
+    #[test]
+    fn stream_fallback_encoder_does_not_upscale_frames() {
+        let png = sample_png(100, 50);
+        let screenshot = fallback_screenshot(100, 50);
+
+        let frame =
+            encode_stream_fallback_frame(&png, &screenshot, 640).expect("encoded fallback frame");
+
+        assert_eq!((frame.width, frame.height), (100, 50));
+        assert_eq!(frame.scale_factor, 2.0);
+    }
+
+    #[test]
+    fn stream_fallback_encoder_rejects_invalid_image_bytes() {
+        let error = encode_stream_fallback_frame(&[1, 2, 3], &fallback_screenshot(10, 10), 10)
+            .expect_err("invalid frame bytes should fail");
+
+        assert_eq!(error.code, "stream_fallback_frame_decode_failed");
+    }
+
+    #[test]
+    fn remote_desktop_payload_forwarding_strips_stream_tokens() {
+        let payload = remote_desktop_payload_for_forward(json!({
+            "streamId": "stream-1",
+            "streamToken": "secret-token",
+            "stream_token": "legacy-secret-token",
+            "quality": "balanced",
+        }));
+
+        assert_eq!(
+            payload,
+            json!({
+                "streamId": "stream-1",
+                "quality": "balanced",
+            })
+        );
+    }
+
+    #[test]
+    fn remote_stream_signal_forwarding_strips_echoed_sdp_and_candidates() {
+        let payload = remote_stream_payload_for_forward(
+            &InboundCommandKind::ComputerUseStreamIceCandidate,
+            json!({
+                "streamId": "stream-1",
+                "streamToken": "secret-token",
+                "candidate": {
+                    "candidate": "candidate:1",
+                    "sdpMid": "0",
+                    "sdpMLineIndex": 0
+                },
+                "quality": "balanced",
+            }),
+        );
+
+        assert_eq!(
+            payload,
+            json!({
+                "streamId": "stream-1",
+                "quality": "balanced",
+            })
+        );
+    }
+
+    #[test]
+    fn native_stream_offer_signal_forwards_offer_schema_and_payload() {
+        let output = desktop_output_with_stream_signal(json!({
+            "sessionDescription": {
+                "type": "offer",
+                "sdp": "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+            }
+        }));
+
+        assert_eq!(
+            stream_signal_schema_for_output(&output),
+            Some("xero.computer_use_stream_offer.v1")
+        );
+        assert_eq!(
+            stream_signal_payload_for_output(&output),
+            Some(json!({
+                "type": "offer",
+                "sdp": "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n",
+            }))
+        );
+    }
+
+    #[test]
+    fn native_stream_ice_signal_forwards_candidate_schema_and_payload() {
+        let output = desktop_output_with_stream_signal(json!({
+            "iceCandidate": {
+                "candidate": "candidate:1 1 udp 1 127.0.0.1 9 typ host",
+                "sdpMid": "0",
+                "sdpMLineIndex": 0,
+                "usernameFragment": "ufrag"
+            }
+        }));
+
+        assert_eq!(
+            stream_signal_schema_for_output(&output),
+            Some("xero.computer_use_stream_ice_candidate.v1")
+        );
+        assert_eq!(
+            stream_signal_payload_for_output(&output),
+            Some(json!({
+                "candidate": {
+                    "candidate": "candidate:1 1 udp 1 127.0.0.1 9 typ host",
+                    "sdpMid": "0",
+                    "sdpMLineIndex": 0,
+                    "usernameFragment": "ufrag"
+                }
+            }))
+        );
+    }
+
+    #[test]
+    fn stream_signaling_payload_maps_to_typed_desktop_request_fields() {
+        let payload = json!({
+            "iceServers": [
+                {
+                    "urls": "turn:turn.example.test:3478",
+                    "username": "user",
+                    "credential": "pass",
+                    "credential_type": "password"
+                }
+            ],
+            "type": "answer",
+            "sdp": "v=0",
+            "candidate": {
+                "candidate": "candidate:1",
+                "sdp_mid": "0",
+                "sdp_m_line_index": 0,
+                "username_fragment": "ufrag"
+            }
+        });
+
+        let ice_servers = desktop_stream_ice_servers_from_payload(&payload).expect("ice servers");
+        let description = desktop_stream_session_description_from_payload(&payload)
+            .expect("session description")
+            .expect("session description");
+        let candidate = desktop_stream_ice_candidate_from_payload(&payload)
+            .expect("ice candidate")
+            .expect("ice candidate");
+
+        assert_eq!(ice_servers.len(), 1);
+        assert_eq!(description.sdp_type, "answer");
+        assert_eq!(description.sdp, "v=0");
+        assert_eq!(candidate.candidate, "candidate:1");
+        assert_eq!(candidate.sdp_mid.as_deref(), Some("0"));
+    }
+
+    #[test]
+    fn stream_quality_commands_use_stable_contract_schemas() {
+        assert_eq!(
+            computer_use_stream_schema(&InboundCommandKind::ComputerUseStreamSetQuality),
+            "xero.computer_use_stream_set_quality.v1"
+        );
+        assert_eq!(
+            computer_use_stream_schema(&InboundCommandKind::ComputerUseStreamRequestKeyframe),
+            "xero.computer_use_stream_request_keyframe.v1"
+        );
+    }
+
+    #[test]
+    fn manual_control_heartbeat_uses_stable_contract_schema() {
+        assert_eq!(
+            computer_use_manual_control_schema(
+                &InboundCommandKind::ComputerUseManualControlHeartbeat
+            ),
+            "xero.computer_use_manual_control_heartbeat.v1"
+        );
+    }
+
+    fn desktop_output_with_stream_signal(stream_signal: JsonValue) -> AutonomousDesktopToolOutput {
+        serde_json::from_value(json!({
+            "tool": "desktop_stream",
+            "action": "stream_start",
+            "requestId": "desktop_request_test",
+            "phase": "phase_computer_use_desktop_control",
+            "status": "starting",
+            "platform": "test",
+            "sidecar": {
+                "schemaVersion": 1,
+                "platform": "test",
+                "transport": "sidecar",
+                "authenticated": true,
+                "health": "ready",
+                "message": "ready"
+            },
+            "capabilities": {
+                "platform": "test",
+                "schemaVersion": 1,
+                "displayList": true,
+                "screenshot": true,
+                "windowList": true,
+                "appList": true,
+                "foregroundState": true,
+                "cursorState": true,
+                "accessibilitySnapshot": false,
+                "ocrSnapshot": false,
+                "mouseInput": true,
+                "keyboardInput": true,
+                "clipboard": true,
+                "accessibilityActions": false,
+                "menuSelect": false,
+                "webrtcStream": true,
+                "screenshotFallbackStream": true,
+                "manualCloudControl": true
+            },
+            "permissions": [],
+            "policy": {
+                "category": "stream_safe",
+                "decision": "allowed",
+                "decisionId": "policy_test",
+                "code": "allowed",
+                "reason": "test",
+                "approvalRequired": false,
+                "userActionRequired": false
+            },
+            "streamSignal": stream_signal,
+            "message": "ok"
+        }))
+        .expect("desktop output")
     }
 }

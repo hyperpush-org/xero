@@ -141,6 +141,7 @@ pub fn domain_tool_pack_manifests() -> Vec<DomainToolPackManifest> {
         browser_pack_manifest(),
         emulator_pack_manifest(),
         solana_pack_manifest(),
+        desktop_control_pack_manifest(),
         os_automation_pack_manifest(),
         project_context_pack_manifest(),
     ]
@@ -648,6 +649,131 @@ fn os_automation_pack_manifest() -> DomainToolPackManifest {
     )
 }
 
+fn desktop_control_pack_manifest() -> DomainToolPackManifest {
+    manifest(
+        "desktop_control",
+        "Desktop Control",
+        "Observe, control, stream, and audit the native desktop for Computer Use through the platform-neutral desktop broker.",
+        "computer_use_desktop_control",
+        &["desktop_observe", "desktop_control", "desktop_stream"],
+        &["desktop_observe", "desktop_control", "desktop_stream"],
+        &[
+            "display_window_observation",
+            "permission_status",
+            "screenshot_capture",
+            "policy_gated_native_input",
+            "controller_lock",
+            "desktop_audit_log",
+            "degraded_screenshot_stream",
+            "manual_cloud_control_contract",
+        ],
+        &["observe", "desktop_control"],
+        &[
+            "destructive_write",
+            "command",
+            "process_control",
+            "external_service",
+            "skill_runtime",
+            "agent_delegation",
+        ],
+        &[
+            review(
+                "desktop_control_operator_intent",
+                "Desktop control approval",
+                "Native pointer, keyboard, app, Accessibility, clipboard, and stream actions require explicit operator-visible intent.",
+                true,
+            ),
+            review(
+                "desktop_control_sensitive_zone_policy",
+                "Sensitive desktop zones",
+                "Password managers, payment, MFA, recovery, privacy/security, and wallet surfaces are denied or paused by default.",
+                true,
+            ),
+        ],
+        &[
+            prereq(
+                "desktop_runtime",
+                "Desktop runtime",
+                "service",
+                true,
+                "Run Computer Use from the Xero desktop app.",
+            ),
+            prereq(
+                "desktop_broker",
+                "Desktop broker",
+                "service",
+                true,
+                "Start the desktop broker or repair the bundled platform sidecar.",
+            ),
+            prereq(
+                "screen_capture_permission",
+                "Screen capture permission",
+                "permission",
+                true,
+                "Grant screen capture permission in the local desktop session.",
+            ),
+            prereq(
+                "accessibility_permission",
+                "Accessibility permission",
+                "permission",
+                false,
+                "Grant Accessibility or UI Automation permission for structured UI snapshots and element actions.",
+            ),
+            prereq(
+                "input_permission",
+                "Input permission",
+                "permission",
+                false,
+                "Grant platform input permissions before mouse or keyboard control.",
+            ),
+            prereq(
+                "stream_transport",
+                "Stream transport",
+                "service",
+                false,
+                "Configure WebRTC signaling/TURN or use degraded screenshot fallback.",
+            ),
+        ],
+        &[
+            scenario(
+                "desktop_observe_capture",
+                "Observe and capture",
+                "Check permissions, list displays/windows, and capture a screenshot after approval.",
+                &["desktop_observe"],
+                false,
+                true,
+            ),
+            scenario(
+                "desktop_control_input",
+                "Desktop input",
+                "Acquire the controller lock, send an approved pointer or keyboard action, and write an audit record.",
+                &["desktop_observe", "desktop_control"],
+                true,
+                true,
+            ),
+            scenario(
+                "desktop_stream_watch",
+                "Watch desktop stream",
+                "Start desktop streaming or degraded screenshot fallback for a Computer Use session after approval.",
+                &["desktop_stream", "desktop_observe"],
+                false,
+                true,
+            ),
+        ],
+        &[
+            ui("desktop_control_status", "Desktop control status"),
+            ui("operator_approval", "Operator approval sheet"),
+            ui("cloud_desktop_viewport", "Cloud desktop viewport"),
+        ],
+        &["xero tool-pack doctor desktop_control"],
+        &[
+            "Desktop control does not grant shell, file mutation, MCP, skill, process-manager, or subagent tools.",
+            "All sensitive observation, control, stream, and manual cloud-control paths are approval-gated and audited.",
+            "Live video is not persisted; degraded screenshot artifacts remain bounded runtime media.",
+        ],
+    )
+}
+
 fn project_context_pack_manifest() -> DomainToolPackManifest {
     manifest(
         "project_context",
@@ -902,6 +1028,7 @@ mod tests {
         assert!(ids.contains("browser"));
         assert!(ids.contains("emulator"));
         assert!(ids.contains("solana"));
+        assert!(ids.contains("desktop_control"));
         assert!(ids.contains("os_automation"));
         assert!(ids.contains("project_context"));
 
@@ -1045,6 +1172,20 @@ mod tests {
             .review_requirements
             .iter()
             .all(|requirement| !requirement.description.trim().is_empty()));
+
+        let desktop = domain_tool_pack_manifest("desktop_control").expect("desktop pack");
+        assert!(desktop
+            .allowed_effect_classes
+            .contains(&"desktop_control".to_string()));
+        assert!(desktop
+            .denied_effect_classes
+            .contains(&"command".to_string()));
+        assert!(desktop
+            .tools
+            .contains(&"desktop_observe".to_string()));
+        assert!(desktop.review_requirements.iter().any(|requirement| {
+            requirement.required && requirement.requirement_id == "desktop_control_operator_intent"
+        }));
     }
 
     #[test]
@@ -1104,6 +1245,14 @@ mod tests {
             vec!["browser"]
         );
         assert_eq!(domain_tool_pack_ids_for_tool("emulator"), vec!["emulator"]);
+        assert_eq!(
+            domain_tool_pack_ids_for_tool("desktop_control"),
+            vec!["desktop_control"]
+        );
+        assert_eq!(
+            domain_tool_pack_ids_for_tool("desktop_stream"),
+            vec!["desktop_control"]
+        );
         assert_eq!(
             domain_tool_pack_ids_for_tool("solana_simulate"),
             vec!["solana"]

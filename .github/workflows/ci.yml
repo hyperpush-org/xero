@@ -165,3 +165,63 @@ jobs:
       - name: Check workspace
         working-directory: client/src-tauri
         run: cargo check --workspace
+
+      - name: Test desktop sidecar IPC contract
+        working-directory: client/src-tauri
+        run: cargo test --package xero-desktop-control-ipc --lib
+
+      - name: Build desktop sidecar scaffold
+        working-directory: client/src-tauri
+        run: cargo build --package xero-desktop-sidecar
+
+  desktop-sidecar-contract:
+    name: Desktop Sidecar Contract (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+          - name: macos
+            os: macos-15
+          - name: windows
+            os: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux sidecar dependencies
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libpipewire-0.3-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcb-randr0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            pkg-config
+
+      - name: Set up protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: client/src-tauri -> target
+          shared-key: desktop-sidecar-${{ matrix.name }}
+
+      - name: Test sidecar IPC contract
+        working-directory: client/src-tauri
+        run: cargo test --package xero-desktop-control-ipc --lib
+
+      - name: Test desktop sidecar
+        working-directory: client/src-tauri
+        run: cargo test --package xero-desktop-sidecar

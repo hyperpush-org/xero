@@ -1,14 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+	answerComputerUseStreamOffer,
 	disconnectRelay,
 	getRelaySocket,
+	heartbeatComputerUseManualControl,
 	type InboundCommand,
 	pushInboundCommand,
+	requestComputerUseStream,
+	requestComputerUseStreamKeyframe,
+	requestRunCancel,
 	requestSessionArchive,
 	requestSessionSnapshot,
 	requestStartSession,
 	requestThemeSnapshot,
+	sendComputerUseStreamIceCandidate,
+	setComputerUseStreamQuality,
 } from "./relay-client";
 
 const { MockSocket, socketInstances } = vi.hoisted(() => {
@@ -211,6 +218,215 @@ describe("pushInboundCommand", () => {
 					prompt: "",
 					sessionKind: "computer_use",
 					agent: "computer_use",
+				},
+			}),
+		);
+	});
+
+	it("answers a Computer Use desktop stream offer through the brokered stream channel", () => {
+		const push = vi.fn();
+
+		answerComputerUseStreamOffer({ push } as never, {
+			computerId: "desktop-1",
+			sessionId: "session-1",
+			deviceId: "web-1",
+			streamId: "stream-1",
+			answer: { type: "answer", sdp: "v=0" },
+		});
+
+		expect(push).toHaveBeenCalledWith(
+			"frame",
+			expect.objectContaining({
+				computer_id: "desktop-1",
+				session_id: "session-1",
+				device_id: "web-1",
+				kind: "computer_use_stream_answer",
+				payload: {
+					streamId: "stream-1",
+					type: "answer",
+					sdp: "v=0",
+				},
+			}),
+		);
+	});
+
+	it("requests Computer Use streams with relay-issued ICE servers", () => {
+		const push = vi.fn();
+
+		requestComputerUseStream({ push } as never, {
+			computerId: "desktop-1",
+			sessionId: "session-1",
+			deviceId: "web-1",
+			displayId: "display-2",
+			quality: "high",
+			runId: "run-1",
+			streamToken: "stream-token-1",
+			iceServers: [
+				{
+					urls: ["turn:turn.example.test:3478"],
+					username: "user",
+					credential: "pass",
+				},
+			],
+		});
+
+		expect(push).toHaveBeenCalledWith(
+			"frame",
+			expect.objectContaining({
+				computer_id: "desktop-1",
+				session_id: "session-1",
+				device_id: "web-1",
+				kind: "computer_use_stream_request",
+				payload: {
+					displayId: "display-2",
+					quality: "high",
+					includeCursor: true,
+					runId: "run-1",
+					streamToken: "stream-token-1",
+					iceServers: [
+						{
+							urls: ["turn:turn.example.test:3478"],
+							username: "user",
+							credential: "pass",
+						},
+					],
+				},
+			}),
+		);
+	});
+
+	it("sends Computer Use desktop stream ICE candidates through the broker", () => {
+		const push = vi.fn();
+
+		sendComputerUseStreamIceCandidate({ push } as never, {
+			computerId: "desktop-1",
+			sessionId: "session-1",
+			deviceId: "web-1",
+			streamId: "stream-1",
+			candidate: {
+				candidate: "candidate:1",
+				sdpMid: "0",
+				sdpMLineIndex: 0,
+			},
+		});
+
+		expect(push).toHaveBeenCalledWith(
+			"frame",
+			expect.objectContaining({
+				computer_id: "desktop-1",
+				session_id: "session-1",
+				device_id: "web-1",
+				kind: "computer_use_stream_ice_candidate",
+				payload: {
+					streamId: "stream-1",
+					candidate: {
+						candidate: "candidate:1",
+						sdpMid: "0",
+						sdpMLineIndex: 0,
+					},
+				},
+			}),
+		);
+	});
+
+	it("updates Computer Use stream quality through the broker", () => {
+		const push = vi.fn();
+
+		setComputerUseStreamQuality({ push } as never, {
+			computerId: "desktop-1",
+			sessionId: "session-1",
+			deviceId: "web-1",
+			streamId: "stream-1",
+			quality: "low",
+		});
+
+		expect(push).toHaveBeenCalledWith(
+			"frame",
+			expect.objectContaining({
+				computer_id: "desktop-1",
+				session_id: "session-1",
+				device_id: "web-1",
+				kind: "computer_use_stream_set_quality",
+				payload: {
+					streamId: "stream-1",
+					quality: "low",
+				},
+			}),
+		);
+	});
+
+	it("requests Computer Use stream keyframes through the broker", () => {
+		const push = vi.fn();
+
+		requestComputerUseStreamKeyframe({ push } as never, {
+			computerId: "desktop-1",
+			sessionId: "session-1",
+			deviceId: "web-1",
+			streamId: "stream-1",
+		});
+
+		expect(push).toHaveBeenCalledWith(
+			"frame",
+			expect.objectContaining({
+				computer_id: "desktop-1",
+				session_id: "session-1",
+				device_id: "web-1",
+				kind: "computer_use_stream_request_keyframe",
+				payload: {
+					streamId: "stream-1",
+				},
+			}),
+		);
+	});
+
+	it("requests run cancellation through the broker", () => {
+		const push = vi.fn();
+
+		requestRunCancel({ push } as never, {
+			computerId: "desktop-1",
+			sessionId: "session-1",
+			deviceId: "web-1",
+			reason: "cloud_emergency_stop",
+		});
+
+		expect(push).toHaveBeenCalledWith(
+			"frame",
+			expect.objectContaining({
+				computer_id: "desktop-1",
+				session_id: "session-1",
+				device_id: "web-1",
+				kind: "cancel_run",
+				payload: {
+					reason: "cloud_emergency_stop",
+				},
+			}),
+		);
+	});
+
+	it("refreshes Computer Use manual-control leases through the broker", () => {
+		const push = vi.fn();
+
+		heartbeatComputerUseManualControl({ push } as never, {
+			computerId: "desktop-1",
+			sessionId: "session-1",
+			deviceId: "web-1",
+			manualControlId: "manual-1",
+			runId: "run-1",
+			streamToken: "stream-token-1",
+		});
+
+		expect(push).toHaveBeenCalledWith(
+			"frame",
+			expect.objectContaining({
+				computer_id: "desktop-1",
+				session_id: "session-1",
+				device_id: "web-1",
+				kind: "computer_use_manual_control_heartbeat",
+				payload: {
+					manualControlId: "manual-1",
+					reason: "manual_cloud_control_heartbeat",
+					runId: "run-1",
+					streamToken: "stream-token-1",
 				},
 			}),
 		);

@@ -1,6 +1,7 @@
 mod agent_coordination;
 mod agent_definition;
 pub mod browser;
+mod desktop_control;
 pub mod emulator;
 mod environment_context;
 mod filesystem;
@@ -76,6 +77,23 @@ pub use agent_definition::{
 pub use browser::{
     AutonomousBrowserAction, AutonomousBrowserOutput, AutonomousBrowserRequest, BrowserExecutor,
     UnavailableBrowserExecutor, AUTONOMOUS_TOOL_BROWSER,
+};
+pub(crate) use desktop_control::desktop_action_approval_id;
+pub use desktop_control::{
+    shutdown_desktop_control_sidecar, AutonomousDesktopActor, AutonomousDesktopApp,
+    AutonomousDesktopCapabilities, AutonomousDesktopControlAction, AutonomousDesktopControlRequest,
+    AutonomousDesktopControlStatusSnapshot, AutonomousDesktopControllerLock,
+    AutonomousDesktopCursorState, AutonomousDesktopDisplay, AutonomousDesktopIceCandidate,
+    AutonomousDesktopIceServer, AutonomousDesktopIceServerUrls, AutonomousDesktopMouseButton,
+    AutonomousDesktopObserveAction, AutonomousDesktopObserveRequest,
+    AutonomousDesktopPermissionGrant, AutonomousDesktopPermissionStatus,
+    AutonomousDesktopPolicyCategory, AutonomousDesktopPolicyDecision, AutonomousDesktopPolicyTrace,
+    AutonomousDesktopRedactionMode, AutonomousDesktopRedactionRequest, AutonomousDesktopRegion,
+    AutonomousDesktopScreenshot, AutonomousDesktopSessionDescription,
+    AutonomousDesktopSidecarStatus, AutonomousDesktopStreamAction, AutonomousDesktopStreamQuality,
+    AutonomousDesktopStreamRequest, AutonomousDesktopStreamState, AutonomousDesktopStreamStatus,
+    AutonomousDesktopStreamTransport, AutonomousDesktopTextSensitivity, AutonomousDesktopToolError,
+    AutonomousDesktopToolOutput, AutonomousDesktopToolStatus,
 };
 pub use emulator::{
     AutonomousEmulatorAction, AutonomousEmulatorOutput, AutonomousEmulatorRequest,
@@ -166,6 +184,9 @@ pub const AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS: &str = "system_diagnostics";
 pub const AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE: &str = "system_diagnostics_observe";
 pub const AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED: &str = "system_diagnostics_privileged";
 pub const AUTONOMOUS_TOOL_MACOS_AUTOMATION: &str = "macos_automation";
+pub const AUTONOMOUS_TOOL_DESKTOP_OBSERVE: &str = "desktop_observe";
+pub const AUTONOMOUS_TOOL_DESKTOP_CONTROL: &str = "desktop_control";
+pub const AUTONOMOUS_TOOL_DESKTOP_STREAM: &str = "desktop_stream";
 pub const AUTONOMOUS_TOOL_MCP: &str = "mcp";
 pub const AUTONOMOUS_TOOL_MCP_LIST: &str = "mcp_list";
 pub const AUTONOMOUS_TOOL_MCP_READ_RESOURCE: &str = "mcp_read_resource";
@@ -191,6 +212,13 @@ pub const AUTONOMOUS_TOOL_SKILL: &str = "skill";
 pub const AUTONOMOUS_TOOL_BROWSER_OBSERVE: &str = "browser_observe";
 pub const AUTONOMOUS_TOOL_BROWSER_CONTROL: &str = "browser_control";
 pub const AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX: &str = "mcp__";
+
+const DESKTOP_FEATURE_MASTER_ENV: &str = "XERO_COMPUTER_USE_DESKTOP_ENABLED";
+const DESKTOP_FEATURE_OBSERVE_ENV: &str = "XERO_COMPUTER_USE_DESKTOP_OBSERVE_ENABLED";
+const DESKTOP_FEATURE_CONTROL_ENV: &str = "XERO_COMPUTER_USE_DESKTOP_CONTROL_ENABLED";
+const DESKTOP_FEATURE_STREAM_ENV: &str = "XERO_COMPUTER_USE_DESKTOP_STREAM_ENABLED";
+const DESKTOP_FEATURE_ROLLOUT_PERCENT_ENV: &str = "XERO_COMPUTER_USE_DESKTOP_ROLLOUT_PERCENT";
+const DESKTOP_FEATURE_ROLLOUT_ID_ENV: &str = "XERO_COMPUTER_USE_DESKTOP_ROLLOUT_ID";
 
 const DEFAULT_READ_LINE_COUNT: usize = 200;
 const MAX_READ_LINE_COUNT: usize = 400;
@@ -318,6 +346,9 @@ const TOOL_ACCESS_PLANNING_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_TODO,
 ];
 const TOOL_ACCESS_EMULATOR_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_EMULATOR];
+const TOOL_ACCESS_DESKTOP_OBSERVE_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_DESKTOP_OBSERVE];
+const TOOL_ACCESS_DESKTOP_CONTROL_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_DESKTOP_CONTROL];
+const TOOL_ACCESS_DESKTOP_STREAM_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_DESKTOP_STREAM];
 const TOOL_ACCESS_COMPUTER_USE_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_TOOL_ACCESS,
     AUTONOMOUS_TOOL_TOOL_SEARCH,
@@ -329,6 +360,9 @@ const TOOL_ACCESS_COMPUTER_USE_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_BROWSER,
     AUTONOMOUS_TOOL_EMULATOR,
     AUTONOMOUS_TOOL_MACOS_AUTOMATION,
+    AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
+    AUTONOMOUS_TOOL_DESKTOP_CONTROL,
+    AUTONOMOUS_TOOL_DESKTOP_STREAM,
     AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
 ];
 const TOOL_ACCESS_SOLANA_TOOLS: &[&str] = &[
@@ -519,6 +553,24 @@ const TOOL_ACCESS_GROUP_DEFINITIONS: &[ToolAccessGroupDefinition] = &[
         risk_class: "device_control",
     },
     ToolAccessGroupDefinition {
+        name: "desktop_observe",
+        description: "Observe native desktop displays, windows, apps, screenshots, cursor state, permissions, and sidecar health.",
+        tools: TOOL_ACCESS_DESKTOP_OBSERVE_TOOLS,
+        risk_class: "desktop_observe",
+    },
+    ToolAccessGroupDefinition {
+        name: "desktop_control",
+        description: "Approval-gated native desktop control through the desktop broker: pointer, keyboard, app/window, clipboard, and Accessibility actions.",
+        tools: TOOL_ACCESS_DESKTOP_CONTROL_TOOLS,
+        risk_class: "desktop_control",
+    },
+    ToolAccessGroupDefinition {
+        name: "desktop_stream",
+        description: "Start, stop, and inspect Computer Use desktop streaming, including degraded screenshot fallback state.",
+        tools: TOOL_ACCESS_DESKTOP_STREAM_TOOLS,
+        risk_class: "desktop_stream",
+    },
+    ToolAccessGroupDefinition {
         name: "solana",
         description: "Solana cluster, program, audit, transaction, deploy, and documentation tools.",
         tools: TOOL_ACCESS_SOLANA_TOOLS,
@@ -683,6 +735,7 @@ pub enum AutonomousToolEffectClass {
     ProcessControl,
     BrowserControl,
     DeviceControl,
+    DesktopControl,
     ExternalService,
     SkillRuntime,
     AgentDelegation,
@@ -700,6 +753,7 @@ impl AutonomousToolEffectClass {
             Self::ProcessControl => "process_control",
             Self::BrowserControl => "browser_control",
             Self::DeviceControl => "device_control",
+            Self::DesktopControl => "desktop_control",
             Self::ExternalService => "external_service",
             Self::SkillRuntime => "skill_runtime",
             Self::AgentDelegation => "agent_delegation",
@@ -1629,9 +1683,111 @@ pub fn tool_available_on_current_host(tool: &str) -> bool {
         AUTONOMOUS_TOOL_MACOS_AUTOMATION | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED => {
             cfg!(target_os = "macos")
         }
+        AUTONOMOUS_TOOL_DESKTOP_OBSERVE
+        | AUTONOMOUS_TOOL_DESKTOP_CONTROL
+        | AUTONOMOUS_TOOL_DESKTOP_STREAM => {
+            cfg!(any(
+                target_os = "macos",
+                target_os = "windows",
+                target_os = "linux"
+            )) && desktop_tool_available_by_rollout(tool)
+        }
         AUTONOMOUS_TOOL_POWERSHELL => cfg!(target_os = "windows"),
         _ => true,
     }
+}
+
+pub(super) fn desktop_tool_available_by_rollout(tool: &str) -> bool {
+    let tool_override = desktop_tool_feature_env(tool).and_then(|name| env::var(name).ok());
+    let master = env::var(DESKTOP_FEATURE_MASTER_ENV).ok();
+    let rollout_percent = env::var(DESKTOP_FEATURE_ROLLOUT_PERCENT_ENV).ok();
+    let rollout_id = env::var(DESKTOP_FEATURE_ROLLOUT_ID_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(default_desktop_rollout_id);
+    desktop_tool_available_from_rollout_values(
+        tool,
+        master.as_deref(),
+        tool_override.as_deref(),
+        rollout_percent.as_deref(),
+        &rollout_id,
+        desktop_tool_default_enabled(),
+    )
+}
+
+fn desktop_tool_available_from_rollout_values(
+    tool: &str,
+    master: Option<&str>,
+    tool_override: Option<&str>,
+    rollout_percent: Option<&str>,
+    rollout_id: &str,
+    default_enabled: bool,
+) -> bool {
+    if let Some(enabled) = tool_override.and_then(parse_feature_bool) {
+        return enabled;
+    }
+    if let Some(enabled) = master.and_then(parse_feature_bool) {
+        return enabled;
+    }
+    if let Some(percent) = rollout_percent.and_then(parse_rollout_percent) {
+        return desktop_rollout_bucket(rollout_id, tool) < percent;
+    }
+    default_enabled
+}
+
+fn desktop_tool_feature_env(tool: &str) -> Option<&'static str> {
+    match tool {
+        AUTONOMOUS_TOOL_DESKTOP_OBSERVE => Some(DESKTOP_FEATURE_OBSERVE_ENV),
+        AUTONOMOUS_TOOL_DESKTOP_CONTROL => Some(DESKTOP_FEATURE_CONTROL_ENV),
+        AUTONOMOUS_TOOL_DESKTOP_STREAM => Some(DESKTOP_FEATURE_STREAM_ENV),
+        _ => None,
+    }
+}
+
+fn desktop_tool_default_enabled() -> bool {
+    cfg!(debug_assertions) || cfg!(test)
+}
+
+fn parse_feature_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" | "enabled" => Some(true),
+        "0" | "false" | "no" | "off" | "disabled" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_rollout_percent(value: &str) -> Option<u8> {
+    value
+        .trim()
+        .parse::<u8>()
+        .ok()
+        .filter(|percent| *percent <= 100)
+}
+
+fn desktop_rollout_bucket(rollout_id: &str, tool: &str) -> u8 {
+    let mut hasher = Sha256::new();
+    hasher.update(rollout_id.as_bytes());
+    hasher.update(b":");
+    hasher.update(tool.as_bytes());
+    let digest = hasher.finalize();
+    digest[0] % 100
+}
+
+fn default_desktop_rollout_id() -> String {
+    env::var("XERO_INSTALLATION_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            env::var("COMPUTERNAME")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .or_else(|| {
+            env::var("HOSTNAME")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .unwrap_or_else(|| format!("{}:{}", env::consts::OS, env::consts::ARCH))
 }
 
 pub fn tool_effect_class(tool_name: &str) -> AutonomousToolEffectClass {
@@ -1660,6 +1816,7 @@ pub fn tool_effect_class(tool_name: &str) -> AutonomousToolEffectClass {
         | AUTONOMOUS_TOOL_WORKSPACE_INDEX
         | AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT
         | AUTONOMOUS_TOOL_BROWSER_OBSERVE
+        | AUTONOMOUS_TOOL_DESKTOP_OBSERVE
         | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE => AutonomousToolEffectClass::Observe,
         AUTONOMOUS_TOOL_TOOL_ACCESS
         | AUTONOMOUS_TOOL_TODO
@@ -1706,6 +1863,9 @@ pub fn tool_effect_class(tool_name: &str) -> AutonomousToolEffectClass {
             AutonomousToolEffectClass::BrowserControl
         }
         AUTONOMOUS_TOOL_EMULATOR => AutonomousToolEffectClass::DeviceControl,
+        AUTONOMOUS_TOOL_DESKTOP_CONTROL | AUTONOMOUS_TOOL_DESKTOP_STREAM => {
+            AutonomousToolEffectClass::DesktopControl
+        }
         AUTONOMOUS_TOOL_SUBAGENT => AutonomousToolEffectClass::AgentDelegation,
         AUTONOMOUS_TOOL_SKILL => AutonomousToolEffectClass::SkillRuntime,
         AUTONOMOUS_TOOL_SOLANA_LOGS
@@ -1739,6 +1899,14 @@ pub fn tool_effect_class(tool_name: &str) -> AutonomousToolEffectClass {
 pub fn tool_allowed_for_runtime_agent(agent_id: RuntimeAgentIdDto, tool_name: &str) -> bool {
     if tool_name == AUTONOMOUS_TOOL_HARNESS_RUNNER {
         return false;
+    }
+    if matches!(
+        tool_name,
+        AUTONOMOUS_TOOL_DESKTOP_OBSERVE
+            | AUTONOMOUS_TOOL_DESKTOP_CONTROL
+            | AUTONOMOUS_TOOL_DESKTOP_STREAM
+    ) {
+        return agent_id == RuntimeAgentIdDto::ComputerUse;
     }
     if matches!(
         tool_name,
@@ -2601,6 +2769,107 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             "os_control",
         ),
         catalog_entry(
+            AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
+            "desktop_observe",
+            "Observe native desktop state through the Computer Use desktop broker: permissions, displays, windows, apps, foreground state, screenshots, cursor state, OCR/Accessibility placeholders, and health.",
+            &[
+                "desktop",
+                "computer_use",
+                "observe",
+                "display",
+                "window",
+                "screenshot",
+                "cursor",
+                "permission",
+            ],
+            &[
+                "action",
+                "displayId",
+                "windowId",
+                "region",
+                "redaction",
+                "x",
+                "y",
+            ],
+            &[
+                "List displays before selecting a screenshot target.",
+                "Capture a screenshot after operator approval.",
+            ],
+            "desktop_observe",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_DESKTOP_CONTROL,
+            "desktop_control",
+            "Approval-gated native desktop control through the Computer Use broker: pointer movement, click, drag, scroll, keyboard, text entry, app/window, Accessibility, menu, and cancel actions.",
+            &[
+                "desktop",
+                "computer_use",
+                "control",
+                "mouse",
+                "keyboard",
+                "accessibility",
+                "approval",
+                "audit",
+            ],
+            &[
+                "action",
+                "displayId",
+                "windowId",
+                "appName",
+                "bundleId",
+                "elementId",
+                "x",
+                "y",
+                "toX",
+                "toY",
+                "deltaX",
+                "deltaY",
+                "button",
+                "clicks",
+                "key",
+                "keys",
+                "text",
+                "value",
+                "menuPath",
+                "reason",
+                "sensitivity",
+            ],
+            &[
+                "Click a visible button after observing the desktop and receiving approval.",
+                "Cancel the current desktop action and release the controller lock.",
+            ],
+            "desktop_control",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_DESKTOP_STREAM,
+            "desktop_stream",
+            "Manage Computer Use desktop streaming state, WebRTC capability negotiation, and degraded screenshot fallback metadata.",
+            &[
+                "desktop",
+                "computer_use",
+                "stream",
+                "webrtc",
+                "screenshot_fallback",
+                "manual_control",
+            ],
+            &[
+                "action",
+                "sessionId",
+                "runId",
+                "displayId",
+                "streamId",
+                "maxWidth",
+                "maxFrameRate",
+                "includeCursor",
+                "quality",
+            ],
+            &[
+                "Check stream capability before opening the cloud desktop viewport.",
+                "Start a degraded screenshot-fallback stream after approval.",
+            ],
+            "desktop_stream",
+        ),
+        catalog_entry(
             AUTONOMOUS_TOOL_WEB_SEARCH,
             "web",
             "Search the web through the configured backend.",
@@ -3111,6 +3380,7 @@ pub struct AutonomousToolRuntime {
     pub(super) browser_executor: Option<Arc<dyn BrowserExecutor>>,
     pub(super) emulator_executor: Option<Arc<dyn EmulatorExecutor>>,
     pub(super) solana_executor: Option<Arc<dyn SolanaExecutor>>,
+    pub(super) desktop_control: desktop_control::DesktopControlState,
     pub(super) cancellation_token: Option<AgentRunCancellationToken>,
     pub(super) tool_execution_cancelled: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     pub(super) mcp_registry_path: Option<PathBuf>,
@@ -3153,6 +3423,7 @@ impl std::fmt::Debug for AutonomousToolRuntime {
             .field("subagent_limits", &self.subagent_limits)
             .field("delegated_usage_budget", &self.delegated_usage_budget)
             .field("skill_tool_enabled", &self.skill_tool.is_some())
+            .field("desktop_control", &"enabled")
             .finish_non_exhaustive()
     }
 }
@@ -3287,6 +3558,7 @@ impl AutonomousToolRuntime {
             browser_executor: None,
             emulator_executor: None,
             solana_executor: None,
+            desktop_control: desktop_control::DesktopControlState::default(),
             cancellation_token: None,
             tool_execution_cancelled: None,
             mcp_registry_path: None,
@@ -3827,6 +4099,9 @@ impl AutonomousToolRuntime {
             AutonomousToolRequest::ProcessManager(request) => self.process_manager(request),
             AutonomousToolRequest::SystemDiagnostics(request) => self.system_diagnostics(request),
             AutonomousToolRequest::MacosAutomation(request) => self.macos_automation(request),
+            AutonomousToolRequest::DesktopObserve(request) => self.desktop_observe(request),
+            AutonomousToolRequest::DesktopControl(request) => self.desktop_control(request),
+            AutonomousToolRequest::DesktopStream(request) => self.desktop_stream(request),
             AutonomousToolRequest::Mcp(request) => self.mcp(request),
             AutonomousToolRequest::Subagent(request) => self.subagent(request),
             AutonomousToolRequest::Todo(request) => self.todo(request),
@@ -3986,6 +4261,15 @@ impl AutonomousToolRuntime {
             }
             AutonomousToolRequest::MacosAutomation(request) => {
                 self.macos_automation_with_operator_approval(request)
+            }
+            AutonomousToolRequest::DesktopObserve(request) => {
+                self.desktop_observe_with_operator_approval(request)
+            }
+            AutonomousToolRequest::DesktopControl(request) => {
+                self.desktop_control_with_operator_approval(request)
+            }
+            AutonomousToolRequest::DesktopStream(request) => {
+                self.desktop_stream_with_operator_approval(request)
             }
             AutonomousToolRequest::AgentDefinition(request) => {
                 self.agent_definition_with_operator_approval(request)
@@ -4432,6 +4716,9 @@ pub enum AutonomousToolRequest {
     ProcessManager(AutonomousProcessManagerRequest),
     SystemDiagnostics(AutonomousSystemDiagnosticsRequest),
     MacosAutomation(AutonomousMacosAutomationRequest),
+    DesktopObserve(AutonomousDesktopObserveRequest),
+    DesktopControl(AutonomousDesktopControlRequest),
+    DesktopStream(AutonomousDesktopStreamRequest),
     Mcp(AutonomousMcpRequest),
     Subagent(AutonomousSubagentRequest),
     Todo(AutonomousTodoRequest),
@@ -4513,6 +4800,9 @@ impl AutonomousToolRequest {
             Self::ProcessManager(_) => AUTONOMOUS_TOOL_PROCESS_MANAGER,
             Self::SystemDiagnostics(_) => AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS,
             Self::MacosAutomation(_) => AUTONOMOUS_TOOL_MACOS_AUTOMATION,
+            Self::DesktopObserve(_) => AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
+            Self::DesktopControl(_) => AUTONOMOUS_TOOL_DESKTOP_CONTROL,
+            Self::DesktopStream(_) => AUTONOMOUS_TOOL_DESKTOP_STREAM,
             Self::Mcp(_) => AUTONOMOUS_TOOL_MCP,
             Self::Subagent(_) => AUTONOMOUS_TOOL_SUBAGENT,
             Self::Todo(_) => AUTONOMOUS_TOOL_TODO,
@@ -6130,6 +6420,9 @@ pub enum AutonomousToolOutput {
     ProcessManager(AutonomousProcessManagerOutput),
     SystemDiagnostics(AutonomousSystemDiagnosticsOutput),
     MacosAutomation(AutonomousMacosAutomationOutput),
+    DesktopObserve(AutonomousDesktopToolOutput),
+    DesktopControl(AutonomousDesktopToolOutput),
+    DesktopStream(AutonomousDesktopToolOutput),
     Mcp(AutonomousMcpOutput),
     Subagent(AutonomousSubagentOutput),
     Todo(AutonomousTodoOutput),
@@ -8096,6 +8389,9 @@ mod tests {
             AUTONOMOUS_TOOL_BROWSER,
             AUTONOMOUS_TOOL_EMULATOR,
             AUTONOMOUS_TOOL_MACOS_AUTOMATION,
+            AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
+            AUTONOMOUS_TOOL_DESKTOP_CONTROL,
+            AUTONOMOUS_TOOL_DESKTOP_STREAM,
             AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
         ] {
             assert!(
@@ -8131,6 +8427,83 @@ mod tests {
                 "computer_use should block {blocked_tool}"
             );
         }
+    }
+
+    #[test]
+    fn desktop_tools_are_computer_use_only() {
+        for tool in [
+            AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
+            AUTONOMOUS_TOOL_DESKTOP_CONTROL,
+            AUTONOMOUS_TOOL_DESKTOP_STREAM,
+        ] {
+            assert!(tool_allowed_for_runtime_agent(
+                RuntimeAgentIdDto::ComputerUse,
+                tool
+            ));
+            assert!(
+                !tool_allowed_for_runtime_agent(RuntimeAgentIdDto::Engineer, tool),
+                "desktop tool {tool} should stay out of engineering agents"
+            );
+            assert!(
+                !tool_allowed_for_runtime_agent(RuntimeAgentIdDto::Debug, tool),
+                "desktop tool {tool} should stay out of debug agents"
+            );
+        }
+    }
+
+    #[test]
+    fn desktop_rollout_defaults_to_fail_closed_in_release_policy() {
+        assert!(!desktop_tool_available_from_rollout_values(
+            AUTONOMOUS_TOOL_DESKTOP_CONTROL,
+            None,
+            None,
+            None,
+            "host-1",
+            false,
+        ));
+    }
+
+    #[test]
+    fn desktop_rollout_master_flag_enables_all_desktop_tools() {
+        assert!(desktop_tool_available_from_rollout_values(
+            AUTONOMOUS_TOOL_DESKTOP_STREAM,
+            Some("enabled"),
+            None,
+            None,
+            "host-1",
+            false,
+        ));
+    }
+
+    #[test]
+    fn desktop_rollout_tool_override_can_disable_single_surface() {
+        assert!(!desktop_tool_available_from_rollout_values(
+            AUTONOMOUS_TOOL_DESKTOP_STREAM,
+            Some("enabled"),
+            Some("off"),
+            None,
+            "host-1",
+            true,
+        ));
+    }
+
+    #[test]
+    fn desktop_rollout_percent_is_deterministic_per_host_and_tool() {
+        let rollout_id = "host-42";
+        let bucket = desktop_rollout_bucket(rollout_id, AUTONOMOUS_TOOL_DESKTOP_OBSERVE);
+        let percent = bucket.saturating_add(1).to_string();
+
+        assert_eq!(
+            desktop_tool_available_from_rollout_values(
+                AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
+                None,
+                None,
+                Some(&percent),
+                rollout_id,
+                false,
+            ),
+            bucket < 100,
+        );
     }
 
     #[test]

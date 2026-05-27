@@ -42,7 +42,8 @@ defmodule XeroWeb.RemoteDesktopChannel do
       XeroWeb.Endpoint.broadcast(auth_topic, "session_authorized", %{
         "join_ref" => join_ref,
         "desktop_device_id" => socket.assigns.device_id,
-        "authorized" => Map.get(payload, "authorized", true)
+        "authorized" => Map.get(payload, "authorized", true),
+        "run_id" => Map.get(payload, "run_id") || Map.get(payload, "runId")
       })
 
       broadcast!(

@@ -1,7 +1,6 @@
 import { SiteHeader } from "@/components/landing/site-header"
 import { Hero } from "@/components/landing/hero"
 import { Features } from "@/components/landing/features"
-import { FeatureGrid } from "@/components/landing/feature-grid"
 import { Models } from "@/components/landing/models"
 import { CloudApp } from "@/components/landing/cloud"
 import { Pricing } from "@/components/landing/pricing"
@@ -21,7 +20,6 @@ export default function Page() {
           className="mx-auto h-px w-full max-w-7xl bg-gradient-to-r from-transparent via-border/80 to-transparent"
         />
         <Features />
-        <FeatureGrid />
         <Models />
         <CloudApp />
         <Pricing />

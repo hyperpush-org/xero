@@ -7,7 +7,8 @@ use super::{
     repo_scope::{is_current_directory_path, normalize_relative_path},
     tool_allowed_for_runtime_agent_with_policy, AutonomousBrowserAction,
     AutonomousCommandPolicyOutcome, AutonomousCommandPolicyProfile, AutonomousCommandPolicyTrace,
-    AutonomousCommandRequest, AutonomousMcpAction, AutonomousProcessActionRiskLevel,
+    AutonomousCommandRequest, AutonomousDesktopControlAction, AutonomousDesktopObserveAction,
+    AutonomousDesktopStreamAction, AutonomousMcpAction, AutonomousProcessActionRiskLevel,
     AutonomousProcessManagerAction, AutonomousProcessManagerPolicyTrace,
     AutonomousProcessOwnershipScope, AutonomousProjectContextAction, AutonomousSafetyApprovalGrant,
     AutonomousSafetyPolicyAction, AutonomousSafetyPolicyDecision,
@@ -337,6 +338,66 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
             require_approval_code: "policy_requires_approval_os_automation",
             require_approval_reason: "Operating-system automation requires operator approval.",
         },
+        AutonomousToolRequest::DesktopObserve(request) => {
+            let sensitive = matches!(
+                request.action,
+                AutonomousDesktopObserveAction::Screenshot
+                    | AutonomousDesktopObserveAction::AccessibilitySnapshot
+                    | AutonomousDesktopObserveAction::OcrSnapshot
+                    | AutonomousDesktopObserveAction::ElementAtPoint
+            );
+            SafetyPolicyMetadata {
+                risk_class: if sensitive {
+                    "desktop_observe_sensitive"
+                } else {
+                    "desktop_observe"
+                },
+                network_intent: "none",
+                credential_sensitivity: if sensitive { "possible" } else { "low" },
+                os_target: Some("desktop"),
+                prior_observation_required: false,
+                requires_approval: sensitive,
+                require_approval_code: "policy_requires_approval_desktop_observe",
+                require_approval_reason: "Sensitive desktop observation can expose private screen contents and requires operator approval.",
+            }
+        }
+        AutonomousToolRequest::DesktopControl(request) => {
+            let cancel_only = matches!(
+                request.action,
+                AutonomousDesktopControlAction::CancelCurrentAction
+            );
+            SafetyPolicyMetadata {
+                risk_class: if cancel_only {
+                    "desktop_control_cancel"
+                } else {
+                    "desktop_control"
+                },
+                network_intent: "none",
+                credential_sensitivity: "possible",
+                os_target: Some("desktop"),
+                prior_observation_required: !cancel_only,
+                requires_approval: !cancel_only,
+                require_approval_code: "policy_requires_approval_desktop_control",
+                require_approval_reason: "Native desktop control requires explicit operator approval.",
+            }
+        }
+        AutonomousToolRequest::DesktopStream(request) => {
+            let requires_approval = !matches!(
+                request.action,
+                AutonomousDesktopStreamAction::StreamCapabilities
+                    | AutonomousDesktopStreamAction::StreamStatus
+            );
+            SafetyPolicyMetadata {
+                risk_class: "desktop_stream",
+                network_intent: "stream_media",
+                credential_sensitivity: "possible",
+                os_target: Some("desktop"),
+                prior_observation_required: false,
+                requires_approval,
+                require_approval_code: "policy_requires_approval_desktop_stream",
+                require_approval_reason: "Desktop streaming exposes live screen media and requires operator approval.",
+            }
+        }
         AutonomousToolRequest::Command(_)
         | AutonomousToolRequest::CommandSessionStart(_)
         | AutonomousToolRequest::PowerShell(_) => SafetyPolicyMetadata {

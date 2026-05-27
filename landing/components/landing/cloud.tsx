@@ -12,7 +12,7 @@ export function CloudApp() {
       <div className="mx-auto grid w-full max-w-7xl grid-cols-1 gap-10 px-4 py-20 sm:px-6 lg:grid-cols-2 lg:gap-16 lg:px-8 lg:py-28">
         <div className="flex flex-col justify-center">
           <p className="font-mono text-xs uppercase tracking-[0.2em] text-primary">
-            Xero Cloud
+            Remote sessions
           </p>
           <h2 className="mt-3 font-sans text-3xl font-medium tracking-tight text-balance sm:text-5xl">
             Your sessions, everywhere.
@@ -31,7 +31,7 @@ export function CloudApp() {
               {
                 icon: MonitorSmartphone,
                 title: "Drive from any browser",
-                copy: "Phone, tablet, or laptop — pick up a live session at any size, nothing to install.",
+                copy: "Desktop, tablet, or phone browser — pick up a live session at any size, nothing to install.",
               },
               {
                 icon: CheckCheck,
@@ -95,7 +95,7 @@ const PREVIEW_SESSIONS: PreviewSession[] = [
 function CloudDeviceMock() {
   return (
     <div className="relative w-full max-w-[19rem]">
-      {/* Phone frame */}
+      {/* Browser-session frame */}
       <div className="overflow-hidden rounded-[2rem] border border-border/70 bg-card/80 p-2 shadow-[0_24px_60px_-24px_rgba(0,0,0,0.55)] backdrop-blur-sm">
         <div className="overflow-hidden rounded-[1.5rem] border border-border/60 bg-background/60">
           {/* Status / app bar */}
@@ -149,7 +149,7 @@ function CloudDeviceMock() {
           <div className="flex items-center gap-2 border-t border-border/60 px-4 py-3">
             <span className="inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md bg-primary px-2.5 text-[12px] font-medium text-primary-foreground">
               <MonitorSmartphone className="h-3 w-3" strokeWidth={2.5} />
-              Add to Home Screen
+              Open remote session
             </span>
           </div>
         </div>

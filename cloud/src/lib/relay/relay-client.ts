@@ -21,8 +21,26 @@ export interface InboundCommand {
 		| "stage_attachment"
 		| "discard_attachment"
 		| "update_session_controls"
-		| "fetch_runtime_media_artifact";
+		| "fetch_runtime_media_artifact"
+		| "computer_use_stream_request"
+		| "computer_use_stream_offer"
+		| "computer_use_stream_answer"
+		| "computer_use_stream_ice_candidate"
+		| "computer_use_stream_stop"
+		| "computer_use_stream_status"
+		| "computer_use_stream_set_quality"
+		| "computer_use_stream_request_keyframe"
+		| "computer_use_manual_control_request"
+		| "computer_use_manual_control_grant"
+		| "computer_use_manual_control_heartbeat"
+		| "computer_use_manual_control_input"
+		| "computer_use_manual_control_release";
 	payload: unknown;
+}
+
+interface StreamTokenOptions {
+	runId?: string | null;
+	streamToken?: string | null;
 }
 
 let socket: Socket | null = null;
@@ -70,7 +88,7 @@ export function joinSessionChannel(
 	computerId: string,
 	sessionId: string,
 	lastSeq?: number,
-	onJoined?: (channel: Channel) => void,
+	onJoined?: (channel: Channel, payload: unknown) => void,
 	onJoinError?: (payload: unknown) => void,
 ): Channel {
 	const channel = socketInstance.channel(`session:${computerId}:${sessionId}`, {
@@ -78,7 +96,7 @@ export function joinSessionChannel(
 	});
 	const join = channel.join();
 	if (onJoined) {
-		join.receive("ok", () => onJoined(channel));
+		join.receive("ok", (payload) => onJoined(channel, payload));
 	}
 	if (onJoinError) {
 		join
@@ -184,6 +202,324 @@ export function requestRuntimeMediaArtifact(
 		kind: "fetch_runtime_media_artifact",
 		payload: { artifactId: options.artifactId },
 	});
+}
+
+export function requestComputerUseStream(
+	channel: Channel,
+	options: {
+		computerId: string;
+		sessionId: string;
+		deviceId: string;
+		displayId?: string | null;
+		quality?: "low" | "balanced" | "high";
+		iceServers?: RTCIceServer[];
+	} & StreamTokenOptions,
+): void {
+	pushInboundCommand(channel, {
+		v: 1,
+		seq: Date.now(),
+		computer_id: options.computerId,
+		session_id: options.sessionId,
+		device_id: options.deviceId,
+		kind: "computer_use_stream_request",
+		payload: {
+			displayId: options.displayId ?? null,
+			quality: options.quality ?? "balanced",
+			includeCursor: true,
+			iceServers: options.iceServers ?? [],
+			...streamSecurityPayload(options),
+		},
+	});
+}
+
+export function requestRunCancel(
+	channel: Channel,
+	options: {
+		computerId: string;
+		sessionId: string;
+		deviceId: string;
+		runId?: string | null;
+		reason?: string | null;
+	},
+): void {
+	const payload: Record<string, unknown> = {
+		reason: options.reason ?? "cloud_run_cancel",
+	};
+	if (options.runId) payload.runId = options.runId;
+	pushInboundCommand(channel, {
+		v: 1,
+		seq: Date.now(),
+		computer_id: options.computerId,
+		session_id: options.sessionId,
+		device_id: options.deviceId,
+		kind: "cancel_run",
+		payload,
+	});
+}
+
+export function stopComputerUseStream(
+	channel: Channel,
+	options: {
+		computerId: string;
+		sessionId: string;
+		deviceId: string;
+		streamId?: string | null;
+	} & StreamTokenOptions,
+): void {
+	pushInboundCommand(channel, {
+		v: 1,
+		seq: Date.now(),
+		computer_id: options.computerId,
+		session_id: options.sessionId,
+		device_id: options.deviceId,
+		kind: "computer_use_stream_stop",
+		payload: {
+			streamId: options.streamId ?? null,
+			...streamSecurityPayload(options),
+		},
+	});
+}
+
+export function requestComputerUseStreamStatus(
+	channel: Channel,
+	options: {
+		computerId: string;
+		sessionId: string;
+		deviceId: string;
+		streamId?: string | null;
+	} & StreamTokenOptions,
+): void {
+	pushInboundCommand(channel, {
+		v: 1,
+		seq: Date.now(),
+		computer_id: options.computerId,
+		session_id: options.sessionId,
+		device_id: options.deviceId,
+		kind: "computer_use_stream_status",
+		payload: {
+			streamId: options.streamId ?? null,
+			...streamSecurityPayload(options),
+		},
+	});
+}
+
+export function setComputerUseStreamQuality(
+	channel: Channel,
+	options: {
+		computerId: string;
+		sessionId: string;
+		deviceId: string;
+		streamId?: string | null;
+		quality: "low" | "balanced" | "high";
+	} & StreamTokenOptions,
+): void {
+	pushInboundCommand(channel, {
+		v: 1,
+		seq: Date.now(),
+		computer_id: options.computerId,
+		session_id: options.sessionId,
+		device_id: options.deviceId,
+		kind: "computer_use_stream_set_quality",
+		payload: {
+			streamId: options.streamId ?? null,
+			quality: options.quality,
+			...streamSecurityPayload(options),
+		},
+	});
+}
+
+export function requestComputerUseStreamKeyframe(
+	channel: Channel,
+	options: {
+		computerId: string;
+		sessionId: string;
+		deviceId: string;
+		streamId?: string | null;
+	} & StreamTokenOptions,
+): void {
+	pushInboundCommand(channel, {
+		v: 1,
+		seq: Date.now(),
+		computer_id: options.computerId,
+		session_id: options.sessionId,
+		device_id: options.deviceId,
+		kind: "computer_use_stream_request_keyframe",
+		payload: {
+			streamId: options.streamId ?? null,
+			...streamSecurityPayload(options),
+		},
+	});
+}
+
+export function answerComputerUseStreamOffer(
+	channel: Channel,
+	options: {
+		computerId: string;
+		sessionId: string;
+		deviceId: string;
+		streamId?: string | null;
+		answer: RTCSessionDescriptionInit;
+	} & StreamTokenOptions,
+): void {
+	pushInboundCommand(channel, {
+		v: 1,
+		seq: Date.now(),
+		computer_id: options.computerId,
+		session_id: options.sessionId,
+		device_id: options.deviceId,
+		kind: "computer_use_stream_answer",
+		payload: {
+			streamId: options.streamId ?? null,
+			type: options.answer.type,
+			sdp: options.answer.sdp,
+			...streamSecurityPayload(options),
+		},
+	});
+}
+
+export function sendComputerUseStreamIceCandidate(
+	channel: Channel,
+	options: {
+		computerId: string;
+		sessionId: string;
+		deviceId: string;
+		streamId?: string | null;
+		candidate: RTCIceCandidateInit;
+	} & StreamTokenOptions,
+): void {
+	pushInboundCommand(channel, {
+		v: 1,
+		seq: Date.now(),
+		computer_id: options.computerId,
+		session_id: options.sessionId,
+		device_id: options.deviceId,
+		kind: "computer_use_stream_ice_candidate",
+		payload: {
+			streamId: options.streamId ?? null,
+			candidate: options.candidate,
+			...streamSecurityPayload(options),
+		},
+	});
+}
+
+export function requestComputerUseManualControl(
+	channel: Channel,
+	options: {
+		computerId: string;
+		sessionId: string;
+		deviceId: string;
+		reason?: string | null;
+	} & StreamTokenOptions,
+): void {
+	pushInboundCommand(channel, {
+		v: 1,
+		seq: Date.now(),
+		computer_id: options.computerId,
+		session_id: options.sessionId,
+		device_id: options.deviceId,
+		kind: "computer_use_manual_control_request",
+		payload: {
+			reason: options.reason ?? "cloud_manual_control",
+			...streamSecurityPayload(options),
+		},
+	});
+}
+
+export function heartbeatComputerUseManualControl(
+	channel: Channel,
+	options: {
+		computerId: string;
+		sessionId: string;
+		deviceId: string;
+		manualControlId?: string | null;
+		reason?: string | null;
+	} & StreamTokenOptions,
+): void {
+	pushInboundCommand(channel, {
+		v: 1,
+		seq: Date.now(),
+		computer_id: options.computerId,
+		session_id: options.sessionId,
+		device_id: options.deviceId,
+		kind: "computer_use_manual_control_heartbeat",
+		payload: {
+			manualControlId: options.manualControlId ?? null,
+			reason: options.reason ?? "manual_cloud_control_heartbeat",
+			...streamSecurityPayload(options),
+		},
+	});
+}
+
+export function releaseComputerUseManualControl(
+	channel: Channel,
+	options: {
+		computerId: string;
+		sessionId: string;
+		deviceId: string;
+		manualControlId?: string | null;
+	} & StreamTokenOptions,
+): void {
+	pushInboundCommand(channel, {
+		v: 1,
+		seq: Date.now(),
+		computer_id: options.computerId,
+		session_id: options.sessionId,
+		device_id: options.deviceId,
+		kind: "computer_use_manual_control_release",
+		payload: {
+			manualControlId: options.manualControlId ?? null,
+			...streamSecurityPayload(options),
+		},
+	});
+}
+
+export function sendComputerUseManualInput(
+	channel: Channel,
+	options: {
+		computerId: string;
+		sessionId: string;
+		deviceId: string;
+		manualControlId?: string | null;
+		input: {
+			action: string;
+			x?: number;
+			y?: number;
+			deltaX?: number;
+			deltaY?: number;
+			button?: "left" | "middle" | "right";
+			clicks?: number;
+			key?: string;
+			keys?: string[];
+			text?: string;
+			reason?: string;
+		};
+	} & StreamTokenOptions,
+): void {
+	pushInboundCommand(channel, {
+		v: 1,
+		seq: Date.now(),
+		computer_id: options.computerId,
+		session_id: options.sessionId,
+		device_id: options.deviceId,
+		kind: "computer_use_manual_control_input",
+		payload: {
+			manualControlId: options.manualControlId ?? null,
+			reason: options.input.reason ?? "cloud_manual_control_input",
+			...options.input,
+			...streamSecurityPayload(options),
+		},
+	});
+}
+
+function streamSecurityPayload(
+	options: StreamTokenOptions,
+): Record<string, string> {
+	const payload: Record<string, string> = {};
+	const runId = options.runId?.trim();
+	const token = options.streamToken?.trim();
+	if (runId) payload.runId = runId;
+	if (token) payload.streamToken = token;
+	return payload;
 }
 
 export function requestStartSession(

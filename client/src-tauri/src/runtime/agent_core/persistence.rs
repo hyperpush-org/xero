@@ -3858,6 +3858,43 @@ pub(crate) fn record_command_output_event(
                 record_macos_action_required(repo_root, project_id, run_id, output)?;
             }
         }
+        AutonomousToolOutput::DesktopObserve(output)
+        | AutonomousToolOutput::DesktopControl(output)
+        | AutonomousToolOutput::DesktopStream(output) => {
+            append_event(
+                repo_root,
+                project_id,
+                run_id,
+                AgentRunEventKind::CommandOutput,
+                json!({
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_name,
+                    "operation": output.action.clone(),
+                    "status": output.status.clone(),
+                    "platform": output.platform.clone(),
+                    "sidecar": output.sidecar.clone(),
+                    "capabilities": output.capabilities.clone(),
+                    "permissions": output.permissions.clone(),
+                    "displays": output.displays.clone(),
+                    "windows": output.windows.clone(),
+                    "apps": output.apps.clone(),
+                    "foreground": output.foreground.clone(),
+                    "cursor": output.cursor.clone(),
+                    "screenshot": output.screenshot.clone(),
+                    "stream": output.stream.clone(),
+                    "controllerLock": output.controller_lock.clone(),
+                    "auditId": output.audit_id.clone(),
+                    "error": output.error.clone(),
+                    "policy": output.policy.clone(),
+                }),
+            )?;
+
+            if matches!(output.status, AutonomousDesktopToolStatus::ApprovalRequired)
+                && output.policy.approval_required
+            {
+                record_desktop_action_required(repo_root, project_id, run_id, output)?;
+            }
+        }
         _ => {}
     }
 
@@ -3954,6 +3991,42 @@ fn record_macos_action_required(
             "code": output.policy.code,
             "toolName": "macos_automation",
             "operation": output.action,
+        }),
+    )?;
+    Ok(())
+}
+
+fn record_desktop_action_required(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    output: &AutonomousDesktopToolOutput,
+) -> CommandResult<()> {
+    let action_id = desktop_action_approval_id(output);
+    record_action_request(
+        repo_root,
+        project_id,
+        run_id,
+        &action_id,
+        "desktop_control_approval",
+        "Desktop control requires review",
+        &output.policy.reason,
+    )?;
+    append_event(
+        repo_root,
+        project_id,
+        run_id,
+        AgentRunEventKind::ActionRequired,
+        json!({
+            "actionId": sanitize_action_id(&action_id),
+            "actionType": "desktop_control_approval",
+            "title": "Desktop control requires review",
+            "reason": output.policy.reason,
+            "code": output.policy.code,
+            "toolName": output.tool,
+            "operation": output.action,
+            "status": output.status,
+            "platform": output.platform,
         }),
     )?;
     Ok(())

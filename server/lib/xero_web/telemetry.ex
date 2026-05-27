@@ -63,6 +63,18 @@ defmodule XeroWeb.Telemetry do
         tags: [:direction],
         description: "Opaque remote bytes forwarded by direction"
       ),
+      sum("xero.remote.computer_use.command.forwarded.count",
+        tags: [:family, :kind, :direction],
+        description: "Computer Use stream/manual command frames forwarded by the relay"
+      ),
+      sum("xero.remote.computer_use.command.forwarded.bytes",
+        tags: [:family, :kind, :direction],
+        description: "Computer Use stream/manual command bytes forwarded by the relay"
+      ),
+      sum("xero.remote.computer_use.command.rejected.count",
+        tags: [:family, :kind, :reason],
+        description: "Computer Use stream/manual command frames rejected by the relay"
+      ),
 
       # Database Metrics
       summary("xero.repo.query.total_time",

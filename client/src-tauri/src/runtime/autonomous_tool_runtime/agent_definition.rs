@@ -11,7 +11,9 @@ use super::{
     AutonomousAgentToolPolicy, AutonomousToolCatalogEntry, AutonomousToolEffectClass,
     AutonomousToolOutput, AutonomousToolResult, AutonomousToolRuntime, AUTONOMOUS_TOOL_BROWSER,
     AUTONOMOUS_TOOL_BROWSER_CONTROL, AUTONOMOUS_TOOL_BROWSER_OBSERVE, AUTONOMOUS_TOOL_CODE_INTEL,
-    AUTONOMOUS_TOOL_COMMAND_PROBE, AUTONOMOUS_TOOL_DIRECTORY_DIGEST, AUTONOMOUS_TOOL_EMULATOR,
+    AUTONOMOUS_TOOL_COMMAND_PROBE, AUTONOMOUS_TOOL_DESKTOP_CONTROL,
+    AUTONOMOUS_TOOL_DESKTOP_OBSERVE, AUTONOMOUS_TOOL_DESKTOP_STREAM,
+    AUTONOMOUS_TOOL_DIRECTORY_DIGEST, AUTONOMOUS_TOOL_EMULATOR,
     AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT, AUTONOMOUS_TOOL_FIND, AUTONOMOUS_TOOL_GIT_DIFF,
     AUTONOMOUS_TOOL_GIT_STATUS, AUTONOMOUS_TOOL_HARNESS_RUNNER, AUTONOMOUS_TOOL_HASH,
     AUTONOMOUS_TOOL_LIST, AUTONOMOUS_TOOL_LIST_TREE, AUTONOMOUS_TOOL_LSP,
@@ -3674,7 +3676,12 @@ fn effect_allowed_by_profile(base_profile: &str, effect_class: &str) -> bool {
         "observe_only" => effect_class == AutonomousToolEffectClass::Observe.as_str(),
         "computer_use" => matches!(
             effect_class,
-            "observe" | "runtime_state" | "browser_control" | "device_control" | "process_control"
+            "observe"
+                | "runtime_state"
+                | "browser_control"
+                | "device_control"
+                | "desktop_control"
+                | "process_control"
         ),
         "planning" => matches!(effect_class, "observe" | "runtime_state"),
         "repository_recon" => {
@@ -3739,6 +3746,9 @@ fn computer_use_tool_allowed(tool: &str) -> bool {
             | AUTONOMOUS_TOOL_BROWSER
             | AUTONOMOUS_TOOL_EMULATOR
             | AUTONOMOUS_TOOL_MACOS_AUTOMATION
+            | AUTONOMOUS_TOOL_DESKTOP_OBSERVE
+            | AUTONOMOUS_TOOL_DESKTOP_CONTROL
+            | AUTONOMOUS_TOOL_DESKTOP_STREAM
             | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE
     )
 }
@@ -4181,6 +4191,9 @@ fn default_tool_policy(profile: &str) -> JsonValue {
                 AUTONOMOUS_TOOL_BROWSER,
                 AUTONOMOUS_TOOL_EMULATOR,
                 AUTONOMOUS_TOOL_MACOS_AUTOMATION,
+                AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
+                AUTONOMOUS_TOOL_DESKTOP_CONTROL,
+                AUTONOMOUS_TOOL_DESKTOP_STREAM,
                 AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE
             ],
             "deniedTools": [
