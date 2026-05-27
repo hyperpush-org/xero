@@ -1192,6 +1192,19 @@ Required docs:
 - Parallel macOS/Windows/Linux sidecar work increases coordination cost and requires a strict shared contract to avoid platform drift.
 - Sidecar signing/notarization and app update compatibility can block release if left late.
 
+## Production Audit Notes
+
+Treat this plan as complete only when the release checklist below has direct evidence, not just code presence.
+
+The latest broker audit closed the high-risk controller issues:
+
+- Cloud manual-control leases are exclusive.
+- Stale manual-control release IDs cannot clear another active controller lock.
+- Cancel requests best-effort notify the sidecar.
+- Emergency stop now best-effort stops native streaming, cancels sidecar work, releases the controller lock, and writes audit plus stream-stop metadata.
+
+Keep cross-platform parity, cloud E2E, security review, notarization, documentation, feature flags, and staged rollout unchecked until those artifacts are attached or approved.
+
 ## Implementation Checklist
 
 - [ ] Threat model approved.

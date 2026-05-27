@@ -7,11 +7,13 @@ import {
 	render,
 	screen,
 	waitFor,
+	within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CloudSession } from "#/lib/auth/session";
 import {
+	REMOTE_COMPUTER_USE_SESSION_ID,
 	type RemoteProjectSummary,
 	useSessionStore,
 	type VisibleSessionSummary,
@@ -95,7 +97,10 @@ vi.mock("#/lib/relay/use-session-stream", async () => {
 		},
 		useSessionStream: () => ({
 			channel: null,
+			iceServers: [],
 			joinRejected: false,
+			streamRunId: null,
+			streamToken: null,
 		}),
 	};
 });
@@ -321,6 +326,52 @@ describe("cloud sessions shell", () => {
 			expect.objectContaining({ id: "yolo", label: "Full auto" }),
 		]);
 		expect(typeof props?.onApprovalChange).toBe("function");
+	});
+
+	it("renders Computer Use desktop controls before any prompt is sent", async () => {
+		const computerUseSession: VisibleSessionSummary = {
+			computerId: "desktop-1",
+			sessionId: REMOTE_COMPUTER_USE_SESSION_ID,
+			agentSessionId: REMOTE_COMPUTER_USE_SESSION_ID,
+			projectId: "global-computer-use",
+			projectName: null,
+			sessionKind: "computer_use",
+			isComputerUse: true,
+			title: "Computer Use",
+			lastActivityAt: null,
+			computerName: "Studio",
+			remoteVisible: true,
+		};
+		streamMock.sessions = [computerUseSession, ...sessions];
+		useSessionStore.setState({
+			visibleSessions: [computerUseSession, ...sessions],
+			visibleSessionsVersion: 2,
+		});
+		useSessionStore
+			.getState()
+			.replaceWithSnapshot(`desktop-1:${REMOTE_COMPUTER_USE_SESSION_ID}`, {
+				turns: [],
+				lastSeq: 1,
+				isLive: false,
+				availableAgents: [{ id: "computer_use", label: "Computer Use" }],
+				availableModels: [],
+				currentAgentId: "computer_use",
+				currentModelId: null,
+				currentThinkingEffort: null,
+				currentApprovalMode: "suggest",
+				currentAutoCompactEnabled: true,
+			});
+
+		renderCloudRoute(`/sessions/desktop-1/${REMOTE_COMPUTER_USE_SESSION_ID}`);
+
+		const desktop = await screen.findByLabelText("Desktop");
+		expect(
+			within(desktop).getByRole("button", { name: /start/i }),
+		).toBeTruthy();
+		expect(
+			within(desktop).getByRole("button", { name: /manual/i }),
+		).toBeTruthy();
+		expect(screen.getByTestId("composer")).toBeTruthy();
 	});
 });
 

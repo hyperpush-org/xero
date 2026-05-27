@@ -615,6 +615,20 @@ function SessionView() {
 		[],
 	);
 	const projectLabel = shell.activeProjectLabel;
+	const computerUseDesktopViewport = isComputerUseSession ? (
+		<ComputerUseDesktopViewport
+			channel={channel}
+			computerId={computerId}
+			deviceId={session.deviceId}
+			iceServers={iceServers}
+			isOnline={currentComputerOnline}
+			isRunLive={isLive}
+			previewUrl={desktopPreviewUrl}
+			sessionId={sessionId}
+			streamRunId={streamRunId}
+			streamToken={streamToken}
+		/>
+	) : null;
 
 	return (
 		<div className="relative min-h-0 flex-1">
@@ -629,30 +643,17 @@ function SessionView() {
 					className="mx-auto flex min-h-full max-w-3xl flex-col gap-4 pb-24 lg:max-w-[47rem]"
 				>
 					{transcript ? (
-						turns.length === 0 ? (
-							<div className="flex flex-1 items-center justify-center">
-								<EmptySessionState
-									projectLabel={projectLabel}
-									context={isComputerUseSession ? "computer-use" : "default"}
-									onSelectSuggestion={setDraftPrompt}
-								/>
-							</div>
-						) : (
-							<>
-								{isComputerUseSession ? (
-									<ComputerUseDesktopViewport
-										channel={channel}
-										computerId={computerId}
-										deviceId={session.deviceId}
-										iceServers={iceServers}
-										isOnline={currentComputerOnline}
-										isRunLive={isLive}
-										previewUrl={desktopPreviewUrl}
-										sessionId={sessionId}
-										streamRunId={streamRunId}
-										streamToken={streamToken}
+						<>
+							{computerUseDesktopViewport}
+							{turns.length === 0 ? (
+								<div className="flex flex-1 items-center justify-center">
+									<EmptySessionState
+										projectLabel={projectLabel}
+										context={isComputerUseSession ? "computer-use" : "default"}
+										onSelectSuggestion={setDraftPrompt}
 									/>
-								) : null}
+								</div>
+							) : (
 								<ConversationSection
 									runtimeRun={null}
 									visibleTurns={resolvedTurns}
@@ -662,8 +663,8 @@ function SessionView() {
 									accountAvatarUrl={session.avatarUrl ?? null}
 									accountLogin={session.githubLogin}
 								/>
-							</>
-						)
+							)}
+						</>
 					) : (
 						<LoadingScreen className="flex-1" />
 					)}

@@ -41,7 +41,7 @@ use super::{
     AUTONOMOUS_TOOL_DESKTOP_STREAM,
 };
 use crate::{
-    commands::{validate_non_empty, CommandError, CommandResult},
+    commands::{validate_non_empty, CommandError, CommandErrorClass, CommandResult},
     db::project_app_data_dir_for_repo,
 };
 
@@ -1136,10 +1136,10 @@ impl AutonomousToolRuntime {
             false,
             false,
         );
-        let lock = self.acquire_desktop_lock_for(
+        let lock_result = self.acquire_desktop_lock_for(
             AutonomousDesktopActor::CloudManualControl,
             Some(manual_control_id.to_owned()),
-        )?;
+        );
         let mut output = self.desktop_base_output(
             AUTONOMOUS_TOOL_DESKTOP_CONTROL,
             "manual_control_request",
@@ -1147,7 +1147,25 @@ impl AutonomousToolRuntime {
             AutonomousDesktopToolStatus::Executed,
             "Cloud manual control acquired the desktop controller lock.",
         )?;
-        output.controller_lock = Some(lock);
+        match lock_result {
+            Ok(lock) => {
+                output.controller_lock = Some(lock);
+            }
+            Err(error) if error.class == CommandErrorClass::UserFixable => {
+                let code = error.code;
+                let message = error.message;
+                output.status = AutonomousDesktopToolStatus::Denied;
+                output.error = Some(desktop_error(
+                    &code,
+                    &message,
+                    error.retryable,
+                    true,
+                    "Wait for the active controller lease to end, or use emergency stop from the local Xero app.",
+                ));
+                output.message = message;
+            }
+            Err(error) => return Err(error),
+        }
         output.audit_id = Some(self.write_desktop_audit(&output, reason)?);
         Ok(output)
     }
@@ -1225,7 +1243,6 @@ impl AutonomousToolRuntime {
         if let Some(manual_control_id) = manual_control_id {
             validate_non_empty(manual_control_id, "manualControlId")?;
         }
-        self.release_desktop_lock(reason)?;
         let policy = desktop_policy(
             AutonomousDesktopPolicyCategory::ControlSafe,
             AutonomousDesktopPolicyDecision::Allowed,
@@ -1234,6 +1251,15 @@ impl AutonomousToolRuntime {
             false,
             false,
         );
+        let release_result = if let Some(manual_control_id) = manual_control_id {
+            self.release_desktop_lock_for(
+                AutonomousDesktopActor::CloudManualControl,
+                Some(manual_control_id),
+                reason,
+            )
+        } else {
+            self.release_desktop_lock(reason)
+        };
         let mut output = self.desktop_base_output(
             AUTONOMOUS_TOOL_DESKTOP_CONTROL,
             "manual_control_release",
@@ -1241,6 +1267,17 @@ impl AutonomousToolRuntime {
             AutonomousDesktopToolStatus::Stopped,
             "Cloud manual control released the desktop controller lock.",
         )?;
+        if let Err(error) = release_result {
+            output.status = AutonomousDesktopToolStatus::Denied;
+            output.error = Some(desktop_error(
+                &error.code,
+                &error.message,
+                true,
+                true,
+                "Use the active manual-control lease or emergency stop from the local Xero app.",
+            ));
+            output.message = error.message;
+        }
         output.audit_id = Some(self.write_desktop_audit(&output, Some(reason))?);
         Ok(output)
     }
@@ -1249,18 +1286,6 @@ impl AutonomousToolRuntime {
         &self,
         reason: &str,
     ) -> CommandResult<AutonomousDesktopControlStatusSnapshot> {
-        self.release_desktop_lock(reason)?;
-        {
-            let mut stream = self.desktop_control.stream.lock().map_err(|_| {
-                CommandError::system_fault(
-                    "desktop_stream_state_lock_failed",
-                    "Xero could not lock desktop stream state.",
-                )
-            })?;
-            stream.status = AutonomousDesktopStreamStatus::Stopped;
-            stream.transport = AutonomousDesktopStreamTransport::Unavailable;
-            stream.message = format!("Desktop stream stopped by {reason}.");
-        }
         let policy = desktop_policy(
             AutonomousDesktopPolicyCategory::ControlSafe,
             AutonomousDesktopPolicyDecision::Allowed,
@@ -1269,6 +1294,20 @@ impl AutonomousToolRuntime {
             false,
             false,
         );
+        let policy_decision_id = policy.decision_id.clone();
+        let current_stream = current_desktop_stream(&self.desktop_control)?;
+        let stream_stop_error =
+            stop_native_desktop_stream_best_effort(&current_stream, &policy_decision_id);
+        let action_cancel_error = cancel_current_sidecar_action_best_effort(&policy_decision_id);
+
+        self.release_desktop_lock(reason)?;
+        let stopped_stream = replace_current_desktop_stream(
+            &self.desktop_control,
+            stopped_stream_state(
+                current_stream,
+                Some(format!("Desktop stream stopped by {reason}.")),
+            ),
+        )?;
         let mut output = self.desktop_base_output(
             AUTONOMOUS_TOOL_DESKTOP_CONTROL,
             "emergency_stop",
@@ -1276,7 +1315,14 @@ impl AutonomousToolRuntime {
             AutonomousDesktopToolStatus::Stopped,
             "Desktop control emergency stop completed.",
         )?;
+        output.stream = Some(stopped_stream);
+        output.structured_snapshot = Some(json!({
+            "schema": "xero.desktop_emergency_stop.v1",
+            "sidecarStreamStopError": stream_stop_error.as_ref().map(sidecar_error_summary),
+            "sidecarActionCancelError": action_cancel_error.as_ref().map(sidecar_error_summary),
+        }));
         output.audit_id = Some(self.write_desktop_audit(&output, Some(reason))?);
+        self.write_desktop_stream_session_event(&output)?;
         self.desktop_control_status_snapshot()
     }
 
@@ -1664,8 +1710,21 @@ impl AutonomousToolRuntime {
 
         let execution = match request.action {
             AutonomousDesktopControlAction::CancelCurrentAction => {
+                let sidecar_cancel_error =
+                    cancel_current_sidecar_action_best_effort(&output.policy.decision_id);
                 self.release_desktop_lock("cancel_current_action")?;
-                Ok("Cancelled current desktop action and released the controller lock.".into())
+                if let Some(error) = sidecar_cancel_error {
+                    output.structured_snapshot = Some(json!({
+                        "schema": "xero.desktop_cancel_current_action.v1",
+                        "sidecarActionCancelError": sidecar_error_summary(&error),
+                    }));
+                    Ok(format!(
+                        "Cancelled current desktop action locally and released the controller lock. Sidecar cancel reported {}.",
+                        error.code
+                    ))
+                } else {
+                    Ok("Cancelled current desktop action and released the controller lock.".into())
+                }
             }
             AutonomousDesktopControlAction::MouseMove => {
                 if let Some(message) =
@@ -2300,15 +2359,25 @@ impl AutonomousToolRuntime {
             )
         })?;
         if let Some(existing) = guard.as_ref() {
-            if lock_is_active_at(existing, &now) && existing.actor != actor {
-                return Err(CommandError::user_fixable(
-                    "controller_lock_unavailable",
-                    format!(
-                        "Desktop control is currently held by {} until {}.",
-                        existing.actor.as_str(),
-                        existing.expires_at
-                    ),
-                ));
+            if lock_is_active_at(existing, &now) {
+                if existing.actor != actor {
+                    return Err(CommandError::user_fixable(
+                        "controller_lock_unavailable",
+                        format!(
+                            "Desktop control is currently held by {} until {}.",
+                            existing.actor.as_str(),
+                            existing.expires_at
+                        ),
+                    ));
+                }
+                if actor == AutonomousDesktopActor::CloudManualControl
+                    && existing.lease_id.as_deref() != lease_id.as_deref()
+                {
+                    return Err(CommandError::user_fixable(
+                        "controller_lock_unavailable",
+                        "Cloud manual control is already held by another active controller lease.",
+                    ));
+                }
             }
             if !lock_is_active_at(existing, &now) {
                 *guard = None;
@@ -2418,6 +2487,48 @@ impl AutonomousToolRuntime {
         if let Some(lock) = guard.as_mut() {
             lock.release_reason = Some(reason.into());
         }
+        *guard = None;
+        Ok(())
+    }
+
+    fn release_desktop_lock_for(
+        &self,
+        actor: AutonomousDesktopActor,
+        lease_id: Option<&str>,
+        reason: &str,
+    ) -> CommandResult<()> {
+        let now = now_timestamp();
+        let mut guard = self.desktop_control.lock.lock().map_err(|_| {
+            CommandError::system_fault(
+                "desktop_controller_lock_state_failed",
+                "Xero could not lock desktop controller state.",
+            )
+        })?;
+        let Some(lock) = guard.as_mut() else {
+            return Ok(());
+        };
+        if !lock_is_active_at(lock, &now) {
+            *guard = None;
+            return Ok(());
+        }
+        if lock.actor != actor {
+            return Err(CommandError::user_fixable(
+                "controller_lock_unavailable",
+                format!(
+                    "Desktop control is currently held by {}.",
+                    lock.actor.as_str()
+                ),
+            ));
+        }
+        if let Some(lease_id) = lease_id {
+            if lock.lease_id.as_deref() != Some(lease_id) {
+                return Err(CommandError::user_fixable(
+                    "manual_control_lease_mismatch",
+                    "The manual-control release lease does not match the active controller lock.",
+                ));
+            }
+        }
+        lock.release_reason = Some(reason.into());
         *guard = None;
         Ok(())
     }
@@ -2637,6 +2748,7 @@ fn desktop_stream_event_name(action: &str) -> &'static str {
         "stream_set_quality" => "quality",
         "stream_request_keyframe" => "keyframe",
         "stream_capabilities" => "capabilities",
+        "emergency_stop" => "stop",
         _ => "unknown",
     }
 }
@@ -3419,6 +3531,27 @@ fn sidecar_json_result_with_error(
             )
         }))
     }
+}
+
+fn cancel_current_sidecar_action_best_effort(
+    policy_decision_id: &str,
+) -> Option<DesktopSidecarErrorBody> {
+    sidecar_json_result_with_error(
+        DesktopSidecarOperation::CancelCurrentAction,
+        json!({}),
+        policy_decision_id,
+    )
+    .map(|_| ())
+    .err()
+}
+
+fn sidecar_error_summary(error: &DesktopSidecarErrorBody) -> serde_json::Value {
+    json!({
+        "code": error.code.as_str(),
+        "message": error.message.as_str(),
+        "retryable": error.retryable,
+        "userActionRequired": error.user_action_required,
+    })
 }
 
 struct DesktopSidecarManager {
@@ -4923,6 +5056,47 @@ fn stopped_stream_state(
     current
 }
 
+fn stop_native_desktop_stream_best_effort(
+    current: &AutonomousDesktopStreamState,
+    policy_decision_id: &str,
+) -> Option<DesktopSidecarErrorBody> {
+    if current.transport != AutonomousDesktopStreamTransport::WebRtc
+        || matches!(
+            current.status,
+            AutonomousDesktopStreamStatus::Idle | AutonomousDesktopStreamStatus::Stopped
+        )
+    {
+        return None;
+    }
+
+    let request = AutonomousDesktopStreamRequest {
+        action: AutonomousDesktopStreamAction::StreamStop,
+        session_id: None,
+        run_id: None,
+        display_id: None,
+        stream_id: current.stream_id.clone(),
+        max_width: None,
+        max_frame_rate: None,
+        include_cursor: None,
+        quality: Some(current.quality),
+        redaction: None,
+        ice_servers: Vec::new(),
+        session_description: None,
+        ice_candidate: None,
+    };
+
+    run_sidecar_desktop_stream(
+        DesktopSidecarOperation::StreamStop,
+        &request,
+        None,
+        current.stream_id.as_deref(),
+        Some(current),
+        policy_decision_id,
+    )
+    .map(|_| ())
+    .err()
+}
+
 fn refresh_native_stream_state(
     request: &AutonomousDesktopStreamRequest,
     current: &AutonomousDesktopStreamState,
@@ -5741,12 +5915,64 @@ mod tests {
             Some("local_user_takeover")
         );
 
-        let reacquire = runtime.desktop_acquire_manual_control("manual-1", Some("test"));
+        let output = runtime
+            .desktop_acquire_manual_control("manual-1", Some("test"))
+            .expect("manual control output");
 
-        assert!(reacquire
-            .expect_err("local user lock should block manual control")
-            .message
-            .contains("local_user"));
+        assert_eq!(output.status, AutonomousDesktopToolStatus::Denied);
+        assert_eq!(
+            output.error.as_ref().map(|error| error.code.as_str()),
+            Some("controller_lock_unavailable")
+        );
+        assert!(output.message.contains("local_user"));
+    }
+
+    #[test]
+    fn manual_control_rejects_second_active_controller_lease() {
+        let repo = tempdir().expect("tempdir");
+        let runtime = AutonomousToolRuntime::new(repo.path()).expect("runtime");
+        runtime
+            .desktop_acquire_manual_control("manual-1", Some("first"))
+            .expect("first manual lock");
+
+        let output = runtime
+            .desktop_acquire_manual_control("manual-2", Some("second"))
+            .expect("second manual lease returns a structured denial");
+
+        assert_eq!(output.status, AutonomousDesktopToolStatus::Denied);
+        assert_eq!(
+            output.error.as_ref().map(|error| error.code.as_str()),
+            Some("controller_lock_unavailable")
+        );
+        let lock = current_desktop_lock(&runtime.desktop_control)
+            .expect("current lock")
+            .expect("active lock");
+        assert_eq!(lock.actor, AutonomousDesktopActor::CloudManualControl);
+        assert_eq!(lock.lease_id.as_deref(), Some("manual-1"));
+    }
+
+    #[test]
+    fn manual_control_release_requires_matching_lease() {
+        let repo = tempdir().expect("tempdir");
+        let runtime = AutonomousToolRuntime::new(repo.path()).expect("runtime");
+        runtime
+            .desktop_acquire_manual_control("manual-1", Some("first"))
+            .expect("manual lock");
+
+        let output = runtime
+            .desktop_release_manual_control(Some("manual-2"), "stale release")
+            .expect("release output");
+
+        assert_eq!(output.status, AutonomousDesktopToolStatus::Denied);
+        assert_eq!(
+            output.error.as_ref().map(|error| error.code.as_str()),
+            Some("manual_control_lease_mismatch")
+        );
+        let lock = current_desktop_lock(&runtime.desktop_control)
+            .expect("current lock")
+            .expect("active lock");
+        assert_eq!(lock.actor, AutonomousDesktopActor::CloudManualControl);
+        assert_eq!(lock.lease_id.as_deref(), Some("manual-1"));
     }
 
     #[test]
@@ -5902,29 +6128,22 @@ mod tests {
     }
 
     #[test]
-    fn manual_control_heartbeat_refreshes_active_lease() {
+    fn manual_control_refresh_extends_active_lease() {
         let repo = tempdir().expect("tempdir");
         let runtime = AutonomousToolRuntime::new(repo.path()).expect("runtime");
         runtime
             .desktop_acquire_manual_control("manual-1", Some("test"))
             .expect("manual lock");
 
-        let output = runtime
-            .desktop_refresh_manual_control("manual-1", "heartbeat")
-            .expect("heartbeat output");
+        let lock = runtime
+            .refresh_desktop_lock(AutonomousDesktopActor::CloudManualControl, Some("manual-1"))
+            .expect("heartbeat refresh");
 
-        assert_eq!(output.status, AutonomousDesktopToolStatus::Executed);
-        assert_eq!(
-            output.controller_lock.as_ref().map(|lock| lock.actor),
-            Some(AutonomousDesktopActor::CloudManualControl)
-        );
-        assert_eq!(
-            output
-                .controller_lock
-                .as_ref()
-                .and_then(|lock| lock.lease_id.as_deref()),
-            Some("manual-1")
-        );
+        assert_eq!(lock.actor, AutonomousDesktopActor::CloudManualControl);
+        assert_eq!(lock.lease_id.as_deref(), Some("manual-1"));
+        assert!(current_desktop_lock(&runtime.desktop_control)
+            .expect("current lock")
+            .is_some());
     }
 
     #[test]
@@ -6141,6 +6360,53 @@ mod tests {
         assert!(records
             .iter()
             .all(|record| record.get("bytesBase64").is_none()));
+    }
+
+    #[test]
+    fn emergency_stop_stops_stream_and_writes_session_metadata() {
+        let repo = tempdir().expect("tempdir");
+        let runtime = AutonomousToolRuntime::new(repo.path())
+            .expect("runtime")
+            .with_agent_run_context("project-1", "session-1", "run-1");
+        replace_current_desktop_stream(
+            &runtime.desktop_control,
+            AutonomousDesktopStreamState {
+                stream_id: Some("stream-1".into()),
+                status: AutonomousDesktopStreamStatus::Live,
+                transport: AutonomousDesktopStreamTransport::WebRtc,
+                signaling_channel: Some("computer_use_stream".into()),
+                quality: AutonomousDesktopStreamQuality::Balanced,
+                max_width: 1280,
+                max_frame_rate: 24,
+                include_cursor: true,
+                message: "Native stream is live.".into(),
+            },
+        )
+        .expect("seed stream");
+
+        let snapshot = runtime
+            .desktop_emergency_stop("test emergency stop")
+            .expect("emergency stop");
+
+        assert_eq!(
+            snapshot.stream.status,
+            AutonomousDesktopStreamStatus::Stopped
+        );
+        assert_eq!(snapshot.stream.stream_id.as_deref(), Some("stream-1"));
+
+        let metadata_path =
+            project_app_data_dir_for_repo(repo.path()).join(DESKTOP_STREAM_SESSIONS_FILE);
+        let records = std::fs::read_to_string(metadata_path).expect("stream session metadata");
+        let records = records
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("json record"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["event"], json!("stop"));
+        assert_eq!(records[0]["action"], json!("emergency_stop"));
+        assert_eq!(records[0]["streamId"], json!("stream-1"));
+        assert!(records[0].get("bytesBase64").is_none());
     }
 
     #[test]
