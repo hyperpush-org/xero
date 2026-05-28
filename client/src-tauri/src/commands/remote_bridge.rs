@@ -67,11 +67,10 @@ use crate::{
         AutonomousDesktopControlAction, AutonomousDesktopControlRequest,
         AutonomousDesktopIceCandidate, AutonomousDesktopIceServer, AutonomousDesktopMouseButton,
         AutonomousDesktopObserveAction, AutonomousDesktopObserveRequest,
-        AutonomousDesktopRedactionRequest, AutonomousDesktopScreenshot,
-        AutonomousDesktopSessionDescription, AutonomousDesktopStreamAction,
-        AutonomousDesktopStreamQuality, AutonomousDesktopStreamRequest,
-        AutonomousDesktopStreamTransport, AutonomousDesktopToolOutput, AutonomousToolOutput,
-        AutonomousToolRuntime,
+        AutonomousDesktopScreenshot, AutonomousDesktopSessionDescription,
+        AutonomousDesktopStreamAction, AutonomousDesktopStreamQuality,
+        AutonomousDesktopStreamRequest, AutonomousDesktopStreamTransport,
+        AutonomousDesktopToolOutput, AutonomousToolOutput, AutonomousToolRuntime,
     },
     state::DesktopState,
 };
@@ -1505,7 +1504,6 @@ fn route_computer_use_stream_command<R: Runtime>(
     let stream_id =
         payload_string(&command.payload, &["streamId", "stream_id"]).map(ToOwned::to_owned);
     let settings = load_desktop_control_settings(app, state)?;
-    let redaction = settings.redaction_request();
     let desktop_output = match command.kind {
         InboundCommandKind::ComputerUseStreamRequest => {
             if !settings.cloud_streaming_enabled {
@@ -1526,55 +1524,47 @@ fn route_computer_use_stream_command<R: Runtime>(
                 &located,
                 &command,
                 AutonomousDesktopStreamAction::StreamStart,
-                redaction.clone(),
             )?)
         }
         InboundCommandKind::ComputerUseStreamStop => Some(run_desktop_stream_command(
             &located,
             &command,
             AutonomousDesktopStreamAction::StreamStop,
-            redaction.clone(),
         )?),
         InboundCommandKind::ComputerUseStreamStatus => Some(run_desktop_stream_command(
             &located,
             &command,
             AutonomousDesktopStreamAction::StreamStatus,
-            redaction.clone(),
         )?),
         InboundCommandKind::ComputerUseStreamSetQuality => Some(run_desktop_stream_command(
             &located,
             &command,
             AutonomousDesktopStreamAction::StreamSetQuality,
-            redaction.clone(),
         )?),
         InboundCommandKind::ComputerUseStreamRequestKeyframe => Some(run_desktop_stream_command(
             &located,
             &command,
             AutonomousDesktopStreamAction::StreamRequestKeyframe,
-            redaction.clone(),
         )?),
         InboundCommandKind::ComputerUseStreamOffer => Some(run_desktop_stream_command(
             &located,
             &command,
             AutonomousDesktopStreamAction::StreamOffer,
-            redaction.clone(),
         )?),
         InboundCommandKind::ComputerUseStreamAnswer => Some(run_desktop_stream_command(
             &located,
             &command,
             AutonomousDesktopStreamAction::StreamAnswer,
-            redaction.clone(),
         )?),
         InboundCommandKind::ComputerUseStreamIceCandidate => Some(run_desktop_stream_command(
             &located,
             &command,
             AutonomousDesktopStreamAction::StreamIceCandidate,
-            redaction.clone(),
         )?),
         _ => None,
     };
     let desktop_frame = if let Some(output) = desktop_output.as_ref() {
-        fallback_frame_for_stream_output(&located, &command, output, redaction.clone())?
+        fallback_frame_for_stream_output(&located, &command, output)?
     } else {
         None
     };
@@ -1730,7 +1720,6 @@ fn run_desktop_stream_command(
     located: &LocatedRemoteSession,
     command: &InboundCommand,
     action: AutonomousDesktopStreamAction,
-    redaction: Option<AutonomousDesktopRedactionRequest>,
 ) -> CommandResult<AutonomousDesktopToolOutput> {
     let request = AutonomousDesktopStreamRequest {
         action,
@@ -1746,7 +1735,6 @@ fn run_desktop_stream_command(
             .and_then(|value| u32::try_from(value).ok()),
         include_cursor: payload_bool(&command.payload, &["includeCursor", "include_cursor"]),
         quality: payload_string(&command.payload, &["quality"]).and_then(stream_quality_from_str),
-        redaction,
         ice_servers: desktop_stream_ice_servers_from_payload(&command.payload)?,
         session_description: desktop_stream_session_description_from_payload(&command.payload)?,
         ice_candidate: desktop_stream_ice_candidate_from_payload(&command.payload)?,
@@ -1912,7 +1900,6 @@ fn fallback_frame_for_stream_output(
     located: &LocatedRemoteSession,
     command: &InboundCommand,
     output: &AutonomousDesktopToolOutput,
-    redaction: Option<AutonomousDesktopRedactionRequest>,
 ) -> CommandResult<Option<JsonValue>> {
     let Some(stream) = output.stream.as_ref() else {
         return Ok(None);
@@ -1929,14 +1916,13 @@ fn fallback_frame_for_stream_output(
     ) {
         return Ok(None);
     }
-    capture_desktop_stream_fallback_frame(located, command, stream.max_width, redaction)
+    capture_desktop_stream_fallback_frame(located, command, stream.max_width)
 }
 
 fn capture_desktop_stream_fallback_frame(
     located: &LocatedRemoteSession,
     command: &InboundCommand,
     max_width: u32,
-    redaction: Option<AutonomousDesktopRedactionRequest>,
 ) -> CommandResult<Option<JsonValue>> {
     let request = AutonomousDesktopObserveRequest {
         action: AutonomousDesktopObserveAction::Screenshot,
@@ -1944,7 +1930,6 @@ fn capture_desktop_stream_fallback_frame(
             .map(ToOwned::to_owned),
         window_id: None,
         region: None,
-        redaction,
         x: None,
         y: None,
     };
@@ -1995,7 +1980,6 @@ fn capture_desktop_stream_fallback_frame(
         "width": encoded.width,
         "height": encoded.height,
         "scaleFactor": encoded.scale_factor,
-        "redactionsApplied": screenshot.redactions_applied,
         "capturedAt": screenshot.captured_at,
     })))
 }
@@ -3504,7 +3488,6 @@ mod tests {
             height,
             scale_factor: 2.0,
             captured_at: "2026-05-26T10:00:00Z".into(),
-            redactions_applied: 3,
         }
     }
 

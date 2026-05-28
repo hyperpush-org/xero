@@ -168,8 +168,6 @@ function makeStatus(overrides: Partial<DesktopControlStatusDto> = {}): DesktopCo
     settings: {
       cloudStreamingEnabled: true,
       manualCloudControlEnabled: true,
-      redactionMode: 'balanced',
-      privateRegions: [],
       updatedAt: '2026-05-26T12:00:00Z',
     },
     auditLogPath: '/tmp/xero/desktop-control/audit.jsonl',

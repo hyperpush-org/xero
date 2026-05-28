@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { isTauriMock, tauriWindowMock, invokeMock, listenMock, openUrlMock } = vi.hoisted(() => ({
@@ -80,11 +80,13 @@ describe('XeroShell', () => {
     expect(screen.getByRole('navigation')).toBeVisible()
   })
 
-  it('places macOS tabs in the left titlebar slot and centers the logo', () => {
-    render(
+  it('keeps the brand icon in the macOS left titlebar slot and centers the project controls', () => {
+    const { container } = render(
       <XeroShell
         activeView="phases"
         onViewChange={() => undefined}
+        projectId="project-1"
+        projectName="Clippster"
         platformOverride="macos"
       >
         <div>Body</div>
@@ -92,9 +94,62 @@ describe('XeroShell', () => {
     )
 
     const nav = screen.getByRole('navigation')
-    const logo = screen.getByText('Xero')
-    expect(nav.compareDocumentPosition(logo) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(logo.parentElement?.parentElement).toHaveClass('absolute', 'left-1/2')
+    const logo = screen.getByRole('img', { name: 'Xero' })
+    const projectTitle = container.querySelector('[data-titlebar-project-title="true"]')
+    expect(logo.compareDocumentPosition(nav) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(projectTitle).toBeInstanceOf(HTMLElement)
+    expect(projectTitle).toHaveClass('absolute', 'left-1/2')
+    expect(projectTitle).toHaveTextContent('Clippster')
+  })
+
+  it('renders the Windows titlebar without brand text or slash and truly centers project actions', () => {
+    const { container } = render(
+      <XeroShell
+        activeView="phases"
+        onViewChange={() => undefined}
+        projectId="project-1"
+        projectName="clippster-mono"
+        projectStartTargets={[{ id: 'dev', name: 'dev' }]}
+        platformOverride="windows"
+      >
+        <div>Body</div>
+      </XeroShell>,
+    )
+
+    const titlebar = container.querySelector('header')
+    const projectTitle = container.querySelector('[data-titlebar-project-title="true"]')
+    expect(screen.queryByText('Xero')).not.toBeInTheDocument()
+    expect(screen.getByRole('img', { name: 'Xero' })).toBeVisible()
+    expect(titlebar).not.toHaveTextContent('/')
+    expect(projectTitle).toBeInstanceOf(HTMLElement)
+    expect(projectTitle).toHaveClass('absolute', 'left-1/2')
+    expect(within(projectTitle as HTMLElement).getByText('clippster-mono')).toBeVisible()
+    expect(within(projectTitle as HTMLElement).getByRole('button', { name: 'Run project' })).toBeVisible()
+  })
+
+  it('uses macOS traffic-light styling for Linux window controls', () => {
+    render(
+      <XeroShell
+        activeView="phases"
+        onViewChange={() => undefined}
+        platformOverride="linux"
+      >
+        <div>Body</div>
+      </XeroShell>,
+    )
+
+    expect(screen.getByRole('button', { name: 'Minimize window' })).toHaveClass(
+      'rounded-full',
+      'bg-[#f5bf4f]',
+    )
+    expect(screen.getByRole('button', { name: 'Toggle maximize' })).toHaveClass(
+      'rounded-full',
+      'bg-[#61c554]',
+    )
+    expect(screen.getByRole('button', { name: 'Close window' })).toHaveClass(
+      'rounded-full',
+      'bg-[#ec6a5e]',
+    )
   })
 
   it.each(['macos', 'windows'] as const)('renders direct titlebar tools without an avatar or dropdown in %s', (platform) => {

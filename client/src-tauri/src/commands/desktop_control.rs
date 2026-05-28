@@ -12,8 +12,7 @@ use crate::{
     runtime::{
         AutonomousDesktopCapabilities, AutonomousDesktopControlStatusSnapshot,
         AutonomousDesktopControllerLock, AutonomousDesktopPermissionGrant,
-        AutonomousDesktopPermissionStatus, AutonomousDesktopRedactionMode,
-        AutonomousDesktopRedactionRequest, AutonomousDesktopRegion, AutonomousDesktopSidecarStatus,
+        AutonomousDesktopPermissionStatus, AutonomousDesktopSidecarStatus,
         AutonomousDesktopStreamState, AutonomousToolRuntime,
     },
     state::DesktopState,
@@ -22,15 +21,12 @@ use crate::{
 const DESKTOP_CONTROL_DIR: &str = "desktop-control";
 const DESKTOP_CONTROL_SETTINGS_FILE: &str = "settings.json";
 const DESKTOP_CONTROL_AUDIT_FILE: &str = "desktop-control/audit.jsonl";
-const MAX_PRIVATE_REGIONS: usize = 16;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DesktopControlSettingsDto {
     pub cloud_streaming_enabled: bool,
     pub manual_cloud_control_enabled: bool,
-    pub redaction_mode: AutonomousDesktopRedactionMode,
-    pub private_regions: Vec<AutonomousDesktopRegion>,
     pub updated_at: Option<String>,
 }
 
@@ -39,24 +35,8 @@ impl Default for DesktopControlSettingsDto {
         Self {
             cloud_streaming_enabled: false,
             manual_cloud_control_enabled: false,
-            redaction_mode: AutonomousDesktopRedactionMode::Balanced,
-            private_regions: Vec::new(),
             updated_at: None,
         }
-    }
-}
-
-impl DesktopControlSettingsDto {
-    pub(crate) fn redaction_request(&self) -> Option<AutonomousDesktopRedactionRequest> {
-        if self.private_regions.is_empty()
-            && self.redaction_mode == AutonomousDesktopRedactionMode::Off
-        {
-            return None;
-        }
-        Some(AutonomousDesktopRedactionRequest {
-            mode: self.redaction_mode.clone(),
-            private_regions: self.private_regions.clone(),
-        })
     }
 }
 
@@ -65,8 +45,6 @@ impl DesktopControlSettingsDto {
 pub struct UpsertDesktopControlSettingsRequestDto {
     pub cloud_streaming_enabled: bool,
     pub manual_cloud_control_enabled: bool,
-    pub redaction_mode: AutonomousDesktopRedactionMode,
-    pub private_regions: Vec<AutonomousDesktopRegion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -182,8 +160,6 @@ fn desktop_control_update_settings_blocking<R: Runtime + 'static>(
     let settings = DesktopControlSettingsDto {
         cloud_streaming_enabled: request.cloud_streaming_enabled,
         manual_cloud_control_enabled: request.manual_cloud_control_enabled,
-        redaction_mode: request.redaction_mode,
-        private_regions: normalize_private_regions(request.private_regions)?,
         updated_at: Some(crate::auth::now_timestamp()),
     };
     write_desktop_control_settings(&app, &state, &settings)?;
@@ -306,20 +282,6 @@ fn write_desktop_control_settings<R: Runtime>(
             format!("Xero could not write desktop-control settings: {error}"),
         )
     })
-}
-
-fn normalize_private_regions(
-    regions: Vec<AutonomousDesktopRegion>,
-) -> CommandResult<Vec<AutonomousDesktopRegion>> {
-    if regions.len() > MAX_PRIVATE_REGIONS {
-        return Err(CommandError::invalid_request("privateRegions"));
-    }
-    for region in &regions {
-        if region.width == 0 || region.height == 0 {
-            return Err(CommandError::invalid_request("privateRegions"));
-        }
-    }
-    Ok(regions)
 }
 
 fn desktop_control_settings_path<R: Runtime>(
@@ -451,46 +413,6 @@ mod tests {
         let settings = DesktopControlSettingsDto::default();
         assert!(!settings.cloud_streaming_enabled);
         assert!(!settings.manual_cloud_control_enabled);
-        assert_eq!(
-            settings.redaction_mode,
-            AutonomousDesktopRedactionMode::Balanced
-        );
-        assert!(settings.private_regions.is_empty());
-    }
-
-    #[test]
-    fn settings_reject_too_many_private_regions() {
-        let regions = (0..=MAX_PRIVATE_REGIONS)
-            .map(|x| AutonomousDesktopRegion {
-                x: x as u32,
-                y: 0,
-                width: 10,
-                height: 10,
-            })
-            .collect();
-
-        let error = normalize_private_regions(regions).expect_err("too many regions");
-
-        assert_eq!(error.code, "invalid_request");
-    }
-
-    #[test]
-    fn redaction_request_preserves_user_marked_private_regions_when_auto_off() {
-        let settings = DesktopControlSettingsDto {
-            redaction_mode: AutonomousDesktopRedactionMode::Off,
-            private_regions: vec![AutonomousDesktopRegion {
-                x: 1,
-                y: 2,
-                width: 3,
-                height: 4,
-            }],
-            ..DesktopControlSettingsDto::default()
-        };
-
-        let redaction = settings.redaction_request().expect("redaction request");
-
-        assert_eq!(redaction.mode, AutonomousDesktopRedactionMode::Off);
-        assert_eq!(redaction.private_regions.len(), 1);
     }
 
     #[test]

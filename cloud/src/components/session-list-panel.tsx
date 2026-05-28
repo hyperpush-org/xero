@@ -19,7 +19,6 @@ import {
 import { Skeleton } from "@xero/ui/components/ui/skeleton";
 import { cn } from "@xero/ui/lib/utils";
 import {
-	ArrowUpRight,
 	ChevronRight,
 	Loader2,
 	MessageSquare,
@@ -441,12 +440,7 @@ export function SessionListPanel({
 			</div>
 
 			<footer className="relative flex items-center gap-3 border-t border-border/50 px-4 py-3.5 pb-[max(env(safe-area-inset-bottom),0.85rem)]">
-				<a
-					href={`https://github.com/${session.githubLogin}`}
-					target="_blank"
-					rel="noreferrer noopener"
-					className="group flex min-w-0 flex-1 items-center gap-3 rounded-md px-1.5 py-1 -mx-1.5 -my-1 transition-colors hover:bg-accent/60"
-				>
+				<div className="-mx-1.5 -my-1 flex min-w-0 flex-1 items-center gap-3 px-1.5 py-1">
 					<Avatar className="h-8 w-8 ring-1 ring-border/80 ring-offset-1 ring-offset-background">
 						{session.avatarUrl ? (
 							<AvatarImage src={session.avatarUrl} alt={session.githubLogin} />
@@ -459,9 +453,8 @@ export function SessionListPanel({
 						<span className="truncate text-[13px] font-medium text-foreground">
 							{session.githubLogin}
 						</span>
-						<ArrowUpRight className="h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-60" />
 					</div>
-				</a>
+				</div>
 				<div className="flex shrink-0 items-center gap-0.5">
 					<InstallAppAction
 						variant="compact"

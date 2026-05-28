@@ -8,7 +8,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use image::{ImageFormat, Rgba, RgbaImage};
+use image::ImageFormat;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -24,14 +24,13 @@ use xero_desktop_control_ipc::{
     DesktopSidecarIceServer, DesktopSidecarIceServerUrls, DesktopSidecarMouseButton,
     DesktopSidecarOcrSnapshotPayload, DesktopSidecarOcrSnapshotRequest, DesktopSidecarOperation,
     DesktopSidecarPermissionGrant, DesktopSidecarPermissionStatus,
-    DesktopSidecarPermissionsPayload, DesktopSidecarPointRequest, DesktopSidecarRedactionMode,
-    DesktopSidecarRedactionRequest, DesktopSidecarRegion, DesktopSidecarRequest,
-    DesktopSidecarResponse, DesktopSidecarScreenshotPayload, DesktopSidecarScreenshotRequest,
-    DesktopSidecarSessionDescription, DesktopSidecarStreamCapabilitiesPayload,
-    DesktopSidecarStreamMetrics, DesktopSidecarStreamPayload, DesktopSidecarStreamQuality,
-    DesktopSidecarStreamRequest, DesktopSidecarStreamStatus, DesktopSidecarStreamTransport,
-    DesktopSidecarWindow, DesktopSidecarWindowListPayload, DESKTOP_SIDECAR_PROTOCOL,
-    DESKTOP_SIDECAR_SCHEMA_VERSION,
+    DesktopSidecarPermissionsPayload, DesktopSidecarPointRequest, DesktopSidecarRegion,
+    DesktopSidecarRequest, DesktopSidecarResponse, DesktopSidecarScreenshotPayload,
+    DesktopSidecarScreenshotRequest, DesktopSidecarSessionDescription,
+    DesktopSidecarStreamCapabilitiesPayload, DesktopSidecarStreamMetrics,
+    DesktopSidecarStreamPayload, DesktopSidecarStreamQuality, DesktopSidecarStreamRequest,
+    DesktopSidecarStreamStatus, DesktopSidecarStreamTransport, DesktopSidecarWindow,
+    DesktopSidecarWindowListPayload, DESKTOP_SIDECAR_PROTOCOL, DESKTOP_SIDECAR_SCHEMA_VERSION,
 };
 
 use super::{
@@ -58,7 +57,6 @@ const DEFAULT_LOCK_LEASE_MS: u64 = 30_000;
 const DEFAULT_SIDECAR_LEASE_MS: u64 = 5 * 60 * 1_000;
 const MAX_TYPE_TEXT_CHARS: usize = 8_000;
 const MAX_MENU_PATH_SEGMENTS: usize = 8;
-const MAX_PRIVATE_REGIONS: usize = 32;
 const DESKTOP_STATUS_SCHEMA: &str = "xero.desktop_control_status.v1";
 #[cfg(not(test))]
 const DESKTOP_SIDECAR_BINARY_NAME: &str = "xero-desktop-sidecar";
@@ -200,8 +198,6 @@ pub struct AutonomousDesktopObserveRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<AutonomousDesktopRegion>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub redaction: Option<AutonomousDesktopRedactionRequest>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub x: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub y: Option<i32>,
@@ -277,8 +273,6 @@ pub struct AutonomousDesktopStreamRequest {
     pub include_cursor: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quality: Option<AutonomousDesktopStreamQuality>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub redaction: Option<AutonomousDesktopRedactionRequest>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ice_servers: Vec<AutonomousDesktopIceServer>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -333,25 +327,6 @@ pub struct AutonomousDesktopRegion {
     pub y: u32,
     pub width: u32,
     pub height: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AutonomousDesktopRedactionRequest {
-    #[serde(default)]
-    pub mode: AutonomousDesktopRedactionMode,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub private_regions: Vec<AutonomousDesktopRegion>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AutonomousDesktopRedactionMode {
-    Off,
-    #[default]
-    Balanced,
-    Auto,
-    Strict,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -479,7 +454,6 @@ pub struct AutonomousDesktopScreenshot {
     pub height: u32,
     pub scale_factor: f32,
     pub captured_at: String,
-    pub redactions_applied: usize,
 }
 
 impl Eq for AutonomousDesktopScreenshot {}
@@ -1578,7 +1552,6 @@ impl AutonomousToolRuntime {
                     "target": snapshot.target,
                     "rows": snapshot.rows,
                     "truncated": snapshot.truncated,
-                    "redacted": snapshot.redacted,
                     "diagnostics": diagnostics,
                     "source": "authenticated_sidecar",
                 }));
@@ -1679,7 +1652,6 @@ impl AutonomousToolRuntime {
             "target": diagnostics_output.target,
             "rows": diagnostics_output.rows,
             "truncated": diagnostics_output.truncated,
-            "redacted": diagnostics_output.redacted,
             "diagnostics": diagnostics_output.diagnostics,
         }));
         output.message = diagnostics_output.summary;
@@ -1716,11 +1688,9 @@ impl AutonomousToolRuntime {
                     "width": snapshot.width,
                     "height": snapshot.height,
                     "scaleFactor": snapshot.scale_factor,
-                    "redactionsApplied": snapshot.redactions_applied,
                     "textBlocks": snapshot.text_blocks,
                     "fullText": snapshot.full_text,
                     "truncated": snapshot.truncated,
-                    "redacted": snapshot.redacted,
                     "diagnostics": diagnostics,
                     "source": "authenticated_sidecar",
                 }));
@@ -2655,7 +2625,7 @@ impl AutonomousToolRuntime {
                 )
             })?;
         }
-        let redacted_summary = redacted_desktop_summary(output, reason);
+        let summary = desktop_audit_summary(output, reason);
         let record = json!({
             "schema": "xero.desktop_control_audit.v1",
             "id": audit_id,
@@ -2673,7 +2643,7 @@ impl AutonomousToolRuntime {
             "approvalId": if output.policy.approval_required { Some(output.policy.decision_id.as_str()) } else { None },
             "status": output.status,
             "errorCode": output.error.as_ref().map(|error| error.code.as_str()),
-            "redactedSummary": redacted_summary,
+            "summary": summary,
         });
         let mut file = open_desktop_metadata_append_file(&audit_path).map_err(|error| {
             CommandError::system_fault(
@@ -2885,14 +2855,6 @@ fn validate_desktop_observe_request(
 ) -> CommandResult<()> {
     validate_optional_id(request.display_id.as_deref(), "displayId")?;
     validate_optional_id(request.window_id.as_deref(), "windowId")?;
-    if let Some(redaction) = &request.redaction {
-        if redaction.private_regions.len() > MAX_PRIVATE_REGIONS {
-            return Err(CommandError::invalid_request("redaction.privateRegions"));
-        }
-        for region in &redaction.private_regions {
-            validate_region(region)?;
-        }
-    }
     if let Some(region) = &request.region {
         validate_region(region)?;
     }
@@ -4569,7 +4531,7 @@ fn desktop_windows() -> CommandResult<Vec<AutonomousDesktopWindow>> {
             Some(AutonomousDesktopWindow {
                 window_id: window.id().unwrap_or_default().to_string(),
                 app_name: window.app_name().unwrap_or_else(|_| "Unknown".into()),
-                title: redact_sensitive_label(&window.title().unwrap_or_default()),
+                title: desktop_label_preview(&window.title().unwrap_or_default()),
                 pid: window.pid().unwrap_or_default(),
                 x: window.x().unwrap_or_default(),
                 y: window.y().unwrap_or_default(),
@@ -4756,7 +4718,6 @@ fn sidecar_ocr_snapshot_request(
             width: region.width,
             height: region.height,
         }),
-        redaction: request.redaction.as_ref().map(sidecar_redaction_request),
         limit: Some(200),
     }
 }
@@ -4798,7 +4759,7 @@ fn capture_desktop_screenshot(
     })?;
     let monitor = select_monitor(&displays, request.display_id.as_deref())?;
     let scale_factor = monitor.scale_factor().unwrap_or(1.0);
-    let mut image = if let Some(region) = &request.region {
+    let image = if let Some(region) = &request.region {
         monitor
             .capture_region(region.x, region.y, region.width, region.height)
             .map_err(|error| {
@@ -4815,8 +4776,6 @@ fn capture_desktop_screenshot(
             )
         })?
     };
-    let redactions_applied =
-        apply_private_region_redactions(&mut image, request.redaction.as_ref());
     let mut bytes = Vec::new();
     image
         .write_to(&mut std::io::Cursor::new(&mut bytes), ImageFormat::Png)
@@ -4850,7 +4809,6 @@ fn capture_desktop_screenshot(
         height: image.height(),
         scale_factor,
         captured_at: now_timestamp(),
-        redactions_applied,
     })
 }
 
@@ -4865,30 +4823,6 @@ fn sidecar_screenshot_request(
             width: region.width,
             height: region.height,
         }),
-        redaction: request.redaction.as_ref().map(sidecar_redaction_request),
-    }
-}
-
-fn sidecar_redaction_request(
-    redaction: &AutonomousDesktopRedactionRequest,
-) -> DesktopSidecarRedactionRequest {
-    DesktopSidecarRedactionRequest {
-        mode: match &redaction.mode {
-            AutonomousDesktopRedactionMode::Off => DesktopSidecarRedactionMode::Off,
-            AutonomousDesktopRedactionMode::Balanced => DesktopSidecarRedactionMode::Balanced,
-            AutonomousDesktopRedactionMode::Auto => DesktopSidecarRedactionMode::Auto,
-            AutonomousDesktopRedactionMode::Strict => DesktopSidecarRedactionMode::Strict,
-        },
-        private_regions: redaction
-            .private_regions
-            .iter()
-            .map(|region| DesktopSidecarRegion {
-                x: region.x,
-                y: region.y,
-                width: region.width,
-                height: region.height,
-            })
-            .collect(),
     }
 }
 
@@ -4942,37 +4876,7 @@ fn write_sidecar_screenshot_artifact(
         height: payload.height,
         scale_factor: payload.scale_factor,
         captured_at: payload.captured_at,
-        redactions_applied: payload.redactions_applied,
     })
-}
-
-fn apply_private_region_redactions(
-    image: &mut RgbaImage,
-    redaction: Option<&AutonomousDesktopRedactionRequest>,
-) -> usize {
-    let Some(redaction) = redaction else {
-        return 0;
-    };
-
-    let width = image.width();
-    let height = image.height();
-    let mut applied = 0;
-    for region in &redaction.private_regions {
-        let x_start = region.x.min(width);
-        let y_start = region.y.min(height);
-        let x_end = region.x.saturating_add(region.width).min(width);
-        let y_end = region.y.saturating_add(region.height).min(height);
-        if x_start >= x_end || y_start >= y_end {
-            continue;
-        }
-        for y in y_start..y_end {
-            for x in x_start..x_end {
-                image.put_pixel(x, y, Rgba([0, 0, 0, 255]));
-            }
-        }
-        applied += 1;
-    }
-    applied
 }
 
 fn select_monitor<'a>(
@@ -5321,7 +5225,6 @@ fn sidecar_stream_request(
                 .unwrap_or(true),
         ),
         quality: Some(sidecar_stream_quality(quality)),
-        redaction: request.redaction.as_ref().map(sidecar_redaction_request),
         ice_servers: sidecar_ice_servers(&request.ice_servers),
         session_description: request
             .session_description
@@ -5470,7 +5373,6 @@ fn stop_native_desktop_stream_best_effort(
         max_frame_rate: None,
         include_cursor: None,
         quality: Some(current.quality),
-        redaction: None,
         ice_servers: Vec::new(),
         session_description: None,
         ice_candidate: None,
@@ -5804,8 +5706,8 @@ fn desktop_error(
     }
 }
 
-fn redacted_desktop_summary(output: &AutonomousDesktopToolOutput, reason: Option<&str>) -> String {
-    let reason = reason.map(redact_sensitive_label).unwrap_or_default();
+fn desktop_audit_summary(output: &AutonomousDesktopToolOutput, reason: Option<&str>) -> String {
+    let reason = reason.map(desktop_label_preview).unwrap_or_default();
     let status = serde_json::to_string(&output.status).unwrap_or_else(|_| "unknown".into());
     if reason.is_empty() {
         format!("{} {} {}", output.tool, output.action, status)
@@ -5817,20 +5719,8 @@ fn redacted_desktop_summary(output: &AutonomousDesktopToolOutput, reason: Option
     }
 }
 
-fn redact_sensitive_label(value: &str) -> String {
-    let lower = value.to_ascii_lowercase();
-    if lower.contains("password")
-        || lower.contains("secret")
-        || lower.contains("token")
-        || lower.contains("recovery")
-        || lower.contains("keychain")
-        || lower.contains("wallet")
-        || lower.contains("mfa")
-    {
-        "[redacted sensitive desktop label]".into()
-    } else {
-        value.chars().take(240).collect()
-    }
+fn desktop_label_preview(value: &str) -> String {
+    value.chars().take(240).collect()
 }
 
 fn now_timestamp() -> String {
@@ -6286,7 +6176,6 @@ mod tests {
             display_id: None,
             window_id: None,
             region: None,
-            redaction: None,
             x: None,
             y: None,
         };
@@ -6757,7 +6646,6 @@ mod tests {
             max_frame_rate: None,
             include_cursor: None,
             quality: Some(AutonomousDesktopStreamQuality::Balanced),
-            redaction: None,
             ice_servers: Vec::new(),
             session_description: None,
             ice_candidate: None,
@@ -6782,7 +6670,6 @@ mod tests {
             max_frame_rate: None,
             include_cursor: None,
             quality: None,
-            redaction: None,
             ice_servers: vec![AutonomousDesktopIceServer {
                 urls: AutonomousDesktopIceServerUrls::One("turn:turn.example.test:3478".into()),
                 username: Some("user".into()),
@@ -6909,7 +6796,6 @@ mod tests {
             max_frame_rate: None,
             include_cursor: Some(true),
             quality: Some(AutonomousDesktopStreamQuality::Low),
-            redaction: None,
             ice_servers: Vec::new(),
             session_description: None,
             ice_candidate: None,
@@ -6948,7 +6834,6 @@ mod tests {
                 max_frame_rate: None,
                 include_cursor: Some(true),
                 quality: Some(AutonomousDesktopStreamQuality::Low),
-                redaction: None,
                 ice_servers: Vec::new(),
                 session_description: None,
                 ice_candidate: None,
@@ -6974,7 +6859,6 @@ mod tests {
                 max_frame_rate: None,
                 include_cursor: None,
                 quality: None,
-                redaction: None,
                 ice_servers: Vec::new(),
                 session_description: None,
                 ice_candidate: None,
@@ -7053,7 +6937,7 @@ mod tests {
     }
 
     #[test]
-    fn audit_redacts_sensitive_reason() {
+    fn audit_summary_includes_reason() {
         let output = AutonomousDesktopToolOutput {
             tool: AUTONOMOUS_TOOL_DESKTOP_CONTROL.into(),
             action: "type_text".into(),
@@ -7086,8 +6970,8 @@ mod tests {
             error: None,
             message: "ok".into(),
         };
-        let summary = redacted_desktop_summary(&output, Some("paste password"));
-        assert!(summary.contains("[redacted sensitive desktop label]"));
+        let summary = desktop_audit_summary(&output, Some("paste password"));
+        assert!(summary.contains("reason=paste password"));
     }
 
     #[cfg(unix)]
@@ -7141,55 +7025,7 @@ mod tests {
     }
 
     #[test]
-    fn screenshot_redaction_blacks_requested_private_regions() {
-        let mut image = RgbaImage::from_pixel(4, 4, Rgba([255, 0, 0, 255]));
-        let redaction = AutonomousDesktopRedactionRequest {
-            mode: AutonomousDesktopRedactionMode::Balanced,
-            private_regions: vec![
-                AutonomousDesktopRegion {
-                    x: 1,
-                    y: 1,
-                    width: 2,
-                    height: 2,
-                },
-                AutonomousDesktopRegion {
-                    x: 10,
-                    y: 10,
-                    width: 2,
-                    height: 2,
-                },
-            ],
-        };
-
-        let applied = apply_private_region_redactions(&mut image, Some(&redaction));
-
-        assert_eq!(applied, 1);
-        assert_eq!(*image.get_pixel(1, 1), Rgba([0, 0, 0, 255]));
-        assert_eq!(*image.get_pixel(2, 2), Rgba([0, 0, 0, 255]));
-        assert_eq!(*image.get_pixel(0, 0), Rgba([255, 0, 0, 255]));
-    }
-
-    #[test]
-    fn screenshot_redaction_keeps_user_marked_regions_when_auto_mode_is_off() {
-        let mut image = RgbaImage::from_pixel(2, 2, Rgba([255, 0, 0, 255]));
-        let redaction = AutonomousDesktopRedactionRequest {
-            mode: AutonomousDesktopRedactionMode::Off,
-            private_regions: vec![AutonomousDesktopRegion {
-                x: 0,
-                y: 0,
-                width: 2,
-                height: 2,
-            }],
-        };
-
-        let applied = apply_private_region_redactions(&mut image, Some(&redaction));
-
-        assert_eq!(applied, 1);
-        assert_eq!(*image.get_pixel(0, 0), Rgba([0, 0, 0, 255]));
-    }
-
-    #[test]
-    fn sidecar_screenshot_request_preserves_capture_bounds_and_redactions() {
+    fn sidecar_screenshot_request_preserves_capture_bounds() {
         let request = AutonomousDesktopObserveRequest {
             action: AutonomousDesktopObserveAction::Screenshot,
             display_id: Some("main".into()),
@@ -7200,15 +7036,6 @@ mod tests {
                 width: 3,
                 height: 4,
             }),
-            redaction: Some(AutonomousDesktopRedactionRequest {
-                mode: AutonomousDesktopRedactionMode::Strict,
-                private_regions: vec![AutonomousDesktopRegion {
-                    x: 5,
-                    y: 6,
-                    width: 7,
-                    height: 8,
-                }],
-            }),
             x: None,
             y: None,
         };
@@ -7217,17 +7044,6 @@ mod tests {
 
         assert_eq!(sidecar.display_id.as_deref(), Some("main"));
         assert_eq!(sidecar.region.as_ref().map(|region| region.height), Some(4));
-        assert_eq!(
-            sidecar.redaction.as_ref().map(|redaction| &redaction.mode),
-            Some(&DesktopSidecarRedactionMode::Strict)
-        );
-        assert_eq!(
-            sidecar
-                .redaction
-                .as_ref()
-                .map(|redaction| redaction.private_regions[0].width),
-            Some(7)
-        );
     }
 
     #[test]
@@ -7463,7 +7279,6 @@ mod tests {
             display_id: None,
             window_id: None,
             region: None,
-            redaction: None,
             x: Some(10),
             y: Some(20),
         };
@@ -7481,7 +7296,6 @@ mod tests {
             display_id: None,
             window_id: Some("42".into()),
             region: None,
-            redaction: None,
             x: None,
             y: None,
         };
@@ -7496,7 +7310,7 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_ocr_snapshot_request_preserves_capture_bounds_and_redactions() {
+    fn sidecar_ocr_snapshot_request_preserves_capture_bounds() {
         let request = AutonomousDesktopObserveRequest {
             action: AutonomousDesktopObserveAction::OcrSnapshot,
             display_id: Some("main".into()),
@@ -7507,15 +7321,6 @@ mod tests {
                 width: 3,
                 height: 4,
             }),
-            redaction: Some(AutonomousDesktopRedactionRequest {
-                mode: AutonomousDesktopRedactionMode::Auto,
-                private_regions: vec![AutonomousDesktopRegion {
-                    x: 5,
-                    y: 6,
-                    width: 7,
-                    height: 8,
-                }],
-            }),
             x: None,
             y: None,
         };
@@ -7524,10 +7329,6 @@ mod tests {
 
         assert_eq!(sidecar.display_id.as_deref(), Some("main"));
         assert_eq!(sidecar.region.as_ref().map(|region| region.width), Some(3));
-        assert_eq!(
-            sidecar.redaction.as_ref().map(|redaction| &redaction.mode),
-            Some(&DesktopSidecarRedactionMode::Auto)
-        );
         assert_eq!(sidecar.limit, Some(200));
     }
 

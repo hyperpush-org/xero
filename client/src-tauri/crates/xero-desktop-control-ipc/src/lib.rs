@@ -396,7 +396,6 @@ pub struct DesktopSidecarAccessibilitySnapshotPayload {
     pub target: Option<DesktopSidecarAccessibilitySnapshotTarget>,
     pub rows: Vec<DesktopSidecarAccessibilitySnapshotRow>,
     pub truncated: bool,
-    pub redacted: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<String>,
 }
@@ -411,33 +410,12 @@ pub struct DesktopSidecarRegion {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum DesktopSidecarRedactionMode {
-    Off,
-    #[default]
-    Balanced,
-    Auto,
-    Strict,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DesktopSidecarRedactionRequest {
-    #[serde(default)]
-    pub mode: DesktopSidecarRedactionMode,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub private_regions: Vec<DesktopSidecarRegion>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DesktopSidecarScreenshotRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<DesktopSidecarRegion>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub redaction: Option<DesktopSidecarRedactionRequest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -449,7 +427,6 @@ pub struct DesktopSidecarScreenshotPayload {
     pub height: u32,
     pub scale_factor: f32,
     pub captured_at: String,
-    pub redactions_applied: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -459,8 +436,6 @@ pub struct DesktopSidecarOcrSnapshotRequest {
     pub display_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<DesktopSidecarRegion>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub redaction: Option<DesktopSidecarRedactionRequest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
 }
@@ -484,11 +459,9 @@ pub struct DesktopSidecarOcrSnapshotPayload {
     pub width: u32,
     pub height: u32,
     pub scale_factor: f32,
-    pub redactions_applied: usize,
     pub text_blocks: Vec<DesktopSidecarOcrTextBlock>,
     pub full_text: String,
     pub truncated: bool,
-    pub redacted: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<String>,
 }
@@ -540,8 +513,6 @@ pub struct DesktopSidecarStreamRequest {
     pub include_cursor: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quality: Option<DesktopSidecarStreamQuality>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub redaction: Option<DesktopSidecarRedactionRequest>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ice_servers: Vec<DesktopSidecarIceServer>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1191,23 +1162,12 @@ mod tests {
     fn parses_screenshot_request_contract() {
         let request = serde_json::from_value::<DesktopSidecarScreenshotRequest>(json!({
             "displayId": "main",
-            "region": { "x": 1, "y": 2, "width": 3, "height": 4 },
-            "redaction": {
-                "mode": "balanced",
-                "privateRegions": [{ "x": 0, "y": 0, "width": 10, "height": 10 }]
-            }
+            "region": { "x": 1, "y": 2, "width": 3, "height": 4 }
         }))
         .expect("screenshot request");
 
         assert_eq!(request.display_id.as_deref(), Some("main"));
         assert_eq!(request.region.as_ref().map(|region| region.width), Some(3));
-        assert_eq!(
-            request
-                .redaction
-                .as_ref()
-                .map(|redaction| redaction.private_regions.len()),
-            Some(1)
-        );
     }
 
     #[test]
@@ -1324,7 +1284,6 @@ mod tests {
                 }
             }],
             "truncated": false,
-            "redacted": false,
             "diagnostics": []
         }))
         .expect("snapshot payload");
@@ -1339,7 +1298,6 @@ mod tests {
         let request = serde_json::from_value::<DesktopSidecarOcrSnapshotRequest>(json!({
             "displayId": "main",
             "region": { "x": 1, "y": 2, "width": 3, "height": 4 },
-            "redaction": { "mode": "balanced" },
             "limit": 25
         }))
         .expect("ocr request");
@@ -1354,7 +1312,6 @@ mod tests {
             "width": 120,
             "height": 80,
             "scaleFactor": 2.0,
-            "redactionsApplied": 1,
             "textBlocks": [{
                 "text": "Continue",
                 "x": 10,
@@ -1364,8 +1321,7 @@ mod tests {
                 "confidence": 0.98
             }],
             "fullText": "Continue",
-            "truncated": false,
-            "redacted": false
+            "truncated": false
         }))
         .expect("ocr payload");
 

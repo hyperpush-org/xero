@@ -165,4 +165,19 @@ describe("SessionListPanel", () => {
 			rows.filter((row) => row.getAttribute("aria-current") === "page"),
 		).toHaveLength(1);
 	});
+
+	it("renders the signed-in account as static identity text", () => {
+		render(
+			<SessionListPanel
+				session={session}
+				visibleSessions={[]}
+				currentSessionKey={null}
+				onSelectSession={vi.fn()}
+				onSignOut={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByText("snowdamiz")).toBeTruthy();
+		expect(screen.queryByRole("link", { name: /snowdamiz/i })).toBeNull();
+	});
 });

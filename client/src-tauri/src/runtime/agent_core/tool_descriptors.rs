@@ -5963,33 +5963,6 @@ fn desktop_observe_schema() -> JsonValue {
                     }
                 }),
             ),
-            (
-                "redaction",
-                json!({
-                    "type": "object",
-                    "description": "Screenshot/OCR redaction request.",
-                    "additionalProperties": false,
-                    "properties": {
-                        "mode": {
-                            "type": "string",
-                            "enum": ["off", "balanced", "auto", "strict"]
-                        },
-                        "privateRegions": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "additionalProperties": false,
-                                "properties": {
-                                    "x": { "type": "integer", "minimum": 0 },
-                                    "y": { "type": "integer", "minimum": 0 },
-                                    "width": { "type": "integer", "minimum": 1 },
-                                    "height": { "type": "integer", "minimum": 1 }
-                                }
-                            }
-                        }
-                    }
-                }),
-            ),
             ("x", integer_schema("Display x coordinate for element_at_point.")),
             ("y", integer_schema("Display y coordinate for element_at_point.")),
         ],

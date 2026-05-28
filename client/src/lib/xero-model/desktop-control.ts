@@ -1,23 +1,11 @@
 import { z } from 'zod'
 
-const desktopRedactionModeSchema = z.enum(['off', 'balanced', 'auto', 'strict'])
 const desktopControlPermissionActionKindSchema = z.enum(['open_macos_privacy_pane'])
-
-const desktopRegionSchema = z
-  .object({
-    x: z.number().int().min(0),
-    y: z.number().int().min(0),
-    width: z.number().int().positive(),
-    height: z.number().int().positive(),
-  })
-  .strict()
 
 export const desktopControlSettingsSchema = z
   .object({
     cloudStreamingEnabled: z.boolean(),
     manualCloudControlEnabled: z.boolean(),
-    redactionMode: desktopRedactionModeSchema,
-    privateRegions: z.array(desktopRegionSchema),
     updatedAt: z.string().nullable(),
   })
   .strict()
@@ -26,8 +14,6 @@ export const upsertDesktopControlSettingsRequestSchema = z
   .object({
     cloudStreamingEnabled: z.boolean(),
     manualCloudControlEnabled: z.boolean(),
-    redactionMode: desktopRedactionModeSchema,
-    privateRegions: z.array(desktopRegionSchema),
   })
   .strict()
 

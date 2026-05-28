@@ -3,11 +3,9 @@ import {
   AlertTriangle,
   Monitor,
   MousePointer2,
-  Plus,
   RefreshCw,
   ShieldCheck,
   Square,
-  Trash2,
 } from "lucide-react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -29,8 +27,6 @@ export type DesktopControlSettingsAdapter = Pick<
   | "desktopControlOpenPermissionSettings"
 >
 
-type DesktopPrivateRegion = DesktopControlStatusDto["settings"]["privateRegions"][number]
-type DesktopRedactionMode = DesktopControlStatusDto["settings"]["redactionMode"]
 type DesktopPermissionAction = NonNullable<DesktopControlStatusDto["permissions"][number]["action"]>
 
 interface DesktopControlSectionProps {
@@ -98,8 +94,6 @@ export function DesktopControlSection({ adapter }: DesktopControlSectionProps) {
   ): UpsertDesktopControlSettingsRequestDto => ({
     cloudStreamingEnabled: status?.settings.cloudStreamingEnabled ?? false,
     manualCloudControlEnabled: status?.settings.manualCloudControlEnabled ?? false,
-    redactionMode: status?.settings.redactionMode ?? "balanced",
-    privateRegions: status?.settings.privateRegions ?? [],
     ...patch,
   })
 
@@ -146,30 +140,6 @@ export function DesktopControlSection({ adapter }: DesktopControlSectionProps) {
   const selectedStatus = status ?? fallbackStatus()
   const activeLock = selectedStatus.controllerLock
   const stream = selectedStatus.stream
-
-  const updatePrivateRegion = (index: number, patch: Partial<DesktopPrivateRegion>) => {
-    const regions = [...selectedStatus.settings.privateRegions]
-    const current = regions[index]
-    if (!current) return
-    const next = { ...current, ...patch }
-    if (!privateRegionIsValid(next)) return
-    regions[index] = next
-    updateSetting("privateRegions", regions)
-  }
-
-  const addPrivateRegion = () => {
-    updateSetting("privateRegions", [
-      ...selectedStatus.settings.privateRegions,
-      { x: 0, y: 0, width: 320, height: 180 },
-    ])
-  }
-
-  const removePrivateRegion = (index: number) => {
-    updateSetting(
-      "privateRegions",
-      selectedStatus.settings.privateRegions.filter((_, candidate) => candidate !== index),
-    )
-  }
 
   return (
     <div className="flex flex-col gap-7">
@@ -252,69 +222,6 @@ export function DesktopControlSection({ adapter }: DesktopControlSectionProps) {
       </section>
 
       <section className="flex flex-col gap-3">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div className="min-w-0">
-            <h4 className="text-[12.5px] font-semibold text-foreground">Redaction</h4>
-            <p className="mt-0.5 text-[12px] leading-[1.55] text-muted-foreground">
-              User-marked regions are always blacked out before fallback frames leave the desktop.
-            </p>
-          </div>
-          <label className="sr-only" htmlFor="desktop-redaction-mode">
-            Redaction mode
-          </label>
-          <select
-            id="desktop-redaction-mode"
-            value={selectedStatus.settings.redactionMode}
-            disabled={!canUseAdapter || saving !== null}
-            onChange={(event) =>
-              updateSetting("redactionMode", event.currentTarget.value as DesktopRedactionMode)
-            }
-            className="h-8 rounded-md border border-input bg-background px-2 text-[12px] text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <option value="off">Manual regions only</option>
-            <option value="balanced">Balanced</option>
-            <option value="auto">Auto</option>
-            <option value="strict">Strict</option>
-          </select>
-        </div>
-        <div className="overflow-hidden rounded-md border border-border/60">
-          {selectedStatus.settings.privateRegions.length === 0 ? (
-            <p className="px-4 py-3 text-[12px] leading-[1.55] text-muted-foreground">
-              No private regions configured.
-            </p>
-          ) : (
-            selectedStatus.settings.privateRegions.map((region, index) => (
-              <PrivateRegionRow
-                key={`${region.x}:${region.y}:${region.width}:${region.height}:${index}`}
-                index={index}
-                region={region}
-                disabled={!canUseAdapter || saving !== null}
-                onChange={(patch) => updatePrivateRegion(index, patch)}
-                onRemove={() => removePrivateRegion(index)}
-              />
-            ))
-          )}
-          <div className="border-t border-border/50 px-4 py-3">
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="h-8 gap-1.5 text-[12px]"
-              disabled={
-                !canUseAdapter ||
-                saving !== null ||
-                selectedStatus.settings.privateRegions.length >= 16
-              }
-              onClick={addPrivateRegion}
-            >
-              <Plus className="h-3.5 w-3.5" />
-              Add Region
-            </Button>
-          </div>
-        </div>
-      </section>
-
-      <section className="flex flex-col gap-3">
         <h4 className="text-[12.5px] font-semibold text-foreground">Permissions</h4>
         <ul className="overflow-hidden rounded-md border border-border/60">
           {selectedStatus.permissions.map((permission) => (
@@ -390,109 +297,6 @@ export function DesktopControlSection({ adapter }: DesktopControlSectionProps) {
         </div>
       </section>
     </div>
-  )
-}
-
-function PrivateRegionRow({
-  index,
-  region,
-  disabled,
-  onChange,
-  onRemove,
-}: {
-  index: number
-  region: DesktopPrivateRegion
-  disabled: boolean
-  onChange: (patch: Partial<DesktopPrivateRegion>) => void
-  onRemove: () => void
-}) {
-  return (
-    <div className="grid gap-2 border-b border-border/50 px-4 py-3 last:border-b-0 sm:grid-cols-[auto_repeat(4,minmax(0,1fr))_auto] sm:items-end">
-      <div className="text-[12px] font-medium text-muted-foreground">#{index + 1}</div>
-      <RegionNumberField
-        label="X"
-        value={region.x}
-        disabled={disabled}
-        onChange={(x) => onChange({ x })}
-      />
-      <RegionNumberField
-        label="Y"
-        value={region.y}
-        disabled={disabled}
-        onChange={(y) => onChange({ y })}
-      />
-      <RegionNumberField
-        label="Width"
-        value={region.width}
-        disabled={disabled}
-        min={1}
-        onChange={(width) => onChange({ width })}
-      />
-      <RegionNumberField
-        label="Height"
-        value={region.height}
-        disabled={disabled}
-        min={1}
-        onChange={(height) => onChange({ height })}
-      />
-      <Button
-        type="button"
-        size="icon"
-        variant="ghost"
-        className="h-8 w-8 text-muted-foreground"
-        disabled={disabled}
-        onClick={onRemove}
-        aria-label={`Remove private region ${index + 1}`}
-      >
-        <Trash2 className="h-3.5 w-3.5" />
-      </Button>
-    </div>
-  )
-}
-
-function RegionNumberField({
-  label,
-  value,
-  disabled,
-  min = 0,
-  onChange,
-}: {
-  label: string
-  value: number
-  disabled: boolean
-  min?: number
-  onChange: (value: number) => void
-}) {
-  return (
-    <label className="flex min-w-0 flex-col gap-1 text-[11px] font-medium text-muted-foreground">
-      {label}
-      <input
-        type="number"
-        min={min}
-        step={1}
-        value={value}
-        disabled={disabled}
-        onChange={(event) => {
-          const next = Number(event.currentTarget.value)
-          if (!Number.isInteger(next) || next < min) return
-          onChange(next)
-        }}
-        className="h-8 min-w-0 rounded-md border border-input bg-background px-2 text-[12px] text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-      />
-    </label>
-  )
-}
-
-function privateRegionIsValid(region: DesktopPrivateRegion): boolean {
-  return (
-    Number.isInteger(region.x) &&
-    Number.isInteger(region.y) &&
-    Number.isInteger(region.width) &&
-    Number.isInteger(region.height) &&
-    region.x >= 0 &&
-    region.y >= 0 &&
-    region.width > 0 &&
-    region.height > 0
   )
 }
 
@@ -619,8 +423,6 @@ function fallbackStatus(): DesktopControlStatusDto {
     settings: {
       cloudStreamingEnabled: false,
       manualCloudControlEnabled: false,
-      redactionMode: "balanced",
-      privateRegions: [],
       updatedAt: null,
     },
     auditLogPath: "",

@@ -10,7 +10,7 @@ use std::{
 };
 
 use base64::Engine as _;
-use image::{ImageFormat, Rgba, RgbaImage};
+use image::{ImageFormat, RgbaImage};
 use serde_json::json;
 use time::format_description::well_known::Rfc3339;
 use webrtc::{
@@ -64,7 +64,6 @@ struct WebRtcStreamConfig {
     max_frame_rate: u32,
     include_cursor: bool,
     quality: DesktopSidecarStreamQuality,
-    redaction: Option<xero_desktop_control_ipc::DesktopSidecarRedactionRequest>,
 }
 
 #[derive(Clone)]
@@ -502,7 +501,7 @@ fn sidecar_window_rows() -> Result<Vec<DesktopSidecarWindow>, DesktopSidecarErro
             Some(DesktopSidecarWindow {
                 window_id: window.id().unwrap_or_default().to_string(),
                 app_name: window.app_name().unwrap_or_else(|_| "Unknown".into()),
-                title: redact_sensitive_label(&window.title().unwrap_or_default()),
+                title: desktop_label_preview(&window.title().unwrap_or_default()),
                 pid: window.pid().unwrap_or_default(),
                 x: window.x().unwrap_or_default(),
                 y: window.y().unwrap_or_default(),
@@ -683,7 +682,6 @@ fn platform_ocr_snapshot(
     let capture_request = DesktopSidecarScreenshotRequest {
         display_id: request.display_id,
         region: request.region,
-        redaction: request.redaction,
     };
     let capture = capture_desktop_image(&capture_request)?;
     let png_bytes = encode_png(
@@ -727,7 +725,6 @@ fn sidecar_screenshot(
         height: capture.image.height(),
         scale_factor: capture.scale_factor,
         captured_at: capture.captured_at,
-        redactions_applied: capture.redactions_applied,
     })
 }
 
@@ -1105,7 +1102,6 @@ fn stop_webrtc_stream_by_id(
             max_frame_rate: 24,
             include_cursor: true,
             quality: DesktopSidecarStreamQuality::Balanced,
-            redaction: None,
         });
     };
     active.stop.store(true, Ordering::SeqCst);
@@ -1219,7 +1215,6 @@ fn webrtc_stream_config(
             .clamp(1, WEBRTC_MAX_FRAME_RATE),
         include_cursor: request.include_cursor.unwrap_or(true),
         quality,
-        redaction: request.redaction.clone(),
     }
 }
 
@@ -1247,9 +1242,6 @@ fn apply_webrtc_stream_request_to_config(
     }
     if let Some(include_cursor) = request.include_cursor {
         config.include_cursor = include_cursor;
-    }
-    if request.redaction.is_some() {
-        config.redaction = request.redaction.clone();
     }
 }
 
@@ -2260,7 +2252,6 @@ struct CapturedDesktopImage {
     image: RgbaImage,
     scale_factor: f32,
     captured_at: String,
-    redactions_applied: usize,
     origin_x: i32,
     origin_y: i32,
 }
@@ -2280,7 +2271,7 @@ fn capture_desktop_image(
     let scale_factor = monitor.scale_factor().unwrap_or(1.0);
     let monitor_x = monitor.x().unwrap_or_default();
     let monitor_y = monitor.y().unwrap_or_default();
-    let (origin_x, origin_y, mut image) = if let Some(region) = &request.region {
+    let (origin_x, origin_y, image) = if let Some(region) = &request.region {
         (
             monitor_x.saturating_add(region.x.min(i32::MAX as u32) as i32),
             monitor_y.saturating_add(region.y.min(i32::MAX as u32) as i32),
@@ -2309,13 +2300,10 @@ fn capture_desktop_image(
             })?,
         )
     };
-    let redactions_applied =
-        apply_private_region_redactions(&mut image, request.redaction.as_ref());
     Ok(CapturedDesktopImage {
         image,
         scale_factor,
         captured_at: now_timestamp(),
-        redactions_applied,
         origin_x,
         origin_y,
     })
@@ -2592,34 +2580,6 @@ fn select_monitor<'a>(
         })
 }
 
-fn apply_private_region_redactions(
-    image: &mut RgbaImage,
-    redaction: Option<&xero_desktop_control_ipc::DesktopSidecarRedactionRequest>,
-) -> usize {
-    let Some(redaction) = redaction else {
-        return 0;
-    };
-    let width = image.width();
-    let height = image.height();
-    let mut applied = 0;
-    for region in &redaction.private_regions {
-        let x_start = region.x.min(width);
-        let y_start = region.y.min(height);
-        let x_end = region.x.saturating_add(region.width).min(width);
-        let y_end = region.y.saturating_add(region.height).min(height);
-        if x_start >= x_end || y_start >= y_end {
-            continue;
-        }
-        for y in y_start..y_end {
-            for x in x_start..x_end {
-                image.put_pixel(x, y, Rgba([0, 0, 0, 255]));
-            }
-        }
-        applied += 1;
-    }
-    applied
-}
-
 fn apps_from_windows(windows: &[DesktopSidecarWindow]) -> Vec<DesktopSidecarApp> {
     let mut apps: BTreeMap<(String, u32), DesktopSidecarApp> = BTreeMap::new();
     for window in windows {
@@ -2636,20 +2596,8 @@ fn apps_from_windows(windows: &[DesktopSidecarWindow]) -> Vec<DesktopSidecarApp>
     apps.into_values().collect()
 }
 
-fn redact_sensitive_label(value: &str) -> String {
-    let lower = value.to_ascii_lowercase();
-    if lower.contains("password")
-        || lower.contains("secret")
-        || lower.contains("token")
-        || lower.contains("recovery")
-        || lower.contains("keychain")
-        || lower.contains("wallet")
-        || lower.contains("mfa")
-    {
-        "[redacted sensitive desktop label]".into()
-    } else {
-        value.chars().take(240).collect()
-    }
+fn desktop_label_preview(value: &str) -> String {
+    value.chars().take(240).collect()
 }
 
 fn now_timestamp() -> String {
@@ -2672,7 +2620,7 @@ mod macos_accessibility {
     use core_graphics::geometry::{CGPoint, CGSize};
 
     use super::{
-        redact_sensitive_label, schema_error, DesktopSidecarAccessibilityElement,
+        desktop_label_preview, schema_error, DesktopSidecarAccessibilityElement,
         DesktopSidecarAccessibilitySnapshotPayload, DesktopSidecarAccessibilitySnapshotRequest,
         DesktopSidecarAccessibilitySnapshotRow, DesktopSidecarAccessibilitySnapshotTarget,
         DesktopSidecarControlRequest, DesktopSidecarElementAtPointPayload, DesktopSidecarErrorBody,
@@ -2696,7 +2644,6 @@ mod macos_accessibility {
                 target: None,
                 rows: Vec::new(),
                 truncated: false,
-                redacted: false,
                 diagnostics: vec!["Grant Xero Accessibility permission in System Settings > Privacy & Security > Accessibility, then retry.".into()],
             });
         }
@@ -2710,16 +2657,9 @@ mod macos_accessibility {
                 .unwrap_or(if request.include_children { 5 } else { 0 }),
             include_children: request.include_children,
             truncated: false,
-            redacted: false,
         };
 
-        let app_row = snapshot_row(
-            "macos_accessibility_app",
-            &target.app,
-            0,
-            None,
-            &mut context.redacted,
-        );
+        let app_row = snapshot_row("macos_accessibility_app", &target.app, 0, None);
         context.push(app_row);
 
         let windows = target.windows();
@@ -2729,7 +2669,6 @@ mod macos_accessibility {
                 target: Some(target.snapshot_target()),
                 rows: context.rows,
                 truncated: context.truncated,
-                redacted: context.redacted,
                 diagnostics: vec![
                     "macOS Accessibility returned no window references for the selected app."
                         .into(),
@@ -2742,13 +2681,7 @@ mod macos_accessibility {
                 context.truncated = true;
                 break;
             }
-            let row = snapshot_row(
-                "macos_accessibility_window",
-                &window,
-                0,
-                Some(index),
-                &mut context.redacted,
-            );
+            let row = snapshot_row("macos_accessibility_window", &window, 0, Some(index));
             context.push(row);
             snapshot_children(&mut context, &window, 1);
         }
@@ -2758,7 +2691,6 @@ mod macos_accessibility {
             target: Some(target.snapshot_target()),
             rows: context.rows,
             truncated: context.truncated,
-            redacted: context.redacted,
             diagnostics: Vec::new(),
         })
     }
@@ -2958,7 +2890,6 @@ mod macos_accessibility {
         max_depth: usize,
         include_children: bool,
         truncated: bool,
-        redacted: bool,
     }
 
     impl SnapshotContext {
@@ -2992,10 +2923,9 @@ mod macos_accessibility {
         let Some(app) = ax_element_attribute(&system_wide, "AXFocusedApplication") else {
             return resolve_focused_window_snapshot_target();
         };
-        let mut redacted = false;
         Ok(SnapshotTarget {
             pid: element_pid(&app),
-            app_name: redacted_attribute(&app, "AXTitle", &mut redacted),
+            app_name: ax_string_attribute(&app, "AXTitle"),
             window_title: None,
             window_id: None,
             focused_only: request.focused_only,
@@ -3051,11 +2981,11 @@ mod macos_accessibility {
         let window_title = focused_window
             .title()
             .ok()
-            .map(|title| redact_sensitive_label(&title));
+            .map(|title| desktop_label_preview(&title));
         let app_name = focused_window
             .app_name()
             .ok()
-            .map(|name| redact_sensitive_label(&name));
+            .map(|name| desktop_label_preview(&name));
         let target_window = find_matching_window(
             &app,
             window_title.as_deref(),
@@ -3120,11 +3050,11 @@ mod macos_accessibility {
             let window_title = window
                 .title()
                 .ok()
-                .map(|title| redact_sensitive_label(&title));
+                .map(|title| desktop_label_preview(&title));
             let app_name = window
                 .app_name()
                 .ok()
-                .map(|name| redact_sensitive_label(&name));
+                .map(|name| desktop_label_preview(&name));
             let target_window =
                 find_matching_window(&app, window_title.as_deref(), window_bounds(&window));
             return Ok(SnapshotTarget {
@@ -3194,13 +3124,7 @@ mod macos_accessibility {
                 context.truncated = true;
                 break;
             }
-            let row = snapshot_row(
-                "macos_accessibility_element",
-                &child,
-                depth,
-                Some(index),
-                &mut context.redacted,
-            );
+            let row = snapshot_row("macos_accessibility_element", &child, depth, Some(index));
             context.push(row);
             snapshot_children(context, &child, depth + 1);
         }
@@ -3211,9 +3135,8 @@ mod macos_accessibility {
         element: &AxElement,
         depth: usize,
         child_index: Option<usize>,
-        redacted: &mut bool,
     ) -> DesktopSidecarAccessibilitySnapshotRow {
-        let element = describe_element_with_redaction(element, 0, 0, redacted);
+        let element = describe_element(element, 0, 0);
         let state = if element.focused.unwrap_or(false) {
             Some("focused".into())
         } else {
@@ -3307,20 +3230,10 @@ mod macos_accessibility {
         hit_x: i32,
         hit_y: i32,
     ) -> DesktopSidecarAccessibilityElement {
-        let mut redacted = false;
-        describe_element_with_redaction(element, hit_x, hit_y, &mut redacted)
-    }
-
-    fn describe_element_with_redaction(
-        element: &AxElement,
-        hit_x: i32,
-        hit_y: i32,
-        redacted: &mut bool,
-    ) -> DesktopSidecarAccessibilityElement {
         let role = ax_string_attribute(element, "AXRole");
-        let title = redacted_attribute(element, "AXTitle", redacted);
-        let value = redacted_attribute(element, "AXValue", redacted);
-        let description = redacted_attribute(element, "AXDescription", redacted);
+        let title = ax_string_attribute(element, "AXTitle");
+        let value = ax_string_attribute(element, "AXValue");
+        let description = ax_string_attribute(element, "AXDescription");
         let enabled = ax_bool_attribute(element, "AXEnabled");
         let focused = ax_bool_attribute(element, "AXFocused");
         let position = ax_point_attribute(element, "AXPosition");
@@ -3377,18 +3290,6 @@ mod macos_accessibility {
             hit_x,
             hit_y
         )
-    }
-
-    fn redacted_attribute(
-        element: &AxElement,
-        attribute: &str,
-        redacted: &mut bool,
-    ) -> Option<String> {
-        ax_string_attribute(element, attribute).map(|value| {
-            let redacted_value = redact_sensitive_label(&value);
-            *redacted |= redacted_value != value && redacted_value.contains("[redacted");
-            redacted_value
-        })
     }
 
     fn ax_string_attribute(element: &AxElement, attribute: &str) -> Option<String> {
@@ -4194,8 +4095,8 @@ mod macos_ocr {
     };
 
     use super::{
-        redact_sensitive_label, CapturedDesktopImage, DesktopSidecarErrorBody,
-        DesktopSidecarOcrSnapshotPayload, DesktopSidecarOcrTextBlock,
+        CapturedDesktopImage, DesktopSidecarErrorBody, DesktopSidecarOcrSnapshotPayload,
+        DesktopSidecarOcrTextBlock,
     };
 
     pub(super) fn recognize_png(
@@ -4238,7 +4139,6 @@ mod macos_ocr {
             .unwrap_or_default();
         let truncated = observations.len() > limit;
         let mut text_blocks = Vec::new();
-        let mut redacted = false;
 
         for observation in observations.into_iter().take(limit) {
             let candidates = observation.topCandidates(1);
@@ -4249,11 +4149,9 @@ mod macos_ocr {
             if raw_text.trim().is_empty() {
                 continue;
             }
-            let text = redact_sensitive_label(&raw_text);
-            redacted |= text != raw_text;
             let bbox = unsafe { observation.boundingBox() };
             text_blocks.push(text_block_from_bbox(
-                text,
+                raw_text,
                 candidate.confidence(),
                 bbox.origin.x,
                 bbox.origin.y,
@@ -4274,11 +4172,9 @@ mod macos_ocr {
             width: capture.image.width(),
             height: capture.image.height(),
             scale_factor: capture.scale_factor,
-            redactions_applied: capture.redactions_applied,
             text_blocks,
             full_text,
             truncated,
-            redacted,
             diagnostics: Vec::new(),
         })
     }
@@ -4414,11 +4310,10 @@ mod tests {
     }
 
     #[test]
-    fn redact_sensitive_label_removes_secret_window_titles() {
-        assert_eq!(
-            redact_sensitive_label("Password reset token"),
-            "[redacted sensitive desktop label]"
-        );
+    fn desktop_label_preview_truncates_long_window_titles() {
+        let long_title = "a".repeat(260);
+
+        assert_eq!(desktop_label_preview(&long_title).len(), 240);
     }
 
     #[test]
@@ -4647,7 +4542,6 @@ mod tests {
                 max_frame_rate: Some(24),
                 include_cursor: Some(true),
                 quality: Some(DesktopSidecarStreamQuality::Balanced),
-                redaction: None,
                 ice_servers: Vec::new(),
                 session_description: None,
                 ice_candidate: None,
@@ -4771,27 +4665,6 @@ mod tests {
         .expect_err("valid answer still requires an active stream");
 
         assert_eq!(valid_answer_without_stream.code, "stream_not_found");
-    }
-
-    #[test]
-    fn screenshot_redaction_blacks_requested_private_regions() {
-        let mut image = RgbaImage::from_pixel(4, 4, Rgba([255, 0, 0, 255]));
-        let redaction = xero_desktop_control_ipc::DesktopSidecarRedactionRequest {
-            mode: xero_desktop_control_ipc::DesktopSidecarRedactionMode::Balanced,
-            private_regions: vec![xero_desktop_control_ipc::DesktopSidecarRegion {
-                x: 1,
-                y: 1,
-                width: 2,
-                height: 2,
-            }],
-        };
-
-        let applied = apply_private_region_redactions(&mut image, Some(&redaction));
-
-        assert_eq!(applied, 1);
-        assert_eq!(*image.get_pixel(1, 1), Rgba([0, 0, 0, 255]));
-        assert_eq!(*image.get_pixel(2, 2), Rgba([0, 0, 0, 255]));
-        assert_eq!(*image.get_pixel(0, 0), Rgba([255, 0, 0, 255]));
     }
 
     #[test]

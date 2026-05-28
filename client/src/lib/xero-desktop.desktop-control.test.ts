@@ -95,8 +95,6 @@ describe('XeroDesktopAdapter desktop control', () => {
       settings: {
         cloudStreamingEnabled: false,
         manualCloudControlEnabled: false,
-        redactionMode: 'balanced',
-        privateRegions: [],
         updatedAt: null,
       },
       auditLogPath: '/tmp/xero/desktop-control/audit.jsonl',
@@ -256,8 +254,6 @@ function makeDesktopControlStatus(overrides: Record<string, unknown> = {}) {
     settings: {
       cloudStreamingEnabled: false,
       manualCloudControlEnabled: false,
-      redactionMode: 'balanced',
-      privateRegions: [],
       updatedAt: null,
     },
     auditLogPath: '/tmp/xero/desktop-control/audit.jsonl',

@@ -4,6 +4,8 @@ const ICON_CANVAS_SIZE = 512;
 const ICON_TILE_INSET = 30;
 const ICON_TILE_RADIUS = 112;
 const LOGO_VIEWBOX_SIZE = 455;
+const ICON_LOGO_SCALE = ICON_CANVAS_SIZE / LOGO_VIEWBOX_SIZE;
+const MASKABLE_ICON_LOGO_SCALE = 0.46;
 
 const LOGO_PATHS = {
 	primaryBottomRight:
@@ -124,7 +126,7 @@ export function createCloudThemeIconDataUrl(
 		ctx.fill();
 	}
 
-	const logoScale = maskable ? 0.46 : 0.5;
+	const logoScale = maskable ? MASKABLE_ICON_LOGO_SCALE : ICON_LOGO_SCALE;
 	const logoSize = LOGO_VIEWBOX_SIZE * logoScale;
 	const offset = (ICON_CANVAS_SIZE - logoSize) / 2;
 

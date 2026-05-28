@@ -343,7 +343,7 @@ export function XeroShell({
   const showProjectActions = Boolean(projectId && trimmedProjectName)
   const hasStartTargets = projectStartTargets.length > 0
   const playButtonClass = cn(
-    "titlebar-no-drag pointer-events-auto flex h-5 w-5 shrink-0 items-center justify-center rounded text-[10px] transition-colors",
+    "titlebar-no-drag pointer-events-auto flex size-[18px] shrink-0 items-center justify-center rounded text-[10px] transition-colors",
     projectRunning
       ? "bg-warning/15 text-warning hover:bg-warning/25"
       : hasStartTargets
@@ -358,9 +358,9 @@ export function XeroShell({
         ? `Run ${projectStartTargets[0].name}`
         : "Run project"
   const playIcon = projectRunning ? (
-    <Square className="h-3 w-3 fill-current" />
+    <Square className="size-2.5 fill-current" />
   ) : (
-    <Play className="h-3 w-3 fill-current" />
+    <Play className="size-2.5 fill-current" />
   )
   const directClick = (event: React.MouseEvent) => {
     event.stopPropagation()
@@ -441,6 +441,9 @@ export function XeroShell({
     )
   ) : null
 
+  const projectNameClassName =
+    "titlebar-no-drag pointer-events-auto min-w-0 truncate text-[13px] font-medium tracking-[-0.01em] text-foreground/75"
+
   const ProjectName = trimmedProjectName ? (
     showProjectActions ? (
       <ProjectContextMenu
@@ -455,37 +458,34 @@ export function XeroShell({
         }}
       >
         <span
-          className="titlebar-no-drag pointer-events-auto min-w-0 truncate text-[13px] font-medium tracking-[-0.01em] text-foreground/75"
+          className={projectNameClassName}
           data-titlebar-no-drag="true"
         >
           {trimmedProjectName}
         </span>
       </ProjectContextMenu>
     ) : (
-      <span className="min-w-0 truncate text-[13px] font-medium tracking-[-0.01em] text-foreground/75">
+      <span className={projectNameClassName} data-titlebar-no-drag="true">
         {trimmedProjectName}
       </span>
     )
   ) : null
 
-  const Logo = (
-    <div className="flex min-w-0 items-center gap-2">
-      <AppLogo className="h-3 w-3 shrink-0" />
-      <span className="shrink-0 text-[13px] font-semibold tracking-[-0.01em] text-foreground/90">Xero</span>
-      {trimmedProjectName ? (
-        <>
-          <span
-            aria-hidden="true"
-            className="shrink-0 text-[13px] font-light text-muted-foreground/40"
-          >
-            /
-          </span>
-          {ProjectName}
-          {PlayPauseBtn}
-        </>
-      ) : null}
+  const BrandLogo = (
+    <div className="flex size-6 shrink-0 items-center justify-center">
+      <AppLogo aria-label="Xero" className="size-[15px]" />
     </div>
   )
+
+  const CenterProjectTitle = trimmedProjectName ? (
+    <div
+      className="pointer-events-none absolute left-1/2 top-1/2 z-10 flex max-w-[min(44vw,28rem)] -translate-x-1/2 -translate-y-1/2 items-center justify-center gap-2"
+      data-titlebar-project-title="true"
+    >
+      {ProjectName}
+      {PlayPauseBtn}
+    </div>
+  ) : null
 
   const NavButtons = (
     <nav
@@ -498,7 +498,7 @@ export function XeroShell({
         <button
           key={id}
           className={cn(
-            "rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors",
+            "rounded-md px-3 py-1 text-[13px] font-medium transition-colors",
             activeView === id
               ? "bg-secondary text-foreground"
               : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
@@ -540,7 +540,7 @@ export function XeroShell({
 
   const titlebarToolButtonClassName = (open: boolean, tone?: "warning") =>
     cn(
-      "size-7 rounded-md text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
+      "size-[26px] rounded-md text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
       open && "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary",
       tone === "warning" && "text-warning/90 hover:bg-warning/15 hover:text-warning",
     )
@@ -558,7 +558,7 @@ export function XeroShell({
             type="button"
             variant="ghost"
           >
-            <AppleLogoIcon className="size-5" />
+            <AppleLogoIcon className="size-[18px]" />
           </Button>
         </TooltipTrigger>
         <TooltipContent side="bottom" sideOffset={8}>Install Xcode</TooltipContent>
@@ -576,7 +576,7 @@ export function XeroShell({
             type="button"
             variant="ghost"
           >
-            <AppleLogoIcon className="size-5" />
+            <AppleLogoIcon className="size-[18px]" />
           </Button>
         </TooltipTrigger>
         <TooltipContent side="bottom" sideOffset={8}>iOS Simulator</TooltipContent>
@@ -599,7 +599,7 @@ export function XeroShell({
           type="button"
           variant="ghost"
         >
-          <Globe className="h-4 w-4" />
+          <Globe className="size-[15px]" />
         </Button>
       </TooltipTrigger>
       <TooltipContent side="bottom" sideOffset={8}>Browser</TooltipContent>
@@ -619,7 +619,7 @@ export function XeroShell({
           type="button"
           variant="ghost"
         >
-          <SolanaLogoIcon className="size-4" mono />
+          <SolanaLogoIcon className="size-[15px]" mono />
         </Button>
       </TooltipTrigger>
       <TooltipContent side="bottom" sideOffset={8}>Solana Workbench</TooltipContent>
@@ -641,7 +641,7 @@ export function XeroShell({
           type="button"
           variant="ghost"
         >
-          <TerminalSquare className="h-4 w-4" />
+          <TerminalSquare className="size-[15px]" />
         </Button>
       </TooltipTrigger>
       <TooltipContent side="bottom" sideOffset={8}>Terminal</TooltipContent>
@@ -654,7 +654,7 @@ export function XeroShell({
       aria-label={vcsOpen ? "Close source control" : "Open source control"}
       aria-pressed={vcsOpen}
       className={cn(
-        "flex items-center gap-1.5 rounded-md px-1.5 py-1 transition-colors",
+        "flex items-center gap-1.5 rounded-md px-1.5 py-[3px] transition-colors",
         vcsOpen
           ? "bg-primary/15 text-primary"
           : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
@@ -669,7 +669,7 @@ export function XeroShell({
       }
       type="button"
     >
-      <GitCompareArrows className="h-4 w-4" />
+      <GitCompareArrows className="size-[15px]" />
       {hasVcsLineChanges ? (
         <span
           aria-hidden="true"
@@ -694,7 +694,7 @@ export function XeroShell({
       aria-label={workflowsOpen ? "Close workflows" : "Open workflows"}
       aria-pressed={workflowsOpen}
       className={cn(
-        "rounded-md p-1.5 transition-colors",
+        "rounded-md p-[5px] transition-colors",
         workflowsOpen
           ? "bg-primary/15 text-primary"
           : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
@@ -705,7 +705,7 @@ export function XeroShell({
       title="Workflows"
       type="button"
     >
-      <WorkflowIcon className="h-4 w-4" />
+      <WorkflowIcon className="size-[15px]" />
     </button>
   )
 
@@ -714,7 +714,7 @@ export function XeroShell({
       aria-label={agentDockOpen ? "Close agent dock" : "Open agent dock"}
       aria-pressed={agentDockOpen}
       className={cn(
-        "rounded-md p-1.5 transition-colors",
+        "rounded-md p-[5px] transition-colors",
         agentDockDisabled && "cursor-not-allowed opacity-40",
         agentDockOpen
           ? "bg-primary/15 text-primary"
@@ -727,7 +727,7 @@ export function XeroShell({
       title={agentDockDisabled ? "Already in Agent view" : "Agent"}
       type="button"
     >
-      <Bot className="h-[17px] w-[17px]" />
+      <Bot className="size-4" />
     </button>
   )
 
@@ -751,7 +751,7 @@ export function XeroShell({
           type="button"
           variant="ghost"
         >
-          <Monitor className="h-4 w-4" />
+          <Monitor className="size-[15px]" />
         </Button>
       </TooltipTrigger>
       <TooltipContent side="bottom" sideOffset={8}>Computer Use</TooltipContent>
@@ -771,42 +771,41 @@ export function XeroShell({
   // macOS traffic lights
   // ------------------------------------------------------------------
 
-  const TrafficLights = (
+  const windowControlDotClassNames: Record<WindowAction, string> = {
+    close: "size-3 rounded-full bg-[#ec6a5e] transition-opacity hover:opacity-85 disabled:opacity-45",
+    minimize: "size-3 rounded-full bg-[#f5bf4f] transition-opacity hover:opacity-85 disabled:opacity-45",
+    "toggle-maximize": "size-3 rounded-full bg-[#61c554] transition-opacity hover:opacity-85 disabled:opacity-45",
+  }
+  const windowControlLabels: Record<WindowAction, string> = {
+    close: "Close window",
+    minimize: "Minimize window",
+    "toggle-maximize": "Toggle maximize",
+  }
+  const renderWindowControlDots = (actions: readonly WindowAction[], className?: string) => (
     <div
-      className="titlebar-no-drag mr-5 flex items-center gap-2"
+      className={cn("titlebar-no-drag flex items-center gap-2", className)}
       data-titlebar-no-drag="true"
       onDoubleClick={stopTitlebarMouseEventPropagation}
       onMouseDown={stopTitlebarMouseEventPropagation}
     >
-      <button
-        aria-label="Close window"
-        className="h-3 w-3 rounded-full bg-[#ec6a5e] transition-opacity hover:opacity-85 disabled:opacity-45"
-        disabled={!desktopRuntime}
-        onClick={() => void handleWindowAction("close")}
-        type="button"
-      />
-      <button
-        aria-label="Minimize window"
-        className="h-3 w-3 rounded-full bg-[#f5bf4f] transition-opacity hover:opacity-85 disabled:opacity-45"
-        disabled={!desktopRuntime}
-        onClick={() => void handleWindowAction("minimize")}
-        type="button"
-      />
-      <button
-        aria-label="Toggle maximize"
-        className="h-3 w-3 rounded-full bg-[#61c554] transition-opacity hover:opacity-85 disabled:opacity-45"
-        disabled={!desktopRuntime}
-        onClick={() => void handleWindowAction("toggle-maximize")}
-        type="button"
-      />
+      {actions.map((action) => (
+        <button
+          key={action}
+          aria-label={windowControlLabels[action]}
+          className={windowControlDotClassNames[action]}
+          disabled={!desktopRuntime}
+          onClick={() => void handleWindowAction(action)}
+          type="button"
+        />
+      ))}
     </div>
   )
+  const TrafficLights = renderWindowControlDots(["close", "minimize", "toggle-maximize"], "mr-5")
+  const LinuxTrafficLights = renderWindowControlDots(["minimize", "toggle-maximize", "close"], "ml-2 mr-3 gap-2.5")
 
   // ------------------------------------------------------------------
-  // Windows / Linux rectangular controls
+  // Windows rectangular controls
   // ------------------------------------------------------------------
-
-  const isLinux = platform === "linux"
 
   const RectControls = (
     <div
@@ -817,39 +816,30 @@ export function XeroShell({
     >
       <button
         aria-label="Minimize window"
-        className={cn(
-          "flex h-11 w-11 items-center justify-center text-foreground/60 transition-colors hover:bg-secondary/70 hover:text-foreground disabled:opacity-40",
-          isLinux && "rounded-sm mx-0.5",
-        )}
+        className="flex h-10 w-9 items-center justify-center text-foreground/60 transition-colors hover:bg-secondary/70 hover:text-foreground disabled:opacity-40"
         disabled={!desktopRuntime}
         onClick={() => void handleWindowAction("minimize")}
         type="button"
       >
-        <Minus className="h-3.5 w-3.5" />
+        <Minus className="size-3.5" />
       </button>
       <button
         aria-label="Toggle maximize"
-        className={cn(
-          "flex h-11 w-11 items-center justify-center text-foreground/60 transition-colors hover:bg-secondary/70 hover:text-foreground disabled:opacity-40",
-          isLinux && "rounded-sm mx-0.5",
-        )}
+        className="flex h-10 w-9 items-center justify-center text-foreground/60 transition-colors hover:bg-secondary/70 hover:text-foreground disabled:opacity-40"
         disabled={!desktopRuntime}
         onClick={() => void handleWindowAction("toggle-maximize")}
         type="button"
       >
-        <Maximize2 className="h-3 w-3" />
+        <Maximize2 className="size-3" />
       </button>
       <button
         aria-label="Close window"
-        className={cn(
-          "flex h-11 w-11 items-center justify-center text-foreground/60 transition-colors hover:bg-destructive hover:text-white disabled:opacity-40",
-          isLinux && "rounded-sm mx-0.5",
-        )}
+        className="flex h-10 w-9 items-center justify-center text-foreground/60 transition-colors hover:bg-destructive hover:text-white disabled:opacity-40"
         disabled={!desktopRuntime}
         onClick={() => void handleWindowAction("close")}
         type="button"
       >
-        <X className="h-3.5 w-3.5" />
+        <X className="size-3.5" />
       </button>
     </div>
   )
@@ -861,27 +851,24 @@ export function XeroShell({
   let titlebar: React.ReactNode
 
   if (platform === "macos") {
-    // macOS: [traffic-lights] [nav] ... (centered logo) ... [vcs] [workflows] [agent] [ios] [browser] [solana]
+    // macOS: [traffic-lights] [logo] [nav] ... (centered project) ... [vcs] [workflows] [agent] [ios] [browser] [solana]
     titlebar = (
-      <header className="relative flex h-11 items-center border-b border-border bg-sidebar shrink-0 pl-3 pr-3">
+      <header className="relative flex h-10 items-center border-b border-border bg-sidebar shrink-0 pl-3 pr-3">
         {TrafficLights}
-        {!chromeOnly ? (
-          <div
-            className="titlebar-no-drag mr-3 flex items-center shrink-0"
-            data-titlebar-no-drag="true"
-            onDoubleClick={stopTitlebarMouseEventPropagation}
-            onMouseDown={stopTitlebarMouseEventPropagation}
-          >
-            {NavButtons}
-          </div>
-        ) : null}
-        {DragSpacer}
-        <div className="pointer-events-none absolute left-1/2 top-1/2 flex max-w-[40vw] -translate-x-1/2 -translate-y-1/2 items-center">
-          {Logo}
+        <div
+          className="titlebar-no-drag mr-3 flex shrink-0 items-center gap-3"
+          data-titlebar-no-drag="true"
+          onDoubleClick={stopTitlebarMouseEventPropagation}
+          onMouseDown={stopTitlebarMouseEventPropagation}
+        >
+          {BrandLogo}
+          {!chromeOnly ? NavButtons : null}
         </div>
+        {DragSpacer}
+        {CenterProjectTitle}
         {!chromeOnly || ComputerUseBtn ? (
           <div
-            className="titlebar-no-drag flex items-center gap-2 shrink-0"
+            className="titlebar-no-drag flex shrink-0 items-center gap-2.5"
             data-titlebar-no-drag="true"
             onDoubleClick={stopTitlebarMouseEventPropagation}
             onMouseDown={stopTitlebarMouseEventPropagation}
@@ -899,24 +886,25 @@ export function XeroShell({
       </header>
     )
   } else {
-    // Windows / Linux: [logo] [|] [nav] <- drag zone -> [vcs] [workflows] [agent] [browser] [solana] [|] [min][max][close]
+    // Windows / Linux: [logo] [|] [nav] <- centered project over drag zone -> [vcs] [workflows] [agent] [browser] [solana] [|] [min][max][close]
     titlebar = (
-      <header className="flex h-11 items-center border-b border-border bg-sidebar shrink-0 pl-3">
+      <header className="relative flex h-10 items-center border-b border-border bg-sidebar shrink-0 pl-3">
         <div
           className="titlebar-no-drag flex items-center shrink-0"
           data-titlebar-no-drag="true"
           onDoubleClick={stopTitlebarMouseEventPropagation}
           onMouseDown={stopTitlebarMouseEventPropagation}
         >
-          {Logo}
+          {BrandLogo}
           {!chromeOnly ? (
             <>
-              <div className="mx-4 h-4 w-px bg-border" />
+              <div className="mx-3 h-4 w-px bg-border" />
               {NavButtons}
             </>
           ) : null}
         </div>
         {DragSpacer}
+        {CenterProjectTitle}
         <div
           className="titlebar-no-drag flex items-center shrink-0"
           data-titlebar-no-drag="true"
@@ -925,17 +913,19 @@ export function XeroShell({
         >
           {!chromeOnly || ComputerUseBtn ? (
             <>
-              {!chromeOnly ? VcsBtn : null}
-              {!chromeOnly ? WorkflowsBtn : null}
-              {ComputerUseBtn}
-              {!chromeOnly ? AgentDockBtn : null}
-              {!chromeOnly ? BrowserToolBtn : null}
-              {!chromeOnly ? SolanaToolBtn : null}
-              {!chromeOnly ? TerminalToolBtn : null}
+              <div className="flex items-center gap-2.5">
+                {!chromeOnly ? VcsBtn : null}
+                {!chromeOnly ? WorkflowsBtn : null}
+                {ComputerUseBtn}
+                {!chromeOnly ? AgentDockBtn : null}
+                {!chromeOnly ? BrowserToolBtn : null}
+                {!chromeOnly ? SolanaToolBtn : null}
+                {!chromeOnly ? TerminalToolBtn : null}
+              </div>
               <div className="mx-2 h-4 w-px bg-border" />
             </>
           ) : null}
-          {RectControls}
+          {platform === "linux" ? LinuxTrafficLights : RectControls}
         </div>
       </header>
     )

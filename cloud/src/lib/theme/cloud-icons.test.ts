@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	applyCloudThemeIconDataUrls,
 	type CloudThemeIconDataUrls,
+	createCloudThemeIconDataUrl,
 	createCloudThemeManifest,
 } from "./cloud-icons";
 
@@ -21,6 +22,8 @@ const ICON_DATA_URLS: CloudThemeIconDataUrls = {
 
 afterEach(() => {
 	document.head.innerHTML = "";
+	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
 });
 
 describe("cloud themed icons", () => {
@@ -103,4 +106,91 @@ describe("cloud themed icons", () => {
 			`"theme_color": "${theme.colors.background}"`,
 		);
 	});
+
+	it("renders non-maskable themed icons at the full static favicon mark size", () => {
+		const theme =
+			THEMES.find((candidate) => candidate.id === "midnight") ?? THEMES[0];
+		const { drawCalls, toDataURL } = installCanvasMock();
+
+		createCloudThemeIconDataUrl(theme, { size: 512 });
+
+		const scaleCalls = drawCalls.filter((call) => call.name === "scale");
+		const translateCalls = drawCalls.filter(
+			(call) => call.name === "translate",
+		);
+		expect(scaleCalls[0]?.args).toEqual([1, 1]);
+		expect(scaleCalls[1]?.args[0]).toBeCloseTo(512 / 455, 6);
+		expect(scaleCalls[1]?.args[1]).toBeCloseTo(512 / 455, 6);
+		expect(translateCalls[0]?.args[0]).toBeCloseTo(0, 6);
+		expect(translateCalls[0]?.args[1]).toBeCloseTo(0, 6);
+		expect(toDataURL).toHaveBeenCalledWith("image/png");
+	});
+
+	it("keeps maskable themed icons inside the install safe area", () => {
+		const theme =
+			THEMES.find((candidate) => candidate.id === "midnight") ?? THEMES[0];
+		const { drawCalls } = installCanvasMock();
+
+		createCloudThemeIconDataUrl(theme, { size: 512, maskable: true });
+
+		const scaleCalls = drawCalls.filter((call) => call.name === "scale");
+		const translateCalls = drawCalls.filter(
+			(call) => call.name === "translate",
+		);
+		expect(scaleCalls[1]?.args[0]).toBeCloseTo(0.46, 6);
+		expect(scaleCalls[1]?.args[1]).toBeCloseTo(0.46, 6);
+		expect(translateCalls[0]?.args[0]).toBeCloseTo((512 - 455 * 0.46) / 2, 6);
+		expect(translateCalls[0]?.args[1]).toBeCloseTo((512 - 455 * 0.46) / 2, 6);
+	});
 });
+
+interface DrawCall {
+	name: string;
+	args: number[];
+}
+
+function installCanvasMock(): {
+	drawCalls: DrawCall[];
+	toDataURL: ReturnType<typeof vi.fn>;
+} {
+	const drawCalls: DrawCall[] = [];
+	const record = (name: string, args: number[] = []) => {
+		drawCalls.push({ name, args });
+	};
+	const ctx = {
+		clearRect: vi.fn((...args: number[]) => record("clearRect", args)),
+		save: vi.fn(() => record("save")),
+		scale: vi.fn((x: number, y: number) => record("scale", [x, y])),
+		fillRect: vi.fn((...args: number[]) => record("fillRect", args)),
+		translate: vi.fn((x: number, y: number) => record("translate", [x, y])),
+		fill: vi.fn(() => record("fill")),
+		beginPath: vi.fn(() => record("beginPath")),
+		moveTo: vi.fn((x: number, y: number) => record("moveTo", [x, y])),
+		lineTo: vi.fn((x: number, y: number) => record("lineTo", [x, y])),
+		quadraticCurveTo: vi.fn((...args: number[]) =>
+			record("quadraticCurveTo", args),
+		),
+		closePath: vi.fn(() => record("closePath")),
+		restore: vi.fn(() => record("restore")),
+		fillStyle: "",
+		globalAlpha: 1,
+	} as unknown as CanvasRenderingContext2D;
+	const toDataURL = vi.fn(() => "data:image/png;base64,themed");
+	const canvas = {
+		width: 0,
+		height: 0,
+		getContext: vi.fn(() => ctx),
+		toDataURL,
+	} as unknown as HTMLCanvasElement;
+	const originalCreateElement = document.createElement.bind(document);
+
+	vi.spyOn(document, "createElement").mockImplementation(
+		(tagName: string, options?: ElementCreationOptions) => {
+			if (tagName === "canvas") return canvas;
+			return originalCreateElement(tagName, options);
+		},
+	);
+	vi.stubGlobal("Path2D", class FakePath2D {});
+
+	return { drawCalls, toDataURL };
+}
