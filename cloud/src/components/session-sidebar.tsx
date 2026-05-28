@@ -1,4 +1,5 @@
 import { Link } from "@tanstack/react-router";
+import { ResizableSidebar } from "@xero/ui/components/resizable-sidebar";
 import { cn } from "@xero/ui/lib/utils";
 
 import { BrandLogo } from "#/components/brand-logo";
@@ -10,6 +11,11 @@ import type {
 } from "#/lib/relay/session-store";
 
 import { SessionListPanel } from "./session-list-panel";
+
+const SESSIONS_SIDEBAR_STORAGE_KEY = "xero.cloud.sessionsSidebar.width.v1";
+const SESSIONS_SIDEBAR_DEFAULT_WIDTH = 276;
+const SESSIONS_SIDEBAR_MIN_WIDTH = 232;
+const SESSIONS_SIDEBAR_MAX_WIDTH = 520;
 
 interface SessionSidebarProps {
 	session: CloudSession;
@@ -44,10 +50,17 @@ export function SessionSidebar({
 	className,
 }: SessionSidebarProps) {
 	return (
-		<aside
+		<ResizableSidebar
 			aria-label="Desktop sessions"
+			defaultWidth={SESSIONS_SIDEBAR_DEFAULT_WIDTH}
+			maxWidth={SESSIONS_SIDEBAR_MAX_WIDTH}
+			minWidth={SESSIONS_SIDEBAR_MIN_WIDTH}
+			resizable
+			resizeEdge="right"
+			resizeLabel="Resize sessions sidebar"
+			widthStorageKey={SESSIONS_SIDEBAR_STORAGE_KEY}
 			className={cn(
-				"relative hidden h-dvh w-[276px] shrink-0 flex-col gap-0 border-r border-border/70 bg-sidebar lg:flex",
+				"hidden gap-0 border-r border-border/70 lg:flex",
 				className,
 			)}
 		>
@@ -77,6 +90,6 @@ export function SessionSidebar({
 					</Link>
 				}
 			/>
-		</aside>
+		</ResizableSidebar>
 	);
 }

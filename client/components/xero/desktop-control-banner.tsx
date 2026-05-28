@@ -101,9 +101,11 @@ export function DesktopControlBanner({ adapter, onOpenSettings }: DesktopControl
               {activeState.badge}
             </Badge>
           </div>
-          <AlertDescription className="mt-0.5 truncate text-[12px] leading-[1.45] text-muted-foreground">
-            {error ?? activeState.description}
-          </AlertDescription>
+          {error ? (
+            <AlertDescription className="mt-0.5 truncate text-[12px] leading-[1.45] text-muted-foreground">
+              {error}
+            </AlertDescription>
+          ) : null}
         </div>
         {onOpenSettings ? (
           <Button
@@ -137,7 +139,6 @@ function getActiveDesktopControlState(status: DesktopControlStatusDto | null):
       kind: 'manual_control' | 'agent_control' | 'stream'
       title: string
       badge: string
-      description: string
     }
   | null {
   if (!status) {
@@ -149,7 +150,6 @@ function getActiveDesktopControlState(status: DesktopControlStatusDto | null):
       kind: 'manual_control',
       title: 'Remote desktop control active',
       badge: 'manual control',
-      description: lockDescription(status),
     }
   }
 
@@ -158,7 +158,6 @@ function getActiveDesktopControlState(status: DesktopControlStatusDto | null):
       kind: 'agent_control',
       title: 'Computer Use desktop control active',
       badge: 'agent',
-      description: lockDescription(status),
     }
   }
 
@@ -170,17 +169,8 @@ function getActiveDesktopControlState(status: DesktopControlStatusDto | null):
       kind: 'stream',
       title: 'Desktop stream active',
       badge: status.stream.transport.replace(/_/g, ' '),
-      description: status.stream.message,
     }
   }
 
   return null
-}
-
-function lockDescription(status: DesktopControlStatusDto): string {
-  const streamSuffix =
-    ACTIVE_STREAM_STATES.has(status.stream.status) && status.stream.transport !== 'unavailable'
-      ? ` Stream: ${status.stream.status.replace(/_/g, ' ')}.`
-      : ''
-  return `Session ${status.controllerLock?.sessionId ?? 'unknown'} holds the desktop controller lock.${streamSuffix}`
 }

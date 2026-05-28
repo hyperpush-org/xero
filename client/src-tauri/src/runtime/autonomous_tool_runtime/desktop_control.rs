@@ -226,6 +226,10 @@ pub struct AutonomousDesktopControlRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub y: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_height: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_x: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_y: Option<i32>,
@@ -493,6 +497,8 @@ pub struct AutonomousDesktopCursorState {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousDesktopStreamState {
     pub stream_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_id: Option<String>,
     pub status: AutonomousDesktopStreamStatus,
     pub transport: AutonomousDesktopStreamTransport,
     pub signaling_channel: Option<String>,
@@ -884,6 +890,7 @@ impl From<DesktopSidecarStreamPayload> for AutonomousDesktopStreamState {
     fn from(payload: DesktopSidecarStreamPayload) -> Self {
         Self {
             stream_id: payload.stream_id,
+            display_id: payload.display_id,
             status: payload.status.into(),
             transport: payload.transport.into(),
             signaling_channel: payload.signaling_channel,
@@ -906,6 +913,7 @@ impl From<DesktopSidecarStreamPayload> for AutonomousDesktopStreamSidecarOutput 
     fn from(payload: DesktopSidecarStreamPayload) -> Self {
         let stream = AutonomousDesktopStreamState {
             stream_id: payload.stream_id,
+            display_id: payload.display_id,
             status: payload.status.into(),
             transport: payload.transport.into(),
             signaling_channel: payload.signaling_channel,
@@ -1178,7 +1186,7 @@ impl AutonomousToolRuntime {
             return Ok(desktop_result(AUTONOMOUS_TOOL_DESKTOP_CONTROL, output));
         }
 
-        let output = self.run_desktop_control(request, actor, policy)?;
+        let output = self.run_desktop_control(request, actor, policy, manual_control_lease_id)?;
         Ok(desktop_result(AUTONOMOUS_TOOL_DESKTOP_CONTROL, output))
     }
 
@@ -1300,21 +1308,7 @@ impl AutonomousToolRuntime {
             Some(manual_control_id),
         ) {
             Ok(lock) => {
-                if let Some(message) = local_user_takeover_message() {
-                    let local_lock = self.mark_local_user_takeover()?;
-                    output.status = AutonomousDesktopToolStatus::Failed;
-                    output.controller_lock = Some(local_lock);
-                    output.error = Some(desktop_error(
-                        "local_user_takeover",
-                        &message,
-                        true,
-                        true,
-                        "Wait for the local user to finish, then request manual control again.",
-                    ));
-                    output.message = message;
-                } else {
-                    output.controller_lock = Some(lock);
-                }
+                output.controller_lock = Some(lock);
             }
             Err(error) => {
                 output.status = AutonomousDesktopToolStatus::Denied;
@@ -1771,12 +1765,22 @@ impl AutonomousToolRuntime {
 
     fn run_desktop_control(
         &self,
-        request: AutonomousDesktopControlRequest,
+        mut request: AutonomousDesktopControlRequest,
         actor: AutonomousDesktopActor,
         policy: AutonomousDesktopPolicyTrace,
+        manual_control_lease_id: Option<&str>,
     ) -> CommandResult<AutonomousDesktopToolOutput> {
-        let continuing_control = desktop_lock_active_for_actor(&self.desktop_control, actor)?;
-        let lock = self.acquire_desktop_lock(actor)?;
+        let continuing_control = if actor == AutonomousDesktopActor::CloudManualControl {
+            if let Some(lease_id) = manual_control_lease_id {
+                desktop_lock_active_for_actor_and_lease(&self.desktop_control, actor, lease_id)?
+            } else {
+                desktop_lock_active_for_actor(&self.desktop_control, actor)?
+            }
+        } else {
+            desktop_lock_active_for_actor(&self.desktop_control, actor)?
+        };
+        let lock =
+            self.acquire_desktop_lock_for(actor, manual_control_lease_id.map(ToOwned::to_owned))?;
         let mut output = self.desktop_base_output(
             AUTONOMOUS_TOOL_DESKTOP_CONTROL,
             request.action.as_str(),
@@ -1786,7 +1790,7 @@ impl AutonomousToolRuntime {
         )?;
         output.controller_lock = Some(lock);
 
-        if continuing_control && actor != AutonomousDesktopActor::LocalUser {
+        if continuing_control && should_pause_for_local_user_takeover(actor) {
             if let Some(message) = local_user_takeover_message() {
                 let local_lock = self.mark_local_user_takeover()?;
                 output.controller_lock = Some(local_lock);
@@ -1804,6 +1808,8 @@ impl AutonomousToolRuntime {
                 return Ok(output);
             }
         }
+
+        normalize_desktop_control_request_for_active_stream(&mut request, &self.desktop_control);
 
         let execution = match request.action {
             AutonomousDesktopControlAction::CancelCurrentAction => {
@@ -2057,10 +2063,15 @@ impl AutonomousToolRuntime {
 
     fn run_desktop_stream(
         &self,
-        request: AutonomousDesktopStreamRequest,
+        mut request: AutonomousDesktopStreamRequest,
         policy: AutonomousDesktopPolicyTrace,
     ) -> CommandResult<AutonomousDesktopToolOutput> {
         let action = request.action.clone();
+        if matches!(action, AutonomousDesktopStreamAction::StreamStart)
+            && request.display_id.is_none()
+        {
+            request.display_id = default_desktop_stream_display_id();
+        }
         let mut output = self.desktop_base_output(
             AUTONOMOUS_TOOL_DESKTOP_STREAM,
             request.action.as_str(),
@@ -2424,13 +2435,6 @@ impl AutonomousToolRuntime {
             )),
             message: message.into(),
         })
-    }
-
-    fn acquire_desktop_lock(
-        &self,
-        actor: AutonomousDesktopActor,
-    ) -> CommandResult<AutonomousDesktopControllerLock> {
-        self.acquire_desktop_lock_for(actor, None)
     }
 
     fn acquire_desktop_lock_for(
@@ -2921,6 +2925,13 @@ fn validate_desktop_control_request(
     }
     for segment in &request.menu_path {
         validate_non_empty(segment, "menuPath")?;
+    }
+    match (request.source_width, request.source_height) {
+        (Some(0), _) | (_, Some(0)) => {
+            return Err(CommandError::invalid_request("sourceWidth/sourceHeight"));
+        }
+        (Some(_), Some(_)) | (None, None) => {}
+        _ => return Err(CommandError::invalid_request("sourceWidth/sourceHeight")),
     }
 
     match request.action {
@@ -4909,6 +4920,13 @@ fn local_user_takeover_message() -> Option<String> {
     })
 }
 
+fn should_pause_for_local_user_takeover(actor: AutonomousDesktopActor) -> bool {
+    !matches!(
+        actor,
+        AutonomousDesktopActor::LocalUser | AutonomousDesktopActor::CloudManualControl
+    )
+}
+
 #[cfg(target_os = "macos")]
 fn local_user_recent_input(threshold: Duration) -> bool {
     use core_graphics::{event::CGEventType, event_source::CGEventSourceStateID};
@@ -4947,6 +4965,7 @@ fn local_user_recent_input(_threshold: Duration) -> bool {
 fn default_stream_state() -> AutonomousDesktopStreamState {
     AutonomousDesktopStreamState {
         stream_id: None,
+        display_id: None,
         status: AutonomousDesktopStreamStatus::Idle,
         transport: AutonomousDesktopStreamTransport::Unavailable,
         signaling_channel: None,
@@ -5163,6 +5182,7 @@ fn degraded_stream_state(
     let profile = stream_quality_profile(quality);
     AutonomousDesktopStreamState {
         stream_id: Some(stream_id.into()),
+        display_id: request.display_id.clone(),
         status: AutonomousDesktopStreamStatus::Degraded,
         transport: AutonomousDesktopStreamTransport::ScreenshotFallback,
         signaling_channel: Some("computer_use_stream".into()),
@@ -5455,6 +5475,98 @@ fn sidecar_control_request(
         value: request.value.clone(),
         menu_path: request.menu_path.clone(),
     }
+}
+
+fn normalize_desktop_control_request_for_active_stream(
+    request: &mut AutonomousDesktopControlRequest,
+    state: &DesktopControlState,
+) {
+    let (Some(source_width), Some(source_height)) = (request.source_width, request.source_height)
+    else {
+        return;
+    };
+    if source_width == 0 || source_height == 0 {
+        return;
+    }
+    let Some(display) = desktop_control_target_display(request, state) else {
+        return;
+    };
+    if let (Some(x), Some(y)) = (request.x, request.y) {
+        let (mapped_x, mapped_y) =
+            map_source_point_to_display(x, y, source_width, source_height, &display);
+        request.x = Some(mapped_x);
+        request.y = Some(mapped_y);
+    }
+    if let (Some(to_x), Some(to_y)) = (request.to_x, request.to_y) {
+        let (mapped_x, mapped_y) =
+            map_source_point_to_display(to_x, to_y, source_width, source_height, &display);
+        request.to_x = Some(mapped_x);
+        request.to_y = Some(mapped_y);
+    }
+    if request.display_id.is_none() {
+        request.display_id = Some(display.display_id);
+    }
+}
+
+fn desktop_control_target_display(
+    request: &AutonomousDesktopControlRequest,
+    state: &DesktopControlState,
+) -> Option<AutonomousDesktopDisplay> {
+    let display_id = request.display_id.clone().or_else(|| {
+        current_desktop_stream(state)
+            .ok()
+            .and_then(|stream| stream.display_id)
+    });
+    let displays = desktop_displays().ok()?;
+    if let Some(display_id) = display_id.as_deref() {
+        if let Some(display) = displays
+            .iter()
+            .find(|display| display.display_id == display_id)
+        {
+            return Some(display.clone());
+        }
+    }
+    displays
+        .iter()
+        .find(|display| display.primary)
+        .or_else(|| displays.first())
+        .cloned()
+}
+
+fn default_desktop_stream_display_id() -> Option<String> {
+    let displays = desktop_displays().ok()?;
+    displays
+        .iter()
+        .find(|display| display.primary)
+        .or_else(|| displays.first())
+        .map(|display| display.display_id.clone())
+}
+
+fn map_source_point_to_display(
+    x: i32,
+    y: i32,
+    source_width: u32,
+    source_height: u32,
+    display: &AutonomousDesktopDisplay,
+) -> (i32, i32) {
+    let width = display.width.max(1);
+    let height = display.height.max(1);
+    let offset_x = map_source_axis_to_display_offset(x, source_width, width);
+    let offset_y = map_source_axis_to_display_offset(y, source_height, height);
+    (
+        display.x.saturating_add(offset_x),
+        display.y.saturating_add(offset_y),
+    )
+}
+
+fn map_source_axis_to_display_offset(value: i32, source_size: u32, display_size: u32) -> i32 {
+    let source_size = source_size.max(1) as f64;
+    let display_size = display_size.max(1);
+    let ratio = (value.max(0) as f64 / source_size).clamp(0.0, 1.0);
+    let offset = (ratio * display_size as f64).round() as u32;
+    offset
+        .min(display_size.saturating_sub(1))
+        .min(i32::MAX as u32) as i32
 }
 
 fn required_point(request: &AutonomousDesktopControlRequest) -> CommandResult<(i32, i32)> {
@@ -5943,6 +6055,8 @@ mod tests {
             element_id: None,
             x: None,
             y: None,
+            source_width: None,
+            source_height: None,
             to_x: None,
             to_y: None,
             delta_x: None,
@@ -5988,6 +6102,8 @@ mod tests {
             element_id: None,
             x: None,
             y: None,
+            source_width: None,
+            source_height: None,
             to_x: None,
             to_y: None,
             delta_x: None,
@@ -6078,9 +6194,10 @@ mod tests {
         let repo = tempdir().expect("tempdir");
         let runtime = AutonomousToolRuntime::new(repo.path()).expect("runtime");
         let _first = runtime
-            .acquire_desktop_lock(AutonomousDesktopActor::Agent)
+            .acquire_desktop_lock_for(AutonomousDesktopActor::Agent, None)
             .expect("first lock");
-        let second = runtime.acquire_desktop_lock(AutonomousDesktopActor::CloudManualControl);
+        let second =
+            runtime.acquire_desktop_lock_for(AutonomousDesktopActor::CloudManualControl, None);
         assert!(second.is_err());
     }
 
@@ -6237,6 +6354,8 @@ mod tests {
             element_id: None,
             x: Some(42),
             y: Some(64),
+            source_width: None,
+            source_height: None,
             to_x: None,
             to_y: None,
             delta_x: None,
@@ -6282,6 +6401,8 @@ mod tests {
             element_id: None,
             x: Some(42),
             y: Some(64),
+            source_width: None,
+            source_height: None,
             to_x: None,
             to_y: None,
             delta_x: None,
@@ -6328,6 +6449,51 @@ mod tests {
         assert!(current_desktop_lock(&runtime.desktop_control)
             .expect("current lock")
             .is_some());
+    }
+
+    #[test]
+    fn cloud_manual_input_preserves_matching_controller_lease() {
+        let repo = tempdir().expect("tempdir");
+        let runtime = AutonomousToolRuntime::new(repo.path()).expect("runtime");
+        runtime
+            .desktop_acquire_manual_control("manual-1", Some("test"))
+            .expect("manual lock");
+        let mut request =
+            desktop_control_request(AutonomousDesktopControlAction::CancelCurrentAction);
+        request.reason = Some("cloud_manual_control_input".into());
+
+        let result = runtime
+            .desktop_control_as_manual_control_with_operator_approval(request, "manual-1")
+            .expect("manual input result");
+        let AutonomousToolOutput::DesktopControl(output) = result.output else {
+            panic!("expected desktop control output");
+        };
+
+        assert_eq!(output.status, AutonomousDesktopToolStatus::Executed);
+        assert_eq!(
+            output
+                .controller_lock
+                .as_ref()
+                .and_then(|lock| lock.lease_id.as_deref()),
+            Some("manual-1")
+        );
+        assert!(output.error.is_none());
+        assert!(current_desktop_lock(&runtime.desktop_control)
+            .expect("current lock")
+            .is_none());
+    }
+
+    #[test]
+    fn cloud_manual_control_is_not_paused_by_local_takeover_gate() {
+        assert!(!should_pause_for_local_user_takeover(
+            AutonomousDesktopActor::CloudManualControl
+        ));
+        assert!(!should_pause_for_local_user_takeover(
+            AutonomousDesktopActor::LocalUser
+        ));
+        assert!(should_pause_for_local_user_takeover(
+            AutonomousDesktopActor::Agent
+        ));
     }
 
     #[test]
@@ -6423,6 +6589,7 @@ mod tests {
     fn sidecar_stream_payload_maps_to_runtime_state() {
         let state = AutonomousDesktopStreamState::from(DesktopSidecarStreamPayload {
             stream_id: Some("stream-1".into()),
+            display_id: Some("display-1".into()),
             status: DesktopSidecarStreamStatus::Live,
             transport: DesktopSidecarStreamTransport::WebRtc,
             signaling_channel: Some("computer_use_stream".into()),
@@ -6456,6 +6623,7 @@ mod tests {
 
         assert_eq!(state.transport, AutonomousDesktopStreamTransport::WebRtc);
         assert_eq!(state.status, AutonomousDesktopStreamStatus::Live);
+        assert_eq!(state.display_id.as_deref(), Some("display-1"));
         assert_eq!(state.quality, AutonomousDesktopStreamQuality::High);
         assert_eq!(
             state
@@ -6610,6 +6778,7 @@ mod tests {
             &runtime.desktop_control,
             AutonomousDesktopStreamState {
                 stream_id: Some("stream-1".into()),
+                display_id: Some("display-1".into()),
                 status: AutonomousDesktopStreamStatus::Live,
                 transport: AutonomousDesktopStreamTransport::WebRtc,
                 signaling_channel: Some("computer_use_stream".into()),
@@ -6837,6 +7006,8 @@ mod tests {
             element_id: Some("macos_ax:1:AXButton:10:20:30:40:10:20".into()),
             x: Some(10),
             y: Some(20),
+            source_width: None,
+            source_height: None,
             to_x: None,
             to_y: None,
             delta_x: None,
@@ -6871,6 +7042,30 @@ mod tests {
         assert_eq!(
             desktop_control_sidecar_operation(&request.action),
             Some(DesktopSidecarOperation::MouseClick)
+        );
+    }
+
+    #[test]
+    fn maps_scaled_stream_points_to_display_coordinates() {
+        let display = AutonomousDesktopDisplay {
+            display_id: "display-1".into(),
+            name: "Built-in Display".into(),
+            x: 0,
+            y: 0,
+            width: 1728,
+            height: 1117,
+            scale_factor: 2.0,
+            rotation: 0.0,
+            primary: true,
+        };
+
+        assert_eq!(
+            map_source_point_to_display(640, 360, 1280, 720, &display),
+            (864, 559)
+        );
+        assert_eq!(
+            map_source_point_to_display(1280, 720, 1280, 720, &display),
+            (1727, 1116)
         );
     }
 

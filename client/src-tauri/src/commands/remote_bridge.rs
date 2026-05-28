@@ -2126,6 +2126,10 @@ fn manual_control_input_request(
         element_id: payload_string(payload, &["elementId", "element_id"]).map(ToOwned::to_owned),
         x: payload_i32(payload, &["x"]),
         y: payload_i32(payload, &["y"]),
+        source_width: payload_u64(payload, &["sourceWidth", "source_width"])
+            .and_then(|value| u32::try_from(value).ok()),
+        source_height: payload_u64(payload, &["sourceHeight", "source_height"])
+            .and_then(|value| u32::try_from(value).ok()),
         to_x: payload_i32(payload, &["toX", "to_x"]),
         to_y: payload_i32(payload, &["toY", "to_y"]),
         delta_x: payload_i32(payload, &["deltaX", "delta_x"]),
@@ -3851,6 +3855,8 @@ mod tests {
             "action": "mouse_click",
             "x": 42,
             "y": 64,
+            "sourceWidth": 1280,
+            "sourceHeight": 720,
             "button": "right",
             "clicks": 1,
         }))
@@ -3859,6 +3865,8 @@ mod tests {
         assert_eq!(request.action, AutonomousDesktopControlAction::MouseClick);
         assert_eq!(request.x, Some(42));
         assert_eq!(request.y, Some(64));
+        assert_eq!(request.source_width, Some(1280));
+        assert_eq!(request.source_height, Some(720));
         assert_eq!(request.button, Some(AutonomousDesktopMouseButton::Right));
         assert_eq!(
             request.reason.as_deref(),

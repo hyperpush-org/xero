@@ -594,6 +594,8 @@ pub struct DesktopSidecarIceCandidate {
 pub struct DesktopSidecarStreamPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_id: Option<String>,
     pub status: DesktopSidecarStreamStatus,
     pub transport: DesktopSidecarStreamTransport,
     #[serde(default, skip_serializing_if = "Option::is_none")]

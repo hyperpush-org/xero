@@ -410,6 +410,7 @@ export function requestComputerUseManualControl(
 		computerId: string;
 		sessionId: string;
 		deviceId: string;
+		manualControlId?: string | null;
 		reason?: string | null;
 	} & StreamTokenOptions,
 ): void {
@@ -421,6 +422,7 @@ export function requestComputerUseManualControl(
 		device_id: options.deviceId,
 		kind: "computer_use_manual_control_request",
 		payload: {
+			manualControlId: options.manualControlId ?? null,
 			reason: options.reason ?? "cloud_manual_control",
 			...streamSecurityPayload(options),
 		},
@@ -486,6 +488,8 @@ export function sendComputerUseManualInput(
 			action: string;
 			x?: number;
 			y?: number;
+			sourceWidth?: number;
+			sourceHeight?: number;
 			deltaX?: number;
 			deltaY?: number;
 			button?: "left" | "middle" | "right";

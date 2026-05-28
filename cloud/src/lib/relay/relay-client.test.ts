@@ -7,6 +7,7 @@ import {
 	heartbeatComputerUseManualControl,
 	type InboundCommand,
 	pushInboundCommand,
+	requestComputerUseManualControl,
 	requestComputerUseStream,
 	requestComputerUseStreamKeyframe,
 	requestRunCancel,
@@ -14,6 +15,7 @@ import {
 	requestSessionSnapshot,
 	requestStartSession,
 	requestThemeSnapshot,
+	sendComputerUseManualInput,
 	sendComputerUseStreamIceCandidate,
 	setComputerUseStreamQuality,
 	stopComputerUseStream,
@@ -456,6 +458,80 @@ describe("pushInboundCommand", () => {
 				payload: {
 					manualControlId: "manual-1",
 					reason: "manual_cloud_control_heartbeat",
+					runId: "run-1",
+					streamToken: "stream-token-1",
+				},
+			}),
+		);
+	});
+
+	it("requests Computer Use manual control with a client lease id", () => {
+		const push = vi.fn();
+
+		requestComputerUseManualControl({ push } as never, {
+			computerId: "desktop-1",
+			sessionId: "session-1",
+			deviceId: "web-1",
+			manualControlId: "manual-web-1",
+			runId: "run-1",
+			streamToken: "stream-token-1",
+		});
+
+		expect(push).toHaveBeenCalledWith(
+			"frame",
+			expect.objectContaining({
+				computer_id: "desktop-1",
+				session_id: "session-1",
+				device_id: "web-1",
+				kind: "computer_use_manual_control_request",
+				payload: {
+					manualControlId: "manual-web-1",
+					reason: "cloud_manual_control",
+					runId: "run-1",
+					streamToken: "stream-token-1",
+				},
+			}),
+		);
+	});
+
+	it("sends manual pointer input with source frame dimensions", () => {
+		const push = vi.fn();
+
+		sendComputerUseManualInput({ push } as never, {
+			computerId: "desktop-1",
+			sessionId: "session-1",
+			deviceId: "web-1",
+			manualControlId: "manual-web-1",
+			runId: "run-1",
+			streamToken: "stream-token-1",
+			input: {
+				action: "mouse_click",
+				x: 640,
+				y: 360,
+				sourceWidth: 1280,
+				sourceHeight: 720,
+				button: "left",
+				clicks: 1,
+			},
+		});
+
+		expect(push).toHaveBeenCalledWith(
+			"frame",
+			expect.objectContaining({
+				computer_id: "desktop-1",
+				session_id: "session-1",
+				device_id: "web-1",
+				kind: "computer_use_manual_control_input",
+				payload: {
+					manualControlId: "manual-web-1",
+					reason: "cloud_manual_control_input",
+					action: "mouse_click",
+					x: 640,
+					y: 360,
+					sourceWidth: 1280,
+					sourceHeight: 720,
+					button: "left",
+					clicks: 1,
 					runId: "run-1",
 					streamToken: "stream-token-1",
 				},

@@ -176,6 +176,10 @@ const projects: RemoteProjectSummary[] = [
 ];
 
 beforeEach(() => {
+	cleanup();
+	document.body.innerHTML = "";
+	document.body.removeAttribute("style");
+	document.documentElement.removeAttribute("style");
 	Object.defineProperty(window, "innerWidth", {
 		configurable: true,
 		writable: true,
@@ -200,6 +204,26 @@ beforeEach(() => {
 		}),
 	});
 	Object.defineProperty(window, "scrollTo", {
+		writable: true,
+		value: vi.fn(),
+	});
+	Object.defineProperty(URL, "createObjectURL", {
+		configurable: true,
+		writable: true,
+		value: vi.fn(() => "blob:desktop-frame"),
+	});
+	Object.defineProperty(URL, "revokeObjectURL", {
+		configurable: true,
+		writable: true,
+		value: vi.fn(),
+	});
+	Object.defineProperty(HTMLElement.prototype, "setPointerCapture", {
+		configurable: true,
+		writable: true,
+		value: vi.fn(),
+	});
+	Object.defineProperty(HTMLElement.prototype, "releasePointerCapture", {
+		configurable: true,
 		writable: true,
 		value: vi.fn(),
 	});
@@ -423,6 +447,37 @@ describe.sequential("cloud sessions shell", () => {
 		expect(screen.getByLabelText("Desktop sessions")).toBe(sidebar);
 		expect(streamMock.accountHookMounts).toBe(1);
 		expect(streamMock.accountHookUnmounts).toBe(0);
+	});
+
+	it("resizes the desktop sessions sidebar from the right edge", async () => {
+		renderCloudRoute("/sessions/desktop-1/session-1");
+
+		const sidebar = await screen.findByLabelText("Desktop sessions");
+		expect(sidebar.getAttribute("style")).toContain("width: 276px");
+		const resizeHandle = within(sidebar).getByRole("separator", {
+			name: "Resize sessions sidebar",
+		});
+		expect(resizeHandle.getAttribute("aria-valuenow")).toBe("276");
+
+		fireEvent.pointerDown(resizeHandle, { button: 0, clientX: 276 });
+		fireEvent.pointerMove(window, { clientX: 360 });
+		fireEvent.pointerUp(window);
+
+		await waitFor(() => {
+			expect(sidebar.getAttribute("style")).toContain("width: 360px");
+		});
+		expect(
+			window.localStorage.getItem("xero.cloud.sessionsSidebar.width.v1"),
+		).toBe("360");
+
+		fireEvent.keyDown(resizeHandle, { key: "ArrowLeft", shiftKey: true });
+
+		await waitFor(() => {
+			expect(sidebar.getAttribute("style")).toContain("width: 328px");
+		});
+		expect(
+			window.localStorage.getItem("xero.cloud.sessionsSidebar.width.v1"),
+		).toBe("328");
 	});
 
 	it("keeps the shell visible while a new session request waits for the directory update", async () => {

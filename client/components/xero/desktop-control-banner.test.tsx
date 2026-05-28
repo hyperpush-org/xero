@@ -39,6 +39,7 @@ describe('DesktopControlBanner', () => {
     render(<DesktopControlBanner adapter={adapter} />)
 
     await screen.findByText('Remote desktop control active')
+    expect(screen.queryByText(/holds the desktop controller lock/i)).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
 
     await waitFor(() => expect(adapter.desktopControlStop).toHaveBeenCalledTimes(1))
@@ -68,9 +69,35 @@ describe('DesktopControlBanner', () => {
     render(<DesktopControlBanner adapter={adapter} onOpenSettings={onOpenSettings} />)
 
     await screen.findByText('Desktop stream active')
+    expect(screen.queryByText('Desktop stream is using fallback frames.')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
 
     expect(onOpenSettings).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops active WebRTC streams with native stream metadata', async () => {
+    const adapter = makeAdapter({
+      status: makeStatus({
+        stream: makeWebRtcStream({ status: 'live', message: 'Native stream is live.' }),
+      }),
+      stopStatus: makeStatus({
+        stream: makeWebRtcStream({
+          status: 'stopped',
+          message: 'Desktop stream stopped.',
+        }),
+      }),
+    })
+
+    render(<DesktopControlBanner adapter={adapter} />)
+
+    await screen.findByText('Desktop stream active')
+    expect(screen.queryByText('Native stream is live.')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
+
+    await waitFor(() => expect(adapter.desktopControlStop).toHaveBeenCalledTimes(1))
+    await waitFor(() =>
+      expect(screen.queryByText('Desktop stream active')).not.toBeInTheDocument(),
+    )
   })
 })
 
@@ -149,4 +176,38 @@ function makeStatus(overrides: Partial<DesktopControlStatusDto> = {}): DesktopCo
     updatedAt: '2026-05-26T12:00:00Z',
     ...overrides,
   }
+}
+
+function makeWebRtcStream(overrides: Partial<DesktopControlStatusDto['stream']> = {}) {
+  return {
+    streamId: 'stream-123',
+    displayId: 'display-1',
+    status: 'live',
+    transport: 'web_rtc',
+    signalingChannel: 'computer_use_stream',
+    quality: 'balanced',
+    maxWidth: 1280,
+    maxFrameRate: 30,
+    includeCursor: true,
+    metrics: {
+      captureBackend: 'screencapturekit',
+      encoderBackend: 'videotoolbox',
+      encoderHardware: true,
+      preferredCodec: 'video/H264',
+      captureFrameRate: 30,
+      captureDroppedFrames: 0,
+      encodeFrameRate: 30,
+      encodeLatencyMs: 4,
+      outboundBitrateBps: 2_500_000,
+      availableOutgoingBitrateBps: 5_000_000,
+      packetsSent: 120,
+      bytesSent: 512_000,
+      packetLoss: 0,
+      roundTripTimeMs: 12,
+      retransmits: 0,
+      keyframes: 2,
+    },
+    message: 'Native stream is live.',
+    ...overrides,
+  } satisfies DesktopControlStatusDto['stream']
 }

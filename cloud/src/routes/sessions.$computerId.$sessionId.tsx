@@ -863,6 +863,21 @@ const STREAM_STATUS_STATES = new Set<DesktopViewportState>([
 	"degraded",
 	"manual",
 ]);
+
+function createManualControlId(deviceId: string, sessionId: string): string {
+	const nonce = Math.random().toString(36).slice(2, 10);
+	const issuedAt = Date.now().toString(36);
+	return `manual_${shortClientToken(deviceId)}_${shortClientToken(sessionId)}_${issuedAt}_${nonce}`;
+}
+
+function shortClientToken(value: string): string {
+	let hash = 0;
+	for (let index = 0; index < value.length; index += 1) {
+		hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+	}
+	return hash.toString(36);
+}
+
 const DESKTOP_STREAM_QUALITY_ORDER: DesktopStreamQuality[] = [
 	"low",
 	"balanced",
@@ -888,6 +903,7 @@ const DESKTOP_TOOLBAR_BUTTON_CLASS =
 	"h-7 gap-1 rounded-md border border-transparent bg-transparent px-2 text-[12px] font-medium text-muted-foreground shadow-none hover:border-border/70 hover:bg-muted/70 hover:text-foreground disabled:opacity-35";
 const DESKTOP_TOOLBAR_DANGER_BUTTON_CLASS =
 	"h-7 gap-1 rounded-md border border-red-500/30 bg-red-500/10 px-2 text-[12px] font-medium text-red-200 shadow-none hover:border-red-400/50 hover:bg-red-500/15 hover:text-red-100 disabled:opacity-35";
+const DESKTOP_CLICK_RIPPLE_MS = 560;
 
 interface DesktopControlBarPosition {
 	x: number;
@@ -897,6 +913,64 @@ interface DesktopControlBarPosition {
 interface DesktopSurfaceSize {
 	height: number;
 	width: number;
+}
+
+interface DesktopInputPoint {
+	x: number;
+	y: number;
+	sourceWidth: number;
+	sourceHeight: number;
+}
+
+interface DesktopMediaContentRect {
+	height: number;
+	left: number;
+	top: number;
+	width: number;
+}
+
+interface DesktopClickRipple {
+	button: "primary" | "secondary";
+	id: number;
+	x: number;
+	y: number;
+}
+
+function desktopMediaContentRect(
+	rect: DOMRect,
+	sourceWidth: number,
+	sourceHeight: number,
+	rotated: boolean,
+): DesktopMediaContentRect | null {
+	if (
+		rect.width <= 0 ||
+		rect.height <= 0 ||
+		sourceWidth <= 0 ||
+		sourceHeight <= 0
+	) {
+		return null;
+	}
+
+	const sourceAspect = rotated
+		? sourceHeight / sourceWidth
+		: sourceWidth / sourceHeight;
+	const rectAspect = rect.width / rect.height;
+	let width = rect.width;
+	let height = rect.height;
+	if (rectAspect > sourceAspect) {
+		height = rect.height;
+		width = height * sourceAspect;
+	} else {
+		width = rect.width;
+		height = width / sourceAspect;
+	}
+
+	return {
+		height,
+		left: rect.left + (rect.width - width) / 2,
+		top: rect.top + (rect.height - height) / 2,
+		width,
+	};
 }
 
 interface DesktopControlBarDrag {
@@ -1327,7 +1401,7 @@ function higherDesktopStreamQuality(
 	);
 }
 
-function ComputerUseDesktopViewport({
+export function ComputerUseDesktopViewport({
 	channel,
 	closeControl,
 	computerId,
@@ -1357,6 +1431,7 @@ function ComputerUseDesktopViewport({
 		useState<DesktopStreamQuality>("balanced");
 	const [hasLiveVideo, setHasLiveVideo] = useState(false);
 	const [toolbarPromptPending, setToolbarPromptPending] = useState(false);
+	const [clickRipples, setClickRipples] = useState<DesktopClickRipple[]>([]);
 	const videoRef = useRef<HTMLVideoElement | null>(null);
 	const imageRef = useRef<HTMLImageElement | null>(null);
 	const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
@@ -1365,10 +1440,13 @@ function ComputerUseDesktopViewport({
 	const dataChannelFramesRef = useRef(
 		new Map<string, DesktopFrameChunkBuffer>(),
 	);
+	const manualControlIdRef = useRef<string | null>(null);
 	const lastPointerMoveAtRef = useRef(0);
 	const desktopSurfaceRef = useRef<HTMLElement | null>(null);
 	const controlBarRef = useRef<HTMLDivElement | null>(null);
 	const controlBarDragRef = useRef<DesktopControlBarDrag | null>(null);
+	const clickRippleTimeoutsRef = useRef<Set<number>>(new Set());
+	const nextClickRippleIdRef = useRef(1);
 	const streamIdRef = useRef<string | null>(null);
 	const streamQualityRef = useRef<DesktopStreamQuality>("balanced");
 	const adaptiveQualityMetricsRef = useRef<DesktopStreamMetrics | null>(null);
@@ -1405,12 +1483,20 @@ function ComputerUseDesktopViewport({
 			pendingMediaStreamRef.current = null;
 			dataChannelFramesRef.current.clear();
 			if (videoRef.current) videoRef.current.srcObject = null;
+			for (const timeout of clickRippleTimeoutsRef.current) {
+				window.clearTimeout(timeout);
+			}
+			clickRippleTimeoutsRef.current.clear();
 		};
 	}, []);
 
 	useEffect(() => {
 		streamIdRef.current = streamId;
 	}, [streamId]);
+
+	useEffect(() => {
+		manualControlIdRef.current = manualControlId;
+	}, [manualControlId]);
 
 	useEffect(() => {
 		streamQualityRef.current = streamQuality;
@@ -1801,7 +1887,10 @@ function ComputerUseDesktopViewport({
 			) {
 				return;
 			}
-			if (payload.manualControlId) setManualControlId(payload.manualControlId);
+			if (payload.manualControlId) {
+				manualControlIdRef.current = payload.manualControlId;
+				setManualControlId(payload.manualControlId);
+			}
 			void handleWebRtcSignal(payload);
 			if (payload.desktopFrame?.ok && payload.desktopFrame.bytesBase64) {
 				const bytes = base64ToBytes(payload.desktopFrame.bytesBase64);
@@ -1983,19 +2072,21 @@ function ComputerUseDesktopViewport({
 	const stopStream = () => {
 		if (!channel || !deviceId) return;
 		const activeStreamId = streamIdRef.current ?? streamId;
+		const activeManualControlId = manualControlIdRef.current ?? manualControlId;
 		streamStopRequestedRef.current = true;
 		clearDesktopStreamMedia({ clearPreview: true, clearStreamId: true });
 		adaptiveQualityMetricsRef.current = null;
 		adaptiveQualityStableSamplesRef.current = 0;
-		if (state === "manual" || manualControlId) {
+		if (state === "manual" || activeManualControlId) {
 			releaseComputerUseManualControl(channel, {
 				computerId,
 				sessionId,
 				deviceId,
-				manualControlId,
+				manualControlId: activeManualControlId,
 				runId: streamRunId,
 				streamToken,
 			});
+			manualControlIdRef.current = null;
 			setManualControlId(null);
 		}
 		stopComputerUseStream(channel, {
@@ -2010,10 +2101,15 @@ function ComputerUseDesktopViewport({
 	};
 	const requestManual = () => {
 		if (!channel || !deviceId) return;
+		const nextManualControlId =
+			manualControlIdRef.current ?? createManualControlId(deviceId, sessionId);
+		manualControlIdRef.current = nextManualControlId;
+		setManualControlId(nextManualControlId);
 		requestComputerUseManualControl(channel, {
 			computerId,
 			sessionId,
 			deviceId,
+			manualControlId: nextManualControlId,
 			runId: streamRunId,
 			streamToken,
 			reason: "manual_cloud_control",
@@ -2022,26 +2118,30 @@ function ComputerUseDesktopViewport({
 	};
 	const releaseManual = () => {
 		if (!channel || !deviceId) return;
+		const activeManualControlId = manualControlIdRef.current ?? manualControlId;
 		releaseComputerUseManualControl(channel, {
 			computerId,
 			sessionId,
 			deviceId,
-			manualControlId,
+			manualControlId: activeManualControlId,
 			runId: streamRunId,
 			streamToken,
 		});
+		manualControlIdRef.current = null;
 		setManualControlId(null);
 		setState(streamId ? "degraded" : "waiting");
 	};
 	const sendManualInput = useCallback(
 		(input: Parameters<typeof sendComputerUseManualInput>[1]["input"]) => {
-			if (!channel || !deviceId || state !== "manual" || !manualControlId)
+			const activeManualControlId =
+				manualControlIdRef.current ?? manualControlId;
+			if (!channel || !deviceId || state !== "manual" || !activeManualControlId)
 				return;
 			sendComputerUseManualInput(channel, {
 				computerId,
 				sessionId,
 				deviceId,
-				manualControlId,
+				manualControlId: activeManualControlId,
 				runId: streamRunId,
 				streamToken,
 				input,
@@ -2059,7 +2159,7 @@ function ComputerUseDesktopViewport({
 		],
 	);
 	const pointFromPointerEvent = useCallback(
-		(event: PointerEvent) => {
+		(event: PointerEvent): DesktopInputPoint | null => {
 			const image = imageRef.current;
 			const video = videoRef.current;
 			const target = image ?? video;
@@ -2067,8 +2167,15 @@ function ComputerUseDesktopViewport({
 			const sourceHeight = image?.naturalHeight ?? video?.videoHeight ?? 0;
 			if (!target || sourceWidth <= 0 || sourceHeight <= 0) return null;
 			const rect = target.getBoundingClientRect();
-			const relativeX = (event.clientX - rect.left) / rect.width;
-			const relativeY = (event.clientY - rect.top) / rect.height;
+			const contentRect = desktopMediaContentRect(
+				rect,
+				sourceWidth,
+				sourceHeight,
+				shouldRotateDesktopContent,
+			);
+			if (!contentRect) return null;
+			const relativeX = (event.clientX - contentRect.left) / contentRect.width;
+			const relativeY = (event.clientY - contentRect.top) / contentRect.height;
 			if (relativeX < 0 || relativeY < 0 || relativeX > 1 || relativeY > 1) {
 				return null;
 			}
@@ -2076,32 +2183,72 @@ function ComputerUseDesktopViewport({
 				return {
 					x: Math.round(relativeY * sourceWidth),
 					y: Math.round((1 - relativeX) * sourceHeight),
+					sourceWidth,
+					sourceHeight,
 				};
 			}
 			return {
 				x: Math.round(relativeX * sourceWidth),
 				y: Math.round(relativeY * sourceHeight),
+				sourceWidth,
+				sourceHeight,
 			};
 		},
 		[shouldRotateDesktopContent],
 	);
+	const showDesktopClickRipple = useCallback(
+		(
+			event: PointerEvent<HTMLElement>,
+			button: DesktopClickRipple["button"],
+		) => {
+			const surface = desktopSurfaceRef.current;
+			if (!surface) return;
+			const surfaceRect = surface.getBoundingClientRect();
+			const id = nextClickRippleIdRef.current;
+			nextClickRippleIdRef.current += 1;
+			const timeout = window.setTimeout(() => {
+				clickRippleTimeoutsRef.current.delete(timeout);
+				setClickRipples((current) =>
+					current.filter((ripple) => ripple.id !== id),
+				);
+			}, DESKTOP_CLICK_RIPPLE_MS);
+			clickRippleTimeoutsRef.current.add(timeout);
+			setClickRipples((current) => [
+				...current.slice(-5),
+				{
+					button,
+					id,
+					x: event.clientX - surfaceRect.left,
+					y: event.clientY - surfaceRect.top,
+				},
+			]);
+		},
+		[],
+	);
 	const handlePointerDown = useCallback(
 		(event: PointerEvent<HTMLElement>) => {
 			if (state !== "manual") return;
+			if (event.button > 2) return;
 			const point = pointFromPointerEvent(event);
 			if (!point) return;
 			event.preventDefault();
 			event.currentTarget.setPointerCapture(event.pointerId);
+			showDesktopClickRipple(
+				event,
+				event.button === 2 ? "secondary" : "primary",
+			);
 			sendManualInput({
 				action: event.button === 2 ? "mouse_right_click" : "mouse_click",
 				x: point.x,
 				y: point.y,
+				sourceWidth: point.sourceWidth,
+				sourceHeight: point.sourceHeight,
 				button:
 					event.button === 1 ? "middle" : event.button === 2 ? "right" : "left",
 				clicks: event.detail > 1 ? 2 : 1,
 			});
 		},
-		[pointFromPointerEvent, sendManualInput, state],
+		[pointFromPointerEvent, sendManualInput, showDesktopClickRipple, state],
 	);
 	const handlePointerMove = useCallback(
 		(event: PointerEvent<HTMLElement>) => {
@@ -2111,7 +2258,13 @@ function ComputerUseDesktopViewport({
 			lastPointerMoveAtRef.current = now;
 			const point = pointFromPointerEvent(event);
 			if (!point) return;
-			sendManualInput({ action: "mouse_move", x: point.x, y: point.y });
+			sendManualInput({
+				action: "mouse_move",
+				x: point.x,
+				y: point.y,
+				sourceWidth: point.sourceWidth,
+				sourceHeight: point.sourceHeight,
+			});
 		},
 		[pointFromPointerEvent, sendManualInput, state],
 	);
@@ -2321,6 +2474,27 @@ function ComputerUseDesktopViewport({
 							<DesktopViewportEmptyState state={state} status={status} />
 						)}
 					</div>
+					{clickRipples.length > 0 ? (
+						<div
+							className="pointer-events-none absolute inset-0 z-10 overflow-hidden"
+							aria-hidden="true"
+						>
+							{clickRipples.map((ripple) => (
+								<span
+									key={ripple.id}
+									className={cn(
+										"desktop-click-ripple",
+										ripple.button === "secondary" &&
+											"desktop-click-ripple-secondary",
+									)}
+									style={{
+										left: ripple.x,
+										top: ripple.y,
+									}}
+								/>
+							))}
+						</div>
+					) : null}
 					<div
 						ref={controlBarRef}
 						role="toolbar"

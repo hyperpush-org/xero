@@ -170,6 +170,51 @@
 	.desktop-control-mobile-prompt-slot {
 		contain: layout paint;
 	}
+
+	.desktop-click-ripple {
+		position: absolute;
+		width: 48px;
+		height: 48px;
+		border-radius: 9999px;
+		border: 1px solid color-mix(in oklab, var(--primary) 38%, white 42%);
+		background:
+			radial-gradient(
+				circle at center,
+				color-mix(in oklab, white 62%, transparent) 0 2px,
+				transparent 3px
+			),
+			radial-gradient(
+				circle at center,
+				color-mix(in oklab, var(--primary) 22%, transparent) 0%,
+				color-mix(in oklab, var(--primary) 12%, transparent) 38%,
+				transparent 72%
+			);
+		box-shadow:
+			0 0 0 1px color-mix(in oklab, white 26%, transparent),
+			0 0 22px color-mix(in oklab, var(--primary) 42%, transparent);
+		transform: translate(-50%, -50%) scale(0.35);
+		animation: desktop-click-ripple 560ms cubic-bezier(0.16, 1, 0.3, 1)
+			forwards;
+	}
+
+	.desktop-click-ripple-secondary {
+		border-color: color-mix(in oklab, #fbbf24 46%, white 30%);
+		background:
+			radial-gradient(
+				circle at center,
+				color-mix(in oklab, white 64%, transparent) 0 2px,
+				transparent 3px
+			),
+			radial-gradient(
+				circle at center,
+				color-mix(in oklab, #fbbf24 24%, transparent) 0%,
+				color-mix(in oklab, #fbbf24 12%, transparent) 38%,
+				transparent 72%
+			);
+		box-shadow:
+			0 0 0 1px color-mix(in oklab, white 22%, transparent),
+			0 0 22px color-mix(in oklab, #fbbf24 34%, transparent);
+	}
 }
 
 @keyframes cloud-rise {
@@ -198,6 +243,20 @@
 	}
 }
 
+@keyframes desktop-click-ripple {
+	0% {
+		opacity: 0;
+		transform: translate(-50%, -50%) scale(0.32);
+	}
+	18% {
+		opacity: 0.95;
+	}
+	100% {
+		opacity: 0;
+		transform: translate(-50%, -50%) scale(1.65);
+	}
+}
+
 @media (prefers-reduced-motion: reduce) {
 	.cloud-rise,
 	.cloud-glow-breathe,
@@ -205,5 +264,11 @@
 		animation-duration: 1ms !important;
 		animation-iteration-count: 1 !important;
 		animation-delay: 0ms !important;
+	}
+
+	.desktop-click-ripple {
+		animation: none !important;
+		opacity: 0.85;
+		transform: translate(-50%, -50%) scale(0.92);
 	}
 }

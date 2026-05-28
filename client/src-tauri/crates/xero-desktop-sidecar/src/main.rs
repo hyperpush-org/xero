@@ -1141,6 +1141,7 @@ fn webrtc_stream_payload_with_metrics(
 ) -> DesktopSidecarStreamPayload {
     DesktopSidecarStreamPayload {
         stream_id: Some(config.stream_id.clone()),
+        display_id: config.display_id.clone(),
         status,
         transport: DesktopSidecarStreamTransport::WebRtc,
         signaling_channel: Some("computer_use_stream".into()),

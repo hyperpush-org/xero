@@ -109,9 +109,32 @@ const desktopControllerLockSchema = z
   })
   .strict()
 
+const desktopStreamMetricsSchema = z
+  .object({
+    captureBackend: z.string().optional(),
+    encoderBackend: z.string().optional(),
+    encoderHardware: z.boolean().optional(),
+    preferredCodec: z.string().optional(),
+    fallbackReason: z.string().optional(),
+    captureFrameRate: z.number().int().nonnegative().optional(),
+    captureDroppedFrames: z.number().int().nonnegative().default(0),
+    encodeFrameRate: z.number().int().nonnegative().optional(),
+    encodeLatencyMs: z.number().int().nonnegative().optional(),
+    outboundBitrateBps: z.number().int().nonnegative().optional(),
+    availableOutgoingBitrateBps: z.number().int().nonnegative().optional(),
+    packetsSent: z.number().int().nonnegative().optional(),
+    bytesSent: z.number().int().nonnegative().optional(),
+    packetLoss: z.number().int().optional(),
+    roundTripTimeMs: z.number().int().nonnegative().optional(),
+    retransmits: z.number().int().nonnegative().optional(),
+    keyframes: z.number().int().nonnegative().default(0),
+  })
+  .strict()
+
 const desktopStreamSchema = z
   .object({
     streamId: z.string().nullable().optional(),
+    displayId: z.string().optional(),
     status: z.enum(['idle', 'starting', 'live', 'degraded', 'paused', 'stopped', 'failed']),
     transport: z.enum(['web_rtc', 'screenshot_fallback', 'unavailable']),
     signalingChannel: z.string().nullable().optional(),
@@ -119,6 +142,7 @@ const desktopStreamSchema = z
     maxWidth: z.number(),
     maxFrameRate: z.number(),
     includeCursor: z.boolean(),
+    metrics: desktopStreamMetricsSchema.optional(),
     message: z.string(),
   })
   .strict()
