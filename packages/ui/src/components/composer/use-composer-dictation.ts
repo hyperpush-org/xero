@@ -63,7 +63,7 @@ interface AudioMeteringSession {
 	frameId: number | null;
 	source: MediaStreamAudioSourceNode;
 	stream: MediaStream;
-	buffer: Uint8Array;
+	buffer: Uint8Array<ArrayBuffer>;
 }
 
 function getSpeechRecognitionConstructor(): WebSpeechRecognitionConstructor | null {

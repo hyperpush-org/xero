@@ -139,6 +139,7 @@ function makeToolItem(overrides: Partial<RuntimeStreamToolItemView> = {}): Runti
     runId: 'run-1',
     sequence: 1,
     createdAt: '2026-04-24T17:30:00Z',
+    mediaAttachments: [],
     toolCallId: 'tool-call-1',
     toolName: 'read',
     toolState: 'succeeded',

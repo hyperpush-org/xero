@@ -50,6 +50,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 import { SolanaWorkbenchSidebar } from "./solana-workbench-sidebar"
 import { SolanaMissingToolchain } from "./solana-missing-toolchain"
+import type { ToolchainStatus } from "@/src/features/solana/use-solana-workbench"
 
 function installLocalStorage() {
   const store = new Map<string, string>()
@@ -80,7 +81,7 @@ function installLocalStorage() {
   return shim
 }
 
-function readyToolchain() {
+function readyToolchain(): ToolchainStatus {
   const present = { present: true, path: "/usr/bin/tool", version: "1.0.0" }
   return {
     solanaCli: present,
@@ -98,7 +99,7 @@ function readyToolchain() {
   }
 }
 
-function missingSolanaToolchain() {
+function missingSolanaToolchain(): ToolchainStatus {
   const ready = readyToolchain()
   const missing = { present: false, path: null, version: null }
   return {

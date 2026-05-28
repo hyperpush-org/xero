@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import {
   AlertTriangle,
   Monitor,
@@ -51,8 +51,8 @@ export function DesktopControlSection({ adapter }: DesktopControlSectionProps) {
   const [openingPermission, setOpeningPermission] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  const refresh = useMemo(
-    () => async () => {
+  const refresh = useCallback(
+    async ({ refreshPermissionStatus = false }: { refreshPermissionStatus?: boolean } = {}) => {
       if (!canUseAdapter || !adapter?.desktopControlStatus) {
         setStatus(null)
         return
@@ -60,7 +60,7 @@ export function DesktopControlSection({ adapter }: DesktopControlSectionProps) {
       setLoading(true)
       setError(null)
       try {
-        setStatus(await adapter.desktopControlStatus({ refreshPermissionStatus: true }))
+        setStatus(await adapter.desktopControlStatus({ refreshPermissionStatus }))
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "Desktop-control status failed.")
       } finally {
@@ -205,7 +205,7 @@ export function DesktopControlSection({ adapter }: DesktopControlSectionProps) {
             variant="outline"
             className="h-8 gap-1.5 text-[12px]"
             disabled={!canUseAdapter || loading}
-            onClick={() => void refresh()}
+            onClick={() => void refresh({ refreshPermissionStatus: true })}
           >
             <RefreshCw className="h-3.5 w-3.5" />
             Refresh

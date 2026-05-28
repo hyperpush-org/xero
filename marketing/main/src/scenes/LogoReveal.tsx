@@ -86,8 +86,8 @@ const renderPhrase = (phrase: string) => {
   }
   return (
     <>
-      This is{" "}
-      <span style={{ fontStyle: "italic", fontWeight: 100 }}>your</span> harness
+      This is <span style={{ fontStyle: "italic", fontWeight: 100 }}>your</span>{" "}
+      harness
     </>
   );
 };
@@ -446,9 +446,7 @@ export const LogoReveal: React.FC = () => {
   return (
     <AbsoluteFill style={{ backgroundColor: "#070707" }}>
       <SceneBackground />
-      <AbsoluteFill
-        style={{ justifyContent: "center", alignItems: "center" }}
-      >
+      <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
         <div
           style={{
             display: "flex",
@@ -468,23 +466,23 @@ export const LogoReveal: React.FC = () => {
               transform: `translate(${logoShoveX + logoEjectX}px, ${logoNudgeY}px)`,
             }}
           >
-          <defs>
-            <clipPath id="logoClip">
-              {QUADRANTS.map((quadrant) => (
-                <path key={quadrant.d} d={quadrant.d} />
-              ))}
-            </clipPath>
-          </defs>
-          {QUADRANTS.map((quadrant, index) => (
-            <Quadrant
-              key={quadrant.d}
-              d={quadrant.d}
-              fill={quadrant.fill}
-              index={index}
-            />
-          ))}
-          <Shine />
-        </svg>
+            <defs>
+              <clipPath id="logoClip">
+                {QUADRANTS.map((quadrant) => (
+                  <path key={quadrant.d} d={quadrant.d} />
+                ))}
+              </clipPath>
+            </defs>
+            {QUADRANTS.map((quadrant, index) => (
+              <Quadrant
+                key={quadrant.d}
+                d={quadrant.d}
+                fill={quadrant.fill}
+                index={index}
+              />
+            ))}
+            <Shine />
+          </svg>
           <span
             style={{
               fontFamily,
@@ -518,7 +516,11 @@ export const LogoReveal: React.FC = () => {
       <PhraseSwitcher size={size} maxWidth={width * 0.84} />
       {/* pencil scribble while the logo outline is drawn (from the clip's 8s mark) */}
       <Sequence from={START_DELAY} durationInFrames={20} layout="none">
-        <Audio src={staticFile("scribble.mp3")} trimBefore={240} volume={0.15} />
+        <Audio
+          src={staticFile("scribble.mp3")}
+          trimBefore={240}
+          volume={0.15}
+        />
       </Sequence>
       <Sequence from={SHINE_START} durationInFrames={45} layout="none">
         <Audio src={staticFile("gleam.mp3")} />
@@ -528,7 +530,7 @@ export const LogoReveal: React.FC = () => {
         SWITCH_START,
         SWITCH_START + PHRASE_STRIDE,
         SWITCH_START + 2 * PHRASE_STRIDE,
-        SWITCH_START + 3 * PHRASE_STRIDE
+        SWITCH_START + 3 * PHRASE_STRIDE,
       ].map((at) => (
         <Sequence key={at} from={at} durationInFrames={13} layout="none">
           <Audio src={staticFile("glitch2.mp3")} trimBefore={22} volume={0.1} />

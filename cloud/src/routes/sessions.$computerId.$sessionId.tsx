@@ -19,6 +19,7 @@ import {
 	ConversationSection,
 	type ConversationTurn,
 } from "@xero/ui/components/transcript/conversation-section";
+import { Badge } from "@xero/ui/components/ui/badge";
 import { Button } from "@xero/ui/components/ui/button";
 import {
 	Dialog,
@@ -46,7 +47,10 @@ import {
 } from "lucide-react";
 import type { Channel } from "phoenix";
 import {
+	type ClipboardEvent,
+	type CompositionEvent,
 	type CSSProperties,
+	type FocusEvent,
 	type FormEvent,
 	type KeyboardEvent,
 	type PointerEvent,
@@ -904,6 +908,16 @@ const DESKTOP_TOOLBAR_BUTTON_CLASS =
 const DESKTOP_TOOLBAR_DANGER_BUTTON_CLASS =
 	"h-7 gap-1 rounded-md border border-red-500/30 bg-red-500/10 px-2 text-[12px] font-medium text-red-200 shadow-none hover:border-red-400/50 hover:bg-red-500/15 hover:text-red-100 disabled:opacity-35";
 const DESKTOP_CLICK_RIPPLE_MS = 560;
+const MANUAL_KEYBOARD_TEXT_BATCH_MS = 18;
+const MANUAL_KEYBOARD_FALLBACK_MS = 24;
+const MANUAL_KEYBOARD_TEXT_CHUNK_CHARS = 512;
+const MANUAL_KEYBOARD_TEXT_MAX_CHARS = 8_000;
+const MANUAL_KEYBOARD_COMPOSITION_DUPLICATE_MS = 80;
+const DESKTOP_MOBILE_ZOOM_MIN = 1;
+const DESKTOP_MOBILE_ZOOM_MAX = 4;
+const DESKTOP_MOBILE_TAP_SLOP_PX = 8;
+
+type ManualKeyboardCaptureState = "inactive" | "armed" | "composing";
 
 interface DesktopControlBarPosition {
 	x: number;
@@ -970,6 +984,219 @@ function desktopMediaContentRect(
 		left: rect.left + (rect.width - width) / 2,
 		top: rect.top + (rect.height - height) / 2,
 		width,
+	};
+}
+
+const MANUAL_KEYBOARD_SPECIAL_KEYS = new Map<string, string>([
+	["Enter", "Enter"],
+	["Return", "Enter"],
+	["Tab", "Tab"],
+	["Backspace", "Backspace"],
+	["Delete", "Delete"],
+	["Del", "Delete"],
+	["Escape", "Escape"],
+	["Esc", "Escape"],
+	["ArrowUp", "ArrowUp"],
+	["ArrowDown", "ArrowDown"],
+	["ArrowLeft", "ArrowLeft"],
+	["ArrowRight", "ArrowRight"],
+	["Home", "Home"],
+	["End", "End"],
+	["PageUp", "PageUp"],
+	["PageDown", "PageDown"],
+]);
+
+const MANUAL_KEYBOARD_MODIFIER_KEYS = new Map<string, string>([
+	["Alt", "option"],
+	["Control", "control"],
+	["Meta", "command"],
+	["OS", "command"],
+	["Shift", "shift"],
+]);
+
+function manualKeyboardModifiers(event: KeyboardEvent<HTMLElement>): string[] {
+	return [
+		event.metaKey ? "command" : null,
+		event.ctrlKey ? "control" : null,
+		event.altKey ? "option" : null,
+		event.shiftKey ? "shift" : null,
+	].filter((modifier): modifier is string => Boolean(modifier));
+}
+
+function normalizeManualModifierKey(key: string): string | null {
+	return MANUAL_KEYBOARD_MODIFIER_KEYS.get(key) ?? null;
+}
+
+function normalizeManualFunctionKey(key: string): string | null {
+	const match = /^F(\d{1,2})$/i.exec(key);
+	if (!match) return null;
+	const index = Number.parseInt(match[1] ?? "", 10);
+	if (!Number.isInteger(index) || index < 1 || index > 12) return null;
+	return `F${index}`;
+}
+
+function normalizeManualKeyPress(key: string): string | null {
+	return (
+		normalizeManualModifierKey(key) ??
+		MANUAL_KEYBOARD_SPECIAL_KEYS.get(key) ??
+		normalizeManualFunctionKey(key)
+	);
+}
+
+function normalizeManualShortcutTarget(key: string): string | null {
+	if (key === " ") return "space";
+	if (key.length === 1) return key.toLowerCase();
+	return normalizeManualKeyPress(key);
+}
+
+function manualKeyboardTextChunk(text: string): string {
+	return Array.from(text).slice(0, MANUAL_KEYBOARD_TEXT_MAX_CHARS).join("");
+}
+
+function manualKeyboardTextChunks(text: string): string[] {
+	const characters = Array.from(text);
+	const chunks: string[] = [];
+	for (
+		let index = 0;
+		index < characters.length;
+		index += MANUAL_KEYBOARD_TEXT_CHUNK_CHARS
+	) {
+		chunks.push(
+			characters
+				.slice(index, index + MANUAL_KEYBOARD_TEXT_CHUNK_CHARS)
+				.join(""),
+		);
+	}
+	return chunks;
+}
+
+function isManualPrintableKey(key: string): boolean {
+	return key.length === 1 && key !== "\u0000";
+}
+
+function beforeInputText(event: FormEvent<HTMLTextAreaElement>): {
+	inputType: string;
+	isComposing: boolean;
+	text: string;
+} {
+	const nativeEvent = event.nativeEvent as InputEvent;
+	return {
+		inputType: nativeEvent.inputType ?? "",
+		isComposing: Boolean(nativeEvent.isComposing),
+		text: typeof nativeEvent.data === "string" ? nativeEvent.data : "",
+	};
+}
+
+interface DesktopMobileViewportTransform {
+	scale: number;
+	x: number;
+	y: number;
+}
+
+interface DesktopMobileTouchPointer {
+	clientX: number;
+	clientY: number;
+	moved: boolean;
+	pointerId: number;
+	startClientX: number;
+	startClientY: number;
+	startTransform: DesktopMobileViewportTransform;
+}
+
+interface DesktopMobilePinchGesture {
+	pointerIds: [number, number];
+	startDistance: number;
+	startMidpoint: { x: number; y: number };
+	startTransform: DesktopMobileViewportTransform;
+}
+
+const DEFAULT_DESKTOP_MOBILE_VIEWPORT_TRANSFORM: DesktopMobileViewportTransform =
+	{
+		scale: 1,
+		x: 0,
+		y: 0,
+	};
+
+function clampNumber(value: number, min: number, max: number): number {
+	return Math.min(max, Math.max(min, value));
+}
+
+function desktopMobileViewportTransformsEqual(
+	a: DesktopMobileViewportTransform,
+	b: DesktopMobileViewportTransform,
+): boolean {
+	return (
+		Math.abs(a.scale - b.scale) < 0.001 &&
+		Math.abs(a.x - b.x) < 0.1 &&
+		Math.abs(a.y - b.y) < 0.1
+	);
+}
+
+function clampDesktopMobileViewportTransform(
+	transform: DesktopMobileViewportTransform,
+	rect: DOMRect | null,
+): DesktopMobileViewportTransform {
+	const scale = clampNumber(
+		transform.scale,
+		DESKTOP_MOBILE_ZOOM_MIN,
+		DESKTOP_MOBILE_ZOOM_MAX,
+	);
+	if (scale <= DESKTOP_MOBILE_ZOOM_MIN + 0.001) {
+		return DEFAULT_DESKTOP_MOBILE_VIEWPORT_TRANSFORM;
+	}
+	if (!rect || rect.width <= 0 || rect.height <= 0) {
+		return {
+			scale,
+			x: transform.x,
+			y: transform.y,
+		};
+	}
+	const maxX = (rect.width * (scale - 1)) / 2;
+	const maxY = (rect.height * (scale - 1)) / 2;
+	return {
+		scale,
+		x: clampNumber(transform.x, -maxX, maxX),
+		y: clampNumber(transform.y, -maxY, maxY),
+	};
+}
+
+function desktopMobileTouchDistance(
+	a: DesktopMobileTouchPointer,
+	b: DesktopMobileTouchPointer,
+): number {
+	return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+}
+
+function desktopMobileTouchMidpoint(
+	a: DesktopMobileTouchPointer,
+	b: DesktopMobileTouchPointer,
+): { x: number; y: number } {
+	return {
+		x: (a.clientX + b.clientX) / 2,
+		y: (a.clientY + b.clientY) / 2,
+	};
+}
+
+function desktopMobilePinchTransform(
+	rect: DOMRect,
+	gesture: DesktopMobilePinchGesture,
+	currentMidpoint: { x: number; y: number },
+	nextScale: number,
+): DesktopMobileViewportTransform {
+	const centerX = rect.left + rect.width / 2;
+	const centerY = rect.top + rect.height / 2;
+	const anchorX =
+		centerX +
+		(gesture.startMidpoint.x - centerX - gesture.startTransform.x) /
+			gesture.startTransform.scale;
+	const anchorY =
+		centerY +
+		(gesture.startMidpoint.y - centerY - gesture.startTransform.y) /
+			gesture.startTransform.scale;
+	return {
+		scale: nextScale,
+		x: currentMidpoint.x - centerX - (anchorX - centerX) * nextScale,
+		y: currentMidpoint.y - centerY - (anchorY - centerY) * nextScale,
 	};
 }
 
@@ -1432,8 +1659,15 @@ export function ComputerUseDesktopViewport({
 	const [hasLiveVideo, setHasLiveVideo] = useState(false);
 	const [toolbarPromptPending, setToolbarPromptPending] = useState(false);
 	const [clickRipples, setClickRipples] = useState<DesktopClickRipple[]>([]);
+	const [keyboardCaptureState, setKeyboardCaptureState] =
+		useState<ManualKeyboardCaptureState>("inactive");
+	const [mobileViewportTransform, setMobileViewportTransform] =
+		useState<DesktopMobileViewportTransform>(
+			DEFAULT_DESKTOP_MOBILE_VIEWPORT_TRANSFORM,
+		);
 	const videoRef = useRef<HTMLVideoElement | null>(null);
 	const imageRef = useRef<HTMLImageElement | null>(null);
+	const keyboardSinkRef = useRef<HTMLTextAreaElement | null>(null);
 	const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
 	const pendingMediaStreamRef = useRef<MediaStream | null>(null);
 	const fallbackPreviewObjectUrlRef = useRef<string | null>(null);
@@ -1441,11 +1675,30 @@ export function ComputerUseDesktopViewport({
 		new Map<string, DesktopFrameChunkBuffer>(),
 	);
 	const manualControlIdRef = useRef<string | null>(null);
+	const keyboardCaptureManualControlIdRef = useRef<string | null>(null);
 	const lastPointerMoveAtRef = useRef(0);
 	const desktopSurfaceRef = useRef<HTMLElement | null>(null);
 	const controlBarRef = useRef<HTMLDivElement | null>(null);
 	const controlBarDragRef = useRef<DesktopControlBarDrag | null>(null);
 	const clickRippleTimeoutsRef = useRef<Set<number>>(new Set());
+	const mobileViewportTransformRef = useRef<DesktopMobileViewportTransform>(
+		DEFAULT_DESKTOP_MOBILE_VIEWPORT_TRANSFORM,
+	);
+	const mobileTouchPointersRef = useRef(
+		new Map<number, DesktopMobileTouchPointer>(),
+	);
+	const mobileTapPointerIdRef = useRef<number | null>(null);
+	const mobilePinchGestureRef = useRef<DesktopMobilePinchGesture | null>(null);
+	const textBatchRef = useRef("");
+	const textBatchTimeoutRef = useRef<number | null>(null);
+	const printableFallbackTimeoutRef = useRef<number | null>(null);
+	const lastCompositionTextRef = useRef<{ at: number; text: string } | null>(
+		null,
+	);
+	const disarmKeyboardCaptureRef = useRef<
+		((options?: { flushText?: boolean }) => void) | null
+	>(null);
+	const keyboardCaptureSessionKeyRef = useRef(`${computerId}:${sessionId}`);
 	const nextClickRippleIdRef = useRef(1);
 	const streamIdRef = useRef<string | null>(null);
 	const streamQualityRef = useRef<DesktopStreamQuality>("balanced");
@@ -1465,12 +1718,46 @@ export function ComputerUseDesktopViewport({
 	const shouldRotateDesktopContent =
 		presentation.rotateDesktop && hasVisibleDesktopMedia;
 	const presentationModeKey = `${presentation.isMobile}:${shouldRotateDesktopContent}`;
+	const mobileViewportResetKey = `${computerId}:${sessionId}:${presentationModeKey}`;
+	const setClampedMobileViewportTransform = useCallback(
+		(transform: DesktopMobileViewportTransform) => {
+			const rect = desktopSurfaceRef.current?.getBoundingClientRect() ?? null;
+			const next = clampDesktopMobileViewportTransform(transform, rect);
+			mobileViewportTransformRef.current = next;
+			setMobileViewportTransform((current) =>
+				desktopMobileViewportTransformsEqual(current, next) ? current : next,
+			);
+		},
+		[],
+	);
+	const resetMobileViewportTransform = useCallback(() => {
+		mobileTouchPointersRef.current.clear();
+		mobileTapPointerIdRef.current = null;
+		mobilePinchGestureRef.current = null;
+		mobileViewportTransformRef.current =
+			DEFAULT_DESKTOP_MOBILE_VIEWPORT_TRANSFORM;
+		setMobileViewportTransform(DEFAULT_DESKTOP_MOBILE_VIEWPORT_TRANSFORM);
+	}, []);
 
 	useEffect(() => {
 		setControlBarPosition((position) =>
 			presentationModeKey && position ? null : position,
 		);
 	}, [presentationModeKey]);
+
+	useEffect(() => {
+		if (!mobileViewportResetKey) return;
+		resetMobileViewportTransform();
+	}, [mobileViewportResetKey, resetMobileViewportTransform]);
+
+	useEffect(() => {
+		if (presentation.isMobile && hasVisibleDesktopMedia) return;
+		resetMobileViewportTransform();
+	}, [
+		hasVisibleDesktopMedia,
+		presentation.isMobile,
+		resetMobileViewportTransform,
+	]);
 
 	useEffect(() => {
 		return () => {
@@ -1487,6 +1774,17 @@ export function ComputerUseDesktopViewport({
 				window.clearTimeout(timeout);
 			}
 			clickRippleTimeoutsRef.current.clear();
+			mobileTouchPointersRef.current.clear();
+			mobileTapPointerIdRef.current = null;
+			mobilePinchGestureRef.current = null;
+			if (textBatchTimeoutRef.current !== null) {
+				window.clearTimeout(textBatchTimeoutRef.current);
+				textBatchTimeoutRef.current = null;
+			}
+			if (printableFallbackTimeoutRef.current !== null) {
+				window.clearTimeout(printableFallbackTimeoutRef.current);
+				printableFallbackTimeoutRef.current = null;
+			}
 		};
 	}, []);
 
@@ -1851,6 +2149,7 @@ export function ComputerUseDesktopViewport({
 				payload.schema === "xero.computer_use_stream_stop.v1";
 			if (streamStopRequestedRef.current && !isStreamStopPayload) return;
 			if (isStreamStopPayload) {
+				disarmKeyboardCaptureRef.current?.();
 				clearDesktopStreamMedia({ clearPreview: true, clearStreamId: true });
 				adaptiveQualityMetricsRef.current = null;
 				adaptiveQualityStableSamplesRef.current = 0;
@@ -1930,6 +2229,7 @@ export function ComputerUseDesktopViewport({
 			} else if (
 				payload.schema === "xero.computer_use_manual_control_release.v1"
 			) {
+				disarmKeyboardCaptureRef.current?.();
 				setState(streamId ? "degraded" : "waiting");
 			}
 		});
@@ -2048,6 +2348,7 @@ export function ComputerUseDesktopViewport({
 
 	const startStream = () => {
 		if (!channel || !deviceId) return;
+		disarmKeyboardCaptureRef.current?.();
 		streamStopRequestedRef.current = false;
 		liveVideoSeenRef.current = false;
 		fallbackRecoveryLastAttemptAtRef.current = 0;
@@ -2071,6 +2372,7 @@ export function ComputerUseDesktopViewport({
 	};
 	const stopStream = () => {
 		if (!channel || !deviceId) return;
+		disarmKeyboardCaptureRef.current?.({ flushText: true });
 		const activeStreamId = streamIdRef.current ?? streamId;
 		const activeManualControlId = manualControlIdRef.current ?? manualControlId;
 		streamStopRequestedRef.current = true;
@@ -2101,6 +2403,7 @@ export function ComputerUseDesktopViewport({
 	};
 	const requestManual = () => {
 		if (!channel || !deviceId) return;
+		disarmKeyboardCaptureRef.current?.();
 		const nextManualControlId =
 			manualControlIdRef.current ?? createManualControlId(deviceId, sessionId);
 		manualControlIdRef.current = nextManualControlId;
@@ -2118,6 +2421,7 @@ export function ComputerUseDesktopViewport({
 	};
 	const releaseManual = () => {
 		if (!channel || !deviceId) return;
+		disarmKeyboardCaptureRef.current?.({ flushText: true });
 		const activeManualControlId = manualControlIdRef.current ?? manualControlId;
 		releaseComputerUseManualControl(channel, {
 			computerId,
@@ -2156,6 +2460,338 @@ export function ComputerUseDesktopViewport({
 			state,
 			streamRunId,
 			streamToken,
+		],
+	);
+	const clearKeyboardSinkValue = useCallback(() => {
+		if (keyboardSinkRef.current) keyboardSinkRef.current.value = "";
+	}, []);
+	const cancelTextBatchTimeout = useCallback(() => {
+		if (textBatchTimeoutRef.current === null) return;
+		window.clearTimeout(textBatchTimeoutRef.current);
+		textBatchTimeoutRef.current = null;
+	}, []);
+	const cancelPrintableFallback = useCallback(() => {
+		if (printableFallbackTimeoutRef.current === null) return;
+		window.clearTimeout(printableFallbackTimeoutRef.current);
+		printableFallbackTimeoutRef.current = null;
+	}, []);
+	const keyboardCaptureIsActive = useCallback(() => {
+		const activeManualControlId = manualControlIdRef.current ?? manualControlId;
+		return (
+			state === "manual" &&
+			keyboardCaptureState !== "inactive" &&
+			Boolean(activeManualControlId) &&
+			keyboardCaptureManualControlIdRef.current === activeManualControlId
+		);
+	}, [keyboardCaptureState, manualControlId, state]);
+	const flushTextBatch = useCallback(() => {
+		cancelTextBatchTimeout();
+		const text = textBatchRef.current;
+		if (!text) return;
+		textBatchRef.current = "";
+		for (const chunk of manualKeyboardTextChunks(text)) {
+			sendManualInput({ action: "type_text", text: chunk });
+		}
+	}, [cancelTextBatchTimeout, sendManualInput]);
+	const queueTypeText = useCallback(
+		(text: string) => {
+			const chunk = manualKeyboardTextChunk(text);
+			if (!chunk || !keyboardCaptureIsActive()) return;
+			textBatchRef.current += chunk;
+			if (
+				Array.from(textBatchRef.current).length >=
+				MANUAL_KEYBOARD_TEXT_CHUNK_CHARS
+			) {
+				flushTextBatch();
+				return;
+			}
+			cancelTextBatchTimeout();
+			textBatchTimeoutRef.current = window.setTimeout(
+				flushTextBatch,
+				MANUAL_KEYBOARD_TEXT_BATCH_MS,
+			);
+		},
+		[cancelTextBatchTimeout, flushTextBatch, keyboardCaptureIsActive],
+	);
+	const disarmKeyboardCapture = useCallback(
+		({ flushText = false }: { flushText?: boolean } = {}) => {
+			cancelPrintableFallback();
+			if (flushText) {
+				flushTextBatch();
+			} else {
+				cancelTextBatchTimeout();
+				textBatchRef.current = "";
+			}
+			keyboardCaptureManualControlIdRef.current = null;
+			lastCompositionTextRef.current = null;
+			setKeyboardCaptureState("inactive");
+			clearKeyboardSinkValue();
+		},
+		[
+			cancelPrintableFallback,
+			cancelTextBatchTimeout,
+			clearKeyboardSinkValue,
+			flushTextBatch,
+		],
+	);
+	useEffect(() => {
+		disarmKeyboardCaptureRef.current = disarmKeyboardCapture;
+		return () => {
+			if (disarmKeyboardCaptureRef.current === disarmKeyboardCapture) {
+				disarmKeyboardCaptureRef.current = null;
+			}
+		};
+	}, [disarmKeyboardCapture]);
+	const armKeyboardCapture = useCallback(() => {
+		const activeManualControlId = manualControlIdRef.current ?? manualControlId;
+		if (state !== "manual" || !activeManualControlId) return;
+		keyboardCaptureManualControlIdRef.current = activeManualControlId;
+		setKeyboardCaptureState("armed");
+		keyboardSinkRef.current?.focus({ preventScroll: true });
+		clearKeyboardSinkValue();
+	}, [clearKeyboardSinkValue, manualControlId, state]);
+	const queuePrintableFallback = useCallback(
+		(text: string) => {
+			cancelPrintableFallback();
+			if (!keyboardCaptureIsActive()) return;
+			printableFallbackTimeoutRef.current = window.setTimeout(() => {
+				printableFallbackTimeoutRef.current = null;
+				queueTypeText(text);
+			}, MANUAL_KEYBOARD_FALLBACK_MS);
+		},
+		[cancelPrintableFallback, keyboardCaptureIsActive, queueTypeText],
+	);
+
+	useEffect(() => {
+		const activeManualControlId = manualControlIdRef.current ?? manualControlId;
+		if (
+			state !== "manual" ||
+			!activeManualControlId ||
+			(keyboardCaptureManualControlIdRef.current &&
+				keyboardCaptureManualControlIdRef.current !== activeManualControlId)
+		) {
+			disarmKeyboardCapture();
+		}
+	}, [disarmKeyboardCapture, manualControlId, state]);
+
+	useEffect(() => {
+		const nextSessionKey = `${computerId}:${sessionId}`;
+		if (keyboardCaptureSessionKeyRef.current === nextSessionKey) return;
+		keyboardCaptureSessionKeyRef.current = nextSessionKey;
+		disarmKeyboardCapture();
+	}, [computerId, disarmKeyboardCapture, sessionId]);
+
+	useEffect(() => {
+		if (keyboardCaptureState === "inactive") return;
+		const handleDocumentPointerDown = (event: globalThis.PointerEvent) => {
+			const surface = desktopSurfaceRef.current;
+			if (
+				surface &&
+				event.target instanceof Node &&
+				surface.contains(event.target)
+			) {
+				return;
+			}
+			disarmKeyboardCapture({ flushText: true });
+		};
+		document.addEventListener("pointerdown", handleDocumentPointerDown, true);
+		return () => {
+			document.removeEventListener(
+				"pointerdown",
+				handleDocumentPointerDown,
+				true,
+			);
+		};
+	}, [disarmKeyboardCapture, keyboardCaptureState]);
+
+	const handleKeyboardBeforeInput = useCallback(
+		(event: FormEvent<HTMLTextAreaElement>) => {
+			if (!keyboardCaptureIsActive()) return;
+			const input = beforeInputText(event);
+			if (!input.text) {
+				clearKeyboardSinkValue();
+				return;
+			}
+			event.preventDefault();
+			cancelPrintableFallback();
+			clearKeyboardSinkValue();
+			if (
+				input.isComposing ||
+				input.inputType === "insertCompositionText" ||
+				input.inputType === "insertFromPaste"
+			) {
+				return;
+			}
+			const lastComposition = lastCompositionTextRef.current;
+			if (
+				lastComposition &&
+				lastComposition.text === input.text &&
+				Date.now() - lastComposition.at <
+					MANUAL_KEYBOARD_COMPOSITION_DUPLICATE_MS
+			) {
+				return;
+			}
+			queueTypeText(input.text);
+		},
+		[
+			cancelPrintableFallback,
+			clearKeyboardSinkValue,
+			keyboardCaptureIsActive,
+			queueTypeText,
+		],
+	);
+	const handleKeyboardInput = useCallback(
+		(event: FormEvent<HTMLTextAreaElement>) => {
+			if (keyboardCaptureIsActive()) {
+				const text = event.currentTarget.value;
+				const lastComposition = lastCompositionTextRef.current;
+				if (
+					text &&
+					!(
+						lastComposition &&
+						lastComposition.text === text &&
+						Date.now() - lastComposition.at <
+							MANUAL_KEYBOARD_COMPOSITION_DUPLICATE_MS
+					)
+				) {
+					cancelPrintableFallback();
+					queueTypeText(text);
+				}
+			}
+			clearKeyboardSinkValue();
+		},
+		[
+			cancelPrintableFallback,
+			clearKeyboardSinkValue,
+			keyboardCaptureIsActive,
+			queueTypeText,
+		],
+	);
+	const handleKeyboardCompositionStart = useCallback(() => {
+		if (!keyboardCaptureIsActive()) return;
+		cancelPrintableFallback();
+		setKeyboardCaptureState("composing");
+	}, [cancelPrintableFallback, keyboardCaptureIsActive]);
+	const handleKeyboardCompositionEnd = useCallback(
+		(event: CompositionEvent<HTMLTextAreaElement>) => {
+			if (!keyboardCaptureIsActive()) return;
+			setKeyboardCaptureState("armed");
+			cancelPrintableFallback();
+			clearKeyboardSinkValue();
+			const text = event.data;
+			if (!text) return;
+			lastCompositionTextRef.current = { at: Date.now(), text };
+			queueTypeText(text);
+		},
+		[
+			cancelPrintableFallback,
+			clearKeyboardSinkValue,
+			keyboardCaptureIsActive,
+			queueTypeText,
+		],
+	);
+	const handleKeyboardPaste = useCallback(
+		(event: ClipboardEvent<HTMLTextAreaElement>) => {
+			if (!keyboardCaptureIsActive()) return;
+			event.preventDefault();
+			cancelPrintableFallback();
+			flushTextBatch();
+			clearKeyboardSinkValue();
+			const text = manualKeyboardTextChunk(
+				event.clipboardData.getData("text/plain"),
+			);
+			if (!text) return;
+			sendManualInput({ action: "paste_text", text });
+		},
+		[
+			cancelPrintableFallback,
+			clearKeyboardSinkValue,
+			flushTextBatch,
+			keyboardCaptureIsActive,
+			sendManualInput,
+		],
+	);
+	const handleKeyboardSinkBlur = useCallback(
+		(event: FocusEvent<HTMLTextAreaElement>) => {
+			const nextTarget = event.relatedTarget;
+			const surface = desktopSurfaceRef.current;
+			if (
+				nextTarget instanceof Node &&
+				surface &&
+				surface.contains(nextTarget)
+			) {
+				return;
+			}
+			disarmKeyboardCapture({ flushText: true });
+		},
+		[disarmKeyboardCapture],
+	);
+	const handleManualKeyboardKeyDown = useCallback(
+		(event: KeyboardEvent<HTMLTextAreaElement>) => {
+			if (!keyboardCaptureIsActive()) return;
+			const nativeEvent = event.nativeEvent as globalThis.KeyboardEvent;
+			if (
+				nativeEvent.isComposing ||
+				keyboardCaptureState === "composing" ||
+				event.key === "Dead" ||
+				event.key === "Process"
+			) {
+				cancelPrintableFallback();
+				return;
+			}
+
+			const modifierKey = normalizeManualModifierKey(event.key);
+			if (modifierKey) {
+				event.preventDefault();
+				event.stopPropagation();
+				cancelPrintableFallback();
+				flushTextBatch();
+				if (!event.repeat) {
+					sendManualInput({ action: "key_press", key: modifierKey });
+				}
+				return;
+			}
+
+			const printable = isManualPrintableKey(event.key);
+			const hasShortcutModifier =
+				event.metaKey ||
+				event.ctrlKey ||
+				event.altKey ||
+				(event.shiftKey && !printable);
+			if (hasShortcutModifier) {
+				const target = normalizeManualShortcutTarget(event.key);
+				if (!target) return;
+				event.preventDefault();
+				event.stopPropagation();
+				cancelPrintableFallback();
+				flushTextBatch();
+				const keys = [...manualKeyboardModifiers(event), target].filter(
+					(key, index, values) => values.indexOf(key) === index,
+				);
+				sendManualInput({ action: "hotkey", keys });
+				return;
+			}
+
+			if (printable) {
+				queuePrintableFallback(event.key);
+				return;
+			}
+
+			const key = normalizeManualKeyPress(event.key);
+			if (!key) return;
+			event.preventDefault();
+			event.stopPropagation();
+			cancelPrintableFallback();
+			flushTextBatch();
+			sendManualInput({ action: "key_press", key });
+		},
+		[
+			cancelPrintableFallback,
+			flushTextBatch,
+			keyboardCaptureIsActive,
+			keyboardCaptureState,
+			queuePrintableFallback,
+			sendManualInput,
 		],
 	);
 	const pointFromPointerEvent = useCallback(
@@ -2225,14 +2861,9 @@ export function ComputerUseDesktopViewport({
 		},
 		[],
 	);
-	const handlePointerDown = useCallback(
-		(event: PointerEvent<HTMLElement>) => {
-			if (state !== "manual") return;
-			if (event.button > 2) return;
-			const point = pointFromPointerEvent(event);
-			if (!point) return;
-			event.preventDefault();
-			event.currentTarget.setPointerCapture(event.pointerId);
+	const sendManualPointerClick = useCallback(
+		(event: PointerEvent<HTMLElement>, point: DesktopInputPoint) => {
+			armKeyboardCapture();
 			showDesktopClickRipple(
 				event,
 				event.button === 2 ? "secondary" : "primary",
@@ -2248,10 +2879,228 @@ export function ComputerUseDesktopViewport({
 				clicks: event.detail > 1 ? 2 : 1,
 			});
 		},
-		[pointFromPointerEvent, sendManualInput, showDesktopClickRipple, state],
+		[armKeyboardCapture, sendManualInput, showDesktopClickRipple],
+	);
+	const beginMobilePinchGesture = useCallback(() => {
+		const [first, second] = Array.from(
+			mobileTouchPointersRef.current.values(),
+		).slice(0, 2);
+		if (!first || !second) {
+			mobilePinchGestureRef.current = null;
+			return;
+		}
+		const distance = desktopMobileTouchDistance(first, second);
+		if (distance <= 0) {
+			mobilePinchGestureRef.current = null;
+			return;
+		}
+		mobileTapPointerIdRef.current = null;
+		mobilePinchGestureRef.current = {
+			pointerIds: [first.pointerId, second.pointerId],
+			startDistance: distance,
+			startMidpoint: desktopMobileTouchMidpoint(first, second),
+			startTransform: mobileViewportTransformRef.current,
+		};
+	}, []);
+	const updateMobilePinchGesture = useCallback(() => {
+		const gesture = mobilePinchGestureRef.current;
+		const surface = desktopSurfaceRef.current;
+		if (!gesture || !surface) return;
+		const first = mobileTouchPointersRef.current.get(gesture.pointerIds[0]);
+		const second = mobileTouchPointersRef.current.get(gesture.pointerIds[1]);
+		if (!first || !second) return;
+		const distance = desktopMobileTouchDistance(first, second);
+		if (distance <= 0) return;
+		const rect = surface.getBoundingClientRect();
+		if (rect.width <= 0 || rect.height <= 0) return;
+		const nextScale =
+			gesture.startTransform.scale * (distance / gesture.startDistance);
+		setClampedMobileViewportTransform(
+			desktopMobilePinchTransform(
+				rect,
+				gesture,
+				desktopMobileTouchMidpoint(first, second),
+				nextScale,
+			),
+		);
+	}, [setClampedMobileViewportTransform]);
+	const handleMobileTouchPointerDown = useCallback(
+		(event: PointerEvent<HTMLElement>) => {
+			event.preventDefault();
+			try {
+				event.currentTarget.setPointerCapture(event.pointerId);
+			} catch {
+				// Some embedded webviews report touch pointer ids before capture exists.
+			}
+			const pointer: DesktopMobileTouchPointer = {
+				clientX: event.clientX,
+				clientY: event.clientY,
+				moved: false,
+				pointerId: event.pointerId,
+				startClientX: event.clientX,
+				startClientY: event.clientY,
+				startTransform: mobileViewportTransformRef.current,
+			};
+			mobileTouchPointersRef.current.set(event.pointerId, pointer);
+			if (mobileTouchPointersRef.current.size === 1) {
+				mobileTapPointerIdRef.current =
+					state === "manual" ? event.pointerId : null;
+			}
+			if (mobileTouchPointersRef.current.size >= 2) {
+				disarmKeyboardCapture({ flushText: true });
+				if (hasVisibleDesktopMedia) beginMobilePinchGesture();
+			} else if (state !== "manual") {
+				disarmKeyboardCapture({ flushText: true });
+			}
+		},
+		[
+			beginMobilePinchGesture,
+			disarmKeyboardCapture,
+			hasVisibleDesktopMedia,
+			state,
+		],
+	);
+	const handleMobileTouchPointerMove = useCallback(
+		(event: PointerEvent<HTMLElement>) => {
+			const pointer = mobileTouchPointersRef.current.get(event.pointerId);
+			if (!pointer) return;
+			event.preventDefault();
+			pointer.clientX = event.clientX;
+			pointer.clientY = event.clientY;
+			if (
+				Math.hypot(
+					pointer.clientX - pointer.startClientX,
+					pointer.clientY - pointer.startClientY,
+				) > DESKTOP_MOBILE_TAP_SLOP_PX
+			) {
+				pointer.moved = true;
+				if (mobileTapPointerIdRef.current === pointer.pointerId) {
+					mobileTapPointerIdRef.current = null;
+				}
+			}
+			if (mobilePinchGestureRef.current) {
+				updateMobilePinchGesture();
+				return;
+			}
+			if (mobileTouchPointersRef.current.size >= 2) {
+				if (hasVisibleDesktopMedia) {
+					beginMobilePinchGesture();
+					updateMobilePinchGesture();
+				}
+				return;
+			}
+			if (
+				pointer.moved &&
+				mobileViewportTransformRef.current.scale >
+					DESKTOP_MOBILE_ZOOM_MIN + 0.001
+			) {
+				setClampedMobileViewportTransform({
+					scale: pointer.startTransform.scale,
+					x: pointer.startTransform.x + event.clientX - pointer.startClientX,
+					y: pointer.startTransform.y + event.clientY - pointer.startClientY,
+				});
+			}
+		},
+		[
+			beginMobilePinchGesture,
+			hasVisibleDesktopMedia,
+			setClampedMobileViewportTransform,
+			updateMobilePinchGesture,
+		],
+	);
+	const handleMobileTouchPointerEnd = useCallback(
+		(event: PointerEvent<HTMLElement>, cancelled = false) => {
+			const pointer = mobileTouchPointersRef.current.get(event.pointerId);
+			if (!pointer) return;
+			event.preventDefault();
+			try {
+				event.currentTarget.releasePointerCapture(event.pointerId);
+			} catch {
+				// Capture can already be released by the webview after touch cancel.
+			}
+			const wasPinching = Boolean(mobilePinchGestureRef.current);
+			const shouldTap =
+				!cancelled &&
+				!wasPinching &&
+				state === "manual" &&
+				mobileTapPointerIdRef.current === event.pointerId &&
+				!pointer.moved;
+			mobileTouchPointersRef.current.delete(event.pointerId);
+			if (wasPinching) {
+				mobileTapPointerIdRef.current = null;
+				if (
+					mobileTouchPointersRef.current.size >= 2 &&
+					hasVisibleDesktopMedia
+				) {
+					beginMobilePinchGesture();
+				} else {
+					mobilePinchGestureRef.current = null;
+				}
+				return;
+			}
+			if (mobileTouchPointersRef.current.size >= 2 && hasVisibleDesktopMedia) {
+				beginMobilePinchGesture();
+			} else {
+				mobilePinchGestureRef.current = null;
+			}
+			if (mobileTapPointerIdRef.current === event.pointerId) {
+				mobileTapPointerIdRef.current = null;
+			}
+			if (!shouldTap) return;
+			const point = pointFromPointerEvent(event);
+			if (!point) {
+				disarmKeyboardCapture();
+				return;
+			}
+			sendManualPointerClick(event, point);
+		},
+		[
+			beginMobilePinchGesture,
+			disarmKeyboardCapture,
+			hasVisibleDesktopMedia,
+			pointFromPointerEvent,
+			sendManualPointerClick,
+			state,
+		],
+	);
+	const handlePointerDown = useCallback(
+		(event: PointerEvent<HTMLElement>) => {
+			if (presentation.isMobile && event.pointerType === "touch") {
+				handleMobileTouchPointerDown(event);
+				return;
+			}
+			if (state !== "manual") {
+				disarmKeyboardCapture();
+				return;
+			}
+			if (event.button > 2) {
+				disarmKeyboardCapture();
+				return;
+			}
+			const point = pointFromPointerEvent(event);
+			if (!point) {
+				disarmKeyboardCapture();
+				return;
+			}
+			event.preventDefault();
+			event.currentTarget.setPointerCapture(event.pointerId);
+			sendManualPointerClick(event, point);
+		},
+		[
+			disarmKeyboardCapture,
+			handleMobileTouchPointerDown,
+			pointFromPointerEvent,
+			presentation.isMobile,
+			sendManualPointerClick,
+			state,
+		],
 	);
 	const handlePointerMove = useCallback(
 		(event: PointerEvent<HTMLElement>) => {
+			if (presentation.isMobile && event.pointerType === "touch") {
+				handleMobileTouchPointerMove(event);
+				return;
+			}
 			if (state !== "manual" || event.buttons === 0) return;
 			const now = Date.now();
 			if (now - lastPointerMoveAtRef.current < 80) return;
@@ -2266,7 +3115,29 @@ export function ComputerUseDesktopViewport({
 				sourceHeight: point.sourceHeight,
 			});
 		},
-		[pointFromPointerEvent, sendManualInput, state],
+		[
+			handleMobileTouchPointerMove,
+			pointFromPointerEvent,
+			presentation.isMobile,
+			sendManualInput,
+			state,
+		],
+	);
+	const handlePointerUp = useCallback(
+		(event: PointerEvent<HTMLElement>) => {
+			if (presentation.isMobile && event.pointerType === "touch") {
+				handleMobileTouchPointerEnd(event);
+			}
+		},
+		[handleMobileTouchPointerEnd, presentation.isMobile],
+	);
+	const handlePointerCancel = useCallback(
+		(event: PointerEvent<HTMLElement>) => {
+			if (presentation.isMobile && event.pointerType === "touch") {
+				handleMobileTouchPointerEnd(event, true);
+			}
+		},
+		[handleMobileTouchPointerEnd, presentation.isMobile],
 	);
 	const handleWheel = useCallback(
 		(event: WheelEvent<HTMLElement>) => {
@@ -2277,28 +3148,6 @@ export function ComputerUseDesktopViewport({
 				deltaX: Math.round(event.deltaX),
 				deltaY: Math.round(event.deltaY),
 			});
-		},
-		[sendManualInput, state],
-	);
-	const handleKeyDown = useCallback(
-		(event: KeyboardEvent<HTMLElement>) => {
-			if (state !== "manual") return;
-			event.preventDefault();
-			const modifiers = [
-				event.metaKey ? "command" : null,
-				event.ctrlKey ? "control" : null,
-				event.altKey ? "option" : null,
-				event.shiftKey ? "shift" : null,
-			].filter(Boolean) as string[];
-			if (modifiers.length > 0 && event.key.length > 0) {
-				sendManualInput({ action: "hotkey", keys: [...modifiers, event.key] });
-				return;
-			}
-			if (event.key.length === 1) {
-				sendManualInput({ action: "type_text", text: event.key });
-				return;
-			}
-			sendManualInput({ action: "key_press", key: event.key });
 		},
 		[sendManualInput, state],
 	);
@@ -2414,6 +3263,17 @@ export function ComputerUseDesktopViewport({
 						width: "100dvh",
 					}
 			: undefined;
+	const desktopMediaLayerStyle: CSSProperties | undefined =
+		presentation.isMobile && hasVisibleDesktopMedia
+			? {
+					transform: `translate3d(${mobileViewportTransform.x}px, ${mobileViewportTransform.y}px, 0) scale(${mobileViewportTransform.scale})`,
+					transformOrigin: "center center",
+					willChange:
+						mobileViewportTransform.scale > DESKTOP_MOBILE_ZOOM_MIN + 0.001
+							? "transform"
+							: undefined,
+				}
+			: undefined;
 	const toolbarButtonClassName = cn(
 		DESKTOP_TOOLBAR_BUTTON_CLASS,
 		presentation.isMobile && "h-8 w-8 px-0",
@@ -2429,6 +3289,12 @@ export function ComputerUseDesktopViewport({
 	const toolbarLabelClassName = presentation.isMobile ? "sr-only" : undefined;
 	const showMobilePrompt = presentation.isMobile && hasLiveVideo;
 	const toolbarWorking = isAgentWorking || toolbarPromptPending;
+	const activeManualControlId = manualControlIdRef.current ?? manualControlId;
+	const keyboardCaptured =
+		state === "manual" &&
+		keyboardCaptureState !== "inactive" &&
+		Boolean(activeManualControlId) &&
+		keyboardCaptureManualControlIdRef.current === activeManualControlId;
 
 	return (
 		<>
@@ -2447,11 +3313,36 @@ export function ComputerUseDesktopViewport({
 					tabIndex={state === "manual" ? 0 : -1}
 					onPointerDown={handlePointerDown}
 					onPointerMove={handlePointerMove}
+					onPointerUp={handlePointerUp}
+					onPointerCancel={handlePointerCancel}
 					onWheel={handleWheel}
-					onKeyDown={handleKeyDown}
-					className="relative flex h-full min-h-0 overflow-hidden bg-zinc-950"
+					className={cn(
+						"relative flex h-full min-h-0 overflow-hidden bg-zinc-950 outline-none",
+						presentation.isMobile && "touch-none select-none",
+						keyboardCaptured && "ring-2 ring-primary/40 ring-inset",
+					)}
 				>
-					<div className="relative flex min-h-0 flex-1 items-center justify-center bg-zinc-950 text-zinc-100">
+					<textarea
+						ref={keyboardSinkRef}
+						aria-label="Desktop keyboard passthrough"
+						autoCapitalize="off"
+						autoComplete="off"
+						autoCorrect="off"
+						spellCheck={false}
+						tabIndex={-1}
+						onBeforeInput={handleKeyboardBeforeInput}
+						onBlur={handleKeyboardSinkBlur}
+						onCompositionEnd={handleKeyboardCompositionEnd}
+						onCompositionStart={handleKeyboardCompositionStart}
+						onInput={handleKeyboardInput}
+						onKeyDown={handleManualKeyboardKeyDown}
+						onPaste={handleKeyboardPaste}
+						className="pointer-events-none absolute left-0 top-0 z-0 h-px w-px resize-none border-0 bg-transparent p-0 opacity-0 outline-none"
+					/>
+					<div
+						className="relative flex min-h-0 flex-1 items-center justify-center bg-zinc-950 text-zinc-100"
+						style={desktopMediaLayerStyle}
+					>
 						{hasLiveVideo ? (
 							<video
 								ref={videoRef}
@@ -2500,7 +3391,11 @@ export function ComputerUseDesktopViewport({
 						role="toolbar"
 						aria-label="Desktop stream controls"
 						style={controlBarStyle}
-						onPointerDown={(event) => event.stopPropagation()}
+						onFocusCapture={() => disarmKeyboardCapture({ flushText: true })}
+						onPointerDown={(event) => {
+							disarmKeyboardCapture({ flushText: true });
+							event.stopPropagation();
+						}}
 						onKeyDown={(event) => event.stopPropagation()}
 						onWheel={(event) => event.stopPropagation()}
 						aria-busy={toolbarWorking || undefined}
@@ -2531,6 +3426,14 @@ export function ComputerUseDesktopViewport({
 							)}
 							aria-hidden="true"
 						/>
+						{keyboardCaptured && !presentation.isMobile ? (
+							<Badge
+								variant="secondary"
+								className="h-7 rounded-md border border-emerald-400/25 bg-emerald-500/15 px-2 text-[11px] font-medium text-emerald-100"
+							>
+								Keyboard captured
+							</Badge>
+						) : null}
 						{showMobilePrompt ? (
 							<>
 								<DesktopToolbarPromptForm

@@ -1717,16 +1717,14 @@ mod tests {
             serde_json::from_str("\"context_snapshot\"").expect("deserialize context snapshot");
         assert_eq!(parsed, InboundCommandKind::ContextSnapshot);
 
-        let parsed: InboundCommandKind = serde_json::from_str(
-            "\"computer_use_manual_control_input\"",
-        )
-        .expect("deserialize manual control input");
+        let parsed: InboundCommandKind =
+            serde_json::from_str("\"computer_use_manual_control_input\"")
+                .expect("deserialize manual control input");
         assert_eq!(parsed, InboundCommandKind::ComputerUseManualControlInput);
 
-        let parsed: InboundCommandKind = serde_json::from_str(
-            "\"computer_use_manual_control_heartbeat\"",
-        )
-        .expect("deserialize manual control heartbeat");
+        let parsed: InboundCommandKind =
+            serde_json::from_str("\"computer_use_manual_control_heartbeat\"")
+                .expect("deserialize manual control heartbeat");
         assert_eq!(
             parsed,
             InboundCommandKind::ComputerUseManualControlHeartbeat
