@@ -177,16 +177,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-15
+          - platform: blacksmith-6vcpu-macos-15
             target: aarch64-apple-darwin
             artifact_suffix: macos-aarch64
-          - platform: macos-15-intel
+          - platform: blacksmith-6vcpu-macos-15
             target: x86_64-apple-darwin
             artifact_suffix: macos-x86_64
           - platform: blacksmith-4vcpu-ubuntu-2404
             target: x86_64-unknown-linux-gnu
             artifact_suffix: linux-x86_64
-          - platform: windows-latest
+          - platform: blacksmith-4vcpu-windows-2025
             target: x86_64-pc-windows-msvc
             artifact_suffix: windows-x86_64
     runs-on: ${{ matrix.platform }}
@@ -237,7 +237,7 @@ jobs:
         run: cargo build --release --package xero-desktop --bin xero --target ${{ matrix.target }}
 
       - name: Package TUI archive
-        if: matrix.platform != 'windows-latest'
+        if: matrix.artifact_suffix != 'windows-x86_64'
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
@@ -264,7 +264,7 @@ jobs:
           printf '%s  %s\n' "$checksum" "$asset" > "$out_dir/$asset.sha256"
 
       - name: Package TUI archive (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: matrix.artifact_suffix == 'windows-x86_64'
         shell: pwsh
         env:
           TARGET: ${{ matrix.target }}
@@ -288,7 +288,7 @@ jobs:
           "$hash  $asset" | Out-File -FilePath (Join-Path $outDir "$asset.sha256") -Encoding ascii
 
       - name: Upload TUI assets to release
-        if: matrix.platform != 'windows-latest'
+        if: matrix.artifact_suffix != 'windows-x86_64'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.create-release.outputs.tag }}
@@ -296,7 +296,7 @@ jobs:
         run: gh release upload "$TAG" "$RUNNER_TEMP"/tui-dist/* --repo "$RELEASE_REPO" --clobber
 
       - name: Upload TUI assets to release (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: matrix.artifact_suffix == 'windows-x86_64'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.create-release.outputs.tag }}
@@ -393,19 +393,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-15
+          - platform: blacksmith-6vcpu-macos-15
             args: --target aarch64-apple-darwin --config src-tauri/tauri.macos.conf.json -- --bin xero-desktop
             artifact_suffix: macos-aarch64
             platform_key: darwin-aarch64
-          - platform: macos-15-intel
+          - platform: blacksmith-6vcpu-macos-15
             args: --target x86_64-apple-darwin --config src-tauri/tauri.macos.conf.json -- --bin xero-desktop
             artifact_suffix: macos-x86_64
             platform_key: darwin-x86_64
-          - platform: windows-latest
+          - platform: blacksmith-4vcpu-windows-2025
             args: --bundles nsis -- --bin xero-desktop
             artifact_suffix: windows-x86_64
             platform_key: windows-x86_64
-          - platform: ubuntu-24.04
+          - platform: blacksmith-4vcpu-ubuntu-2404
             args: --bundles appimage -- --bin xero-desktop
             artifact_suffix: linux-x86_64
             platform_key: linux-x86_64
@@ -433,7 +433,7 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
 
       - name: Install Linux Tauri dependencies
-        if: matrix.platform == 'ubuntu-24.04'
+        if: matrix.platform_key == 'linux-x86_64'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -453,13 +453,13 @@ jobs:
           repo-token: ${{ github.token }}
 
       - name: Set up Rust (macOS)
-        if: contains(matrix.platform, 'macos')
+        if: contains(matrix.platform_key, 'darwin')
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Set up Rust
-        if: ${{ !contains(matrix.platform, 'macos') }}
+        if: ${{ !contains(matrix.platform_key, 'darwin') }}
         uses: dtolnay/rust-toolchain@stable
 
       - name: Rust cache
@@ -484,7 +484,7 @@ jobs:
           NODE
 
       - name: Validate Apple signing secrets
-        if: contains(matrix.platform, 'macos')
+        if: contains(matrix.platform_key, 'darwin')
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -522,7 +522,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           XERO_REMOTE_RELAY_URL: ${{ env.SERVER_URL }}
           VITE_XERO_SERVER_URL: ${{ env.SERVER_URL }}
-          XERO_SKIP_IDB_COMPANION_FETCH: ${{ contains(matrix.platform, 'macos') && '1' || '' }}
+          XERO_SKIP_IDB_COMPANION_FETCH: ${{ contains(matrix.platform_key, 'darwin') && '1' || '' }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -536,7 +536,7 @@ jobs:
           args: ${{ matrix.args }}
 
       - name: Verify macOS signing
-        if: contains(matrix.platform, 'macos')
+        if: contains(matrix.platform_key, 'darwin')
         shell: bash
         run: |
           set -euo pipefail
@@ -553,7 +553,7 @@ jobs:
 
       - name: Check Azure Windows signing configuration
         id: windows_signing_config
-        if: matrix.platform == 'windows-latest'
+        if: matrix.platform_key == 'windows-x86_64'
         shell: pwsh
         env:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -586,7 +586,7 @@ jobs:
           "enabled=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Azure Login (OIDC)
-        if: matrix.platform == 'windows-latest' && steps.windows_signing_config.outputs.enabled == 'true'
+        if: matrix.platform_key == 'windows-x86_64' && steps.windows_signing_config.outputs.enabled == 'true'
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -594,7 +594,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Sign Windows installer with Azure Trusted Signing
-        if: matrix.platform == 'windows-latest' && steps.windows_signing_config.outputs.enabled == 'true'
+        if: matrix.platform_key == 'windows-x86_64' && steps.windows_signing_config.outputs.enabled == 'true'
         uses: azure/artifact-signing-action@v1
         with:
           endpoint: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
@@ -609,7 +609,7 @@ jobs:
           description: Xero
 
       - name: Re-sign Tauri updater signature after Windows code signing
-        if: matrix.platform == 'windows-latest' && steps.windows_signing_config.outputs.enabled == 'true'
+        if: matrix.platform_key == 'windows-x86_64' && steps.windows_signing_config.outputs.enabled == 'true'
         shell: pwsh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -633,7 +633,7 @@ jobs:
           & pnpm --dir client @signArgs
 
       - name: Verify Windows Authenticode signatures
-        if: matrix.platform == 'windows-latest' && steps.windows_signing_config.outputs.enabled == 'true'
+        if: matrix.platform_key == 'windows-x86_64' && steps.windows_signing_config.outputs.enabled == 'true'
         shell: pwsh
         run: |
           $files = Get-ChildItem -Path "client/src-tauri/target/release/bundle" -Recurse -File |
@@ -654,7 +654,7 @@ jobs:
           }
 
       - name: Upload macOS artifacts and latest.json
-        if: contains(matrix.platform, 'macos')
+        if: contains(matrix.platform_key, 'darwin')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -698,7 +698,7 @@ jobs:
             > /tmp/latest-json/latest.json
 
       - name: Upload Windows artifacts and latest.json
-        if: matrix.platform == 'windows-latest'
+        if: matrix.platform_key == 'windows-x86_64'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -737,7 +737,7 @@ jobs:
           } | ConvertTo-Json -Depth 10 | Out-File -FilePath "$outputDir/latest.json" -Encoding utf8
 
       - name: Upload Linux artifacts and latest.json
-        if: matrix.platform == 'ubuntu-24.04'
+        if: matrix.platform_key == 'linux-x86_64'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -768,7 +768,7 @@ jobs:
             > /tmp/latest-json/latest.json
 
       - name: Upload latest.json fragment
-        if: matrix.platform != 'windows-latest'
+        if: matrix.platform_key != 'windows-x86_64'
         uses: actions/upload-artifact@v4
         with:
           name: latest-json-${{ matrix.artifact_suffix }}
@@ -776,7 +776,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload latest.json fragment (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: matrix.platform_key == 'windows-x86_64'
         uses: actions/upload-artifact@v4
         with:
           name: latest-json-${{ matrix.artifact_suffix }}
