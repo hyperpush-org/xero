@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", allow(dead_code))]
+
 #[cfg(unix)]
 use std::process::Command;
 use std::{

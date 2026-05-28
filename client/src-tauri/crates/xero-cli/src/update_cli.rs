@@ -205,6 +205,7 @@ fn command_update_install(
     Ok(response(
         &globals,
         match install_status {
+            #[cfg(not(windows))]
             InstallStatus::Installed => format!(
                 "Installed xero {}. Restart any running TUI sessions to use it.",
                 check.latest_version
@@ -602,6 +603,7 @@ fn verify_file_sha256(path: &Path, expected: &str) -> Result<(), CliError> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallStatus {
+    #[cfg(not(windows))]
     Installed,
     #[cfg(windows)]
     Scheduled,
@@ -610,6 +612,7 @@ enum InstallStatus {
 impl InstallStatus {
     fn as_str(self) -> &'static str {
         match self {
+            #[cfg(not(windows))]
             Self::Installed => "installed",
             #[cfg(windows)]
             Self::Scheduled => "scheduled",
