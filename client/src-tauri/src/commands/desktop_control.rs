@@ -124,23 +124,59 @@ pub struct DesktopControlStatusDto {
 }
 
 #[tauri::command]
-pub fn desktop_control_status<R: Runtime>(
+pub async fn desktop_control_status<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
     request: Option<DesktopControlStatusRequestDto>,
 ) -> CommandResult<DesktopControlStatusDto> {
-    let runtime = global_computer_use_desktop_runtime(&app, state.inner(), "status")?;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        desktop_control_status_blocking(app, state, request)
+    })
+    .await
+    .map_err(|error| {
+        CommandError::system_fault(
+            "desktop_control_status_task_failed",
+            format!("Xero could not finish background desktop-control status work: {error}"),
+        )
+    })?
+}
+
+fn desktop_control_status_blocking<R: Runtime + 'static>(
+    app: AppHandle<R>,
+    state: DesktopState,
+    request: Option<DesktopControlStatusRequestDto>,
+) -> CommandResult<DesktopControlStatusDto> {
+    let runtime = global_computer_use_desktop_runtime(&app, &state, "status")?;
     let snapshot = runtime
         .desktop_control_status_snapshot(request.unwrap_or_default().refresh_permission_status)?;
-    let settings = load_desktop_control_settings(&app, state.inner())?;
-    let audit_log_path = global_computer_use_audit_log_path(&app, state.inner())?;
+    let settings = load_desktop_control_settings(&app, &state)?;
+    let audit_log_path = global_computer_use_audit_log_path(&app, &state)?;
     Ok(desktop_status_dto(snapshot, settings, audit_log_path))
 }
 
 #[tauri::command]
-pub fn desktop_control_update_settings<R: Runtime>(
+pub async fn desktop_control_update_settings<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
+    request: UpsertDesktopControlSettingsRequestDto,
+) -> CommandResult<DesktopControlStatusDto> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        desktop_control_update_settings_blocking(app, state, request)
+    })
+    .await
+    .map_err(|error| {
+        CommandError::system_fault(
+            "desktop_control_settings_task_failed",
+            format!("Xero could not finish background desktop-control settings work: {error}"),
+        )
+    })?
+}
+
+fn desktop_control_update_settings_blocking<R: Runtime + 'static>(
+    app: AppHandle<R>,
+    state: DesktopState,
     request: UpsertDesktopControlSettingsRequestDto,
 ) -> CommandResult<DesktopControlStatusDto> {
     let settings = DesktopControlSettingsDto {
@@ -150,22 +186,37 @@ pub fn desktop_control_update_settings<R: Runtime>(
         private_regions: normalize_private_regions(request.private_regions)?,
         updated_at: Some(crate::auth::now_timestamp()),
     };
-    write_desktop_control_settings(&app, state.inner(), &settings)?;
-    let runtime = global_computer_use_desktop_runtime(&app, state.inner(), "settings")?;
+    write_desktop_control_settings(&app, &state, &settings)?;
+    let runtime = global_computer_use_desktop_runtime(&app, &state, "settings")?;
     let snapshot = runtime.desktop_control_status_snapshot(false)?;
-    let audit_log_path = global_computer_use_audit_log_path(&app, state.inner())?;
+    let audit_log_path = global_computer_use_audit_log_path(&app, &state)?;
     Ok(desktop_status_dto(snapshot, settings, audit_log_path))
 }
 
 #[tauri::command]
-pub fn desktop_control_stop<R: Runtime>(
+pub async fn desktop_control_stop<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
 ) -> CommandResult<DesktopControlStatusDto> {
-    let runtime = global_computer_use_desktop_runtime(&app, state.inner(), "emergency-stop")?;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || desktop_control_stop_blocking(app, state))
+        .await
+        .map_err(|error| {
+            CommandError::system_fault(
+                "desktop_control_stop_task_failed",
+                format!("Xero could not finish background desktop-control stop work: {error}"),
+            )
+        })?
+}
+
+fn desktop_control_stop_blocking<R: Runtime + 'static>(
+    app: AppHandle<R>,
+    state: DesktopState,
+) -> CommandResult<DesktopControlStatusDto> {
+    let runtime = global_computer_use_desktop_runtime(&app, &state, "emergency-stop")?;
     let snapshot = runtime.desktop_emergency_stop("local_desktop_control_stop")?;
-    let settings = load_desktop_control_settings(&app, state.inner())?;
-    let audit_log_path = global_computer_use_audit_log_path(&app, state.inner())?;
+    let settings = load_desktop_control_settings(&app, &state)?;
+    let audit_log_path = global_computer_use_audit_log_path(&app, &state)?;
     Ok(desktop_status_dto(snapshot, settings, audit_log_path))
 }
 

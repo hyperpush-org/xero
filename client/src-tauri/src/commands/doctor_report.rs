@@ -107,14 +107,80 @@ fn collect_dictation_checks<R: Runtime>(
         }
     };
 
+    if status.platform == DictationPlatformDto::Windows {
+        push_check(
+            checks,
+            XeroDiagnosticCheck::passed(
+                XeroDiagnosticSubject::Dictation,
+                "dictation_windows_runtime_detected",
+                format!(
+                    "Windows {} is available for native dictation.",
+                    status.os_version.as_deref().unwrap_or("unknown")
+                ),
+            ),
+        );
+
+        if status.windows_sdk.available {
+            push_check(
+                checks,
+                XeroDiagnosticCheck::passed(
+                    XeroDiagnosticSubject::Dictation,
+                    "dictation_windows_sdk_available",
+                    "The native Windows SDK dictation engine is available.",
+                ),
+            );
+        } else {
+            push_check(
+                checks,
+                XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+                    subject: XeroDiagnosticSubject::Dictation,
+                    status: XeroDiagnosticStatus::Failed,
+                    severity: XeroDiagnosticSeverity::Error,
+                    retryable: true,
+                    code: "dictation_windows_sdk_unavailable".into(),
+                    message: "Xero could not initialize the native Windows SDK dictation engine.".into(),
+                    affected_profile_id: None,
+                    affected_provider_id: None,
+                    endpoint: None,
+                    remediation: Some(
+                        "Confirm a microphone is connected, microphone access is enabled for desktop apps, and Windows online speech recognition is enabled if required.".into(),
+                    ),
+                }),
+            );
+        }
+        push_windows_meter_check(checks, &status);
+
+        push_permission_check(
+            checks,
+            "microphone",
+            status.microphone_permission,
+            "Start dictation once to trigger the Windows microphone prompt.",
+            "Open Windows Settings > Privacy & security > Microphone and allow desktop app access.",
+        );
+        push_permission_check(
+            checks,
+            "speech",
+            status.speech_permission,
+            "Start dictation once, then enable Windows speech recognition if prompted.",
+            "Open Windows Settings > Privacy & security > Speech and allow online speech recognition.",
+        );
+
+        if let Some(settings) = settings {
+            push_selected_engine_check(checks, settings.engine_preference, &status);
+            push_selected_locale_check(checks, settings.locale.as_deref(), &status);
+        }
+
+        return;
+    }
+
     if status.platform != DictationPlatformDto::Macos {
         push_check(
             checks,
             XeroDiagnosticCheck::skipped(
                 XeroDiagnosticSubject::Dictation,
                 "dictation_platform_unsupported",
-                "Native dictation is only available on macOS in this release.",
-                Some("Use Xero on macOS to enable native dictation.".into()),
+                "Native dictation is available on macOS and Windows.",
+                Some("Use Xero on macOS or Windows to enable native dictation.".into()),
             ),
         );
         return;
@@ -183,12 +249,14 @@ fn collect_dictation_checks<R: Runtime>(
         checks,
         "microphone",
         status.microphone_permission,
+        "Start dictation once to trigger the macOS permission prompt.",
         "Open System Settings > Privacy & Security > Microphone and allow Xero.",
     );
     push_permission_check(
         checks,
         "speech",
         status.speech_permission,
+        "Start dictation once to trigger the macOS permission prompt.",
         "Open System Settings > Privacy & Security > Speech Recognition and allow Xero.",
     );
 
@@ -205,6 +273,11 @@ fn push_selected_engine_check(
     preference: DictationEnginePreferenceDto,
     status: &DictationStatusDto,
 ) {
+    if status.platform == DictationPlatformDto::Windows {
+        push_selected_windows_engine_check(checks, preference, status);
+        return;
+    }
+
     let (check_status, severity, retryable, code, message, remediation) = match preference {
         DictationEnginePreferenceDto::Modern if status.modern.available => (
             XeroDiagnosticStatus::Passed,
@@ -291,10 +364,123 @@ fn push_selected_engine_check(
     );
 }
 
+fn push_selected_windows_engine_check(
+    checks: &mut Vec<XeroDiagnosticCheck>,
+    preference: DictationEnginePreferenceDto,
+    status: &DictationStatusDto,
+) {
+    let (check_status, severity, retryable, code, message, remediation) = match preference {
+        DictationEnginePreferenceDto::Automatic if status.windows_sdk.available => (
+            XeroDiagnosticStatus::Passed,
+            XeroDiagnosticSeverity::Info,
+            false,
+            "dictation_automatic_windows_sdk_available",
+            "Automatic dictation can use the native Windows SDK engine.".to_string(),
+            None,
+        ),
+        DictationEnginePreferenceDto::Automatic => (
+            XeroDiagnosticStatus::Failed,
+            XeroDiagnosticSeverity::Error,
+            true,
+            "dictation_automatic_windows_sdk_unavailable",
+            "Automatic dictation could not initialize the native Windows SDK engine.".to_string(),
+            Some("Check Windows microphone access, speech privacy settings, and installed speech languages.".to_string()),
+        ),
+        DictationEnginePreferenceDto::Modern => (
+            XeroDiagnosticStatus::Failed,
+            XeroDiagnosticSeverity::Error,
+            false,
+            "dictation_selected_modern_unavailable_windows",
+            "Dictation is set to prefer the macOS modern engine, which is not available on Windows.".to_string(),
+            Some("Choose Automatic in Dictation settings to use the Windows SDK engine.".to_string()),
+        ),
+        DictationEnginePreferenceDto::Legacy => (
+            XeroDiagnosticStatus::Failed,
+            XeroDiagnosticSeverity::Error,
+            false,
+            "dictation_selected_legacy_unavailable_windows",
+            "Dictation is set to Legacy only, which is not available on Windows.".to_string(),
+            Some("Choose Automatic in Dictation settings to use the Windows SDK engine.".to_string()),
+        ),
+    };
+
+    push_check(
+        checks,
+        XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+            subject: XeroDiagnosticSubject::Dictation,
+            status: check_status,
+            severity,
+            retryable,
+            code: code.into(),
+            message,
+            affected_profile_id: None,
+            affected_provider_id: None,
+            endpoint: None,
+            remediation,
+        }),
+    );
+}
+
+fn push_windows_meter_check(checks: &mut Vec<XeroDiagnosticCheck>, status: &DictationStatusDto) {
+    if !status.windows_sdk.available {
+        push_check(
+            checks,
+            XeroDiagnosticCheck::skipped(
+                XeroDiagnosticSubject::Dictation,
+                "dictation_windows_meter_not_applicable",
+                "Windows microphone metering was not checked because native Windows dictation is unavailable.",
+                Some("Repair Windows SDK dictation availability, then run diagnostics again.".into()),
+            ),
+        );
+        return;
+    }
+
+    let meter_reason = status
+        .windows_sdk
+        .reason
+        .as_deref()
+        .filter(|reason| is_windows_meter_reason(reason));
+
+    if let Some(reason) = meter_reason {
+        push_check(
+            checks,
+            XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+                subject: XeroDiagnosticSubject::Dictation,
+                status: XeroDiagnosticStatus::Warning,
+                severity: XeroDiagnosticSeverity::Warning,
+                retryable: true,
+                code: "dictation_windows_meter_unavailable".into(),
+                message: "Windows dictation can transcribe, but Xero could not prepare the composer waveform meter.".into(),
+                affected_profile_id: None,
+                affected_provider_id: None,
+                endpoint: None,
+                remediation: Some(format!(
+                    "The waveform may stay flat while dictation continues. Check the default microphone and desktop app microphone access, then run diagnostics again. Details: {reason}"
+                )),
+            }),
+        );
+        return;
+    }
+
+    push_check(
+        checks,
+        XeroDiagnosticCheck::passed(
+            XeroDiagnosticSubject::Dictation,
+            "dictation_windows_meter_available",
+            "Windows microphone metering can use the default input path for composer waveform levels.",
+        ),
+    );
+}
+
+fn is_windows_meter_reason(reason: &str) -> bool {
+    reason.starts_with("windows_meter_")
+}
+
 fn push_permission_check(
     checks: &mut Vec<XeroDiagnosticCheck>,
     permission: &'static str,
     state: DictationPermissionStateDto,
+    pending_remediation: &'static str,
     denied_remediation: &'static str,
 ) {
     let (status, severity, retryable, code, message, remediation) = match state {
@@ -312,7 +498,7 @@ fn push_permission_check(
             true,
             format!("dictation_{permission}_permission_not_determined"),
             format!("Xero has not requested {permission} permission yet."),
-            Some("Start dictation once to trigger the macOS permission prompt.".to_string()),
+            Some(pending_remediation.to_string()),
         ),
         DictationPermissionStateDto::Denied | DictationPermissionStateDto::Restricted => (
             XeroDiagnosticStatus::Failed,
@@ -328,9 +514,7 @@ fn push_permission_check(
             true,
             format!("dictation_{permission}_permission_unknown"),
             format!("Xero could not determine {permission} permission state."),
-            Some(
-                "Open System Settings privacy permissions, then run diagnostics again.".to_string(),
-            ),
+            Some("Open system privacy settings, then run diagnostics again.".to_string()),
         ),
     };
 
@@ -356,6 +540,11 @@ fn push_selected_locale_check(
     selected_locale: Option<&str>,
     status: &DictationStatusDto,
 ) {
+    let platform_label = match status.platform {
+        DictationPlatformDto::Windows => "Windows",
+        DictationPlatformDto::Macos => "macOS",
+        _ => "this platform",
+    };
     let locale = selected_locale
         .or(status.default_locale.as_deref())
         .map(str::trim)
@@ -367,7 +556,9 @@ fn push_selected_locale_check(
             XeroDiagnosticCheck::skipped(
                 XeroDiagnosticSubject::Dictation,
                 "dictation_locale_unselected",
-                "No dictation locale is selected and macOS did not report a system default locale.",
+                format!(
+                    "No dictation locale is selected and {platform_label} did not report a system default locale."
+                ),
                 Some("Choose a locale in Dictation settings.".into()),
             ),
         );
@@ -380,7 +571,7 @@ fn push_selected_locale_check(
             XeroDiagnosticCheck::skipped(
                 XeroDiagnosticSubject::Dictation,
                 "dictation_supported_locale_list_unavailable",
-                format!("Xero could not verify selected dictation locale `{locale}` because macOS did not report supported locales."),
+                format!("Xero could not verify selected dictation locale `{locale}` because {platform_label} did not report supported locales."),
                 Some("Start dictation or run diagnostics again after Speech Recognition becomes available.".into()),
             ),
         );
@@ -1639,12 +1830,48 @@ fn doctor_report_id(generated_at: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::{DictationEngineStatusDto, DictationModernAssetsDto};
 
     fn registry_record(project_id: &str) -> RegistryProjectRecord {
         RegistryProjectRecord {
             project_id: project_id.into(),
             repository_id: format!("repo-{project_id}"),
             root_path: format!("/tmp/{project_id}"),
+        }
+    }
+
+    fn windows_status_with_meter_reason(reason: Option<&str>) -> DictationStatusDto {
+        DictationStatusDto {
+            platform: DictationPlatformDto::Windows,
+            os_version: Some("11".into()),
+            default_locale: Some("en-US".into()),
+            supported_locales: vec!["en-US".into()],
+            modern: DictationEngineStatusDto {
+                available: false,
+                compiled: false,
+                runtime_supported: false,
+                reason: Some("macos_modern_unavailable_on_windows".into()),
+            },
+            legacy: DictationEngineStatusDto {
+                available: false,
+                compiled: false,
+                runtime_supported: false,
+                reason: Some("macos_legacy_unavailable_on_windows".into()),
+            },
+            windows_sdk: DictationEngineStatusDto {
+                available: true,
+                compiled: true,
+                runtime_supported: true,
+                reason: reason.map(str::to_owned),
+            },
+            modern_assets: DictationModernAssetsDto {
+                status: DictationModernAssetStatusDto::Unavailable,
+                locale: None,
+                reason: Some("macos_modern_unavailable_on_windows".into()),
+            },
+            microphone_permission: DictationPermissionStateDto::Unknown,
+            speech_permission: DictationPermissionStateDto::Unknown,
+            active_session: None,
         }
     }
 
@@ -1658,5 +1885,34 @@ mod tests {
         let filtered = filter_diagnostic_registry_projects(projects);
 
         assert_eq!(filtered, vec![registry_record("project-real")]);
+    }
+
+    #[test]
+    fn windows_meter_check_warns_when_transcription_is_available_without_metering() {
+        let mut checks = Vec::new();
+        push_windows_meter_check(
+            &mut checks,
+            &windows_status_with_meter_reason(Some(
+                "windows_meter_config_unavailable: no default config",
+            )),
+        );
+
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].code, "dictation_windows_meter_unavailable");
+        assert_eq!(checks[0].status, XeroDiagnosticStatus::Warning);
+        assert!(checks[0]
+            .remediation
+            .as_deref()
+            .is_some_and(|remediation| remediation.contains("windows_meter_config_unavailable")));
+    }
+
+    #[test]
+    fn windows_meter_check_passes_when_default_input_meter_is_ready() {
+        let mut checks = Vec::new();
+        push_windows_meter_check(&mut checks, &windows_status_with_meter_reason(None));
+
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].code, "dictation_windows_meter_available");
+        assert_eq!(checks[0].status, XeroDiagnosticStatus::Passed);
     }
 }

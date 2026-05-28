@@ -2,6 +2,7 @@ import * as SelectPrimitive from "@radix-ui/react-select";
 import { Activity, Brain, ChevronDown, Cpu, MessageCircle, Settings, ShieldCheck, Sparkles } from "lucide-react";
 import {
 	type ChangeEvent,
+	type CSSProperties,
 	Fragment,
 	type KeyboardEvent,
 	type ReactNode,
@@ -57,12 +58,28 @@ import {
 export type { ComposerSelectGroup, ComposerSelectOption } from "./composer-types";
 export type ComposerPendingAttachmentType = ComposerPendingAttachment;
 
+export interface ComposerShortcutBinding {
+	/** "Mod" — Cmd on macOS, Ctrl on Windows/Linux. */
+	mod: boolean;
+	shift: boolean;
+	alt: boolean;
+	key: string;
+}
+
+export const COMPOSER_DICTATION_SHORTCUT: ComposerShortcutBinding = {
+	mod: true,
+	shift: true,
+	alt: false,
+	key: "d",
+};
+
 /**
  * Minimal dictation contract the composer needs. Compatible with both the
  * browser `useComposerDictation` control and platform-supplied controls (e.g.
  * the Tauri desktop dictation adapter). Optional members are guarded.
  */
 export interface ComposerDictationLike {
+	audioLevel?: number;
 	ariaLabel: string;
 	isListening: boolean;
 	isToggleDisabled: boolean;
@@ -126,6 +143,8 @@ export interface ComposerProps {
 	onRemoveAttachment?: (id: string) => void;
 
 	dictation?: ComposerDictationLike;
+	/** Defaults to Cmd/Ctrl+Shift+D. Pass null to disable the composer-owned shortcut. */
+	dictationShortcut?: ComposerShortcutBinding | null;
 	contextMeter?: ReactNode;
 
 	isStopVisible?: boolean;
@@ -150,6 +169,8 @@ const useIsomorphicLayoutEffect =
 
 const drawerSelectContentClassName =
 	"max-h-72 min-w-[min(20rem,90vw)] border-border/70 bg-card text-foreground shadow-xl";
+
+const WAVEFORM_BANDS = [0.58, 0.82, 0.46, 1, 0.64, 0.9, 0.52, 0.76, 0.42, 0.68, 0.95, 0.56];
 
 function parseCssPixelValue(value: string): number | null {
 	const parsed = Number.parseFloat(value);
@@ -189,6 +210,41 @@ function findOption(
 	return null;
 }
 
+function normalizeShortcutKey(key: string): string {
+	return key.length === 1 ? key.toLowerCase() : key;
+}
+
+function isShortcutBindingEmpty(binding: ComposerShortcutBinding): boolean {
+	return binding.key.trim() === "";
+}
+
+function detectShortcutPlatform(): "macos" | "other" {
+	if (typeof navigator === "undefined") return "other";
+	return /mac|iphone|ipad|ipod/i.test(navigator.platform) ? "macos" : "other";
+}
+
+function eventMatchesComposerShortcut(
+	event: globalThis.KeyboardEvent,
+	binding: ComposerShortcutBinding,
+): boolean {
+	if (isShortcutBindingEmpty(binding)) return false;
+	if (normalizeShortcutKey(event.key) !== normalizeShortcutKey(binding.key)) return false;
+
+	const platform = detectShortcutPlatform();
+	const modPressed = platform === "macos" ? event.metaKey : event.ctrlKey;
+	const otherModPressed = platform === "macos" ? event.ctrlKey : event.metaKey;
+	if (binding.mod !== modPressed) return false;
+	if (otherModPressed) return false;
+	if (binding.shift !== event.shiftKey) return false;
+	if (binding.alt !== event.altKey) return false;
+	return true;
+}
+
+function clampAudioLevel(level: number | null | undefined): number {
+	if (level == null || !Number.isFinite(level)) return 0;
+	return Math.max(0, Math.min(1, level));
+}
+
 export function Composer({
 	draftPrompt,
 	onDraftPromptChange,
@@ -226,6 +282,7 @@ export function Composer({
 	onAddFiles,
 	onRemoveAttachment,
 	dictation: externalDictation,
+	dictationShortcut,
 	contextMeter,
 	isStopVisible = false,
 	isStopDisabled = false,
@@ -256,6 +313,12 @@ export function Composer({
 	const dictation: ComposerDictationLike = externalDictation ?? internalDictation;
 	const dictationVisible = dictation.isVisible !== false;
 	const dictationError = dictation.error ?? null;
+	const resolvedDictationShortcut =
+		dictationShortcut === undefined ? COMPOSER_DICTATION_SHORTCUT : dictationShortcut;
+	const dictationRunning =
+		dictationVisible &&
+		(dictation.isListening || dictation.phase === "requesting" || dictation.phase === "stopping");
+	const dictationAudioLevel = clampAudioLevel(dictation.audioLevel);
 
 	const isMobile = useIsMobile();
 	const hasText = draftPrompt.trim().length > 0;
@@ -277,6 +340,22 @@ export function Composer({
 		if (!node) return;
 		resizeComposerTextarea(node);
 	}, [draftPrompt, textareaRef]);
+
+	useEffect(() => {
+		if (!dictationVisible || !resolvedDictationShortcut) return;
+		if (typeof window === "undefined") return;
+
+		const handleDictationShortcut = (event: globalThis.KeyboardEvent) => {
+			if (event.repeat) return;
+			if (!eventMatchesComposerShortcut(event, resolvedDictationShortcut)) return;
+			if (dictation.isToggleDisabled) return;
+			event.preventDefault();
+			void dictation.toggle();
+		};
+
+		window.addEventListener("keydown", handleDictationShortcut);
+		return () => window.removeEventListener("keydown", handleDictationShortcut);
+	}, [dictation, dictationVisible, resolvedDictationShortcut]);
 
 	const handleTextareaChange = useCallback(
 		(value: string) => {
@@ -568,10 +647,11 @@ export function Composer({
 	return (
 		<div
 			className={cn(
-				"group/composer flex w-full flex-col overflow-hidden bg-card/90 supports-[backdrop-filter]:bg-card/75",
+				"group/composer relative flex w-full flex-col overflow-hidden bg-card/90 supports-[backdrop-filter]:bg-card/75",
 				dense
 					? "border-t border-border/60 transition-colors focus-within:border-primary/40"
 					: "agent-composer-glow rounded-xl border border-border/60 shadow-[0_8px_24px_-12px_rgba(15,23,42,0.12),0_1px_3px_-1px_rgba(15,23,42,0.06)] ring-1 ring-inset ring-foreground/[0.03] backdrop-blur hover:border-border focus-within:border-primary/40 focus-within:ring-primary/20 dark:shadow-[0_20px_60px_-20px_rgba(0,0,0,0.6),0_2px_8px_-2px_rgba(0,0,0,0.3)]",
+				dictationRunning && "pb-1.5",
 				className,
 			)}
 		>
@@ -685,6 +765,29 @@ export function Composer({
 					tabIndex={-1}
 				/>
 			) : null}
+			{dictationRunning ? (
+				<ComposerDictationWaveform level={dictationAudioLevel} />
+			) : null}
+		</div>
+	);
+}
+
+function ComposerDictationWaveform({ level }: { level: number }) {
+	return (
+		<div
+			aria-hidden="true"
+			className="composer-dictation-waveform"
+			style={{ "--composer-dictation-level": level } as CSSProperties}
+		>
+			<div className="composer-dictation-waveform__rail">
+				{WAVEFORM_BANDS.map((band, index) => (
+					<span
+						key={`${band}-${index}`}
+						className="composer-dictation-waveform__band"
+						style={{ "--composer-dictation-band": band } as CSSProperties}
+					/>
+				))}
+			</div>
 		</div>
 	);
 }

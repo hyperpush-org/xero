@@ -65,6 +65,13 @@ function stubResizeObserver() {
 	});
 }
 
+function stubNavigatorPlatform(platform: string) {
+	Object.defineProperty(window.navigator, "platform", {
+		configurable: true,
+		value: platform,
+	});
+}
+
 type RenderOverrides = Partial<Omit<ComposerProps, "draftPrompt" | "onDraftPromptChange">> & {
 	initialDraft?: string;
 };
@@ -96,6 +103,7 @@ function renderComposer({ initialDraft = "", ...overrides }: RenderOverrides = {
 describe("Composer", () => {
 	beforeEach(() => {
 		setViewportWidth(1280);
+		stubNavigatorPlatform("Win32");
 		stubMatchMedia(false);
 		stubResizeObserver();
 	});
@@ -141,6 +149,26 @@ describe("Composer", () => {
 		fireEvent.click(screen.getByRole("menuitemradio", { name: "High" }));
 
 		expect(onThinkingChange).toHaveBeenCalledWith("high");
+	});
+
+	it("toggles visible dictation from the composer shortcut and renders the voice meter", async () => {
+		const toggle = vi.fn(async () => undefined);
+		renderComposer({
+			dictation: {
+				...inertDictation,
+				audioLevel: 0.62,
+				ariaLabel: "Stop dictation",
+				isListening: true,
+				isVisible: true,
+				phase: "listening",
+				toggle,
+			},
+		});
+
+		expect(document.querySelector(".composer-dictation-waveform")).not.toBeNull();
+		fireEvent.keyDown(window, { key: "d", ctrlKey: true, shiftKey: true });
+
+		await waitFor(() => expect(toggle).toHaveBeenCalledTimes(1));
 	});
 
 	it("keeps only the model list scrollable when many models are available", () => {

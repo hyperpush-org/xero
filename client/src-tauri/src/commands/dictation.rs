@@ -257,9 +257,10 @@ pub fn speech_dictation_start<R: Runtime>(
     let channel = resolve_channel(&webview, request.channel.as_deref())?;
     let request = normalize_start_request(request);
     let status = probe_dictation_status();
-    ensure_macos_platform(&status)?;
+    ensure_native_dictation_platform(&status)?;
 
     let engine = select_engine(&status, request.engine_preference)?;
+    ensure_privacy_mode_supported(&status, request.privacy_mode)?;
     let locale = request
         .locale
         .clone()
@@ -543,14 +544,17 @@ impl DictationSettingsFile {
     }
 }
 
-fn ensure_macos_platform(status: &DictationStatusDto) -> CommandResult<()> {
-    if status.platform == DictationPlatformDto::Macos {
+fn ensure_native_dictation_platform(status: &DictationStatusDto) -> CommandResult<()> {
+    if matches!(
+        status.platform,
+        DictationPlatformDto::Macos | DictationPlatformDto::Windows
+    ) {
         return Ok(());
     }
 
     Err(CommandError::user_fixable(
         "dictation_unsupported_platform",
-        "Xero dictation is only available on macOS in this release.",
+        "Xero native dictation is available on macOS and Windows.",
     ))
 }
 
@@ -558,6 +562,10 @@ fn select_engine(
     status: &DictationStatusDto,
     preference: DictationEnginePreferenceDto,
 ) -> CommandResult<DictationEngineDto> {
+    if status.platform == DictationPlatformDto::Windows {
+        return select_windows_engine(status, preference);
+    }
+
     match preference {
         DictationEnginePreferenceDto::Modern if status.modern.available => {
             Ok(DictationEngineDto::Modern)
@@ -586,6 +594,46 @@ fn select_engine(
             "Xero could not find an available native macOS dictation engine.",
         )),
     }
+}
+
+fn select_windows_engine(
+    status: &DictationStatusDto,
+    preference: DictationEnginePreferenceDto,
+) -> CommandResult<DictationEngineDto> {
+    match preference {
+        DictationEnginePreferenceDto::Automatic if status.windows_sdk.available => {
+            Ok(DictationEngineDto::WindowsSdk)
+        }
+        DictationEnginePreferenceDto::Automatic => Err(engine_unavailable_error(
+            "dictation_windows_sdk_unavailable",
+            "Windows SDK",
+            &status.windows_sdk,
+        )),
+        DictationEnginePreferenceDto::Modern => Err(CommandError::user_fixable(
+            "dictation_modern_unavailable_windows",
+            "Modern dictation is a macOS engine. Use Automatic on Windows to use the native Windows SDK engine.",
+        )),
+        DictationEnginePreferenceDto::Legacy => Err(CommandError::user_fixable(
+            "dictation_legacy_unavailable_windows",
+            "Legacy dictation is a macOS engine. Use Automatic on Windows to use the native Windows SDK engine.",
+        )),
+    }
+}
+
+fn ensure_privacy_mode_supported(
+    status: &DictationStatusDto,
+    privacy_mode: DictationPrivacyModeDto,
+) -> CommandResult<()> {
+    if status.platform == DictationPlatformDto::Windows
+        && privacy_mode == DictationPrivacyModeDto::OnDeviceRequired
+    {
+        return Err(CommandError::user_fixable(
+            "dictation_windows_on_device_required_unavailable",
+            "Windows SDK dictation can require Windows online speech recognition. Choose On-device preferred or Allow network until a local Windows engine is available.",
+        ));
+    }
+
+    Ok(())
 }
 
 fn engine_unavailable_error(
@@ -645,6 +693,9 @@ struct DictationProbe {
     modern_assets: DictationModernAssetsDto,
     legacy_runtime_supported: bool,
     legacy_recognizer_available: bool,
+    windows_sdk_runtime_supported: bool,
+    windows_sdk_recognizer_available: bool,
+    windows_sdk_reason: Option<String>,
     microphone_permission: DictationPermissionStateDto,
     speech_permission: DictationPermissionStateDto,
     fallback_reason: Option<String>,
@@ -664,6 +715,9 @@ struct NativeDictationProbe {
     modern_assets_reason: Option<String>,
     legacy_runtime_supported: Option<bool>,
     legacy_recognizer_available: Option<bool>,
+    windows_sdk_runtime_supported: Option<bool>,
+    windows_sdk_recognizer_available: Option<bool>,
+    windows_sdk_reason: Option<String>,
     microphone_permission: Option<String>,
     speech_permission: Option<String>,
 }
@@ -672,6 +726,8 @@ impl DictationProbe {
     fn into_status(self) -> DictationStatusDto {
         let modern_reason = if self.platform == DictationPlatformDto::Unsupported {
             Some("unsupported_platform".into())
+        } else if self.platform == DictationPlatformDto::Windows {
+            Some("macos_modern_unavailable_on_windows".into())
         } else if let Some(reason) = self.fallback_reason.clone() {
             Some(reason)
         } else if !self.modern_compiled {
@@ -684,12 +740,30 @@ impl DictationProbe {
 
         let legacy_reason = if self.platform == DictationPlatformDto::Unsupported {
             Some("unsupported_platform".into())
-        } else if let Some(reason) = self.fallback_reason {
+        } else if self.platform == DictationPlatformDto::Windows {
+            Some("macos_legacy_unavailable_on_windows".into())
+        } else if let Some(reason) = self.fallback_reason.clone() {
             Some(reason)
         } else if !self.legacy_runtime_supported {
             Some("legacy_runtime_unavailable".into())
         } else if !self.legacy_recognizer_available {
             Some("legacy_recognizer_unavailable".into())
+        } else {
+            None
+        };
+
+        let windows_sdk_reason = if self.platform == DictationPlatformDto::Unsupported {
+            Some("unsupported_platform".into())
+        } else if self.platform != DictationPlatformDto::Windows {
+            Some("windows_sdk_unavailable_on_this_platform".into())
+        } else if let Some(reason) = self.fallback_reason {
+            Some(reason)
+        } else if let Some(reason) = self.windows_sdk_reason {
+            Some(reason)
+        } else if !self.windows_sdk_runtime_supported {
+            Some("windows_speech_runtime_unavailable".into())
+        } else if !self.windows_sdk_recognizer_available {
+            Some("windows_speech_recognizer_unavailable".into())
         } else {
             None
         };
@@ -700,16 +774,28 @@ impl DictationProbe {
             default_locale: self.default_locale,
             supported_locales: self.supported_locales,
             modern: DictationEngineStatusDto {
-                available: self.modern_compiled && self.modern_runtime_supported,
+                available: self.platform == DictationPlatformDto::Macos
+                    && self.modern_compiled
+                    && self.modern_runtime_supported,
                 compiled: self.modern_compiled,
                 runtime_supported: self.modern_runtime_supported,
                 reason: modern_reason,
             },
             legacy: DictationEngineStatusDto {
-                available: self.legacy_runtime_supported && self.legacy_recognizer_available,
+                available: self.platform == DictationPlatformDto::Macos
+                    && self.legacy_runtime_supported
+                    && self.legacy_recognizer_available,
                 compiled: self.legacy_runtime_supported,
                 runtime_supported: self.legacy_runtime_supported,
                 reason: legacy_reason,
+            },
+            windows_sdk: DictationEngineStatusDto {
+                available: self.platform == DictationPlatformDto::Windows
+                    && self.windows_sdk_runtime_supported
+                    && self.windows_sdk_recognizer_available,
+                compiled: self.windows_sdk_runtime_supported,
+                runtime_supported: self.windows_sdk_runtime_supported,
+                reason: windows_sdk_reason,
             },
             modern_assets: self.modern_assets,
             microphone_permission: self.microphone_permission,
@@ -731,6 +817,8 @@ fn native_probe() -> Result<DictationProbe, String> {
     Ok(DictationProbe {
         platform: match probe.platform.as_deref() {
             Some("macos") => DictationPlatformDto::Macos,
+            Some("windows") => DictationPlatformDto::Windows,
+            Some("linux") => DictationPlatformDto::Linux,
             _ => DictationPlatformDto::Unsupported,
         },
         os_version: normalize_optional_text(probe.os_version),
@@ -745,6 +833,9 @@ fn native_probe() -> Result<DictationProbe, String> {
         },
         legacy_runtime_supported: probe.legacy_runtime_supported.unwrap_or(false),
         legacy_recognizer_available: probe.legacy_recognizer_available.unwrap_or(false),
+        windows_sdk_runtime_supported: probe.windows_sdk_runtime_supported.unwrap_or(false),
+        windows_sdk_recognizer_available: probe.windows_sdk_recognizer_available.unwrap_or(false),
+        windows_sdk_reason: normalize_optional_text(probe.windows_sdk_reason),
         microphone_permission: permission_state(probe.microphone_permission.as_deref()),
         speech_permission: permission_state(probe.speech_permission.as_deref()),
         fallback_reason: None,
@@ -766,6 +857,9 @@ fn fallback_probe(reason: String) -> DictationProbe {
         },
         legacy_runtime_supported: false,
         legacy_recognizer_available: false,
+        windows_sdk_runtime_supported: false,
+        windows_sdk_recognizer_available: false,
+        windows_sdk_reason: None,
         microphone_permission: fallback_permission(),
         speech_permission: fallback_permission(),
         fallback_reason: Some(reason),
@@ -777,7 +871,17 @@ fn fallback_platform() -> DictationPlatformDto {
     DictationPlatformDto::Macos
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn fallback_platform() -> DictationPlatformDto {
+    DictationPlatformDto::Windows
+}
+
+#[cfg(target_os = "linux")]
+fn fallback_platform() -> DictationPlatformDto {
+    DictationPlatformDto::Linux
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn fallback_platform() -> DictationPlatformDto {
     DictationPlatformDto::Unsupported
 }
@@ -843,7 +947,11 @@ struct NativeSessionRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(
-    not(any(test, all(target_os = "macos", xero_dictation_native_shim))),
+    not(any(
+        test,
+        target_os = "windows",
+        all(target_os = "macos", xero_dictation_native_shim)
+    )),
     allow(dead_code)
 )]
 struct NativeOperationResponse {
@@ -892,7 +1000,11 @@ impl NativeStartError {
 }
 
 #[cfg_attr(
-    not(any(test, all(target_os = "macos", xero_dictation_native_shim))),
+    not(any(
+        test,
+        target_os = "windows",
+        all(target_os = "macos", xero_dictation_native_shim)
+    )),
     allow(dead_code)
 )]
 fn native_operation_result(
@@ -914,7 +1026,11 @@ fn native_operation_result(
 }
 
 #[cfg_attr(
-    not(any(test, all(target_os = "macos", xero_dictation_native_shim))),
+    not(any(
+        test,
+        target_os = "windows",
+        all(target_os = "macos", xero_dictation_native_shim)
+    )),
     allow(dead_code)
 )]
 struct NativeCallbackContext {
@@ -924,7 +1040,11 @@ struct NativeCallbackContext {
 }
 
 #[cfg_attr(
-    not(any(test, all(target_os = "macos", xero_dictation_native_shim))),
+    not(any(
+        test,
+        target_os = "windows",
+        all(target_os = "macos", xero_dictation_native_shim)
+    )),
     allow(dead_code)
 )]
 impl NativeCallbackContext {
@@ -967,7 +1087,11 @@ impl NativeCallbackContext {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[cfg_attr(
-    not(any(test, all(target_os = "macos", xero_dictation_native_shim))),
+    not(any(
+        test,
+        target_os = "windows",
+        all(target_os = "macos", xero_dictation_native_shim)
+    )),
     allow(dead_code)
 )]
 enum NativeDictationEvent {
@@ -988,6 +1112,12 @@ enum NativeDictationEvent {
         #[serde(rename = "sessionId")]
         session_id: String,
         text: String,
+        sequence: u64,
+    },
+    AudioLevel {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        level: f32,
         sequence: u64,
     },
     Final {
@@ -1012,7 +1142,11 @@ enum NativeDictationEvent {
 
 #[derive(Debug, Clone)]
 #[cfg_attr(
-    not(any(test, all(target_os = "macos", xero_dictation_native_shim))),
+    not(any(
+        test,
+        target_os = "windows",
+        all(target_os = "macos", xero_dictation_native_shim)
+    )),
     allow(dead_code)
 )]
 struct NativeEventOutcome {
@@ -1021,7 +1155,11 @@ struct NativeEventOutcome {
 }
 
 #[cfg_attr(
-    not(any(test, all(target_os = "macos", xero_dictation_native_shim))),
+    not(any(
+        test,
+        target_os = "windows",
+        all(target_os = "macos", xero_dictation_native_shim)
+    )),
     allow(dead_code)
 )]
 impl NativeDictationEvent {
@@ -1063,6 +1201,25 @@ impl NativeDictationEvent {
                     event: DictationEventDto::Partial {
                         session_id,
                         text,
+                        sequence,
+                    },
+                    terminal: false,
+                })
+            }
+            NativeDictationEvent::AudioLevel {
+                session_id,
+                level,
+                sequence,
+            } => {
+                validate_native_session_id(expected_session_id, &session_id)?;
+                Ok(NativeEventOutcome {
+                    event: DictationEventDto::AudioLevel {
+                        session_id,
+                        level: if level.is_finite() {
+                            level.clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        },
                         sequence,
                     },
                     terminal: false,
@@ -1114,7 +1271,11 @@ impl NativeDictationEvent {
 }
 
 #[cfg_attr(
-    not(any(test, all(target_os = "macos", xero_dictation_native_shim))),
+    not(any(
+        test,
+        target_os = "windows",
+        all(target_os = "macos", xero_dictation_native_shim)
+    )),
     allow(dead_code)
 )]
 fn validate_native_session_id(
@@ -1271,7 +1432,22 @@ mod native_shim {
     }
 }
 
-#[cfg(not(all(target_os = "macos", xero_dictation_native_shim)))]
+#[cfg(target_os = "windows")]
+mod windows_native;
+
+#[cfg(target_os = "windows")]
+mod native_shim {
+    pub(super) use super::windows_native::Session;
+
+    pub(super) fn capability_status_json() -> Result<String, String> {
+        super::windows_native::capability_status_json()
+    }
+}
+
+#[cfg(not(any(
+    target_os = "windows",
+    all(target_os = "macos", xero_dictation_native_shim)
+)))]
 mod native_shim {
     use super::*;
 
@@ -1311,7 +1487,7 @@ mod native_shim {
     fn native_unavailable_error() -> NativeOperationError {
         NativeOperationError {
             code: "dictation_native_shim_unavailable".into(),
-            message: "Xero was built without the native macOS dictation shim.".into(),
+            message: "Xero was built without a native dictation backend for this platform.".into(),
             retryable: false,
         }
     }
@@ -1338,6 +1514,12 @@ mod tests {
                 compiled: true,
                 runtime_supported: true,
                 reason: None,
+            },
+            windows_sdk: DictationEngineStatusDto {
+                available: false,
+                compiled: false,
+                runtime_supported: false,
+                reason: Some("windows_sdk_unavailable_on_this_platform".into()),
             },
             modern_assets: DictationModernAssetsDto {
                 status: DictationModernAssetStatusDto::Unavailable,
@@ -1496,6 +1678,73 @@ mod tests {
     }
 
     #[test]
+    fn windows_engine_selection_maps_automatic_to_windows_sdk_only() {
+        let mut status = available_status();
+        status.platform = DictationPlatformDto::Windows;
+        status.modern.available = false;
+        status.legacy.available = false;
+        status.windows_sdk = DictationEngineStatusDto {
+            available: true,
+            compiled: true,
+            runtime_supported: true,
+            reason: None,
+        };
+
+        assert_eq!(
+            select_engine(&status, DictationEnginePreferenceDto::Automatic).unwrap(),
+            DictationEngineDto::WindowsSdk
+        );
+
+        let modern_error = select_engine(&status, DictationEnginePreferenceDto::Modern)
+            .expect_err("macOS modern engine should not be selectable on Windows");
+        assert_eq!(modern_error.code, "dictation_modern_unavailable_windows");
+
+        let legacy_error = select_engine(&status, DictationEnginePreferenceDto::Legacy)
+            .expect_err("macOS legacy engine should not be selectable on Windows");
+        assert_eq!(legacy_error.code, "dictation_legacy_unavailable_windows");
+
+        let privacy_error =
+            ensure_privacy_mode_supported(&status, DictationPrivacyModeDto::OnDeviceRequired)
+                .expect_err("Windows SDK is not an on-device-only engine");
+        assert_eq!(
+            privacy_error.code,
+            "dictation_windows_on_device_required_unavailable"
+        );
+    }
+
+    #[test]
+    fn windows_probe_keeps_sdk_available_when_only_meter_has_reason() {
+        let status = DictationProbe {
+            platform: DictationPlatformDto::Windows,
+            os_version: Some("11".into()),
+            default_locale: Some("en-US".into()),
+            supported_locales: vec!["en-US".into()],
+            modern_compiled: false,
+            modern_runtime_supported: false,
+            modern_assets: DictationModernAssetsDto {
+                status: DictationModernAssetStatusDto::Unavailable,
+                locale: None,
+                reason: Some("macos_modern_unavailable_on_windows".into()),
+            },
+            legacy_runtime_supported: false,
+            legacy_recognizer_available: false,
+            windows_sdk_runtime_supported: true,
+            windows_sdk_recognizer_available: true,
+            windows_sdk_reason: Some("windows_meter_config_unavailable: no default config".into()),
+            microphone_permission: DictationPermissionStateDto::Unknown,
+            speech_permission: DictationPermissionStateDto::Unknown,
+            fallback_reason: None,
+        }
+        .into_status();
+
+        assert!(status.windows_sdk.available);
+        assert_eq!(
+            status.windows_sdk.reason.as_deref(),
+            Some("windows_meter_config_unavailable: no default config")
+        );
+    }
+
+    #[test]
     fn automatic_mode_falls_back_only_for_modern_startup_failures() {
         let mut status = available_status();
         status.modern = DictationEngineStatusDto {
@@ -1556,6 +1805,22 @@ mod tests {
             }
         );
 
+        let event: NativeDictationEvent = serde_json::from_str(
+            r#"{"kind":"audio_level","sessionId":"session-1","level":0.42,"sequence":2}"#,
+        )
+        .expect("audio level event should parse");
+        let event = event
+            .into_dto("session-1")
+            .expect("audio level should convert to dto");
+        assert_eq!(
+            event.event,
+            DictationEventDto::AudioLevel {
+                session_id: "session-1".into(),
+                level: 0.42,
+                sequence: 2,
+            }
+        );
+
         let mismatched: NativeDictationEvent =
             serde_json::from_str(r#"{"kind":"stopped","sessionId":"other","reason":"user"}"#)
                 .expect("event should parse");
@@ -1612,6 +1877,10 @@ mod tests {
 
         if cfg!(target_os = "macos") {
             assert_eq!(status.platform, DictationPlatformDto::Macos);
+        } else if cfg!(target_os = "windows") {
+            assert_eq!(status.platform, DictationPlatformDto::Windows);
+        } else if cfg!(target_os = "linux") {
+            assert_eq!(status.platform, DictationPlatformDto::Linux);
         } else {
             assert_eq!(status.platform, DictationPlatformDto::Unsupported);
         }

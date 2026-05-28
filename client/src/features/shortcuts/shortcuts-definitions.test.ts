@@ -21,11 +21,12 @@ function makeEvent(init: Partial<KeyboardEventInit> & { key: string }): Keyboard
 }
 
 describe('shortcuts-definitions', () => {
-  it('defaults Cmd+1, Cmd+2, Cmd+3 to the three views', () => {
+  it('defaults Cmd+1, Cmd+2, Cmd+3 to the three views and Cmd+Shift+D to dictation', () => {
     const defaults = defaultBindings()
     expect(defaults['view.phases']).toEqual({ mod: true, shift: false, alt: false, key: '1' })
     expect(defaults['view.agent']).toEqual({ mod: true, shift: false, alt: false, key: '2' })
     expect(defaults['view.execution']).toEqual({ mod: true, shift: false, alt: false, key: '3' })
+    expect(defaults['composer.dictation']).toEqual({ mod: true, shift: true, alt: false, key: 'd' })
   })
 
   it('captures bindings from keyboard events with cross-platform mod', () => {

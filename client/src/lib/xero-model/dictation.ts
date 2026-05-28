@@ -2,8 +2,8 @@ import { z } from 'zod'
 
 import { normalizeOptionalText } from '@xero/ui/model/shared'
 
-export const dictationPlatformSchema = z.enum(['macos', 'unsupported'])
-export const dictationEngineSchema = z.enum(['modern', 'legacy'])
+export const dictationPlatformSchema = z.enum(['macos', 'windows', 'linux', 'unsupported'])
+export const dictationEngineSchema = z.enum(['modern', 'legacy', 'windows_sdk'])
 export const dictationEnginePreferenceSchema = z.enum(['automatic', 'modern', 'legacy'])
 export const dictationPrivacyModeSchema = z.enum([
   'on_device_preferred',
@@ -71,6 +71,9 @@ export const dictationStatusSchema = z
     supportedLocales: z.array(z.string().trim().min(1)).optional().default([]),
     modern: dictationEngineStatusSchema,
     legacy: dictationEngineStatusSchema,
+    windowsSdk: dictationEngineStatusSchema
+      .optional()
+      .default({ available: false, compiled: false, runtimeSupported: false, reason: null }),
     modernAssets: dictationModernAssetsSchema
       .optional()
       .default({ status: 'unknown', locale: null, reason: null }),
@@ -146,6 +149,14 @@ export const dictationEventSchema = z.discriminatedUnion('kind', [
       kind: z.literal('partial'),
       sessionId: z.string().trim().min(1),
       text: z.string(),
+      sequence: dictationSequenceSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('audio_level'),
+      sessionId: z.string().trim().min(1),
+      level: z.number().min(0).max(1),
       sequence: dictationSequenceSchema,
     })
     .strict(),

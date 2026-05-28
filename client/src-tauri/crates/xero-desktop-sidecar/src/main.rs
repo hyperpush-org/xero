@@ -3787,8 +3787,8 @@ mod cross_platform_input {
             "return" | "enter" => Ok(Key::Return),
             "tab" => Ok(Key::Tab),
             "space" => Ok(Key::Space),
-            "delete" | "backspace" => Ok(Key::Backspace),
-            "forwarddelete" | "forward_delete" => Ok(Key::Delete),
+            "backspace" => Ok(Key::Backspace),
+            "delete" | "forwarddelete" | "forward_delete" => Ok(Key::Delete),
             "escape" | "esc" => Ok(Key::Escape),
             "home" => Ok(Key::Home),
             "end" => Ok(Key::End),
@@ -3843,6 +3843,8 @@ mod cross_platform_input {
         fn key_mapper_accepts_common_browser_key_names() {
             assert_eq!(key_for("Enter").expect("enter"), Key::Return);
             assert_eq!(key_for("ArrowLeft").expect("arrow"), Key::LeftArrow);
+            assert_eq!(key_for("Backspace").expect("backspace"), Key::Backspace);
+            assert_eq!(key_for("Delete").expect("delete"), Key::Delete);
             assert_eq!(key_for("v").expect("v"), Key::Unicode('v'));
         }
 
@@ -4146,7 +4148,8 @@ mod macos_input {
             "." | "period" => Some(0x2F),
             "tab" => Some(KeyCode::TAB),
             "space" => Some(KeyCode::SPACE),
-            "delete" | "backspace" => Some(KeyCode::DELETE),
+            "backspace" => Some(KeyCode::DELETE),
+            "delete" | "forwarddelete" | "forward_delete" => Some(KeyCode::FORWARD_DELETE),
             "escape" | "esc" => Some(KeyCode::ESCAPE),
             "cmd" | "command" | "meta" | "super" => Some(KeyCode::COMMAND),
             "shift" => Some(KeyCode::SHIFT),
@@ -4882,6 +4885,14 @@ mod tests {
     fn macos_keyboard_mapper_accepts_common_key_aliases() {
         assert!(macos_input::key_code_for("enter").is_some());
         assert!(macos_input::key_code_for("arrowleft").is_some());
+        assert_eq!(
+            macos_input::key_code_for("backspace"),
+            Some(core_graphics::event::KeyCode::DELETE)
+        );
+        assert_eq!(
+            macos_input::key_code_for("delete"),
+            Some(core_graphics::event::KeyCode::FORWARD_DELETE)
+        );
         assert!(macos_input::key_code_for("definitely-not-a-key").is_none());
     }
 }

@@ -1641,6 +1641,70 @@
       0 8px 24px -12px color-mix(in oklab, var(--primary) 28%, transparent);
   }
 
+  .composer-dictation-waveform {
+    --composer-dictation-level: 0;
+    pointer-events: none;
+    position: absolute;
+    inset-inline: 0.625rem;
+    bottom: 0.1875rem;
+    height: 0.3125rem;
+    opacity: calc(0.5 + (var(--composer-dictation-level) * 0.5));
+  }
+
+  .composer-dictation-waveform__rail {
+    position: relative;
+    display: flex;
+    height: 100%;
+    align-items: center;
+    gap: 0.125rem;
+    overflow: hidden;
+    border-radius: 999px;
+  }
+
+  .composer-dictation-waveform__rail::before {
+    position: absolute;
+    inset-block: 0.0625rem;
+    inset-inline: -35%;
+    content: "";
+    border-radius: inherit;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in oklab, var(--primary) 70%, white 12%),
+      transparent
+    );
+    opacity: calc(0.28 + (var(--composer-dictation-level) * 0.58));
+    animation: composer-dictation-wave-sweep 1.1s linear infinite;
+  }
+
+  .composer-dictation-waveform__band {
+    --composer-dictation-band: 0.5;
+    position: relative;
+    z-index: 1;
+    min-width: 0.25rem;
+    flex: 1 1 0;
+    height: 0.0625rem;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--primary) 74%, var(--foreground) 8%);
+    opacity: calc(0.38 + (var(--composer-dictation-level) * 0.52));
+    transform: scaleY(calc(1 + (var(--composer-dictation-level) * var(--composer-dictation-band) * 5)));
+    transform-origin: center;
+    transition:
+      opacity 120ms linear,
+      transform 90ms linear;
+    will-change: opacity, transform;
+  }
+
+  @keyframes composer-dictation-wave-sweep {
+    from {
+      transform: translate3d(-35%, 0, 0);
+    }
+
+    to {
+      transform: translate3d(35%, 0, 0);
+    }
+  }
+
   /* Send button — micro lift on hover when the button is interactive. The
    * arrow nudges up 1px and brightens slightly so the affordance reads as
    * "actionable" rather than just a flat icon. Disabled state stays flat. */

@@ -3875,6 +3875,53 @@ mod tests {
     }
 
     #[test]
+    fn manual_control_keyboard_payloads_map_to_desktop_control_requests() {
+        let text_request = manual_control_input_request(&json!({
+            "action": "type_text",
+            "text": "hello",
+        }))
+        .expect("type text request");
+        assert_eq!(
+            text_request.action,
+            AutonomousDesktopControlAction::TypeText
+        );
+        assert_eq!(text_request.text.as_deref(), Some("hello"));
+
+        let key_request = manual_control_input_request(&json!({
+            "action": "key_press",
+            "key": "Enter",
+        }))
+        .expect("key press request");
+        assert_eq!(key_request.action, AutonomousDesktopControlAction::KeyPress);
+        assert_eq!(key_request.key.as_deref(), Some("Enter"));
+
+        let hotkey_request = manual_control_input_request(&json!({
+            "action": "hotkey",
+            "keys": ["command", "a"],
+        }))
+        .expect("hotkey request");
+        assert_eq!(
+            hotkey_request.action,
+            AutonomousDesktopControlAction::Hotkey
+        );
+        assert_eq!(
+            hotkey_request.keys,
+            vec!["command".to_string(), "a".to_string()]
+        );
+
+        let paste_request = manual_control_input_request(&json!({
+            "action": "paste_text",
+            "text": "pasted text",
+        }))
+        .expect("paste text request");
+        assert_eq!(
+            paste_request.action,
+            AutonomousDesktopControlAction::PasteText
+        );
+        assert_eq!(paste_request.text.as_deref(), Some("pasted text"));
+    }
+
+    #[test]
     fn manual_control_rejects_unknown_desktop_action() {
         let error = manual_control_input_request(&json!({
             "action": "shell_exec",

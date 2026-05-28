@@ -41,6 +41,7 @@ interface UseSpeechDictationOptions {
 }
 
 interface SpeechDictationController {
+  audioLevel: number
   isVisible: boolean
   phase: SpeechDictationPhase
   isListening: boolean
@@ -110,12 +111,17 @@ function getRecoveryMessage(code: string, message: string): string {
   const recovery = (() => {
     switch (code) {
       case 'dictation_microphone_permission_denied':
-        return 'Open System Settings > Privacy & Security > Microphone and allow Xero.'
+        return 'Open system privacy settings and allow microphone access for Xero.'
       case 'dictation_speech_permission_denied':
-        return 'Open System Settings > Privacy & Security > Speech Recognition and allow Xero.'
+        return 'Open System Settings or Windows Settings and allow speech recognition for Xero.'
+      case 'dictation_windows_locale_unsupported':
       case 'dictation_modern_locale_unsupported':
       case 'dictation_legacy_locale_unsupported':
         return 'Choose a supported locale in Dictation settings.'
+      case 'dictation_windows_on_device_required_unavailable':
+        return 'Choose On-device preferred or Allow network in Dictation settings.'
+      case 'dictation_windows_speech_service_unavailable':
+        return 'Enable Windows online speech recognition or check network access.'
       case 'dictation_legacy_network_recognition_required':
       case 'dictation_legacy_on_device_unavailable':
         return 'Allow Apple server recognition in Dictation settings or choose a locale with on-device recognition.'
@@ -133,8 +139,8 @@ function getRecoveryMessage(code: string, message: string): string {
 
 function isDictationAvailable(status: DictationStatusDto | null): boolean {
   return Boolean(
-    status?.platform === 'macos' &&
-      (status.modern.available || status.legacy.available),
+    (status?.platform === 'macos' && (status.modern.available || status.legacy.available)) ||
+      (status?.platform === 'windows' && status.windowsSdk.available),
   )
 }
 
@@ -150,6 +156,7 @@ export function useSpeechDictation({
   const [status, setStatus] = useState<DictationStatusDto | null>(null)
   const [phase, setPhase] = useState<SpeechDictationPhase>('idle')
   const [error, setError] = useState<OperatorActionErrorView | null>(null)
+  const [audioLevel, setAudioLevel] = useState(0)
 
   const adapterRef = useRef(adapter)
   const draftPromptRef = useRef(draftPrompt)
@@ -183,6 +190,7 @@ export function useSpeechDictation({
     sessionRef.current?.unsubscribe()
     sessionRef.current = null
     sessionIdRef.current = null
+    setAudioLevel(0)
     dictationBaseRef.current = draftPromptRef.current
     renderedDraftRef.current = draftPromptRef.current
   }, [])
@@ -213,8 +221,8 @@ export function useSpeechDictation({
           setError({
             code: 'dictation_permission_denied',
             message: deniedMicrophone
-              ? 'Allow microphone access in System Settings to use dictation.'
-              : 'Allow speech recognition in System Settings to use dictation.',
+              ? 'Allow microphone access in system privacy settings to use dictation.'
+              : 'Allow speech recognition in system privacy settings to use dictation.',
             retryable: true,
           })
         }
@@ -241,6 +249,12 @@ export function useSpeechDictation({
       if (event.kind === 'partial') {
         updatePhase('listening')
         applyDictatedSegment(event.text, false)
+        return
+      }
+
+      if (event.kind === 'audio_level') {
+        updatePhase('listening')
+        setAudioLevel(Math.max(0, Math.min(1, event.level)))
         return
       }
 
@@ -441,6 +455,7 @@ export function useSpeechDictation({
         : ariaLabel
 
   return {
+    audioLevel,
     isVisible,
     phase,
     isListening,

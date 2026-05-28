@@ -71,6 +71,12 @@ function makeDictationStatus(overrides: Partial<DictationStatusDto> = {}): Dicta
       runtimeSupported: true,
       reason: null,
     },
+    windowsSdk: {
+      available: false,
+      compiled: false,
+      runtimeSupported: false,
+      reason: null,
+    },
     modernAssets: {
       status: 'unavailable',
       locale: null,
@@ -1045,6 +1051,64 @@ describe('SettingsDialog', () => {
         'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone',
       ),
     )
+  })
+
+  it('loads Windows dictation settings with the native SDK engine', async () => {
+    const dictationAdapter = makeDictationAdapter({
+      status: makeDictationStatus({
+        platform: 'windows',
+        osVersion: '11',
+        defaultLocale: 'en-US',
+        supportedLocales: ['en-US'],
+        modern: {
+          available: false,
+          compiled: false,
+          runtimeSupported: false,
+          reason: 'macos_modern_unavailable_on_windows',
+        },
+        legacy: {
+          available: false,
+          compiled: false,
+          runtimeSupported: false,
+          reason: 'macos_legacy_unavailable_on_windows',
+        },
+        windowsSdk: {
+          available: true,
+          compiled: true,
+          runtimeSupported: true,
+          reason: null,
+        },
+        microphonePermission: 'denied',
+        speechPermission: 'unknown',
+      }),
+    })
+
+    render(
+      <SettingsDialog
+        {...makeSettingsDialogProps({
+          initialSection: 'dictation',
+          dictationAdapter,
+        })}
+      />,
+    )
+
+    expect(await screen.findByText('Native Windows dictation')).toBeVisible()
+    expect(await screen.findByText('Windows SDK engine')).toBeVisible()
+    expect(await screen.findByText('Windows is blocking microphone or speech recognition for Xero. Open Windows Settings to allow access.')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Privacy' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Allow Windows speech service' }))
+
+    await waitFor(() =>
+      expect(dictationAdapter.speechDictationUpdateSettings).toHaveBeenCalledWith({
+        enginePreference: 'automatic',
+        privacyMode: 'allow_network',
+        locale: null,
+      }),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Settings' }))
+    await waitFor(() => expect(openUrlMock).toHaveBeenCalledWith('ms-settings:privacy-microphone'))
   })
 
   it('loads Soul settings and saves the selected premade soul', async () => {

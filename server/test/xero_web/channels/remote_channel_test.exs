@@ -321,14 +321,18 @@ defmodule XeroWeb.RemoteChannelTest do
 
       assert stream_token == web_session_reply.stream_token
 
+      manual_payload = %{
+        "runId" => "run-1",
+        "streamToken" => web_session_reply.stream_token,
+        "manualControlId" => "manual-web-1",
+        "action" => "type_text",
+        "text" => "hello"
+      }
+
       manual_ref =
         push(web_session, "frame", %{
           "kind" => "computer_use_manual_control_input",
-          "payload" => %{
-            "runId" => "run-1",
-            "streamToken" => web_session_reply.stream_token,
-            "input" => %{"type" => "mouse_move", "x" => 32, "y" => 64}
-          }
+          "payload" => manual_payload
         })
 
       assert_reply manual_ref, :ok
@@ -344,6 +348,15 @@ defmodule XeroWeb.RemoteChannelTest do
                       }}
 
       assert manual_bytes > 0
+
+      assert_push "frame", %{
+        from_kind: "web",
+        direction: "web_to_desktop",
+        payload: %{
+          "kind" => "computer_use_manual_control_input",
+          "payload" => ^manual_payload
+        }
+      }
     end)
   end
 

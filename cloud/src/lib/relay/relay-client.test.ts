@@ -538,4 +538,78 @@ describe("pushInboundCommand", () => {
 			}),
 		);
 	});
+
+	it("sends manual keyboard payloads through the brokered input frame", () => {
+		const push = vi.fn();
+		const baseOptions = {
+			computerId: "desktop-1",
+			sessionId: "session-1",
+			deviceId: "web-1",
+			manualControlId: "manual-web-1",
+			runId: "run-1",
+			streamToken: "stream-token-1",
+		};
+
+		sendComputerUseManualInput({ push } as never, {
+			...baseOptions,
+			input: { action: "type_text", text: "hello" },
+		});
+		sendComputerUseManualInput({ push } as never, {
+			...baseOptions,
+			input: { action: "key_press", key: "Enter" },
+		});
+		sendComputerUseManualInput({ push } as never, {
+			...baseOptions,
+			input: { action: "hotkey", keys: ["command", "a"] },
+		});
+		sendComputerUseManualInput({ push } as never, {
+			...baseOptions,
+			input: { action: "paste_text", text: "pasted text" },
+		});
+
+		expect(push).toHaveBeenNthCalledWith(
+			1,
+			"frame",
+			expect.objectContaining({
+				kind: "computer_use_manual_control_input",
+				payload: expect.objectContaining({
+					manualControlId: "manual-web-1",
+					action: "type_text",
+					text: "hello",
+					runId: "run-1",
+					streamToken: "stream-token-1",
+				}),
+			}),
+		);
+		expect(push).toHaveBeenNthCalledWith(
+			2,
+			"frame",
+			expect.objectContaining({
+				payload: expect.objectContaining({
+					action: "key_press",
+					key: "Enter",
+				}),
+			}),
+		);
+		expect(push).toHaveBeenNthCalledWith(
+			3,
+			"frame",
+			expect.objectContaining({
+				payload: expect.objectContaining({
+					action: "hotkey",
+					keys: ["command", "a"],
+				}),
+			}),
+		);
+		expect(push).toHaveBeenNthCalledWith(
+			4,
+			"frame",
+			expect.objectContaining({
+				payload: expect.objectContaining({
+					action: "paste_text",
+					text: "pasted text",
+				}),
+			}),
+		);
+	});
 });

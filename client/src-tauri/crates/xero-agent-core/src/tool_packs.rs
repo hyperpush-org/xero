@@ -1180,9 +1180,7 @@ mod tests {
         assert!(desktop
             .denied_effect_classes
             .contains(&"command".to_string()));
-        assert!(desktop
-            .tools
-            .contains(&"desktop_observe".to_string()));
+        assert!(desktop.tools.contains(&"desktop_observe".to_string()));
         assert!(desktop.review_requirements.iter().any(|requirement| {
             requirement.required && requirement.requirement_id == "desktop_control_operator_intent"
         }));

@@ -13,7 +13,9 @@ export type {
 	ComposerPendingAttachmentType,
 	ComposerProps,
 	ComposerRuntimeError,
+	ComposerShortcutBinding,
 } from "./composer";
+export { COMPOSER_DICTATION_SHORTCUT } from "./composer";
 export { ComposerModelSelect } from "./composer-model-select";
 export type { ComposerModelSelectProps } from "./composer-model-select";
 export type {

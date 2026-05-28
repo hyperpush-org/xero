@@ -6,10 +6,12 @@ pub const SPEECH_DICTATION_CANCEL_COMMAND: &str = "speech_dictation_cancel";
 pub const SPEECH_DICTATION_SETTINGS_COMMAND: &str = "speech_dictation_settings";
 pub const SPEECH_DICTATION_UPDATE_SETTINGS_COMMAND: &str = "speech_dictation_update_settings";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DictationPlatformDto {
     Macos,
+    Windows,
+    Linux,
     Unsupported,
 }
 
@@ -18,6 +20,7 @@ pub enum DictationPlatformDto {
 pub enum DictationEngineDto {
     Modern,
     Legacy,
+    WindowsSdk,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -67,7 +70,7 @@ pub enum DictationModernAssetStatusDto {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DictationEngineStatusDto {
     pub available: bool,
@@ -104,6 +107,8 @@ pub struct DictationStatusDto {
     pub supported_locales: Vec<String>,
     pub modern: DictationEngineStatusDto,
     pub legacy: DictationEngineStatusDto,
+    #[serde(default)]
+    pub windows_sdk: DictationEngineStatusDto,
     pub modern_assets: DictationModernAssetsDto,
     pub microphone_permission: DictationPermissionStateDto,
     pub speech_permission: DictationPermissionStateDto,
@@ -168,6 +173,12 @@ pub enum DictationEventDto {
         #[serde(rename = "sessionId")]
         session_id: String,
         text: String,
+        sequence: u64,
+    },
+    AudioLevel {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        level: f32,
         sequence: u64,
     },
     Final {

@@ -98,7 +98,7 @@ import {
 } from '@/components/xero/agent-runtime'
 import type { SpeechDictationAdapter } from '@/components/xero/agent-runtime/use-speech-dictation'
 import type { AgentPaneView } from '@/src/features/xero/use-xero-desktop-state'
-import type { DictationEventDto, DictationStatusDto } from '@/src/lib/xero-model/dictation'
+import type { DictationEngineDto, DictationEventDto, DictationStatusDto } from '@/src/lib/xero-model/dictation'
 import type {
   AgentDefinitionSummaryDto,
   ProjectDetailView,
@@ -459,6 +459,12 @@ function makeDictationStatus(overrides: Partial<DictationStatusDto> = {}): Dicta
       runtimeSupported: true,
       reason: null,
     },
+    windowsSdk: {
+      available: false,
+      compiled: false,
+      runtimeSupported: false,
+      reason: null,
+    },
     modernAssets: {
       status: 'unavailable',
       locale: null,
@@ -472,15 +478,17 @@ function makeDictationStatus(overrides: Partial<DictationStatusDto> = {}): Dicta
 }
 
 function createDictationAdapter(options: {
+  engine?: DictationEngineDto
   status?: DictationStatusDto
   stop?: () => Promise<void>
   cancel?: () => Promise<void>
 } = {}) {
   let eventHandler: ((event: DictationEventDto) => void) | null = null
+  const engine = options.engine ?? 'legacy'
   const session = {
     response: {
       sessionId: 'dictation-session-1',
-      engine: 'legacy' as const,
+      engine,
       locale: 'en_US',
     },
     unsubscribe: vi.fn(),
@@ -495,7 +503,7 @@ function createDictationAdapter(options: {
       handler({
         kind: 'started',
         sessionId: session.response.sessionId,
-        engine: 'legacy',
+        engine,
         locale: 'en_US',
       })
       return session
@@ -532,6 +540,7 @@ function makeTranscriptItem(options: {
     runId,
     sequence: options.sequence,
     createdAt: `2026-04-29T00:48:${String(options.sequence).padStart(2, '0')}Z`,
+    mediaAttachments: [],
     role: options.role ?? 'assistant',
     text: options.text,
   }
@@ -554,6 +563,7 @@ function makeToolItem(
     sequence,
     createdAt: `2026-04-29T00:48:${String(sequence).padStart(2, '0')}Z`,
     detail: null,
+    mediaAttachments: [],
     toolSummary: null,
     toolResultPreview: null,
     ...rest,
@@ -575,6 +585,7 @@ function makeReasoningItem(options: {
     title: 'Reasoning',
     text: options.text,
     detail,
+    mediaAttachments: [],
   }
 }
 
@@ -598,6 +609,7 @@ function makeFileChangeItem(
     text: null,
     detail: 'modify: client/src/file.ts',
     codeChangeGroupId: 'code-change-1',
+    mediaAttachments: [],
     ...rest,
   }
 }
@@ -999,6 +1011,7 @@ describe('AgentRuntime current UI', () => {
               runId: 'run-1',
               sequence: 9,
               createdAt: '2026-04-29T00:48:10Z',
+              mediaAttachments: [],
               detail: 'Owned agent run handed off to a same-type target run.',
             },
             failure: null,
@@ -1013,6 +1026,7 @@ describe('AgentRuntime current UI', () => {
               runId: 'run-1',
               sequence: 8,
               createdAt: '2026-04-29T00:48:09Z',
+              mediaAttachments: [],
               role: 'assistant',
               text: 'Saved progress so far.',
             },
@@ -1043,6 +1057,7 @@ describe('AgentRuntime current UI', () => {
               runId: 'run-2',
               sequence: 1,
               createdAt: '2026-04-29T00:48:10Z',
+              mediaAttachments: [],
               role: 'assistant',
               text: 'Continuing in a fresh run.',
             },
@@ -1129,6 +1144,7 @@ describe('AgentRuntime current UI', () => {
               runId: 'run-1',
               sequence: 12,
               createdAt: '2026-04-29T00:48:02Z',
+              mediaAttachments: [],
               role: 'user',
               text: 'How do I write fizz buzz in rust?',
             },
@@ -1138,6 +1154,7 @@ describe('AgentRuntime current UI', () => {
               runId: 'run-1',
               sequence: 18,
               createdAt: '2026-04-29T00:48:09Z',
+              mediaAttachments: [],
               role: 'assistant',
               text: replayedFragment,
             },
@@ -1193,6 +1210,7 @@ describe('AgentRuntime current UI', () => {
               runId: 'run-1',
               sequence: 2,
               createdAt: '2026-04-29T00:48:03Z',
+              mediaAttachments: [],
               role: 'user',
               text: 'What is 1+1?',
             },
@@ -1204,6 +1222,7 @@ describe('AgentRuntime current UI', () => {
               createdAt: '2026-04-29T00:48:04Z',
               code: 'owned_agent_validation_started',
               title: 'Validation started',
+              mediaAttachments: [],
               detail: 'Validation started: repo_preflight.',
             },
             {
@@ -1212,6 +1231,7 @@ describe('AgentRuntime current UI', () => {
               runId: 'run-1',
               sequence: 4,
               createdAt: '2026-04-29T00:48:05Z',
+              mediaAttachments: [],
               role: 'assistant',
               text: '2',
             },
@@ -3981,6 +4001,49 @@ describe('AgentRuntime current UI', () => {
     expect(input).toHaveValue('Review the logs carefully before sending')
   })
 
+  it('starts native Windows SDK dictation from the shared composer control', async () => {
+    const dictation = createDictationAdapter({
+      engine: 'windows_sdk',
+      status: makeDictationStatus({
+        platform: 'windows',
+        modern: {
+          available: false,
+          compiled: false,
+          runtimeSupported: false,
+          reason: 'macos_modern_unavailable_on_windows',
+        },
+        legacy: {
+          available: false,
+          compiled: false,
+          runtimeSupported: false,
+          reason: 'macos_legacy_unavailable_on_windows',
+        },
+        windowsSdk: {
+          available: true,
+          compiled: true,
+          runtimeSupported: true,
+          reason: null,
+        },
+      }),
+    })
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun(),
+        })}
+        desktopAdapter={dictation.adapter}
+        onUpdateRuntimeRunControls={vi.fn(async () => makeRuntimeRun())}
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Start dictation' }))
+
+    await waitFor(() => expect(dictation.adapter.speechDictationStart).toHaveBeenCalledTimes(1))
+    expect(screen.getByRole('button', { name: 'Stop dictation' })).toBeVisible()
+  })
+
   it('appends new dictated partials after manual edits during dictation', async () => {
     const dictation = createDictationAdapter()
 
@@ -4735,6 +4798,7 @@ describe('AgentRuntime current UI', () => {
           runId: 'run-1',
           sequence: 1,
           createdAt: '2026-05-09T10:00:00Z',
+          mediaAttachments: [],
           role: 'user',
           text: 'Delegate the refactor.',
         },
@@ -4744,6 +4808,7 @@ describe('AgentRuntime current UI', () => {
           runId: 'run-1',
           sequence: 2,
           createdAt: '2026-05-09T10:00:01Z',
+          mediaAttachments: [],
           subagentId: 'sub-1',
           subagentRole: 'engineer',
           subagentRoleLabel: 'Engineer',
@@ -4766,6 +4831,7 @@ describe('AgentRuntime current UI', () => {
           runId: 'run-1',
           sequence: 3,
           createdAt: '2026-05-09T10:00:05Z',
+          mediaAttachments: [],
           role: 'assistant',
           text: 'Reading auth module first.',
           subagentId: 'sub-1',
@@ -4778,6 +4844,7 @@ describe('AgentRuntime current UI', () => {
           runId: 'run-1',
           sequence: 4,
           createdAt: '2026-05-09T10:00:30Z',
+          mediaAttachments: [],
           subagentId: 'sub-1',
           subagentRole: 'engineer',
           subagentRoleLabel: 'Engineer',
@@ -4818,6 +4885,7 @@ describe('AgentRuntime current UI', () => {
           runId: 'run-1',
           sequence: 1,
           createdAt: '2026-05-09T11:00:00Z',
+          mediaAttachments: [],
           subagentId: 'sub-2',
           subagentRole: 'debugger',
           subagentRoleLabel: 'Debugger',
@@ -4840,6 +4908,7 @@ describe('AgentRuntime current UI', () => {
           runId: 'run-1',
           sequence: 2,
           createdAt: '2026-05-09T11:00:05Z',
+          mediaAttachments: [],
           role: 'assistant',
           text: 'Looking at the stack trace…',
           subagentId: 'sub-2',
@@ -4865,6 +4934,7 @@ describe('AgentRuntime current UI', () => {
           runId: 'run-1',
           sequence: 1,
           createdAt: '2026-05-09T12:00:00Z',
+          mediaAttachments: [],
           subagentId: 'sub-4',
           subagentRole: 'researcher',
           subagentRoleLabel: 'Researcher',
@@ -4887,6 +4957,7 @@ describe('AgentRuntime current UI', () => {
           runId: 'run-1',
           sequence: 2,
           createdAt: '2026-05-09T12:01:00Z',
+          mediaAttachments: [],
           subagentId: 'sub-4',
           subagentRole: 'researcher',
           subagentRoleLabel: 'Researcher',

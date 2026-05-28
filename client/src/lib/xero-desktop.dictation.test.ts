@@ -79,6 +79,12 @@ describe('XeroDesktopAdapter dictation', () => {
         runtimeSupported: true,
         reason: null,
       },
+      windowsSdk: {
+        available: false,
+        compiled: false,
+        runtimeSupported: false,
+        reason: null,
+      },
       modernAssets: {
         status: 'unknown',
         locale: null,

@@ -1711,9 +1711,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const [computerUseRuntimeRunActionError, setComputerUseRuntimeRunActionError] =
     useState<OperatorActionErrorView | null>(null)
   const computerUseRuntimeActionRefreshKeysRef = useRef<Record<string, Set<string>>>({})
-  const computerUseRuntimeMetadataRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  )
+  const computerUseRuntimeMetadataRefreshTimeoutRef = useRef<number | null>(null)
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [startTargetsDialogOpen, setStartTargetsDialogOpen] = useState(false)
   const [pendingInitialRuntimeAgent, setPendingInitialRuntimeAgent] =

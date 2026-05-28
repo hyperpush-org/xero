@@ -1,4 +1,5 @@
 import AVFoundation
+import Darwin
 import Dispatch
 import Foundation
 import Speech
@@ -36,6 +37,37 @@ func xeroDictationModernAssetProbe(localeIdentifier: String) -> (status: String,
     }
 
     return result
+}
+
+private func xeroModernNormalizedAudioLevel(from buffer: AVAudioPCMBuffer) -> Double? {
+    guard let channels = buffer.floatChannelData else {
+        return nil
+    }
+
+    let frameCount = Int(buffer.frameLength)
+    let channelCount = Int(buffer.format.channelCount)
+    guard frameCount > 0, channelCount > 0 else {
+        return nil
+    }
+
+    var sumSquares = 0.0
+    var sampleCount = 0
+    for channelIndex in 0..<channelCount {
+        let channel = channels[channelIndex]
+        for frameIndex in 0..<frameCount {
+            let sample = Double(channel[frameIndex])
+            sumSquares += sample * sample
+        }
+        sampleCount += frameCount
+    }
+
+    guard sampleCount > 0 else {
+        return nil
+    }
+
+    let rms = sqrt(sumSquares / Double(sampleCount))
+    let decibels = 20.0 * log10(max(rms, 0.000_001))
+    return min(1.0, max(0.0, (decibels + 60.0) / 60.0))
 }
 
 @available(macOS 26.0, *)
@@ -333,6 +365,10 @@ final class XeroModernDictationEngine {
                 return
             }
 
+            if let level = xeroModernNormalizedAudioLevel(from: buffer) {
+                emitAudioLevel(level)
+            }
+
             do {
                 let convertedBuffer = try convert(buffer: buffer, to: analyzerFormat)
                 inputBuilder.yield(AnalyzerInput(buffer: convertedBuffer))
@@ -343,6 +379,25 @@ final class XeroModernDictationEngine {
                     retryable: true
                 )
             }
+        }
+    }
+
+    private func emitAudioLevel(_ level: Double) {
+        let payload: [String: Any]? = lock.withLock {
+            if isStopping || isFinished {
+                return nil
+            }
+            sequence += 1
+            return [
+                "kind": "audio_level",
+                "sessionId": sessionId,
+                "level": min(1.0, max(0.0, level)),
+                "sequence": sequence,
+            ]
+        }
+
+        if let payload {
+            emit(payload)
         }
     }
 

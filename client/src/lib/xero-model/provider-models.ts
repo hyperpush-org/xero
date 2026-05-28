@@ -1,13 +1,13 @@
 import { z } from 'zod'
 import { estimateUtf16Bytes } from '@/lib/byte-budget-cache'
 import { optionalIsoTimestampSchema } from '@xero/ui/model/shared'
-import { runtimeProviderIdSchema } from '@xero/ui/model/runtime'
+import { CURSOR_AUTO_MODEL_ID, runtimeProviderIdSchema } from '@xero/ui/model/runtime'
 import {
   sessionContextLimitConfidenceSchema,
   sessionContextLimitSourceSchema,
 } from './session-context'
 
-export const CURSOR_AUTO_MODEL_ID = 'cursor-auto' as const
+export { CURSOR_AUTO_MODEL_ID }
 
 export const providerModelCatalogSourceSchema = z.enum(['live', 'cache', 'manual', 'unavailable'])
 export const providerModelThinkingEffortSchema = z.enum(['none', 'minimal', 'low', 'medium', 'high', 'x_high'])

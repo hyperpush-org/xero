@@ -1,4 +1,5 @@
 import AVFoundation
+import Darwin
 import Dispatch
 import Foundation
 import Speech
@@ -19,6 +20,37 @@ private struct XeroLegacyDictationError: Error {
     let code: String
     let message: String
     let retryable: Bool
+}
+
+private func xeroLegacyNormalizedAudioLevel(from buffer: AVAudioPCMBuffer) -> Double? {
+    guard let channels = buffer.floatChannelData else {
+        return nil
+    }
+
+    let frameCount = Int(buffer.frameLength)
+    let channelCount = Int(buffer.format.channelCount)
+    guard frameCount > 0, channelCount > 0 else {
+        return nil
+    }
+
+    var sumSquares = 0.0
+    var sampleCount = 0
+    for channelIndex in 0..<channelCount {
+        let channel = channels[channelIndex]
+        for frameIndex in 0..<frameCount {
+            let sample = Double(channel[frameIndex])
+            sumSquares += sample * sample
+        }
+        sampleCount += frameCount
+    }
+
+    guard sampleCount > 0 else {
+        return nil
+    }
+
+    let rms = sqrt(sumSquares / Double(sampleCount))
+    let decibels = 20.0 * log10(max(rms, 0.000_001))
+    return min(1.0, max(0.0, (decibels + 60.0) / 60.0))
 }
 
 final class XeroLegacyDictationEngine {
@@ -367,8 +399,14 @@ final class XeroLegacyDictationEngine {
             )
         }
 
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
             request.append(buffer)
+            guard let level = xeroLegacyNormalizedAudioLevel(from: buffer) else {
+                return
+            }
+            self?.controlQueue.async { [weak self] in
+                self?.emitAudioLevelOnQueue(level)
+            }
         }
         audioTapInstalled = true
 
@@ -389,6 +427,19 @@ final class XeroLegacyDictationEngine {
         controlQueue.async { [weak self] in
             self?.handleRecognitionOnQueue(update, generation: taskGeneration)
         }
+    }
+
+    private func emitAudioLevelOnQueue(_ level: Double) {
+        guard state == .started else {
+            return
+        }
+        sequence += 1
+        emit([
+            "kind": "audio_level",
+            "sessionId": sessionId,
+            "level": min(1.0, max(0.0, level)),
+            "sequence": sequence,
+        ])
     }
 
     private func handleRecognitionOnQueue(_ update: XeroLegacyRecognitionUpdate, generation taskGeneration: UInt64) {

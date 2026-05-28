@@ -1,8 +1,9 @@
 import type { View } from '@/components/xero/data'
+import { COMPOSER_DICTATION_SHORTCUT } from '@xero/ui/components/composer'
 
 export const SHORTCUTS_STORAGE_KEY = 'xero.shortcuts.bindings.v1'
 
-export type ShortcutId = 'view.phases' | 'view.agent' | 'view.execution'
+export type ShortcutId = 'view.phases' | 'view.agent' | 'view.execution' | 'composer.dictation'
 
 export interface ShortcutBinding {
   /** "Mod" — Cmd on macOS, Ctrl on Windows/Linux. */
@@ -27,9 +28,9 @@ export interface ShortcutDefinition {
   view?: View
 }
 
-export type ShortcutCategory = 'Views'
+export type ShortcutCategory = 'Views' | 'Composer'
 
-export const SHORTCUT_CATEGORIES: ShortcutCategory[] = ['Views']
+export const SHORTCUT_CATEGORIES: ShortcutCategory[] = ['Views', 'Composer']
 
 export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
   {
@@ -55,6 +56,13 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     category: 'Views',
     view: 'execution',
     defaultBinding: { mod: true, shift: false, alt: false, key: '3' },
+  },
+  {
+    id: 'composer.dictation',
+    label: 'Toggle Dictation',
+    description: 'Start or stop voice input in the active composer.',
+    category: 'Composer',
+    defaultBinding: { ...COMPOSER_DICTATION_SHORTCUT },
   },
 ]
 

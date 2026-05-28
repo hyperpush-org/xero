@@ -253,12 +253,22 @@ const pointFor = ({
 }) => {
   const camera = cameraFor({ frame, start, end, focus, width, height });
   return {
-    x: camera.x + (camera.rect.left + camera.rect.width * point.fx) * camera.scale,
-    y: camera.y + (camera.rect.top + camera.rect.height * point.fy) * camera.scale,
+    x:
+      camera.x +
+      (camera.rect.left + camera.rect.width * point.fx) * camera.scale,
+    y:
+      camera.y +
+      (camera.rect.top + camera.rect.height * point.fy) * camera.scale,
   };
 };
 
-const XeroMark = ({ size, opacity = 1 }: { size: number; opacity?: number }) => (
+const XeroMark = ({
+  size,
+  opacity = 1,
+}: {
+  size: number;
+  opacity?: number;
+}) => (
   <svg
     width={size}
     height={size}
@@ -272,7 +282,13 @@ const XeroMark = ({ size, opacity = 1 }: { size: number; opacity?: number }) => 
   </svg>
 );
 
-const SolanaBars = ({ size = 76, opacity = 1 }: { size?: number; opacity?: number }) => {
+const SolanaBars = ({
+  size = 76,
+  opacity = 1,
+}: {
+  size?: number;
+  opacity?: number;
+}) => {
   const bar = (y: number, color: string, reverse = false) => (
     <path
       d={
@@ -284,7 +300,12 @@ const SolanaBars = ({ size = 76, opacity = 1 }: { size?: number; opacity?: numbe
     />
   );
   return (
-    <svg width={size} height={size * 0.74} viewBox={`0 0 ${size} ${size * 0.74}`} style={{ opacity }}>
+    <svg
+      width={size}
+      height={size * 0.74}
+      viewBox={`0 0 ${size} ${size * 0.74}`}
+      style={{ opacity }}
+    >
       {bar(size * 0.06, "#e5b174")}
       {bar(size * 0.27, "#9b8cff", true)}
       {bar(size * 0.48, "#77e3b4")}
@@ -360,7 +381,9 @@ const GlitchText = ({
         transform: `translateX(${jitter}px)`,
       }}
     >
-      <span style={{ ...base, color, display: "block", position: "relative" }}>{children}</span>
+      <span style={{ ...base, color, display: "block", position: "relative" }}>
+        {children}
+      </span>
       <span style={layer("#ff4b4b", shift, -shift * 0.12)}>{children}</span>
       <span style={layer("#46a6ff", -shift, shift * 0.1)}>{children}</span>
       {slices.map((slice) => (
@@ -443,7 +466,12 @@ const CursorGlyph = ({ glitch = 0 }: { glitch?: number }) => (
       }}
     />
     {glitch > 0.05 ? (
-      <path d="M6 5L39 32L24.2 35.2L17.2 52L6 5Z" stroke="#d4a574" strokeWidth="2" opacity={glitch} />
+      <path
+        d="M6 5L39 32L24.2 35.2L17.2 52L6 5Z"
+        stroke="#d4a574"
+        strokeWidth="2"
+        opacity={glitch}
+      />
     ) : null}
   </svg>
 );
@@ -463,11 +491,17 @@ const IntroCursor = () => {
   const t = ease(frame, 18, OPEN_CLICK - 4);
   const x = interpolate(t, [0, 1], [width * 0.56, target.x]);
   const y = interpolate(t, [0, 1], [height * 0.64, target.y]);
-  const fade = ease(frame, 12, 24) * (1 - ease(frame, OPEN_CLICK + 10, OPEN_CLICK + 28));
-  const press = interpolate(frame, [OPEN_CLICK - 1, OPEN_CLICK + 2, OPEN_CLICK + 7], [1, 0.86, 1], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-  });
+  const fade =
+    ease(frame, 12, 24) * (1 - ease(frame, OPEN_CLICK + 10, OPEN_CLICK + 28));
+  const press = interpolate(
+    frame,
+    [OPEN_CLICK - 1, OPEN_CLICK + 2, OPEN_CLICK + 7],
+    [1, 0.86, 1],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+    },
+  );
   return (
     <div
       style={{
@@ -487,7 +521,8 @@ const IntroCursor = () => {
 const ClickRipple = ({ x, y, at }: { x: number; y: number; at: number }) => {
   const frame = useCurrentFrame();
   const t = ease(frame, at, at + 18, Easing.out(Easing.cubic));
-  const fade = ease(frame, at - 3, at + 2) * (1 - ease(frame, at + 12, at + 20));
+  const fade =
+    ease(frame, at - 3, at + 2) * (1 - ease(frame, at + 12, at + 20));
   if (fade <= 0.001) {
     return null;
   }
@@ -545,7 +580,14 @@ const IntroCopy = () => {
         fontFamily,
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 18, marginBottom: 32 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 18,
+          marginBottom: 32,
+        }}
+      >
         <SolanaBars size={86} opacity={0.95} />
         <span
           style={{
@@ -582,8 +624,9 @@ const IntroCopy = () => {
 const BeatCopy = () => {
   const frame = useCurrentFrame();
   const beat =
-    BEATS.find((candidate) => frame >= candidate.start && frame < candidate.end) ??
-    BEATS[BEATS.length - 1];
+    BEATS.find(
+      (candidate) => frame >= candidate.start && frame < candidate.end,
+    ) ?? BEATS[BEATS.length - 1];
   const inProgress = ease(frame, beat.start + 4, beat.start + 24);
   const outProgress = ease(frame, beat.end - 22, beat.end - 4);
   const scanOut = ease(frame, SCAN_START - 12, SCAN_START + 12);
@@ -651,7 +694,9 @@ const BeatCopy = () => {
         >
           {beat.body}
         </div>
-        <div style={{ marginTop: 20, display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <div
+          style={{ marginTop: 20, display: "flex", gap: 10, flexWrap: "wrap" }}
+        >
           {beat.chips.map((chip, index) => (
             <div
               key={chip}
@@ -795,37 +840,53 @@ const SurfaceScan = () => {
         >
           WORKBENCH TABS
         </div>
-        {["Cluster", "Personas", "Scenarios", "Tx", "Logs", "Indexer", "IDL", "Deploy", "Audit", "Token", "Wallet", "Safety", "RPC"].map(
-          (label, index) => {
-            const itemIn = ease(frame, SCAN_START + 10 + index * 2, SCAN_START + 24 + index * 2);
-            return (
-              <div
-                key={label}
+        {[
+          "Cluster",
+          "Personas",
+          "Scenarios",
+          "Tx",
+          "Logs",
+          "Indexer",
+          "IDL",
+          "Deploy",
+          "Audit",
+          "Token",
+          "Wallet",
+          "Safety",
+          "RPC",
+        ].map((label, index) => {
+          const itemIn = ease(
+            frame,
+            SCAN_START + 10 + index * 2,
+            SCAN_START + 24 + index * 2,
+          );
+          return (
+            <div
+              key={label}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 11,
+                opacity: itemIn,
+                transform: `translateX(${(1 - itemIn) * 16}px)`,
+                marginTop: index === 0 ? 0 : 10,
+                color: index < 5 ? "#ffffff" : "rgba(230,230,230,0.68)",
+                fontSize: 22,
+                fontWeight: 600,
+              }}
+            >
+              <span
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 11,
-                  opacity: itemIn,
-                  transform: `translateX(${(1 - itemIn) * 16}px)`,
-                  marginTop: index === 0 ? 0 : 10,
-                  color: index < 5 ? "#ffffff" : "rgba(230,230,230,0.68)",
-                  fontSize: 22,
-                  fontWeight: 600,
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  backgroundColor: index < 5 ? ACCENT : "rgba(212,165,116,0.4)",
                 }}
-              >
-                <span
-                  style={{
-                    width: 7,
-                    height: 7,
-                    borderRadius: "50%",
-                    backgroundColor: index < 5 ? ACCENT : "rgba(212,165,116,0.4)",
-                  }}
-                />
-                {label}
-              </div>
-            );
-          },
-        )}
+              />
+              {label}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -836,7 +897,12 @@ const Closeout = () => {
   const { fps } = useVideoConfig();
   const intro = ease(frame, CLOSEOUT_START, CLOSEOUT_START + 28);
   const domain = ease(frame, CLOSEOUT_START + 42, CLOSEOUT_START + 68);
-  const fade = ease(frame, FINAL_CLEAR_START, APPFLOW_FRAMES - 8, Easing.in(Easing.cubic));
+  const fade = ease(
+    frame,
+    FINAL_CLEAR_START,
+    APPFLOW_FRAMES - 8,
+    Easing.in(Easing.cubic),
+  );
   const shove = spring({
     frame: frame - CLOSEOUT_START - 34,
     fps,
@@ -888,7 +954,11 @@ const Closeout = () => {
           <XeroMark size={86} />
         </div>
         <div style={{ display: "flex", alignItems: "baseline" }}>
-          <GlitchText fontSize={104} intensity={Math.max(glitch, domainGlitch * 0.28)} seed={frame}>
+          <GlitchText
+            fontSize={104}
+            intensity={Math.max(glitch, domainGlitch * 0.28)}
+            seed={frame}
+          >
             xero
           </GlitchText>
           <div
@@ -900,7 +970,11 @@ const Closeout = () => {
               transform: `translateX(${(1 - domain) * 26}px)`,
             }}
           >
-            <GlitchText fontSize={104} intensity={domainGlitch} seed={frame + 922}>
+            <GlitchText
+              fontSize={104}
+              intensity={domainGlitch}
+              seed={frame + 922}
+            >
               shell.com
             </GlitchText>
           </div>
@@ -937,12 +1011,22 @@ const AudioBed = () => (
       <Audio src={staticFile("click.mp3")} trimBefore={1} volume={0.42} />
     </Sequence>
     {BEATS.map((beat) => (
-      <Sequence key={`${beat.id}-click`} from={beat.start + 16} durationInFrames={12} layout="none">
+      <Sequence
+        key={`${beat.id}-click`}
+        from={beat.start + 16}
+        durationInFrames={12}
+        layout="none"
+      >
         <Audio src={staticFile("click.mp3")} trimBefore={1} volume={0.28} />
       </Sequence>
     ))}
     {BEATS.slice(1).map((beat) => (
-      <Sequence key={`${beat.id}-whoosh`} from={beat.start - 10} durationInFrames={34} layout="none">
+      <Sequence
+        key={`${beat.id}-whoosh`}
+        from={beat.start - 10}
+        durationInFrames={34}
+        layout="none"
+      >
         <Audio src={staticFile("whoosh.mp3")} trimBefore={6} volume={0.18} />
       </Sequence>
     ))}
@@ -1007,7 +1091,11 @@ export const AppFlow = () => {
       <SurfaceScan />
       <Closeout />
       <IntroCursor />
-      <ClickRipple x={introRipplePoint.x} y={introRipplePoint.y} at={OPEN_CLICK} />
+      <ClickRipple
+        x={introRipplePoint.x}
+        y={introRipplePoint.y}
+        at={OPEN_CLICK}
+      />
       {BEATS.map((beat) => (
         <BeatHotspot key={`${beat.id}-hotspot`} beat={beat} />
       ))}

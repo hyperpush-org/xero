@@ -172,9 +172,17 @@ function stubMatchMedia() {
 	});
 }
 
+function stubNavigatorPlatform(platform: string) {
+	Object.defineProperty(window.navigator, "platform", {
+		configurable: true,
+		value: platform,
+	});
+}
+
 describe("Composer dictation", () => {
 	beforeEach(() => {
 		MockSpeechRecognition.instances = [];
+		stubNavigatorPlatform("Win32");
 		stubMatchMedia();
 		Object.defineProperty(window, "webkitSpeechRecognition", {
 			configurable: true,
@@ -222,6 +230,25 @@ describe("Composer dictation", () => {
 				.getByRole("button", { name: "Stop dictation" })
 				.getAttribute("aria-pressed"),
 		).toBe("true");
+	});
+
+	it("starts browser dictation from the shared composer shortcut", async () => {
+		renderComposer();
+
+		const micButton = await screen.findByRole("button", {
+			name: "Start dictation",
+		});
+		await waitFor(() =>
+			expect((micButton as HTMLButtonElement).disabled).toBe(false),
+		);
+
+		fireEvent.keyDown(window, { key: "d", ctrlKey: true, shiftKey: true });
+
+		const recognition = MockSpeechRecognition.instances[0];
+		expect(recognition.start).toHaveBeenCalledTimes(1);
+		expect(
+			screen.getByRole("button", { name: "Stop dictation" }),
+		).not.toBeNull();
 	});
 
 	it("stops active dictation before submitting the dictated prompt", async () => {
@@ -319,10 +346,11 @@ describe("Composer layout", () => {
 			autoCompactEnabled: true,
 			onAutoCompactEnabledChange,
 		});
-		const toggle = screen.getByRole("button", {
+		fireEvent.click(screen.getByRole("button", { name: "Composer settings" }));
+		const toggle = screen.getByRole("switch", {
 			name: "Auto-compact before sending",
 		});
-		expect(toggle.getAttribute("aria-pressed")).toBe("true");
+		expect(toggle.getAttribute("aria-checked")).toBe("true");
 		fireEvent.click(toggle);
 		expect(onAutoCompactEnabledChange).toHaveBeenCalledWith(false);
 	});

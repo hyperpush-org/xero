@@ -35,6 +35,7 @@ import {
   type ComposerSelectGroup,
   type ComposerSelectOption,
 } from '@xero/ui/components/composer'
+import { useShortcuts } from '@/src/features/shortcuts/shortcuts-provider'
 
 import type {
   ComposerApprovalOption,
@@ -48,6 +49,7 @@ import type { ComposerPendingAttachment } from '@xero/ui/components/composer'
 export type ComposerAttachmentKind = ComposerPendingAttachment['kind']
 
 interface ComposerDictationControl {
+  audioLevel?: number
   isVisible: boolean
   phase: SpeechDictationPhase
   isListening: boolean
@@ -206,6 +208,7 @@ export function ComposerDock({
   onComposerThinkingLevelChange,
   onComposerApprovalModeChange,
 }: ComposerDockProps) {
+  const { bindings } = useShortcuts()
   const handleComposerModelChange = useStableCallback(onComposerModelChange)
   const composerRuntimeAgentDescriptor = getRuntimeAgentDescriptor(composerRuntimeAgentId)
   const showApprovalSelector = composerRuntimeAgentDescriptor.allowedApprovalModes.length > 1
@@ -376,6 +379,7 @@ export function ComposerDock({
       onAddFiles={onAddFiles}
       onRemoveAttachment={onRemoveAttachment}
       dictation={hideDictation ? { ...dictation, isVisible: false } : dictation}
+      dictationShortcut={bindings['composer.dictation']}
       contextMeter={hideContextMeter ? undefined : contextMeter}
       error={composerError}
       onOpenDiagnostics={onOpenDiagnostics}

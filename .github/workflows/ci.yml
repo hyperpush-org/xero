@@ -174,6 +174,39 @@ jobs:
         working-directory: client/src-tauri
         run: cargo build --package xero-desktop-sidecar
 
+  windows-dictation-check:
+    name: Windows Dictation Rust Check
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: client/src-tauri -> target
+          shared-key: windows-dictation
+
+      - name: Check desktop library with Windows dictation backend
+        working-directory: client/src-tauri
+        run: cargo check --lib
+
+      - name: Test dictation command contract
+        working-directory: client/src-tauri
+        run: cargo test dictation --lib
+
+      - name: Test dictation diagnostics
+        working-directory: client/src-tauri
+        run: cargo test doctor_report --lib
+
   desktop-sidecar-contract:
     name: Desktop Sidecar Contract (${{ matrix.name }})
     runs-on: ${{ matrix.os }}

@@ -6212,7 +6212,8 @@ mod platform_input {
             "." | "period" => Some(0x2F),
             "tab" => Some(KeyCode::TAB),
             "space" => Some(KeyCode::SPACE),
-            "delete" | "backspace" => Some(KeyCode::DELETE),
+            "backspace" => Some(KeyCode::DELETE),
+            "delete" | "forwarddelete" | "forward_delete" => Some(KeyCode::FORWARD_DELETE),
             "escape" | "esc" => Some(KeyCode::ESCAPE),
             "cmd" | "command" | "meta" | "super" => Some(KeyCode::COMMAND),
             "shift" => Some(KeyCode::SHIFT),
@@ -6588,6 +6589,35 @@ mod tests {
             output.error.as_ref().map(|error| error.code.as_str()),
             Some("manual_control_lease_required")
         );
+    }
+
+    #[test]
+    fn cloud_manual_keyboard_input_requires_active_controller_lease_without_logging_text() {
+        let repo = tempdir().expect("tempdir");
+        let runtime = AutonomousToolRuntime::new(repo.path()).expect("runtime");
+        let mut request = desktop_control_request(AutonomousDesktopControlAction::TypeText);
+        request.text = Some("do-not-log-this".into());
+        request.reason = Some("cloud_manual_control_input".into());
+
+        let result = runtime
+            .desktop_control_as_manual_control_with_operator_approval(request, "manual-missing")
+            .expect("manual keyboard input result");
+        let AutonomousToolOutput::DesktopControl(output) = result.output else {
+            panic!("expected desktop control output");
+        };
+
+        assert_eq!(output.status, AutonomousDesktopToolStatus::Denied);
+        assert_eq!(
+            output.error.as_ref().map(|error| error.code.as_str()),
+            Some("manual_control_lease_required")
+        );
+        assert_eq!(output.action, "type_text");
+        assert!(output.audit_id.is_some());
+
+        let audit_path = project_app_data_dir_for_repo(repo.path()).join(DESKTOP_AUDIT_FILE);
+        let audit_records = std::fs::read_to_string(audit_path).expect("audit records");
+        assert!(audit_records.contains("\"action\":\"type_text\""));
+        assert!(!audit_records.contains("do-not-log-this"));
     }
 
     #[test]

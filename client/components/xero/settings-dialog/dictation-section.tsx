@@ -7,6 +7,7 @@ import type { XeroDesktopAdapter } from "@/src/lib/xero-desktop"
 import type {
   DictationEnginePreferenceDto,
   DictationPermissionStateDto,
+  DictationPlatformDto,
   DictationPrivacyModeDto,
   DictationSettingsDto,
   DictationStatusDto,
@@ -45,16 +46,35 @@ const DEFAULT_SETTINGS: DictationSettingsDto = {
   updatedAt: null,
 }
 
-const ENGINE_OPTIONS: Array<{ value: DictationEnginePreferenceDto; label: string; detail: string }> = [
+type PreferenceOption<T extends string> = {
+  value: T
+  label: string
+  detail: string
+  disabled?: boolean
+}
+
+const MACOS_ENGINE_OPTIONS: Array<PreferenceOption<DictationEnginePreferenceDto>> = [
   { value: "automatic", label: "Automatic", detail: "Use modern dictation when available" },
   { value: "modern", label: "Prefer macOS 26 Dictation", detail: "Require the modern SpeechAnalyzer path first" },
   { value: "legacy", label: "Legacy only", detail: "Use SFSpeechRecognizer" },
 ]
 
-const PRIVACY_OPTIONS: Array<{ value: DictationPrivacyModeDto; label: string; detail: string }> = [
+const WINDOWS_ENGINE_OPTIONS: Array<PreferenceOption<DictationEnginePreferenceDto>> = [
+  { value: "automatic", label: "Automatic", detail: "Use the native Windows SDK engine" },
+  { value: "modern", label: "macOS modern only", detail: "Unavailable on Windows", disabled: true },
+  { value: "legacy", label: "macOS legacy only", detail: "Unavailable on Windows", disabled: true },
+]
+
+const MACOS_PRIVACY_OPTIONS: Array<PreferenceOption<DictationPrivacyModeDto>> = [
   { value: "on_device_preferred", label: "On-device preferred", detail: "Try local recognition before asking for another path" },
   { value: "on_device_required", label: "On-device required", detail: "Never use Apple server recognition" },
   { value: "allow_network", label: "Allow Apple server recognition", detail: "Permit Apple recognition when local support is unavailable" },
+]
+
+const WINDOWS_PRIVACY_OPTIONS: Array<PreferenceOption<DictationPrivacyModeDto>> = [
+  { value: "on_device_preferred", label: "Windows default", detail: "Use Windows speech settings" },
+  { value: "on_device_required", label: "Local only", detail: "Requires a future local Windows engine", disabled: true },
+  { value: "allow_network", label: "Allow Windows speech service", detail: "Permit Windows online speech recognition when required" },
 ]
 
 type StatusTone = "ok" | "warn" | "bad" | "muted"
@@ -142,7 +162,7 @@ export function DictationSection({ adapter }: DictationSectionProps) {
       localeOptions.length > 0 &&
       !localeOptions.some((locale) => normalizeLocale(locale) === normalizeLocale(selectedSettings.locale)),
   )
-  const isMacos = status?.platform === "macos"
+  const isNativePlatform = status?.platform === "macos" || status?.platform === "windows"
   const isBusy = loadState === "loading" || saveState === "saving"
 
   const updateSettings = (patch: Partial<UpsertDictationSettingsRequestDto>) => {
@@ -171,7 +191,7 @@ export function DictationSection({ adapter }: DictationSectionProps) {
     <div className="flex flex-col gap-7">
       <SectionHeader
         title="Dictation"
-        description="Configure native macOS speech input for the agent composer."
+        description="Configure native speech input for the agent composer."
         actions={
           <Button
             type="button"
@@ -198,13 +218,13 @@ export function DictationSection({ adapter }: DictationSectionProps) {
         />
       ) : loadState === "loading" && !status ? (
         <LoadingCard />
-      ) : !isMacos ? (
+      ) : !isNativePlatform ? (
         <UnavailableCard
-          title="Native dictation is macOS-only"
+          title="Native dictation is unavailable"
           body={
             status?.platform === "unsupported"
-              ? "Xero's native speech input pipeline is currently shipped for macOS only."
-              : "Switch to a macOS device to configure native dictation."
+              ? "Xero could not identify a native dictation backend for this device."
+              : "Use Xero on macOS or Windows to configure native dictation."
           }
         />
       ) : (
@@ -221,6 +241,7 @@ export function DictationSection({ adapter }: DictationSectionProps) {
 
           <PreferencesPanel
             settings={selectedSettings}
+            platform={status!.platform}
             disabled={isBusy}
             localeOptions={localeOptions}
             selectedLocale={selectedLocale}
@@ -244,6 +265,7 @@ function ReadinessCard({
   saving: boolean
 }) {
   const summary = summarizeReadiness(status)
+  const platformLabel = status.platform === "windows" ? "Windows" : "macOS"
 
   return (
     <div className="flex items-start gap-3 rounded-md border border-border/60 bg-secondary/10 px-3.5 py-3">
@@ -251,7 +273,7 @@ function ReadinessCard({
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <p className="truncate text-[12.5px] font-semibold text-foreground">
-            Native macOS dictation
+            Native {platformLabel} dictation
           </p>
           <StatusPill tone={summary.tone} label={summary.label} />
           {saving ? (
@@ -269,6 +291,7 @@ function ReadinessCard({
 
 function PreferencesPanel({
   settings,
+  platform,
   disabled,
   localeOptions,
   selectedLocale,
@@ -277,6 +300,7 @@ function PreferencesPanel({
   onUpdate,
 }: {
   settings: DictationSettingsDto
+  platform: DictationPlatformDto
   disabled: boolean
   localeOptions: string[]
   selectedLocale: string
@@ -284,6 +308,9 @@ function PreferencesPanel({
   defaultLocale: string | null
   onUpdate: (patch: Partial<UpsertDictationSettingsRequestDto>) => void
 }) {
+  const engineOptions = platform === "windows" ? WINDOWS_ENGINE_OPTIONS : MACOS_ENGINE_OPTIONS
+  const privacyOptions = platform === "windows" ? WINDOWS_PRIVACY_OPTIONS : MACOS_PRIVACY_OPTIONS
+
   return (
     <section className="flex flex-col gap-2.5">
       <h4 className="text-[12.5px] font-semibold text-foreground">Preferences</h4>
@@ -292,14 +319,14 @@ function PreferencesPanel({
           label="Engine"
           value={settings.enginePreference}
           disabled={disabled}
-          options={ENGINE_OPTIONS}
+          options={engineOptions}
           onValueChange={(enginePreference) => onUpdate({ enginePreference })}
         />
         <PreferenceRow
           label="Privacy"
           value={settings.privacyMode}
           disabled={disabled}
-          options={PRIVACY_OPTIONS}
+          options={privacyOptions}
           onValueChange={(privacyMode) => onUpdate({ privacyMode })}
         />
         <LocaleRow
@@ -325,7 +352,7 @@ function PreferenceRow<T extends string>({
   label: string
   value: T
   disabled: boolean
-  options: Array<{ value: T; label: string; detail: string }>
+  options: Array<PreferenceOption<T>>
   onValueChange: (value: T) => void
 }) {
   return (
@@ -341,7 +368,7 @@ function PreferenceRow<T extends string>({
         </SelectTrigger>
         <SelectContent>
           {options.map((option) => (
-            <SelectItem key={option.value} value={option.value}>
+            <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
               {option.label}
             </SelectItem>
           ))}
@@ -401,6 +428,7 @@ function LocaleRow({
 }
 
 function CapabilitiesPanel({ status }: { status: DictationStatusDto }) {
+  const isWindows = status.platform === "windows"
   const modernAssetsTone: StatusTone =
     status.modernAssets.status === "installed" ? "ok" : status.modern.available ? "warn" : "muted"
 
@@ -408,29 +436,41 @@ function CapabilitiesPanel({ status }: { status: DictationStatusDto }) {
     <section className="flex flex-col gap-2.5">
       <h4 className="text-[12.5px] font-semibold text-foreground">System availability</h4>
       <ul className="overflow-hidden rounded-md border border-border/60 divide-y divide-border/40">
-        <EngineRow
-          label="Modern engine"
-          available={status.modern.available}
-          reason={status.modern.reason}
-        />
-        <EngineRow
-          label="Legacy engine"
-          available={status.legacy.available}
-          reason={status.legacy.reason}
-        />
-        <PermissionRow kind="microphone" state={status.microphonePermission} />
-        <PermissionRow kind="speech recognition" state={status.speechPermission} />
-        <CapabilityRow
-          label="Modern speech assets"
-          tone={modernAssetsTone}
-          pillLabel={
-            status.modernAssets.status === "installed"
-              ? "Installed"
-              : status.modern.available
-                ? "Missing"
-                : "—"
-          }
-        />
+        {isWindows ? (
+          <EngineRow
+            label="Windows SDK engine"
+            available={status.windowsSdk.available}
+            reason={status.windowsSdk.reason}
+          />
+        ) : (
+          <>
+            <EngineRow
+              label="Modern engine"
+              available={status.modern.available}
+              reason={status.modern.reason}
+            />
+            <EngineRow
+              label="Legacy engine"
+              available={status.legacy.available}
+              reason={status.legacy.reason}
+            />
+          </>
+        )}
+        <PermissionRow platform={status.platform} kind="microphone" state={status.microphonePermission} />
+        <PermissionRow platform={status.platform} kind="speech recognition" state={status.speechPermission} />
+        {!isWindows ? (
+          <CapabilityRow
+            label="Modern speech assets"
+            tone={modernAssetsTone}
+            pillLabel={
+              status.modernAssets.status === "installed"
+                ? "Installed"
+                : status.modern.available
+                  ? "Missing"
+                  : "—"
+            }
+          />
+        ) : null}
       </ul>
     </section>
   )
@@ -455,15 +495,17 @@ function EngineRow({
 }
 
 function PermissionRow({
+  platform,
   kind,
   state,
 }: {
+  platform: DictationPlatformDto
   kind: "microphone" | "speech recognition"
   state: DictationPermissionStateDto
 }) {
   const denied = state === "denied" || state === "restricted"
   const tone: StatusTone = state === "authorized" ? "ok" : denied ? "bad" : "warn"
-  const pane = kind === "microphone" ? "Privacy_Microphone" : "Privacy_SpeechRecognition"
+  const pane = kind === "microphone" ? "microphone" : "speech"
   const pillLabel =
     state === "authorized"
       ? "Allowed"
@@ -485,7 +527,7 @@ function PermissionRow({
             variant="outline"
             size="sm"
             className="h-7 text-[11.5px]"
-            onClick={() => void openMacosPrivacyPane(pane)}
+            onClick={() => void openPrivacyPane(platform, pane)}
           >
             Open Settings
           </Button>
@@ -560,13 +602,17 @@ function summarizeReadiness(status: DictationStatusDto): {
   const micBlocked = status.microphonePermission === "denied" || status.microphonePermission === "restricted"
   const speechBlocked = status.speechPermission === "denied" || status.speechPermission === "restricted"
   const anyBlocked = micBlocked || speechBlocked
-  const noEngine = !status.modern.available && !status.legacy.available
+  const isWindows = status.platform === "windows"
+  const hasEngine = isWindows ? status.windowsSdk.available : status.modern.available || status.legacy.available
+  const noEngine = !hasEngine
 
   if (noEngine) {
     return {
       tone: "bad",
       label: "Unavailable",
-      body: "No dictation engine is available on this Mac. Check the system requirements below.",
+      body: isWindows
+        ? "The Windows SDK dictation engine is unavailable. Check the system requirements below."
+        : "No dictation engine is available on this Mac. Check the system requirements below.",
     }
   }
 
@@ -574,7 +620,9 @@ function summarizeReadiness(status: DictationStatusDto): {
     return {
       tone: "bad",
       label: "Permissions blocked",
-      body: "macOS is blocking microphone or speech recognition for Xero. Open System Settings to allow access.",
+      body: isWindows
+        ? "Windows is blocking microphone or speech recognition for Xero. Open Windows Settings to allow access."
+        : "macOS is blocking microphone or speech recognition for Xero. Open System Settings to allow access.",
     }
   }
 
@@ -587,7 +635,17 @@ function summarizeReadiness(status: DictationStatusDto): {
     return {
       tone: "warn",
       label: "Permissions pending",
-      body: "macOS will request microphone and speech permission the first time dictation runs.",
+      body: isWindows
+        ? "Windows may request microphone permission the first time dictation runs."
+        : "macOS will request microphone and speech permission the first time dictation runs.",
+    }
+  }
+
+  if (isWindows) {
+    return {
+      tone: "ok",
+      label: "Ready",
+      body: "Windows SDK dictation is ready to use. Keep Automatic selected for native Windows speech input.",
     }
   }
 
@@ -634,6 +692,15 @@ function capitalize(value: string): string {
   return value.replace(/^\w/, (letter: string) => letter.toUpperCase())
 }
 
-async function openMacosPrivacyPane(pane: string): Promise<void> {
-  await openUrl(`x-apple.systempreferences:com.apple.preference.security?${pane}`)
+async function openPrivacyPane(platform: DictationPlatformDto, pane: "microphone" | "speech"): Promise<void> {
+  if (platform === "windows") {
+    await openUrl(pane === "microphone" ? "ms-settings:privacy-microphone" : "ms-settings:privacy-speech")
+    return
+  }
+
+  await openUrl(
+    `x-apple.systempreferences:com.apple.preference.security?${
+      pane === "microphone" ? "Privacy_Microphone" : "Privacy_SpeechRecognition"
+    }`,
+  )
 }
