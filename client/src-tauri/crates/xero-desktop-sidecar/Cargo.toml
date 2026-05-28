@@ -23,6 +23,9 @@ xcap = "0.6"
 core-foundation = "0.9"
 core-graphics = { version = "0.23", features = ["elcapitan", "highsierra"] }
 apple-cf = { version = "0.9.3", default-features = false, features = ["cm", "cv", "iosurface"] }
+# Keep ScreenCaptureKit on an apple-metal release that compiles with the
+# macos-15 runner SDK; newer 0.6/0.8 releases reference macOS 26 symbols.
+apple-metal = { version = "=0.6.0", default-features = false }
 libc = "0.2"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSPasteboard"] }

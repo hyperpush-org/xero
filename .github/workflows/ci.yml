@@ -142,6 +142,7 @@ jobs:
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
+            libegl-dev \
             libgbm-dev \
             libpipewire-0.3-dev \
             libssl-dev \
@@ -230,6 +231,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libpipewire-0.3-dev \
+            libegl-dev \
             libwayland-dev \
             libx11-dev \
             libxcb-randr0-dev \
