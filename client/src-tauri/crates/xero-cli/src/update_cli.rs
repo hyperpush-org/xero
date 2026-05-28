@@ -99,8 +99,9 @@ pub(crate) fn check_for_update(manifest_url: Option<&str>) -> Result<UpdateCheck
         .map(ToOwned::to_owned)
         .or_else(|| env::var("XERO_UPDATE_MANIFEST_URL").ok())
         .unwrap_or_else(|| DEFAULT_MANIFEST_URL.to_owned());
+    let platform = platform_key()?;
     let manifest = fetch_manifest(&manifest_url)?;
-    check_from_manifest(&manifest, &manifest_url, platform_key())
+    check_from_manifest(&manifest, &manifest_url, platform)
 }
 
 pub(crate) fn update_notice(check: &UpdateCheck) -> Option<String> {
@@ -839,32 +840,31 @@ fn unique_temp_dir() -> Result<PathBuf, CliError> {
     Ok(env::temp_dir().join(format!("xero-update-{}-{nanos}", process::id())))
 }
 
-fn platform_key() -> &'static str {
+fn platform_key() -> Result<&'static str, CliError> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        "aarch64-apple-darwin"
+        return Ok("aarch64-apple-darwin");
     }
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     {
-        "x86_64-apple-darwin"
+        return Err(CliError::user_fixable(
+            "xero_macos_intel_unsupported",
+            "Xero no longer publishes macOS Intel builds. Use an Apple silicon Mac, Windows, or Linux build.",
+        ));
     }
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
-        "x86_64-unknown-linux-gnu"
+        return Ok("x86_64-unknown-linux-gnu");
     }
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
-        "x86_64-pc-windows-msvc"
+        return Ok("x86_64-pc-windows-msvc");
     }
-    #[cfg(not(any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "macos", target_arch = "x86_64"),
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "windows", target_arch = "x86_64")
-    )))]
-    {
-        "unsupported"
-    }
+    #[allow(unreachable_code)]
+    Err(CliError::user_fixable(
+        "xero_update_platform_unsupported",
+        "No xero update asset is available for this OS / architecture.",
+    ))
 }
 
 fn default_binary_name() -> String {

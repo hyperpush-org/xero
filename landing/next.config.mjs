@@ -32,10 +32,14 @@ const nextConfig = {
           },
           {
             key: 'Permissions-Policy',
-            value: 'camera=(), geolocation=(), microphone=()',
+            value: 'camera=(), geolocation=(), microphone=(), ch-ua-arch=(self), ch-ua-platform=(self)',
           },
           {
             key: 'Accept-CH',
+            value: 'Sec-CH-UA-Platform, Sec-CH-UA-Arch',
+          },
+          {
+            key: 'Critical-CH',
             value: 'Sec-CH-UA-Platform, Sec-CH-UA-Arch',
           },
         ],

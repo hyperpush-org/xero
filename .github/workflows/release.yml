@@ -180,9 +180,6 @@ jobs:
           - platform: blacksmith-6vcpu-macos-15
             target: aarch64-apple-darwin
             artifact_suffix: macos-aarch64
-          - platform: blacksmith-6vcpu-macos-15
-            target: x86_64-apple-darwin
-            artifact_suffix: macos-x86_64
           - platform: blacksmith-4vcpu-ubuntu-2404
             target: x86_64-unknown-linux-gnu
             artifact_suffix: linux-x86_64
@@ -397,10 +394,6 @@ jobs:
             args: --target aarch64-apple-darwin --config src-tauri/tauri.macos.conf.json -- --bin xero-desktop
             artifact_suffix: macos-aarch64
             platform_key: darwin-aarch64
-          - platform: blacksmith-6vcpu-macos-15
-            args: --target x86_64-apple-darwin --config src-tauri/tauri.macos.conf.json -- --bin xero-desktop
-            artifact_suffix: macos-x86_64
-            platform_key: darwin-x86_64
           - platform: blacksmith-4vcpu-windows-2025
             args: --bundles nsis -- --bin xero-desktop
             artifact_suffix: windows-x86_64
@@ -456,7 +449,7 @@ jobs:
         if: contains(matrix.platform_key, 'darwin')
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: aarch64-apple-darwin
 
       - name: Set up Rust
         if: ${{ !contains(matrix.platform_key, 'darwin') }}
@@ -507,9 +500,6 @@ jobs:
           case "${{ matrix.platform_key }}" in
             darwin-aarch64)
               cargo build --release --package xero-desktop-sidecar --target aarch64-apple-darwin
-              ;;
-            darwin-x86_64)
-              cargo build --release --package xero-desktop-sidecar --target x86_64-apple-darwin
               ;;
             *)
               cargo build --release --package xero-desktop-sidecar
