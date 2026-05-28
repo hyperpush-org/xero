@@ -71,7 +71,7 @@ export function DesktopControlSection({ adapter }: DesktopControlSectionProps) {
   )
 
   useEffect(() => {
-    void refresh()
+    void refresh({ refreshPermissionStatus: true })
   }, [refresh])
 
   const saveSettings = async (

@@ -36,7 +36,7 @@ describe('DesktopControlSection', () => {
     render(<DesktopControlSection adapter={adapter} />)
 
     expect(await screen.findByText('Screen Recording')).toBeVisible()
-    expect(adapter.desktopControlStatus).toHaveBeenCalledWith({ refreshPermissionStatus: false })
+    expect(adapter.desktopControlStatus).toHaveBeenCalledWith({ refreshPermissionStatus: true })
     expect(adapter.desktopControlStatus).toHaveBeenCalledTimes(1)
     expect(screen.getByText('Required for screenshot, stream.')).toBeVisible()
     expect(screen.getByText(/quit and reopen Xero/)).toBeVisible()
