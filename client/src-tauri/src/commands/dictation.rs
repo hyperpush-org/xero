@@ -1,10 +1,11 @@
+#[cfg(not(target_os = "windows"))]
+use std::fmt;
 #[cfg(all(target_os = "macos", xero_dictation_native_shim))]
 use std::{
     ffi::{c_char, c_void, CStr, CString},
     ptr::NonNull,
 };
 use std::{
-    fmt,
     path::Path,
     str::FromStr,
     sync::{
@@ -947,11 +948,7 @@ struct NativeSessionRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(
-    not(any(
-        test,
-        target_os = "windows",
-        all(target_os = "macos", xero_dictation_native_shim)
-    )),
+    not(any(test, all(target_os = "macos", xero_dictation_native_shim))),
     allow(dead_code)
 )]
 struct NativeOperationResponse {
@@ -1000,11 +997,7 @@ impl NativeStartError {
 }
 
 #[cfg_attr(
-    not(any(
-        test,
-        target_os = "windows",
-        all(target_os = "macos", xero_dictation_native_shim)
-    )),
+    not(any(test, all(target_os = "macos", xero_dictation_native_shim))),
     allow(dead_code)
 )]
 fn native_operation_result(
@@ -1026,11 +1019,7 @@ fn native_operation_result(
 }
 
 #[cfg_attr(
-    not(any(
-        test,
-        target_os = "windows",
-        all(target_os = "macos", xero_dictation_native_shim)
-    )),
+    not(any(test, all(target_os = "macos", xero_dictation_native_shim))),
     allow(dead_code)
 )]
 struct NativeCallbackContext {
@@ -1040,11 +1029,7 @@ struct NativeCallbackContext {
 }
 
 #[cfg_attr(
-    not(any(
-        test,
-        target_os = "windows",
-        all(target_os = "macos", xero_dictation_native_shim)
-    )),
+    not(any(test, all(target_os = "macos", xero_dictation_native_shim))),
     allow(dead_code)
 )]
 impl NativeCallbackContext {
@@ -1087,11 +1072,7 @@ impl NativeCallbackContext {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[cfg_attr(
-    not(any(
-        test,
-        target_os = "windows",
-        all(target_os = "macos", xero_dictation_native_shim)
-    )),
+    not(any(test, all(target_os = "macos", xero_dictation_native_shim))),
     allow(dead_code)
 )]
 enum NativeDictationEvent {
@@ -1142,11 +1123,7 @@ enum NativeDictationEvent {
 
 #[derive(Debug, Clone)]
 #[cfg_attr(
-    not(any(
-        test,
-        target_os = "windows",
-        all(target_os = "macos", xero_dictation_native_shim)
-    )),
+    not(any(test, all(target_os = "macos", xero_dictation_native_shim))),
     allow(dead_code)
 )]
 struct NativeEventOutcome {
@@ -1155,11 +1132,7 @@ struct NativeEventOutcome {
 }
 
 #[cfg_attr(
-    not(any(
-        test,
-        target_os = "windows",
-        all(target_os = "macos", xero_dictation_native_shim)
-    )),
+    not(any(test, all(target_os = "macos", xero_dictation_native_shim))),
     allow(dead_code)
 )]
 impl NativeDictationEvent {
@@ -1271,11 +1244,7 @@ impl NativeDictationEvent {
 }
 
 #[cfg_attr(
-    not(any(
-        test,
-        target_os = "windows",
-        all(target_os = "macos", xero_dictation_native_shim)
-    )),
+    not(any(test, all(target_os = "macos", xero_dictation_native_shim))),
     allow(dead_code)
 )]
 fn validate_native_session_id(

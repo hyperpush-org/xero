@@ -487,6 +487,7 @@ fn parse_ps_pid_pgid_args(line: &str) -> Option<(libc::pid_t, libc::pid_t, &str)
     Some((pid, pgid, args))
 }
 
+#[cfg_attr(not(any(unix, test)), allow(dead_code))]
 fn process_label_from_args(args: &str) -> Option<String> {
     let tokens = split_process_args(args);
     if tokens.is_empty() {
@@ -518,6 +519,7 @@ fn process_label_from_args(args: &str) -> Option<String> {
     Some(command_label)
 }
 
+#[cfg_attr(not(any(unix, test)), allow(dead_code))]
 fn split_process_args(args: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -561,6 +563,7 @@ fn split_process_args(args: &str) -> Vec<String> {
     tokens
 }
 
+#[cfg_attr(not(any(unix, test)), allow(dead_code))]
 fn first_command_token_index(tokens: &[String]) -> Option<usize> {
     let mut index = 0;
     while index < tokens.len() {
@@ -578,6 +581,7 @@ fn first_command_token_index(tokens: &[String]) -> Option<usize> {
     None
 }
 
+#[cfg_attr(not(any(unix, test)), allow(dead_code))]
 fn known_cli_label(token: &str) -> Option<&'static str> {
     let lower = token.to_ascii_lowercase();
     let components = lower.split(['/', '\\', ':', '@']);
@@ -605,6 +609,7 @@ fn known_cli_label(token: &str) -> Option<&'static str> {
     None
 }
 
+#[cfg_attr(not(any(unix, test)), allow(dead_code))]
 fn is_script_runtime(label: &str) -> bool {
     let lower = label.to_ascii_lowercase();
     matches!(
@@ -613,6 +618,7 @@ fn is_script_runtime(label: &str) -> bool {
     ) || lower.starts_with("python3.")
 }
 
+#[cfg_attr(not(any(unix, test)), allow(dead_code))]
 fn script_label_from_token(token: &str) -> Option<String> {
     if token.starts_with('-') || token.contains('=') {
         return None;
@@ -624,6 +630,7 @@ fn script_label_from_token(token: &str) -> Option<String> {
     Some(label)
 }
 
+#[cfg_attr(not(any(unix, test)), allow(dead_code))]
 fn package_manager_script_label(command: &str, args: &[String]) -> Option<String> {
     if !matches!(command, "npm" | "pnpm" | "yarn") {
         return None;

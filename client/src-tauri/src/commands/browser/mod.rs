@@ -130,6 +130,7 @@ impl Default for BrowserState {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 struct BrowserResizeDragSession {
     id: u64,
     labels: Vec<String>,
@@ -144,6 +145,7 @@ struct BrowserResizeDragSession {
     inset: f64,
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 impl BrowserResizeDragSession {
     fn width_for_cursor(&self, cursor_client_x: f64) -> f64 {
         let delta = self.start_client_x - cursor_client_x;

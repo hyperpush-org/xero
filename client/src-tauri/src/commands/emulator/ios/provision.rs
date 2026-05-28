@@ -11,6 +11,8 @@
 //!
 //! Progress is streamed to the frontend on [`EMULATOR_IOS_PROVISION_EVENT`].
 
+#![cfg_attr(not(target_os = "macos"), allow(dead_code, unused_imports))]
+
 use std::ffi::CString;
 use std::mem::MaybeUninit;
 use std::path::Path;

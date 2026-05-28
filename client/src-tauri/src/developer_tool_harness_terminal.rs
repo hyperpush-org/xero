@@ -1259,12 +1259,14 @@ fn default_app_data_dir() -> Result<PathBuf, HarnessTerminalError> {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn home_dir() -> Option<PathBuf> {
     env::var_os("HOME")
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)
 }
 
+#[cfg(not(target_os = "windows"))]
 fn home_dir_error() -> HarnessTerminalError {
     HarnessTerminalError::system_fault(
         "developer_tool_app_data_unavailable",
