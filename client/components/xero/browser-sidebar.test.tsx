@@ -786,6 +786,12 @@ describe("BrowserSidebar", () => {
       render(<BrowserSidebar open />)
       const input = (await screen.findByLabelText("Address")) as HTMLInputElement
       await waitFor(() => expect(input.value).toBe("https://example.com/"))
+      await waitFor(() =>
+        expect(invokeCalls.some((call) => call.command === "browser_resize")).toBe(
+          true,
+        ),
+      )
+      invokeCalls.length = 0
 
       const separator = screen.getByRole("separator", {
         name: "Resize browser sidebar",

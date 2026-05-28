@@ -211,6 +211,7 @@ fn seed_runtime_run(repo_root: &Path, project_id: &str, run_id: &str) {
             project_id: project_id.into(),
             title: "Attached skill run".into(),
             summary: String::new(),
+            session_kind: project_store::AgentSessionKind::Standard,
             selected: true,
         },
     )

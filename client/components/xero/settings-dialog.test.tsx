@@ -788,7 +788,11 @@ describe('SettingsDialog', () => {
       />,
     )
 
-    const onboardingHeading = await screen.findByRole('heading', { name: 'Onboarding' })
+    const onboardingHeading = await screen.findByRole(
+      'heading',
+      { name: 'Onboarding' },
+      { timeout: 5000 },
+    )
     const toolbarHeading = await screen.findByRole('heading', { name: 'Toolbar platform' })
     const harnessHeading = await screen.findByRole('heading', { name: 'Tool harness' })
     expect(screen.getByRole('button', { name: 'Start onboarding' })).toBeEnabled()

@@ -2663,10 +2663,17 @@ mod tests {
         )
         .expect("write instructions");
         let canonical_root = fs::canonicalize(&repo_root).expect("canonical repo root");
-        let project_id = "project-context-package".to_string();
+        let project_suffix = root
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("test")
+            .trim_start_matches('.')
+            .to_string();
+        let project_id = format!("project-context-package-{project_suffix}");
         let repository = CanonicalRepository {
             project_id: project_id.clone(),
-            repository_id: "repo-context-package".into(),
+            repository_id: format!("repo-context-package-{project_suffix}"),
             root_path: canonical_root.clone(),
             root_path_string: canonical_root.to_string_lossy().into_owned(),
             common_git_dir: canonical_root.join(".git"),

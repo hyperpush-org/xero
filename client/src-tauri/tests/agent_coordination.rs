@@ -50,6 +50,7 @@ fn create_session(repo_root: &std::path::Path, project_id: &str, title: &str) ->
             project_id: project_id.into(),
             title: title.into(),
             summary: "Parallel active run".into(),
+            session_kind: project_store::AgentSessionKind::Standard,
             selected: false,
         },
     )

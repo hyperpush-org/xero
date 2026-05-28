@@ -9364,7 +9364,7 @@ fn reconcile_cursor_workspace(
                 request,
                 &path,
                 provenance,
-                &diff_kind,
+                diff_kind,
                 &final_snapshot,
             )?;
             action = "promoted";

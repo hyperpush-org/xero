@@ -6383,10 +6383,6 @@ pub struct AutonomousToolResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "kind")]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Tool outputs are serialized immediately at an API boundary; boxing one variant would churn every matcher and fixture."
-)]
 pub enum AutonomousToolOutput {
     Read(AutonomousReadOutput),
     ReadMany(AutonomousReadManyOutput),

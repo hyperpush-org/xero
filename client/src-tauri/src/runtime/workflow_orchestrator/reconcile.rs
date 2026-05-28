@@ -1806,7 +1806,7 @@ fn lookup_artifact_template_ref(
         )
     })?;
     if let Some(path) = path {
-        return json_path_lookup(*payload, &path).cloned().ok_or_else(|| {
+        return json_path_lookup(payload, &path).cloned().ok_or_else(|| {
             CommandError::user_fixable(
                 "workflow_template_artifact_path_missing",
                 format!("Workflow template could not resolve `{artifact_ref}{path}`."),

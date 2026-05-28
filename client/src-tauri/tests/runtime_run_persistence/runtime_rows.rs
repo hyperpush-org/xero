@@ -239,6 +239,7 @@ pub(crate) fn runtime_run_persistence_isolates_runs_by_agent_session() {
             project_id: project_id.into(),
             title: "Parallel".into(),
             summary: "Independent owned-agent run".into(),
+            session_kind: project_store::AgentSessionKind::Standard,
             selected: false,
         },
     )

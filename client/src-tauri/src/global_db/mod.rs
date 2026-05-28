@@ -628,7 +628,10 @@ mod tests {
         assert!(
             tempdir
                 .path()
-                .join("xero.db.pre-migration-v10-to-v12.bak")
+                .join(format!(
+                    "xero.db.pre-migration-v10-to-v{}.bak",
+                    migrations::GLOBAL_DATABASE_SCHEMA_VERSION
+                ))
                 .exists(),
             "existing user state should be copied before an in-place schema upgrade"
         );

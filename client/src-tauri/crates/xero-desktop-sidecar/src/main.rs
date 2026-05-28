@@ -965,10 +965,7 @@ fn apply_webrtc_stream_answer(
             })
     })?;
     start_webrtc_media_publisher(&active)?;
-    Ok(active_webrtc_stream_payload(
-        &stream_id,
-        "Browser WebRTC answer was applied.",
-    )?)
+    active_webrtc_stream_payload(&stream_id, "Browser WebRTC answer was applied.")
 }
 
 fn add_webrtc_stream_ice_candidate(
@@ -999,10 +996,7 @@ fn add_webrtc_stream_ice_candidate(
                 )
             })
     })?;
-    Ok(active_webrtc_stream_payload(
-        &stream_id,
-        "Browser ICE candidate was applied.",
-    )?)
+    active_webrtc_stream_payload(&stream_id, "Browser ICE candidate was applied.")
 }
 
 fn stop_webrtc_stream(
@@ -1584,7 +1578,7 @@ impl NativeVideoTarget {
         Self {
             display_id: config.display_id.clone(),
             max_width: config.max_width,
-            fps: config.max_frame_rate.max(1).min(WEBRTC_MAX_FRAME_RATE),
+            fps: config.max_frame_rate.clamp(1, WEBRTC_MAX_FRAME_RATE),
             include_cursor: config.include_cursor,
             quality: config.quality,
         }
@@ -1742,7 +1736,7 @@ fn scaled_even_dimensions(source_width: u32, source_height: u32, max_width: u32)
 
 #[cfg(target_os = "macos")]
 fn make_even(value: u32) -> u32 {
-    if value % 2 == 0 {
+    if value.is_multiple_of(2) {
         value
     } else {
         value.saturating_sub(1).max(2)
@@ -3336,8 +3330,14 @@ mod macos_accessibility {
         let width = size.map(|size| size.width.max(0.0).round() as u32);
         let height = size.map(|size| size.height.max(0.0).round() as u32);
         let pid = element_pid(element);
+        let geometry = AxElementGeometry {
+            x,
+            y,
+            width,
+            height,
+        };
         DesktopSidecarAccessibilityElement {
-            element_id: element_id(pid, role.as_deref(), x, y, width, height, hit_x, hit_y),
+            element_id: element_id(pid, role.as_deref(), geometry, hit_x, hit_y),
             pid,
             role,
             title,
@@ -3352,13 +3352,17 @@ mod macos_accessibility {
         }
     }
 
-    fn element_id(
-        pid: Option<u32>,
-        role: Option<&str>,
+    struct AxElementGeometry {
         x: Option<i32>,
         y: Option<i32>,
         width: Option<u32>,
         height: Option<u32>,
+    }
+
+    fn element_id(
+        pid: Option<u32>,
+        role: Option<&str>,
+        geometry: AxElementGeometry,
         hit_x: i32,
         hit_y: i32,
     ) -> String {
@@ -3366,10 +3370,10 @@ mod macos_accessibility {
             "macos_ax:{}:{}:{}:{}:{}:{}:{}:{}",
             pid.unwrap_or_default(),
             role.unwrap_or("element"),
-            x.unwrap_or(hit_x),
-            y.unwrap_or(hit_y),
-            width.unwrap_or_default(),
-            height.unwrap_or_default(),
+            geometry.x.unwrap_or(hit_x),
+            geometry.y.unwrap_or(hit_y),
+            geometry.width.unwrap_or_default(),
+            geometry.height.unwrap_or_default(),
             hit_x,
             hit_y
         )
@@ -4279,10 +4283,6 @@ mod macos_ocr {
         })
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "OCR geometry conversion is clearer when Vision's normalized rectangle components stay explicit."
-    )]
     fn text_block_from_bbox(
         text: String,
         confidence: f32,

@@ -816,6 +816,7 @@ struct OwnedAgentReplayProjectionResult {
     deliverable_items: Vec<RuntimeStreamItemDto>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn project_owned_agent_replay_events(
     repo_root: &Path,
     project_id: &str,

@@ -1,4 +1,7 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -116,8 +119,8 @@ fn global_computer_use_paths<R: Runtime>(
 }
 
 fn ensure_global_computer_use_database(
-    repo_root: &PathBuf,
-    database_path: &PathBuf,
+    repo_root: &Path,
+    database_path: &Path,
 ) -> CommandResult<()> {
     let database_existed = database_path.exists();
     let mut connection = open_global_computer_use_database(database_path)?;
@@ -149,7 +152,7 @@ fn ensure_global_computer_use_database(
     upsert_global_computer_use_rows(&connection, repo_root, database_path)
 }
 
-fn open_global_computer_use_database(database_path: &PathBuf) -> CommandResult<Connection> {
+fn open_global_computer_use_database(database_path: &Path) -> CommandResult<Connection> {
     let connection = Connection::open(database_path).map_err(|error| {
         CommandError::retryable(
             "computer_use_state_open_failed",
@@ -165,8 +168,8 @@ fn open_global_computer_use_database(database_path: &PathBuf) -> CommandResult<C
 
 fn upsert_global_computer_use_rows(
     connection: &Connection,
-    repo_root: &PathBuf,
-    database_path: &PathBuf,
+    repo_root: &Path,
+    database_path: &Path,
 ) -> CommandResult<()> {
     let now = now_timestamp();
     let tx = connection.unchecked_transaction().map_err(|error| {
@@ -307,7 +310,7 @@ fn upsert_global_computer_use_rows(
     })
 }
 
-fn remove_database_sidecars(database_path: &PathBuf) {
+fn remove_database_sidecars(database_path: &Path) {
     let wal_path = database_path.with_extension("db-wal");
     let shm_path = database_path.with_extension("db-shm");
     let _ = fs::remove_file(wal_path);

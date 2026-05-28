@@ -717,7 +717,7 @@ fn spawn_screenshot_fallback<R: Runtime + 'static>(
             match xcrun::screenshot(&device_id) {
                 Ok(png) => {
                     frame_count += 1;
-                    if frame_count <= 3 || frame_count % 20 == 0 {
+                    if frame_count <= 3 || frame_count.is_multiple_of(20) {
                         eprintln!(
                             "[screenshot-poll] frame #{frame_count}, {} bytes",
                             png.len()

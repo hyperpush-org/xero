@@ -967,12 +967,14 @@ pub(crate) fn sync_active_session_to_cloud(
     super::remote::publish_session_controls(
         globals,
         project_id,
-        session_id,
-        provider_id,
-        model_id,
-        runtime_agent_id,
-        thinking_effort,
-        approval_mode,
+        super::remote::RemoteControlsUpdate {
+            session_id: session_id.to_owned(),
+            provider_id: provider_id.to_owned(),
+            model_id: model_id.to_owned(),
+            runtime_agent_id: runtime_agent_id.to_owned(),
+            thinking_effort: thinking_effort.to_owned(),
+            approval_mode: approval_mode.to_owned(),
+        },
     )
 }
 
@@ -2344,7 +2346,7 @@ fn stage_tui_attachment(
     run_id: &str,
     source_path: &Path,
 ) -> Result<TuiStagedAttachmentDto, CliError> {
-    let args = vec![
+    let args = [
         "attachment".to_owned(),
         "stage".to_owned(),
         "--project-id".to_owned(),
@@ -2369,7 +2371,7 @@ fn discard_staged_attachment(
     project_id: &str,
     absolute_path: &str,
 ) -> Result<(), CliError> {
-    let args = vec![
+    let args = [
         "attachment".to_owned(),
         "discard".to_owned(),
         "--project-id".to_owned(),
@@ -2910,7 +2912,7 @@ fn start_approval_decision_job(
     } else {
         "deny"
     };
-    let owned = vec![
+    let owned = [
         "conversation".to_owned(),
         command.to_owned(),
         "--project-id".to_owned(),

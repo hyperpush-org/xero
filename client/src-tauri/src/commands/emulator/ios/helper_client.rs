@@ -57,7 +57,7 @@ impl HelperClient {
             .spawn(move || {
                 reader_loop(read_stream, frame_tx, responses_clone);
             })
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
 
         Ok(Self {
             writer: Mutex::new(BufWriter::new(stream)),
@@ -215,7 +215,7 @@ impl HelperClient {
             let code = err["code"].as_str().unwrap_or("unknown");
             let message = err["message"].as_str().unwrap_or("helper error");
             return Err(CommandError::system_fault(
-                &format!("ios_helper_{code}"),
+                format!("ios_helper_{code}"),
                 message.to_string(),
             ));
         }
@@ -231,12 +231,7 @@ fn reader_loop(
     frame_tx: mpsc::Sender<FrameData>,
     responses: Arc<Mutex<HashMap<u64, mpsc::Sender<Value>>>>,
 ) {
-    loop {
-        let (msg_type, payload) = match read_message(&mut stream) {
-            Ok(msg) => msg,
-            Err(_) => break, // Connection closed or error.
-        };
-
+    while let Ok((msg_type, payload)) = read_message(&mut stream) {
         match msg_type {
             MSG_TYPE_JSON => {
                 if let Ok(value) = serde_json::from_slice::<Value>(&payload) {

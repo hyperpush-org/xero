@@ -7,7 +7,9 @@ defmodule Xero.RemoteFixtures do
 
   def start_github_flow!(conn, kind, opts \\ []) do
     conn =
-      Phoenix.ConnTest.dispatch(conn, XeroWeb.Endpoint, :post, "/api/github/login", %{
+      conn
+      |> put_rate_limit_fixture_ip()
+      |> Phoenix.ConnTest.dispatch(XeroWeb.Endpoint, :post, "/api/github/login", %{
         "kind" => Atom.to_string(kind),
         "name" => Keyword.get(opts, :name, default_name(kind))
       })
@@ -32,8 +34,9 @@ defmodule Xero.RemoteFixtures do
              )
 
     conn =
-      Phoenix.ConnTest.dispatch(
-        conn,
+      conn
+      |> put_rate_limit_fixture_ip()
+      |> Phoenix.ConnTest.dispatch(
         XeroWeb.Endpoint,
         :get,
         "/api/github/session?flowId=#{started["flowId"]}"
@@ -138,4 +141,12 @@ defmodule Xero.RemoteFixtures do
 
   defp default_name(:desktop), do: "Test Desktop"
   defp default_name(:web), do: "Test Web"
+
+  defp put_rate_limit_fixture_ip(conn) do
+    n = System.unique_integer([:positive])
+    octet_three = rem(div(n, 250), 250)
+    octet_four = rem(n, 250) + 1
+
+    Plug.Conn.put_req_header(conn, "x-forwarded-for", "203.0.#{octet_three}.#{octet_four}")
+  end
 end

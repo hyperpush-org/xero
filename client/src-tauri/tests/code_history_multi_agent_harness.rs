@@ -330,6 +330,7 @@ fn create_session(repo_root: &Path, project_id: &str, title: &str) -> String {
             project_id: project_id.into(),
             title: title.into(),
             summary: "S36 multi-agent history harness".into(),
+            session_kind: project_store::AgentSessionKind::Standard,
             selected: false,
         },
     )

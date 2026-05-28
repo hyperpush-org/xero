@@ -820,6 +820,7 @@ fn json_child_record(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_json_child(
     connection: &Connection,
     table: &str,
@@ -849,6 +850,7 @@ fn insert_json_child(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_delivery_state_event(
     connection: &Connection,
     project_id: &str,
@@ -860,13 +862,13 @@ fn insert_delivery_state_event(
     after: Option<&JsonValue>,
 ) -> Result<(), CommandError> {
     let before_json = before
-        .map(|value| serde_json::to_string(value))
+        .map(serde_json::to_string)
         .transpose()
         .map_err(|error| {
             CommandError::system_fault("delivery_state_json_encode_failed", error.to_string())
         })?;
     let after_json = after
-        .map(|value| serde_json::to_string(value))
+        .map(serde_json::to_string)
         .transpose()
         .map_err(|error| {
             CommandError::system_fault("delivery_state_json_encode_failed", error.to_string())

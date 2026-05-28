@@ -383,22 +383,48 @@ fn parse_required_space(detail: &str) -> Option<RequiredSpace> {
     let mut parts = detail[start..].split_whitespace();
     let raw_amount = parts.next()?;
     let raw_unit = parts.next()?;
-    let amount = raw_amount
-        .trim_matches(|c: char| !c.is_ascii_digit() && c != '.')
-        .parse::<f64>()
-        .ok()?;
     let unit = raw_unit.trim_matches(|c: char| !c.is_ascii_alphabetic());
     let multiplier = match unit {
-        "GB" => 1_000_000_000.0,
-        "GiB" => 1_073_741_824.0,
-        "MB" => 1_000_000.0,
-        "MiB" => 1_048_576.0,
+        "GB" => 1_000_000_000,
+        "GiB" => 1_073_741_824,
+        "MB" => 1_000_000,
+        "MiB" => 1_048_576,
         _ => return None,
     };
     Some(RequiredSpace {
         label: format!("{raw_amount} {unit}"),
-        bytes: (amount * multiplier).ceil() as u64,
+        bytes: parse_decimal_bytes(raw_amount, multiplier)?,
     })
+}
+
+#[cfg(target_os = "macos")]
+fn parse_decimal_bytes(raw_amount: &str, multiplier: u64) -> Option<u64> {
+    let normalized = raw_amount.trim_matches(|c: char| !c.is_ascii_digit() && c != '.');
+    let (whole, fraction) = normalized
+        .split_once('.')
+        .map_or((normalized, ""), |(whole, fraction)| (whole, fraction));
+    let whole = whole.parse::<u128>().ok()?;
+    let multiplier = u128::from(multiplier);
+    let whole_bytes = whole.checked_mul(multiplier)?;
+    if fraction.is_empty() {
+        return u64::try_from(whole_bytes).ok();
+    }
+
+    let fraction_digits = fraction
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>();
+    if fraction_digits.is_empty() {
+        return u64::try_from(whole_bytes).ok();
+    }
+
+    let fraction_value = fraction_digits.parse::<u128>().ok()?;
+    let scale = 10_u128.checked_pow(fraction_digits.len() as u32)?;
+    let fraction_bytes = fraction_value
+        .checked_mul(multiplier)?
+        .checked_add(scale - 1)?
+        / scale;
+    u64::try_from(whole_bytes.checked_add(fraction_bytes)?).ok()
 }
 
 #[cfg(target_os = "macos")]
@@ -458,7 +484,7 @@ fn available_bytes(path: &str) -> std::io::Result<u64> {
         return Err(std::io::Error::last_os_error());
     }
     let stat = unsafe { stat.assume_init() };
-    Ok((stat.f_bavail as u64).saturating_mul(stat.f_bsize as u64))
+    Ok(stat.f_bavail.saturating_mul(stat.f_bsize as u64))
 }
 
 #[cfg(target_os = "macos")]

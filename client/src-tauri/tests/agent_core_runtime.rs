@@ -4,6 +4,7 @@ use std::{
     io::{Read, Write},
     net::TcpListener,
     path::{Path, PathBuf},
+    sync::{LazyLock, Mutex, MutexGuard},
     thread,
     time::{Duration, Instant},
 };
@@ -69,6 +70,14 @@ fn create_state(root: &TempDir) -> DesktopState {
         .with_owned_agent_provider_config_override(AgentProviderConfig::Fake)
 }
 
+static RUNTIME_RUN_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+fn runtime_run_test_guard() -> MutexGuard<'static, ()> {
+    RUNTIME_RUN_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (String, PathBuf) {
     let repo_root = root.path().join("repo");
     fs::create_dir_all(repo_root.join("src")).expect("create repo src");
@@ -85,10 +94,15 @@ fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (
 
     let canonical_root = fs::canonicalize(&repo_root).expect("canonical repo root");
     let root_path_string = canonical_root.to_string_lossy().into_owned();
+    let project_hash = Sha256::digest(root.path().to_string_lossy().as_bytes());
+    let project_hash = format!("{project_hash:x}");
+    let project_suffix = &project_hash[..12];
+    let project_id = format!("project-{project_suffix}");
+    let repository_id = format!("repo-{project_suffix}");
 
     let repository = CanonicalRepository {
-        project_id: "project-1".into(),
-        repository_id: "repo-1".into(),
+        project_id: project_id.clone(),
+        repository_id: repository_id.clone(),
         root_path: canonical_root.clone(),
         root_path_string: root_path_string.clone(),
         common_git_dir: canonical_root.join(".git"),
@@ -4828,6 +4842,7 @@ fn owned_agent_command_sessions_enforce_concurrency_limit() {
 
 #[test]
 fn start_runtime_run_defaults_to_owned_agent_runtime() {
+    let _runtime_run_guard = runtime_run_test_guard();
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));
     let (project_id, _repo_root) = seed_project(&root, &app);
@@ -4861,6 +4876,7 @@ fn start_runtime_run_defaults_to_owned_agent_runtime() {
 
 #[test]
 fn start_runtime_run_initial_prompt_runs_owned_agent_task() {
+    let _runtime_run_guard = runtime_run_test_guard();
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));
     let (project_id, repo_root) = seed_project(&root, &app);
@@ -4896,6 +4912,7 @@ fn start_runtime_run_initial_prompt_runs_owned_agent_task() {
 
 #[test]
 fn archive_agent_session_stops_idle_runtime_run_after_interaction() {
+    let _runtime_run_guard = runtime_run_test_guard();
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));
     let (project_id, repo_root) = seed_project(&root, &app);
@@ -4946,6 +4963,7 @@ fn archive_agent_session_stops_idle_runtime_run_after_interaction() {
 
 #[test]
 fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
+    let _runtime_run_guard = runtime_run_test_guard();
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));
     let (project_id, repo_root) = seed_project(&root, &app);
@@ -5018,6 +5036,7 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
 
 #[test]
 fn update_runtime_run_controls_queues_runtime_agent_switch_for_next_boundary() {
+    let _runtime_run_guard = runtime_run_test_guard();
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));
     let (project_id, repo_root) = seed_project(&root, &app);
@@ -5107,6 +5126,7 @@ fn update_runtime_run_controls_queues_runtime_agent_switch_for_next_boundary() {
 
 #[test]
 fn update_runtime_run_controls_queues_provider_profile_switch_for_next_prompt() {
+    let _runtime_run_guard = runtime_run_test_guard();
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));
     let (project_id, repo_root) = seed_project(&root, &app);
@@ -5351,22 +5371,27 @@ fn built_in_agents_seed_workflow_structure_v2() {
         let record = by_id
             .get(definition_id)
             .unwrap_or_else(|| panic!("missing built-in `{definition_id}` after migration"));
+        let expected_version = if definition_id == "agent_create" {
+            3
+        } else {
+            2
+        };
         assert_eq!(
-            record.current_version, 2,
-            "expected `{definition_id}` to be bumped to v2 by the workflowStructure migration"
+            record.current_version, expected_version,
+            "expected `{definition_id}` to be bumped to the current workflowStructure migration version"
         );
 
-        let snapshot = load_seeded_definition_snapshot(&repo_root, definition_id, 2);
+        let snapshot = load_seeded_definition_snapshot(&repo_root, definition_id, expected_version);
         let actual_phases = phase_ids_in_snapshot(&snapshot);
         assert_eq!(
             actual_phases, expected_phases,
-            "`{definition_id}` v2 snapshot phase ids do not match the AGENT_STAGES_PLAN spec"
+            "`{definition_id}` v{expected_version} snapshot phase ids do not match the AGENT_STAGES_PLAN spec"
         );
 
         let policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&snapshot);
         assert!(
             policy.is_some(),
-            "`{definition_id}` v2 snapshot must parse into AutonomousAgentWorkflowPolicy"
+            "`{definition_id}` v{expected_version} snapshot must parse into AutonomousAgentWorkflowPolicy"
         );
     }
 

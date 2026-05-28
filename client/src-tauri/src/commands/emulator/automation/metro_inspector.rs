@@ -358,12 +358,10 @@ pub const METRO_PORT_RANGE: &[u16] = &[8081, 19000, 19001, 19002, 19003, 19004, 
 /// Probe ports for a running Metro bundler. Returns the first port that
 /// responds to `GET /status`.
 pub fn discover_metro(port_range: &[u16]) -> Option<u16> {
-    for &port in port_range {
-        if probe_metro_port(port) {
-            return Some(port);
-        }
-    }
-    None
+    port_range
+        .iter()
+        .find(|&&port| probe_metro_port(port))
+        .copied()
 }
 
 fn probe_metro_port(port: u16) -> bool {

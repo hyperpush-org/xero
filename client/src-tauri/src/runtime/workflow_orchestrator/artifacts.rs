@@ -114,6 +114,7 @@ pub fn validate_workflow_artifact_payload(
     Ok((render_text, diagnostics))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_agent_node_prompt(
     workflow_name: &str,
     node_title: &str,

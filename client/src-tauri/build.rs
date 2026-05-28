@@ -497,10 +497,12 @@ fn prepare_desktop_sidecar() {
 
     if !target.exists() {
         println!("cargo:rustc-env=XERO_BUNDLED_DESKTOP_SIDECAR_SHA256=");
-        println!(
-            "cargo:warning=xero-desktop-sidecar not found at {}; build it before packaging with `cargo build --package xero-desktop-sidecar`.",
-            target.display()
-        );
+        if should_copy_generated_resource_binaries() {
+            println!(
+                "cargo:warning=xero-desktop-sidecar not found at {}; build it before packaging with `cargo build --package xero-desktop-sidecar`.",
+                target.display()
+            );
+        }
         return;
     }
     match sha256_of(&target) {

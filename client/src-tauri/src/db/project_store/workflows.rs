@@ -462,6 +462,7 @@ pub fn update_workflow_run_status(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn insert_workflow_run_node(
     repo_root: &Path,
     project_id: &str,
@@ -582,6 +583,7 @@ pub fn update_workflow_run_node(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn insert_workflow_artifact(
     repo_root: &Path,
     project_id: &str,
@@ -640,6 +642,7 @@ pub fn insert_workflow_artifact(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn insert_workflow_edge_decision(
     repo_root: &Path,
     project_id: &str,
@@ -1056,6 +1059,7 @@ fn read_definition_summary_from_row(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_definition_version(
     connection: &Connection,
     database_path: &Path,
@@ -1113,7 +1117,7 @@ fn read_workflow_run_node_by_key(
             )
             .as_str(),
             params![project_id, run_id, node_id, attempt_number],
-            |row| read_run_node_from_row(row),
+            read_run_node_from_row,
         )
         .optional()
         .map_err(|error| {

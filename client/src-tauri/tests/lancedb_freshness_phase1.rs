@@ -706,6 +706,7 @@ fn lancedb_freshness_phase1_project_context_access_matches_runtime_agent_write_p
                 assert!(!names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE));
                 assert!(!names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH));
             }
+            RuntimeAgentIdDto::ComputerUse => unreachable!(),
         }
     }
 
@@ -764,7 +765,7 @@ fn lancedb_freshness_phase1_project_context_access_matches_runtime_agent_write_p
                 };
                 assert_eq!(error.code, expected_code);
             }
-            RuntimeAgentIdDto::Plan => unreachable!(),
+            RuntimeAgentIdDto::ComputerUse | RuntimeAgentIdDto::Plan => unreachable!(),
         }
     }
 

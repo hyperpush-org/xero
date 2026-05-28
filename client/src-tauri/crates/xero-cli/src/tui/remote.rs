@@ -78,6 +78,13 @@ struct ProviderChoice {
     model_id: String,
 }
 
+struct RuntimeRunControls<'a> {
+    choice: &'a ProviderChoice,
+    runtime_agent_id: &'a str,
+    thinking_effort: &'a str,
+    approval_mode: &'a str,
+}
+
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct TuiRemotePreferences {
@@ -171,25 +178,22 @@ pub(crate) fn publish_session_snapshot_with_run(
 pub(crate) fn publish_session_controls(
     globals: &GlobalOptions,
     project_id: &str,
-    session_id: &str,
-    provider_id: &str,
-    model_id: &str,
-    runtime_agent_id: &str,
-    thinking_effort: &str,
-    approval_mode: &str,
+    controls: RemoteControlsUpdate,
 ) -> Result<(), CliError> {
     let Some(bridge) = remote_state().start_if_registered(globals)? else {
         return Ok(());
     };
+    let session_id = controls.session_id.as_str();
+    let runtime_agent_id = controls.runtime_agent_id.as_str();
     if runtime_agent_id == "computer_use" {
         return Ok(());
     }
     let payload = json!({
-        "providerId": provider_id,
-        "modelId": model_id,
+        "providerId": controls.provider_id.as_str(),
+        "modelId": controls.model_id.as_str(),
         "agent": runtime_agent_id,
-        "thinkingEffort": thinking_effort,
-        "approvalMode": approval_mode,
+        "thinkingEffort": controls.thinking_effort.as_str(),
+        "approvalMode": controls.approval_mode.as_str(),
     });
     let choice = provider_choice_from_payload(globals, &payload)?;
     let located = locate_remote_session_in_project(globals, project_id, session_id, true)?;
@@ -200,10 +204,12 @@ pub(crate) fn publish_session_controls(
         project_id,
         session_id,
         "pending",
-        &choice,
-        runtime_agent_id,
-        thinking_effort,
-        approval_mode,
+        RuntimeRunControls {
+            choice: &choice,
+            runtime_agent_id,
+            thinking_effort: controls.thinking_effort.as_str(),
+            approval_mode: controls.approval_mode.as_str(),
+        },
         "completed",
     );
     send_command_ok(
@@ -633,10 +639,12 @@ fn run_remote_prompt(
         project_id,
         &session_id,
         &run_id,
-        &choice,
-        &runtime_agent_id,
-        &thinking_effort,
-        &approval_mode,
+        RuntimeRunControls {
+            choice: &choice,
+            runtime_agent_id: &runtime_agent_id,
+            thinking_effort: &thinking_effort,
+            approval_mode: &approval_mode,
+        },
         "running",
     );
     send_command_ok(
@@ -1136,10 +1144,12 @@ fn route_update_session_controls(
         &located.project_id,
         &local_session_id,
         "pending",
-        &choice,
-        runtime_agent_id,
-        thinking_effort,
-        approval_mode,
+        RuntimeRunControls {
+            choice: &choice,
+            runtime_agent_id,
+            thinking_effort,
+            approval_mode,
+        },
         "completed",
     );
     send_command_ok(
@@ -1474,10 +1484,12 @@ fn draft_runtime_run_from_preferences(
         &located.project_id,
         session_id,
         "pending",
-        &choice,
-        runtime_agent_id,
-        thinking_effort,
-        approval_mode,
+        RuntimeRunControls {
+            choice: &choice,
+            runtime_agent_id,
+            thinking_effort,
+            approval_mode,
+        },
         "completed",
     )))
 }
@@ -1987,27 +1999,24 @@ fn remote_runtime_run_payload(
     project_id: &str,
     session_id: &str,
     run_id: &str,
-    choice: &ProviderChoice,
-    runtime_agent_id: &str,
-    thinking_effort: &str,
-    approval_mode: &str,
+    controls: RuntimeRunControls<'_>,
     status: &str,
 ) -> JsonValue {
     json!({
         "projectId": project_id,
         "agentSessionId": session_id,
         "runId": run_id,
-        "providerId": choice.provider_id,
-        "modelId": choice.model_id,
+        "providerId": controls.choice.provider_id.as_str(),
+        "modelId": controls.choice.model_id.as_str(),
         "status": status,
         "controls": {
             "active": {
-                "runtimeAgentId": runtime_agent_id,
-                "agentDefinitionId": runtime_agent_id,
-                "providerProfileId": choice.provider_profile_id,
-                "modelId": choice.model_id,
-                "thinkingEffort": thinking_effort,
-                "approvalMode": approval_mode,
+                "runtimeAgentId": controls.runtime_agent_id,
+                "agentDefinitionId": controls.runtime_agent_id,
+                "providerProfileId": controls.choice.provider_profile_id.as_deref(),
+                "modelId": controls.choice.model_id.as_str(),
+                "thinkingEffort": controls.thinking_effort,
+                "approvalMode": controls.approval_mode,
                 "autoCompactEnabled": true,
             }
         }
@@ -2293,10 +2302,12 @@ mod tests {
             "project-1",
             "session-1",
             "run-1",
-            &choice,
-            "engineer",
-            "high",
-            "auto_edit",
+            RuntimeRunControls {
+                choice: &choice,
+                runtime_agent_id: "engineer",
+                thinking_effort: "high",
+                approval_mode: "auto_edit",
+            },
             "completed",
         );
 

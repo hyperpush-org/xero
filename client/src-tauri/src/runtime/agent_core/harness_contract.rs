@@ -620,6 +620,10 @@ mod tests {
             "command_probe",
             "command_verify",
             "coordination_state",
+            "definition_state",
+            "desktop_control",
+            "desktop_observe",
+            "desktop_stream",
             "device_control",
             "external_capability",
             "external_capability_invoke",
@@ -644,6 +648,7 @@ mod tests {
             "system_read",
             "write",
             "write_destructive",
+            "workflow_definition_state",
         ]
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
@@ -738,6 +743,14 @@ mod tests {
                 "9468236f559c29c000e7e9a56d817e38d142e3af795c836c4710ba78eb07e356",
             ),
             (
+                "computer_use:base".to_string(),
+                "e7f9b36a85193f909fc3fc8eaa6fc18450004a1e38d76a7ffabc643abf40a29b",
+            ),
+            (
+                "computer_use:custom_policy_skill_process_coordination".to_string(),
+                "20df4ba3cd3c76ad59e994e553180903288e30b1479aac2f19a952754c9515b5",
+            ),
+            (
                 "plan:base".to_string(),
                 "c17a622d124bf889d96865e6c8e0698ac64f1586028ba7a5ae35f9068a68cc6a",
             ),
@@ -771,11 +784,11 @@ mod tests {
             ),
             (
                 "agent_create:base".to_string(),
-                "b5443c57b055c74c92d424b23a0f329c2d6141907b71395de2e712e04e5540e7",
+                "87b6171e694215bac53a128e50e9d1a39ad7f3dac68fe2be7c891823b6d7d198",
             ),
             (
                 "agent_create:custom_policy_skill_process_coordination".to_string(),
-                "c6cd154dd79fd5b0446abce0d15cdd567a2e11adeb96bbd5c01df669c8590464",
+                "bb3dc0f6eeeb6864dac74aede0525ef8ff8306fa721b575c491de5f90bccdfb0",
             ),
         ];
 
@@ -812,6 +825,10 @@ mod tests {
                 "bc60905830b13392e1fe5a95795d468e50957a779822fdb555483d525aa772aa",
             ),
             (
+                "computer_use:builtin_full".to_string(),
+                "a66e35662559e213d7e488ac59000b13db23b12646a62eb1cdbc2634dc7c173e",
+            ),
+            (
                 "plan:builtin_full".to_string(),
                 "fb1ab69ace66e290f305d8fdb868e7475f87c7f11455273952e670df83817a28",
             ),
@@ -829,7 +846,7 @@ mod tests {
             ),
             (
                 "agent_create:builtin_full".to_string(),
-                "0d3204d107e89477b3707082ff85f5d3f7d1993875a6342705755b04f352a01a",
+                "a9ffceb5989357c6b7c40d419dca1a9dbffb574c4f9ab121da4739f495e079b0",
             ),
             (
                 "engineer:custom_observe_only".to_string(),
@@ -841,7 +858,7 @@ mod tests {
             ),
             (
                 "agent_create:custom_agent_builder".to_string(),
-                "0d3204d107e89477b3707082ff85f5d3f7d1993875a6342705755b04f352a01a",
+                "a9ffceb5989357c6b7c40d419dca1a9dbffb574c4f9ab121da4739f495e079b0",
             ),
         ];
 

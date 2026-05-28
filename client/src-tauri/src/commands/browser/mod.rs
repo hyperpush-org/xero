@@ -145,12 +145,12 @@ struct BrowserResizeDragSession {
 }
 
 impl BrowserResizeDragSession {
-    fn width_for_cursor(self: &Self, cursor_client_x: f64) -> f64 {
+    fn width_for_cursor(&self, cursor_client_x: f64) -> f64 {
         let delta = self.start_client_x - cursor_client_x;
         (self.start_width + delta).clamp(self.min_width, self.max_width)
     }
 
-    fn viewport_for_width(self: &Self, width: f64) -> BrowserViewport {
+    fn viewport_for_width(&self, width: f64) -> BrowserViewport {
         BrowserViewport {
             x: self.right - width + self.inset,
             y: self.top,
@@ -159,7 +159,7 @@ impl BrowserResizeDragSession {
         }
     }
 
-    fn viewport_for_cursor(self: &Self, cursor_client_x: f64) -> BrowserViewport {
+    fn viewport_for_cursor(&self, cursor_client_x: f64) -> BrowserViewport {
         self.viewport_for_width(self.width_for_cursor(cursor_client_x))
     }
 }

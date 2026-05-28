@@ -29,6 +29,7 @@ const APP_DATA_DIRECTORY_NAME: &str = "dev.sn0w.xero";
 struct ProjectDatabasePathConfig {
     project_root: Option<PathBuf>,
     registry_path: Option<PathBuf>,
+    project_id_to_database_path: HashMap<String, PathBuf>,
     repo_root_to_database_path: HashMap<PathBuf, PathBuf>,
 }
 
@@ -86,6 +87,7 @@ pub fn configure_project_database_paths(global_db_path: &Path) {
         let mut config = thread_config.borrow_mut();
         config.project_root = Some(project_root);
         config.registry_path = Some(registry_path);
+        config.project_id_to_database_path.clear();
         config.repo_root_to_database_path.clear();
     });
 
@@ -240,7 +242,11 @@ pub fn import_project_with_origin(
             database_existed,
         );
     } else {
-        register_project_database_path(&repository.root_path, &database_path);
+        register_project_database_path_for_project(
+            &repository.project_id,
+            &repository.root_path,
+            &database_path,
+        );
     }
 
     import_result
@@ -342,12 +348,17 @@ pub(crate) fn rebuild_incompatible_project_database(
         .map_err(|error| state_database_migration_error(database_path, error))?;
 
     let repository = crate::git::repository::open_repository_root(repo_root)?;
+    let canonical_repository = repository.canonical_repository()?;
     persist_import_rows(
         &reset_connection,
-        &repository.canonical_repository()?,
+        &canonical_repository,
         ProjectOrigin::Brownfield,
     )?;
-    register_project_database_path(repo_root, database_path);
+    register_project_database_path_for_project(
+        &canonical_repository.project_id,
+        repo_root,
+        database_path,
+    );
 
     Ok(reset_connection)
 }
@@ -571,6 +582,27 @@ fn configured_database_path_for_project(project_id: &str) -> Option<PathBuf> {
     let thread_path = THREAD_PROJECT_DATABASE_PATH_CONFIG.with(|thread_config| {
         thread_config
             .borrow()
+            .project_id_to_database_path
+            .get(project_id)
+            .cloned()
+    });
+    if thread_path.is_some() {
+        return thread_path;
+    }
+
+    let global_path = {
+        let config = PROJECT_DATABASE_PATH_CONFIG
+            .read()
+            .expect("project database path config lock poisoned");
+        config.project_id_to_database_path.get(project_id).cloned()
+    };
+    if global_path.is_some() {
+        return global_path;
+    }
+
+    let thread_path = THREAD_PROJECT_DATABASE_PATH_CONFIG.with(|thread_config| {
+        thread_config
+            .borrow()
             .project_root
             .as_ref()
             .map(|root| root.join(project_id).join(STATE_DATABASE_FILE))
@@ -660,6 +692,28 @@ pub(crate) fn register_project_database_path(repo_root: &Path, database_path: &P
     config
         .repo_root_to_database_path
         .insert(normalized_repo_root, database_path.to_path_buf());
+}
+
+fn register_project_database_path_for_project(
+    project_id: &str,
+    repo_root: &Path,
+    database_path: &Path,
+) {
+    register_project_database_path(repo_root, database_path);
+
+    THREAD_PROJECT_DATABASE_PATH_CONFIG.with(|thread_config| {
+        thread_config
+            .borrow_mut()
+            .project_id_to_database_path
+            .insert(project_id.to_string(), database_path.to_path_buf());
+    });
+
+    let mut config = PROJECT_DATABASE_PATH_CONFIG
+        .write()
+        .expect("project database path config lock poisoned");
+    config
+        .project_id_to_database_path
+        .insert(project_id.to_string(), database_path.to_path_buf());
 }
 
 #[cfg(test)]

@@ -210,48 +210,33 @@ impl WorkflowHumanCheckpointTypeDto {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowAttemptScopeDto {
+    #[default]
     Run,
     SourceNode,
     TargetNode,
     ArtifactGroup,
 }
 
-impl Default for WorkflowAttemptScopeDto {
-    fn default() -> Self {
-        Self::Run
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowCarryoverPolicyDto {
+    #[default]
     All,
     RequiredOnly,
     None,
     Selected,
 }
 
-impl Default for WorkflowCarryoverPolicyDto {
-    fn default() -> Self {
-        Self::All
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowResetPolicyDto {
+    #[default]
     Never,
     OnDownstreamSuccess,
     OnTerminalSuccess,
-}
-
-impl Default for WorkflowResetPolicyDto {
-    fn default() -> Self {
-        Self::Never
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -276,32 +261,22 @@ impl WorkflowStallDetectorDto {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowMergeWaitPolicyDto {
+    #[default]
     All,
     Any,
     Quorum,
     FailFast,
 }
 
-impl Default for WorkflowMergeWaitPolicyDto {
-    fn default() -> Self {
-        Self::All
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowResourceConflictModeDto {
     AllowConflicts,
+    #[default]
     SerializeConflicts,
-}
-
-impl Default for WorkflowResourceConflictModeDto {
-    fn default() -> Self {
-        Self::SerializeConflicts
-    }
 }
 
 impl WorkflowResourceConflictModeDto {
@@ -324,7 +299,7 @@ pub enum WorkflowNumberCompareOperatorDto {
     Lte,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -332,6 +307,7 @@ pub enum WorkflowNumberCompareOperatorDto {
     deny_unknown_fields
 )]
 pub enum WorkflowConditionDto {
+    #[default]
     Always,
     All {
         conditions: Vec<WorkflowConditionDto>,
@@ -392,12 +368,6 @@ pub enum WorkflowConditionDto {
         operator: WorkflowNumberCompareOperatorDto,
         value: f64,
     },
-}
-
-impl Default for WorkflowConditionDto {
-    fn default() -> Self {
-        Self::Always
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -462,18 +432,13 @@ pub enum WorkflowInputBindingDto {
     },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowOutputExtractionDto {
+    #[default]
     GenericText,
     JsonObject,
     JsonArray,
-}
-
-impl Default for WorkflowOutputExtractionDto {
-    fn default() -> Self {
-        Self::GenericText
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -549,21 +514,16 @@ impl WorkflowDeliveryStateEntityTypeDto {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowStateQueryFilterOperatorDto {
+    #[default]
     Eq,
     Neq,
     In,
     NotIn,
     Exists,
     Missing,
-}
-
-impl Default for WorkflowStateQueryFilterOperatorDto {
-    fn default() -> Self {
-        Self::Eq
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

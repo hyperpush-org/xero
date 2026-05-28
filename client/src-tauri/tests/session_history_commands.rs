@@ -20,7 +20,7 @@ use xero_desktop_lib::{
         DeleteSessionMemoryRequestDto, ExportSessionTranscriptRequestDto,
         ExtractSessionMemoryCandidatesRequestDto, GetSessionContextSnapshotRequestDto,
         GetSessionMemoryReviewQueueRequestDto, GetSessionTranscriptRequestDto,
-        ListSessionMemoriesRequestDto, RewindAgentSessionRequestDto,
+        ListSessionMemoriesRequestDto, ProjectAssetState, RewindAgentSessionRequestDto,
         SaveSessionTranscriptExportRequestDto, SearchSessionTranscriptsRequestDto,
         SessionCompactionTriggerDto, SessionContextContributorKindDto,
         SessionContextPolicyActionDto, SessionContextPolicyDecisionKindDto, SessionMemoryKindDto,
@@ -212,6 +212,7 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
     let transcript = tauri::async_runtime::block_on(get_session_transcript(
         app.handle().clone(),
         app.state::<DesktopState>(),
+        app.state::<ProjectAssetState>(),
         GetSessionTranscriptRequestDto {
             project_id: project_id.clone(),
             agent_session_id: SESSION_ID.into(),
@@ -619,6 +620,7 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
     let archived_transcript = tauri::async_runtime::block_on(get_session_transcript(
         app.handle().clone(),
         app.state::<DesktopState>(),
+        app.state::<ProjectAssetState>(),
         GetSessionTranscriptRequestDto {
             project_id: project_id.clone(),
             agent_session_id: SESSION_ID.into(),
@@ -694,6 +696,7 @@ fn run_scoped_projection_rejects_mismatched_sessions() {
             project_id: project_id.clone(),
             title: "Parallel session".into(),
             summary: String::new(),
+            session_kind: project_store::AgentSessionKind::Standard,
             selected: false,
         },
     )
@@ -711,6 +714,7 @@ fn run_scoped_projection_rejects_mismatched_sessions() {
     let mismatch = tauri::async_runtime::block_on(get_session_transcript(
         app.handle().clone(),
         app.state::<DesktopState>(),
+        app.state::<ProjectAssetState>(),
         GetSessionTranscriptRequestDto {
             project_id: project_id.clone(),
             agent_session_id: SESSION_ID.into(),
@@ -738,6 +742,7 @@ fn run_scoped_projection_rejects_mismatched_sessions() {
     let transcript = tauri::async_runtime::block_on(get_session_transcript(
         app.handle().clone(),
         app.state::<DesktopState>(),
+        app.state::<ProjectAssetState>(),
         GetSessionTranscriptRequestDto {
             project_id,
             agent_session_id: second_session.agent_session_id,
@@ -763,6 +768,7 @@ fn context_snapshot_handles_sessions_without_runs() {
             project_id: project_id.clone(),
             title: "Empty context session".into(),
             summary: String::new(),
+            session_kind: project_store::AgentSessionKind::Standard,
             selected: false,
         },
     )
@@ -812,6 +818,7 @@ fn manual_compact_persists_supersedes_and_preserves_raw_history() {
     let transcript_before = tauri::async_runtime::block_on(get_session_transcript(
         app.handle().clone(),
         app.state::<DesktopState>(),
+        app.state::<ProjectAssetState>(),
         GetSessionTranscriptRequestDto {
             project_id: project_id.clone(),
             agent_session_id: SESSION_ID.into(),
@@ -862,6 +869,7 @@ fn manual_compact_persists_supersedes_and_preserves_raw_history() {
     let transcript_after = tauri::async_runtime::block_on(get_session_transcript(
         app.handle().clone(),
         app.state::<DesktopState>(),
+        app.state::<ProjectAssetState>(),
         GetSessionTranscriptRequestDto {
             project_id: project_id.clone(),
             agent_session_id: SESSION_ID.into(),
@@ -1589,6 +1597,7 @@ fn session_context_privacy_hardening_covers_exports_search_compaction_and_memory
     let transcript = tauri::async_runtime::block_on(get_session_transcript(
         app.handle().clone(),
         app.state::<DesktopState>(),
+        app.state::<ProjectAssetState>(),
         GetSessionTranscriptRequestDto {
             project_id: project_id.clone(),
             agent_session_id: SESSION_ID.into(),

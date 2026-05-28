@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import test from 'node:test'
+import { test } from 'vitest'
 import {
   buildCursorAgentCreateOptions,
   findCursorAutoCatalogAlias,
@@ -12,7 +12,7 @@ import {
   resolveCursorModelRequest,
 } from './cursor-sdk-bridge.mjs'
 
-const scriptPath = new URL('./cursor-sdk-bridge.mjs', import.meta.url).pathname
+const scriptPath = path.resolve(process.cwd(), 'scripts/cursor-sdk-bridge.mjs')
 
 test('Cursor model routes distinguish Auto, Composer Latest, and explicit ids', () => {
   assert.deepEqual(parseCursorModelRoute('auto'), {

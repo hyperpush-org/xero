@@ -2184,6 +2184,7 @@ fn strip_sensitive_keys(payload: &mut JsonValue, keys: &[&str]) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn forward_computer_use_desktop_rejection(
     bridge: &AppRemoteBridge,
     session_id: &str,

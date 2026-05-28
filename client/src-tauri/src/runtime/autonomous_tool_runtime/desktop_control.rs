@@ -3989,9 +3989,9 @@ fn resolve_desktop_sidecar_binary() -> Result<PathBuf, String> {
     }
     #[cfg(test)]
     {
-        return Err(format!(
+        Err(format!(
             "Desktop sidecar auto-discovery is disabled in tests; set {DESKTOP_SIDECAR_PATH_ENV} to exercise the authenticated sidecar."
-        ));
+        ))
     }
 
     #[cfg(not(test))]
@@ -4771,7 +4771,7 @@ fn sidecar_element_at_point_request(
 }
 
 fn capture_desktop_screenshot(
-    repo_root: &PathBuf,
+    repo_root: &Path,
     request: &AutonomousDesktopObserveRequest,
 ) -> CommandResult<AutonomousDesktopScreenshot> {
     if let Ok(payload) = sidecar_json_result(
@@ -4893,7 +4893,7 @@ fn sidecar_redaction_request(
 }
 
 fn write_sidecar_screenshot_artifact(
-    repo_root: &PathBuf,
+    repo_root: &Path,
     request: &AutonomousDesktopObserveRequest,
     payload: DesktopSidecarScreenshotPayload,
 ) -> CommandResult<AutonomousDesktopScreenshot> {
@@ -5100,7 +5100,7 @@ fn desktop_lock_active_for_actor_with_lease(
     Ok(guard.as_ref().is_some_and(|lock| {
         lock.actor == actor
             && lock_is_active_at(lock, &now)
-            && lease_id.map_or(true, |lease_id| lock.lease_id.as_deref() == Some(lease_id))
+            && lease_id.is_none_or(|lease_id| lock.lease_id.as_deref() == Some(lease_id))
     }))
 }
 

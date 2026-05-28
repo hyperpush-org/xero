@@ -22,9 +22,9 @@ use xero_desktop_lib::{
     db::project_store::{
         AgentActionRequestRecord, AgentCheckpointRecord, AgentEventRecord, AgentFileChangeRecord,
         AgentMessageRecord, AgentMessageRole, AgentRunDiagnosticRecord, AgentRunEventKind,
-        AgentRunRecord, AgentRunSnapshotRecord, AgentRunStatus, AgentSessionRecord,
-        AgentSessionStatus, AgentToolCallRecord, AgentToolCallState, AgentUsageRecord,
-        BUILTIN_AGENT_DEFINITION_VERSION,
+        AgentRunRecord, AgentRunSnapshotRecord, AgentRunStatus, AgentSessionKind,
+        AgentSessionRecord, AgentSessionStatus, AgentToolCallRecord, AgentToolCallState,
+        AgentUsageRecord, BUILTIN_AGENT_DEFINITION_VERSION,
     },
 };
 
@@ -154,6 +154,7 @@ fn runtime_stream_items_share_the_transcript_contract() {
             code_patch_availability: None,
             tool_summary: None,
             tool_result_preview: None,
+            media_attachments: Vec::new(),
             skill_id: None,
             skill_stage: None,
             skill_result: None,
@@ -207,6 +208,7 @@ fn runtime_stream_items_share_the_transcript_contract() {
             code_patch_availability: None,
             tool_summary: None,
             tool_result_preview: None,
+            media_attachments: Vec::new(),
             skill_id: None,
             skill_stage: None,
             skill_result: None,
@@ -278,6 +280,7 @@ fn archived_empty_sessions_have_a_valid_session_transcript_shape() {
         title: "Archived investigation".into(),
         summary: "No runs yet.".into(),
         status: AgentSessionStatus::Archived,
+        session_kind: AgentSessionKind::Standard,
         selected: false,
         remote_visible: false,
         created_at: T0.into(),
