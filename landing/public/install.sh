@@ -45,7 +45,7 @@ target_triple() {
       printf 'aarch64-apple-darwin'
       ;;
     Darwin:x86_64|Darwin:amd64)
-      printf 'x86_64-apple-darwin'
+      fail 'macOS Intel builds are no longer published. Xero for macOS requires Apple silicon; use an Apple silicon Mac, Windows, or Linux build.'
       ;;
     Linux:x86_64|Linux:amd64)
       printf 'x86_64-unknown-linux-gnu'

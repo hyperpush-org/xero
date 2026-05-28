@@ -23,9 +23,6 @@ jobs:
           - platform: blacksmith-6vcpu-macos-15
             target: aarch64-apple-darwin
             artifact_suffix: macos-aarch64
-          - platform: blacksmith-6vcpu-macos-15
-            target: x86_64-apple-darwin
-            artifact_suffix: macos-x86_64
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -52,7 +49,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: aarch64-apple-darwin
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2

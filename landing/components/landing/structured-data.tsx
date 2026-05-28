@@ -26,7 +26,7 @@ const jsonLd = {
       "@id": absoluteUrl("/#software"),
       name: siteConfig.name,
       applicationCategory: "DeveloperApplication",
-      operatingSystem: "macOS, Windows, Linux",
+      operatingSystem: "macOS (Apple silicon), Windows, Linux",
       softwareVersion: desktopRelease.version,
       description: siteConfig.description,
       url: siteConfig.url,

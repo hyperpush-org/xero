@@ -49,8 +49,8 @@ export function mailto(subject?: string) {
 }
 
 export const desktopRelease = {
-  version: "0.1.13",
-  tag: "v0.1.13",
+  version: "0.1.24",
+  tag: "v0.1.24",
   releaseUrl: `${siteConfig.githubUrl}/releases/latest`,
 } as const
 
