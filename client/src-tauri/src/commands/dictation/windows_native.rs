@@ -14,9 +14,10 @@ use windows::{
     Globalization::Language,
     Media::SpeechRecognition::{
         ISpeechRecognitionConstraint, SpeechContinuousRecognitionCompletedEventArgs,
-        SpeechContinuousRecognitionResultGeneratedEventArgs, SpeechRecognitionAudioProblem,
-        SpeechRecognitionCompilationResult, SpeechRecognitionConfidence,
-        SpeechRecognitionHypothesisGeneratedEventArgs, SpeechRecognitionResult,
+        SpeechContinuousRecognitionResultGeneratedEventArgs, SpeechContinuousRecognitionSession,
+        SpeechRecognitionAudioProblem, SpeechRecognitionCompilationResult,
+        SpeechRecognitionConfidence, SpeechRecognitionHypothesisGeneratedEventArgs,
+        SpeechRecognitionQualityDegradingEventArgs, SpeechRecognitionResult,
         SpeechRecognitionResultStatus, SpeechRecognitionScenario, SpeechRecognitionTopicConstraint,
         SpeechRecognizer,
     },
@@ -547,7 +548,7 @@ fn register_hypothesis_handler(
     recognizer: &SpeechRecognizer,
     runtime: Arc<WindowsSessionRuntime>,
 ) -> windows::core::Result<i64> {
-    recognizer.HypothesisGenerated(TypedEventHandler::<
+    let handler = TypedEventHandler::<
         SpeechRecognizer,
         SpeechRecognitionHypothesisGeneratedEventArgs,
     >::new(move |_sender, args| {
@@ -559,15 +560,16 @@ fn register_hypothesis_handler(
             }
         }
         Ok(())
-    }))
+    });
+    recognizer.HypothesisGenerated(&handler)
 }
 
 fn register_result_handler(
-    continuous: &windows::Media::SpeechRecognition::SpeechContinuousRecognitionSession,
+    continuous: &SpeechContinuousRecognitionSession,
     runtime: Arc<WindowsSessionRuntime>,
 ) -> windows::core::Result<i64> {
-    continuous.ResultGenerated(TypedEventHandler::<
-        windows::Media::SpeechRecognition::SpeechContinuousRecognitionSession,
+    let handler = TypedEventHandler::<
+        SpeechContinuousRecognitionSession,
         SpeechContinuousRecognitionResultGeneratedEventArgs,
     >::new(move |_sender, args| {
         if let Some(args) = args.as_ref() {
@@ -576,15 +578,16 @@ fn register_result_handler(
             }
         }
         Ok(())
-    }))
+    });
+    continuous.ResultGenerated(&handler)
 }
 
 fn register_completed_handler(
-    continuous: &windows::Media::SpeechRecognition::SpeechContinuousRecognitionSession,
+    continuous: &SpeechContinuousRecognitionSession,
     runtime: Arc<WindowsSessionRuntime>,
 ) -> windows::core::Result<i64> {
-    continuous.Completed(TypedEventHandler::<
-        windows::Media::SpeechRecognition::SpeechContinuousRecognitionSession,
+    let handler = TypedEventHandler::<
+        SpeechContinuousRecognitionSession,
         SpeechContinuousRecognitionCompletedEventArgs,
     >::new(move |_sender, args| {
         if let Some(args) = args.as_ref() {
@@ -603,26 +606,31 @@ fn register_completed_handler(
             }
         }
         Ok(())
-    }))
+    });
+    continuous.Completed(&handler)
 }
 
 fn register_quality_handler(
     recognizer: &SpeechRecognizer,
     runtime: Arc<WindowsSessionRuntime>,
 ) -> windows::core::Result<i64> {
-    recognizer.RecognitionQualityDegrading(TypedEventHandler::new(move |_sender, args| {
-        if let Some(args) = args.as_ref() {
-            if let Ok(problem) = args.Problem() {
-                if problem == SpeechRecognitionAudioProblem::TooNoisy
-                    || problem == SpeechRecognitionAudioProblem::TooFast
-                    || problem == SpeechRecognitionAudioProblem::TooSlow
-                {
-                    runtime.emit_audio_level(0.0);
+    let handler =
+        TypedEventHandler::<SpeechRecognizer, SpeechRecognitionQualityDegradingEventArgs>::new(
+            move |_sender, args| {
+                if let Some(args) = args.as_ref() {
+                    if let Ok(problem) = args.Problem() {
+                        if problem == SpeechRecognitionAudioProblem::TooNoisy
+                            || problem == SpeechRecognitionAudioProblem::TooFast
+                            || problem == SpeechRecognitionAudioProblem::TooSlow
+                        {
+                            runtime.emit_audio_level(0.0);
+                        }
+                    }
                 }
-            }
-        }
-        Ok(())
-    }))
+                Ok(())
+            },
+        );
+    recognizer.RecognitionQualityDegrading(&handler)
 }
 
 fn handle_recognition_result(runtime: &WindowsSessionRuntime, result: SpeechRecognitionResult) {
