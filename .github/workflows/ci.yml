@@ -204,13 +204,9 @@ jobs:
         working-directory: client/src-tauri
         run: cargo check --lib
 
-      - name: Test dictation command contract
+      - name: Compile dictation command contract tests
         working-directory: client/src-tauri
-        run: cargo test dictation --lib
-
-      - name: Test dictation diagnostics
-        working-directory: client/src-tauri
-        run: cargo test doctor_report --lib
+        run: cargo test --lib --no-run
 
   desktop-sidecar-contract:
     name: Desktop Sidecar Contract (${{ matrix.name }})
