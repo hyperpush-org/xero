@@ -1,7 +1,9 @@
+import type { ComponentPropsWithoutRef } from "react"
+
 import { cn } from "../lib/utils"
 
-interface AppLogoProps {
-  className?: string
+export interface AppLogoProps
+  extends Omit<ComponentPropsWithoutRef<"svg">, "children"> {
   /**
    * Optional aria-label. Defaults to empty so the logo is treated as
    * decorative (most callers pair it with adjacent text).
@@ -15,15 +17,22 @@ interface AppLogoProps {
  * theme — external SVGs loaded through `<img>` cannot read CSS variables
  * from the host document.
  */
-export function AppLogo({ className, "aria-label": ariaLabel }: AppLogoProps) {
-  const decorative = !ariaLabel
+export function AppLogo({
+  className,
+  role,
+  "aria-hidden": ariaHidden,
+  "aria-label": ariaLabel,
+  ...props
+}: AppLogoProps) {
+  const decorative = !ariaLabel && role === undefined
   return (
     <svg
+      {...props}
       viewBox="0 0 455 455"
       xmlns="http://www.w3.org/2000/svg"
       className={cn("shrink-0", className)}
-      role={decorative ? undefined : "img"}
-      aria-hidden={decorative ? true : undefined}
+      role={role ?? (decorative ? undefined : "img")}
+      aria-hidden={ariaHidden ?? (decorative ? true : undefined)}
       aria-label={ariaLabel}
     >
       <path

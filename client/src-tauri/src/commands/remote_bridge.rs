@@ -29,6 +29,7 @@ use crate::{
             ensure_global_computer_use_session_record, GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
             GLOBAL_COMPUTER_USE_PROJECT_ID, REMOTE_COMPUTER_USE_SESSION_ID,
         },
+        list_projects::load_visible_project_summaries_from_registry,
         project_state::{read_app_ui_state_value, write_app_ui_state_value},
         provider_credentials::load_provider_credentials_view,
         resolve_operator_action::resolve_operator_action_blocking,
@@ -61,9 +62,7 @@ use crate::{
         load_provider_model_catalog, ProviderModelRecord, ProviderModelThinkingCapability,
         ProviderModelThinkingEffort,
     },
-    registry::{
-        read_project_summaries, read_registry, RegistryProjectRecord, RegistryProjectSummaryRecord,
-    },
+    registry::RegistryProjectSummaryRecord,
     runtime::{
         AutonomousDesktopControlAction, AutonomousDesktopControlRequest,
         AutonomousDesktopIceCandidate, AutonomousDesktopIceServer, AutonomousDesktopMouseButton,
@@ -251,14 +250,15 @@ pub fn publish_remote_project_list_to_cloud<R: Runtime>(app: &AppHandle<R>, stat
             return;
         }
     };
-    let projects =
-        match read_project_summaries(&path).and_then(remote_project_summaries_from_projects) {
-            Ok(projects) => projects,
-            Err(error) => {
-                eprintln!("[remote-bridge] project list publish skipped: {error}");
-                return;
-            }
-        };
+    let projects = match load_visible_project_summaries_from_registry(&path)
+        .and_then(remote_project_summaries_from_projects)
+    {
+        Ok(projects) => projects,
+        Err(error) => {
+            eprintln!("[remote-bridge] project list publish skipped: {error}");
+            return;
+        }
+    };
     if let Err(error) = bridge.forward_control_event(
         "__projects__",
         json!({
@@ -348,8 +348,10 @@ fn publish_agent_session_remote_state_inner<R: Runtime>(
     let Some(bridge) = runtime_event_forwarder() else {
         return Ok(());
     };
-    let project_name = project_name_for_id(app, state, project_id)?;
-    let payload = remote_session_result_payload(project_id, project_name.as_deref(), session);
+    let Some(project_name) = project_name_for_id(app, state, project_id)? else {
+        return Ok(());
+    };
+    let payload = remote_session_result_payload(project_id, Some(&project_name), session);
     bridge
         .forward_control_event(
             "__sessions__",
@@ -773,7 +775,7 @@ fn remote_project_summaries<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
 ) -> CommandResult<Vec<JsonValue>> {
-    remote_project_summaries_from_projects(read_project_summaries(&state.global_db_path(app)?)?)
+    remote_project_summaries_from_projects(visible_remote_project_summaries(app, state)?)
 }
 
 fn route_archive_session<R: Runtime>(
@@ -2367,17 +2369,16 @@ fn locate_project_for_remote_start<R: Runtime>(
     state: &DesktopState,
     payload: &JsonValue,
 ) -> CommandResult<LocatedRemoteProject> {
+    let projects = visible_remote_project_summaries(app, state)?;
+
     if let Some(project_id) = payload_string(payload, &["projectId", "project_id"]) {
-        let repo_root = resolve_project_root(app, state, project_id)?;
-        let project_name = project_name_for_id(app, state, project_id)?;
-        return Ok(LocatedRemoteProject {
-            project_id: project_id.to_string(),
-            project_name,
-            repo_root,
-        });
+        return projects
+            .into_iter()
+            .find(|project| project.registry.project_id == project_id)
+            .map(|project| project_summary_location(&project))
+            .ok_or_else(CommandError::project_not_found);
     }
 
-    let projects = read_project_summaries(&state.global_db_path(app)?)?;
     match projects.as_slice() {
         [project] => Ok(project_summary_location(project)),
         [] => Err(CommandError::project_not_found()),
@@ -2405,9 +2406,13 @@ fn locate_remote_session<R: Runtime>(
     }
     if let Some((project_id, agent_session_id)) = parse_project_scoped_remote_session_id(session_id)
     {
-        let repo_root = resolve_project_root(app, state, project_id)?;
-        let session = project_store::get_agent_session(&repo_root, project_id, agent_session_id)?
-            .ok_or_else(|| {
+        let location = locate_visible_remote_project(app, state, project_id)?;
+        let session = project_store::get_agent_session(
+            &location.repo_root,
+            &location.project_id,
+            agent_session_id,
+        )?
+        .ok_or_else(|| {
             CommandError::user_fixable(
                 "remote_session_not_found",
                 format!("Xero could not find session `{agent_session_id}`."),
@@ -2419,16 +2424,15 @@ fn locate_remote_session<R: Runtime>(
             ));
         }
         return Ok(LocatedRemoteSession {
-            project_id: project_id.to_string(),
-            repo_root,
+            project_id: location.project_id,
+            repo_root: location.repo_root,
             session,
             remote_session_id: session_id.to_string(),
         });
     }
 
-    let registry = read_registry(&state.global_db_path(app)?)?;
-    for project in registry.projects {
-        let location = project_location(&project);
+    for project in visible_remote_project_summaries(app, state)? {
+        let location = project_summary_location(&project);
         if let Some(session) =
             project_store::get_agent_session(&location.repo_root, &location.project_id, session_id)?
         {
@@ -2461,7 +2465,7 @@ fn remote_session_summaries<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
 ) -> CommandResult<Vec<JsonValue>> {
-    remote_session_summaries_from_projects(read_project_summaries(&state.global_db_path(app)?)?)
+    remote_session_summaries_from_projects(visible_remote_project_summaries(app, state)?)
 }
 
 fn remote_project_summaries_from_projects(
@@ -3016,14 +3020,6 @@ fn remote_model_option_id(provider_profile_id: &str, model_id: &str) -> String {
     format!("{}:{}", provider_profile_id.trim(), model_id.trim())
 }
 
-fn project_location(project: &RegistryProjectRecord) -> LocatedRemoteProject {
-    LocatedRemoteProject {
-        project_id: project.project_id.clone(),
-        project_name: None,
-        repo_root: std::path::PathBuf::from(&project.root_path),
-    }
-}
-
 fn project_summary_location(project: &RegistryProjectSummaryRecord) -> LocatedRemoteProject {
     LocatedRemoteProject {
         project_id: project.registry.project_id.clone(),
@@ -3032,12 +3028,32 @@ fn project_summary_location(project: &RegistryProjectSummaryRecord) -> LocatedRe
     }
 }
 
+fn locate_visible_remote_project<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    project_id: &str,
+) -> CommandResult<LocatedRemoteProject> {
+    visible_remote_project_summaries(app, state)?
+        .into_iter()
+        .find(|project| project.registry.project_id == project_id)
+        .map(|project| project_summary_location(&project))
+        .ok_or_else(CommandError::project_not_found)
+}
+
+fn visible_remote_project_summaries<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+) -> CommandResult<Vec<RegistryProjectSummaryRecord>> {
+    let registry_path = state.global_db_path(app)?;
+    load_visible_project_summaries_from_registry(&registry_path)
+}
+
 fn project_name_for_id<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
     project_id: &str,
 ) -> CommandResult<Option<String>> {
-    Ok(read_project_summaries(&state.global_db_path(app)?)?
+    Ok(visible_remote_project_summaries(app, state)?
         .into_iter()
         .find(|project| project.registry.project_id == project_id)
         .map(|project| project.project.name))
@@ -3404,10 +3420,11 @@ mod tests {
     use rusqlite::{params, Connection};
 
     use crate::{
-        commands::{ProjectOriginDto, ProjectSummaryDto},
+        commands::{ProjectOriginDto, ProjectSummaryDto, HARNESS_FIXTURE_PROJECT_ID},
         db::{
             configure_connection, migrations::migrations, register_project_database_path_for_tests,
         },
+        registry::{self, RegistryProjectRecord},
     };
 
     fn seed_project_database(repo_root: &Path, project_id: &str) {
@@ -3832,6 +3849,70 @@ mod tests {
             summaries[0]["session"]["agentSessionId"],
             session.agent_session_id
         );
+    }
+
+    #[test]
+    fn remote_session_summaries_follow_client_visible_project_filter() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let registry_path = tempdir.path().join("xero.db");
+        let visible_root = tempdir.path().join("clippster-mono");
+        let fixture_root = tempdir
+            .path()
+            .join("developer-tool-harness")
+            .join("fixture");
+        seed_project_database(&visible_root, "project-visible");
+        seed_project_database(&fixture_root, HARNESS_FIXTURE_PROJECT_ID);
+
+        project_store::create_agent_session(
+            &visible_root,
+            &AgentSessionCreateRecord {
+                project_id: "project-visible".into(),
+                title: "Visible Chat".into(),
+                summary: String::new(),
+                selected: true,
+                session_kind: project_store::AgentSessionKind::Standard,
+            },
+        )
+        .expect("create visible session");
+        project_store::create_agent_session(
+            &fixture_root,
+            &AgentSessionCreateRecord {
+                project_id: HARNESS_FIXTURE_PROJECT_ID.into(),
+                title: "Fixture Chat".into(),
+                summary: String::new(),
+                selected: true,
+                session_kind: project_store::AgentSessionKind::Standard,
+            },
+        )
+        .expect("create fixture session");
+
+        registry::replace_projects(
+            &registry_path,
+            vec![
+                RegistryProjectRecord {
+                    project_id: HARNESS_FIXTURE_PROJECT_ID.into(),
+                    repository_id: "repo-fixture".into(),
+                    root_path: fixture_root.to_string_lossy().into_owned(),
+                },
+                RegistryProjectRecord {
+                    project_id: "project-visible".into(),
+                    repository_id: "repo-visible".into(),
+                    root_path: visible_root.to_string_lossy().into_owned(),
+                },
+            ],
+        )
+        .expect("seed registry");
+
+        let visible_projects = load_visible_project_summaries_from_registry(&registry_path)
+            .expect("client-visible project summaries");
+        assert_eq!(visible_projects.len(), 1);
+        assert_eq!(visible_projects[0].registry.project_id, "project-visible");
+
+        let summaries = remote_session_summaries_from_projects(visible_projects)
+            .expect("remote session summaries");
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0]["projectId"], "project-visible");
+        assert_eq!(summaries[0]["session"]["title"], "Visible Chat");
     }
 
     #[test]

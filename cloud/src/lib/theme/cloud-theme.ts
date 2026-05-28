@@ -7,6 +7,7 @@ import {
 } from "@xero/ui/theme";
 
 import type { RuntimeEnvelope } from "#/lib/relay/envelope";
+import { syncCloudThemeIcons } from "./cloud-icons";
 
 export const CLOUD_THEME_SCHEMA = "xero.cloud_theme.v1";
 
@@ -15,6 +16,7 @@ export function applyRemoteThemeEnvelope(envelope: RuntimeEnvelope): boolean {
 	if (!theme) return false;
 	applyThemeToDocument(theme, { inlineColors: isCustomThemeId(theme.id) });
 	updateThemeColorMeta(theme);
+	syncCloudThemeIcons(theme);
 	return true;
 }
 
