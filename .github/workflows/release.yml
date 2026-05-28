@@ -118,6 +118,10 @@ jobs:
     name: Deploy Server
     needs: create-release
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    concurrency:
+      group: fly-deploy-xero-server
+      cancel-in-progress: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -135,6 +139,10 @@ jobs:
     name: Deploy Cloud
     needs: create-release
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    concurrency:
+      group: fly-deploy-xero-cloud
+      cancel-in-progress: true
     defaults:
       run:
         working-directory: cloud
@@ -317,6 +325,10 @@ jobs:
       - create-release
       - build-tui
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    concurrency:
+      group: fly-deploy-xero-landing
+      cancel-in-progress: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
