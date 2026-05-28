@@ -1,6 +1,6 @@
 [package]
 name = "xero-cli"
-version = "0.1.22"
+version = "0.1.23"
 edition = "2021"
 description = "Headless Xero CLI backed by xero-agent-core"
 

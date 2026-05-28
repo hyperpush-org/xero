@@ -11839,7 +11839,7 @@ dependencies = [
 
 [[package]]
 name = "xero-cli"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "crossterm",
  "flate2",
@@ -11860,7 +11860,7 @@ dependencies = [
 
 [[package]]
 name = "xero-desktop"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "arc-swap",
  "arrow-array",
