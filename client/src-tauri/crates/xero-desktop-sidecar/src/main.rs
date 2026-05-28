@@ -347,17 +347,13 @@ fn sidecar_permissions() -> DesktopSidecarPermissionsPayload {
         permissions: vec![
             permission(
                 "Screen Recording",
-                DesktopSidecarPermissionGrant::Unknown,
+                desktop_screen_recording_permission_status(),
                 &["screenshot", "ocr_snapshot", "stream"],
                 "Grant screen capture permission in the local desktop session, then retry.",
             ),
             permission(
                 "Accessibility",
-                if cfg!(target_os = "macos") {
-                    DesktopSidecarPermissionGrant::Unknown
-                } else {
-                    DesktopSidecarPermissionGrant::Unsupported
-                },
+                desktop_accessibility_permission_status(),
                 &[
                     "mouse",
                     "keyboard",
@@ -368,11 +364,7 @@ fn sidecar_permissions() -> DesktopSidecarPermissionsPayload {
             ),
             permission(
                 "Input Monitoring",
-                if cfg!(target_os = "macos") {
-                    DesktopSidecarPermissionGrant::Unknown
-                } else {
-                    DesktopSidecarPermissionGrant::Unsupported
-                },
+                desktop_input_monitoring_permission_status(),
                 &["keyboard", "hotkey"],
                 "Grant Input Monitoring only if the selected keyboard backend requires it.",
             ),
@@ -390,6 +382,49 @@ fn sidecar_permissions() -> DesktopSidecarPermissionsPayload {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn desktop_screen_recording_permission_status() -> DesktopSidecarPermissionGrant {
+    permission_grant_from_bool(unsafe { CGPreflightScreenCaptureAccess() })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn desktop_screen_recording_permission_status() -> DesktopSidecarPermissionGrant {
+    if cfg!(any(target_os = "windows", target_os = "linux")) {
+        DesktopSidecarPermissionGrant::Unknown
+    } else {
+        DesktopSidecarPermissionGrant::Unsupported
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn desktop_accessibility_permission_status() -> DesktopSidecarPermissionGrant {
+    permission_grant_from_bool(unsafe { AXIsProcessTrusted() })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn desktop_accessibility_permission_status() -> DesktopSidecarPermissionGrant {
+    DesktopSidecarPermissionGrant::Unsupported
+}
+
+#[cfg(target_os = "macos")]
+fn desktop_input_monitoring_permission_status() -> DesktopSidecarPermissionGrant {
+    permission_grant_from_bool(unsafe { CGPreflightListenEventAccess() })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn desktop_input_monitoring_permission_status() -> DesktopSidecarPermissionGrant {
+    DesktopSidecarPermissionGrant::Unsupported
+}
+
+#[cfg(target_os = "macos")]
+fn permission_grant_from_bool(granted: bool) -> DesktopSidecarPermissionGrant {
+    if granted {
+        DesktopSidecarPermissionGrant::Granted
+    } else {
+        DesktopSidecarPermissionGrant::Denied
+    }
+}
+
 fn permission(
     name: &str,
     status: DesktopSidecarPermissionGrant,
@@ -402,6 +437,19 @@ fn permission(
         required_for: required_for.iter().map(|value| (*value).into()).collect(),
         remediation: remediation.into(),
     }
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "ApplicationServices", kind = "framework")]
+extern "C" {
+    fn AXIsProcessTrusted() -> bool;
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGPreflightListenEventAccess() -> bool;
+    fn CGPreflightScreenCaptureAccess() -> bool;
 }
 
 fn sidecar_displays() -> Result<DesktopSidecarDisplayListPayload, DesktopSidecarErrorBody> {
@@ -4432,6 +4480,23 @@ mod tests {
                 DesktopSidecarPermissionGrant::Unsupported
             }
         );
+
+        if cfg!(target_os = "macos") {
+            for permission_name in ["Screen Recording", "Accessibility", "Input Monitoring"] {
+                let permission = permissions
+                    .iter()
+                    .find(|permission| permission.name == permission_name)
+                    .expect("macOS permission row");
+                assert!(
+                    matches!(
+                        permission.status,
+                        DesktopSidecarPermissionGrant::Granted
+                            | DesktopSidecarPermissionGrant::Denied
+                    ),
+                    "{permission_name} should be resolved from macOS permission APIs"
+                );
+            }
+        }
     }
 
     #[test]

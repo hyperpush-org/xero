@@ -573,6 +573,7 @@ pub fn load_agent_memory_review_queue(
     project_id: &str,
     agent_session_id: Option<&str>,
     limit: usize,
+    offset: usize,
 ) -> Result<serde_json::Value, CommandError> {
     validate_non_empty_text(project_id, "projectId")?;
     if let Some(agent_session_id) = agent_session_id {
@@ -588,6 +589,14 @@ pub fn load_agent_memory_review_queue(
             include_rejected: true,
         },
     )?;
+    let total = memories.len();
+    let offset = if total == 0 {
+        0
+    } else if offset >= total {
+        ((total - 1) / limit) * limit
+    } else {
+        offset
+    };
     let mut candidate_count = 0_usize;
     let mut approved_count = 0_usize;
     let mut rejected_count = 0_usize;
@@ -608,15 +617,20 @@ pub fn load_agent_memory_review_queue(
     }
     let items = memories
         .iter()
+        .skip(offset)
         .take(limit)
         .map(memory_review_queue_item)
         .collect::<Vec<_>>();
+    let next_offset = offset.saturating_add(items.len());
+    let has_more = next_offset < total;
 
     Ok(serde_json::json!({
         "schema": "xero.agent_memory_review_queue.v1",
         "projectId": project_id,
         "agentSessionId": agent_session_id,
+        "offset": offset,
         "limit": limit,
+        "total": total,
         "counts": {
             "candidate": candidate_count,
             "approved": approved_count,
@@ -632,6 +646,8 @@ pub fn load_agent_memory_review_queue(
             "delete": "Remove the memory record from the approved-memory retrieval store.",
             "edit": "Create a corrected memory or superseding project record; direct text mutation is intentionally not part of this backend contract."
         },
+        "hasMore": has_more,
+        "nextOffset": if has_more { Some(next_offset) } else { None },
         "uiDeferred": true
     }))
 }
@@ -1487,7 +1503,7 @@ mod tests {
         )
         .expect("insert redaction candidate memory");
 
-        let queue = load_agent_memory_review_queue(&repo_root, project_id, None, 10)
+        let queue = load_agent_memory_review_queue(&repo_root, project_id, None, 10, 0)
             .expect("load memory review queue");
 
         assert_eq!(
@@ -1497,9 +1513,18 @@ mod tests {
         assert_eq!(queue["counts"]["candidate"], serde_json::json!(2));
         assert_eq!(queue["counts"]["approved"], serde_json::json!(1));
         assert_eq!(queue["counts"]["retrievableApproved"], serde_json::json!(1));
-        let limited_queue = load_agent_memory_review_queue(&repo_root, project_id, None, 1)
+        let limited_queue = load_agent_memory_review_queue(&repo_root, project_id, None, 1, 0)
             .expect("load limited review queue");
         assert_eq!(limited_queue["counts"]["candidate"], serde_json::json!(2));
+        assert_eq!(limited_queue["offset"], serde_json::json!(0));
+        assert_eq!(limited_queue["total"], serde_json::json!(3));
+        assert_eq!(limited_queue["hasMore"], serde_json::json!(true));
+        assert_eq!(limited_queue["nextOffset"], serde_json::json!(1));
+        let clamped_queue = load_agent_memory_review_queue(&repo_root, project_id, None, 1, 99)
+            .expect("load clamped review queue");
+        assert_eq!(clamped_queue["offset"], serde_json::json!(2));
+        assert_eq!(clamped_queue["hasMore"], serde_json::json!(false));
+        assert!(clamped_queue["nextOffset"].is_null());
         assert_eq!(
             limited_queue["items"]
                 .as_array()

@@ -598,6 +598,7 @@ pub fn get_session_memory_review_queue<R: Runtime>(
         &request.project_id,
         request.agent_session_id.as_deref(),
         request.limit.unwrap_or(50),
+        request.offset.unwrap_or(0),
     )
 }
 

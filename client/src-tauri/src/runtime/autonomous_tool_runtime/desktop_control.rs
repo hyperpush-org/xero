@@ -1192,6 +1192,7 @@ impl AutonomousToolRuntime {
 
     pub fn desktop_control_status_snapshot(
         &self,
+        refresh_permission_status: bool,
     ) -> CommandResult<AutonomousDesktopControlStatusSnapshot> {
         if !desktop_feature_any_surface_enabled() {
             return Ok(AutonomousDesktopControlStatusSnapshot {
@@ -1211,9 +1212,9 @@ impl AutonomousToolRuntime {
         Ok(AutonomousDesktopControlStatusSnapshot {
             schema: DESKTOP_STATUS_SCHEMA.into(),
             platform: std::env::consts::OS.into(),
-            sidecar: sidecar_status(),
-            capabilities: desktop_capabilities(),
-            permissions: desktop_permissions(),
+            sidecar: sidecar_status(refresh_permission_status),
+            capabilities: desktop_capabilities(refresh_permission_status),
+            permissions: desktop_permissions(refresh_permission_status),
             controller_lock: current_desktop_lock(&self.desktop_control)?,
             stream: current_desktop_stream(&self.desktop_control)?,
             updated_at: now_timestamp(),
@@ -1414,7 +1415,7 @@ impl AutonomousToolRuntime {
         }));
         output.audit_id = Some(self.write_desktop_audit(&output, Some(reason))?);
         self.write_desktop_stream_session_event(&output)?;
-        self.desktop_control_status_snapshot()
+        self.desktop_control_status_snapshot(false)
     }
 
     pub fn desktop_stream(
@@ -1486,6 +1487,7 @@ impl AutonomousToolRuntime {
 
         match request.action {
             AutonomousDesktopObserveAction::PermissionsStatus => {
+                output.permissions = desktop_permissions(true);
                 output.message = "Desktop permission status returned.".into();
             }
             AutonomousDesktopObserveAction::DisplayList => {
@@ -2354,9 +2356,9 @@ impl AutonomousToolRuntime {
             phase: DESKTOP_CONTROL_PHASE.into(),
             status,
             platform: std::env::consts::OS.into(),
-            sidecar: sidecar_status(),
-            capabilities: desktop_capabilities(),
-            permissions: desktop_permissions(),
+            sidecar: sidecar_status(true),
+            capabilities: desktop_capabilities(true),
+            permissions: desktop_permissions(false),
             policy,
             displays: Vec::new(),
             windows: Vec::new(),
@@ -3567,13 +3569,30 @@ fn desktop_policy(
     }
 }
 
-fn sidecar_status() -> AutonomousDesktopSidecarStatus {
-    let manager = DESKTOP_SIDECAR_MANAGER.get_or_init(|| Mutex::new(DesktopSidecarManager::new()));
-    match manager.lock() {
-        Ok(mut manager) => manager.status(),
-        Err(_) => sidecar_unavailable_status(
-            "desktop_sidecar_state_lock_failed",
-            "Xero could not lock desktop sidecar manager state.",
+fn sidecar_status(refresh_sidecar_status: bool) -> AutonomousDesktopSidecarStatus {
+    if refresh_sidecar_status {
+        let manager =
+            DESKTOP_SIDECAR_MANAGER.get_or_init(|| Mutex::new(DesktopSidecarManager::new()));
+        return match manager.lock() {
+            Ok(mut manager) => manager.status(),
+            Err(_) => sidecar_unavailable_status(
+                "desktop_sidecar_state_lock_failed",
+                "Xero could not lock desktop sidecar manager state.",
+            ),
+        };
+    }
+
+    match DESKTOP_SIDECAR_MANAGER.get() {
+        Some(manager) => match manager.lock() {
+            Ok(mut manager) => manager.passive_status(),
+            Err(_) => sidecar_unavailable_status(
+                "desktop_sidecar_state_lock_failed",
+                "Xero could not lock desktop sidecar manager state.",
+            ),
+        },
+        None => sidecar_unavailable_status(
+            "desktop_sidecar_not_started",
+            "Desktop sidecar has not been started for this session.",
         ),
     }
 }
@@ -3718,6 +3737,56 @@ impl DesktopSidecarManager {
                 self.last_error = Some(error.clone());
                 self.shutdown();
                 sidecar_unavailable_status("sidecar_unavailable", &error)
+            }
+        }
+    }
+
+    fn passive_status(&mut self) -> AutonomousDesktopSidecarStatus {
+        let Some(process) = self.process.as_mut() else {
+            return sidecar_unavailable_status(
+                "desktop_sidecar_not_started",
+                self.last_error
+                    .as_deref()
+                    .unwrap_or("Desktop sidecar has not been started for this session."),
+            );
+        };
+
+        match process.child.try_wait() {
+            Ok(Some(status)) => {
+                let message = format!("Desktop sidecar exited with {status}.");
+                self.last_error = Some(message.clone());
+                self.shutdown();
+                sidecar_unavailable_status("sidecar_unavailable", &message)
+            }
+            Ok(None) if timestamp_has_expired(&process.lease_expires_at) => {
+                self.shutdown();
+                sidecar_unavailable_status(
+                    "desktop_sidecar_lease_expired",
+                    "Desktop sidecar lease expired.",
+                )
+            }
+            Ok(None) => AutonomousDesktopSidecarStatus {
+                schema_version: DESKTOP_SIDECAR_SCHEMA_VERSION,
+                platform: std::env::consts::OS.into(),
+                transport: "stdio_authenticated_sidecar".into(),
+                authenticated: true,
+                health: "ready".into(),
+                message: format!(
+                    "Desktop sidecar is running from {} with a lease expiring at {}{}.",
+                    process.binary_path.display(),
+                    process.lease_expires_at,
+                    if process.checksum_verified {
+                        " and a verified checksum"
+                    } else {
+                        " in development checksum mode"
+                    }
+                ),
+            },
+            Err(error) => {
+                let message = format!("Desktop sidecar health check failed: {error}");
+                self.last_error = Some(message.clone());
+                self.shutdown();
+                sidecar_unavailable_status("sidecar_unavailable", &message)
             }
         }
     }
@@ -4043,7 +4112,11 @@ fn read_sidecar_response(
         .map_err(|error| format!("Xero could not decode desktop sidecar response: {error}"))
 }
 
-fn desktop_capabilities() -> AutonomousDesktopCapabilities {
+fn desktop_capabilities(refresh_sidecar_status: bool) -> AutonomousDesktopCapabilities {
+    if !refresh_sidecar_status {
+        return in_process_desktop_capabilities();
+    }
+
     let mut capabilities = if let Ok(payload) = sidecar_json_result(
         DesktopSidecarOperation::Capabilities,
         json!({}),
@@ -4184,7 +4257,34 @@ fn desktop_feature_any_surface_enabled() -> bool {
     .any(super::desktop_tool_available_by_rollout)
 }
 
-fn desktop_permissions() -> Vec<AutonomousDesktopPermissionStatus> {
+static DESKTOP_PERMISSION_STATUS_CACHE: OnceLock<
+    Mutex<Option<Vec<AutonomousDesktopPermissionStatus>>>,
+> = OnceLock::new();
+
+fn desktop_permissions(refresh_permission_status: bool) -> Vec<AutonomousDesktopPermissionStatus> {
+    if !refresh_permission_status {
+        return cached_desktop_permissions().unwrap_or_else(static_desktop_permissions);
+    }
+
+    let permissions = refreshed_desktop_permissions();
+    cache_desktop_permissions(&permissions);
+    permissions
+}
+
+fn cached_desktop_permissions() -> Option<Vec<AutonomousDesktopPermissionStatus>> {
+    let cache = DESKTOP_PERMISSION_STATUS_CACHE.get_or_init(|| Mutex::new(None));
+    let guard = cache.lock().ok()?;
+    guard.as_ref().cloned()
+}
+
+fn cache_desktop_permissions(permissions: &[AutonomousDesktopPermissionStatus]) {
+    let cache = DESKTOP_PERMISSION_STATUS_CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some(permissions.to_vec());
+    }
+}
+
+fn refreshed_desktop_permissions() -> Vec<AutonomousDesktopPermissionStatus> {
     if let Ok(payload) = sidecar_json_result(
         DesktopSidecarOperation::PermissionsStatus,
         json!({}),
@@ -4195,39 +4295,23 @@ fn desktop_permissions() -> Vec<AutonomousDesktopPermissionStatus> {
                 .permissions
                 .into_iter()
                 .map(AutonomousDesktopPermissionStatus::from)
-                .collect();
-            return merge_desktop_permissions(
-                sidecar_permissions,
-                in_process_desktop_permissions(),
-            );
+                .collect::<Vec<_>>();
+            if sidecar_permissions
+                .iter()
+                .any(|permission| permission.status == AutonomousDesktopPermissionGrant::Unknown)
+            {
+                return merge_desktop_permissions(
+                    sidecar_permissions,
+                    in_process_desktop_permissions(),
+                );
+            }
+            return sidecar_permissions;
         }
     }
     in_process_desktop_permissions()
 }
 
-fn merge_desktop_permissions(
-    mut sidecar: Vec<AutonomousDesktopPermissionStatus>,
-    fallback: Vec<AutonomousDesktopPermissionStatus>,
-) -> Vec<AutonomousDesktopPermissionStatus> {
-    for fallback_permission in fallback {
-        if let Some(existing) = sidecar
-            .iter_mut()
-            .find(|permission| permission.name == fallback_permission.name)
-        {
-            for required_for in fallback_permission.required_for {
-                if !existing.required_for.contains(&required_for) {
-                    existing.required_for.push(required_for);
-                }
-            }
-        } else {
-            sidecar.push(fallback_permission);
-        }
-    }
-
-    sidecar
-}
-
-fn in_process_desktop_permissions() -> Vec<AutonomousDesktopPermissionStatus> {
+fn static_desktop_permissions() -> Vec<AutonomousDesktopPermissionStatus> {
     vec![
         permission(
             "Screen Recording",
@@ -4281,6 +4365,114 @@ fn in_process_desktop_permissions() -> Vec<AutonomousDesktopPermissionStatus> {
     ]
 }
 
+fn merge_desktop_permissions(
+    mut sidecar: Vec<AutonomousDesktopPermissionStatus>,
+    fallback: Vec<AutonomousDesktopPermissionStatus>,
+) -> Vec<AutonomousDesktopPermissionStatus> {
+    for fallback_permission in fallback {
+        if let Some(existing) = sidecar
+            .iter_mut()
+            .find(|permission| permission.name == fallback_permission.name)
+        {
+            if existing.status == AutonomousDesktopPermissionGrant::Unknown
+                && fallback_permission.status != AutonomousDesktopPermissionGrant::Unknown
+            {
+                existing.status = fallback_permission.status;
+            }
+            for required_for in fallback_permission.required_for {
+                if !existing.required_for.contains(&required_for) {
+                    existing.required_for.push(required_for);
+                }
+            }
+        } else {
+            sidecar.push(fallback_permission);
+        }
+    }
+
+    sidecar
+}
+
+fn in_process_desktop_permissions() -> Vec<AutonomousDesktopPermissionStatus> {
+    vec![
+        permission(
+            "Screen Recording",
+            desktop_screen_recording_permission_status(),
+            &["screenshot", "stream"],
+            "Grant screen capture permission in the local desktop session, then refresh status.",
+        ),
+        permission(
+            "Accessibility",
+            desktop_accessibility_permission_status(),
+            &[
+                "mouse",
+                "keyboard",
+                "accessibility_snapshot",
+                "accessibility_actions",
+            ],
+            "Grant Accessibility permission to Xero in local system privacy settings.",
+        ),
+        permission(
+            "Input Monitoring",
+            desktop_input_monitoring_permission_status(),
+            &["keyboard", "hotkey"],
+            "Grant Input Monitoring only if the selected keyboard backend requires it.",
+        ),
+        permission(
+            "Remote Desktop Portal",
+            if cfg!(target_os = "linux") {
+                AutonomousDesktopPermissionGrant::Unknown
+            } else {
+                AutonomousDesktopPermissionGrant::Unsupported
+            },
+            &["wayland_capture", "wayland_input"],
+            "Approve the Wayland portal prompt in the local desktop session.",
+        ),
+    ]
+}
+
+#[cfg(target_os = "macos")]
+fn desktop_screen_recording_permission_status() -> AutonomousDesktopPermissionGrant {
+    permission_grant_from_bool(unsafe { CGPreflightScreenCaptureAccess() })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn desktop_screen_recording_permission_status() -> AutonomousDesktopPermissionGrant {
+    if cfg!(any(target_os = "windows", target_os = "linux")) {
+        AutonomousDesktopPermissionGrant::Unknown
+    } else {
+        AutonomousDesktopPermissionGrant::Unsupported
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn desktop_accessibility_permission_status() -> AutonomousDesktopPermissionGrant {
+    permission_grant_from_bool(unsafe { AXIsProcessTrusted() })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn desktop_accessibility_permission_status() -> AutonomousDesktopPermissionGrant {
+    AutonomousDesktopPermissionGrant::Unsupported
+}
+
+#[cfg(target_os = "macos")]
+fn desktop_input_monitoring_permission_status() -> AutonomousDesktopPermissionGrant {
+    permission_grant_from_bool(unsafe { CGPreflightListenEventAccess() })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn desktop_input_monitoring_permission_status() -> AutonomousDesktopPermissionGrant {
+    AutonomousDesktopPermissionGrant::Unsupported
+}
+
+#[cfg(target_os = "macos")]
+fn permission_grant_from_bool(granted: bool) -> AutonomousDesktopPermissionGrant {
+    if granted {
+        AutonomousDesktopPermissionGrant::Granted
+    } else {
+        AutonomousDesktopPermissionGrant::Denied
+    }
+}
+
 fn permission(
     name: &str,
     status: AutonomousDesktopPermissionGrant,
@@ -4293,6 +4485,19 @@ fn permission(
         required_for: required_for.iter().map(|value| (*value).into()).collect(),
         remediation: remediation.into(),
     }
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "ApplicationServices", kind = "framework")]
+extern "C" {
+    fn AXIsProcessTrusted() -> bool;
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGPreflightListenEventAccess() -> bool;
+    fn CGPreflightScreenCaptureAccess() -> bool;
 }
 
 fn desktop_displays() -> CommandResult<Vec<AutonomousDesktopDisplay>> {
@@ -6826,8 +7031,8 @@ mod tests {
             phase: DESKTOP_CONTROL_PHASE.into(),
             status: AutonomousDesktopToolStatus::Executed,
             platform: "macos".into(),
-            sidecar: sidecar_status(),
-            capabilities: desktop_capabilities(),
+            sidecar: sidecar_status(false),
+            capabilities: desktop_capabilities(false),
             permissions: Vec::new(),
             policy: desktop_policy(
                 AutonomousDesktopPolicyCategory::ControlSafe,
@@ -7156,6 +7361,54 @@ mod tests {
         assert!(merged
             .iter()
             .any(|permission| permission.name == "Input Monitoring"));
+    }
+
+    #[test]
+    fn sidecar_unknown_permission_status_is_filled_from_fallback() {
+        let merged = merge_desktop_permissions(
+            vec![permission(
+                "Accessibility",
+                AutonomousDesktopPermissionGrant::Unknown,
+                &["mouse"],
+                "Grant Accessibility from the sidecar.",
+            )],
+            vec![permission(
+                "Accessibility",
+                AutonomousDesktopPermissionGrant::Granted,
+                &["keyboard"],
+                "Grant Accessibility locally.",
+            )],
+        );
+
+        let accessibility = merged
+            .iter()
+            .find(|permission| permission.name == "Accessibility")
+            .expect("accessibility permission");
+
+        assert_eq!(
+            accessibility.status,
+            AutonomousDesktopPermissionGrant::Granted
+        );
+        assert_eq!(
+            accessibility.required_for,
+            vec!["mouse".to_string(), "keyboard".to_string()]
+        );
+    }
+
+    #[test]
+    fn static_desktop_permissions_do_not_resolve_macos_tcc_status() {
+        let permissions = static_desktop_permissions();
+        let screen_recording = permissions
+            .iter()
+            .find(|permission| permission.name == "Screen Recording")
+            .expect("screen recording permission");
+
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                screen_recording.status,
+                AutonomousDesktopPermissionGrant::Unknown
+            );
+        }
     }
 
     #[test]

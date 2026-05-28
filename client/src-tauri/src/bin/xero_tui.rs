@@ -268,6 +268,9 @@ fn handle_memory_command(state_dir: &Path, args: &[String]) -> Result<JsonValue,
             let limit = option_value(&args[1..], "--limit")
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or(50);
+            let offset = option_value(&args[1..], "--offset")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(0);
             configure_project_store_paths(state_dir);
             let repo_root = project_root(state_dir, &project_id)?;
             let queue = project_store::load_agent_memory_review_queue(
@@ -275,6 +278,7 @@ fn handle_memory_command(state_dir: &Path, args: &[String]) -> Result<JsonValue,
                 &project_id,
                 agent_session_id.as_deref(),
                 limit,
+                offset,
             )?;
             Ok(json!({
                 "kind": "memoryReviewQueue",

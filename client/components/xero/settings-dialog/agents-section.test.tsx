@@ -22,6 +22,15 @@ const builtin: AgentDefinitionSummaryDto = {
   isBuiltIn: true,
 }
 
+const computerUseBuiltin: AgentDefinitionSummaryDto = {
+  ...builtin,
+  definitionId: 'computer_use',
+  displayName: 'Computer Use',
+  shortLabel: 'Computer',
+  description: 'Control the visible computer through bounded automation.',
+  baseCapabilityProfile: 'computer_use',
+}
+
 const projectCustom: AgentDefinitionSummaryDto = {
   definitionId: 'project_research',
   currentVersion: 3,
@@ -80,6 +89,20 @@ describe('AgentsSection', () => {
     // built-ins do not get an Archive button
     const archiveButtons = screen.queryAllByRole('button', { name: /^Archive$/i })
     expect(archiveButtons).toHaveLength(1)
+  })
+
+  it('uses a computer icon for the Computer Use built-in agent', async () => {
+    const list = vi.fn(async () => ({ definitions: [computerUseBuiltin] }))
+    const { container } = render(
+      <AgentsSection
+        projectId="project-1"
+        projectLabel="Xero"
+        onListAgentDefinitions={list}
+      />,
+    )
+
+    await screen.findByText('Computer Use')
+    expect(container.querySelector('.lucide-monitor')).toBeInTheDocument()
   })
 
   it('archives a custom agent and refreshes the list', async () => {

@@ -8,6 +8,7 @@ import {
   ListChecks,
   Loader2,
   MessageCircle,
+  Monitor,
   Package,
   RefreshCw,
   Search,
@@ -102,6 +103,8 @@ function profileIcon(profile: AgentDefinitionBaseCapabilityProfileDto) {
       return Search
     case "agent_builder":
       return Sparkles
+    case "computer_use":
+      return Monitor
     case "observe_only":
     default:
       return MessageCircle

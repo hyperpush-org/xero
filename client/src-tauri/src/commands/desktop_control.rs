@@ -69,6 +69,13 @@ pub struct UpsertDesktopControlSettingsRequestDto {
     pub private_regions: Vec<AutonomousDesktopRegion>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DesktopControlStatusRequestDto {
+    #[serde(default)]
+    pub refresh_permission_status: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DesktopControlPermissionActionKindDto {
@@ -120,9 +127,11 @@ pub struct DesktopControlStatusDto {
 pub fn desktop_control_status<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
+    request: Option<DesktopControlStatusRequestDto>,
 ) -> CommandResult<DesktopControlStatusDto> {
     let runtime = global_computer_use_desktop_runtime(&app, state.inner(), "status")?;
-    let snapshot = runtime.desktop_control_status_snapshot()?;
+    let snapshot = runtime
+        .desktop_control_status_snapshot(request.unwrap_or_default().refresh_permission_status)?;
     let settings = load_desktop_control_settings(&app, state.inner())?;
     let audit_log_path = global_computer_use_audit_log_path(&app, state.inner())?;
     Ok(desktop_status_dto(snapshot, settings, audit_log_path))
@@ -143,7 +152,7 @@ pub fn desktop_control_update_settings<R: Runtime>(
     };
     write_desktop_control_settings(&app, state.inner(), &settings)?;
     let runtime = global_computer_use_desktop_runtime(&app, state.inner(), "settings")?;
-    let snapshot = runtime.desktop_control_status_snapshot()?;
+    let snapshot = runtime.desktop_control_status_snapshot(false)?;
     let audit_log_path = global_computer_use_audit_log_path(&app, state.inner())?;
     Ok(desktop_status_dto(snapshot, settings, audit_log_path))
 }

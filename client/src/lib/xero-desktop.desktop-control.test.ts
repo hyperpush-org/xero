@@ -121,7 +121,20 @@ describe('XeroDesktopAdapter desktop control', () => {
         },
       ],
     })
-    expect(mocks.invoke).toHaveBeenCalledWith('desktop_control_status', undefined)
+    expect(mocks.invoke).toHaveBeenCalledWith('desktop_control_status', {
+      request: { refreshPermissionStatus: false },
+    })
+
+    mocks.invoke.mockResolvedValueOnce(makeDesktopControlStatus())
+
+    await expect(
+      XeroDesktopAdapter.desktopControlStatus?.({ refreshPermissionStatus: true }),
+    ).resolves.toMatchObject({
+      schema: 'xero.desktop_control_status.v1',
+    })
+    expect(mocks.invoke).toHaveBeenLastCalledWith('desktop_control_status', {
+      request: { refreshPermissionStatus: true },
+    })
   })
 
   it('parses active WebRTC desktop streams and stopped stream responses with metrics', async () => {
@@ -145,7 +158,9 @@ describe('XeroDesktopAdapter desktop control', () => {
         },
       },
     })
-    expect(mocks.invoke).toHaveBeenCalledWith('desktop_control_status', undefined)
+    expect(mocks.invoke).toHaveBeenCalledWith('desktop_control_status', {
+      request: { refreshPermissionStatus: false },
+    })
 
     mocks.invoke.mockResolvedValueOnce(
       makeDesktopControlStatus({

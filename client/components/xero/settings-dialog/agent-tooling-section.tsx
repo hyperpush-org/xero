@@ -674,76 +674,78 @@ function AddOverrideForm({
         </p>
       </header>
 
-      <div className="flex flex-col gap-3 px-4 py-3.5">
-        <div className="grid grid-cols-1 items-end gap-3 md:grid-cols-[2fr_1fr_auto]">
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="agent-tooling-add-model" className="text-[12px] font-medium text-muted-foreground">
-              Model
-            </Label>
-            <Select
-              value={selectionKey}
-              disabled={disabled || selectableModels.length === 0}
-              onValueChange={(value) => setSelectionKey(value)}
-            >
-              <SelectTrigger
-                id="agent-tooling-add-model"
-                aria-label="Model"
-                className="h-9 text-[12.5px]"
-                size="sm"
+      <div className="px-4 py-3.5">
+        <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="agent-tooling-add-model" className="text-[12px] font-medium text-muted-foreground">
+                Model
+              </Label>
+              <Select
+                value={selectionKey}
+                disabled={disabled || selectableModels.length === 0}
+                onValueChange={(value) => setSelectionKey(value)}
               >
-                <SelectValue
-                  placeholder={
-                    selectableModels.length === 0
-                      ? "Every configured model already has an override"
-                      : "Select a configured model"
-                  }
-                />
-              </SelectTrigger>
-              <SelectContent>
-                {providerGroups.map((group) => {
-                  const groupModels = group.models.filter(
-                    (model) => !overrideKeys.has(makeOverrideKey(model.providerId, model.modelId)),
-                  )
-                  if (groupModels.length === 0) return null
-                  return (
-                    <SelectGroup key={group.providerId}>
-                      <SelectLabel>{group.providerLabel}</SelectLabel>
-                      {groupModels.map((model) => (
-                        <SelectItem key={model.selectionKey} value={model.selectionKey}>
-                          {model.displayName}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  )
-                })}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="agent-tooling-add-style" className="text-[12px] font-medium text-muted-foreground">
-              Style
-            </Label>
-            <Select
-              value={style}
-              disabled={disabled}
-              onValueChange={(value) => setStyle(value as AgentToolApplicationStyleDto)}
-            >
-              <SelectTrigger
-                id="agent-tooling-add-style"
-                aria-label="Style"
-                className="h-9 text-[12.5px]"
-                size="sm"
+                <SelectTrigger
+                  id="agent-tooling-add-model"
+                  aria-label="Model"
+                  className="h-9 text-[12.5px]"
+                  size="sm"
+                >
+                  <SelectValue
+                    placeholder={
+                      selectableModels.length === 0
+                        ? "Every configured model already has an override"
+                        : "Select a configured model"
+                    }
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {providerGroups.map((group) => {
+                    const groupModels = group.models.filter(
+                      (model) => !overrideKeys.has(makeOverrideKey(model.providerId, model.modelId)),
+                    )
+                    if (groupModels.length === 0) return null
+                    return (
+                      <SelectGroup key={group.providerId}>
+                        <SelectLabel>{group.providerLabel}</SelectLabel>
+                        {groupModels.map((model) => (
+                          <SelectItem key={model.selectionKey} value={model.selectionKey}>
+                            {model.displayName}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    )
+                  })}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="agent-tooling-add-style" className="text-[12px] font-medium text-muted-foreground">
+                Style
+              </Label>
+              <Select
+                value={style}
+                disabled={disabled}
+                onValueChange={(value) => setStyle(value as AgentToolApplicationStyleDto)}
               >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {STYLE_OPTIONS.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+                <SelectTrigger
+                  id="agent-tooling-add-style"
+                  aria-label="Style"
+                  className="h-9 text-[12.5px]"
+                  size="sm"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STYLE_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <Button
             type="submit"

@@ -516,6 +516,22 @@ fn github_autonomous_skill_runtime_registers_cache_hits_refreshes_and_failures()
 }
 
 #[test]
+fn project_skill_discovery_treats_missing_app_data_skill_root_as_empty() {
+    let root = tempfile::tempdir().expect("temp dir");
+    db::configure_project_database_paths(&root.path().join("app-data").join("xero.db"));
+    let project_root = root.path().join("project-without-skills");
+    std::fs::create_dir_all(&project_root).expect("create project root");
+    let project_app_data_dir = db::project_app_data_dir_for_repo(&project_root);
+
+    let discovered =
+        discover_project_skill_directory("project-1", &project_app_data_dir).expect("discover");
+
+    assert!(!project_app_data_dir.join("skills").exists());
+    assert!(discovered.candidates.is_empty());
+    assert!(discovered.diagnostics.is_empty());
+}
+
+#[test]
 fn local_and_project_skill_scanning_returns_candidates_and_typed_diagnostics() {
     let root = tempfile::tempdir().expect("temp dir");
     let local_root = root.path().join("local-skills");

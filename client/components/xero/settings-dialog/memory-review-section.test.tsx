@@ -65,21 +65,33 @@ function makeItem(
   }
 }
 
-function makeQueueResponse(items: AgentMemoryReviewQueueItemDto[]): GetSessionMemoryReviewQueueResponseDto {
+const PAGE_SIZE = 10
+
+function makeQueueResponse(
+  allItems: AgentMemoryReviewQueueItemDto[],
+  options: { offset?: number; limit?: number } = {},
+): GetSessionMemoryReviewQueueResponseDto {
+  const offset = options.offset ?? 0
+  const limit = options.limit ?? PAGE_SIZE
+  const items = allItems.slice(offset, offset + limit)
   const counts = {
-    candidate: items.filter((item) => item.reviewState === 'candidate').length,
-    approved: items.filter((item) => item.reviewState === 'approved').length,
-    rejected: items.filter((item) => item.reviewState === 'rejected').length,
-    disabled: items.filter((item) => !item.enabled).length,
-    retrievableApproved: items.filter(
+    candidate: allItems.filter((item) => item.reviewState === 'candidate').length,
+    approved: allItems.filter((item) => item.reviewState === 'approved').length,
+    rejected: allItems.filter((item) => item.reviewState === 'rejected').length,
+    disabled: allItems.filter((item) => !item.enabled).length,
+    retrievableApproved: allItems.filter(
       (item) => item.reviewState === 'approved' && item.retrieval.eligible,
     ).length,
   }
+  const nextOffset = offset + items.length
+  const hasMore = nextOffset < allItems.length
   return {
     schema: 'xero.agent_memory_review_queue.v1',
     projectId: PROJECT_ID,
     agentSessionId: SESSION_ID,
-    limit: 50,
+    offset,
+    limit,
+    total: allItems.length,
     counts,
     items,
     actions: {
@@ -89,6 +101,8 @@ function makeQueueResponse(items: AgentMemoryReviewQueueItemDto[]): GetSessionMe
       delete: 'Delete memory',
       edit: 'Create a corrected memory',
     },
+    hasMore,
+    nextOffset: hasMore ? nextOffset : null,
     uiDeferred: true,
   }
 }
@@ -163,7 +177,8 @@ describe('MemoryReviewSection', () => {
       expect(getQueue).toHaveBeenCalledWith({
         projectId: PROJECT_ID,
         agentSessionId: SESSION_ID,
-        limit: 50,
+        offset: 0,
+        limit: PAGE_SIZE,
       })
     })
 
@@ -173,6 +188,50 @@ describe('MemoryReviewSection', () => {
     expect(within(counts).getByLabelText('Candidates: 1')).toBeVisible()
     expect(within(counts).getByLabelText('Approved: 1')).toBeVisible()
     expect(within(counts).getByLabelText('Retrievable: 1')).toBeVisible()
+  })
+
+  it('keeps memory details collapsed until the card is opened', async () => {
+    const item = makeItem({ memoryId: 'mem-collapsed' })
+    const { adapter } = makeAdapter(makeQueueResponse([item]))
+
+    render(<MemoryReviewSection projectId={PROJECT_ID} projectLabel={null} adapter={adapter} />)
+
+    const row = await screen.findByTestId('memory-review-item')
+    expect(within(row).queryByTestId('memory-full-preview')).not.toBeInTheDocument()
+
+    fireEvent.click(within(row).getByRole('button', { name: 'Toggle memory details for mem-collapsed' }))
+
+    expect(await within(row).findByTestId('memory-full-preview')).toBeVisible()
+    expect(within(row).getByText('Source run')).toBeVisible()
+  })
+
+  it('requests and renders paginated memory pages', async () => {
+    const allItems = Array.from({ length: 12 }, (_, index) =>
+      makeItem({ memoryId: `mem-page-${index + 1}` }),
+    )
+    const firstPage = makeQueueResponse(allItems, { offset: 0 })
+    const secondPage = makeQueueResponse(allItems, { offset: PAGE_SIZE })
+    const { adapter, getQueue } = makeAdapter(firstPage)
+    getQueue.mockResolvedValueOnce(firstPage).mockResolvedValueOnce(secondPage)
+
+    render(<MemoryReviewSection projectId={PROJECT_ID} projectLabel={null} adapter={adapter} />)
+
+    expect(await screen.findAllByTestId('memory-review-item')).toHaveLength(PAGE_SIZE)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Go to next page' }))
+
+    await waitFor(() => {
+      expect(getQueue).toHaveBeenLastCalledWith({
+        projectId: PROJECT_ID,
+        agentSessionId: null,
+        offset: PAGE_SIZE,
+        limit: PAGE_SIZE,
+      })
+    })
+    await waitFor(() => {
+      expect(screen.getAllByTestId('memory-review-item')).toHaveLength(2)
+    })
+    expect(screen.getAllByText('Page 2 of 2')[0]).toBeVisible()
   })
 
   it('hides the preview and disables Approve for redacted (secret-shaped) memory', async () => {
@@ -200,7 +259,8 @@ describe('MemoryReviewSection', () => {
     expect(within(item).getByTestId('memory-redacted-notice')).toBeInTheDocument()
     expect(within(item).getByTestId('redaction-badge')).toBeInTheDocument()
     expect(within(item).getByRole('button', { name: 'Approve memory' })).toBeDisabled()
-    expect(within(item).getByRole('button', { name: 'Edit memory' })).toBeEnabled()
+    fireEvent.pointerDown(within(item).getByRole('button', { name: 'Memory actions' }), { button: 0 })
+    expect(await screen.findByRole('menuitem', { name: 'Edit memory' })).toBeEnabled()
   })
 
   it('approves a candidate and refetches the queue', async () => {
@@ -240,7 +300,8 @@ describe('MemoryReviewSection', () => {
     render(<MemoryReviewSection projectId={PROJECT_ID} projectLabel={null} adapter={adapter} />)
 
     const item = await screen.findByTestId('memory-review-item')
-    fireEvent.click(within(item).getByRole('button', { name: 'Reject memory' }))
+    fireEvent.pointerDown(within(item).getByRole('button', { name: 'Memory actions' }), { button: 0 })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Reject memory' }))
 
     await waitFor(() => {
       expect(updateMemory).toHaveBeenCalledWith({
@@ -258,7 +319,8 @@ describe('MemoryReviewSection', () => {
     render(<MemoryReviewSection projectId={PROJECT_ID} projectLabel={null} adapter={adapter} />)
 
     const row = await screen.findByTestId('memory-review-item')
-    fireEvent.click(within(row).getByRole('button', { name: 'Delete memory' }))
+    fireEvent.pointerDown(within(row).getByRole('button', { name: 'Memory actions' }), { button: 0 })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete memory' }))
 
     await waitFor(() => {
       expect(deleteMemory).toHaveBeenCalledWith({
@@ -283,7 +345,8 @@ describe('MemoryReviewSection', () => {
     render(<MemoryReviewSection projectId={PROJECT_ID} projectLabel={null} adapter={adapter} />)
 
     const row = await screen.findByTestId('memory-review-item')
-    fireEvent.click(within(row).getByRole('button', { name: 'Edit memory' }))
+    fireEvent.pointerDown(within(row).getByRole('button', { name: 'Memory actions' }), { button: 0 })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Edit memory' }))
 
     const textarea = await screen.findByLabelText('Corrected memory text')
     fireEvent.change(textarea, { target: { value: 'Sanitized memory text' } })

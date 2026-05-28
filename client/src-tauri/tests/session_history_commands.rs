@@ -1190,6 +1190,7 @@ fn memory_extraction_review_and_context_injection_are_review_gated() {
         GetSessionMemoryReviewQueueRequestDto {
             project_id: project_id.clone(),
             agent_session_id: Some(SESSION_ID.into()),
+            offset: Some(0),
             limit: Some(2),
         },
     )
@@ -1199,6 +1200,10 @@ fn memory_extraction_review_and_context_injection_are_review_gated() {
         json!("xero.agent_memory_review_queue.v1")
     );
     assert_eq!(review_queue["limit"], json!(2));
+    assert_eq!(review_queue["offset"], json!(0));
+    assert_eq!(review_queue["total"], json!(4));
+    assert_eq!(review_queue["hasMore"], json!(true));
+    assert_eq!(review_queue["nextOffset"], json!(2));
     assert_eq!(review_queue["counts"]["candidate"], json!(4));
     assert_eq!(review_queue["counts"]["approved"], json!(0));
     assert_eq!(review_queue["counts"]["disabled"], json!(4));

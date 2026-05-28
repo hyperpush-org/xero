@@ -256,69 +256,71 @@ export function PowerSection({ adapter }: PowerSectionProps) {
             </Alert>
           ) : null}
 
-          <section className="rounded-md border border-border/60 bg-secondary/10 px-3.5 py-3">
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex min-w-0 items-start gap-3">
-                <BatteryCharging className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h4 className="text-[12.5px] font-semibold text-foreground">
-                      Adrenaline Mode
-                    </h4>
-                    <StatusPill tone={status.tone} label={status.label} />
-                    {saveTarget === "adrenaline" ? (
-                      <LoaderCircle className="h-3 w-3 animate-spin text-muted-foreground" />
-                    ) : null}
+          <div className="flex flex-col gap-3">
+            <section className="rounded-md border border-border/60 bg-secondary/10 px-3.5 py-3">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex min-w-0 items-start gap-3">
+                  <BatteryCharging className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h4 className="text-[12.5px] font-semibold text-foreground">
+                        Adrenaline Mode
+                      </h4>
+                      <StatusPill tone={status.tone} label={status.label} />
+                      {saveTarget === "adrenaline" ? (
+                        <LoaderCircle className="h-3 w-3 animate-spin text-muted-foreground" />
+                      ) : null}
+                    </div>
+                    <p className="mt-1 text-[11.5px] leading-[1.5] text-muted-foreground">
+                      Keep this device awake while Xero is running.
+                    </p>
+                    <p className="mt-1 text-[11px] leading-[1.5] text-muted-foreground/80">
+                      {status.body}
+                    </p>
                   </div>
-                  <p className="mt-1 text-[11.5px] leading-[1.5] text-muted-foreground">
-                    Keep this device awake while Xero is running.
-                  </p>
-                  <p className="mt-1 text-[11px] leading-[1.5] text-muted-foreground/80">
-                    {status.body}
-                  </p>
                 </div>
+                <Switch
+                  checked={settings.enabled}
+                  disabled={switchDisabled}
+                  onCheckedChange={updateAdrenalineMode}
+                  aria-label="Adrenaline Mode"
+                  className="mt-0.5"
+                />
               </div>
-              <Switch
-                checked={settings.enabled}
-                disabled={switchDisabled}
-                onCheckedChange={updateAdrenalineMode}
-                aria-label="Adrenaline Mode"
-                className="mt-0.5"
-              />
-            </div>
-          </section>
+            </section>
 
-          <section className="rounded-md border border-border/60 bg-secondary/10 px-3.5 py-3">
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex min-w-0 items-start gap-3">
-                <Laptop className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h4 className="text-[12.5px] font-semibold text-foreground">
-                      Closed-Lid Mode
-                    </h4>
-                    <StatusPill tone={closedLidStatus.tone} label={closedLidStatus.label} />
-                    {saveTarget === "closed_lid" ? (
-                      <LoaderCircle className="h-3 w-3 animate-spin text-muted-foreground" />
-                    ) : null}
+            <section className="rounded-md border border-border/60 bg-secondary/10 px-3.5 py-3">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex min-w-0 items-start gap-3">
+                  <Laptop className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h4 className="text-[12.5px] font-semibold text-foreground">
+                        Closed-Lid Mode
+                      </h4>
+                      <StatusPill tone={closedLidStatus.tone} label={closedLidStatus.label} />
+                      {saveTarget === "closed_lid" ? (
+                        <LoaderCircle className="h-3 w-3 animate-spin text-muted-foreground" />
+                      ) : null}
+                    </div>
+                    <p className="mt-1 text-[11.5px] leading-[1.5] text-muted-foreground">
+                      Keep the system awake after the lid closes.
+                    </p>
+                    <p className="mt-1 text-[11px] leading-[1.5] text-muted-foreground/80">
+                      {closedLidStatus.body}
+                    </p>
                   </div>
-                  <p className="mt-1 text-[11.5px] leading-[1.5] text-muted-foreground">
-                    Keep the system awake after the lid closes.
-                  </p>
-                  <p className="mt-1 text-[11px] leading-[1.5] text-muted-foreground/80">
-                    {closedLidStatus.body}
-                  </p>
                 </div>
+                <Switch
+                  checked={closedLidSettings.enabled}
+                  disabled={closedLidSwitchDisabled}
+                  onCheckedChange={requestClosedLidModeChange}
+                  aria-label="Closed-Lid Mode"
+                  className="mt-0.5"
+                />
               </div>
-              <Switch
-                checked={closedLidSettings.enabled}
-                disabled={closedLidSwitchDisabled}
-                onCheckedChange={requestClosedLidModeChange}
-                aria-label="Closed-Lid Mode"
-                className="mt-0.5"
-              />
-            </div>
-          </section>
+            </section>
+          </div>
 
           <Alert className="rounded-md border-warning/25 bg-warning/[0.07] px-3 py-2 text-[12px]">
             <AlertTriangle className="h-3.5 w-3.5 text-warning" />

@@ -591,9 +591,11 @@ import {
 } from '@/src/lib/xero-model/environment'
 import {
   desktopControlOpenPermissionSettingsRequestSchema,
+  desktopControlStatusRequestSchema,
   desktopControlStatusSchema,
   upsertDesktopControlSettingsRequestSchema,
   type DesktopControlOpenPermissionSettingsRequestDto,
+  type DesktopControlStatusRequestDto,
   type DesktopControlStatusDto,
   type UpsertDesktopControlSettingsRequestDto,
 } from '@/src/lib/xero-model/desktop-control'
@@ -1443,7 +1445,9 @@ export interface XeroDesktopAdapter {
   browserControlUpdateSettings?(
     request: UpsertBrowserControlSettingsRequestDto,
   ): Promise<BrowserControlSettingsDto>
-  desktopControlStatus?(): Promise<DesktopControlStatusDto>
+  desktopControlStatus?(
+    request?: DesktopControlStatusRequestDto,
+  ): Promise<DesktopControlStatusDto>
   desktopControlUpdateSettings?(
     request: UpsertDesktopControlSettingsRequestDto,
   ): Promise<DesktopControlStatusDto>
@@ -3677,8 +3681,14 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     })
   },
 
-  desktopControlStatus() {
-    return invokeTyped(COMMANDS.desktopControlStatus, desktopControlStatusSchema)
+  desktopControlStatus(request = {}) {
+    const parsedRequest = {
+      refreshPermissionStatus: false,
+      ...desktopControlStatusRequestSchema.parse(request),
+    }
+    return invokeTyped(COMMANDS.desktopControlStatus, desktopControlStatusSchema, {
+      request: parsedRequest,
+    })
   },
 
   desktopControlUpdateSettings(request) {

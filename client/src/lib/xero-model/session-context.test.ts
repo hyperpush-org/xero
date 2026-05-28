@@ -414,14 +414,17 @@ describe('session context contract', () => {
       getSessionMemoryReviewQueueRequestSchema.parse({
         projectId,
         agentSessionId,
+        offset: 25,
         limit: 25,
-      }).limit,
-    ).toBe(25)
+      }),
+    ).toMatchObject({ offset: 25, limit: 25 })
     const reviewQueue = getSessionMemoryReviewQueueResponseSchema.parse({
       schema: 'xero.agent_memory_review_queue.v1',
       projectId,
       agentSessionId,
+      offset: 0,
       limit: 25,
+      total: 2,
       counts: {
         candidate: 1,
         approved: 1,
@@ -480,6 +483,8 @@ describe('session context contract', () => {
         delete: 'Delete memory',
         edit: 'Create a corrected memory',
       },
+      hasMore: true,
+      nextOffset: 1,
       uiDeferred: true,
     })
     expect(reviewQueue.items[0].redaction.rawTextHidden).toBe(true)
@@ -545,6 +550,21 @@ describe('session context contract', () => {
     expect(() =>
       getSessionMemoryReviewQueueResponseSchema.parse({
         ...reviewQueue,
+        hasMore: false,
+        nextOffset: null,
+      }),
+    ).toThrow(/hasMore/)
+    expect(() =>
+      getSessionMemoryReviewQueueResponseSchema.parse({
+        ...reviewQueue,
+        nextOffset: 10,
+      }),
+    ).toThrow(/nextOffset/)
+    expect(() =>
+      getSessionMemoryReviewQueueResponseSchema.parse({
+        ...reviewQueue,
+        hasMore: false,
+        nextOffset: null,
         items: [reviewQueue.items[0], { ...reviewQueue.items[0] }],
       }),
     ).toThrow(/unique/)

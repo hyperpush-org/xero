@@ -846,6 +846,8 @@ pub struct GetSessionMemoryReviewQueueRequestDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
 }
 

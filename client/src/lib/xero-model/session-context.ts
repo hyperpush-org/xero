@@ -762,6 +762,7 @@ export const getSessionMemoryReviewQueueRequestSchema = z
   .object({
     projectId: z.string().trim().min(1),
     agentSessionId: nonEmptyOptionalTextSchema,
+    offset: z.number().int().nonnegative().nullable().optional(),
     limit: z.number().int().positive().max(100).nullable().optional(),
   })
   .strict()
@@ -897,7 +898,9 @@ export const getSessionMemoryReviewQueueResponseSchema = z
     schema: z.literal('xero.agent_memory_review_queue.v1'),
     projectId: z.string().trim().min(1),
     agentSessionId: nonEmptyOptionalTextSchema,
+    offset: z.number().int().nonnegative(),
     limit: z.number().int().positive().max(100),
+    total: z.number().int().nonnegative(),
     counts: z
       .object({
         candidate: z.number().int().nonnegative(),
@@ -917,6 +920,8 @@ export const getSessionMemoryReviewQueueResponseSchema = z
         edit: z.string().trim().min(1),
       })
       .strict(),
+    hasMore: z.boolean(),
+    nextOffset: z.number().int().nonnegative().nullable(),
     uiDeferred: z.literal(true),
   })
   .strict()
@@ -933,6 +938,37 @@ export const getSessionMemoryReviewQueueResponseSchema = z
         code: z.ZodIssueCode.custom,
         path: ['counts', 'retrievableApproved'],
         message: 'Retrievable approved memory count cannot exceed approved memory count.',
+      })
+    }
+    const reviewStateTotal = queue.counts.candidate + queue.counts.approved + queue.counts.rejected
+    if (reviewStateTotal !== queue.total) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['total'],
+        message: 'Memory review total must match review-state counts.',
+      })
+    }
+    if (queue.offset > queue.total) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['offset'],
+        message: 'Memory review offset cannot exceed total count.',
+      })
+    }
+    const expectedHasMore = queue.offset + queue.items.length < queue.total
+    if (queue.hasMore !== expectedHasMore) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['hasMore'],
+        message: 'Memory review pagination hasMore must match offset, item count, and total.',
+      })
+    }
+    const expectedNextOffset = expectedHasMore ? queue.offset + queue.items.length : null
+    if (queue.nextOffset !== expectedNextOffset) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['nextOffset'],
+        message: 'Memory review nextOffset must point to the next page start.',
       })
     }
     const memoryIds = new Set<string>()

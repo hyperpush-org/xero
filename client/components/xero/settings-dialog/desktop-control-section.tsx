@@ -60,7 +60,7 @@ export function DesktopControlSection({ adapter }: DesktopControlSectionProps) {
       setLoading(true)
       setError(null)
       try {
-        setStatus(await adapter.desktopControlStatus())
+        setStatus(await adapter.desktopControlStatus({ refreshPermissionStatus: true }))
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "Desktop-control status failed.")
       } finally {

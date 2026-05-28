@@ -172,9 +172,19 @@ pub fn discover_project_skill_directory(
     project_app_data_dir: impl AsRef<Path>,
 ) -> CommandResult<XeroSkillDirectoryDiscovery> {
     let project_id = normalize_required(project_id.into(), "projectId")?;
+    let project_app_data_dir = project_app_data_dir.as_ref().to_path_buf();
+    let skill_root = project_app_data_dir.join(PROJECT_SKILL_DIRECTORY);
+    if let Err(error) = fs::symlink_metadata(&skill_root) {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return Ok(XeroSkillDirectoryDiscovery {
+                candidates: Vec::new(),
+                diagnostics: Vec::new(),
+            });
+        }
+    }
     discover_skill_directory(SkillDiscoveryRoot::Project {
         project_id,
-        project_app_data_dir: project_app_data_dir.as_ref().to_path_buf(),
+        project_app_data_dir,
     })
 }
 

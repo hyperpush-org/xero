@@ -31,6 +31,12 @@ export const upsertDesktopControlSettingsRequestSchema = z
   })
   .strict()
 
+export const desktopControlStatusRequestSchema = z
+  .object({
+    refreshPermissionStatus: z.boolean().optional(),
+  })
+  .strict()
+
 const desktopPermissionSchema = z
   .object({
     name: z.string(),
@@ -166,6 +172,7 @@ export type DesktopControlSettingsDto = z.infer<typeof desktopControlSettingsSch
 export type UpsertDesktopControlSettingsRequestDto = z.infer<
   typeof upsertDesktopControlSettingsRequestSchema
 >
+export type DesktopControlStatusRequestDto = z.infer<typeof desktopControlStatusRequestSchema>
 export type DesktopControlOpenPermissionSettingsRequestDto = z.infer<
   typeof desktopControlOpenPermissionSettingsRequestSchema
 >
