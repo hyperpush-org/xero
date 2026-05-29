@@ -4,7 +4,6 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -27,7 +26,7 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Read Tauri version
         id: version
@@ -86,12 +85,12 @@ jobs:
             --draft
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 10.28.1
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
@@ -108,7 +107,7 @@ jobs:
         run: pnpm build
 
       - name: Upload frontend dist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: client-dist
           path: client/dist
@@ -124,7 +123,7 @@ jobs:
       cancel-in-progress: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up flyctl
         uses: superfly/flyctl-actions/setup-flyctl@master
@@ -148,7 +147,7 @@ jobs:
         working-directory: cloud
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up flyctl
         uses: superfly/flyctl-actions/setup-flyctl@master
@@ -191,13 +190,13 @@ jobs:
           - platform: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             artifact_suffix: linux-x86_64
-          - platform: windows-latest
+          - platform: windows-2025-vs2026
             target: x86_64-pc-windows-msvc
             artifact_suffix: windows-x86_64
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Linux Tauri dependencies
         if: matrix.artifact_suffix == 'linux-x86_64'
@@ -212,12 +211,16 @@ jobs:
             libssl-dev \
             pkg-config \
             librsvg2-dev \
+            protobuf-compiler \
             patchelf
 
-      - name: Set up protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ github.token }}
+      - name: Set up protoc (macOS)
+        if: matrix.artifact_suffix == 'macos-aarch64'
+        run: brew install protobuf
+
+      - name: Set up protoc (Windows)
+        if: matrix.artifact_suffix == 'windows-x86_64'
+        run: choco install protoc --no-progress -y
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -312,7 +315,7 @@ jobs:
           gh release upload $env:TAG @files --repo $env:RELEASE_REPO --clobber
 
       - name: Upload TUI assets for landing deploy
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tui-release-${{ matrix.artifact_suffix }}
           path: ${{ runner.temp }}/tui-dist/*
@@ -331,10 +334,10 @@ jobs:
       cancel-in-progress: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download TUI assets for Fly hosting
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: tui-release-*
           merge-multiple: true
@@ -406,7 +409,7 @@ jobs:
             args: --target aarch64-apple-darwin --config src-tauri/tauri.macos.conf.json -- --bin xero-desktop
             artifact_suffix: macos-aarch64
             platform_key: darwin-aarch64
-          - platform: windows-latest
+          - platform: windows-2025-vs2026
             args: --bundles nsis -- --bin xero-desktop
             artifact_suffix: windows-x86_64
             platform_key: windows-x86_64
@@ -417,21 +420,21 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download frontend dist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: client-dist
           path: client/dist
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 10.28.1
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
@@ -450,12 +453,16 @@ jobs:
             libssl-dev \
             pkg-config \
             librsvg2-dev \
+            protobuf-compiler \
             patchelf
 
-      - name: Set up protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ github.token }}
+      - name: Set up protoc (macOS)
+        if: contains(matrix.platform_key, 'darwin')
+        run: brew install protobuf
+
+      - name: Set up protoc (Windows)
+        if: matrix.platform_key == 'windows-x86_64'
+        run: choco install protoc --no-progress -y
 
       - name: Set up Rust (macOS)
         if: contains(matrix.platform_key, 'darwin')
@@ -591,7 +598,7 @@ jobs:
 
       - name: Azure Login (OIDC)
         if: matrix.platform_key == 'windows-x86_64' && steps.windows_signing_config.outputs.enabled == 'true'
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -773,7 +780,7 @@ jobs:
 
       - name: Upload latest.json fragment
         if: matrix.platform_key != 'windows-x86_64'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: latest-json-${{ matrix.artifact_suffix }}
           path: /tmp/latest-json/latest.json
@@ -781,7 +788,7 @@ jobs:
 
       - name: Upload latest.json fragment (Windows)
         if: matrix.platform_key == 'windows-x86_64'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: latest-json-${{ matrix.artifact_suffix }}
           path: ${{ runner.temp }}\latest-json\latest.json
@@ -798,7 +805,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download latest.json fragments
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: latest-json-*
           merge-multiple: false

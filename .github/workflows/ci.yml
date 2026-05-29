@@ -20,15 +20,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 10.28.1
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
@@ -55,15 +55,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 10.28.1
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
@@ -103,7 +103,7 @@ jobs:
         working-directory: server
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Erlang and Elixir
         uses: erlef/setup-beam@v1
@@ -112,7 +112,7 @@ jobs:
           elixir-version: 1.15.7
 
       - name: Cache Mix
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             server/deps
@@ -136,7 +136,7 @@ jobs:
       TAURI_CONFIG: '{"bundle":{"resources":[]}}'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Linux Tauri dependencies
         run: |
@@ -150,12 +150,8 @@ jobs:
             libssl-dev \
             pkg-config \
             librsvg2-dev \
+            protobuf-compiler \
             patchelf
-
-      - name: Set up protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ github.token }}
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -179,17 +175,15 @@ jobs:
 
   windows-dictation-check:
     name: Windows Dictation Rust Check
-    runs-on: windows-latest
+    runs-on: windows-2025-vs2026
     env:
       TAURI_CONFIG: '{"bundle":{"resources":[]}}'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ github.token }}
+        run: choco install protoc --no-progress -y
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -220,10 +214,10 @@ jobs:
           - name: macos
             os: macos-15
           - name: windows
-            os: windows-latest
+            os: windows-2025-vs2026
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Linux sidecar dependencies
         if: matrix.name == 'linux'
@@ -238,12 +232,16 @@ jobs:
             libxcb-randr0-dev \
             libxcb-shape0-dev \
             libxcb-xfixes0-dev \
+            protobuf-compiler \
             pkg-config
 
-      - name: Set up protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ github.token }}
+      - name: Set up protoc (macOS)
+        if: matrix.name == 'macos'
+        run: brew install protobuf
+
+      - name: Set up protoc (Windows)
+        if: matrix.name == 'windows'
+        run: choco install protoc --no-progress -y
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
