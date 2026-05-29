@@ -1,9 +1,7 @@
 import { NextResponse } from "next/server"
 import {
   detectDownloadTarget,
-  detectUnsupportedDownloadTarget,
   resolveDownloadUrl,
-  unsupportedDownloadUrls,
 } from "@/lib/download-targets"
 
 export const revalidate = 300
@@ -16,11 +14,5 @@ function redirectTo(request: Request, url: string) {
 }
 
 export async function GET(request: Request) {
-  const unsupportedTarget = detectUnsupportedDownloadTarget(request.headers)
-
-  if (unsupportedTarget) {
-    return redirectTo(request, unsupportedDownloadUrls[unsupportedTarget])
-  }
-
   return redirectTo(request, await resolveDownloadUrl(detectDownloadTarget(request.headers)))
 }

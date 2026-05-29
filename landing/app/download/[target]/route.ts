@@ -1,10 +1,8 @@
 import { NextResponse } from "next/server"
 import {
   isDownloadTarget,
-  isUnsupportedDownloadTarget,
   releasePageUrl,
   resolveDownloadUrl,
-  unsupportedDownloadUrls,
 } from "@/lib/download-targets"
 
 export const revalidate = 300
@@ -24,10 +22,6 @@ export async function GET(
 
   if (target === "release") {
     return redirectTo(request, releasePageUrl)
-  }
-
-  if (isUnsupportedDownloadTarget(target)) {
-    return redirectTo(request, unsupportedDownloadUrls[target])
   }
 
   if (!isDownloadTarget(target)) {
