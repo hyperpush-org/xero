@@ -202,6 +202,9 @@ jobs:
           - platform: macos-15
             target: aarch64-apple-darwin
             artifact_suffix: macos-aarch64
+          - platform: macos-15-intel
+            target: x86_64-apple-darwin
+            artifact_suffix: macos-x86_64
           - platform: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             artifact_suffix: linux-x86_64
@@ -230,7 +233,7 @@ jobs:
             patchelf
 
       - name: Set up protoc (macOS)
-        if: matrix.artifact_suffix == 'macos-aarch64'
+        if: contains(matrix.target, 'apple-darwin')
         run: brew install protobuf
 
       - name: Set up protoc (Windows)
@@ -427,9 +430,15 @@ jobs:
       matrix:
         include:
           - platform: macos-15
+            target: aarch64-apple-darwin
             args: --target aarch64-apple-darwin --config src-tauri/tauri.macos.conf.json -- --bin xero-desktop
             artifact_suffix: macos-aarch64
             platform_key: darwin-aarch64
+          - platform: macos-15-intel
+            target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin --config src-tauri/tauri.macos.conf.json -- --bin xero-desktop
+            artifact_suffix: macos-x86_64
+            platform_key: darwin-x86_64
           - platform: windows-2025-vs2026
             args: --bundles nsis -- --bin xero-desktop
             artifact_suffix: windows-x86_64
@@ -489,7 +498,7 @@ jobs:
         if: contains(matrix.platform_key, 'darwin')
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin
+          targets: ${{ matrix.target }}
 
       - name: Set up Rust
         if: ${{ !contains(matrix.platform_key, 'darwin') }}
@@ -523,8 +532,8 @@ jobs:
         run: |
           set -euo pipefail
           case "${{ matrix.platform_key }}" in
-            darwin-aarch64)
-              cargo build --release --package xero-desktop-sidecar --target aarch64-apple-darwin
+            darwin-*)
+              cargo build --release --package xero-desktop-sidecar --target ${{ matrix.target }}
               ;;
             *)
               cargo build --release --package xero-desktop-sidecar
