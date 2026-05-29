@@ -147,6 +147,7 @@ jobs:
             libegl-dev \
             libgbm-dev \
             libpipewire-0.3-dev \
+            libprotobuf-dev \
             libssl-dev \
             pkg-config \
             librsvg2-dev \
@@ -224,6 +225,7 @@ jobs:
             libxcb-randr0-dev \
             libxcb-shape0-dev \
             libxcb-xfixes0-dev \
+            libprotobuf-dev \
             protobuf-compiler \
             pkg-config
 
