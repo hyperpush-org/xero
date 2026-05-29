@@ -1251,6 +1251,18 @@ export function useXeroDesktopState(
     repositoryDiffsRef.current = repositoryDiffs
   }, [repositoryDiffs])
 
+  const updateRepositoryDiffs = useCallback(
+    (action: SetStateAction<Record<RepositoryDiffScope, RepositoryDiffState>>) => {
+      setRepositoryDiffs((currentDiffs) => {
+        const nextDiffs =
+          typeof action === 'function' ? action(currentDiffs) : action
+        repositoryDiffsRef.current = nextDiffs
+        return nextDiffs
+      })
+    },
+    [],
+  )
+
   useEffect(() => {
     runtimeSessionsRef.current = runtimeSessions
   }, [runtimeSessions])
@@ -1444,9 +1456,9 @@ export function useXeroDesktopState(
     }
 
     repositoryDiffRevisionRef.current = nextRevision
-    setRepositoryDiffs(createInitialRepositoryDiffs())
+    updateRepositoryDiffs(createInitialRepositoryDiffs())
     setActiveDiffScope(getDefaultDiffScope(status))
-  }, [])
+  }, [updateRepositoryDiffs])
 
   const handleAdapterEventError = useCallback((error: XeroDesktopError) => {
     setErrorMessage(getDesktopErrorMessage(error))
@@ -2642,7 +2654,7 @@ export function useXeroDesktopState(
       const requestId = latestDiffRequestRef.current[scope] + 1
       latestDiffRequestRef.current[scope] = requestId
 
-      setRepositoryDiffs((currentDiffs) => ({
+      updateRepositoryDiffs((currentDiffs) => ({
         ...currentDiffs,
         [scope]: {
           ...currentDiffs[scope],
@@ -2659,7 +2671,7 @@ export function useXeroDesktopState(
         }
 
         const nextDiff = mapRepositoryDiff(response)
-        setRepositoryDiffs((currentDiffs) => ({
+        updateRepositoryDiffs((currentDiffs) => ({
           ...currentDiffs,
           [scope]: {
             status: 'ready',
@@ -2674,7 +2686,7 @@ export function useXeroDesktopState(
         }
 
         const nextMessage = getDesktopErrorMessage(error)
-        setRepositoryDiffs((currentDiffs) => ({
+        updateRepositoryDiffs((currentDiffs) => ({
           ...currentDiffs,
           [scope]: {
             ...currentDiffs[scope],
@@ -2685,7 +2697,7 @@ export function useXeroDesktopState(
         }))
       }
     },
-    [adapter],
+    [adapter, updateRepositoryDiffs],
   )
 
   const selectProject = useCallback(
