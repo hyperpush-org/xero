@@ -3,16 +3,12 @@ const releaseApiUrl = "https://api.github.com/repos/hyperpush-org/xero/releases/
 
 const assetPatterns = {
   "macos-apple-silicon": /^Xero_.*_aarch64_macos-aarch64\.dmg$/,
+  "macos-intel": /^Xero_.*_(?:x64|x86_64)_macos-x86_64\.dmg$/,
   windows: /^Xero_.*_x64-setup\.exe$/,
   linux: /^Xero_.*_amd64\.AppImage$/,
 } as const
 
 export type DownloadTarget = keyof typeof assetPatterns
-export type UnsupportedDownloadTarget = "macos-intel"
-
-export const unsupportedDownloadUrls = {
-  "macos-intel": "/download/unsupported/macos-intel",
-} as const satisfies Record<UnsupportedDownloadTarget, string>
 
 type GitHubRelease = {
   html_url?: string
@@ -46,24 +42,14 @@ export function isDownloadTarget(target: string): target is DownloadTarget {
   return target in assetPatterns
 }
 
-export function isUnsupportedDownloadTarget(target: string): target is UnsupportedDownloadTarget {
-  return target in unsupportedDownloadUrls
-}
-
-export function detectUnsupportedDownloadTarget(headers: Headers): UnsupportedDownloadTarget | null {
+export function detectDownloadTarget(headers: Headers): DownloadTarget | null {
   const { platform, architecture, userAgent } = getRequestPlatform(headers)
 
-  if (isMacRequest(platform, userAgent) && isIntelArchitecture(architecture)) {
-    return "macos-intel"
-  }
-
-  return null
-}
-
-export function detectDownloadTarget(headers: Headers): DownloadTarget | null {
-  const { platform, userAgent } = getRequestPlatform(headers)
-
   if (isMacRequest(platform, userAgent)) {
+    if (isIntelArchitecture(architecture)) {
+      return "macos-intel"
+    }
+
     return "macos-apple-silicon"
   }
 

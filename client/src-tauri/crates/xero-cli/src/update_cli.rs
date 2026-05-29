@@ -847,10 +847,7 @@ fn platform_key() -> Result<&'static str, CliError> {
     }
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     {
-        return Err(CliError::user_fixable(
-            "xero_macos_intel_unsupported",
-            "Xero no longer publishes macOS Intel builds. Use an Apple silicon Mac, Windows, or Linux build.",
-        ));
+        return Ok("x86_64-apple-darwin");
     }
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
@@ -971,16 +968,28 @@ mod tests {
             version: version.into(),
             notes: Some("notes".into()),
             pub_date: Some("2026-05-23T00:00:00Z".into()),
-            assets: BTreeMap::from([(
-                "x86_64-unknown-linux-gnu".into(),
-                UpdateAsset {
-                    url: "xero-x86_64-unknown-linux-gnu.tar.gz".into(),
-                    sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-                        .into(),
-                    binary: Some("xero".into()),
-                    archive: None,
-                },
-            )]),
+            assets: BTreeMap::from([
+                (
+                    "x86_64-unknown-linux-gnu".into(),
+                    UpdateAsset {
+                        url: "xero-x86_64-unknown-linux-gnu.tar.gz".into(),
+                        sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                            .into(),
+                        binary: Some("xero".into()),
+                        archive: None,
+                    },
+                ),
+                (
+                    "x86_64-apple-darwin".into(),
+                    UpdateAsset {
+                        url: "xero-x86_64-apple-darwin.tar.gz".into(),
+                        sha256: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+                            .into(),
+                        binary: Some("xero".into()),
+                        archive: None,
+                    },
+                ),
+            ]),
         }
     }
 
@@ -1014,6 +1023,24 @@ mod tests {
         assert_eq!(
             asset.url,
             "https://xeroshell.com/downloads/tui/latest/xero-x86_64-unknown-linux-gnu.tar.gz"
+        );
+        assert_eq!(asset.binary, "xero");
+    }
+
+    #[test]
+    fn manifest_check_resolves_macos_intel_asset_url() {
+        let check = check_from_manifest(
+            &manifest("99.0.0"),
+            "https://xeroshell.com/downloads/tui/latest/manifest.json",
+            "x86_64-apple-darwin",
+        )
+        .expect("check manifest");
+        let asset = check.asset.expect("asset");
+
+        assert!(check.update_available);
+        assert_eq!(
+            asset.url,
+            "https://xeroshell.com/downloads/tui/latest/xero-x86_64-apple-darwin.tar.gz"
         );
         assert_eq!(asset.binary, "xero");
     }
