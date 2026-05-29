@@ -14,8 +14,10 @@ function usage() {
   console.log(`Usage: pnpm release:push <version> [--dry-run] [--remote <name>]
 
 Pushes the current branch and a v<version> tag to GitHub. The tag push
-triggers the Release workflow, so <version> must match
-client/src-tauri/tauri.conf.json.
+triggers the Release workflow. The tag builds the desktop client when
+<version> matches client/src-tauri/tauri.conf.json, and builds the TUI when
+<version> matches client/src-tauri/crates/xero-cli/Cargo.toml. At least one
+artifact version must match.
 
 Examples:
   pnpm release:push 0.1.1
@@ -92,21 +94,29 @@ function ensureSemver(version) {
   }
 }
 
-function ensureReleaseVersion(version) {
+function readCargoPackageVersion(path) {
+  const cargoToml = readFileSync(path, 'utf8')
+  return cargoToml.match(/^\[package\][\s\S]*?^version\s*=\s*"([^"]+)"/m)?.[1] ?? null
+}
+
+function resolveReleaseTargets(version) {
   const config = JSON.parse(readFileSync(tauriConfigPath, 'utf8'))
-  if (config.version !== version) {
+  const tauriVersion = config.version
+  const tuiVersion = readCargoPackageVersion(xeroCliCargoPath)
+  const buildTauri = tauriVersion === version
+  const buildTui = tuiVersion === version
+
+  if (!buildTauri && !buildTui) {
     fail(
-      `Version mismatch: client/src-tauri/tauri.conf.json is ${config.version}, but command requested ${version}`,
+      [
+        `No release artifact version matches ${version}.`,
+        `client/src-tauri/tauri.conf.json is ${tauriVersion ?? 'missing'}.`,
+        `client/src-tauri/crates/xero-cli/Cargo.toml is ${tuiVersion ?? 'missing'}.`,
+      ].join('\n'),
     )
   }
 
-  const cargoToml = readFileSync(xeroCliCargoPath, 'utf8')
-  const packageVersion = cargoToml.match(/^\[package\][\s\S]*?^version\s*=\s*"([^"]+)"/m)?.[1]
-  if (packageVersion !== version) {
-    fail(
-      `Version mismatch: client/src-tauri/crates/xero-cli/Cargo.toml is ${packageVersion ?? 'missing'}, but command requested ${version}`,
-    )
-  }
+  return { buildTauri, buildTui, tauriVersion, tuiVersion }
 }
 
 function ensureCleanWorktree(dryRun) {
@@ -163,11 +173,20 @@ const { version, remote, dryRun } = parseArgs(process.argv.slice(2))
 const tag = `v${version}`
 
 ensureSemver(version)
-ensureReleaseVersion(version)
+const releaseTargets = resolveReleaseTargets(version)
 ensureCleanWorktree(dryRun)
 const branch = ensureBranch()
 ensureRemote(remote)
 ensureTagAvailable(remote, tag)
+
+console.log(
+  `[release:push] ${tag} will build: ${[
+    releaseTargets.buildTauri ? 'desktop client' : null,
+    releaseTargets.buildTui ? 'TUI' : null,
+  ]
+    .filter(Boolean)
+    .join(', ')}`,
+)
 
 maybeRunGit(dryRun, ['push', remote, `HEAD:${branch}`])
 maybeRunGit(dryRun, ['tag', '-a', tag, '-m', `Xero ${version}`])

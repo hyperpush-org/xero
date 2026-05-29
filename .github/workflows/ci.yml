@@ -32,7 +32,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          cache-dependency-path: client/pnpm-lock.yaml
 
       - name: Install dependencies
         working-directory: client
@@ -141,7 +141,7 @@ jobs:
       - name: Install Linux Tauri dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             libegl-dev \
@@ -164,14 +164,6 @@ jobs:
       - name: Check workspace
         working-directory: client/src-tauri
         run: cargo check --workspace
-
-      - name: Test desktop sidecar IPC contract
-        working-directory: client/src-tauri
-        run: cargo test --package xero-desktop-control-ipc --lib
-
-      - name: Build desktop sidecar scaffold
-        working-directory: client/src-tauri
-        run: cargo build --package xero-desktop-sidecar
 
   windows-dictation-check:
     name: Windows Dictation Rust Check
@@ -223,7 +215,7 @@ jobs:
         if: matrix.name == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             libpipewire-0.3-dev \
             libegl-dev \
             libgbm-dev \

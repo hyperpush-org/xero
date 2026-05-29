@@ -13,8 +13,76 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  detect-changes:
+    name: Detect deploy changes
+    runs-on: ubuntu-latest
+    outputs:
+      landing: ${{ steps.changes.outputs.landing }}
+      cloud: ${{ steps.changes.outputs.cloud }}
+      server: ${{ steps.changes.outputs.server }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect affected deploys
+        id: changes
+        run: |
+          set -euo pipefail
+
+          BASE="${{ github.event.before }}"
+          HEAD="$GITHUB_SHA"
+          LANDING=false
+          CLOUD=false
+          SERVER=false
+
+          if [ -z "$BASE" ] || [[ "$BASE" =~ ^0+$ ]] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "::notice::Could not determine a reliable deploy diff base; deploying all apps."
+            LANDING=true
+            CLOUD=true
+            SERVER=true
+          else
+            changed_files="$(git diff --name-only "$BASE" "$HEAD")"
+            echo "$changed_files"
+
+            affects() {
+              printf '%s\n' "$changed_files" | grep -Eq "$1"
+            }
+
+            if affects '^\.github/workflows/landing-deploy\.yml$'; then
+              LANDING=true
+              CLOUD=true
+              SERVER=true
+            else
+              if affects '^landing/'; then
+                LANDING=true
+              fi
+              if affects '^(cloud/|packages/ui/|pnpm-workspace\.yaml$|pnpm-lock\.yaml$|package\.json$)'; then
+                CLOUD=true
+              fi
+              if affects '^server/'; then
+                SERVER=true
+              fi
+            fi
+          fi
+
+          echo "landing=$LANDING" >> "$GITHUB_OUTPUT"
+          echo "cloud=$CLOUD" >> "$GITHUB_OUTPUT"
+          echo "server=$SERVER" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Deploy plan"
+            echo ""
+            echo "- Landing: $LANDING"
+            echo "- Cloud: $CLOUD"
+            echo "- Server: $SERVER"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   landing:
     name: Deploy landing to Fly.io
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.landing == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
@@ -106,6 +174,8 @@ jobs:
 
   cloud:
     name: Deploy cloud to Fly.io
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.cloud == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
@@ -146,6 +216,8 @@ jobs:
 
   server:
     name: Deploy server to Fly.io
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.server == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:

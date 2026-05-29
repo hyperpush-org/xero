@@ -18,42 +18,35 @@ env:
   SERVER_URL: https://api.xeroshell.com
 
 jobs:
-  create-release:
-    name: Create Release
+  prepare-release:
+    name: Prepare Release
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.version.outputs.version }}
-      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      tauri_version: ${{ steps.plan.outputs.tauri_version }}
+      tui_version: ${{ steps.plan.outputs.tui_version }}
+      build_tauri: ${{ steps.plan.outputs.build_tauri }}
+      build_tui: ${{ steps.plan.outputs.build_tui }}
+      should_release: ${{ steps.plan.outputs.should_release }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Read Tauri version
-        id: version
+      - name: Plan release artifacts
+        id: plan
         run: |
-          VERSION=$(jq -r '.version' client/src-tauri/tauri.conf.json)
-          TAG="v$VERSION"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ "${GITHUB_REF_NAME:-}" != "$TAG" ]; then
-            echo "::error::Tag ${GITHUB_REF_NAME} does not match client/src-tauri/tauri.conf.json version $VERSION"
+          set -euo pipefail
+
+          TAG="${GITHUB_REF_NAME:-}"
+          if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release tags must look like v1.2.3, got ${TAG:-<empty>}."
             exit 1
           fi
 
-      - name: Validate updater signing secret
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        run: |
-          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            echo "::error::Missing TAURI_SIGNING_PRIVATE_KEY. Set it to the contents of the Xero updater private key."
-            exit 1
-          fi
-
-      - name: Validate TUI version
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          CLI_VERSION=$(awk '
+          VERSION="${TAG#v}"
+          TAURI_VERSION=$(jq -r '.version' client/src-tauri/tauri.conf.json)
+          TUI_VERSION=$(awk '
             /^\[package\]$/ { in_package = 1; next }
             /^\[/ && in_package { exit }
             in_package && /^version = / {
@@ -62,16 +55,64 @@ jobs:
               exit
             }
           ' client/src-tauri/crates/xero-cli/Cargo.toml)
-          if [ "$CLI_VERSION" != "$VERSION" ]; then
-            echo "::error::client/src-tauri/crates/xero-cli/Cargo.toml version $CLI_VERSION does not match release version $VERSION"
+
+          if [ -z "$TAURI_VERSION" ] || [ "$TAURI_VERSION" = "null" ]; then
+            echo "::error::Could not read client/src-tauri/tauri.conf.json version."
             exit 1
           fi
 
+          if [ -z "$TUI_VERSION" ]; then
+            echo "::error::Could not read client/src-tauri/crates/xero-cli/Cargo.toml package version."
+            exit 1
+          fi
+
+          BUILD_TAURI=false
+          BUILD_TUI=false
+          SHOULD_RELEASE=false
+
+          if [ "$TAURI_VERSION" = "$VERSION" ]; then
+            BUILD_TAURI=true
+            SHOULD_RELEASE=true
+          fi
+
+          if [ "$TUI_VERSION" = "$VERSION" ]; then
+            BUILD_TUI=true
+            SHOULD_RELEASE=true
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "tauri_version=$TAURI_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tui_version=$TUI_VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_tauri=$BUILD_TAURI" >> "$GITHUB_OUTPUT"
+          echo "build_tui=$BUILD_TUI" >> "$GITHUB_OUTPUT"
+          echo "should_release=$SHOULD_RELEASE" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Release plan"
+            echo ""
+            echo "- Tag: $TAG"
+            echo "- Desktop client version: $TAURI_VERSION"
+            echo "- TUI version: $TUI_VERSION"
+            echo "- Build Tauri: $BUILD_TAURI"
+            echo "- Build TUI: $BUILD_TUI"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$SHOULD_RELEASE" != "true" ]; then
+            echo "::notice::No Tauri or TUI version matches $TAG. Skipping artifact release work."
+          fi
+
+  create-release:
+    name: Create Release
+    needs: prepare-release
+    if: ${{ needs.prepare-release.outputs.should_release == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
       - name: Create draft GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
           if gh release view "$TAG" --repo "$RELEASE_REPO" > /dev/null 2>&1; then
             gh release delete "$TAG" --repo "$RELEASE_REPO" --yes
@@ -84,6 +125,39 @@ jobs:
             --notes "See assets to download and install Xero." \
             --draft
 
+  validate-tauri-signing:
+    name: Validate Tauri Signing
+    needs: prepare-release
+    if: ${{ needs.prepare-release.outputs.build_tauri == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate signing secrets
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          for name in TAURI_SIGNING_PRIVATE_KEY APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing $name for signed Tauri release builds."
+              exit 1
+            fi
+          done
+
+  build-client:
+    name: Build Client
+    needs: prepare-release
+    if: ${{ needs.prepare-release.outputs.build_tauri == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
       - name: Set up pnpm
         uses: pnpm/action-setup@v6
         with:
@@ -94,7 +168,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          cache-dependency-path: client/pnpm-lock.yaml
 
       - name: Install frontend dependencies
         working-directory: client
@@ -113,71 +187,12 @@ jobs:
           path: client/dist
           retention-days: 1
 
-  deploy-server:
-    name: Deploy Server
-    needs: create-release
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    concurrency:
-      group: fly-deploy-xero-server
-      cancel-in-progress: true
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up flyctl
-        uses: superfly/flyctl-actions/setup-flyctl@master
-
-      - name: Deploy server to Fly.io
-        working-directory: server
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_SERVER_TOKEN || secrets.FLY_API_TOKEN }}
-        run: flyctl deploy --remote-only
-
-  deploy-cloud:
-    name: Deploy Cloud
-    needs: create-release
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    concurrency:
-      group: fly-deploy-xero-cloud
-      cancel-in-progress: true
-    defaults:
-      run:
-        working-directory: cloud
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up flyctl
-        uses: superfly/flyctl-actions/setup-flyctl@master
-
-      - name: Ensure cloud app and domain
-        working-directory: .
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_CLOUD_TOKEN || secrets.FLY_API_TOKEN }}
-          FLY_ORG: ${{ vars.FLY_CLOUD_ORG || vars.FLY_ORG }}
-        run: |
-          set -euo pipefail
-          if ! flyctl status --app xero-cloud > /dev/null 2>&1; then
-            create_args=(xero-cloud)
-            if [ -n "${FLY_ORG:-}" ]; then
-              create_args+=(--org "$FLY_ORG")
-            fi
-            flyctl apps create "${create_args[@]}"
-          fi
-          flyctl certs show cloud.xeroshell.com --app xero-cloud > /dev/null 2>&1 \
-            || flyctl certs create cloud.xeroshell.com --app xero-cloud
-
-      - name: Deploy cloud to Fly.io
-        working-directory: .
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_CLOUD_TOKEN || secrets.FLY_API_TOKEN }}
-        run: flyctl deploy . --remote-only --config cloud/fly.toml --app xero-cloud
-
   build-tui:
     name: Build TUI (${{ matrix.artifact_suffix }})
-    needs: create-release
+    needs:
+      - prepare-release
+      - create-release
+    if: ${{ needs.prepare-release.outputs.build_tui == 'true' }}
     permissions:
       contents: write
     strategy:
@@ -202,7 +217,7 @@ jobs:
         if: matrix.artifact_suffix == 'linux-x86_64'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             libegl-dev \
@@ -299,7 +314,7 @@ jobs:
         if: matrix.artifact_suffix != 'windows-x86_64'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.create-release.outputs.tag }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
         shell: bash
         run: gh release upload "$TAG" "$RUNNER_TEMP"/tui-dist/* --repo "$RELEASE_REPO" --clobber
 
@@ -307,7 +322,7 @@ jobs:
         if: matrix.artifact_suffix == 'windows-x86_64'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.create-release.outputs.tag }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
         shell: pwsh
         run: |
           $files = Get-ChildItem -Path (Join-Path $env:RUNNER_TEMP "tui-dist") -File |
@@ -325,8 +340,9 @@ jobs:
   deploy-landing:
     name: Deploy Landing
     needs:
-      - create-release
+      - prepare-release
       - build-tui
+    if: ${{ needs.prepare-release.outputs.build_tui == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
@@ -345,7 +361,7 @@ jobs:
 
       - name: Write TUI update manifest
         env:
-          VERSION: ${{ needs.create-release.outputs.version }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
           set -euo pipefail
 
@@ -397,7 +413,12 @@ jobs:
 
   build-tauri:
     name: Build Tauri (${{ matrix.artifact_suffix }})
-    needs: create-release
+    needs:
+      - prepare-release
+      - create-release
+      - validate-tauri-signing
+      - build-client
+    if: ${{ needs.prepare-release.outputs.build_tauri == 'true' }}
     permissions:
       contents: write
       id-token: write
@@ -438,13 +459,13 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          cache-dependency-path: client/pnpm-lock.yaml
 
       - name: Install Linux Tauri dependencies
         if: matrix.platform_key == 'linux-x86_64'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             libegl-dev \
@@ -495,22 +516,6 @@ jobs:
           config.build.beforeBuildCommand = ''
           fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`)
           NODE
-
-      - name: Validate Apple signing secrets
-        if: contains(matrix.platform_key, 'darwin')
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
-            if [ -z "${!name}" ]; then
-              echo "::error::Missing $name for macOS signing/notarization."
-              exit 1
-            fi
-          done
 
       - name: Build desktop sidecar
         working-directory: client/src-tauri
@@ -669,8 +674,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.create-release.outputs.version }}
-          TAG: ${{ needs.create-release.outputs.tag }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
           ARTIFACT_SUFFIX: ${{ matrix.artifact_suffix }}
           PLATFORM_KEY: ${{ matrix.platform_key }}
         run: |
@@ -713,8 +718,8 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.create-release.outputs.version }}
-          TAG: ${{ needs.create-release.outputs.tag }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
           PLATFORM_KEY: ${{ matrix.platform_key }}
           RUNNER_TEMP: ${{ runner.temp }}
         run: |
@@ -752,8 +757,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.create-release.outputs.version }}
-          TAG: ${{ needs.create-release.outputs.tag }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
           PLATFORM_KEY: ${{ matrix.platform_key }}
         run: |
           set -euo pipefail
@@ -797,22 +802,25 @@ jobs:
   finalize-release:
     name: Finalize Release
     needs:
+      - prepare-release
       - create-release
-      - deploy-server
-      - deploy-cloud
+      - build-tui
       - deploy-landing
       - build-tauri
+    if: ${{ always() && needs.prepare-release.outputs.should_release == 'true' && needs.create-release.result == 'success' && (needs.prepare-release.outputs.build_tui != 'true' || (needs.build-tui.result == 'success' && needs.deploy-landing.result == 'success')) && (needs.prepare-release.outputs.build_tauri != 'true' || needs.build-tauri.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
       - name: Download latest.json fragments
+        if: ${{ needs.prepare-release.outputs.build_tauri == 'true' }}
         uses: actions/download-artifact@v7
         with:
           pattern: latest-json-*
           merge-multiple: false
 
       - name: Merge latest.json
+        if: ${{ needs.prepare-release.outputs.build_tauri == 'true' }}
         env:
-          VERSION: ${{ needs.create-release.outputs.version }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
           set -euo pipefail
 
@@ -844,9 +852,17 @@ jobs:
           jq . latest.json
 
       - name: Publish latest.json and release
+        if: ${{ needs.prepare-release.outputs.build_tauri == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.create-release.outputs.tag }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
         run: |
           gh release upload "$TAG" latest.json --repo "$RELEASE_REPO" --clobber
           gh release edit "$TAG" --repo "$RELEASE_REPO" --draft=false
+
+      - name: Publish release
+        if: ${{ needs.prepare-release.outputs.build_tauri != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+        run: gh release edit "$TAG" --repo "$RELEASE_REPO" --draft=false
