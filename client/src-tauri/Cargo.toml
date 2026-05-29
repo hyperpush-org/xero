@@ -12,7 +12,7 @@ resolver = "2"
 
 [package]
 name = "xero-desktop"
-version = "0.1.35"
+version = "0.1.36"
 edition = "2021"
 default-run = "xero-desktop"
 description = "Xero desktop host"

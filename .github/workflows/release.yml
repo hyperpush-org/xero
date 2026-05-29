@@ -460,16 +460,32 @@ jobs:
           path: client/dist
 
       - name: Set up pnpm
+        if: matrix.platform_key != 'windows-x86_64'
         uses: pnpm/action-setup@v6
         with:
           version: 10.28.1
 
       - name: Set up Node
+        if: matrix.platform_key != 'windows-x86_64'
         uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
           cache-dependency-path: client/pnpm-lock.yaml
+
+      - name: Set up Node (Windows)
+        if: matrix.platform_key == 'windows-x86_64'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Set up pnpm (Windows)
+        if: matrix.platform_key == 'windows-x86_64'
+        shell: pwsh
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.28.1 --activate
+          pnpm --version
 
       - name: Install Linux Tauri dependencies
         if: matrix.platform_key == 'linux-x86_64'
