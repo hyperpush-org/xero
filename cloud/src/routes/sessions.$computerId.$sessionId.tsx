@@ -1116,6 +1116,7 @@ const MANUAL_KEYBOARD_FALLBACK_MS = 24;
 const MANUAL_KEYBOARD_TEXT_CHUNK_CHARS = 512;
 const MANUAL_KEYBOARD_TEXT_MAX_CHARS = 8_000;
 const MANUAL_KEYBOARD_COMPOSITION_DUPLICATE_MS = 80;
+const MANUAL_POINTER_MOVE_INTERVAL_MS = 33;
 const DESKTOP_MOBILE_ZOOM_MIN = 1;
 const DESKTOP_MOBILE_ZOOM_MAX = 4;
 const DESKTOP_POINTER_TAP_SLOP_PX = 8;
@@ -3840,7 +3841,12 @@ export function ComputerUseDesktopViewport({
 			}
 			if (!manualActive || event.buttons === 0) return;
 			const now = Date.now();
-			if (now - lastPointerMoveAtRef.current < 80) return;
+			if (
+				now - lastPointerMoveAtRef.current <
+				MANUAL_POINTER_MOVE_INTERVAL_MS
+			) {
+				return;
+			}
 			lastPointerMoveAtRef.current = now;
 			const point = pointFromPointerEvent(event);
 			if (!point) return;

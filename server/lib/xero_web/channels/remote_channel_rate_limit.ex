@@ -5,7 +5,7 @@ defmodule XeroWeb.RemoteChannelRateLimit do
   @default_per_minute 60
   @computer_use_default_limits %{
     "manual_critical" => 600,
-    "manual_pointer" => 180,
+    "manual_pointer" => 1_800,
     "stream_signaling" => 300,
     "stream_status" => 120,
     "stream_keyframe" => 60,

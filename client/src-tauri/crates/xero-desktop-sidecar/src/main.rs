@@ -105,6 +105,96 @@ struct EncodedVideoSample {
     keyframe: bool,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum LatestFrameSendResult {
+    Stored,
+    Replaced,
+    Closed,
+}
+
+struct LatestFrameSlot<T> {
+    frame: Mutex<Option<T>>,
+    notify: tokio::sync::Notify,
+    closed: AtomicBool,
+}
+
+struct LatestFrameSender<T> {
+    slot: Arc<LatestFrameSlot<T>>,
+}
+
+struct LatestFrameReceiver<T> {
+    slot: Arc<LatestFrameSlot<T>>,
+}
+
+fn latest_frame_channel<T>() -> (LatestFrameSender<T>, LatestFrameReceiver<T>) {
+    let slot = Arc::new(LatestFrameSlot {
+        frame: Mutex::new(None),
+        notify: tokio::sync::Notify::new(),
+        closed: AtomicBool::new(false),
+    });
+    (
+        LatestFrameSender {
+            slot: Arc::clone(&slot),
+        },
+        LatestFrameReceiver { slot },
+    )
+}
+
+impl<T> LatestFrameSender<T> {
+    fn send_replace(&self, frame: T) -> LatestFrameSendResult {
+        if self.slot.closed.load(Ordering::Acquire) {
+            return LatestFrameSendResult::Closed;
+        }
+        let Ok(mut pending) = self.slot.frame.lock() else {
+            return LatestFrameSendResult::Closed;
+        };
+        if self.slot.closed.load(Ordering::Acquire) {
+            return LatestFrameSendResult::Closed;
+        }
+        let result = if pending.replace(frame).is_some() {
+            LatestFrameSendResult::Replaced
+        } else {
+            LatestFrameSendResult::Stored
+        };
+        drop(pending);
+        self.slot.notify.notify_one();
+        result
+    }
+}
+
+impl<T> Drop for LatestFrameSender<T> {
+    fn drop(&mut self) {
+        self.slot.closed.store(true, Ordering::Release);
+        self.slot.notify.notify_waiters();
+    }
+}
+
+impl<T> LatestFrameReceiver<T> {
+    async fn recv(&mut self) -> Option<T> {
+        loop {
+            let notified = self.slot.notify.notified();
+            let pending_frame = match self.slot.frame.lock() {
+                Ok(mut pending) => pending.take(),
+                Err(_) => return None,
+            };
+            if let Some(frame) = pending_frame {
+                return Some(frame);
+            }
+            if self.slot.closed.load(Ordering::Acquire) {
+                return None;
+            }
+            notified.await;
+        }
+    }
+}
+
+impl<T> Drop for LatestFrameReceiver<T> {
+    fn drop(&mut self) {
+        self.slot.closed.store(true, Ordering::Release);
+        self.slot.notify.notify_waiters();
+    }
+}
+
 fn main() {
     if let Err(error) = run() {
         let _ = writeln!(io::stderr(), "xero-desktop-sidecar: {error}");
@@ -1585,7 +1675,7 @@ struct MacosScreenFrame {
 #[cfg(target_os = "macos")]
 struct MacosCaptureLease {
     stream: screencapturekit::stream::SCStream,
-    receiver: tokio::sync::mpsc::Receiver<MacosScreenFrame>,
+    receiver: LatestFrameReceiver<MacosScreenFrame>,
     target: NativeVideoTarget,
     width: u32,
     height: u32,
@@ -1627,7 +1717,7 @@ impl MacosCaptureLease {
             .with_fps(target.fps)
             .with_shows_cursor(target.include_cursor)
             .with_scales_to_fit(true);
-        let (sender, receiver) = tokio::sync::mpsc::channel(3);
+        let (sender, receiver) = latest_frame_channel();
         let metrics_for_handler = Arc::clone(&metrics);
         let mut stream = SCStream::new(&filter, &config);
         stream.add_output_handler(
@@ -1660,10 +1750,13 @@ impl MacosCaptureLease {
                 metrics_for_handler
                     .capture_frames
                     .fetch_add(1, Ordering::Relaxed);
-                if sender.try_send(MacosScreenFrame { surface }).is_err() {
-                    metrics_for_handler
-                        .capture_dropped_frames
-                        .fetch_add(1, Ordering::Relaxed);
+                match sender.send_replace(MacosScreenFrame { surface }) {
+                    LatestFrameSendResult::Stored => {}
+                    LatestFrameSendResult::Replaced | LatestFrameSendResult::Closed => {
+                        metrics_for_handler
+                            .capture_dropped_frames
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             },
             SCStreamOutputType::Screen,
@@ -1741,7 +1834,6 @@ struct MacosVideoToolboxEncoder {
     width: u32,
     height: u32,
     fps: u32,
-    bitrate: i32,
     parameter_sets: Vec<Vec<u8>>,
     nal_length_size: usize,
 }
@@ -1779,14 +1871,13 @@ impl MacosVideoToolboxEncoder {
             width,
             height,
             fps,
-            bitrate,
             parameter_sets: Vec::new(),
             nal_length_size: 4,
         })
     }
 
-    fn matches(&self, width: u32, height: u32, fps: u32, bitrate: i32) -> bool {
-        self.width == width && self.height == height && self.fps == fps && self.bitrate == bitrate
+    fn matches_stream_shape(&self, width: u32, height: u32, fps: u32) -> bool {
+        self.width == width && self.height == height && self.fps == fps
     }
 
     fn encode(
@@ -1825,7 +1916,9 @@ impl MacosVideoToolboxEncoder {
                 }
             }
         }
-        let include_parameter_sets = force_keyframe || frame_index == 0;
+        let contains_idr = h264_sample_contains_idr(&encoded.data, self.nal_length_size)?;
+        let include_parameter_sets =
+            h264_should_include_parameter_sets(frame_index, force_keyframe, contains_idr);
         let (bytes, contains_idr) = h264_sample_to_annex_b(
             &encoded.data,
             self.nal_length_size,
@@ -1839,7 +1932,7 @@ impl MacosVideoToolboxEncoder {
             bytes,
             duration: Duration::from_micros(1_000_000 / self.fps.max(1) as u64),
             encode_latency_ms: started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
-            keyframe: force_keyframe || contains_idr,
+            keyframe: contains_idr,
         })
     }
 }
@@ -1882,16 +1975,13 @@ async fn run_macos_webrtc_media_loop(
         };
         let bitrate = stream_target_bitrate(frame_config.quality, &metrics);
         let force_keyframe = keyframe_requested.swap(false, Ordering::SeqCst);
-        if force_keyframe
-            || encoder.as_ref().is_none_or(|encoder| {
-                !encoder.matches(
-                    capture_lease.width,
-                    capture_lease.height,
-                    capture_lease.target.fps,
-                    bitrate,
-                )
-            })
-        {
+        if encoder.as_ref().is_none_or(|encoder| {
+            !encoder.matches_stream_shape(
+                capture_lease.width,
+                capture_lease.height,
+                capture_lease.target.fps,
+            )
+        }) {
             encoder = Some(MacosVideoToolboxEncoder::new(
                 capture_lease.width,
                 capture_lease.height,
@@ -2100,6 +2190,56 @@ fn h264_sample_to_annex_b(
         offset += nal_size;
     }
     Ok((output, contains_idr))
+}
+
+fn h264_sample_contains_idr(
+    data: &[u8],
+    nal_length_size: usize,
+) -> Result<bool, DesktopSidecarErrorBody> {
+    if h264_annex_b_starts(data) {
+        return Ok(h264_annex_b_contains_idr(data));
+    }
+
+    let mut offset = 0_usize;
+    while offset < data.len() {
+        if offset + nal_length_size > data.len() {
+            return Err(DesktopSidecarErrorBody::new(
+                "stream_frame_encode_failed",
+                "VideoToolbox emitted a truncated H.264 length-prefixed sample.",
+                true,
+                false,
+            ));
+        }
+        let mut nal_size = 0_usize;
+        for byte in &data[offset..offset + nal_length_size] {
+            nal_size = (nal_size << 8) | usize::from(*byte);
+        }
+        offset += nal_length_size;
+        if nal_size == 0 {
+            continue;
+        }
+        if offset + nal_size > data.len() {
+            return Err(DesktopSidecarErrorBody::new(
+                "stream_frame_encode_failed",
+                "VideoToolbox emitted an H.264 NAL unit larger than its sample buffer.",
+                true,
+                false,
+            ));
+        }
+        if data[offset] & 0x1f == 5 {
+            return Ok(true);
+        }
+        offset += nal_size;
+    }
+    Ok(false)
+}
+
+fn h264_should_include_parameter_sets(
+    frame_index: i64,
+    force_keyframe: bool,
+    contains_idr: bool,
+) -> bool {
+    frame_index == 0 || contains_idr || force_keyframe
 }
 
 fn append_annex_b_nal(output: &mut Vec<u8>, nal: &[u8]) {
@@ -4530,6 +4670,50 @@ mod tests {
             stream_target_bitrate(DesktopSidecarStreamQuality::Balanced, &metrics),
             850_000
         );
+    }
+
+    #[test]
+    fn latest_frame_channel_replaces_stale_pending_frame() {
+        webrtc_runtime()
+            .expect("webrtc runtime")
+            .block_on(async move {
+                let (sender, mut receiver) = latest_frame_channel();
+
+                assert_eq!(sender.send_replace(1), LatestFrameSendResult::Stored);
+                assert_eq!(sender.send_replace(2), LatestFrameSendResult::Replaced);
+
+                assert_eq!(receiver.recv().await, Some(2));
+            });
+    }
+
+    #[test]
+    fn latest_frame_channel_closes_after_sender_drops() {
+        webrtc_runtime()
+            .expect("webrtc runtime")
+            .block_on(async move {
+                let (sender, mut receiver) = latest_frame_channel::<u8>();
+
+                drop(sender);
+
+                assert_eq!(receiver.recv().await, None);
+            });
+    }
+
+    #[test]
+    fn h264_idr_detection_handles_length_prefixed_samples() {
+        let non_idr = [0, 0, 0, 2, 0x41, 0x9a];
+        let idr = [0, 0, 0, 3, 0x65, 0x88, 0x84];
+
+        assert!(!h264_sample_contains_idr(&non_idr, 4).expect("non-idr sample"));
+        assert!(h264_sample_contains_idr(&idr, 4).expect("idr sample"));
+    }
+
+    #[test]
+    fn h264_parameter_sets_are_sent_for_actual_idr_frames() {
+        assert!(h264_should_include_parameter_sets(42, false, true));
+        assert!(h264_should_include_parameter_sets(42, true, false));
+        assert!(h264_should_include_parameter_sets(0, false, false));
+        assert!(!h264_should_include_parameter_sets(42, false, false));
     }
 
     #[test]
