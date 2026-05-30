@@ -108,7 +108,7 @@ describe('index.html boot theme script', () => {
   it('keeps the pre-React loading mark tied to CSS theme variables', () => {
     expect(INDEX_HTML).toContain('class="boot-loading-logo"')
     expect(INDEX_HTML).toContain('fill="var(--primary, #d4a574)"')
-    expect(INDEX_HTML).toContain('fill="var(--foreground, #f8f9fa)"')
+    expect(INDEX_HTML).not.toContain('fill="var(--foreground, #f8f9fa)"')
     expect(INDEX_HTML).not.toContain('src="/icon-logo.svg" alt=""')
   })
 })

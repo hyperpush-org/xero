@@ -17,7 +17,6 @@ pub mod desktop_control;
 pub mod developer_tool_harness;
 pub mod development_storage;
 pub mod dictation;
-pub mod dock_icon;
 pub mod doctor_report;
 pub mod editor_diagnostics;
 pub mod editor_workflows;
@@ -157,7 +156,6 @@ pub use dictation::{
     speech_dictation_status, speech_dictation_stop, speech_dictation_update_settings,
     DictationState,
 };
-pub use dock_icon::set_theme_dock_icon;
 pub use doctor_report::run_doctor_report;
 pub use editor_diagnostics::{
     run_project_typecheck, EditorLspInstallCommandDto, EditorLspInstallSuggestionDto,

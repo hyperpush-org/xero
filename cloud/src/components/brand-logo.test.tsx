@@ -12,10 +12,11 @@ describe("BrandLogo", () => {
 		expect(paths.map((path) => path.getAttribute("fill"))).toEqual([
 			"var(--primary)",
 			"var(--primary)",
-			"var(--foreground)",
-			"var(--foreground)",
+			"var(--primary)",
+			"var(--primary)",
 		]);
 		expect(paths[2]?.getAttribute("fill-opacity")).toBe("0.32");
+		expect(paths[3]?.getAttribute("fill-opacity")).toBe("0.32");
 	});
 
 	it("forwards standard SVG accessibility props", () => {

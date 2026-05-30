@@ -21,7 +21,6 @@ import {
   isThemeDefinition,
   type ThemeDefinition,
 } from '@xero/ui/theme'
-import { syncThemeDockIcon } from './dock-icon'
 
 interface ThemeContextValue {
   themes: ThemeDefinition[]
@@ -168,10 +167,6 @@ export function ThemeProvider({ children, initialThemeId }: ThemeProviderProps) 
       }
     }
   }, [theme, appStateHydrated])
-
-  useEffect(() => {
-    void syncThemeDockIcon(theme)
-  }, [theme])
 
   const persistCustomThemes = useCallback((next: ThemeDefinition[]) => {
     try {
