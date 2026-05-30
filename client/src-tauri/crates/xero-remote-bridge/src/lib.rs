@@ -1,12 +1,11 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, VecDeque},
     ffi::OsString,
     fs,
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self, TryRecvError},
-        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc, Arc, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -17,7 +16,6 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use time::OffsetDateTime;
-use tokio::sync::broadcast;
 use tungstenite::{connect, stream::MaybeTlsStream, Message, WebSocket};
 use url::Url;
 
@@ -76,6 +74,11 @@ pub enum BridgeError {
     UnsupportedUrlScheme(String),
     #[error("remote bridge server response is missing `{0}`")]
     MissingServerField(&'static str),
+    #[error("remote bridge outbound queue `{priority}` is full at {limit} pending frames")]
+    OutboundQueueFull {
+        priority: &'static str,
+        limit: usize,
+    },
     #[error("remote bridge lock was poisoned")]
     LockPoisoned,
 }
@@ -323,8 +326,21 @@ pub struct BridgeStatus {
     pub signed_in: bool,
     pub account: Option<BridgeAccount>,
     pub devices: Vec<AccountDevice>,
+    pub telemetry: BridgeTelemetry,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub devices_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeTelemetry {
+    pub reconnect_count: u64,
+    pub replay_count: u64,
+    pub requeued_outbound_count: u64,
+    pub coalesced_outbound_count: u64,
+    pub dropped_coalescible_outbound_count: u64,
+    pub expired_outbound_count: u64,
+    pub outbound_queue_depth: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -466,7 +482,27 @@ pub struct InboundCommand {
     pub session_id: Option<String>,
     pub kind: InboundCommandKind,
     pub device_id: String,
+    #[serde(default, alias = "clientCommandId")]
+    pub client_command_id: Option<String>,
+    #[serde(default, alias = "clientSeq")]
+    pub client_seq: Option<u64>,
+    #[serde(default)]
+    pub priority: Option<InboundCommandPriority>,
+    #[serde(default, alias = "sentAt")]
+    pub sent_at: Option<JsonValue>,
+    #[serde(default, alias = "dedupeKey")]
+    pub dedupe_key: Option<String>,
+    #[serde(default, alias = "expiresAt")]
+    pub expires_at: Option<JsonValue>,
     pub payload: JsonValue,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InboundCommandPriority {
+    CriticalReliable,
+    ReliableIdempotent,
+    CoalescedBestEffort,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -756,9 +792,15 @@ pub struct RemoteBridge<I> {
     connected: AtomicBool,
     seq_by_session: Mutex<HashMap<String, u64>>,
     replay_by_session: Mutex<HashMap<String, Vec<RuntimeEnvelope>>>,
-    outbound_tx: mpsc::Sender<OutboundFrame>,
-    outbound_rx: Mutex<mpsc::Receiver<OutboundFrame>>,
-    inbound_tx: broadcast::Sender<InboundCommand>,
+    outbound_queue: Mutex<VecDeque<QueuedOutboundFrame>>,
+    inbound_tx: mpsc::SyncSender<InboundCommand>,
+    inbound_rx: Mutex<Option<mpsc::Receiver<InboundCommand>>>,
+    reconnect_count: AtomicU64,
+    replay_count: AtomicU64,
+    requeued_outbound_count: AtomicU64,
+    coalesced_outbound_count: AtomicU64,
+    dropped_coalescible_outbound_count: AtomicU64,
+    expired_outbound_count: AtomicU64,
 }
 
 #[derive(Debug, Clone)]
@@ -792,6 +834,37 @@ enum OutboundFrame {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum OutboundPriority {
+    CoalescedBestEffort = 0,
+    ReliableIdempotent = 1,
+    CriticalReliable = 2,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct QueuedOutboundFrame {
+    priority: OutboundPriority,
+    coalesce_key: Option<String>,
+    expires_at: Option<Instant>,
+    frame: OutboundFrame,
+}
+
+impl QueuedOutboundFrame {
+    fn new(priority: OutboundPriority, frame: OutboundFrame) -> Self {
+        let now = Instant::now();
+        Self {
+            priority,
+            coalesce_key: outbound_frame_coalesce_key(&frame, priority),
+            expires_at: outbound_frame_expires_at(&frame, priority, now),
+            frame,
+        }
+    }
+
+    fn is_expired(&self, now: Instant) -> bool {
+        matches!(self.expires_at, Some(expires_at) if expires_at <= now)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopBridgeLoopOptions {
     pub heartbeat_interval: Duration,
@@ -811,6 +884,10 @@ const CONTROL_SESSION_IDS: [&str; 4] = ["__sessions__", "__projects__", "__new__
 const MAX_SESSION_REPLAY_FRAMES: usize = 512;
 const RELAY_TOKEN_REFRESH_SKEW_SECONDS: i64 = 120;
 const ACCOUNT_DEVICES_CACHE_TTL: Duration = Duration::from_secs(5);
+const OUTBOUND_MAX_CRITICAL_QUEUE: usize = 4096;
+const OUTBOUND_MAX_RELIABLE_QUEUE: usize = 2048;
+const OUTBOUND_MAX_COALESCED_QUEUE: usize = 256;
+const OUTBOUND_COALESCED_TTL: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RelayTokenRefreshAuth {
@@ -823,8 +900,7 @@ where
     I: IdentityStore,
 {
     pub fn new(config: BridgeConfig, identity_store: I) -> Self {
-        let (inbound_tx, _inbound_rx) = broadcast::channel(256);
-        let (outbound_tx, outbound_rx) = mpsc::channel();
+        let (inbound_tx, inbound_rx) = mpsc::sync_channel(4096);
         Self {
             config,
             identity_store,
@@ -833,9 +909,15 @@ where
             connected: AtomicBool::new(false),
             seq_by_session: Mutex::new(HashMap::new()),
             replay_by_session: Mutex::new(HashMap::new()),
-            outbound_tx,
-            outbound_rx: Mutex::new(outbound_rx),
+            outbound_queue: Mutex::new(VecDeque::new()),
             inbound_tx,
+            inbound_rx: Mutex::new(Some(inbound_rx)),
+            reconnect_count: AtomicU64::new(0),
+            replay_count: AtomicU64::new(0),
+            requeued_outbound_count: AtomicU64::new(0),
+            coalesced_outbound_count: AtomicU64::new(0),
+            dropped_coalescible_outbound_count: AtomicU64::new(0),
+            expired_outbound_count: AtomicU64::new(0),
         }
     }
 
@@ -868,7 +950,26 @@ where
             signed_in,
             account,
             devices,
+            telemetry: self.telemetry_snapshot()?,
             devices_error,
+        })
+    }
+
+    fn telemetry_snapshot(&self) -> BridgeResult<BridgeTelemetry> {
+        Ok(BridgeTelemetry {
+            reconnect_count: self.reconnect_count.load(Ordering::Relaxed),
+            replay_count: self.replay_count.load(Ordering::Relaxed),
+            requeued_outbound_count: self.requeued_outbound_count.load(Ordering::Relaxed),
+            coalesced_outbound_count: self.coalesced_outbound_count.load(Ordering::Relaxed),
+            dropped_coalescible_outbound_count: self
+                .dropped_coalescible_outbound_count
+                .load(Ordering::Relaxed),
+            expired_outbound_count: self.expired_outbound_count.load(Ordering::Relaxed),
+            outbound_queue_depth: self
+                .outbound_queue
+                .lock()
+                .map_err(|_| BridgeError::LockPoisoned)?
+                .len(),
         })
     }
 
@@ -1084,8 +1185,12 @@ where
         Ok(())
     }
 
-    pub fn subscribe_inbound(&self) -> broadcast::Receiver<InboundCommand> {
-        self.inbound_tx.subscribe()
+    pub fn subscribe_inbound(&self) -> BridgeResult<mpsc::Receiver<InboundCommand>> {
+        self.inbound_rx
+            .lock()
+            .map_err(|_| BridgeError::LockPoisoned)?
+            .take()
+            .ok_or(BridgeError::MissingServerField("inbound_rx"))
     }
 
     pub fn authorize_session_join(
@@ -1096,14 +1201,16 @@ where
         authorized: bool,
         run_id: Option<&str>,
     ) -> BridgeResult<()> {
-        let _ = self.outbound_tx.send(OutboundFrame::SessionAuthorization {
-            join_ref: join_ref.to_owned(),
-            auth_topic: auth_topic.to_owned(),
-            session_id: session_id.to_owned(),
-            authorized,
-            run_id: run_id.map(ToOwned::to_owned),
-        });
-        Ok(())
+        self.enqueue_outbound(QueuedOutboundFrame::new(
+            OutboundPriority::CriticalReliable,
+            OutboundFrame::SessionAuthorization {
+                join_ref: join_ref.to_owned(),
+                auth_topic: auth_topic.to_owned(),
+                session_id: session_id.to_owned(),
+                authorized,
+                run_id: run_id.map(ToOwned::to_owned),
+            },
+        ))
     }
 
     pub fn forward(
@@ -1219,6 +1326,7 @@ where
         for envelope in replay {
             self.enqueue_envelope(&envelope)?;
         }
+        self.replay_count.fetch_add(count as u64, Ordering::Relaxed);
         Ok(count)
     }
 
@@ -1269,6 +1377,7 @@ where
                 }
                 Err(_error) if !shutdown.load(Ordering::Relaxed) => {
                     self.connected.store(false, Ordering::Relaxed);
+                    self.reconnect_count.fetch_add(1, Ordering::Relaxed);
                     thread::sleep(backoff.next_jittered_delay());
                 }
                 Err(error) => {
@@ -1388,11 +1497,87 @@ where
 
     fn enqueue_envelope(&self, envelope: &RuntimeEnvelope) -> BridgeResult<()> {
         let payload = encode_relay_frame_payload(envelope)?;
-        let _ = self.outbound_tx.send(OutboundFrame::SessionFrame {
-            session_id: envelope.session_id.clone(),
-            payload,
-        });
+        self.enqueue_outbound(QueuedOutboundFrame::new(
+            outbound_priority_for_payload(&payload),
+            OutboundFrame::SessionFrame {
+                session_id: envelope.session_id.clone(),
+                payload,
+            },
+        ))
+    }
+
+    fn enqueue_outbound(&self, queued: QueuedOutboundFrame) -> BridgeResult<()> {
+        let mut queue = self
+            .outbound_queue
+            .lock()
+            .map_err(|_| BridgeError::LockPoisoned)?;
+        let now = Instant::now();
+        self.prune_expired_outbound_locked(&mut queue, now);
+        if queued.is_expired(now) {
+            self.expired_outbound_count.fetch_add(1, Ordering::Relaxed);
+            return Ok(());
+        }
+        if let Some(coalesce_key) = queued.coalesce_key.as_deref() {
+            if let Some(position) = queue
+                .iter()
+                .position(|existing| existing.coalesce_key.as_deref() == Some(coalesce_key))
+            {
+                queue.remove(position);
+                self.coalesced_outbound_count
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        self.enforce_outbound_queue_limit_locked(&mut queue, queued.priority)?;
+        let insert_at = queue
+            .iter()
+            .position(|existing| existing.priority < queued.priority)
+            .unwrap_or(queue.len());
+        queue.insert(insert_at, queued);
         Ok(())
+    }
+
+    fn enforce_outbound_queue_limit_locked(
+        &self,
+        queue: &mut VecDeque<QueuedOutboundFrame>,
+        priority: OutboundPriority,
+    ) -> BridgeResult<()> {
+        let limit = outbound_queue_limit(priority);
+        let count = queue
+            .iter()
+            .filter(|queued| queued.priority == priority)
+            .count();
+        if count < limit {
+            return Ok(());
+        }
+        if priority == OutboundPriority::CoalescedBestEffort {
+            if let Some(position) = queue
+                .iter()
+                .position(|queued| queued.priority == OutboundPriority::CoalescedBestEffort)
+            {
+                queue.remove(position);
+                self.dropped_coalescible_outbound_count
+                    .fetch_add(1, Ordering::Relaxed);
+                return Ok(());
+            }
+        }
+        Err(BridgeError::OutboundQueueFull {
+            priority: outbound_priority_name(priority),
+            limit,
+        })
+    }
+
+    fn prune_expired_outbound_locked(
+        &self,
+        queue: &mut VecDeque<QueuedOutboundFrame>,
+        now: Instant,
+    ) {
+        let before = queue.len();
+        queue.retain(|queued| !queued.is_expired(now));
+        let expired = before.saturating_sub(queue.len());
+        if expired > 0 {
+            self.expired_outbound_count
+                .fetch_add(expired as u64, Ordering::Relaxed);
+        }
     }
 
     fn run_desktop_once(
@@ -1463,6 +1648,12 @@ where
                     session_id: Some(session_id.to_owned()),
                     kind: InboundCommandKind::AuthorizeSessionJoin,
                     device_id: web_device_id.to_owned(),
+                    client_command_id: None,
+                    client_seq: None,
+                    priority: None,
+                    sent_at: None,
+                    dedupe_key: None,
+                    expires_at: None,
                     payload: json!({
                         "joinRef": join_ref,
                         "authTopic": auth_topic,
@@ -1484,6 +1675,12 @@ where
                     session_id: Some(session_id.to_owned()),
                     kind: InboundCommandKind::SessionAttached,
                     device_id: web_device_id.to_owned(),
+                    client_command_id: None,
+                    client_seq: None,
+                    priority: None,
+                    sent_at: None,
+                    dedupe_key: None,
+                    expires_at: None,
                     payload: json!({ "lastSeq": last_seq }),
                 });
             }
@@ -1515,17 +1712,21 @@ where
         joined_sessions: &mut BTreeSet<String>,
     ) -> BridgeResult<()> {
         loop {
-            let frame = {
-                let receiver = self
-                    .outbound_rx
+            let queued = {
+                let mut queue = self
+                    .outbound_queue
                     .lock()
                     .map_err(|_| BridgeError::LockPoisoned)?;
-                match receiver.try_recv() {
-                    Ok(frame) => frame,
-                    Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
-                }
+                queue.pop_front()
             };
-            match frame {
+            let Some(queued) = queued else {
+                break;
+            };
+            if queued.is_expired(Instant::now()) {
+                self.expired_outbound_count.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            let result = match &queued.frame {
                 OutboundFrame::SessionFrame {
                     session_id,
                     payload,
@@ -1533,7 +1734,7 @@ where
                     if joined_sessions.insert(session_id.clone()) {
                         connection.join_session(&session_id)?;
                     }
-                    connection.push_session_frame(&session_id, payload)?;
+                    connection.push_session_frame(&session_id, payload.clone())
                 }
                 OutboundFrame::SessionAuthorization {
                     join_ref,
@@ -1542,18 +1743,38 @@ where
                     authorized,
                     run_id,
                 } => {
-                    connection.authorize_session_join(
+                    let result = connection.authorize_session_join(
                         &join_ref,
                         &auth_topic,
-                        authorized,
+                        *authorized,
                         run_id.as_deref(),
-                    )?;
-                    if authorized && joined_sessions.insert(session_id.clone()) {
+                    );
+                    if result.is_ok() && *authorized && joined_sessions.insert(session_id.clone()) {
                         connection.join_session(&session_id)?;
                     }
+                    result
                 }
+            };
+            if let Err(error) = result {
+                self.requeue_outbound_front(queued)?;
+                return Err(error);
             }
         }
+        Ok(())
+    }
+
+    fn requeue_outbound_front(&self, queued: QueuedOutboundFrame) -> BridgeResult<()> {
+        if queued.is_expired(Instant::now()) {
+            self.expired_outbound_count.fetch_add(1, Ordering::Relaxed);
+            return Ok(());
+        }
+        self.requeued_outbound_count.fetch_add(1, Ordering::Relaxed);
+        let mut queue = self
+            .outbound_queue
+            .lock()
+            .map_err(|_| BridgeError::LockPoisoned)?;
+        self.prune_expired_outbound_locked(&mut queue, Instant::now());
+        queue.push_front(queued);
         Ok(())
     }
 }
@@ -1718,6 +1939,132 @@ fn required_json_string<'a>(value: &'a JsonValue, key: &'static str) -> BridgeRe
 
 fn is_control_session_id(session_id: &str) -> bool {
     CONTROL_SESSION_IDS.contains(&session_id)
+}
+
+fn outbound_priority_for_payload(payload: &JsonValue) -> OutboundPriority {
+    let Some(encoded) = payload.get("envelope").and_then(JsonValue::as_str) else {
+        return OutboundPriority::ReliableIdempotent;
+    };
+    let Ok(bytes) = URL_SAFE_NO_PAD.decode(encoded) else {
+        return OutboundPriority::ReliableIdempotent;
+    };
+    let Ok(envelope) = decode_envelope(&bytes) else {
+        return OutboundPriority::ReliableIdempotent;
+    };
+    let schema = envelope
+        .payload
+        .get("schema")
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default();
+    if schema.starts_with("xero.computer_use_manual_control_")
+        || schema == "xero.computer_use_stream_offer.v1"
+        || schema == "xero.computer_use_stream_answer.v1"
+        || schema == "xero.computer_use_stream_ice_candidate.v1"
+        || schema == "xero.remote_command_result.v1"
+    {
+        return OutboundPriority::CriticalReliable;
+    }
+    if schema == "xero.computer_use_stream_status.v1"
+        || schema == "xero.computer_use_stream_set_quality.v1"
+        || schema == "xero.computer_use_stream_frame.v1"
+    {
+        return OutboundPriority::CoalescedBestEffort;
+    }
+    OutboundPriority::ReliableIdempotent
+}
+
+fn outbound_queue_limit(priority: OutboundPriority) -> usize {
+    match priority {
+        OutboundPriority::CriticalReliable => OUTBOUND_MAX_CRITICAL_QUEUE,
+        OutboundPriority::ReliableIdempotent => OUTBOUND_MAX_RELIABLE_QUEUE,
+        OutboundPriority::CoalescedBestEffort => OUTBOUND_MAX_COALESCED_QUEUE,
+    }
+}
+
+fn outbound_priority_name(priority: OutboundPriority) -> &'static str {
+    match priority {
+        OutboundPriority::CriticalReliable => "critical_reliable",
+        OutboundPriority::ReliableIdempotent => "reliable_idempotent",
+        OutboundPriority::CoalescedBestEffort => "coalesced_best_effort",
+    }
+}
+
+fn outbound_frame_coalesce_key(
+    frame: &OutboundFrame,
+    priority: OutboundPriority,
+) -> Option<String> {
+    if priority != OutboundPriority::CoalescedBestEffort {
+        return None;
+    }
+    let OutboundFrame::SessionFrame {
+        session_id,
+        payload,
+    } = frame
+    else {
+        return None;
+    };
+    let envelope = decoded_relay_payload_envelope(payload)?;
+    let schema = envelope
+        .payload
+        .get("schema")
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default();
+    let stream_id = envelope
+        .payload
+        .get("streamId")
+        .or_else(|| envelope.payload.get("stream_id"))
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default();
+    Some(format!("{session_id}:{schema}:{stream_id}"))
+}
+
+fn outbound_frame_expires_at(
+    frame: &OutboundFrame,
+    priority: OutboundPriority,
+    now: Instant,
+) -> Option<Instant> {
+    let explicit_expires_at = match frame {
+        OutboundFrame::SessionFrame { payload, .. } => decoded_relay_payload_envelope(payload)
+            .and_then(|envelope| {
+                envelope
+                    .payload
+                    .get("expiresAt")
+                    .or_else(|| envelope.payload.get("expires_at"))
+                    .and_then(json_unix_millis)
+                    .and_then(|millis| instant_from_unix_millis(millis, now))
+            }),
+        OutboundFrame::SessionAuthorization { .. } => None,
+    };
+    explicit_expires_at.or_else(|| {
+        (priority == OutboundPriority::CoalescedBestEffort)
+            .then(|| now.checked_add(OUTBOUND_COALESCED_TTL))
+            .flatten()
+    })
+}
+
+fn decoded_relay_payload_envelope(payload: &JsonValue) -> Option<RuntimeEnvelope> {
+    let encoded = payload.get("envelope").and_then(JsonValue::as_str)?;
+    let bytes = URL_SAFE_NO_PAD.decode(encoded).ok()?;
+    decode_envelope(&bytes).ok()
+}
+
+fn json_unix_millis(value: &JsonValue) -> Option<i128> {
+    if let Some(value) = value.as_i64() {
+        return Some(value as i128);
+    }
+    if let Some(value) = value.as_u64() {
+        return Some(value as i128);
+    }
+    value.as_str()?.parse::<i128>().ok()
+}
+
+fn instant_from_unix_millis(millis: i128, now: Instant) -> Option<Instant> {
+    let current_millis = OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000;
+    if millis <= current_millis {
+        return Some(now);
+    }
+    let delta = u64::try_from(millis - current_millis).ok()?;
+    now.checked_add(Duration::from_millis(delta))
 }
 
 fn session_id_from_topic(topic: &str) -> Option<String> {
@@ -2281,11 +2628,174 @@ mod tests {
         assert_eq!(relay_payloads.len(), 2);
         assert_eq!(relay_payloads[0]["encoding"], "msgpack.base64url");
 
-        let receiver = bridge.outbound_rx.lock().expect("outbound lock");
-        let queued_first = receiver.try_recv().expect("queued first");
-        let queued_second = receiver.try_recv().expect("queued second");
+        let mut queue = bridge.outbound_queue.lock().expect("outbound lock");
+        let queued_first = queue.pop_front().expect("queued first").frame;
+        let queued_second = queue.pop_front().expect("queued second").frame;
         assert_session_frame(&queued_first, "session-1", 1);
         assert_session_frame(&queued_second, "session-1", 2);
+    }
+
+    #[test]
+    fn bridge_outbound_queue_prioritizes_critical_manual_frames() {
+        let temp = tempfile_path("bridge-priority");
+        let identity_store = FileIdentityStore::new(temp.join("identity.json"));
+        identity_store.save(&test_identity()).expect("identity");
+        let bridge = RemoteBridge::new(BridgeConfig::local_default(), identity_store);
+
+        bridge
+            .forward(
+                "session-1",
+                json!({
+                    "schema": "xero.computer_use_stream_status.v1",
+                    "ok": true,
+                }),
+            )
+            .expect("status forward");
+        bridge
+            .forward(
+                "session-1",
+                json!({"schema": "xero.remote_runtime_event.v1"}),
+            )
+            .expect("runtime forward");
+        bridge
+            .forward(
+                "session-1",
+                json!({
+                    "schema": "xero.computer_use_manual_control_input.v1",
+                    "outcome": "executed",
+                }),
+            )
+            .expect("manual forward");
+        assert_eq!(
+            bridge
+                .telemetry_snapshot()
+                .expect("telemetry")
+                .outbound_queue_depth,
+            3
+        );
+
+        let mut queue = bridge.outbound_queue.lock().expect("outbound lock");
+        let first = queue.pop_front().expect("first").frame;
+        let second = queue.pop_front().expect("second").frame;
+        let third = queue.pop_front().expect("third").frame;
+
+        assert_eq!(
+            queued_session_frame_schema(&first),
+            "xero.computer_use_manual_control_input.v1"
+        );
+        assert_eq!(
+            queued_session_frame_schema(&second),
+            "xero.remote_runtime_event.v1"
+        );
+        assert_eq!(
+            queued_session_frame_schema(&third),
+            "xero.computer_use_stream_status.v1"
+        );
+    }
+
+    #[test]
+    fn bridge_outbound_queue_coalesces_best_effort_stream_frames() {
+        let temp = tempfile_path("bridge-coalesced");
+        let identity_store = FileIdentityStore::new(temp.join("identity.json"));
+        identity_store.save(&test_identity()).expect("identity");
+        let bridge = RemoteBridge::new(BridgeConfig::local_default(), identity_store);
+
+        bridge
+            .forward(
+                "session-1",
+                json!({
+                    "schema": "xero.computer_use_stream_status.v1",
+                    "streamId": "stream-1",
+                    "status": "degraded",
+                }),
+            )
+            .expect("first status");
+        bridge
+            .forward(
+                "session-1",
+                json!({
+                    "schema": "xero.computer_use_stream_status.v1",
+                    "streamId": "stream-1",
+                    "status": "live",
+                }),
+            )
+            .expect("second status");
+
+        let telemetry = bridge.telemetry_snapshot().expect("telemetry");
+        assert_eq!(telemetry.outbound_queue_depth, 1);
+        assert_eq!(telemetry.coalesced_outbound_count, 1);
+
+        let mut queue = bridge.outbound_queue.lock().expect("outbound lock");
+        let queued = queue.pop_front().expect("queued latest").frame;
+        let envelope = queued_session_frame_envelope(&queued);
+        assert_eq!(
+            envelope.payload["schema"],
+            "xero.computer_use_stream_status.v1"
+        );
+        assert_eq!(envelope.payload["status"], "live");
+    }
+
+    #[test]
+    fn bridge_outbound_queue_expires_stale_best_effort_frames() {
+        let temp = tempfile_path("bridge-expired");
+        let identity_store = FileIdentityStore::new(temp.join("identity.json"));
+        identity_store.save(&test_identity()).expect("identity");
+        let bridge = RemoteBridge::new(BridgeConfig::local_default(), identity_store);
+        let expired_at = OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000 - 1;
+
+        bridge
+            .forward(
+                "session-1",
+                json!({
+                    "schema": "xero.computer_use_stream_status.v1",
+                    "streamId": "stream-1",
+                    "expiresAt": expired_at,
+                }),
+            )
+            .expect("expired status");
+
+        let telemetry = bridge.telemetry_snapshot().expect("telemetry");
+        assert_eq!(telemetry.outbound_queue_depth, 0);
+        assert_eq!(telemetry.expired_outbound_count, 1);
+    }
+
+    #[test]
+    fn bridge_outbound_requeue_preserves_unsent_frame() {
+        let temp = tempfile_path("bridge-requeue");
+        let identity_store = FileIdentityStore::new(temp.join("identity.json"));
+        identity_store.save(&test_identity()).expect("identity");
+        let bridge = RemoteBridge::new(BridgeConfig::local_default(), identity_store);
+
+        bridge
+            .forward(
+                "session-1",
+                json!({
+                    "schema": "xero.computer_use_manual_control_input.v1",
+                    "outcome": "executed",
+                }),
+            )
+            .expect("manual outcome");
+
+        let queued = bridge
+            .outbound_queue
+            .lock()
+            .expect("outbound lock")
+            .pop_front()
+            .expect("queued frame");
+        bridge
+            .requeue_outbound_front(queued)
+            .expect("requeue unsent frame");
+
+        let telemetry = bridge.telemetry_snapshot().expect("telemetry");
+        assert_eq!(telemetry.requeued_outbound_count, 1);
+        assert_eq!(telemetry.outbound_queue_depth, 1);
+
+        let mut queue = bridge.outbound_queue.lock().expect("outbound lock");
+        let queued = queue.pop_front().expect("requeued frame").frame;
+        assert_eq!(
+            queued_session_frame_schema(&queued),
+            "xero.computer_use_manual_control_input.v1"
+        );
     }
 
     #[test]
@@ -2355,8 +2865,8 @@ mod tests {
             .expect("removed payload");
 
         assert_eq!(payload["kind"], "session_removed");
-        let receiver = bridge.outbound_rx.lock().expect("outbound lock");
-        let queued = receiver.try_recv().expect("queued removal");
+        let mut queue = bridge.outbound_queue.lock().expect("outbound lock");
+        let queued = queue.pop_front().expect("queued removal").frame;
         let (session_id, payload) = queued_session_frame(&queued);
         assert_eq!(session_id, "__sessions__");
         assert_eq!(payload["kind"], "session_removed");
@@ -2421,6 +2931,25 @@ mod tests {
                 panic!("expected session frame, got authorization")
             }
         }
+    }
+
+    fn queued_session_frame_schema(frame: &OutboundFrame) -> String {
+        queued_session_frame_envelope(frame)
+            .payload
+            .get("schema")
+            .and_then(JsonValue::as_str)
+            .expect("schema")
+            .to_owned()
+    }
+
+    fn queued_session_frame_envelope(frame: &OutboundFrame) -> RuntimeEnvelope {
+        let (_session_id, payload) = queued_session_frame(frame);
+        let encoded = payload
+            .get("envelope")
+            .and_then(JsonValue::as_str)
+            .expect("encoded envelope");
+        let bytes = URL_SAFE_NO_PAD.decode(encoded).expect("base64 envelope");
+        decode_envelope(&bytes).expect("decode envelope")
     }
 
     fn tempfile_path(name: &str) -> PathBuf {

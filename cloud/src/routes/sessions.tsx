@@ -188,6 +188,9 @@ function useSessionsShellViewModel(
 			? Boolean(state.visibleSessionsByComputerVersion[activeComputerId])
 			: false,
 	);
+	const currentComputerRemoteControl = activeComputerId
+		? (remoteSessions.remoteControlByComputer[activeComputerId] ?? null)
+		: null;
 	const desktopDeviceIds = useMemo(
 		() =>
 			session.devices
@@ -349,7 +352,9 @@ function useSessionsShellViewModel(
 			computerPresenceKnown,
 			currentComputerOnline,
 			currentComputerReconciled,
+			currentComputerRemoteControl,
 			isSessionDirectoryLoading,
+			remoteControlByComputer: remoteSessions.remoteControlByComputer,
 			topBarAccessoryElement: null,
 			visibleSessionsVersion,
 			selectSession,
@@ -367,6 +372,7 @@ function useSessionsShellViewModel(
 			computerPresenceKnown,
 			currentComputerOnline,
 			currentComputerReconciled,
+			currentComputerRemoteControl,
 			isSessionDirectoryLoading,
 			pendingNewSession,
 			remoteSessions,

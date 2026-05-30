@@ -1,9 +1,10 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashSet, VecDeque},
     fs,
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
+        mpsc::TryRecvError as InboundTryRecvError,
         Arc, Mutex, OnceLock,
     },
     thread,
@@ -13,11 +14,10 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
-use tokio::sync::broadcast::error::TryRecvError as BroadcastTryRecvError;
 use xero_remote_bridge::{
     AccountDevice, AuthStatus, BridgeAccount, BridgeConfig, BridgeError, BridgeResult,
-    DesktopBridgeLoopOptions, FileIdentityStore, IdentityStore, InboundCommand, InboundCommandKind,
-    RemoteBridge,
+    BridgeTelemetry, DesktopBridgeLoopOptions, FileIdentityStore, IdentityStore, InboundCommand,
+    InboundCommandKind, RemoteBridge,
 };
 
 use crate::{
@@ -70,7 +70,8 @@ use crate::{
         AutonomousDesktopScreenshot, AutonomousDesktopSessionDescription,
         AutonomousDesktopStreamAction, AutonomousDesktopStreamQuality,
         AutonomousDesktopStreamRequest, AutonomousDesktopStreamTransport,
-        AutonomousDesktopToolOutput, AutonomousToolOutput, AutonomousToolRuntime,
+        AutonomousDesktopToolOutput, AutonomousDesktopToolStatus, AutonomousToolOutput,
+        AutonomousToolRuntime,
     },
     state::DesktopState,
 };
@@ -88,6 +89,8 @@ const COMPOSER_SETTINGS_VERSION: u64 = 1;
 const PROJECT_REMOTE_SESSION_ID_PREFIX: &str = "project:";
 const STREAM_FALLBACK_FRAME_MAX_BYTES: usize = 5 * 1024 * 1024;
 const STREAM_FALLBACK_JPEG_QUALITY: u8 = 74;
+const COMMAND_OUTCOME_SCHEMA: &str = "xero.remote_command_outcome.v1";
+const MAX_DEDUPE_COMMAND_IDS: usize = 2048;
 
 type AppRemoteBridge = RemoteBridge<FileIdentityStore>;
 
@@ -108,6 +111,7 @@ pub struct BridgeStatusResponseDto {
     pub signed_in: bool,
     pub account: Option<BridgeAccount>,
     pub devices: Vec<AccountDevice>,
+    pub telemetry: BridgeTelemetry,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub devices_error: Option<String>,
 }
@@ -149,6 +153,7 @@ pub fn bridge_status<R: Runtime + 'static>(
         signed_in: status.signed_in,
         account: status.account,
         devices: status.devices,
+        telemetry: status.telemetry,
         devices_error: status.devices_error,
     })
 }
@@ -555,7 +560,7 @@ impl RemoteBridgeRuntimeState {
             return Ok(());
         }
 
-        let mut inbound = bridge.subscribe_inbound();
+        let inbound = bridge.subscribe_inbound().map_err(map_bridge_error)?;
         let app = app.clone();
         let state = state.clone();
         let handle = thread::spawn(move || {
@@ -568,11 +573,10 @@ impl RemoteBridgeRuntimeState {
                             eprintln!("[remote-bridge] inbound command failed: {error}");
                         }
                     }
-                    Err(BroadcastTryRecvError::Empty) => {
+                    Err(InboundTryRecvError::Empty) => {
                         thread::sleep(Duration::from_millis(100));
                     }
-                    Err(BroadcastTryRecvError::Lagged(_)) => {}
-                    Err(BroadcastTryRecvError::Closed) => break,
+                    Err(InboundTryRecvError::Disconnected) => break,
                 }
             }
         });
@@ -618,7 +622,16 @@ fn handle_inbound_command<R: Runtime + 'static>(
         .as_deref()
         .unwrap_or("__sessions__")
         .to_string();
-    let result = route_inbound_command(app, state, Arc::clone(&bridge), command);
+    if command_is_duplicate(&command) {
+        bridge
+            .forward_control_event(
+                &response_session,
+                command_outcome_payload(&command, "duplicate", Some("duplicate_command")),
+            )
+            .map_err(map_bridge_error)?;
+        return Ok(());
+    }
+    let result = route_inbound_command(app, state, Arc::clone(&bridge), command.clone());
     if let Err(error) = &result {
         let _ = bridge.forward_control_event(
             &response_session,
@@ -629,7 +642,218 @@ fn handle_inbound_command<R: Runtime + 'static>(
             }),
         );
     }
+    if let Err(error) = &result {
+        let _ = bridge.forward_control_event(
+            &response_session,
+            command_outcome_payload(&command, "rejected", Some(error.code.as_str())),
+        );
+    }
     result.map(|_| ())
+}
+
+#[derive(Default)]
+struct CommandDedupeState {
+    seen: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+fn command_is_duplicate(command: &InboundCommand) -> bool {
+    if !is_critical_command(&command.kind) {
+        return false;
+    }
+    let Some(key) = command_dedupe_key(command) else {
+        return false;
+    };
+    let Ok(mut state) = command_dedupe_state().lock() else {
+        return false;
+    };
+    if state.seen.contains(&key) {
+        return true;
+    }
+    state.seen.insert(key.clone());
+    state.order.push_back(key);
+    while state.order.len() > MAX_DEDUPE_COMMAND_IDS {
+        if let Some(expired) = state.order.pop_front() {
+            state.seen.remove(&expired);
+        }
+    }
+    false
+}
+
+fn command_dedupe_state() -> &'static Mutex<CommandDedupeState> {
+    static STATE: OnceLock<Mutex<CommandDedupeState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(CommandDedupeState::default()))
+}
+
+fn command_dedupe_key(command: &InboundCommand) -> Option<String> {
+    command
+        .client_command_id
+        .as_deref()
+        .or(command.dedupe_key.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn is_critical_command(kind: &InboundCommandKind) -> bool {
+    matches!(
+        kind,
+        InboundCommandKind::ComputerUseManualControlRequest
+            | InboundCommandKind::ComputerUseManualControlGrant
+            | InboundCommandKind::ComputerUseManualControlHeartbeat
+            | InboundCommandKind::ComputerUseManualControlInput
+            | InboundCommandKind::ComputerUseManualControlRelease
+            | InboundCommandKind::ComputerUseStreamOffer
+            | InboundCommandKind::ComputerUseStreamAnswer
+            | InboundCommandKind::ComputerUseStreamIceCandidate
+    )
+}
+
+fn command_outcome_payload(
+    command: &InboundCommand,
+    outcome: &str,
+    reason: Option<&str>,
+) -> JsonValue {
+    let mut payload = json!({
+        "schema": COMMAND_OUTCOME_SCHEMA,
+        "clientCommandId": command.client_command_id.as_deref(),
+        "clientSeq": command.client_seq,
+        "kind": command_kind_wire_value(&command.kind),
+        "outcome": outcome,
+        "priority": command_priority_wire_value(command),
+        "reason": reason,
+        "sentAt": command.sent_at.clone(),
+        "dedupeKey": command.dedupe_key.as_deref(),
+        "expiresAt": command.expires_at.clone(),
+        "receivedAt": crate::auth::now_timestamp(),
+    });
+    attach_command_context(&mut payload, command, None);
+    payload
+}
+
+fn attach_command_context(
+    payload: &mut JsonValue,
+    command: &InboundCommand,
+    outcome: Option<&str>,
+) {
+    let Some(object) = payload.as_object_mut() else {
+        return;
+    };
+    object.insert(
+        "clientCommandId".into(),
+        command
+            .client_command_id
+            .as_deref()
+            .map(JsonValue::from)
+            .unwrap_or(JsonValue::Null),
+    );
+    object.insert("clientSeq".into(), json!(command.client_seq));
+    object.insert(
+        "kind".into(),
+        JsonValue::from(command_kind_wire_value(&command.kind)),
+    );
+    object.insert(
+        "priority".into(),
+        JsonValue::from(command_priority_wire_value(command)),
+    );
+    object.insert(
+        "sentAt".into(),
+        command.sent_at.clone().unwrap_or(JsonValue::Null),
+    );
+    object.insert(
+        "dedupeKey".into(),
+        command
+            .dedupe_key
+            .as_deref()
+            .map(JsonValue::from)
+            .unwrap_or(JsonValue::Null),
+    );
+    object.insert(
+        "expiresAt".into(),
+        command.expires_at.clone().unwrap_or(JsonValue::Null),
+    );
+    if let Some(outcome) = outcome {
+        object.insert("outcome".into(), JsonValue::from(outcome));
+    }
+    if let Some(stream_id) = payload_string(&command.payload, &["streamId", "stream_id"]) {
+        object.insert("streamId".into(), JsonValue::from(stream_id));
+    }
+    if let Some(manual_control_id) =
+        payload_string(&command.payload, &["manualControlId", "manual_control_id"])
+    {
+        object.insert("manualControlId".into(), JsonValue::from(manual_control_id));
+    }
+}
+
+fn command_outcome_for_desktop_output(
+    output: Option<&AutonomousDesktopToolOutput>,
+) -> &'static str {
+    match output.map(|output| output.status) {
+        Some(AutonomousDesktopToolStatus::Executed | AutonomousDesktopToolStatus::Stopped) => {
+            "executed"
+        }
+        Some(AutonomousDesktopToolStatus::Starting) | None => "accepted",
+        Some(
+            AutonomousDesktopToolStatus::ApprovalRequired
+            | AutonomousDesktopToolStatus::Denied
+            | AutonomousDesktopToolStatus::Unavailable
+            | AutonomousDesktopToolStatus::Failed,
+        ) => "rejected",
+    }
+}
+
+fn command_kind_wire_value(kind: &InboundCommandKind) -> &'static str {
+    match kind {
+        InboundCommandKind::AuthorizeSessionJoin => "authorize_session_join",
+        InboundCommandKind::SendMessage => "send_message",
+        InboundCommandKind::ListSessions => "list_sessions",
+        InboundCommandKind::ListProjects => "list_projects",
+        InboundCommandKind::ArchiveSession => "archive_session",
+        InboundCommandKind::SessionAttached => "session_attached",
+        InboundCommandKind::StartSession => "start_session",
+        InboundCommandKind::ResolveOperatorAction => "resolve_operator_action",
+        InboundCommandKind::CancelRun => "cancel_run",
+        InboundCommandKind::ContextSnapshot => "context_snapshot",
+        InboundCommandKind::StageAttachment => "stage_attachment",
+        InboundCommandKind::DiscardAttachment => "discard_attachment",
+        InboundCommandKind::UpdateSessionControls => "update_session_controls",
+        InboundCommandKind::FetchRuntimeMediaArtifact => "fetch_runtime_media_artifact",
+        InboundCommandKind::ComputerUseStreamRequest => "computer_use_stream_request",
+        InboundCommandKind::ComputerUseStreamOffer => "computer_use_stream_offer",
+        InboundCommandKind::ComputerUseStreamAnswer => "computer_use_stream_answer",
+        InboundCommandKind::ComputerUseStreamIceCandidate => "computer_use_stream_ice_candidate",
+        InboundCommandKind::ComputerUseStreamStop => "computer_use_stream_stop",
+        InboundCommandKind::ComputerUseStreamStatus => "computer_use_stream_status",
+        InboundCommandKind::ComputerUseStreamSetQuality => "computer_use_stream_set_quality",
+        InboundCommandKind::ComputerUseStreamRequestKeyframe => {
+            "computer_use_stream_request_keyframe"
+        }
+        InboundCommandKind::ComputerUseManualControlRequest => {
+            "computer_use_manual_control_request"
+        }
+        InboundCommandKind::ComputerUseManualControlGrant => "computer_use_manual_control_grant",
+        InboundCommandKind::ComputerUseManualControlHeartbeat => {
+            "computer_use_manual_control_heartbeat"
+        }
+        InboundCommandKind::ComputerUseManualControlInput => "computer_use_manual_control_input",
+        InboundCommandKind::ComputerUseManualControlRelease => {
+            "computer_use_manual_control_release"
+        }
+    }
+}
+
+fn command_priority_wire_value(command: &InboundCommand) -> &'static str {
+    match command.priority {
+        Some(xero_remote_bridge::InboundCommandPriority::CriticalReliable) => "critical_reliable",
+        Some(xero_remote_bridge::InboundCommandPriority::CoalescedBestEffort) => {
+            "coalesced_best_effort"
+        }
+        Some(xero_remote_bridge::InboundCommandPriority::ReliableIdempotent) => {
+            "reliable_idempotent"
+        }
+        None if is_critical_command(&command.kind) => "critical_reliable",
+        None => "reliable_idempotent",
+    }
 }
 
 fn route_inbound_command<R: Runtime + 'static>(
@@ -1514,13 +1738,11 @@ fn route_computer_use_stream_command<R: Runtime>(
                     bridge,
                     &session_id,
                     schema,
-                    command.seq,
-                    Some(command.device_id.as_str()),
+                    &command,
                     stream_id.as_deref(),
                     None,
                     "cloud_streaming_disabled",
                     "Cloud desktop viewing is disabled in the local desktop app.",
-                    command.payload,
                 );
             }
             Some(run_desktop_stream_command(
@@ -1583,24 +1805,25 @@ fn route_computer_use_stream_command<R: Runtime>(
         .as_ref()
         .and_then(stream_signal_schema_for_output)
         .unwrap_or(schema);
-    let forwarded_payload = stream_signal_payload
-        .unwrap_or_else(|| remote_stream_payload_for_forward(&command.kind, command.payload));
+    let forwarded_payload = stream_signal_payload.unwrap_or_else(|| {
+        remote_stream_payload_for_forward(&command.kind, command.payload.clone())
+    });
+    let response_outcome = command_outcome_for_desktop_output(desktop_output.as_ref());
+    let mut response_payload = json!({
+        "schema": forwarded_schema,
+        "ok": response_outcome != "rejected",
+        "commandSeq": command.seq,
+        "deviceId": command.device_id.as_str(),
+        "sessionId": session_id.as_str(),
+        "streamId": stream_id,
+        "receivedAt": crate::auth::now_timestamp(),
+        "payload": forwarded_payload,
+        "desktop": desktop_output,
+        "desktopFrame": desktop_frame,
+    });
+    attach_command_context(&mut response_payload, &command, Some(response_outcome));
     bridge
-        .forward_control_event(
-            &session_id,
-            json!({
-                "schema": forwarded_schema,
-                "ok": true,
-                "commandSeq": command.seq,
-                "deviceId": command.device_id,
-                "sessionId": session_id,
-                "streamId": stream_id,
-                "receivedAt": crate::auth::now_timestamp(),
-                "payload": forwarded_payload,
-                "desktop": desktop_output,
-                "desktopFrame": desktop_frame,
-            }),
-        )
+        .forward_control_event(&session_id, response_payload)
         .map_err(map_bridge_error)?;
     Ok(())
 }
@@ -1628,13 +1851,11 @@ fn route_computer_use_manual_control_command<R: Runtime>(
                     bridge,
                     &session_id,
                     schema,
-                    command.seq,
-                    Some(command.device_id.as_str()),
+                    &command,
                     None,
                     Some(manual_control_id.as_str()),
                     "manual_cloud_control_disabled",
                     "Cloud manual control is disabled in the local desktop app.",
-                    command.payload,
                 );
             }
             let runtime = desktop_runtime_for_located(&located, &command)?;
@@ -1649,13 +1870,11 @@ fn route_computer_use_manual_control_command<R: Runtime>(
                     bridge,
                     &session_id,
                     schema,
-                    command.seq,
-                    Some(command.device_id.as_str()),
+                    &command,
                     None,
                     Some(manual_control_id.as_str()),
                     "manual_cloud_control_disabled",
                     "Cloud manual control is disabled in the local desktop app.",
-                    command.payload,
                 );
             }
             let runtime = desktop_runtime_for_located(&located, &command)?;
@@ -1673,13 +1892,11 @@ fn route_computer_use_manual_control_command<R: Runtime>(
                     bridge,
                     &session_id,
                     schema,
-                    command.seq,
-                    Some(command.device_id.as_str()),
+                    &command,
                     None,
                     Some(manual_control_id.as_str()),
                     "manual_cloud_control_disabled",
                     "Cloud manual control is disabled in the local desktop app.",
-                    command.payload,
                 );
             }
             let request = manual_control_input_request(&command.payload)?;
@@ -1699,22 +1916,22 @@ fn route_computer_use_manual_control_command<R: Runtime>(
         }
         _ => None,
     };
+    let response_outcome = command_outcome_for_desktop_output(desktop_output.as_ref());
+    let mut response_payload = json!({
+        "schema": schema,
+        "ok": response_outcome != "rejected",
+        "commandSeq": command.seq,
+        "deviceId": command.device_id.as_str(),
+        "sessionId": session_id.as_str(),
+        "manualControlId": manual_control_id,
+        "receivedAt": crate::auth::now_timestamp(),
+        "payload": remote_desktop_payload_for_forward(command.payload.clone()),
+        "desktop": desktop_output,
+        "brokered": true,
+    });
+    attach_command_context(&mut response_payload, &command, Some(response_outcome));
     bridge
-        .forward_control_event(
-            &session_id,
-            json!({
-                "schema": schema,
-                "ok": true,
-                "commandSeq": command.seq,
-                "deviceId": command.device_id,
-                "sessionId": session_id,
-                "manualControlId": manual_control_id,
-                "receivedAt": crate::auth::now_timestamp(),
-                "payload": remote_desktop_payload_for_forward(command.payload),
-                "desktop": desktop_output,
-                "brokered": true,
-            }),
-        )
+        .forward_control_event(&session_id, response_payload)
         .map_err(map_bridge_error)?;
     Ok(())
 }
@@ -2178,33 +2395,30 @@ fn forward_computer_use_desktop_rejection(
     bridge: &AppRemoteBridge,
     session_id: &str,
     schema: &str,
-    command_seq: u64,
-    device_id: Option<&str>,
+    command: &InboundCommand,
     stream_id: Option<&str>,
     manual_control_id: Option<&str>,
     code: &str,
     message: &str,
-    payload: JsonValue,
 ) -> CommandResult<()> {
+    let mut payload = json!({
+        "schema": schema,
+        "ok": false,
+        "commandSeq": command.seq,
+        "deviceId": command.device_id.as_str(),
+        "sessionId": session_id,
+        "streamId": stream_id,
+        "manualControlId": manual_control_id,
+        "receivedAt": crate::auth::now_timestamp(),
+        "payload": remote_desktop_payload_for_forward(command.payload.clone()),
+        "error": {
+            "code": code,
+            "message": message,
+        },
+    });
+    attach_command_context(&mut payload, command, Some("rejected"));
     bridge
-        .forward_control_event(
-            session_id,
-            json!({
-                "schema": schema,
-                "ok": false,
-                "commandSeq": command_seq,
-                "deviceId": device_id,
-                "sessionId": session_id,
-                "streamId": stream_id,
-                "manualControlId": manual_control_id,
-                "receivedAt": crate::auth::now_timestamp(),
-                "payload": remote_desktop_payload_for_forward(payload),
-                "error": {
-                    "code": code,
-                    "message": message,
-                },
-            }),
-        )
+        .forward_control_event(session_id, payload)
         .map(|_| ())
         .map_err(map_bridge_error)
 }
@@ -3393,6 +3607,7 @@ fn map_bridge_error(error: BridgeError) -> CommandError {
         | BridgeError::Decode(_)
         | BridgeError::Json(_)
         | BridgeError::MissingServerField(_)
+        | BridgeError::OutboundQueueFull { .. }
         | BridgeError::LockPoisoned => {
             CommandError::system_fault("remote_bridge_failed", error.to_string())
         }
@@ -4216,13 +4431,86 @@ mod tests {
         );
     }
 
+    #[test]
+    fn command_outcome_payload_includes_envelope_and_desktop_context() {
+        let command = inbound_command(
+            InboundCommandKind::ComputerUseManualControlInput,
+            json!({
+                "manualControlId": "manual-1",
+                "streamId": "stream-1",
+                "action": "mouse_click"
+            }),
+        );
+
+        let payload = command_outcome_payload(&command, "duplicate", Some("duplicate_command"));
+
+        assert_eq!(payload["schema"], COMMAND_OUTCOME_SCHEMA);
+        assert_eq!(payload["clientCommandId"], "client-command-1");
+        assert_eq!(payload["clientSeq"], 7);
+        assert_eq!(payload["kind"], "computer_use_manual_control_input");
+        assert_eq!(payload["outcome"], "duplicate");
+        assert_eq!(payload["priority"], "critical_reliable");
+        assert_eq!(payload["manualControlId"], "manual-1");
+        assert_eq!(payload["streamId"], "stream-1");
+        assert_eq!(payload["dedupeKey"], "dedupe-client-command-1");
+    }
+
+    #[test]
+    fn command_dedupe_only_marks_repeated_critical_command_ids() {
+        let unique = format!(
+            "client-command-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        );
+        let mut command = inbound_command(
+            InboundCommandKind::ComputerUseManualControlInput,
+            json!({"manualControlId": "manual-1", "action": "mouse_click"}),
+        );
+        command.client_command_id = Some(unique.clone());
+        command.dedupe_key = Some(format!("dedupe-{unique}"));
+
+        assert!(!command_is_duplicate(&command));
+        assert!(command_is_duplicate(&command));
+
+        command.kind = InboundCommandKind::ListSessions;
+        assert!(!command_is_duplicate(&command));
+    }
+
+    #[test]
+    fn desktop_output_status_maps_to_command_outcomes() {
+        let executed = desktop_output_with_status("executed");
+        let starting = desktop_output_with_status("starting");
+        let denied = desktop_output_with_status("denied");
+
+        assert_eq!(
+            command_outcome_for_desktop_output(Some(&executed)),
+            "executed"
+        );
+        assert_eq!(
+            command_outcome_for_desktop_output(Some(&starting)),
+            "accepted"
+        );
+        assert_eq!(
+            command_outcome_for_desktop_output(Some(&denied)),
+            "rejected"
+        );
+    }
+
     fn desktop_output_with_stream_signal(stream_signal: JsonValue) -> AutonomousDesktopToolOutput {
+        let mut output = desktop_output_with_status("starting");
+        output.stream_signal = Some(serde_json::from_value(stream_signal).expect("stream signal"));
+        output
+    }
+
+    fn desktop_output_with_status(status: &str) -> AutonomousDesktopToolOutput {
         serde_json::from_value(json!({
             "tool": "desktop_stream",
             "action": "stream_start",
             "requestId": "desktop_request_test",
             "phase": "phase_computer_use_desktop_control",
-            "status": "starting",
+            "status": status,
             "platform": "test",
             "sidecar": {
                 "schemaVersion": 1,
@@ -4262,9 +4550,26 @@ mod tests {
                 "approvalRequired": false,
                 "userActionRequired": false
             },
-            "streamSignal": stream_signal,
             "message": "ok"
         }))
         .expect("desktop output")
+    }
+
+    fn inbound_command(kind: InboundCommandKind, payload: JsonValue) -> InboundCommand {
+        InboundCommand {
+            v: 1,
+            seq: 42,
+            computer_id: "desktop-1".into(),
+            session_id: Some("session-1".into()),
+            kind,
+            device_id: "web-1".into(),
+            client_command_id: Some("client-command-1".into()),
+            client_seq: Some(7),
+            priority: Some(xero_remote_bridge::InboundCommandPriority::CriticalReliable),
+            sent_at: Some(json!(1_700_000_000_000_i64)),
+            dedupe_key: Some("dedupe-client-command-1".into()),
+            expires_at: Some(json!(1_700_000_008_000_i64)),
+            payload,
+        }
     }
 }

@@ -39,6 +39,23 @@ const streamMock = vi.hoisted(() => ({
 		on: ReturnType<typeof vi.fn>;
 		off: ReturnType<typeof vi.fn>;
 	},
+	remoteControl: null as null | {
+		available: boolean;
+		reason: string | null;
+		message: string | null;
+		ownerDeviceId: string | null;
+		startedAt: string | null;
+	},
+	remoteControlByComputer: {} as Record<
+		string,
+		{
+			available: boolean;
+			reason: string | null;
+			message: string | null;
+			ownerDeviceId: string | null;
+			startedAt: string | null;
+		}
+	>,
 }));
 
 const DESKTOP_CONTROL_PRESENTATION_STORAGE_KEY =
@@ -104,6 +121,7 @@ vi.mock("#/lib/relay/use-session-stream", async () => {
 			return {
 				sessions: streamMock.sessions,
 				projects: streamMock.projects,
+				remoteControlByComputer: streamMock.remoteControlByComputer,
 				startSession: streamMock.startSession,
 				archiveSession: streamMock.archiveSession,
 			};
@@ -112,6 +130,7 @@ vi.mock("#/lib/relay/use-session-stream", async () => {
 			channel: streamMock.channel,
 			iceServers: [],
 			joinRejected: false,
+			remoteControl: streamMock.remoteControl,
 			streamRunId: null,
 			streamToken: null,
 		}),
@@ -254,6 +273,8 @@ beforeEach(() => {
 	streamMock.accountHookMounts = 0;
 	streamMock.accountHookUnmounts = 0;
 	streamMock.channel = null;
+	streamMock.remoteControl = null;
+	streamMock.remoteControlByComputer = {};
 	window.localStorage.removeItem(DESKTOP_CONTROL_PRESENTATION_STORAGE_KEY);
 	useSessionStore.setState({
 		transcripts: {},
@@ -687,6 +708,64 @@ describe.sequential("cloud sessions shell", () => {
 				screen.queryByRole("region", { name: "Desktop controls" }),
 			).toBeNull();
 		});
+	});
+
+	it("disables Computer Use when another cloud app owns the connection", async () => {
+		setupComputerUseSession({ withSnapshot: false });
+		streamMock.remoteControlByComputer = {
+			"desktop-1": {
+				available: false,
+				reason: "computer_use_connection_already_active",
+				message:
+					"Stop the running connection in the other cloud app before using it here.",
+				ownerDeviceId: "web-other",
+				startedAt: "2026-05-29T18:29:00Z",
+			},
+		};
+
+		renderCloudRoute(`/sessions/desktop-1/${REMOTE_COMPUTER_USE_SESSION_ID}`);
+
+		const desktopButton = await screen.findByRole("button", {
+			name: "Open desktop controls",
+		});
+		expect((desktopButton as HTMLButtonElement).disabled).toBe(true);
+		expect(
+			screen.getByRole("heading", { name: "Computer Use is already in use" }),
+		).toBeTruthy();
+		expect(
+			screen.getByText(
+				"Stop the running connection in the other cloud app before using it here.",
+			),
+		).toBeTruthy();
+		expect(screen.queryByText("Use an app")).toBeNull();
+
+		expect(screen.queryByTestId("composer")).toBeNull();
+		expect(streamMock.composerProps).toHaveLength(0);
+	});
+
+	it("disables standard sessions when another cloud app owns the desktop", async () => {
+		streamMock.remoteControlByComputer = {
+			"desktop-1": {
+				available: false,
+				reason: "computer_use_connection_already_active",
+				message:
+					"Stop the running connection in the other cloud app before using it here.",
+				ownerDeviceId: "web-other",
+				startedAt: "2026-05-29T18:29:00Z",
+			},
+		};
+
+		renderCloudRoute("/sessions/desktop-1/session-1");
+
+		expect(
+			await screen.findByRole("heading", {
+				name: "Xero Cloud is already connected elsewhere",
+			}),
+		).toBeTruthy();
+		expect(screen.queryByLabelText("Loading")).toBeNull();
+
+		expect(screen.queryByTestId("composer")).toBeNull();
+		expect(streamMock.composerProps).toHaveLength(0);
 	});
 
 	it("renders Computer Use after reload before the synthetic session has a transcript snapshot", async () => {

@@ -13,6 +13,7 @@ defmodule Xero.Application do
       {DNSCluster, query: Application.get_env(:xero, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Xero.PubSub},
       XeroWeb.Presence,
+      Xero.Remote.ControlSessionRegistry,
       Xero.GitHubAuth,
       # ETS-backed rate limiter (Hammer v7).
       Xero.RateLimiter,

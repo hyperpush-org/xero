@@ -75,6 +75,14 @@ defmodule XeroWeb.Telemetry do
         tags: [:family, :kind, :reason],
         description: "Computer Use stream/manual command frames rejected by the relay"
       ),
+      sum("xero.remote.computer_use.command.outcome.count",
+        tags: [:kind, :outcome, :priority, :reason],
+        description: "Computer Use command acknowledgement outcomes by kind"
+      ),
+      summary("xero.remote.computer_use.command.outcome.ack_latency_ms",
+        tags: [:kind, :outcome, :priority],
+        description: "Computer Use command acknowledgement latency"
+      ),
 
       # Database Metrics
       summary("xero.repo.query.total_time",

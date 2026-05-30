@@ -70,6 +70,7 @@ import { LoadingScreen } from "#/components/loading-screen";
 import { decodeRelayFrame } from "#/lib/relay/envelope";
 import {
 	answerComputerUseStreamOffer,
+	type CommandAckResult,
 	heartbeatComputerUseManualControl,
 	type InboundCommand,
 	pushInboundCommand,
@@ -155,13 +156,27 @@ function SessionView() {
 	const contextSnapshot = transcript?.contextSnapshot ?? null;
 	const contextSnapshotError = transcript?.contextSnapshotError ?? null;
 	const isLive = transcript?.isLive ?? false;
-	const { channel, iceServers, joinRejected, streamRunId, streamToken } =
-		useSessionStream({
-			computerId,
-			enabled: currentComputerOnline && currentSessionAvailable,
-			sessionId,
-			relayToken: session.relayToken,
-		});
+	const {
+		channel,
+		iceServers,
+		joinRejected,
+		remoteControl,
+		streamRunId,
+		streamToken,
+	} = useSessionStream({
+		computerId,
+		enabled: currentComputerOnline && currentSessionAvailable,
+		sessionId,
+		relayToken: session.relayToken,
+	});
+	const hostRemoteControl = shell.currentComputerRemoteControl ?? remoteControl;
+	const hostConnectionBlocked = hostRemoteControl?.available === false;
+	const hostConnectionBlockedTitle = isComputerUseSession
+		? "Computer Use is already in use"
+		: "Xero Cloud is already connected elsewhere";
+	const hostConnectionBlockedMessage =
+		hostRemoteControl?.message ??
+		"Stop the running connection in the other cloud app before using it here.";
 	const resolvedTurns = useResolvedRemoteMedia({
 		channel,
 		computerId,
@@ -357,6 +372,7 @@ function SessionView() {
 
 	useEffect(() => {
 		if (!channel || !session.deviceId || !currentSessionAvailable) return;
+		if (hostConnectionBlocked) return;
 		if (storedTranscript) return;
 		const requestSnapshot = () => {
 			if (useSessionStore.getState().transcripts[key]) return;
@@ -373,6 +389,7 @@ function SessionView() {
 		channel,
 		computerId,
 		currentSessionAvailable,
+		hostConnectionBlocked,
 		key,
 		session.deviceId,
 		sessionId,
@@ -381,6 +398,7 @@ function SessionView() {
 
 	useEffect(() => {
 		if (!channel || !session.deviceId || !transcript || isLive) return;
+		if (hostConnectionBlocked) return;
 		if (isComputerUseSession) return;
 		if (contextRequestSettled) {
 			setPendingContextRequestKey((current) =>
@@ -405,6 +423,7 @@ function SessionView() {
 		contextRequestKey,
 		contextRequestSettled,
 		debouncedDraftPrompt,
+		hostConnectionBlocked,
 		isLive,
 		isComputerUseSession,
 		pendingContextRequestKey,
@@ -424,6 +443,7 @@ function SessionView() {
 
 	const pushControlUpdate = useCallback(
 		(overrides: ControlUpdateOverrides = {}) => {
+			if (hostConnectionBlocked) return;
 			if (!channel || !session.deviceId) return;
 			const nextAgentId = isComputerUseSession
 				? "computer_use"
@@ -472,6 +492,7 @@ function SessionView() {
 			autoCompactEnabled,
 			channel,
 			computerId,
+			hostConnectionBlocked,
 			resolvedAgentId,
 			resolvedApprovalMode,
 			resolvedModelId,
@@ -486,6 +507,7 @@ function SessionView() {
 	const dispatchSend = useCallback(
 		(submittedPrompt?: string) => {
 			const message = (submittedPrompt ?? draftPrompt).trim();
+			if (hostConnectionBlocked) return;
 			if (!channel || !message || !session.deviceId) return;
 			const readyAttachments = attachmentsHook.getReadyAttachments();
 			const payload: Record<string, unknown> = {
@@ -536,6 +558,7 @@ function SessionView() {
 			autoCompactEnabled,
 			channel,
 			computerId,
+			hostConnectionBlocked,
 			draftPrompt,
 			followLatestConversation,
 			key,
@@ -662,6 +685,9 @@ function SessionView() {
 	const [computerUseSidebarDensity, setComputerUseSidebarDensity] =
 		useState<ComputerUseSidebarDensity>("comfortable");
 	const mobileTextKeyboardActive = useMobileTextKeyboardActive();
+	useEffect(() => {
+		if (hostConnectionBlocked) setDesktopControlsOpen(false);
+	}, [hostConnectionBlocked]);
 	const renderConversationPane = (
 		surface: "main" | "sidebar" = "main",
 		density: ComputerUseSidebarDensity = "comfortable",
@@ -690,7 +716,19 @@ function SessionView() {
 								: "max-w-3xl gap-4 pb-24 lg:max-w-[47rem]",
 						)}
 					>
-						{transcript ? (
+						{hostConnectionBlocked && !transcript ? (
+							shouldCollapseEmptyState ? null : (
+								<div className="flex flex-1 items-center justify-center">
+									<EmptySessionState
+										projectLabel={projectLabel}
+										context={isComputerUseSession ? "computer-use" : "default"}
+										variant={isCompactSidebar ? "dense" : "default"}
+										disabledTitle={hostConnectionBlockedTitle}
+										disabledDescription={hostConnectionBlockedMessage}
+									/>
+								</div>
+							)
+						) : transcript ? (
 							turns.length === 0 ? (
 								shouldCollapseEmptyState ? null : (
 									<div className="flex flex-1 items-center justify-center">
@@ -700,7 +738,19 @@ function SessionView() {
 												isComputerUseSession ? "computer-use" : "default"
 											}
 											variant={isCompactSidebar ? "dense" : "default"}
-											onSelectSuggestion={setDraftPrompt}
+											disabledTitle={
+												hostConnectionBlocked
+													? hostConnectionBlockedTitle
+													: undefined
+											}
+											disabledDescription={
+												hostConnectionBlocked
+													? hostConnectionBlockedMessage
+													: undefined
+											}
+											onSelectSuggestion={
+												hostConnectionBlocked ? undefined : setDraftPrompt
+											}
 										/>
 									</div>
 								)
@@ -729,62 +779,64 @@ function SessionView() {
 						isSidebarSurface ? "from-sidebar" : "from-background",
 					)}
 				/>
-				<div
-					className={cn(
-						"pointer-events-none absolute inset-x-0 bottom-0 px-3 sm:px-6",
-						isCompactSidebar
-							? "pb-[max(env(safe-area-inset-bottom),0.5rem)]"
-							: "pb-[max(env(safe-area-inset-bottom),0.75rem)]",
-						isSidebarSurface ? "bg-sidebar" : "bg-background",
-					)}
-				>
+				{hostConnectionBlocked ? null : (
 					<div
 						className={cn(
-							"pointer-events-auto mx-auto",
-							isCompactSidebar ? "max-w-none" : "max-w-3xl",
+							"pointer-events-none absolute inset-x-0 bottom-0 px-3 sm:px-6",
+							isCompactSidebar
+								? "pb-[max(env(safe-area-inset-bottom),0.5rem)]"
+								: "pb-[max(env(safe-area-inset-bottom),0.75rem)]",
+							isSidebarSurface ? "bg-sidebar" : "bg-background",
 						)}
 					>
-						<Composer
-							draftPrompt={draftPrompt}
-							onDraftPromptChange={setDraftPrompt}
-							onSubmit={dispatchSend}
-							density={isSidebarSurface ? density : undefined}
-							autoCompactEnabled={
-								isComputerUseSession ? undefined : autoCompactEnabled
-							}
-							onAutoCompactEnabledChange={
-								isComputerUseSession
-									? undefined
-									: handleAutoCompactEnabledChange
-							}
-							agentGroups={
-								isComputerUseSession
-									? []
-									: [{ id: "agents", options: selectableAgents }]
-							}
-							selectedAgentId={resolvedAgentId}
-							onAgentChange={handleAgentChange}
-							modelGroups={modelGroups}
-							selectedModelId={resolvedModelId}
-							onModelChange={handleModelChange}
-							thinkingOptions={thinkingComposerOptions}
-							selectedThinkingId={resolvedThinkingEffort}
-							onThinkingChange={handleThinkingChange}
-							approvalOptions={
-								isComputerUseSession ? undefined : approvalComposerOptions
-							}
-							selectedApprovalId={resolvedApprovalMode}
-							onApprovalChange={
-								isComputerUseSession ? undefined : handleApprovalModeChange
-							}
-							pendingAttachments={attachmentsHook.pendingAttachments}
-							onAddFiles={attachmentsHook.addFiles}
-							onRemoveAttachment={attachmentsHook.removeAttachment}
-							contextMeter={contextMeter}
-							dictation={isComputerUseSession ? hiddenDictation : undefined}
-						/>
+						<div
+							className={cn(
+								"pointer-events-auto mx-auto",
+								isCompactSidebar ? "max-w-none" : "max-w-3xl",
+							)}
+						>
+							<Composer
+								draftPrompt={draftPrompt}
+								onDraftPromptChange={setDraftPrompt}
+								onSubmit={dispatchSend}
+								density={isSidebarSurface ? density : undefined}
+								autoCompactEnabled={
+									isComputerUseSession ? undefined : autoCompactEnabled
+								}
+								onAutoCompactEnabledChange={
+									isComputerUseSession
+										? undefined
+										: handleAutoCompactEnabledChange
+								}
+								agentGroups={
+									isComputerUseSession
+										? []
+										: [{ id: "agents", options: selectableAgents }]
+								}
+								selectedAgentId={resolvedAgentId}
+								onAgentChange={handleAgentChange}
+								modelGroups={modelGroups}
+								selectedModelId={resolvedModelId}
+								onModelChange={handleModelChange}
+								thinkingOptions={thinkingComposerOptions}
+								selectedThinkingId={resolvedThinkingEffort}
+								onThinkingChange={handleThinkingChange}
+								approvalOptions={
+									isComputerUseSession ? undefined : approvalComposerOptions
+								}
+								selectedApprovalId={resolvedApprovalMode}
+								onApprovalChange={
+									isComputerUseSession ? undefined : handleApprovalModeChange
+								}
+								pendingAttachments={attachmentsHook.pendingAttachments}
+								onAddFiles={attachmentsHook.addFiles}
+								onRemoveAttachment={attachmentsHook.removeAttachment}
+								contextMeter={contextMeter}
+								dictation={isComputerUseSession ? hiddenDictation : undefined}
+							/>
+						</div>
 					</div>
-				</div>
+				)}
 			</div>
 		);
 	};
@@ -795,6 +847,8 @@ function SessionView() {
 					<ComputerUseDesktopDialog
 						open={desktopControlsOpen}
 						onOpenChange={setDesktopControlsOpen}
+						disabled={hostConnectionBlocked}
+						disabledReason={hostConnectionBlockedMessage}
 						agentSidebar={renderConversationPane(
 							"sidebar",
 							computerUseSidebarDensity,
@@ -958,7 +1012,17 @@ type DesktopViewportState =
 	| "degraded"
 	| "paused"
 	| "manual"
+	| "blocked"
 	| "offline";
+
+type ManualControlState =
+	| "manual_idle"
+	| "manual_requesting"
+	| "manual_active"
+	| "manual_reconnecting"
+	| "manual_denied"
+	| "manual_releasing"
+	| "manual_released";
 
 type DesktopStreamQuality = "low" | "balanced" | "high";
 type DesktopControlPresentationOverride = "auto" | "desktop" | "mobile";
@@ -973,6 +1037,7 @@ const DESKTOP_STREAM_CONNECTING_RETRY_MS = 7_000;
 const DESKTOP_STREAM_STALE_FRAME_MS = 8_000;
 const DESKTOP_STREAM_STATUS_INTERVAL_MS = 5_000;
 const DESKTOP_STREAM_FALLBACK_RECOVERY_COOLDOWN_MS = 2_500;
+const DESKTOP_STREAM_PENDING_ICE_CANDIDATES_MAX = 128;
 const DESKTOP_ADAPTIVE_QUALITY_DOWNGRADE_COOLDOWN_MS = 6_000;
 const DESKTOP_ADAPTIVE_QUALITY_UPGRADE_COOLDOWN_MS = 30_000;
 const DESKTOP_ADAPTIVE_QUALITY_STABLE_SAMPLES = 3;
@@ -1006,7 +1071,6 @@ const STREAM_STATUS_STATES = new Set<DesktopViewportState>([
 	"degraded",
 	"manual",
 ]);
-
 function createManualControlId(deviceId: string, sessionId: string): string {
 	const nonce = Math.random().toString(36).slice(2, 10);
 	const issuedAt = Date.now().toString(36);
@@ -1055,6 +1119,8 @@ const MANUAL_KEYBOARD_COMPOSITION_DUPLICATE_MS = 80;
 const DESKTOP_MOBILE_ZOOM_MIN = 1;
 const DESKTOP_MOBILE_ZOOM_MAX = 4;
 const DESKTOP_POINTER_TAP_SLOP_PX = 8;
+const REMOTE_CONTROL_ALREADY_ACTIVE_REASON =
+	"computer_use_connection_already_active";
 
 type ManualKeyboardCaptureState = "inactive" | "armed" | "composing";
 
@@ -1431,6 +1497,8 @@ interface ComputerUseDesktopViewportProps {
 interface ComputerUseDesktopControlsProps
 	extends ComputerUseDesktopViewportProps {
 	agentSidebar: ReactNode;
+	disabled?: boolean;
+	disabledReason?: string;
 	onAgentSidebarDensityChange: (density: ComputerUseSidebarDensity) => void;
 	onOpenChange: (open: boolean) => void;
 	open: boolean;
@@ -1438,6 +1506,8 @@ interface ComputerUseDesktopControlsProps
 
 function ComputerUseDesktopDialog({
 	agentSidebar,
+	disabled = false,
+	disabledReason,
 	onAgentSidebarDensityChange,
 	onOpenChange,
 	open,
@@ -1451,10 +1521,14 @@ function ComputerUseDesktopDialog({
 			size="sm"
 			aria-label="Open desktop controls"
 			className="h-8 gap-2 px-2.5"
+			disabled={disabled}
+			title={disabled ? disabledReason : undefined}
 			onClick={
-				presentation.isMobile
-					? () => requestNativeDesktopOrientationLock()
-					: () => onOpenChange(true)
+				disabled
+					? undefined
+					: presentation.isMobile
+						? () => requestNativeDesktopOrientationLock()
+						: () => onOpenChange(true)
 			}
 		>
 			<Monitor className="h-4 w-4" aria-hidden="true" />
@@ -1826,6 +1900,8 @@ export function ComputerUseDesktopViewport({
 	const [state, setState] = useState<DesktopViewportState>(
 		isOnline ? "waiting" : "offline",
 	);
+	const [manualState, setManualState] =
+		useState<ManualControlState>("manual_idle");
 	const [streamId, setStreamId] = useState<string | null>(null);
 	const [manualControlId, setManualControlId] = useState<string | null>(null);
 	const [fallbackPreviewUrl, setFallbackPreviewUrl] = useState<string | null>(
@@ -1847,6 +1923,7 @@ export function ComputerUseDesktopViewport({
 	const keyboardSinkRef = useRef<HTMLTextAreaElement | null>(null);
 	const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
 	const pendingMediaStreamRef = useRef<MediaStream | null>(null);
+	const pendingIceCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
 	const fallbackPreviewObjectUrlRef = useRef<string | null>(null);
 	const dataChannelFramesRef = useRef(
 		new Map<string, DesktopFrameChunkBuffer>(),
@@ -1892,6 +1969,7 @@ export function ComputerUseDesktopViewport({
 	const fallbackRecoveryLastAttemptAtRef = useRef(0);
 	const lastDesktopStreamRequestAtRef = useRef(0);
 	const lastDesktopVideoFrameAtRef = useRef(0);
+	const lastDesktopVideoHealthProbeAtRef = useRef(0);
 	const videoFrameCallbackIdRef = useRef<number | null>(null);
 	const streamStopRequestedRef = useRef(false);
 	const [controlBarPosition, setControlBarPosition] =
@@ -1903,6 +1981,11 @@ export function ComputerUseDesktopViewport({
 	const resolvedPreviewUrl =
 		state === "paused" ? null : (fallbackPreviewUrl ?? previewUrl);
 	const hasVisibleDesktopMedia = hasLiveVideo || Boolean(resolvedPreviewUrl);
+	const manualActive = manualState === "manual_active";
+	const manualBusy =
+		manualState === "manual_requesting" ||
+		manualState === "manual_reconnecting" ||
+		manualState === "manual_releasing";
 	const shouldRotateDesktopContent =
 		presentation.rotateDesktop && hasVisibleDesktopMedia;
 	const presentationModeKey = `${presentation.isMobile}:${shouldRotateDesktopContent}`;
@@ -1985,6 +2068,7 @@ export function ComputerUseDesktopViewport({
 			}
 			videoFrameCallbackIdRef.current = null;
 			pendingMediaStreamRef.current = null;
+			pendingIceCandidatesRef.current = [];
 			dataChannelFramesRef.current.clear();
 			if (videoRef.current) videoRef.current.srcObject = null;
 			for (const timeout of clickRippleTimeoutsRef.current) {
@@ -2015,8 +2099,8 @@ export function ComputerUseDesktopViewport({
 	}, [manualControlId]);
 
 	useEffect(() => {
-		if (state !== "manual") clearManualPointerGesture();
-	}, [clearManualPointerGesture, state]);
+		if (!manualActive) clearManualPointerGesture();
+	}, [clearManualPointerGesture, manualActive]);
 
 	useEffect(() => {
 		if (
@@ -2052,8 +2136,10 @@ export function ComputerUseDesktopViewport({
 	}, []);
 
 	useEffect(() => {
-		if (!isOnline) setState("offline");
-		else if (state === "offline") setState("waiting");
+		if (!isOnline) {
+			setManualState("manual_idle");
+			setState("offline");
+		} else if (state === "offline") setState("waiting");
 	}, [isOnline, state]);
 
 	useEffect(() => {
@@ -2100,9 +2186,11 @@ export function ComputerUseDesktopViewport({
 			}
 			videoFrameCallbackIdRef.current = null;
 			pendingMediaStreamRef.current = null;
+			pendingIceCandidatesRef.current = [];
 			dataChannelFramesRef.current.clear();
 			if (videoRef.current) videoRef.current.srcObject = null;
 			setHasLiveVideo(false);
+			lastDesktopVideoHealthProbeAtRef.current = 0;
 			if (clearPreview) clearFallbackPreview();
 			if (clearStreamId) {
 				streamIdRef.current = null;
@@ -2131,6 +2219,10 @@ export function ComputerUseDesktopViewport({
 		},
 		[],
 	);
+	const markDesktopVideoFrame = useCallback(() => {
+		lastDesktopVideoFrameAtRef.current = Date.now();
+		lastDesktopVideoHealthProbeAtRef.current = 0;
+	}, []);
 
 	const handleDesktopDataChannelMessage = useCallback(
 		(event: MessageEvent) => {
@@ -2179,6 +2271,7 @@ export function ComputerUseDesktopViewport({
 				closeDesktopPeerConnection(peerConnectionRef.current);
 				peerConnectionRef.current = null;
 				pendingMediaStreamRef.current = null;
+				pendingIceCandidatesRef.current = [];
 				dataChannelFramesRef.current.clear();
 				if (videoRef.current) videoRef.current.srcObject = null;
 				setHasLiveVideo(false);
@@ -2214,14 +2307,12 @@ export function ComputerUseDesktopViewport({
 				pendingMediaStreamRef.current = mediaStream;
 				if (videoRef.current) videoRef.current.srcObject = mediaStream;
 				liveVideoSeenRef.current = true;
-				lastDesktopVideoFrameAtRef.current = Date.now();
+				markDesktopVideoFrame();
 				fallbackRecoveryLastAttemptAtRef.current = 0;
 				clearFallbackPreview();
 				setHasLiveVideo(true);
 				setState((current) =>
-					current === "manual" || manualControlIdRef.current
-						? "manual"
-						: "live",
+					current === "manual" || manualActive ? "manual" : "live",
 				);
 			};
 			peerConnection.onicecandidate = (event) => {
@@ -2258,6 +2349,8 @@ export function ComputerUseDesktopViewport({
 			fallbackPreviewUrl,
 			handleDesktopDataChannelMessage,
 			iceServers,
+			manualActive,
+			markDesktopVideoFrame,
 			sessionId,
 			streamRunId,
 			streamToken,
@@ -2279,6 +2372,10 @@ export function ComputerUseDesktopViewport({
 					if (!peerConnection) return;
 					setState("connecting");
 					await peerConnection.setRemoteDescription(offer);
+					await flushPendingDesktopIceCandidates(
+						peerConnection,
+						pendingIceCandidatesRef.current,
+					);
 					const answer = await peerConnection.createAnswer();
 					await peerConnection.setLocalDescription(answer);
 					answerComputerUseStreamOffer(channel, {
@@ -2294,7 +2391,17 @@ export function ComputerUseDesktopViewport({
 				}
 				if (payload.schema === "xero.computer_use_stream_ice_candidate.v1") {
 					const candidate = desktopStreamIceCandidate(payload);
-					if (!candidate || !peerConnectionRef.current) return;
+					if (!candidate) return;
+					if (
+						!peerConnectionRef.current ||
+						!peerConnectionRef.current.remoteDescription
+					) {
+						queuePendingDesktopIceCandidate(
+							pendingIceCandidatesRef.current,
+							candidate,
+						);
+						return;
+					}
 					await peerConnectionRef.current.addIceCandidate(candidate);
 				}
 			} catch {
@@ -2452,10 +2559,11 @@ export function ComputerUseDesktopViewport({
 			) {
 				return;
 			}
-			if (payload.manualControlId) {
-				manualControlIdRef.current = payload.manualControlId;
-				setManualControlId(payload.manualControlId);
-			}
+			const payloadManualControlId = payload.manualControlId ?? null;
+			const manualResponseMatches =
+				!payloadManualControlId ||
+				!manualControlIdRef.current ||
+				payloadManualControlId === manualControlIdRef.current;
 			void handleWebRtcSignal(payload);
 			if (payload.desktopFrame?.ok && payload.desktopFrame.bytesBase64) {
 				const bytes = base64ToBytes(payload.desktopFrame.bytesBase64);
@@ -2487,16 +2595,53 @@ export function ComputerUseDesktopViewport({
 				);
 			} else if (
 				payload.schema === "xero.computer_use_manual_control_request.v1" ||
-				payload.schema === "xero.computer_use_manual_control_grant.v1" ||
-				payload.schema === "xero.computer_use_manual_control_heartbeat.v1" ||
+				payload.schema === "xero.computer_use_manual_control_grant.v1"
+			) {
+				if (!manualResponseMatches) return;
+				if (payloadManualControlId) {
+					manualControlIdRef.current = payloadManualControlId;
+					setManualControlId(payloadManualControlId);
+				}
+				if (computerUseCommandSucceeded(payload)) {
+					setManualState("manual_active");
+					setState("manual");
+				} else {
+					disarmKeyboardCaptureRef.current?.();
+					manualControlIdRef.current = null;
+					setManualControlId(null);
+					setManualState("manual_denied");
+					setState(streamIdRef.current ? "degraded" : "waiting");
+				}
+			} else if (
+				payload.schema === "xero.computer_use_manual_control_heartbeat.v1"
+			) {
+				if (!manualResponseMatches) return;
+				if (computerUseCommandSucceeded(payload)) {
+					setManualState("manual_active");
+					setState("manual");
+				} else {
+					disarmKeyboardCaptureRef.current?.({ flushText: true });
+					setManualState("manual_reconnecting");
+					setState(streamIdRef.current ? "degraded" : "waiting");
+				}
+			} else if (
 				payload.schema === "xero.computer_use_manual_control_input.v1"
 			) {
-				setState("manual");
+				if (!manualResponseMatches) return;
+				if (!computerUseCommandSucceeded(payload)) {
+					disarmKeyboardCaptureRef.current?.({ flushText: true });
+					setManualState("manual_reconnecting");
+					setState(streamIdRef.current ? "degraded" : "waiting");
+				}
 			} else if (
 				payload.schema === "xero.computer_use_manual_control_release.v1"
 			) {
+				if (!manualResponseMatches) return;
 				disarmKeyboardCaptureRef.current?.();
-				setState(streamId ? "degraded" : "waiting");
+				manualControlIdRef.current = null;
+				setManualControlId(null);
+				setManualState("manual_released");
+				setState(streamIdRef.current ? "degraded" : "waiting");
 			}
 		});
 		return () => {
@@ -2509,13 +2654,64 @@ export function ComputerUseDesktopViewport({
 		handleWebRtcSignal,
 		recoverDesktopWebRtcStream,
 		state,
-		streamId,
 	]);
 
 	useEffect(() => {
-		if (!channel || !deviceId || state !== "manual" || !manualControlId) return;
+		if (!channel) return;
+		const ref = channel.on(
+			"computer_use_command_outcome",
+			(payload: unknown) => {
+				if (!isCommandAckResult(payload)) return;
+				const activeManualControlId = manualControlIdRef.current;
+				const isActiveManualCommand =
+					payload.kind === "computer_use_manual_control_request" ||
+					payload.kind === "computer_use_manual_control_heartbeat" ||
+					payload.kind === "computer_use_manual_control_input" ||
+					payload.kind === "computer_use_manual_control_release";
+				if (!activeManualControlId || !isActiveManualCommand) return;
+				if (
+					payload.outcome === "rate_limited" ||
+					payload.outcome === "rejected" ||
+					payload.outcome === "timed_out" ||
+					payload.outcome === "stale"
+				) {
+					disarmKeyboardCaptureRef.current?.({ flushText: true });
+					if (
+						payload.kind === "computer_use_manual_control_request" ||
+						payload.kind === "computer_use_manual_control_release"
+					) {
+						manualControlIdRef.current = null;
+						setManualControlId(null);
+					}
+					setManualState(
+						payload.kind === "computer_use_manual_control_heartbeat" ||
+							payload.kind === "computer_use_manual_control_input"
+							? "manual_reconnecting"
+							: "manual_denied",
+					);
+					setState(streamIdRef.current ? "degraded" : "waiting");
+				}
+				if (
+					payload.kind === "computer_use_manual_control_release" &&
+					(payload.outcome === "executed" || payload.outcome === "duplicate")
+				) {
+					disarmKeyboardCaptureRef.current?.();
+					manualControlIdRef.current = null;
+					setManualControlId(null);
+					setManualState("manual_released");
+					setState(streamIdRef.current ? "degraded" : "waiting");
+				}
+			},
+		);
+		return () => {
+			channel.off("computer_use_command_outcome", ref);
+		};
+	}, [channel]);
+
+	useEffect(() => {
+		if (!channel || !deviceId || !manualActive || !manualControlId) return;
 		const sendHeartbeat = () => {
-			heartbeatComputerUseManualControl(channel, {
+			void heartbeatComputerUseManualControl(channel, {
 				computerId,
 				sessionId,
 				deviceId,
@@ -2523,6 +2719,15 @@ export function ComputerUseDesktopViewport({
 				runId: streamRunId,
 				streamToken,
 				reason: "manual_cloud_control_heartbeat",
+			}).then((result) => {
+				if (
+					result.outcome === "rate_limited" ||
+					result.outcome === "rejected" ||
+					result.outcome === "timed_out"
+				) {
+					setManualState("manual_reconnecting");
+					setState(streamIdRef.current ? "degraded" : "waiting");
+				}
 			});
 		};
 		sendHeartbeat();
@@ -2533,11 +2738,76 @@ export function ComputerUseDesktopViewport({
 		computerId,
 		deviceId,
 		manualControlId,
+		manualActive,
 		sessionId,
-		state,
 		streamRunId,
 		streamToken,
 	]);
+
+	useEffect(() => {
+		if (
+			!channel ||
+			!deviceId ||
+			manualState !== "manual_reconnecting" ||
+			!manualControlId
+		) {
+			return;
+		}
+		const handle = window.setTimeout(() => {
+			void requestComputerUseManualControl(channel, {
+				computerId,
+				sessionId,
+				deviceId,
+				manualControlId,
+				runId: streamRunId,
+				streamToken,
+				reason: "manual_cloud_control_reacquire",
+			}).then((result) => {
+				if (
+					result.outcome === "rate_limited" ||
+					result.outcome === "rejected" ||
+					result.outcome === "timed_out"
+				) {
+					setManualState("manual_denied");
+				}
+			});
+		}, 750);
+		return () => window.clearTimeout(handle);
+	}, [
+		channel,
+		computerId,
+		deviceId,
+		manualControlId,
+		manualState,
+		sessionId,
+		streamRunId,
+		streamToken,
+	]);
+
+	useEffect(() => {
+		if (
+			manualState !== "manual_requesting" &&
+			manualState !== "manual_reconnecting" &&
+			manualState !== "manual_releasing"
+		) {
+			return;
+		}
+		const timeoutMs = manualState === "manual_releasing" ? 8_000 : 10_000;
+		const handle = window.setTimeout(() => {
+			disarmKeyboardCaptureRef.current?.({ flushText: true });
+			if (manualState === "manual_releasing") {
+				manualControlIdRef.current = null;
+				setManualControlId(null);
+				setManualState("manual_released");
+			} else {
+				manualControlIdRef.current = null;
+				setManualControlId(null);
+				setManualState("manual_denied");
+			}
+			setState(streamIdRef.current ? "degraded" : "waiting");
+		}, timeoutMs);
+		return () => window.clearTimeout(handle);
+	}, [manualState]);
 
 	useEffect(() => {
 		if (!channel || !deviceId || !streamId) return;
@@ -2572,8 +2842,12 @@ export function ComputerUseDesktopViewport({
 	const canSend = Boolean(channel && deviceId && isOnline);
 	const canStopDesktop = canSend && STOPPABLE_DESKTOP_STATES.has(state);
 	const canUseManualControl =
-		canSend && MANUAL_CONTROL_DESKTOP_STATES.has(state);
-	const status = desktopViewportStatusLabel(state, resolvedPreviewUrl);
+		canSend && MANUAL_CONTROL_DESKTOP_STATES.has(state) && !manualBusy;
+	const status = desktopViewportStatusLabel(
+		state,
+		resolvedPreviewUrl,
+		manualState,
+	);
 	const requestStreamKeyframe = useCallback(() => {
 		if (!channel || !deviceId || !streamId) return;
 		requestComputerUseStreamKeyframe(channel, {
@@ -2610,7 +2884,7 @@ export function ComputerUseDesktopViewport({
 
 		let disposed = false;
 		const markFrame = () => {
-			lastDesktopVideoFrameAtRef.current = Date.now();
+			markDesktopVideoFrame();
 		};
 		const scheduleFrameProbe = () => {
 			if (disposed || typeof video.requestVideoFrameCallback !== "function") {
@@ -2635,7 +2909,7 @@ export function ComputerUseDesktopViewport({
 			}
 			videoFrameCallbackIdRef.current = null;
 		};
-	}, [hasLiveVideo]);
+	}, [hasLiveVideo, markDesktopVideoFrame]);
 
 	useEffect(() => {
 		if (!canSend || !streamId || !KEYFRAME_REFRESH_STATES.has(state)) return;
@@ -2651,7 +2925,7 @@ export function ComputerUseDesktopViewport({
 	}, [canSend, requestStreamKeyframe, state, streamId]);
 
 	useEffect(() => {
-		if (!canSend || state !== "connecting") return;
+		if (!canSend || !channel || !deviceId || state !== "connecting") return;
 		const retryConnectingStream = () => {
 			if (streamStopRequestedRef.current) return;
 			const now = Date.now();
@@ -2665,6 +2939,7 @@ export function ComputerUseDesktopViewport({
 			closeDesktopPeerConnection(peerConnectionRef.current);
 			peerConnectionRef.current = null;
 			pendingMediaStreamRef.current = null;
+			pendingIceCandidatesRef.current = [];
 			dataChannelFramesRef.current.clear();
 			if (videoRef.current) videoRef.current.srcObject = null;
 			setHasLiveVideo(false);
@@ -2705,10 +2980,18 @@ export function ComputerUseDesktopViewport({
 		const recoverStaleVideo = () => {
 			if (streamStopRequestedRef.current) return;
 			const lastFrameAt = lastDesktopVideoFrameAtRef.current;
-			if (
-				!lastFrameAt ||
-				Date.now() - lastFrameAt < DESKTOP_STREAM_STALE_FRAME_MS
-			) {
+			const now = Date.now();
+			if (!lastFrameAt || now - lastFrameAt < DESKTOP_STREAM_STALE_FRAME_MS) {
+				return;
+			}
+			if (!desktopPeerConnectionNeedsMediaRecovery(peerConnectionRef.current)) {
+				if (
+					now - lastDesktopVideoHealthProbeAtRef.current >=
+					DESKTOP_STREAM_STALE_FRAME_MS
+				) {
+					lastDesktopVideoHealthProbeAtRef.current = now;
+					requestStreamKeyframe();
+				}
 				return;
 			}
 			requestStreamKeyframe();
@@ -2735,6 +3018,7 @@ export function ComputerUseDesktopViewport({
 		fallbackRecoveryLastAttemptAtRef.current = 0;
 		lastDesktopStreamRequestAtRef.current = Date.now();
 		lastDesktopVideoFrameAtRef.current = 0;
+		lastDesktopVideoHealthProbeAtRef.current = 0;
 		streamIdRef.current = null;
 		streamQualityRef.current = "balanced";
 		adaptiveQualityMetricsRef.current = null;
@@ -2743,7 +3027,7 @@ export function ComputerUseDesktopViewport({
 		clearDesktopStreamMedia({ clearPreview: true, clearStreamId: true });
 		setStreamQuality("balanced");
 		setState("connecting");
-		requestComputerUseStream(channel, {
+		void requestComputerUseStream(channel, {
 			computerId,
 			sessionId,
 			deviceId,
@@ -2751,6 +3035,12 @@ export function ComputerUseDesktopViewport({
 			runId: streamRunId,
 			streamToken,
 			iceServers,
+		}).then((result) => {
+			if (remoteControlConnectionAlreadyActive(result)) {
+				streamStopRequestedRef.current = true;
+				clearDesktopStreamMedia({ clearPreview: true, clearStreamId: true });
+				setState("blocked");
+			}
 		});
 	};
 	const stopStream = () => {
@@ -2764,7 +3054,8 @@ export function ComputerUseDesktopViewport({
 		adaptiveQualityMetricsRef.current = null;
 		adaptiveQualityStableSamplesRef.current = 0;
 		if (state === "manual" || activeManualControlId) {
-			releaseComputerUseManualControl(channel, {
+			setManualState("manual_releasing");
+			void releaseComputerUseManualControl(channel, {
 				computerId,
 				sessionId,
 				deviceId,
@@ -2772,10 +3063,8 @@ export function ComputerUseDesktopViewport({
 				runId: streamRunId,
 				streamToken,
 			});
-			manualControlIdRef.current = null;
-			setManualControlId(null);
 		}
-		stopComputerUseStream(channel, {
+		void stopComputerUseStream(channel, {
 			computerId,
 			sessionId,
 			deviceId,
@@ -2793,7 +3082,8 @@ export function ComputerUseDesktopViewport({
 			manualControlIdRef.current ?? createManualControlId(deviceId, sessionId);
 		manualControlIdRef.current = nextManualControlId;
 		setManualControlId(nextManualControlId);
-		requestComputerUseManualControl(channel, {
+		setManualState("manual_requesting");
+		void requestComputerUseManualControl(channel, {
 			computerId,
 			sessionId,
 			deviceId,
@@ -2801,33 +3091,47 @@ export function ComputerUseDesktopViewport({
 			runId: streamRunId,
 			streamToken,
 			reason: "manual_cloud_control",
+		}).then((result) => {
+			if (
+				result.outcome === "rate_limited" ||
+				result.outcome === "rejected" ||
+				result.outcome === "timed_out"
+			) {
+				manualControlIdRef.current = null;
+				setManualControlId(null);
+				setManualState("manual_denied");
+			}
 		});
-		setState("manual");
 	};
 	const releaseManual = () => {
 		if (!channel || !deviceId) return;
 		clearManualPointerGesture();
 		disarmKeyboardCaptureRef.current?.({ flushText: true });
 		const activeManualControlId = manualControlIdRef.current ?? manualControlId;
-		releaseComputerUseManualControl(channel, {
+		setManualState("manual_releasing");
+		void releaseComputerUseManualControl(channel, {
 			computerId,
 			sessionId,
 			deviceId,
 			manualControlId: activeManualControlId,
 			runId: streamRunId,
 			streamToken,
+		}).then((result) => {
+			if (result.outcome === "executed" || result.outcome === "duplicate") {
+				manualControlIdRef.current = null;
+				setManualControlId(null);
+				setManualState("manual_released");
+				setState(streamIdRef.current ? "degraded" : "waiting");
+			}
 		});
-		manualControlIdRef.current = null;
-		setManualControlId(null);
-		setState(streamId ? "degraded" : "waiting");
 	};
 	const sendManualInput = useCallback(
 		(input: Parameters<typeof sendComputerUseManualInput>[1]["input"]) => {
 			const activeManualControlId =
 				manualControlIdRef.current ?? manualControlId;
-			if (!channel || !deviceId || state !== "manual" || !activeManualControlId)
+			if (!channel || !deviceId || !manualActive || !activeManualControlId)
 				return;
-			sendComputerUseManualInput(channel, {
+			void sendComputerUseManualInput(channel, {
 				computerId,
 				sessionId,
 				deviceId,
@@ -2842,8 +3146,8 @@ export function ComputerUseDesktopViewport({
 			computerId,
 			deviceId,
 			manualControlId,
+			manualActive,
 			sessionId,
-			state,
 			streamRunId,
 			streamToken,
 		],
@@ -2864,12 +3168,12 @@ export function ComputerUseDesktopViewport({
 	const keyboardCaptureIsActive = useCallback(() => {
 		const activeManualControlId = manualControlIdRef.current ?? manualControlId;
 		return (
-			state === "manual" &&
+			manualActive &&
 			keyboardCaptureState !== "inactive" &&
 			Boolean(activeManualControlId) &&
 			keyboardCaptureManualControlIdRef.current === activeManualControlId
 		);
-	}, [keyboardCaptureState, manualControlId, state]);
+	}, [keyboardCaptureState, manualActive, manualControlId]);
 	const flushTextBatch = useCallback(() => {
 		cancelTextBatchTimeout();
 		const text = textBatchRef.current;
@@ -2930,12 +3234,12 @@ export function ComputerUseDesktopViewport({
 	}, [disarmKeyboardCapture]);
 	const armKeyboardCapture = useCallback(() => {
 		const activeManualControlId = manualControlIdRef.current ?? manualControlId;
-		if (state !== "manual" || !activeManualControlId) return;
+		if (!manualActive || !activeManualControlId) return;
 		keyboardCaptureManualControlIdRef.current = activeManualControlId;
 		setKeyboardCaptureState("armed");
 		keyboardSinkRef.current?.focus({ preventScroll: true });
 		clearKeyboardSinkValue();
-	}, [clearKeyboardSinkValue, manualControlId, state]);
+	}, [clearKeyboardSinkValue, manualActive, manualControlId]);
 	const queuePrintableFallback = useCallback(
 		(text: string) => {
 			cancelPrintableFallback();
@@ -2951,14 +3255,14 @@ export function ComputerUseDesktopViewport({
 	useEffect(() => {
 		const activeManualControlId = manualControlIdRef.current ?? manualControlId;
 		if (
-			state !== "manual" ||
+			!manualActive ||
 			!activeManualControlId ||
 			(keyboardCaptureManualControlIdRef.current &&
 				keyboardCaptureManualControlIdRef.current !== activeManualControlId)
 		) {
 			disarmKeyboardCapture();
 		}
-	}, [disarmKeyboardCapture, manualControlId, state]);
+	}, [disarmKeyboardCapture, manualActive, manualControlId]);
 
 	useEffect(() => {
 		const nextSessionKey = `${computerId}:${sessionId}`;
@@ -3336,13 +3640,12 @@ export function ComputerUseDesktopViewport({
 			};
 			mobileTouchPointersRef.current.set(event.pointerId, pointer);
 			if (mobileTouchPointersRef.current.size === 1) {
-				mobileTapPointerIdRef.current =
-					state === "manual" ? event.pointerId : null;
+				mobileTapPointerIdRef.current = manualActive ? event.pointerId : null;
 			}
 			if (mobileTouchPointersRef.current.size >= 2) {
 				disarmKeyboardCapture({ flushText: true });
 				if (hasVisibleDesktopMedia) beginMobilePinchGesture();
-			} else if (state !== "manual") {
+			} else if (!manualActive) {
 				disarmKeyboardCapture({ flushText: true });
 			}
 		},
@@ -3350,7 +3653,7 @@ export function ComputerUseDesktopViewport({
 			beginMobilePinchGesture,
 			disarmKeyboardCapture,
 			hasVisibleDesktopMedia,
-			state,
+			manualActive,
 		],
 	);
 	const handleMobileTouchPointerMove = useCallback(
@@ -3413,7 +3716,7 @@ export function ComputerUseDesktopViewport({
 			const shouldTap =
 				!cancelled &&
 				!wasPinching &&
-				state === "manual" &&
+				manualActive &&
 				mobileTapPointerIdRef.current === event.pointerId &&
 				!pointer.moved;
 			mobileTouchPointersRef.current.delete(event.pointerId);
@@ -3460,7 +3763,7 @@ export function ComputerUseDesktopViewport({
 			hasVisibleDesktopMedia,
 			pointFromPointerEvent,
 			sendManualPointerClick,
-			state,
+			manualActive,
 		],
 	);
 	const handlePointerDown = useCallback(
@@ -3469,7 +3772,7 @@ export function ComputerUseDesktopViewport({
 				handleMobileTouchPointerDown(event);
 				return;
 			}
-			if (state !== "manual") {
+			if (!manualActive) {
 				clearManualPointerGesture();
 				disarmKeyboardCapture();
 				return;
@@ -3509,9 +3812,9 @@ export function ComputerUseDesktopViewport({
 			clearManualPointerGesture,
 			disarmKeyboardCapture,
 			handleMobileTouchPointerDown,
+			manualActive,
 			pointFromPointerEvent,
 			presentation.isMobile,
-			state,
 		],
 	);
 	const handlePointerMove = useCallback(
@@ -3535,7 +3838,7 @@ export function ComputerUseDesktopViewport({
 				if (point) gesture.latestPoint = point;
 				return;
 			}
-			if (state !== "manual" || event.buttons === 0) return;
+			if (!manualActive || event.buttons === 0) return;
 			const now = Date.now();
 			if (now - lastPointerMoveAtRef.current < 80) return;
 			lastPointerMoveAtRef.current = now;
@@ -3551,10 +3854,10 @@ export function ComputerUseDesktopViewport({
 		},
 		[
 			handleMobileTouchPointerMove,
+			manualActive,
 			pointFromPointerEvent,
 			presentation.isMobile,
 			sendManualInput,
-			state,
 		],
 	);
 	const handlePointerUp = useCallback(
@@ -3640,7 +3943,7 @@ export function ComputerUseDesktopViewport({
 	);
 	const handleWheel = useCallback(
 		(event: WheelEvent<HTMLElement>) => {
-			if (state !== "manual") return;
+			if (!manualActive) return;
 			const deltaX = Math.round(event.deltaX);
 			const deltaY = Math.round(event.deltaY);
 			if (deltaX === 0 && deltaY === 0) return;
@@ -3651,7 +3954,7 @@ export function ComputerUseDesktopViewport({
 				deltaY,
 			});
 		},
-		[sendManualInput, state],
+		[manualActive, sendManualInput],
 	);
 	const clampFloatingBarPosition = useCallback(
 		(
@@ -3865,8 +4168,7 @@ export function ComputerUseDesktopViewport({
 	const showMobilePrompt = presentation.isMobile && hasVisibleDesktopMedia;
 	const toolbarWorking = isAgentWorking || toolbarPromptPending;
 	const activeManualControlId = manualControlIdRef.current ?? manualControlId;
-	const canCaptureKeyboard =
-		state === "manual" && Boolean(activeManualControlId);
+	const canCaptureKeyboard = manualActive && Boolean(activeManualControlId);
 	const keyboardCaptured =
 		canCaptureKeyboard &&
 		keyboardCaptureState !== "inactive" &&
@@ -3886,7 +4188,7 @@ export function ComputerUseDesktopViewport({
 				<section
 					ref={desktopSurfaceRef}
 					aria-label="Desktop"
-					tabIndex={state === "manual" ? 0 : -1}
+					tabIndex={manualActive ? 0 : -1}
 					onPointerDown={handlePointerDown}
 					onPointerMove={handlePointerMove}
 					onPointerUp={handlePointerUp}
@@ -3926,15 +4228,9 @@ export function ComputerUseDesktopViewport({
 								autoPlay
 								muted
 								playsInline
-								onLoadedData={() => {
-									lastDesktopVideoFrameAtRef.current = Date.now();
-								}}
-								onPlaying={() => {
-									lastDesktopVideoFrameAtRef.current = Date.now();
-								}}
-								onTimeUpdate={() => {
-									lastDesktopVideoFrameAtRef.current = Date.now();
-								}}
+								onLoadedData={markDesktopVideoFrame}
+								onPlaying={markDesktopVideoFrame}
+								onTimeUpdate={markDesktopVideoFrame}
 								className={desktopMediaClassName}
 								style={desktopMediaStyle}
 							/>
@@ -4037,14 +4333,14 @@ export function ComputerUseDesktopViewport({
 							variant="ghost"
 							className={toolbarButtonClassName}
 							disabled={!canUseManualControl}
-							onClick={state === "manual" ? releaseManual : requestManual}
+							onClick={manualActive ? releaseManual : requestManual}
 						>
 							<MousePointer2
 								className={toolbarIconClassName}
 								aria-hidden="true"
 							/>
 							<span className={toolbarLabelClassName}>
-								{state === "manual" ? "Release" : "Manual"}
+								{manualControlButtonLabel(manualState)}
 							</span>
 						</Button>
 						{presentation.isMobile ? (
@@ -4285,6 +4581,8 @@ function DesktopViewportEmptyState({
 function desktopViewportEmptyDescription(state: DesktopViewportState): string {
 	if (state === "offline")
 		return "This computer is not connected to Xero Cloud.";
+	if (state === "blocked")
+		return "Stop the running connection in the other cloud app before using it here.";
 	if (state === "connecting") return "Opening the live desktop stream.";
 	if (state === "paused")
 		return "The desktop stream is stopped for this session.";
@@ -4293,6 +4591,7 @@ function desktopViewportEmptyDescription(state: DesktopViewportState): string {
 
 function desktopViewportEmptyBadge(state: DesktopViewportState): string {
 	if (state === "offline") return "offline";
+	if (state === "blocked") return "in use";
 	if (state === "connecting") return "connecting";
 	if (state === "paused") return "paused";
 	return "ready";
@@ -4301,14 +4600,96 @@ function desktopViewportEmptyBadge(state: DesktopViewportState): string {
 function desktopViewportStatusLabel(
 	state: DesktopViewportState,
 	previewUrl: string | null,
+	manualState: ManualControlState = "manual_idle",
 ): string {
+	if (manualState === "manual_requesting") return "Requesting manual control";
+	if (manualState === "manual_reconnecting") return "Recovering manual control";
+	if (manualState === "manual_denied") return "Manual control denied";
+	if (manualState === "manual_releasing") return "Releasing manual control";
 	if (state === "offline") return "Device offline";
+	if (state === "blocked") return "Already in use";
 	if (state === "connecting") return "Connecting stream";
 	if (state === "live") return "Live stream";
 	if (state === "manual") return "Manual control active";
 	if (state === "paused") return "Stream paused";
 	if (previewUrl) return "Stream degraded";
 	return "Waiting for desktop";
+}
+
+function manualControlButtonLabel(state: ManualControlState): string {
+	if (state === "manual_active") return "Release";
+	if (state === "manual_requesting") return "Requesting";
+	if (state === "manual_reconnecting") return "Recovering";
+	if (state === "manual_releasing") return "Releasing";
+	if (state === "manual_denied") return "Retry";
+	return "Manual";
+}
+
+function computerUseCommandSucceeded(
+	payload: ComputerUseDesktopPayload,
+): boolean {
+	if (payload.ok === false) return false;
+	return (
+		payload.outcome !== "rejected" &&
+		payload.outcome !== "rate_limited" &&
+		payload.outcome !== "timed_out" &&
+		payload.outcome !== "stale"
+	);
+}
+
+function isCommandAckResult(value: unknown): value is CommandAckResult {
+	if (!value || typeof value !== "object") return false;
+	const payload = value as Partial<CommandAckResult>;
+	return (
+		payload.schema === "xero.remote_command_outcome.v1" &&
+		typeof payload.clientCommandId === "string" &&
+		typeof payload.kind === "string" &&
+		typeof payload.outcome === "string"
+	);
+}
+
+function remoteControlConnectionAlreadyActive(
+	result: CommandAckResult,
+): boolean {
+	return (
+		result.reason === REMOTE_CONTROL_ALREADY_ACTIVE_REASON &&
+		(result.outcome === "rejected" || result.outcome === "rate_limited")
+	);
+}
+
+function desktopPeerConnectionNeedsMediaRecovery(
+	peerConnection: RTCPeerConnection | null,
+): boolean {
+	if (!peerConnection) return true;
+	return (
+		peerConnection.connectionState === "failed" ||
+		peerConnection.connectionState === "disconnected" ||
+		peerConnection.connectionState === "closed" ||
+		peerConnection.iceConnectionState === "failed" ||
+		peerConnection.iceConnectionState === "disconnected" ||
+		peerConnection.iceConnectionState === "closed"
+	);
+}
+
+function queuePendingDesktopIceCandidate(
+	pending: RTCIceCandidateInit[],
+	candidate: RTCIceCandidateInit,
+) {
+	if (pending.length >= DESKTOP_STREAM_PENDING_ICE_CANDIDATES_MAX) {
+		pending.shift();
+	}
+	pending.push(candidate);
+}
+
+async function flushPendingDesktopIceCandidates(
+	peerConnection: RTCPeerConnection,
+	pending: RTCIceCandidateInit[],
+) {
+	while (pending.length > 0) {
+		const candidate = pending.shift();
+		if (!candidate) continue;
+		await peerConnection.addIceCandidate(candidate);
+	}
 }
 
 function desktopStreamDetails(
@@ -4385,6 +4766,7 @@ function isDesktopStreamQuality(value: unknown): value is DesktopStreamQuality {
 interface ComputerUseDesktopPayload {
 	schema: string;
 	ok?: boolean;
+	outcome?: string | null;
 	streamId?: string | null;
 	manualControlId?: string | null;
 	type?: string | null;
