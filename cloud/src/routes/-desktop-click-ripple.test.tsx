@@ -594,9 +594,9 @@ describe("ComputerUseDesktopViewport click feedback", () => {
 			pointerId: 10,
 		});
 		await waitFor(() => {
-			expect(manualInputPayloads(push).map((payload) => payload.action)).toEqual(
-				["mouse_down", "mouse_drag_move"],
-			);
+			expect(
+				manualInputPayloads(push).map((payload) => payload.action),
+			).toEqual(["mouse_down", "mouse_drag_move"]);
 		});
 		fireEvent.pointerUp(desktop, {
 			button: 0,
@@ -607,9 +607,9 @@ describe("ComputerUseDesktopViewport click feedback", () => {
 		});
 
 		await waitFor(() => {
-			expect(manualInputPayloads(push).map((payload) => payload.action)).toEqual(
-				["mouse_down", "mouse_drag_move", "mouse_up"],
-			);
+			expect(
+				manualInputPayloads(push).map((payload) => payload.action),
+			).toEqual(["mouse_down", "mouse_drag_move", "mouse_up"]);
 		});
 		expect(manualInputPayloads(push)).toEqual([
 			expect.objectContaining({
@@ -734,9 +734,9 @@ describe("ComputerUseDesktopViewport click feedback", () => {
 		});
 
 		await waitFor(() => {
-			expect(manualInputPayloads(push).map((payload) => payload.action)).toEqual(
-				["mouse_down", "mouse_drag_move", "mouse_up"],
-			);
+			expect(
+				manualInputPayloads(push).map((payload) => payload.action),
+			).toEqual(["mouse_down", "mouse_drag_move", "mouse_up"]);
 		});
 		expect(
 			manualInputPayloads(push).some(
@@ -1191,11 +1191,11 @@ async function renderManualDesktopViewport({
 		rotateDesktop: boolean;
 	};
 } = {}) {
-	let frameHandler: ((rawFrame: unknown) => void) | null = null;
+	const handlers: { frame?: (rawFrame: unknown) => void } = {};
 	const push = vi.fn();
 	const channel = {
 		on: vi.fn((event: string, handler: (rawFrame: unknown) => void) => {
-			if (event === "frame") frameHandler = handler;
+			if (event === "frame") handlers.frame = handler;
 			return "frame-ref";
 		}),
 		off: vi.fn(),
@@ -1222,9 +1222,12 @@ async function renderManualDesktopViewport({
 	render(presentation.isMobile ? <Dialog open>{viewport}</Dialog> : viewport);
 
 	const desktop = screen.getByLabelText("Desktop");
-	expect(frameHandler).toBeTruthy();
+	const sendFrame = handlers.frame;
+	if (!sendFrame) {
+		throw new Error("Expected desktop stream frame handler to be registered.");
+	}
 	act(() => {
-		frameHandler?.(
+		sendFrame(
 			relayFrame({
 				schema: "xero.computer_use_stream_frame.v1",
 				streamId: "stream-1",
@@ -1278,7 +1281,7 @@ async function renderManualDesktopViewport({
 	expect(manualControlId).toBeTruthy();
 	if (grantManual) {
 		act(() => {
-			frameHandler?.(
+			sendFrame(
 				relayFrame({
 					schema: "xero.computer_use_manual_control_request.v1",
 					ok: true,
@@ -1303,7 +1306,7 @@ async function renderManualDesktopViewport({
 
 	return {
 		desktop,
-		frameHandler,
+		frameHandler: sendFrame,
 		image,
 		keyboard,
 		manualControlId,

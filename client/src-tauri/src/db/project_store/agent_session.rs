@@ -691,6 +691,83 @@ pub fn delete_agent_session(
     Ok(())
 }
 
+/// Deletes a session without creating the usual replacement chat. Only use when
+/// the caller recreates a scoped backing session immediately.
+pub(crate) fn delete_agent_session_without_replacement(
+    repo_root: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+) -> Result<(), CommandError> {
+    validate_non_empty_text(project_id, "projectId", "agent_session_request_invalid")?;
+    validate_non_empty_text(
+        agent_session_id,
+        "agentSessionId",
+        "agent_session_request_invalid",
+    )?;
+
+    let database_path = database_path_for_repo(repo_root);
+    let connection = open_runtime_database(repo_root, &database_path)?;
+    read_project_row(&connection, &database_path, repo_root, project_id)?;
+    let _existing =
+        read_agent_session_row(&connection, &database_path, project_id, agent_session_id)?
+            .ok_or_else(|| missing_agent_session_error(project_id, agent_session_id))?;
+    let cascade_run_ids =
+        read_run_ids_for_session(&connection, &database_path, project_id, agent_session_id)?;
+    let now = now_timestamp();
+    let transaction = connection.unchecked_transaction().map_err(|error| {
+        CommandError::system_fault(
+            "agent_session_transaction_failed",
+            format!(
+                "Xero could not start the agent-session delete transaction in {}: {error}",
+                database_path.display()
+            ),
+        )
+    })?;
+
+    prepare_code_history_for_agent_session_delete(
+        &transaction,
+        &database_path,
+        project_id,
+        agent_session_id,
+        now.as_str(),
+    )?;
+    transaction
+        .execute(
+            r#"
+            DELETE FROM agent_sessions
+            WHERE project_id = ?1
+              AND agent_session_id = ?2
+            "#,
+            params![project_id, agent_session_id],
+        )
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_session_persist_failed",
+                format!(
+                    "Xero could not delete agent session `{agent_session_id}` in {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?;
+
+    transaction.commit().map_err(|error| {
+        CommandError::system_fault(
+            "agent_session_commit_failed",
+            format!(
+                "Xero could not commit the agent-session delete transaction in {}: {error}",
+                database_path.display()
+            ),
+        )
+    })?;
+
+    drop(connection);
+    if !cascade_run_ids.is_empty() {
+        clear_memory_runs_for_deletion(repo_root, project_id, &cascade_run_ids)?;
+    }
+
+    Ok(())
+}
+
 fn is_blank_new_agent_session(
     connection: &Connection,
     database_path: &Path,

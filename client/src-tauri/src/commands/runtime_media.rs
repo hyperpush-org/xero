@@ -395,12 +395,7 @@ fn store_runtime_image_attachment(
         )
     })?;
     let artifact_path = root.join(format!("{artifact_id}.{extension}"));
-    fs::write(&artifact_path, &image.bytes).map_err(|error| {
-        CommandError::system_fault(
-            "runtime_media_artifact_write_failed",
-            format!("Xero could not write runtime media artifact `{artifact_id}`: {error}"),
-        )
-    })?;
+    write_runtime_image_artifact(&artifact_path, &image.bytes, &artifact_id)?;
 
     let render_url = runtime_media_source_url(
         request.repo_root,
@@ -433,6 +428,25 @@ fn store_runtime_image_attachment(
         height: image.height,
         source,
         render_url,
+    })
+}
+
+fn write_runtime_image_artifact(
+    artifact_path: &Path,
+    bytes: &[u8],
+    artifact_id: &str,
+) -> CommandResult<()> {
+    if let Ok(existing) = fs::read(artifact_path) {
+        if existing == bytes {
+            return Ok(());
+        }
+    }
+
+    fs::write(artifact_path, bytes).map_err(|error| {
+        CommandError::system_fault(
+            "runtime_media_artifact_write_failed",
+            format!("Xero could not write runtime media artifact `{artifact_id}`: {error}"),
+        )
     })
 }
 
@@ -585,6 +599,7 @@ fn non_empty_string(value: Option<String>) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::{path::PathBuf, thread, time::Duration};
 
     const ONE_BY_ONE_PNG: &str =
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/axj3nQAAAAASUVORK5CYII=";
@@ -616,6 +631,54 @@ mod tests {
             attachments[0].source,
             RuntimeStreamMediaSourceDto::AppDataPath { .. }
         ));
+    }
+
+    #[test]
+    fn reuses_existing_identical_artifact_without_changing_metadata() {
+        let repo = tempfile::tempdir().expect("repo");
+        let output = json!({
+            "kind": "browser",
+            "action": "screenshot",
+            "valueJson": serde_json::to_string(&ONE_BY_ONE_PNG).unwrap(),
+        });
+
+        let extract_once = || {
+            extract_runtime_media_attachments(RuntimeMediaExtractionRequest {
+                repo_root: repo.path(),
+                project_id: "project-1",
+                run_id: "run-1",
+                event_id: 42,
+                tool_call_id: Some("call-browser"),
+                tool_name: Some("browser"),
+                output: &output,
+                asset_state: None,
+                remote_context: None,
+            })
+        };
+
+        let first = extract_once();
+        assert_eq!(first.len(), 1);
+        let absolute_path = match &first[0].source {
+            RuntimeStreamMediaSourceDto::AppDataPath { absolute_path } => {
+                PathBuf::from(absolute_path)
+            }
+            _ => panic!("expected app-data path"),
+        };
+        let first_modified = fs::metadata(&absolute_path)
+            .expect("first artifact metadata")
+            .modified()
+            .expect("first modified timestamp");
+
+        thread::sleep(Duration::from_millis(10));
+        let second = extract_once();
+        assert_eq!(second.len(), 1);
+        let second_modified = fs::metadata(&absolute_path)
+            .expect("second artifact metadata")
+            .modified()
+            .expect("second modified timestamp");
+
+        assert_eq!(second[0].id, first[0].id);
+        assert_eq!(second_modified, first_modified);
     }
 
     #[test]

@@ -38,6 +38,7 @@ import {
 	runtimeAgentIdSchema,
 } from "@xero/ui/model/runtime";
 import {
+	Eraser,
 	GripVertical,
 	Keyboard,
 	Monitor,
@@ -124,12 +125,16 @@ const COMPUTER_USE_EMPTY_TRANSCRIPT: SessionTranscript = {
 	currentApprovalMode: "suggest",
 	currentAutoCompactEnabled: true,
 };
+const COMPUTER_USE_TOP_BAR_ACTION_CLASS =
+	"h-7 gap-2 bg-transparent px-1.5 text-[12px] font-medium text-muted-foreground shadow-none hover:bg-transparent hover:text-foreground active:bg-transparent dark:hover:bg-transparent disabled:opacity-35";
+const COMPUTER_USE_TOP_BAR_ACTION_ICON_CLASS = "h-3.5 w-3.5";
 
 function SessionView() {
 	const shell = useSessionsShell();
 	const {
 		session,
 		visibleSessions,
+		clearComputerUseChat,
 		currentComputerOnline,
 		reportActiveTargetInvalid,
 	} = shell;
@@ -682,12 +687,53 @@ function SessionView() {
 	);
 	const projectLabel = shell.activeProjectLabel;
 	const [desktopControlsOpen, setDesktopControlsOpen] = useState(false);
+	const [clearChatPending, setClearChatPending] = useState(false);
 	const [computerUseSidebarDensity, setComputerUseSidebarDensity] =
 		useState<ComputerUseSidebarDensity>("comfortable");
 	const mobileTextKeyboardActive = useMobileTextKeyboardActive();
 	useEffect(() => {
 		if (hostConnectionBlocked) setDesktopControlsOpen(false);
 	}, [hostConnectionBlocked]);
+	useEffect(() => {
+		if (!clearChatPending) return;
+		if (turns.length === 0 && !isLive) setClearChatPending(false);
+	}, [clearChatPending, isLive, turns.length]);
+	useEffect(() => {
+		if (!clearChatPending) return;
+		const timeout = window.setTimeout(() => setClearChatPending(false), 10_000);
+		return () => window.clearTimeout(timeout);
+	}, [clearChatPending]);
+	const handleClearComputerUseChat = useCallback(() => {
+		if (!visibleSession || !isComputerUseSession) return;
+		const didRequest = clearComputerUseChat(visibleSession);
+		if (didRequest) {
+			setClearChatPending(true);
+			setDraftPrompt("");
+			attachmentsHook.clearAttachments();
+		}
+	}, [
+		attachmentsHook,
+		clearComputerUseChat,
+		isComputerUseSession,
+		visibleSession,
+	]);
+	const canClearComputerUseChat =
+		isComputerUseSession &&
+		Boolean(visibleSession) &&
+		currentComputerOnline &&
+		!hostConnectionBlocked &&
+		!isLive &&
+		!clearChatPending &&
+		turns.length > 0;
+	const clearComputerUseChatTitle = !currentComputerOnline
+		? "Computer Use is offline"
+		: hostConnectionBlocked
+			? hostConnectionBlockedMessage
+			: isLive
+				? "Stop the current run before clearing chat"
+				: turns.length === 0
+					? "Chat is already clear"
+					: undefined;
 	const renderConversationPane = (
 		surface: "main" | "sidebar" = "main",
 		density: ComputerUseSidebarDensity = "comfortable",
@@ -841,38 +887,64 @@ function SessionView() {
 		);
 	};
 	const conversationPane = renderConversationPane();
-	const computerUseDesktopDialog =
+	const computerUseTopBarAccessory =
 		isComputerUseSession && shell.topBarAccessoryElement
 			? createPortal(
-					<ComputerUseDesktopDialog
-						open={desktopControlsOpen}
-						onOpenChange={setDesktopControlsOpen}
-						disabled={hostConnectionBlocked}
-						disabledReason={hostConnectionBlockedMessage}
-						agentSidebar={renderConversationPane(
-							"sidebar",
-							computerUseSidebarDensity,
-						)}
-						onAgentSidebarDensityChange={setComputerUseSidebarDensity}
-						channel={channel}
-						computerId={computerId}
-						deviceId={session.deviceId}
-						iceServers={iceServers}
-						isOnline={currentComputerOnline}
-						isAgentWorking={isLive}
-						onPromptSubmit={dispatchSend}
-						previewUrl={desktopPreviewUrl}
-						sessionId={sessionId}
-						streamRunId={streamRunId}
-						streamToken={streamToken}
-					/>,
+					<>
+						<Button
+							type="button"
+							variant="ghost"
+							size="sm"
+							aria-label="Clear Computer Use chat"
+							className={COMPUTER_USE_TOP_BAR_ACTION_CLASS}
+							disabled={!canClearComputerUseChat}
+							title={clearComputerUseChatTitle}
+							onClick={handleClearComputerUseChat}
+						>
+							<Eraser
+								className={COMPUTER_USE_TOP_BAR_ACTION_ICON_CLASS}
+								aria-hidden="true"
+							/>
+							<span className="hidden sm:inline">
+								{clearChatPending ? "Clearing..." : "Clear Chat"}
+							</span>
+						</Button>
+						<span
+							aria-hidden="true"
+							className="select-none text-[12px] text-muted-foreground/35"
+						>
+							|
+						</span>
+						<ComputerUseDesktopDialog
+							open={desktopControlsOpen}
+							onOpenChange={setDesktopControlsOpen}
+							disabled={hostConnectionBlocked}
+							disabledReason={hostConnectionBlockedMessage}
+							agentSidebar={renderConversationPane(
+								"sidebar",
+								computerUseSidebarDensity,
+							)}
+							onAgentSidebarDensityChange={setComputerUseSidebarDensity}
+							channel={channel}
+							computerId={computerId}
+							deviceId={session.deviceId}
+							iceServers={iceServers}
+							isOnline={currentComputerOnline}
+							isAgentWorking={isLive}
+							onPromptSubmit={dispatchSend}
+							previewUrl={desktopPreviewUrl}
+							sessionId={sessionId}
+							streamRunId={streamRunId}
+							streamToken={streamToken}
+						/>
+					</>,
 					shell.topBarAccessoryElement,
 				)
 			: null;
 
 	return (
 		<>
-			{computerUseDesktopDialog}
+			{computerUseTopBarAccessory}
 			{desktopControlsOpen && isComputerUseSession ? null : conversationPane}
 		</>
 	);
@@ -1175,7 +1247,9 @@ interface DesktopManualPointerGesture extends DesktopManualPointerClick {
 	startPoint: DesktopInputPoint;
 }
 
-type DesktopManualInput = Parameters<typeof sendComputerUseManualInput>[1]["input"];
+type DesktopManualInput = Parameters<
+	typeof sendComputerUseManualInput
+>[1]["input"];
 
 function desktopMediaContentRect(
 	rect: DOMRect,
@@ -1523,10 +1597,10 @@ function ComputerUseDesktopDialog({
 	const trigger = (
 		<Button
 			type="button"
-			variant="secondary"
+			variant="ghost"
 			size="sm"
 			aria-label="Open desktop controls"
-			className="h-8 gap-2 px-2.5"
+			className={COMPUTER_USE_TOP_BAR_ACTION_CLASS}
 			disabled={disabled}
 			title={disabled ? disabledReason : undefined}
 			onClick={
@@ -1537,7 +1611,10 @@ function ComputerUseDesktopDialog({
 						: () => onOpenChange(true)
 			}
 		>
-			<Monitor className="h-4 w-4" aria-hidden="true" />
+			<Monitor
+				className={COMPUTER_USE_TOP_BAR_ACTION_ICON_CLASS}
+				aria-hidden="true"
+			/>
 			<span className="hidden sm:inline">Desktop</span>
 		</Button>
 	);
@@ -5169,12 +5246,13 @@ function collectMissingRemoteArtifactIds(
 	const ids = new Set<string>();
 	for (const turn of turns) {
 		for (const attachment of turnMediaAttachments(turn)) {
+			const artifactId = remoteArtifactId(attachment.source);
 			if (
-				attachment.source?.kind === "remote_artifact" &&
+				artifactId &&
 				!attachmentPreviewAvailable(attachment) &&
-				!resolvedUrls[attachment.source.artifactId]
+				!resolvedUrls[artifactId]
 			) {
-				ids.add(attachment.source.artifactId);
+				ids.add(artifactId);
 			}
 		}
 	}
@@ -5230,7 +5308,9 @@ function resolveAttachments(
 	if (!attachments?.length) return attachments;
 	return attachments.map((attachment) => {
 		if (attachment.source?.kind !== "remote_artifact") return attachment;
-		const renderUrl = resolvedUrls[attachment.source.artifactId];
+		const artifactId = remoteArtifactId(attachment.source);
+		if (!artifactId) return attachment;
+		const renderUrl = resolvedUrls[artifactId];
 		if (!renderUrl) return attachment;
 		return {
 			...attachment,
@@ -5252,6 +5332,18 @@ function turnMediaAttachments(
 		return turn.children.flatMap(turnMediaAttachments);
 	}
 	return [];
+}
+
+function remoteArtifactId(
+	source: ConversationMessageAttachment["source"],
+): string | null {
+	if (source?.kind !== "remote_artifact") return null;
+	const sourceRecord = source as { artifactId?: unknown };
+	const artifactId =
+		typeof sourceRecord.artifactId === "string"
+			? sourceRecord.artifactId.trim()
+			: "";
+	return artifactId.length > 0 ? artifactId : null;
 }
 
 function latestDesktopPreviewUrl(

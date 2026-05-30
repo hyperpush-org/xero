@@ -8,7 +8,7 @@ use super::{
     tool_allowed_for_runtime_agent_with_policy, AutonomousBrowserAction,
     AutonomousCommandPolicyOutcome, AutonomousCommandPolicyProfile, AutonomousCommandPolicyTrace,
     AutonomousCommandRequest, AutonomousDesktopControlAction, AutonomousDesktopObserveAction,
-    AutonomousDesktopStreamAction, AutonomousMcpAction, AutonomousProcessActionRiskLevel,
+    AutonomousMacosAutomationAction, AutonomousMcpAction, AutonomousProcessActionRiskLevel,
     AutonomousProcessManagerAction, AutonomousProcessManagerPolicyTrace,
     AutonomousProcessOwnershipScope, AutonomousProjectContextAction, AutonomousSafetyApprovalGrant,
     AutonomousSafetyPolicyAction, AutonomousSafetyPolicyDecision,
@@ -328,16 +328,36 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
                 }
             }
         }
-        AutonomousToolRequest::MacosAutomation(_) => SafetyPolicyMetadata {
-            risk_class: "os_control",
-            network_intent: "none",
-            credential_sensitivity: "possible",
-            os_target: Some("macos"),
-            prior_observation_required: false,
-            requires_approval: true,
-            require_approval_code: "policy_requires_approval_os_automation",
-            require_approval_reason: "Operating-system automation requires operator approval.",
-        },
+        AutonomousToolRequest::MacosAutomation(request) => {
+            let requires_approval = macos_automation_action_requires_approval(request.action);
+            SafetyPolicyMetadata {
+                risk_class: macos_automation_risk_class(request.action),
+                network_intent: "none",
+                credential_sensitivity: if matches!(
+                    request.action,
+                    AutonomousMacosAutomationAction::MacPermissions
+                        | AutonomousMacosAutomationAction::MacAppList
+                        | AutonomousMacosAutomationAction::MacWindowList
+                ) {
+                    "low"
+                } else {
+                    "possible"
+                },
+                os_target: Some("macos"),
+                prior_observation_required: false,
+                requires_approval,
+                require_approval_code: if requires_approval {
+                    "policy_requires_approval_destructive_os_automation"
+                } else {
+                    "policy_allows_non_destructive_os_automation"
+                },
+                require_approval_reason: if requires_approval {
+                    "Quitting an app can lose unsaved work and requires operator approval."
+                } else {
+                    "Read-only and non-destructive macOS automation does not require operator approval."
+                },
+            }
+        }
         AutonomousToolRequest::DesktopObserve(request) => {
             let sensitive = matches!(
                 request.action,
@@ -356,9 +376,9 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
                 credential_sensitivity: if sensitive { "possible" } else { "low" },
                 os_target: Some("desktop"),
                 prior_observation_required: false,
-                requires_approval: sensitive,
-                require_approval_code: "policy_requires_approval_desktop_observe",
-                require_approval_reason: "Sensitive desktop observation can expose private screen contents and requires operator approval.",
+                requires_approval: false,
+                require_approval_code: "policy_allows_desktop_observe",
+                require_approval_reason: "Desktop observation is read-only and does not require operator approval.",
             }
         }
         AutonomousToolRequest::DesktopControl(request) => {
@@ -366,8 +386,11 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
                 request.action,
                 AutonomousDesktopControlAction::CancelCurrentAction
             );
+            let requires_approval = desktop_control_action_requires_approval(&request.action);
             SafetyPolicyMetadata {
-                risk_class: if cancel_only {
+                risk_class: if requires_approval {
+                    "desktop_control_destructive"
+                } else if cancel_only {
                     "desktop_control_cancel"
                 } else {
                     "desktop_control"
@@ -376,26 +399,29 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
                 credential_sensitivity: "possible",
                 os_target: Some("desktop"),
                 prior_observation_required: !cancel_only,
-                requires_approval: !cancel_only,
-                require_approval_code: "policy_requires_approval_desktop_control",
-                require_approval_reason: "Native desktop control requires explicit operator approval.",
+                requires_approval,
+                require_approval_code: if requires_approval {
+                    "policy_requires_approval_destructive_desktop_control"
+                } else {
+                    "policy_allows_non_destructive_desktop_control"
+                },
+                require_approval_reason: if requires_approval {
+                    "Quitting an app can lose unsaved work and requires operator approval."
+                } else {
+                    "Non-destructive desktop control does not require operator approval."
+                },
             }
         }
-        AutonomousToolRequest::DesktopStream(request) => {
-            let requires_approval = !matches!(
-                request.action,
-                AutonomousDesktopStreamAction::StreamCapabilities
-                    | AutonomousDesktopStreamAction::StreamStatus
-            );
+        AutonomousToolRequest::DesktopStream(_) => {
             SafetyPolicyMetadata {
                 risk_class: "desktop_stream",
                 network_intent: "stream_media",
                 credential_sensitivity: "possible",
                 os_target: Some("desktop"),
                 prior_observation_required: false,
-                requires_approval,
-                require_approval_code: "policy_requires_approval_desktop_stream",
-                require_approval_reason: "Desktop streaming exposes live screen media and requires operator approval.",
+                requires_approval: false,
+                require_approval_code: "policy_allows_desktop_stream",
+                require_approval_reason: "Desktop streaming is read-only and does not require operator approval.",
             }
         }
         AutonomousToolRequest::Command(_)
@@ -562,6 +588,27 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
             require_approval_reason: "This tool call requires operator approval.",
         },
     }
+}
+
+fn macos_automation_action_requires_approval(action: AutonomousMacosAutomationAction) -> bool {
+    matches!(action, AutonomousMacosAutomationAction::MacAppQuit)
+}
+
+fn macos_automation_risk_class(action: AutonomousMacosAutomationAction) -> &'static str {
+    match action {
+        AutonomousMacosAutomationAction::MacPermissions
+        | AutonomousMacosAutomationAction::MacAppList
+        | AutonomousMacosAutomationAction::MacWindowList => "os_observe",
+        AutonomousMacosAutomationAction::MacScreenshot => "desktop_observe_sensitive",
+        AutonomousMacosAutomationAction::MacAppQuit => "os_destructive_control",
+        AutonomousMacosAutomationAction::MacAppLaunch
+        | AutonomousMacosAutomationAction::MacAppActivate
+        | AutonomousMacosAutomationAction::MacWindowFocus => "os_control",
+    }
+}
+
+fn desktop_control_action_requires_approval(action: &AutonomousDesktopControlAction) -> bool {
+    matches!(action, AutonomousDesktopControlAction::QuitApp)
 }
 
 fn project_context_action_mutates_app_state(request: &AutonomousToolRequest) -> bool {
@@ -1910,6 +1957,144 @@ mod tests {
     }
 
     #[test]
+    fn safety_policy_allows_computer_use_observation_without_approval() {
+        let tempdir = tempdir().expect("tempdir");
+        let runtime = test_runtime_for_agent(
+            tempdir.path(),
+            RuntimeRunApprovalModeDto::Yolo,
+            RuntimeAgentIdDto::ComputerUse,
+        );
+        let requests = [
+            (
+                super::super::AUTONOMOUS_TOOL_MACOS_AUTOMATION,
+                json!({"action": "mac_screenshot"}),
+                AutonomousToolRequest::MacosAutomation(
+                    super::super::AutonomousMacosAutomationRequest {
+                        action: AutonomousMacosAutomationAction::MacScreenshot,
+                        app_name: None,
+                        bundle_id: None,
+                        pid: None,
+                        window_id: None,
+                        monitor_id: None,
+                        screenshot_target: None,
+                    },
+                ),
+            ),
+            (
+                super::super::AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
+                json!({"action": "screenshot"}),
+                AutonomousToolRequest::DesktopObserve(
+                    super::super::AutonomousDesktopObserveRequest {
+                        action: AutonomousDesktopObserveAction::Screenshot,
+                        display_id: None,
+                        window_id: None,
+                        region: None,
+                        x: None,
+                        y: None,
+                    },
+                ),
+            ),
+            (
+                super::super::AUTONOMOUS_TOOL_DESKTOP_STREAM,
+                json!({"action": "stream_start"}),
+                AutonomousToolRequest::DesktopStream(
+                    super::super::AutonomousDesktopStreamRequest {
+                        action: super::super::AutonomousDesktopStreamAction::StreamStart,
+                        session_id: Some("session-1".into()),
+                        run_id: Some("run-1".into()),
+                        display_id: None,
+                        stream_id: None,
+                        max_width: None,
+                        max_frame_rate: None,
+                        include_cursor: None,
+                        quality: None,
+                        ice_servers: Vec::new(),
+                        session_description: None,
+                        ice_candidate: None,
+                    },
+                ),
+            ),
+        ];
+
+        for (tool_name, raw, request) in requests {
+            let decision = runtime
+                .evaluate_safety_policy(tool_name, &raw, &request, false, "input-hash")
+                .expect("policy");
+
+            assert_eq!(decision.action, AutonomousSafetyPolicyAction::Allow);
+        }
+    }
+
+    #[test]
+    fn safety_policy_requires_approval_for_destructive_computer_use_actions() {
+        let tempdir = tempdir().expect("tempdir");
+        let runtime = test_runtime_for_agent(
+            tempdir.path(),
+            RuntimeRunApprovalModeDto::Yolo,
+            RuntimeAgentIdDto::ComputerUse,
+        );
+        let requests = [
+            (
+                super::super::AUTONOMOUS_TOOL_MACOS_AUTOMATION,
+                json!({"action": "mac_app_quit", "appName": "TextEdit"}),
+                AutonomousToolRequest::MacosAutomation(
+                    super::super::AutonomousMacosAutomationRequest {
+                        action: AutonomousMacosAutomationAction::MacAppQuit,
+                        app_name: Some("TextEdit".into()),
+                        bundle_id: None,
+                        pid: None,
+                        window_id: None,
+                        monitor_id: None,
+                        screenshot_target: None,
+                    },
+                ),
+            ),
+            (
+                super::super::AUTONOMOUS_TOOL_DESKTOP_CONTROL,
+                json!({"action": "quit_app", "appName": "TextEdit"}),
+                AutonomousToolRequest::DesktopControl(
+                    super::super::AutonomousDesktopControlRequest {
+                        action: AutonomousDesktopControlAction::QuitApp,
+                        display_id: None,
+                        window_id: None,
+                        app_name: Some("TextEdit".into()),
+                        bundle_id: None,
+                        element_id: None,
+                        x: None,
+                        y: None,
+                        source_width: None,
+                        source_height: None,
+                        to_x: None,
+                        to_y: None,
+                        delta_x: None,
+                        delta_y: None,
+                        button: None,
+                        clicks: None,
+                        key: None,
+                        keys: Vec::new(),
+                        text: None,
+                        value: None,
+                        menu_path: Vec::new(),
+                        reason: None,
+                        sensitivity: None,
+                    },
+                ),
+            ),
+        ];
+
+        for (tool_name, raw, request) in requests {
+            let decision = runtime
+                .evaluate_safety_policy(tool_name, &raw, &request, false, "input-hash")
+                .expect("policy");
+
+            assert_eq!(
+                decision.action,
+                AutonomousSafetyPolicyAction::RequireApproval
+            );
+        }
+    }
+
+    #[test]
     fn safety_policy_uses_command_approval_mode() {
         let tempdir = tempdir().expect("tempdir");
         let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Suggest);
@@ -1988,11 +2173,19 @@ mod tests {
         repo_root: &Path,
         approval_mode: RuntimeRunApprovalModeDto,
     ) -> AutonomousToolRuntime {
+        test_runtime_for_agent(repo_root, approval_mode, RuntimeAgentIdDto::Engineer)
+    }
+
+    fn test_runtime_for_agent(
+        repo_root: &Path,
+        approval_mode: RuntimeRunApprovalModeDto,
+        runtime_agent_id: RuntimeAgentIdDto,
+    ) -> AutonomousToolRuntime {
         AutonomousToolRuntime::new(repo_root)
             .expect("runtime")
             .with_runtime_run_controls(RuntimeRunControlStateDto {
                 active: RuntimeRunActiveControlSnapshotDto {
-                    runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                    runtime_agent_id,
                     agent_definition_id: None,
                     agent_definition_version: None,
                     provider_profile_id: None,

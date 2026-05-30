@@ -1518,7 +1518,18 @@ fn activation_effect_allowed_by_profile(base_profile: &str, effect_class: &str) 
         "observe_only" => effect_class == "observe",
         "computer_use" => matches!(
             effect_class,
-            "observe" | "runtime_state" | "browser_control" | "device_control" | "process_control"
+            "observe"
+                | "runtime_state"
+                | "write"
+                | "destructive_write"
+                | "command"
+                | "process_control"
+                | "browser_control"
+                | "device_control"
+                | "desktop_control"
+                | "external_service"
+                | "skill_runtime"
+                | "agent_delegation"
         ),
         "planning" => matches!(effect_class, "observe" | "runtime_state"),
         "repository_recon" => matches!(

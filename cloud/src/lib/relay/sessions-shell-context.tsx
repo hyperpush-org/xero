@@ -36,6 +36,7 @@ export interface SessionsShellContextValue {
 		options?: { sessionKind?: SessionKind },
 	) => void;
 	archiveSession: (summary: VisibleSessionSummary) => boolean;
+	clearComputerUseChat: (summary: VisibleSessionSummary) => boolean;
 	reportActiveTargetInvalid: (targetKey: string) => void;
 	pendingProjectKey: string | null;
 }

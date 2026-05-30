@@ -714,13 +714,13 @@ pub(crate) fn base_policy_fragment(runtime_agent_id: RuntimeAgentIdDto) -> Strin
         ]
         .join("\n"),
         RuntimeAgentIdDto::ComputerUse => [
-            "You are Xero's Computer Use agent. Follow the user's direct instructions by observing and controlling the visible local computer through bounded UI automation tools.",
+            "You are Xero's Computer Use agent. Follow the user's direct instructions using the tools available for the current turn.",
             "",
-            "Computer Use is for direct computer interaction, not repository engineering. You may use browser, emulator, desktop observe/control/stream, macOS automation, system-diagnostics observe, tool discovery/access, todo, and read-only durable project context when those tools are available. Do not read repository files, edit files, run shell commands, manage processes outside the bounded automation tools, use git, invoke MCP servers, install or invoke skills, spawn subagents, or extract secrets. Do not request approval to escape this boundary.",
+            "Computer Use is general-purpose. It may combine computer interaction, project inspection, file changes, commands, browser and desktop automation, diagnostics, external-capability tools, skills, subagents, and durable context when those tools are available and appropriate to the user's task. Do not request approval to escape the active tool or safety boundary.",
             "",
             "Interaction contract: keep actions scoped to the visible task, ask before risky actions such as purchases, account changes, sending messages, deleting data, or changing system settings, and stop immediately if the user cancels. Treat passwords, tokens, recovery codes, and payment details as secrets: do not reveal, persist, or summarize them.",
             "",
-            "Persistence and retrieval contract: use read-only durable project context only when it helps understand the user's intended task or project-specific UI. Do not write durable context from Computer Use.",
+            "Persistence and retrieval contract: use durable project context when it helps understand the user's task or preserve explicitly requested durable information. Do not persist secrets.",
             "",
             "Final response contract: answer directly with what was done, what still needs user confirmation, or why the requested action was stopped. Do not include secrets.",
         ]
@@ -1293,7 +1293,7 @@ fn tool_policy_fragment(
         .collect::<Vec<_>>()
         .join(", ");
     let browser_control_guidance =
-        browser_control_prompt_section(browser_control_preference, tools);
+        browser_control_prompt_section(runtime_agent_id, browser_control_preference, tools);
     let tool_application_guidance =
         tool_application_prompt_section(runtime_agent_id, tool_application_policy, tools);
     match runtime_agent_id {
@@ -1301,7 +1301,7 @@ fn tool_policy_fragment(
             "Available observe-only tools: {tool_names}\n\nUse tools only to inspect project information needed to answer. Use `project_context_search` and `project_context_get` to read durable context; Ask's default surface does not expose durable-context writes. If the user explicitly asks to save a note, use only an approved context-write action when Xero exposes one for this turn. `tool_search` and `tool_access` are filtered to Ask-safe observe-only capabilities; do not ask for repo mutation, command, browser-control, MCP, skill, subagent, device, or external-service tools.{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::ComputerUse => format!(
-            "Available Computer Use tools: {tool_names}\n\nUse tools only for bounded visible-computer interaction and read-only project context. Prefer desktop_observe before desktop_control, use desktop_stream only for approved live viewing or degraded screenshot fallback, and keep browser/emulator/macOS automation/system-diagnostics observe inside their bounded UI surfaces. Shell and file access are not part of this agent's surface. `tool_search` and `tool_access` are filtered to Computer Use capabilities; do not ask for repository read/write, shell commands, git, MCP, skill, subagent, external-service, or durable-context write tools.{browser_control_guidance}"
+            "Available Computer Use tools: {tool_names}\n\nUse the smallest appropriate tool or tool group for the user's task, and follow each tool's schema, risk class, approval flow, and output contract. Prefer observe/read actions before state-changing actions when context is missing. Use `tool_search` and `tool_access` to activate additional Computer Use capabilities when the current tool list is insufficient.{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::Plan => format!(
             "Available planning tools: {tool_names}\n\nUse repository read/read_many/result_page/stat/search/find/list/list_tree/directory_digest/hash, safe git status/diff, workspace index, durable context search/get, tool discovery, and `todo` for runtime-owned planning state. Use context retrieval before drafting when prior plans, decisions, constraints, project facts, questions, or handoffs may matter. Use `project_context_record` only after explicit acceptance, with `recordKind: \"plan\"` and `contentJson.schema: \"xero.plan_pack.v1\"`; Plan cannot use it for generic notes, drafts, or non-plan records. `tool_search` and `tool_access` are filtered to planning-safe capabilities; do not ask for repo mutation, shell commands, browser-control, MCP, skill, subagent, device, network, external-service, branch, stash, commit, push, deploy, or other durable-context write tools.{browser_control_guidance}"
@@ -2125,6 +2125,7 @@ fn non_empty_trimmed(value: &str) -> Option<&str> {
 }
 
 fn browser_control_prompt_section(
+    runtime_agent_id: RuntimeAgentIdDto,
     preference: BrowserControlPreferenceDto,
     tools: &[AgentToolDescriptor],
 ) -> String {
@@ -2144,15 +2145,29 @@ fn browser_control_prompt_section(
         return String::new();
     }
 
-    let body = match preference {
-        BrowserControlPreferenceDto::Default => {
-            "Browser control preference: default. When browser control is needed, try the in-app `browser` tool first. It supports navigation, DOM click/type/key/scroll actions, screenshots, cookies/storage, console and network diagnostics, accessibility snapshots, and state save/restore. Use native desktop/browser automation only as a fallback when the in-app browser is unavailable, cannot reach the required user-owned browser state, or the user explicitly asks for device-browser control."
+    let body = if runtime_agent_id == RuntimeAgentIdDto::ComputerUse {
+        match preference {
+            BrowserControlPreferenceDto::Default => {
+                "Browser tools are available for browser-specific tasks. Choose in-app browser tools or native desktop/browser automation from the user's request, current state, and tool availability."
+            }
+            BrowserControlPreferenceDto::InAppBrowser => {
+                "For browser-specific tasks, prefer in-app browser tools when they fit. Use native desktop/browser automation when the user's request or current visible state calls for it."
+            }
+            BrowserControlPreferenceDto::NativeBrowser => {
+                "For browser-specific tasks, prefer native desktop/browser automation when it fits. Use in-app browser tools when the user's request or current state calls for them."
+            }
         }
-        BrowserControlPreferenceDto::InAppBrowser => {
-            "Browser control preference: in-app browser. Prefer the in-app `browser` tool for browser control. Use native desktop/browser automation only if the user explicitly asks for it or the in-app browser cannot satisfy the task."
-        }
-        BrowserControlPreferenceDto::NativeBrowser => {
-            "Browser control preference: native browser. Prefer native desktop/browser automation for browser control. Use the in-app `browser` tool only when the user explicitly asks for it or native browser control is unavailable."
+    } else {
+        match preference {
+            BrowserControlPreferenceDto::Default => {
+                "Browser control preference: default. When browser control is needed, use in-app `browser_control` for opening, navigation, DOM click/type/key/scroll actions, cookies/storage writes, tab control, and state restore; use `browser_observe` for screenshots, page text, cookies/storage reads, console and network diagnostics, accessibility snapshots, and state reads. Use native desktop/browser automation only as a fallback when the in-app browser is unavailable, cannot reach the required user-owned browser state, or the user explicitly asks for device-browser control."
+            }
+            BrowserControlPreferenceDto::InAppBrowser => {
+                "Browser control preference: in-app browser. Prefer in-app `browser_control` and `browser_observe` for browser tasks. Use native desktop/browser automation only if the user explicitly asks for it or the in-app browser cannot satisfy the task."
+            }
+            BrowserControlPreferenceDto::NativeBrowser => {
+                "Browser control preference: native browser. Prefer native desktop/browser automation for browser control. Use in-app `browser_control` and `browser_observe` only when the user explicitly asks for them or native browser control is unavailable."
+            }
         }
     };
 
@@ -2181,6 +2196,9 @@ pub(crate) fn plan_tool_exposure_for_prompt(
     plan.apply_tool_application_policy(&options.tool_application_policy);
 
     add_startup_surface(&mut plan, options);
+    if options.runtime_agent_id == RuntimeAgentIdDto::ComputerUse {
+        add_computer_use_startup_surface(&mut plan);
+    }
     if options.runtime_agent_id == RuntimeAgentIdDto::AgentCreate {
         add_tool_group_with_reason(
             &mut plan,
@@ -2437,9 +2455,7 @@ pub(crate) fn plan_tool_exposure_for_prompt(
         &[
             "browser",
             "frontend",
-            "ui",
             "playwright",
-            "screenshot",
             "localhost",
             "http://",
             "https://",
@@ -2447,7 +2463,20 @@ pub(crate) fn plan_tool_exposure_for_prompt(
             "type",
             "navigate",
         ],
-    );
+    ) || (contains_any(&lowered, &["screenshot"])
+        && contains_any(
+            &lowered,
+            &[
+                "browser",
+                "web page",
+                "webpage",
+                "page",
+                "frontend",
+                "localhost",
+                "http://",
+                "https://",
+            ],
+        ));
     if browser_task
         && (!docs_or_current_web
             || contains_any(&lowered, &["localhost", "click", "type", "navigate"]))
@@ -2742,6 +2771,24 @@ fn add_startup_surface(plan: &mut ToolExposurePlan, options: &ToolRegistryOption
             "Plan may persist only accepted xero.plan_pack.v1 plan records.",
         );
     }
+}
+
+fn add_computer_use_startup_surface(plan: &mut ToolExposurePlan) {
+    plan.add_tools(
+        [
+            AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
+            AUTONOMOUS_TOOL_DESKTOP_CONTROL,
+            AUTONOMOUS_TOOL_DESKTOP_STREAM,
+            AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+            AUTONOMOUS_TOOL_BROWSER_CONTROL,
+            AUTONOMOUS_TOOL_EMULATOR,
+            AUTONOMOUS_TOOL_MACOS_AUTOMATION,
+            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
+        ],
+        "agent_profile",
+        "computer_use_runtime_surface",
+        "Computer Use starts with general computer interaction and automation surfaces.",
+    );
 }
 
 fn add_tool_group_with_reason(
@@ -4081,7 +4128,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_MACOS_AUTOMATION,
-            "Phase 7 macOS app/system automation: check permissions, list/launch/activate/quit apps, list/focus windows, and capture approval-gated screenshots.",
+            "Phase 7 macOS app/system automation: check permissions, list/launch/activate/quit apps, list/focus windows, and capture screenshots.",
             macos_automation_schema(),
         ),
         descriptor(
@@ -4091,12 +4138,12 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_DESKTOP_CONTROL,
-            "Approval-gated Computer Use native desktop control with controller lock, audit, pointer, keyboard, app/window, Accessibility, clipboard, menu, and cancel actions.",
+            "Computer Use native desktop control with controller lock, audit, pointer, keyboard, app/window, Accessibility, clipboard, menu, and cancel actions.",
             desktop_control_schema(),
         ),
         descriptor(
             AUTONOMOUS_TOOL_DESKTOP_STREAM,
-            "Approval-gated Computer Use desktop streaming state and degraded screenshot fallback control.",
+            "Computer Use desktop streaming state and degraded screenshot fallback control.",
             desktop_stream_schema(),
         ),
         descriptor(
@@ -5886,7 +5933,7 @@ fn macos_automation_schema() -> JsonValue {
             (
                 "action",
                 enum_schema(
-                    "macOS automation action. Control actions and screenshots require operator approval.",
+                    "macOS automation action. Read-only and non-destructive actions run directly; quitting apps requires operator approval.",
                     &[
                         "mac_permissions",
                         "mac_app_list",
@@ -5914,7 +5961,7 @@ fn macos_automation_schema() -> JsonValue {
             ),
             (
                 "monitorId",
-                integer_schema("Target monitor id for mac_screenshot."),
+                integer_schema("Optional monitor id or display index for mac_screenshot; omit for the primary display."),
             ),
             (
                 "screenshotTarget",
@@ -5931,7 +5978,7 @@ fn desktop_observe_schema() -> JsonValue {
             (
                 "action",
                 enum_schema(
-                    "Desktop observation action. Screenshots, OCR, Accessibility snapshots, and element lookup require operator approval.",
+                    "Desktop observation action. Observation is read-only and does not require operator approval.",
                     &[
                         "permissions_status",
                         "display_list",
@@ -5976,7 +6023,7 @@ fn desktop_control_schema() -> JsonValue {
             (
                 "action",
                 enum_schema(
-                    "Desktop control action. All native input except cancel_current_action requires operator approval.",
+                    "Desktop control action. Non-destructive input runs directly; quitting apps requires operator approval.",
                     &[
                         "mouse_move",
                         "mouse_click",
@@ -6045,7 +6092,7 @@ fn desktop_stream_schema() -> JsonValue {
             (
                 "action",
                 enum_schema(
-                    "Desktop stream action. Starting or changing stream exposure requires operator approval.",
+                    "Desktop stream action. Stream state and signaling actions are read-only from the desktop's perspective.",
                     &[
                         "stream_capabilities",
                         "stream_start",
@@ -8447,6 +8494,149 @@ mod tests {
                         && reason.reason_code == "verification_expected"
                 })
         }));
+    }
+
+    #[test]
+    fn computer_use_prompt_starts_with_core_and_computer_surfaces() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let controls_input = RuntimeRunControlInputDto {
+            runtime_agent_id: RuntimeAgentIdDto::ComputerUse,
+            agent_definition_id: None,
+            provider_profile_id: None,
+            model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            thinking_effort: None,
+            approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            plan_mode_required: false,
+            auto_compact_enabled: true,
+        };
+        let controls = runtime_controls_from_request(Some(&controls_input));
+        let registry = ToolRegistry::for_prompt(
+            root.path(),
+            "Take a screenshot and show it to me.",
+            &controls,
+        );
+        let names = registry.descriptor_names();
+
+        for expected in [
+            AUTONOMOUS_TOOL_READ,
+            AUTONOMOUS_TOOL_READ_MANY,
+            AUTONOMOUS_TOOL_SEARCH,
+            AUTONOMOUS_TOOL_FIND,
+            AUTONOMOUS_TOOL_GIT_STATUS,
+            AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
+            AUTONOMOUS_TOOL_DESKTOP_CONTROL,
+            AUTONOMOUS_TOOL_DESKTOP_STREAM,
+            AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+            AUTONOMOUS_TOOL_BROWSER_CONTROL,
+            AUTONOMOUS_TOOL_EMULATOR,
+            AUTONOMOUS_TOOL_MACOS_AUTOMATION,
+            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
+            AUTONOMOUS_TOOL_TOOL_ACCESS,
+            AUTONOMOUS_TOOL_TOOL_SEARCH,
+            AUTONOMOUS_TOOL_TODO,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+        ] {
+            assert!(
+                names.contains(expected),
+                "missing Computer Use tool {expected}"
+            );
+        }
+
+        for denied in [
+            AUTONOMOUS_TOOL_WRITE,
+            AUTONOMOUS_TOOL_EDIT,
+            AUTONOMOUS_TOOL_PATCH,
+            AUTONOMOUS_TOOL_AGENT_DEFINITION,
+            AUTONOMOUS_TOOL_WORKFLOW_DEFINITION,
+        ] {
+            assert!(
+                !names.contains(denied),
+                "Computer Use should not expose {denied}"
+            );
+        }
+
+        assert!(exposure_has_reason(
+            &registry,
+            AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
+            "computer_use_runtime_surface"
+        ));
+
+        let compilation = PromptCompiler::new(
+            root.path(),
+            None,
+            None,
+            RuntimeAgentIdDto::ComputerUse,
+            BrowserControlPreferenceDto::Default,
+            registry.descriptors(),
+        )
+        .compile()
+        .expect("compile Computer Use prompt");
+        let prompt = compilation.prompt;
+        assert!(prompt.contains(
+            "Follow the user's direct instructions using the tools available for the current turn."
+        ));
+        assert!(prompt.contains("file changes, commands"));
+        assert!(prompt.contains("Use the smallest appropriate tool or tool group"));
+        assert!(prompt.contains("Browser tools are available for browser-specific tasks."));
+        for forbidden in [
+            concat!("Do not read ", "repository files"),
+            concat!(
+                "Shell ",
+                "and ",
+                "file access ",
+                "are not part of this agent's ",
+                "surface"
+            ),
+            concat!("without repository ", "mutation tools"),
+            concat!(
+                "Use tools only for bounded visible-computer ",
+                "interaction"
+            ),
+        ] {
+            assert!(
+                !prompt.contains(forbidden),
+                "Computer Use prompt should not contain old narrow policy: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn computer_use_file_change_prompt_can_activate_edit_and_verification_tools() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let controls_input = RuntimeRunControlInputDto {
+            runtime_agent_id: RuntimeAgentIdDto::ComputerUse,
+            agent_definition_id: None,
+            provider_profile_id: None,
+            model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            thinking_effort: None,
+            approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            plan_mode_required: false,
+            auto_compact_enabled: true,
+        };
+        let controls = runtime_controls_from_request(Some(&controls_input));
+        let registry = ToolRegistry::for_prompt(
+            root.path(),
+            "Edit the README, fix the broken command, and run scoped tests.",
+            &controls,
+        );
+        let names = registry.descriptor_names();
+
+        for expected in [
+            AUTONOMOUS_TOOL_EDIT,
+            AUTONOMOUS_TOOL_WRITE,
+            AUTONOMOUS_TOOL_PATCH,
+            AUTONOMOUS_TOOL_COMMAND_PROBE,
+            AUTONOMOUS_TOOL_COMMAND_VERIFY,
+            AUTONOMOUS_TOOL_CODE_INTEL,
+            AUTONOMOUS_TOOL_LSP,
+            AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
+        ] {
+            assert!(
+                names.contains(expected),
+                "missing Computer Use task tool {expected}"
+            );
+        }
     }
 
     #[test]

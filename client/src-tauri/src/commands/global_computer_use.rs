@@ -9,7 +9,11 @@ use tauri::{AppHandle, Runtime, State};
 
 use crate::{
     auth::now_timestamp,
-    commands::{agent_session::agent_session_dto, AgentSessionDto, CommandError, CommandResult},
+    commands::{
+        agent_session::agent_session_dto, runtime_support::load_persisted_runtime_run,
+        stop_runtime_run::stop_runtime_run_blocking, AgentSessionDto, CommandError, CommandResult,
+        StopRuntimeRunRequestDto,
+    },
     db::{
         self,
         migrations::{migrations, PROJECT_DATABASE_SCHEMA_VERSION},
@@ -99,6 +103,55 @@ pub(crate) fn ensure_global_computer_use_session_record<R: Runtime>(
         repo_root,
         session,
     })
+}
+
+pub(crate) fn reset_global_computer_use_session_record<R: Runtime + 'static>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+) -> CommandResult<GlobalComputerUseSessionRecord> {
+    let current = ensure_global_computer_use_session_record(app, state)?;
+    stop_global_computer_use_runtime_run_if_active(app, state, &current)?;
+    project_store::delete_agent_session_without_replacement(
+        &current.repo_root,
+        &current.project_id,
+        &current.session.agent_session_id,
+    )?;
+    ensure_global_computer_use_session_record(app, state)
+}
+
+fn stop_global_computer_use_runtime_run_if_active<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    record: &GlobalComputerUseSessionRecord,
+) -> CommandResult<()> {
+    let Some(snapshot) = load_persisted_runtime_run(
+        &record.repo_root,
+        &record.project_id,
+        &record.session.agent_session_id,
+    )?
+    else {
+        return Ok(());
+    };
+
+    if !matches!(
+        snapshot.run.status,
+        project_store::RuntimeRunStatus::Starting
+            | project_store::RuntimeRunStatus::Running
+            | project_store::RuntimeRunStatus::Stale
+    ) {
+        return Ok(());
+    }
+
+    stop_runtime_run_blocking(
+        app.clone(),
+        state.clone(),
+        StopRuntimeRunRequestDto {
+            project_id: record.project_id.clone(),
+            agent_session_id: record.session.agent_session_id.clone(),
+            run_id: snapshot.run.run_id,
+        },
+    )?;
+    Ok(())
 }
 
 pub(crate) fn global_computer_use_project_root<R: Runtime>(
@@ -315,4 +368,60 @@ fn remove_database_sidecars(database_path: &Path) {
     let shm_path = database_path.with_extension("db-shm");
     let _ = fs::remove_file(wal_path);
     let _ = fs::remove_file(shm_path);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        configure_builder_with_state,
+        db::project_store::{AgentSessionKind, AgentSessionUpdateRecord},
+        state::DesktopState,
+    };
+    use tauri::Manager;
+
+    #[test]
+    fn reset_global_computer_use_session_discards_previous_session_state() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let app = configure_builder_with_state(
+            tauri::test::mock_builder(),
+            DesktopState::default().with_global_db_path_override(root.path().join("global.db")),
+        )
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+        let handle = app.handle().clone();
+        let state = app.state::<DesktopState>();
+
+        let first = ensure_global_computer_use_session_record(&handle, state.inner())
+            .expect("global session");
+        project_store::update_agent_session(
+            &first.repo_root,
+            &AgentSessionUpdateRecord {
+                project_id: first.project_id.clone(),
+                agent_session_id: first.session.agent_session_id.clone(),
+                title: None,
+                summary: Some("old transcript summary".into()),
+                selected: Some(true),
+            },
+        )
+        .expect("mark old state");
+
+        let reset = reset_global_computer_use_session_record(&handle, state.inner())
+            .expect("reset global session");
+
+        assert_eq!(
+            reset.session.agent_session_id,
+            GLOBAL_COMPUTER_USE_AGENT_SESSION_ID
+        );
+        assert_eq!(reset.session.summary, "");
+        assert_eq!(reset.session.session_kind, AgentSessionKind::ComputerUse);
+        let sessions =
+            project_store::list_agent_sessions(&reset.repo_root, &reset.project_id, true)
+                .expect("list sessions");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions[0].agent_session_id,
+            GLOBAL_COMPUTER_USE_AGENT_SESSION_ID
+        );
+    }
 }

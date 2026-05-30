@@ -1026,7 +1026,7 @@ impl AutonomousToolRuntime {
                 request.action.as_str(),
                 policy,
                 AutonomousDesktopToolStatus::ApprovalRequired,
-                "Desktop observation requires operator approval before sensitive screen state is captured.",
+                "Desktop observation was paused by policy.",
             )?;
             return Ok(desktop_result(AUTONOMOUS_TOOL_DESKTOP_OBSERVE, output));
         }
@@ -1151,7 +1151,7 @@ impl AutonomousToolRuntime {
                 request.action.as_str(),
                 policy,
                 AutonomousDesktopToolStatus::ApprovalRequired,
-                "Desktop control requires operator approval before native input is sent.",
+                "Desktop control requires operator approval before a destructive action is performed.",
             )?;
             return Ok(desktop_result(AUTONOMOUS_TOOL_DESKTOP_CONTROL, output));
         }
@@ -1433,7 +1433,7 @@ impl AutonomousToolRuntime {
                 request.action.as_str(),
                 policy,
                 AutonomousDesktopToolStatus::ApprovalRequired,
-                "Desktop streaming requires operator approval before screen media is exposed.",
+                "Desktop streaming was paused by policy.",
             )?;
             return Ok(desktop_result(AUTONOMOUS_TOOL_DESKTOP_STREAM, output));
         }
@@ -3088,18 +3088,8 @@ fn validate_region(region: &AutonomousDesktopRegion) -> CommandResult<()> {
 
 fn desktop_observe_policy(
     request: &AutonomousDesktopObserveRequest,
-    operator_approved: bool,
+    _operator_approved: bool,
 ) -> AutonomousDesktopPolicyTrace {
-    if request.action.sensitive() && !operator_approved {
-        return desktop_policy(
-            AutonomousDesktopPolicyCategory::ObserveSensitive,
-            AutonomousDesktopPolicyDecision::ApprovalRequired,
-            "desktop_policy_observe_sensitive_requires_approval",
-            "Screenshots, OCR, Accessibility snapshots, and element lookup can expose private desktop content.",
-            true,
-            true,
-        );
-    }
     desktop_policy(
         if request.action.sensitive() {
             AutonomousDesktopPolicyCategory::ObserveSensitive
@@ -3112,6 +3102,10 @@ fn desktop_observe_policy(
         false,
         false,
     )
+}
+
+fn desktop_control_action_requires_approval(action: &AutonomousDesktopControlAction) -> bool {
+    matches!(action, AutonomousDesktopControlAction::QuitApp)
 }
 
 fn desktop_control_policy(
@@ -3154,21 +3148,34 @@ fn desktop_control_policy(
             false,
         );
     }
-    if !operator_approved {
+    let requires_approval = desktop_control_action_requires_approval(&request.action);
+    if requires_approval && !operator_approved {
         return desktop_policy(
             AutonomousDesktopPolicyCategory::ControlApprovalRequired,
             AutonomousDesktopPolicyDecision::ApprovalRequired,
-            "desktop_policy_control_requires_approval",
-            "Native desktop input, app control, clipboard use, and Accessibility actions require explicit operator approval.",
+            "desktop_policy_destructive_control_requires_approval",
+            "Quitting an app can lose unsaved work and requires explicit operator approval.",
             true,
             true,
         );
     }
     desktop_policy(
-        AutonomousDesktopPolicyCategory::ControlApprovalRequired,
+        if requires_approval {
+            AutonomousDesktopPolicyCategory::ControlApprovalRequired
+        } else {
+            AutonomousDesktopPolicyCategory::ControlSafe
+        },
         AutonomousDesktopPolicyDecision::Allowed,
-        "desktop_policy_control_allowed_after_approval",
-        "Desktop control was allowed after operator approval.",
+        if requires_approval {
+            "desktop_policy_destructive_control_allowed_after_approval"
+        } else {
+            "desktop_policy_control_allowed"
+        },
+        if requires_approval {
+            "Destructive desktop control was allowed after operator approval."
+        } else {
+            "Desktop control is non-destructive under the active Computer Use policy."
+        },
         false,
         false,
     )
@@ -3526,7 +3533,7 @@ fn desktop_target_contains(haystack: &str, term: &str) -> bool {
 
 fn desktop_stream_policy(
     request: &AutonomousDesktopStreamRequest,
-    operator_approved: bool,
+    _operator_approved: bool,
 ) -> AutonomousDesktopPolicyTrace {
     match request.action {
         AutonomousDesktopStreamAction::StreamCapabilities
@@ -3538,16 +3545,8 @@ fn desktop_stream_policy(
             false,
             false,
         ),
-        AutonomousDesktopStreamAction::StreamStart if !operator_approved => desktop_policy(
-            AutonomousDesktopPolicyCategory::StreamApprovalRequired,
-            AutonomousDesktopPolicyDecision::ApprovalRequired,
-            "desktop_policy_stream_start_requires_approval",
-            "Starting a desktop stream exposes live screen media and requires operator approval.",
-            true,
-            true,
-        ),
         _ => desktop_policy(
-            AutonomousDesktopPolicyCategory::StreamApprovalRequired,
+            AutonomousDesktopPolicyCategory::StreamSafe,
             AutonomousDesktopPolicyDecision::Allowed,
             "desktop_policy_stream_allowed",
             "Desktop stream action is allowed under the active policy.",
@@ -6488,7 +6487,7 @@ mod tests {
     }
 
     #[test]
-    fn observe_screenshot_requires_approval() {
+    fn observe_screenshot_is_allowed_without_approval() {
         let request = AutonomousDesktopObserveRequest {
             action: AutonomousDesktopObserveAction::Screenshot,
             display_id: None,
@@ -6498,10 +6497,9 @@ mod tests {
             y: None,
         };
         let policy = desktop_observe_policy(&request, false);
-        assert_eq!(
-            policy.decision,
-            AutonomousDesktopPolicyDecision::ApprovalRequired
-        );
+        assert_eq!(policy.decision, AutonomousDesktopPolicyDecision::Allowed);
+        assert!(!policy.approval_required);
+        assert_eq!(policy.code, "desktop_policy_observe_allowed");
     }
 
     #[test]
@@ -6599,7 +6597,54 @@ mod tests {
         let policy = desktop_control_policy(&request, true);
 
         assert_eq!(policy.decision, AutonomousDesktopPolicyDecision::Allowed);
-        assert_eq!(policy.code, "desktop_policy_control_allowed_after_approval");
+        assert_eq!(policy.code, "desktop_policy_control_allowed");
+    }
+
+    #[test]
+    fn control_quit_app_requires_approval() {
+        let mut request = desktop_control_request(AutonomousDesktopControlAction::QuitApp);
+        request.app_name = Some("TextEdit".into());
+
+        let blocked = desktop_control_policy(&request, false);
+        assert_eq!(
+            blocked.decision,
+            AutonomousDesktopPolicyDecision::ApprovalRequired
+        );
+        assert_eq!(
+            blocked.code,
+            "desktop_policy_destructive_control_requires_approval"
+        );
+
+        let approved = desktop_control_policy(&request, true);
+        assert_eq!(approved.decision, AutonomousDesktopPolicyDecision::Allowed);
+        assert_eq!(
+            approved.code,
+            "desktop_policy_destructive_control_allowed_after_approval"
+        );
+    }
+
+    #[test]
+    fn stream_start_is_allowed_without_approval() {
+        let request = AutonomousDesktopStreamRequest {
+            action: AutonomousDesktopStreamAction::StreamStart,
+            session_id: Some("session-1".into()),
+            run_id: Some("run-1".into()),
+            display_id: None,
+            stream_id: None,
+            max_width: None,
+            max_frame_rate: None,
+            include_cursor: None,
+            quality: None,
+            ice_servers: Vec::new(),
+            session_description: None,
+            ice_candidate: None,
+        };
+
+        let policy = desktop_stream_policy(&request, false);
+
+        assert_eq!(policy.decision, AutonomousDesktopPolicyDecision::Allowed);
+        assert!(!policy.approval_required);
+        assert_eq!(policy.code, "desktop_policy_stream_allowed");
     }
 
     #[test]

@@ -9,19 +9,16 @@ use super::{
     deferred_tool_catalog, tool_access_all_known_tools, tool_access_group_tools,
     tool_allowed_for_runtime_agent, tool_available_on_current_host, tool_effect_class,
     AutonomousAgentToolPolicy, AutonomousToolCatalogEntry, AutonomousToolEffectClass,
-    AutonomousToolOutput, AutonomousToolResult, AutonomousToolRuntime, AUTONOMOUS_TOOL_BROWSER,
-    AUTONOMOUS_TOOL_BROWSER_CONTROL, AUTONOMOUS_TOOL_BROWSER_OBSERVE, AUTONOMOUS_TOOL_CODE_INTEL,
-    AUTONOMOUS_TOOL_COMMAND_PROBE, AUTONOMOUS_TOOL_DESKTOP_CONTROL,
-    AUTONOMOUS_TOOL_DESKTOP_OBSERVE, AUTONOMOUS_TOOL_DESKTOP_STREAM,
-    AUTONOMOUS_TOOL_DIRECTORY_DIGEST, AUTONOMOUS_TOOL_EMULATOR,
+    AutonomousToolOutput, AutonomousToolResult, AutonomousToolRuntime, AUTONOMOUS_TOOL_CODE_INTEL,
+    AUTONOMOUS_TOOL_COMMAND_PROBE, AUTONOMOUS_TOOL_DIRECTORY_DIGEST,
     AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT, AUTONOMOUS_TOOL_FIND, AUTONOMOUS_TOOL_GIT_DIFF,
     AUTONOMOUS_TOOL_GIT_STATUS, AUTONOMOUS_TOOL_HARNESS_RUNNER, AUTONOMOUS_TOOL_HASH,
     AUTONOMOUS_TOOL_LIST, AUTONOMOUS_TOOL_LIST_TREE, AUTONOMOUS_TOOL_LSP,
-    AUTONOMOUS_TOOL_MACOS_AUTOMATION, AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
-    AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD, AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
-    AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_READ_MANY, AUTONOMOUS_TOOL_SEARCH, AUTONOMOUS_TOOL_SKILL,
-    AUTONOMOUS_TOOL_STAT, AUTONOMOUS_TOOL_SUBAGENT, AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
-    AUTONOMOUS_TOOL_TODO, AUTONOMOUS_TOOL_TOOL_ACCESS, AUTONOMOUS_TOOL_TOOL_SEARCH,
+    AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET, AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
+    AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH, AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_READ_MANY,
+    AUTONOMOUS_TOOL_SEARCH, AUTONOMOUS_TOOL_SKILL, AUTONOMOUS_TOOL_STAT, AUTONOMOUS_TOOL_SUBAGENT,
+    AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE, AUTONOMOUS_TOOL_TODO, AUTONOMOUS_TOOL_TOOL_ACCESS,
+    AUTONOMOUS_TOOL_TOOL_SEARCH, AUTONOMOUS_TOOL_WORKFLOW_DEFINITION,
     AUTONOMOUS_TOOL_WORKSPACE_INDEX,
 };
 use crate::{
@@ -3678,10 +3675,16 @@ fn effect_allowed_by_profile(base_profile: &str, effect_class: &str) -> bool {
             effect_class,
             "observe"
                 | "runtime_state"
+                | "write"
+                | "destructive_write"
+                | "command"
+                | "process_control"
                 | "browser_control"
                 | "device_control"
                 | "desktop_control"
-                | "process_control"
+                | "external_service"
+                | "skill_runtime"
+                | "agent_delegation"
         ),
         "planning" => matches!(effect_class, "observe" | "runtime_state"),
         "repository_recon" => {
@@ -3734,22 +3737,11 @@ fn planning_tool_allowed(tool: &str) -> bool {
 }
 
 fn computer_use_tool_allowed(tool: &str) -> bool {
-    matches!(
+    !matches!(
         tool,
-        AUTONOMOUS_TOOL_TOOL_ACCESS
-            | AUTONOMOUS_TOOL_TOOL_SEARCH
-            | AUTONOMOUS_TOOL_TODO
-            | AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH
-            | AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET
-            | AUTONOMOUS_TOOL_BROWSER_OBSERVE
-            | AUTONOMOUS_TOOL_BROWSER_CONTROL
-            | AUTONOMOUS_TOOL_BROWSER
-            | AUTONOMOUS_TOOL_EMULATOR
-            | AUTONOMOUS_TOOL_MACOS_AUTOMATION
-            | AUTONOMOUS_TOOL_DESKTOP_OBSERVE
-            | AUTONOMOUS_TOOL_DESKTOP_CONTROL
-            | AUTONOMOUS_TOOL_DESKTOP_STREAM
-            | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE
+        AUTONOMOUS_TOOL_HARNESS_RUNNER
+            | AUTONOMOUS_TOOL_AGENT_DEFINITION
+            | AUTONOMOUS_TOOL_WORKFLOW_DEFINITION
     )
 }
 
@@ -4177,59 +4169,42 @@ fn default_tool_policy(profile: &str) -> JsonValue {
             "destructiveWriteAllowed": false
         }),
         "computer_use" => json!({
-            "allowedEffectClasses": [],
+            "allowedEffectClasses": [
+                "observe",
+                "runtime_state",
+                "write",
+                "destructive_write",
+                "command",
+                "process_control",
+                "browser_control",
+                "device_control",
+                "desktop_control",
+                "external_service",
+                "skill_runtime",
+                "agent_delegation"
+            ],
             "allowedToolGroups": [],
             "allowedToolPacks": [],
-            "allowedTools": [
-                AUTONOMOUS_TOOL_TOOL_ACCESS,
-                AUTONOMOUS_TOOL_TOOL_SEARCH,
-                AUTONOMOUS_TOOL_TODO,
-                AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
-                AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
-                AUTONOMOUS_TOOL_BROWSER_OBSERVE,
-                AUTONOMOUS_TOOL_BROWSER_CONTROL,
-                AUTONOMOUS_TOOL_BROWSER,
-                AUTONOMOUS_TOOL_EMULATOR,
-                AUTONOMOUS_TOOL_MACOS_AUTOMATION,
-                AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
-                AUTONOMOUS_TOOL_DESKTOP_CONTROL,
-                AUTONOMOUS_TOOL_DESKTOP_STREAM,
-                AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE
-            ],
-            "deniedTools": [
-                "write",
-                "edit",
-                "patch",
-                "copy",
-                "fs_transaction",
-                "json_edit",
-                "toml_edit",
-                "yaml_edit",
-                "delete",
-                "rename",
-                "mkdir",
-                "command",
-                "command_run",
-                "command_session",
-                "command_session_start",
-                "command_session_read",
-                "command_session_stop",
-                "powershell",
-                "process_manager",
-                "git_status",
-                "git_diff",
-                "mcp",
-                "mcp_call_tool",
-                "skill",
-                "subagent"
-            ],
+            "allowedTools": [],
+            "deniedTools": [],
             "deniedToolPacks": [],
-            "externalServiceAllowed": false,
+            "externalServiceAllowed": true,
             "browserControlAllowed": true,
-            "skillRuntimeAllowed": false,
-            "subagentAllowed": false,
+            "skillRuntimeAllowed": true,
+            "subagentAllowed": true,
+            "allowedSubagentRoles": [
+                "engineer",
+                "debugger",
+                "planner",
+                "researcher",
+                "reviewer",
+                "browser",
+                "emulator",
+                "solana",
+                "database"
+            ],
             "commandAllowed": true,
-            "destructiveWriteAllowed": false
+            "destructiveWriteAllowed": true
         }),
         "repository_recon" => json!({
             "allowedEffectClasses": ["observe", "runtime_state", "command", "process_control"],

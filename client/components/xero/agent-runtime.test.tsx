@@ -153,6 +153,34 @@ function makeProject(overrides: Partial<ProjectDetailView> = {}): ProjectDetailV
   }
 }
 
+function makeComputerUseProject(overrides: Partial<ProjectDetailView> = {}): ProjectDetailView {
+  return makeProject({
+    selectedAgentSession: {
+      projectId: 'project-1',
+      agentSessionId: 'computer-use-session',
+      sessionKind: 'computer_use',
+      title: 'Computer Use',
+      summary: '',
+      status: 'active',
+      statusLabel: 'Active',
+      selected: true,
+      remoteVisible: false,
+      createdAt: '2026-05-01T11:00:00Z',
+      updatedAt: '2026-05-01T11:00:00Z',
+      archivedAt: null,
+      lastRunId: null,
+      lastRuntimeKind: null,
+      lastProviderId: null,
+      lineage: null,
+      isActive: true,
+      isArchived: false,
+      isComputerUse: true,
+    },
+    selectedAgentSessionId: 'computer-use-session',
+    ...overrides,
+  })
+}
+
 function makeRuntimeSession(overrides: Partial<RuntimeSessionView> = {}): RuntimeSessionView {
   return {
     projectId: 'project-1',
@@ -4564,29 +4592,7 @@ describe('AgentRuntime current UI', () => {
       render(
         <AgentRuntime
           agent={makeAgent({
-            project: makeProject({
-              selectedAgentSession: {
-                projectId: 'project-1',
-                agentSessionId: 'computer-use-session',
-                sessionKind: 'computer_use',
-                title: 'Computer Use',
-                summary: '',
-                status: 'active',
-                statusLabel: 'Active',
-                selected: true,
-                remoteVisible: false,
-                createdAt: '2026-05-01T11:00:00Z',
-                updatedAt: '2026-05-01T11:00:00Z',
-                archivedAt: null,
-                lastRunId: null,
-                lastRuntimeKind: null,
-                lastProviderId: null,
-                lineage: null,
-                isActive: true,
-                isArchived: false,
-                isComputerUse: true,
-              },
-            }),
+            project: makeComputerUseProject(),
             runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
           })}
           density="comfortable"
@@ -4600,11 +4606,147 @@ describe('AgentRuntime current UI', () => {
       const closeButton = screen.getByRole('button', { name: 'Close Computer Use' })
       const header = closeButton.parentElement
       expect(header?.className).toContain('h-10')
+      expect(header?.className).toContain('translate-y-1')
       expect(header?.textContent).toContain('Computer Use')
       expect(screen.queryByRole('button', { name: 'Close agent dock' })).not.toBeInTheDocument()
 
       fireEvent.click(closeButton)
       expect(onCloseSidebar).toHaveBeenCalledTimes(1)
+    })
+
+    it('adds client-only top spacing above Computer Use sidebar transcript content', () => {
+      const restoreResizeObserver = installResizeObserverMock(560)
+      try {
+        render(
+          <AgentRuntime
+            agent={makeAgent({
+              project: makeComputerUseProject(),
+              runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+              runtimeRun: makeRuntimeRun(),
+              runtimeStreamStatus: 'live',
+              runtimeStreamStatusLabel: 'Live stream',
+              runtimeStreamItems: [
+                {
+                  id: 'transcript:run-1:1',
+                  kind: 'transcript',
+                  runId: 'run-1',
+                  sequence: 1,
+                  createdAt: '2026-05-30T20:15:00Z',
+                  mediaAttachments: [],
+                  role: 'user',
+                  text: 'take a screenshot',
+                },
+              ],
+            })}
+            density="comfortable"
+            inSidebar
+            paneCount={1}
+            paneNumber={1}
+          />,
+        )
+
+        const viewport = screen.getByLabelText('Agent conversation viewport')
+        expect(viewport.className).toContain('pt-14')
+        expect(viewport.className).not.toContain('pt-20')
+        expect(screen.getByText('take a screenshot')).toBeVisible()
+      } finally {
+        restoreResizeObserver()
+      }
+    })
+
+    it('promotes Computer Use screenshot tool output into the assistant reply preview', () => {
+      const restoreResizeObserver = installResizeObserverMock(560)
+      try {
+        render(
+          <AgentRuntime
+            agent={makeAgent({
+              project: makeComputerUseProject(),
+              runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+              runtimeRun: makeRuntimeRun(),
+              runtimeStreamStatus: 'live',
+              runtimeStreamStatusLabel: 'Live stream',
+              runtimeStreamItems: [
+                {
+                  id: 'transcript:run-1:1',
+                  kind: 'transcript',
+                  runId: 'run-1',
+                  sequence: 1,
+                  createdAt: '2026-05-30T20:22:00Z',
+                  mediaAttachments: [],
+                  role: 'user',
+                  text: 'take a screenshot',
+                },
+                {
+                  id: 'tool:run-1:2',
+                  kind: 'tool',
+                  runId: 'run-1',
+                  sequence: 2,
+                  createdAt: '2026-05-30T20:22:01Z',
+                  toolCallId: 'call-macos-screenshot',
+                  toolName: 'macos_automation',
+                  title: 'macos automation',
+                  detail: 'Captured macOS screenshot.',
+                  toolState: 'succeeded',
+                  toolInputPreview: null,
+                  toolResultPreview: 'Captured macOS screenshot.',
+                  mediaAttachments: [
+                    {
+                      id: 'media-macos-screenshot',
+                      kind: 'image',
+                      mediaType: 'image/png',
+                      title: 'macOS screenshot',
+                      alt: 'macOS screenshot',
+                      sizeBytes: 67,
+                      width: 1,
+                      height: 1,
+                      source: {
+                        kind: 'app_data_path',
+                        absolutePath:
+                          '/Users/sn0w/Library/Application Support/Xero/tool-artifacts/conversation-media/macos.png',
+                      },
+                      renderUrl: 'project-asset://preview/macos-screenshot',
+                    },
+                  ],
+                },
+                {
+                  id: 'transcript:run-1:3',
+                  kind: 'transcript',
+                  runId: 'run-1',
+                  sequence: 3,
+                  createdAt: '2026-05-30T20:22:02Z',
+                  mediaAttachments: [],
+                  role: 'assistant',
+                  text: 'Screenshot captured.',
+                },
+              ],
+            })}
+            density="comfortable"
+            inSidebar
+            paneCount={1}
+            paneNumber={1}
+          />,
+        )
+
+        expect(screen.getByText('Screenshot captured.')).toBeVisible()
+        const previewButton = screen.getByRole('button', {
+          name: 'Open image preview for macOS screenshot',
+        })
+        expect(within(previewButton).getByRole('img', { name: 'macOS screenshot' })).toHaveAttribute(
+          'src',
+          'project-asset://preview/macos-screenshot',
+        )
+
+        fireEvent.click(previewButton)
+
+        expect(screen.getByRole('button', { name: 'Close image preview' })).toBeVisible()
+        expect(screen.getByRole('button', { name: 'Zoom in' })).toBeVisible()
+        expect(screen.getByRole('link', { name: 'Download macOS screenshot' })).toHaveAttribute(
+          'href',
+          'project-asset://preview/macos-screenshot',
+        )
+      } finally {
+        restoreResizeObserver()
+      }
     })
 
     it('switches sidebar panes to condensed below the sidebar compact breakpoint', async () => {

@@ -12,8 +12,9 @@ use tempfile::TempDir;
 use xero_agent_core::DomainToolPackHealthStatus;
 use xero_desktop_lib::{
     commands::{
-        RepositoryDiffScope, RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto,
-        RuntimeRunApprovalModeDto, RuntimeRunControlStateDto, RuntimeRunPendingControlSnapshotDto,
+        global_computer_use::GLOBAL_COMPUTER_USE_PROJECT_ID, RepositoryDiffScope,
+        RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto,
+        RuntimeRunControlStateDto, RuntimeRunPendingControlSnapshotDto,
     },
     configure_builder_with_state, db,
     git::{diff::MAX_PATCH_BYTES, repository::CanonicalRepository},
@@ -614,10 +615,10 @@ fn tool_runtime_macos_automation_checks_permissions_and_gates_control() {
         other => panic!("unexpected output: {other:?}"),
     }
 
-    let blocked_activate = runtime
+    let blocked_quit = runtime
         .execute(AutonomousToolRequest::MacosAutomation(
             AutonomousMacosAutomationRequest {
-                action: AutonomousMacosAutomationAction::MacAppActivate,
+                action: AutonomousMacosAutomationAction::MacAppQuit,
                 app_name: Some("Finder".into()),
                 bundle_id: None,
                 pid: None,
@@ -626,38 +627,10 @@ fn tool_runtime_macos_automation_checks_permissions_and_gates_control() {
                 screenshot_target: None,
             },
         ))
-        .expect("macOS app activation should return approval boundary");
-    match blocked_activate.output {
+        .expect("macOS app quit should return approval boundary");
+    match blocked_quit.output {
         AutonomousToolOutput::MacosAutomation(output) => {
-            assert_eq!(
-                output.action,
-                AutonomousMacosAutomationAction::MacAppActivate
-            );
-            assert!(!output.performed);
-            assert!(output.policy.approval_required);
-        }
-        other => panic!("unexpected output: {other:?}"),
-    }
-
-    let blocked_screenshot = runtime
-        .execute(AutonomousToolRequest::MacosAutomation(
-            AutonomousMacosAutomationRequest {
-                action: AutonomousMacosAutomationAction::MacScreenshot,
-                app_name: None,
-                bundle_id: None,
-                pid: None,
-                window_id: None,
-                monitor_id: None,
-                screenshot_target: None,
-            },
-        ))
-        .expect("macOS screenshot should return approval boundary");
-    match blocked_screenshot.output {
-        AutonomousToolOutput::MacosAutomation(output) => {
-            assert_eq!(
-                output.action,
-                AutonomousMacosAutomationAction::MacScreenshot
-            );
+            assert_eq!(output.action, AutonomousMacosAutomationAction::MacAppQuit);
             assert!(!output.performed);
             assert!(output.policy.approval_required);
         }
@@ -5209,6 +5182,28 @@ fn tool_runtime_returns_project_not_found_for_unknown_projects() {
     )
     .expect_err("unknown projects should not resolve a repo root");
     assert_eq!(error.code, "project_not_found");
+}
+
+#[test]
+fn tool_runtime_resolves_global_computer_use_project_from_app_data() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+
+    let runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        GLOBAL_COMPUTER_USE_PROJECT_ID,
+    )
+    .expect("global Computer Use project should resolve from app-data");
+
+    assert_eq!(
+        runtime
+            .repo_root()
+            .file_name()
+            .and_then(|name| name.to_str()),
+        Some("computer-use")
+    );
+    assert!(runtime.repo_root().join("state.db").is_file());
 }
 
 #[cfg(unix)]

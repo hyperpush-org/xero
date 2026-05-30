@@ -4,14 +4,13 @@
  * Renders user / assistant transcripts as polished message rows with
  * avatars, role labels, and (for assistant content) markdown + code
  * highlighting. Tool/action items render as inline activity rows and
- * failures get a distinct destructive treatment.
+ * failure notices get severity-aware treatment.
  *
  * The component preserves the public ARIA surface (`Agent conversation`
  * landmark, `Agent conversation turns` list) so existing tests keep
  * passing.
  */
 
-import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AlertCircle,
   AlertTriangle,
@@ -28,44 +27,15 @@ import {
   ImageIcon,
   Info,
   Loader2,
-  Maximize2,
   MoreHorizontal,
   Terminal,
   Undo2,
   User,
   XCircle,
 } from 'lucide-react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 
 import { cn } from '../../lib/utils'
-import { Badge } from '../ui/badge'
-import { Button } from '../ui/button'
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '../ui/collapsible'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '../ui/tooltip'
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '../ui/dropdown-menu'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '../ui/dialog'
 import type {
   CodeHistoryConflictDto,
   CodePatchAvailabilityDto,
@@ -80,10 +50,31 @@ import type {
   RuntimeStreamMediaSourceDto,
   RuntimeStreamToolItemView,
 } from '../../model'
-
 import { AppLogo } from '../app-logo'
+import { Badge } from '../ui/badge'
+import { Button } from '../ui/button'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '../ui/collapsible'
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu'
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip'
 import { ActionPromptCard } from './action-prompt-card'
 import { Markdown } from './conversation-markdown'
+import {
+  AttachmentPreviewChip,
+  ToolMediaAttachments,
+  attachmentDisplayName,
+} from './media-attachment-preview'
 import { RoutingSuggestionCard } from './routing-suggestion-card'
 
 export interface ConversationMessageAttachment {
@@ -345,7 +336,11 @@ const HANDOFF_COMPLETION_DETAIL_MARKER = 'handed off to a same-type target run'
 function isHandoffCompletion(
   completion: RuntimeStreamCompleteItemView | null | undefined,
 ): boolean {
-  return Boolean(completion?.detail?.toLowerCase().includes(HANDOFF_COMPLETION_DETAIL_MARKER))
+  return Boolean(
+    completion?.detail
+      ?.toLowerCase()
+      .includes(HANDOFF_COMPLETION_DETAIL_MARKER),
+  )
 }
 
 export const ConversationSection = memo(function ConversationSection({
@@ -365,19 +360,37 @@ export const ConversationSection = memo(function ConversationSection({
   onOpenHandoffSummary,
   footerHandoffSourceRunId = null,
 }: ConversationSectionProps) {
-  const runFailureCode = runtimeRun?.lastError?.code ?? runtimeRun?.lastErrorCode ?? null
+  const runFailureCode =
+    runtimeRun?.lastError?.code ?? runtimeRun?.lastErrorCode ?? null
   const runFailureMessage =
     runtimeRun?.lastError?.message ??
-    (runtimeRun?.isFailed ? 'Xero recovered a failed agent run without a persisted diagnostic.' : null)
+    (runtimeRun?.isFailed
+      ? 'Xero recovered a failed agent run without a persisted diagnostic.'
+      : null)
+  const runFailurePresentation = runFailureMessage
+    ? failurePresentation(runFailureMessage, runFailureCode ?? 'run_failed')
+    : null
+  const streamFailurePresentation = streamFailure
+    ? failurePresentation(
+        describeStreamMessage(streamFailure.code, streamFailure.message),
+        streamFailure.code,
+      )
+    : null
   const streamFailureIsDuplicate =
-    Boolean(streamFailure?.message && streamFailure.message === runFailureMessage) ||
-    Boolean(streamFailure?.code && streamFailure.code === runFailureCode)
+    Boolean(
+      streamFailure?.message && streamFailure.message === runFailureMessage,
+    ) || Boolean(streamFailure?.code && streamFailure.code === runFailureCode)
   const streamIssueIsDuplicate =
     Boolean(
       streamIssue?.message &&
-        (streamIssue.message === runFailureMessage || streamIssue.message === streamFailure?.message),
+        (streamIssue.message === runFailureMessage ||
+          streamIssue.message === streamFailure?.message),
     ) ||
-    Boolean(streamIssue?.code && (streamIssue.code === runFailureCode || streamIssue.code === streamFailure?.code))
+    Boolean(
+      streamIssue?.code &&
+        (streamIssue.code === runFailureCode ||
+          streamIssue.code === streamFailure?.code),
+    )
 
   const showRunFailure = Boolean(runFailureMessage)
   const showStreamFailure = Boolean(streamFailure && !streamFailureIsDuplicate)
@@ -387,13 +400,19 @@ export const ConversationSection = memo(function ConversationSection({
   // (rendered after the runtime run snapshot rebinds to the target run); the
   // footer only fires when the pane is still subscribed to the source run's
   // stream, which is the transient pre-rebind state.
-  const hasInlineHandoffNotice = visibleTurns.some((turn) => turn.kind === 'handoff_notice')
+  const hasInlineHandoffNotice = visibleTurns.some(
+    (turn) => turn.kind === 'handoff_notice',
+  )
   const showHandoffNotice =
-    !showRunFailure && !hasInlineHandoffNotice && isHandoffCompletion(streamCompletion)
-  const showAnyNotice = showRunFailure || showStreamFailure || showStreamIssue || showHandoffNotice
+    !showRunFailure &&
+    !hasInlineHandoffNotice &&
+    isHandoffCompletion(streamCompletion)
+  const showAnyNotice =
+    showRunFailure || showStreamFailure || showStreamIssue || showHandoffNotice
   const showAnyTurn = visibleTurns.length > 0
 
-  const lastTurn = visibleTurns.length > 0 ? visibleTurns[visibleTurns.length - 1] : null
+  const lastTurn =
+    visibleTurns.length > 0 ? visibleTurns[visibleTurns.length - 1] : null
   const isLastTurnStreamingAssistant = Boolean(
     showActivityIndicator &&
       lastTurn &&
@@ -409,7 +428,10 @@ export const ConversationSection = memo(function ConversationSection({
         className="flex flex-col gap-2 text-[12px] leading-snug select-text"
       >
         {showAnyTurn ? (
-          <ol aria-label="Agent conversation turns" className="flex flex-col gap-2">
+          <ol
+            aria-label="Agent conversation turns"
+            className="flex flex-col gap-2"
+          >
             {visibleTurns.map((turn) => (
               <DenseTurnItem
                 key={turn.id}
@@ -425,7 +447,10 @@ export const ConversationSection = memo(function ConversationSection({
         ) : null}
         {showActivityIndicator ? <AgentActivityIndicator /> : null}
         {showAnyNotice ? (
-          <ul aria-label="Agent run notices" className="mt-2 flex flex-col gap-2">
+          <ul
+            aria-label="Agent run notices"
+            className="mt-2 flex flex-col gap-2"
+          >
             {showHandoffNotice ? (
               <li>
                 {onOpenHandoffSummary ? (
@@ -453,13 +478,31 @@ export const ConversationSection = memo(function ConversationSection({
               </li>
             ) : null}
             {showRunFailure ? (
-              <li className="rounded-sm border border-destructive/30 bg-destructive/10 px-2 py-1 text-[12px] text-destructive">
-                ✗ {runFailureMessage}
+              <li
+                className={cn(
+                  'rounded-sm border px-2 py-1 text-[12px]',
+                  runFailurePresentation?.tone === 'warning'
+                    ? 'border-warning/30 bg-warning/10 text-foreground'
+                    : 'border-destructive/30 bg-destructive/10 text-destructive',
+                )}
+              >
+                {runFailurePresentation?.message ?? runFailureMessage}
               </li>
             ) : null}
             {showStreamFailure && streamFailure ? (
-              <li className="rounded-sm border border-destructive/30 bg-destructive/10 px-2 py-1 text-[12px] text-destructive">
-                ✗ {describeStreamMessage(streamFailure.code, streamFailure.message)}
+              <li
+                className={cn(
+                  'rounded-sm border px-2 py-1 text-[12px]',
+                  streamFailurePresentation?.tone === 'warning'
+                    ? 'border-warning/30 bg-warning/10 text-foreground'
+                    : 'border-destructive/30 bg-destructive/10 text-destructive',
+                )}
+              >
+                {streamFailurePresentation?.message ??
+                  describeStreamMessage(
+                    streamFailure.code,
+                    streamFailure.message,
+                  )}
               </li>
             ) : null}
             {showStreamIssue && streamIssue ? (
@@ -474,19 +517,29 @@ export const ConversationSection = memo(function ConversationSection({
   }
 
   return (
-    <section aria-label="Agent conversation" className="flex flex-col gap-5 select-text">
+    <section
+      aria-label="Agent conversation"
+      className="flex flex-col gap-5 select-text"
+    >
       {showAnyTurn ? (
-        <ol aria-label="Agent conversation turns" className="flex flex-col gap-5">
+        <ol
+          aria-label="Agent conversation turns"
+          className="flex flex-col gap-5"
+        >
           {visibleTurns.map((turn, index) => {
             const prev = index > 0 ? visibleTurns[index - 1] : null
-            const next = index < visibleTurns.length - 1 ? visibleTurns[index + 1] : null
+            const next =
+              index < visibleTurns.length - 1 ? visibleTurns[index + 1] : null
             return (
               <ConversationTurnItem
                 key={turn.id}
                 turn={turn}
                 accountAvatarUrl={accountAvatarUrl}
                 accountLogin={accountLogin}
-                isStreaming={index === visibleTurns.length - 1 && isLastTurnStreamingAssistant}
+                isStreaming={
+                  index === visibleTurns.length - 1 &&
+                  isLastTurnStreamingAssistant
+                }
                 connectsTop={isToolTurnKind(prev)}
                 connectsBottom={isToolTurnKind(next)}
                 codeUndoStates={codeUndoStates}
@@ -524,9 +577,17 @@ export const ConversationSection = memo(function ConversationSection({
           {showRunFailure ? (
             <NoticeListItem>
               <NoticeRow
-                tone="destructive"
-                title={runtimeRun?.isTerminal ? 'Latest saved run failed' : 'Agent run failed'}
-                message={runFailureMessage ?? ''}
+                tone={runFailurePresentation?.tone ?? 'destructive'}
+                title={
+                  runFailurePresentation?.tone === 'warning'
+                    ? runFailurePresentation.title
+                    : runtimeRun?.isTerminal
+                      ? 'Latest saved run failed'
+                      : 'Agent run failed'
+                }
+                message={
+                  runFailurePresentation?.message ?? runFailureMessage ?? ''
+                }
                 code={runFailureCode}
               />
             </NoticeListItem>
@@ -534,9 +595,15 @@ export const ConversationSection = memo(function ConversationSection({
           {showStreamFailure && streamFailure ? (
             <NoticeListItem>
               <NoticeRow
-                tone="destructive"
-                title="Live stream failed"
-                message={describeStreamMessage(streamFailure.code, streamFailure.message)}
+                tone={streamFailurePresentation?.tone ?? 'destructive'}
+                title={streamFailurePresentation?.title ?? 'Live stream failed'}
+                message={
+                  streamFailurePresentation?.message ??
+                  describeStreamMessage(
+                    streamFailure.code,
+                    streamFailure.message,
+                  )
+                }
                 code={streamFailure.code}
               />
             </NoticeListItem>
@@ -545,8 +612,14 @@ export const ConversationSection = memo(function ConversationSection({
             <NoticeListItem>
               <NoticeRow
                 tone={streamIssue.retryable ? 'info' : 'warning'}
-                title={describeStreamTitle(streamIssue.code, 'Live stream issue')}
-                message={describeStreamMessage(streamIssue.code, streamIssue.message)}
+                title={describeStreamTitle(
+                  streamIssue.code,
+                  'Live stream issue',
+                )}
+                message={describeStreamMessage(
+                  streamIssue.code,
+                  streamIssue.message,
+                )}
                 code={streamIssue.code}
               />
             </NoticeListItem>
@@ -617,7 +690,10 @@ function CopyTextButton({
           <Icon
             key={copied ? 'copied' : 'idle'}
             aria-hidden="true"
-            className={cn(iconClassName, copied ? 'agent-copy-icon-pop' : undefined)}
+            className={cn(
+              iconClassName,
+              copied ? 'agent-copy-icon-pop' : undefined,
+            )}
           />
         </Button>
       </TooltipTrigger>
@@ -662,7 +738,9 @@ function describeStreamMessage(code: string, fallback: string): string {
 }
 
 function isToolTurnKind(turn: ConversationTurn | null): boolean {
-  return turn != null && (turn.kind === 'action' || turn.kind === 'action_group')
+  return (
+    turn != null && (turn.kind === 'action' || turn.kind === 'action_group')
+  )
 }
 
 interface ConversationTurnItemProps {
@@ -786,32 +864,40 @@ function ConversationTurnRow({
 
   if (turn.kind === 'file_change') {
     const fileUndoState = turn.changeGroupId
-      ? codeUndoStates[getCodeUndoStateKey({
-          targetKind: 'file_change',
-          changeGroupId: turn.changeGroupId,
-          filePath: fileChangeUndoFilePath(turn),
-        })]
+      ? codeUndoStates[
+          getCodeUndoStateKey({
+            targetKind: 'file_change',
+            changeGroupId: turn.changeGroupId,
+            filePath: fileChangeUndoFilePath(turn),
+          })
+        ]
       : undefined
     const changeGroupUndoState = turn.changeGroupId
-      ? codeUndoStates[getCodeUndoStateKey({
-          targetKind: 'change_group',
-          changeGroupId: turn.changeGroupId,
-        })]
+      ? codeUndoStates[
+          getCodeUndoStateKey({
+            targetKind: 'change_group',
+            changeGroupId: turn.changeGroupId,
+          })
+        ]
       : undefined
     const hunkUndoState = turn.changeGroupId
-      ? codeUndoStates[getCodeUndoStateKey({
-          targetKind: 'hunks',
-          changeGroupId: turn.changeGroupId,
-          filePath: fileChangeUndoFilePath(turn),
-        })]
+      ? codeUndoStates[
+          getCodeUndoStateKey({
+            targetKind: 'hunks',
+            changeGroupId: turn.changeGroupId,
+            filePath: fileChangeUndoFilePath(turn),
+          })
+        ]
       : undefined
     const returnSessionState = turn.changeGroupId
-      ? returnSessionToHereStates[getReturnSessionToHereStateKey({
-          targetKind: 'run_boundary',
-          boundaryId: codeChangeGroupBoundaryId(turn.changeGroupId),
-          runId: turn.runId,
-          changeGroupId: turn.changeGroupId,
-        })]
+      ? returnSessionToHereStates[
+          getReturnSessionToHereStateKey({
+            targetKind: 'run_boundary',
+            boundaryId: codeChangeGroupBoundaryId(turn.changeGroupId),
+            runId: turn.runId,
+            changeGroupId: turn.changeGroupId,
+          })
+        ]
       : undefined
 
     return (
@@ -861,7 +947,11 @@ function ConversationTurnRow({
       <HandoffNoticeRow
         onOpen={
           handler
-            ? () => handler({ sourceRunId: turn.sourceRunId, targetRunId: turn.targetRunId })
+            ? () =>
+                handler({
+                  sourceRunId: turn.sourceRunId,
+                  targetRunId: turn.targetRunId,
+                })
             : undefined
         }
       />
@@ -898,27 +988,30 @@ function ConversationTurnRow({
   }
 
   return (
-      <ActionCard
-        title={turn.title}
-        detail={turn.detail}
-        detailRows={turn.detailRows}
-        mediaAttachments={turn.mediaAttachments}
-        state={turn.state ?? null}
-        defaultOpen={turn.defaultOpen ?? false}
-        connectsTop={connectsTop}
-        connectsBottom={connectsBottom}
-      />
+    <ActionCard
+      title={turn.title}
+      detail={turn.detail}
+      detailRows={turn.detailRows}
+      mediaAttachments={turn.mediaAttachments}
+      state={turn.state ?? null}
+      defaultOpen={turn.defaultOpen ?? false}
+      connectsTop={connectsTop}
+      connectsBottom={connectsBottom}
+    />
   )
 }
 
 function HandoffNoticeRow({ onOpen }: { onOpen?: () => void }) {
   const description = (
     <>
-      <History className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80" aria-hidden />
+      <History
+        className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80"
+        aria-hidden
+      />
       <span className="min-w-0 flex-1 text-left">
-        Run continued in a fresh session — context budget filled, so Xero handed this conversation
-        off to a new same-type run. Earlier turns above are from the previous run; the conversation
-        continues below.
+        Run continued in a fresh session — context budget filled, so Xero handed
+        this conversation off to a new same-type run. Earlier turns above are
+        from the previous run; the conversation continues below.
       </span>
       {onOpen ? (
         <span className="ml-2 inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-foreground/80">
@@ -957,18 +1050,24 @@ function HandoffNoticeRow({ onOpen }: { onOpen?: () => void }) {
 }
 
 function humanizeFileChangeOperation(operation: string): string {
-  return operation
-    .trim()
-    .replace(/[._-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .toLowerCase() || 'changed'
+  return (
+    operation
+      .trim()
+      .replace(/[._-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .toLowerCase() || 'changed'
+  )
 }
 
-function fileChangeTargetLabel(turn: Extract<ConversationTurn, { kind: 'file_change' }>): string {
+function fileChangeTargetLabel(
+  turn: Extract<ConversationTurn, { kind: 'file_change' }>,
+): string {
   return turn.toPath ? `${turn.path} -> ${turn.toPath}` : turn.path
 }
 
-function fileChangeUndoFilePath(turn: Extract<ConversationTurn, { kind: 'file_change' }>): string {
+function fileChangeUndoFilePath(
+  turn: Extract<ConversationTurn, { kind: 'file_change' }>,
+): string {
   return turn.toPath ?? turn.path
 }
 
@@ -986,7 +1085,9 @@ function visibleCodeUndoState(
   if (changeGroupUndoState?.status === 'pending') return changeGroupUndoState
   if (fileUndoState?.status === 'pending') return fileUndoState
   if (hunkUndoState?.status === 'pending') return hunkUndoState
-  return returnSessionState ?? hunkUndoState ?? fileUndoState ?? changeGroupUndoState
+  return (
+    returnSessionState ?? hunkUndoState ?? fileUndoState ?? changeGroupUndoState
+  )
 }
 
 function fileChangeTextHunks(
@@ -1000,7 +1101,11 @@ function fileChangeTextHunks(
   return (availability.textHunks ?? [])
     .filter((hunk) => hunk.filePath === undoFilePath)
     .slice()
-    .sort((left, right) => left.hunkIndex - right.hunkIndex || left.hunkId.localeCompare(right.hunkId))
+    .sort(
+      (left, right) =>
+        left.hunkIndex - right.hunkIndex ||
+        left.hunkId.localeCompare(right.hunkId),
+    )
 }
 
 function formatHunkLineLabel(hunk: CodePatchTextHunkDto): string {
@@ -1016,7 +1121,9 @@ function formatHunkLineLabel(hunk: CodePatchTextHunkDto): string {
 }
 
 function uniqueNonEmptyStrings(values: readonly string[]): string[] {
-  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)))
+  return Array.from(
+    new Set(values.map((value) => value.trim()).filter(Boolean)),
+  )
 }
 
 function humanizeConflictKind(kind: CodeHistoryConflictDto['kind']): string {
@@ -1067,13 +1174,26 @@ function CodeUndoConflictDetails({
         <div className="flex items-start gap-2">
           <AlertTriangle
             aria-hidden="true"
-            className={cn('mt-[2px] shrink-0', dense ? 'h-3 w-3' : 'h-3.5 w-3.5')}
+            className={cn(
+              'mt-[2px] shrink-0',
+              dense ? 'h-3 w-3' : 'h-3.5 w-3.5',
+            )}
           />
           <div className="min-w-0 flex-1">
-            <p className={cn('font-medium', dense ? 'text-[11.5px]' : 'text-[12px]')}>
+            <p
+              className={cn(
+                'font-medium',
+                dense ? 'text-[11.5px]' : 'text-[12px]',
+              )}
+            >
               {summary.title}
             </p>
-            <p className={cn('mt-0.5 break-words text-destructive/85', dense ? 'text-[11px]' : 'text-[11.5px]')}>
+            <p
+              className={cn(
+                'mt-0.5 break-words text-destructive/85',
+                dense ? 'text-[11px]' : 'text-[11.5px]',
+              )}
+            >
               {summary.targetLabel}
             </p>
           </div>
@@ -1090,13 +1210,21 @@ function CodeUndoConflictDetails({
             >
               <ChevronDown
                 aria-hidden="true"
-                className={cn('transition-transform duration-150', open && 'rotate-180')}
+                className={cn(
+                  'transition-transform duration-150',
+                  open && 'rotate-180',
+                )}
               />
             </Button>
           </CollapsibleTrigger>
         </div>
         <CollapsibleContent>
-          <div className={cn('mt-2 space-y-2 border-t border-destructive/15 pt-2', dense && 'mt-1.5 pt-1.5')}>
+          <div
+            className={cn(
+              'mt-2 space-y-2 border-t border-destructive/15 pt-2',
+              dense && 'mt-1.5 pt-1.5',
+            )}
+          >
             {affectedPaths.length > 0 ? (
               <div>
                 <p className="text-[10.5px] font-medium uppercase text-destructive/70">
@@ -1125,7 +1253,10 @@ function CodeUndoConflictDetails({
                     className="rounded-md bg-background/45 px-2 py-1.5 text-destructive"
                   >
                     <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                      <span className="min-w-0 truncate font-mono text-[11px]" title={conflict.path}>
+                      <span
+                        className="min-w-0 truncate font-mono text-[11px]"
+                        title={conflict.path}
+                      >
                         {conflict.path}
                       </span>
                       <Badge
@@ -1140,7 +1271,9 @@ function CodeUndoConflictDetails({
                     </p>
                     {hunkIds.length > 0 ? (
                       <div className="mt-1 flex flex-wrap items-center gap-1">
-                        <span className="text-[10.5px] text-destructive/70">Selected hunks</span>
+                        <span className="text-[10.5px] text-destructive/70">
+                          Selected hunks
+                        </span>
                         {hunkIds.map((hunkId) => (
                           <Badge
                             key={hunkId}
@@ -1184,9 +1317,16 @@ function FileChangeRow({
   const targetLabel = fileChangeTargetLabel(turn)
   const undoFilePath = fileChangeUndoFilePath(turn)
   const canUndo = Boolean(turn.changeGroupId && onUndoChangeGroup)
-  const canReturnSessionToHere = Boolean(turn.changeGroupId && turn.runId && onReturnSessionToHere)
+  const canReturnSessionToHere = Boolean(
+    turn.changeGroupId && turn.runId && onReturnSessionToHere,
+  )
   const textHunks = fileChangeTextHunks(turn)
-  const undoState = visibleCodeUndoState(fileUndoState, changeGroupUndoState, hunkUndoState, returnSessionState)
+  const undoState = visibleCodeUndoState(
+    fileUndoState,
+    changeGroupUndoState,
+    hunkUndoState,
+    returnSessionState,
+  )
   const statusTone =
     undoState?.status === 'failed'
       ? 'text-destructive'
@@ -1201,28 +1341,36 @@ function FileChangeRow({
         'hover:bg-foreground/[0.03]',
       )}
     >
-      <FileText className="mt-[3px] h-3.5 w-3.5 shrink-0 text-primary/70" aria-hidden="true" />
+      <FileText
+        className="mt-[3px] h-3.5 w-3.5 shrink-0 text-primary/70"
+        aria-hidden="true"
+      />
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-baseline gap-1.5">
           <span className="shrink-0 text-[12.5px] font-medium text-foreground">
             {operationLabel}
           </span>
-          <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-foreground/80" title={targetLabel}>
+          <span
+            className="min-w-0 flex-1 truncate font-mono text-[12px] text-foreground/80"
+            title={targetLabel}
+          >
             {targetLabel}
           </span>
         </div>
-        <p className="mt-0.5 min-w-0 truncate text-[11.5px] text-muted-foreground/75" title={turn.detail}>
+        <p
+          className="mt-0.5 min-w-0 truncate text-[11.5px] text-muted-foreground/75"
+          title={turn.detail}
+        >
           {turn.detail}
         </p>
         {undoState ? (
           <>
-            <p
+            <output
               className={cn('mt-1 text-[11.5px]', statusTone)}
-              role="status"
               aria-live="polite"
             >
               {undoState.message}
-            </p>
+            </output>
             <CodeUndoConflictDetails summary={undoState.conflictSummary} />
           </>
         ) : null}
@@ -1281,26 +1429,34 @@ function CodeUndoMenu({
   dense?: boolean
 }) {
   const [selectedHunkIds, setSelectedHunkIds] = useState<string[]>([])
-  const visibleState = visibleCodeUndoState(fileState, changeGroupState, hunkState, returnSessionState)
+  const visibleState = visibleCodeUndoState(
+    fileState,
+    changeGroupState,
+    hunkState,
+    returnSessionState,
+  )
   const isPending =
-    fileState?.status === 'pending'
-    || changeGroupState?.status === 'pending'
-    || hunkState?.status === 'pending'
-    || returnSessionState?.status === 'pending'
+    fileState?.status === 'pending' ||
+    changeGroupState?.status === 'pending' ||
+    hunkState?.status === 'pending' ||
+    returnSessionState?.status === 'pending'
   const isChangeGroupSucceeded = changeGroupState?.status === 'succeeded'
   const isFileSucceeded = fileState?.status === 'succeeded'
   const isReturnSessionSucceeded = returnSessionState?.status === 'succeeded'
   const hasMenuAction = enabled || canReturnSessionToHere
   const canOpen =
-    hasMenuAction
-    && Boolean(changeGroupId)
-    && !isPending
-    && !isChangeGroupSucceeded
-    && !isReturnSessionSucceeded
+    hasMenuAction &&
+    Boolean(changeGroupId) &&
+    !isPending &&
+    !isChangeGroupSucceeded &&
+    !isReturnSessionSucceeded
   const hasTextHunks = textHunks.length > 0
   const label = (() => {
     if (!hasMenuAction || !changeGroupId) return `Undo unavailable for ${path}`
-    if (isPending) return returnSessionState?.status === 'pending' ? `Returning session to here for ${path}` : `Undoing ${path}`
+    if (isPending)
+      return returnSessionState?.status === 'pending'
+        ? `Returning session to here for ${path}`
+        : `Undoing ${path}`
     if (isReturnSessionSucceeded) return `Returned session to here for ${path}`
     if (isChangeGroupSucceeded) return `Undone ${path}`
     return `Open undo menu for ${path}`
@@ -1308,19 +1464,31 @@ function CodeUndoMenu({
   const tooltip = (() => {
     if (!changeGroupId) return 'Code history data unavailable'
     if (!hasMenuAction) return 'Code history unavailable'
-    if (isPending) return returnSessionState?.status === 'pending' ? 'Returning session' : 'Undoing'
+    if (isPending)
+      return returnSessionState?.status === 'pending'
+        ? 'Returning session'
+        : 'Undoing'
     if (isReturnSessionSucceeded) return 'Session returned'
     if (isChangeGroupSucceeded) return 'Undone'
     return 'Code history options'
   })()
-  const TriggerIcon = isPending ? Loader2 : isChangeGroupSucceeded || isReturnSessionSucceeded ? CheckCircle2 : MoreHorizontal
+  const TriggerIcon = isPending
+    ? Loader2
+    : isChangeGroupSucceeded || isReturnSessionSucceeded
+      ? CheckCircle2
+      : MoreHorizontal
   const undoActionsDisabled = !enabled || !changeGroupId || !canOpen
   const fileActionDisabled = undoActionsDisabled || isFileSucceeded
-  const changeGroupActionDisabled = undoActionsDisabled || isChangeGroupSucceeded
+  const changeGroupActionDisabled =
+    undoActionsDisabled || isChangeGroupSucceeded
   const selectedHunkCount = selectedHunkIds.length
   const hunkActionDisabled = undoActionsDisabled || selectedHunkCount === 0
   const returnSessionActionDisabled =
-    !canReturnSessionToHere || !changeGroupId || !runId || !canOpen || isReturnSessionSucceeded
+    !canReturnSessionToHere ||
+    !changeGroupId ||
+    !runId ||
+    !canOpen ||
+    isReturnSessionSucceeded
   const fileActionLabel =
     fileState?.status === 'failed'
       ? 'Retry undo for this file change'
@@ -1349,7 +1517,9 @@ function CodeUndoMenu({
 
   useEffect(() => {
     const availableIds = new Set(textHunks.map((hunk) => hunk.hunkId))
-    setSelectedHunkIds((current) => current.filter((hunkId) => availableIds.has(hunkId)))
+    setSelectedHunkIds((current) =>
+      current.filter((hunkId) => availableIds.has(hunkId)),
+    )
   }, [textHunks])
 
   const toggleSelectedHunk = useCallback((hunkId: string, checked: boolean) => {
@@ -1375,11 +1545,16 @@ function CodeUndoMenu({
           className={cn(
             'mt-[1px] shrink-0 rounded-md text-muted-foreground/70 hover:text-foreground',
             dense ? 'h-5 w-5 [&_svg]:size-[11px]' : 'h-6 w-6 [&_svg]:size-3',
-            visibleState?.status === 'failed' && 'text-destructive hover:text-destructive',
-            (isChangeGroupSucceeded || isReturnSessionSucceeded) && 'text-success',
+            visibleState?.status === 'failed' &&
+              'text-destructive hover:text-destructive',
+            (isChangeGroupSucceeded || isReturnSessionSucceeded) &&
+              'text-success',
           )}
         >
-          <TriggerIcon aria-hidden="true" className={cn(isPending && 'animate-spin')} />
+          <TriggerIcon
+            aria-hidden="true"
+            className={cn(isPending && 'animate-spin')}
+          />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className={menuWidthClass}>
@@ -1396,7 +1571,11 @@ function CodeUndoMenu({
             })
           }}
         >
-          {isFileSucceeded ? <CheckCircle2 aria-hidden="true" /> : <FileText aria-hidden="true" />}
+          {isFileSucceeded ? (
+            <CheckCircle2 aria-hidden="true" />
+          ) : (
+            <FileText aria-hidden="true" />
+          )}
           <span>{fileActionLabel}</span>
         </DropdownMenuItem>
         {hasTextHunks ? (
@@ -1462,7 +1641,11 @@ function CodeUndoMenu({
             })
           }}
         >
-          {isChangeGroupSucceeded ? <CheckCircle2 aria-hidden="true" /> : <Undo2 aria-hidden="true" />}
+          {isChangeGroupSucceeded ? (
+            <CheckCircle2 aria-hidden="true" />
+          ) : (
+            <Undo2 aria-hidden="true" />
+          )}
           <span>{changeGroupActionLabel}</span>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
@@ -1481,7 +1664,11 @@ function CodeUndoMenu({
             })
           }}
         >
-          {isReturnSessionSucceeded ? <CheckCircle2 aria-hidden="true" /> : <History aria-hidden="true" />}
+          {isReturnSessionSucceeded ? (
+            <CheckCircle2 aria-hidden="true" />
+          ) : (
+            <History aria-hidden="true" />
+          )}
           <span>{returnSessionActionLabel}</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
@@ -1536,7 +1723,10 @@ function ActionCard({
 
   return (
     <div className="group/tool relative">
-      <ToolChainConnectors connectsTop={connectsTop} connectsBottom={connectsBottom} />
+      <ToolChainConnectors
+        connectsTop={connectsTop}
+        connectsBottom={connectsBottom}
+      />
       {hasDetails && open ? (
         <span
           aria-hidden="true"
@@ -1549,14 +1739,27 @@ function ActionCard({
             <button
               type="button"
               aria-label={`${open ? 'Hide' : 'Show'} tool details for ${title}`}
-              className={cn(rowClass, 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60')}
+              className={cn(
+                rowClass,
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+              )}
             >
-              <ActionCardHeader title={title} detail={detail} state={state} open={open} />
+              <ActionCardHeader
+                title={title}
+                detail={detail}
+                state={state}
+                open={open}
+              />
             </button>
           </CollapsibleTrigger>
         ) : (
           <div className={rowClass}>
-            <ActionCardHeader title={title} detail={detail} state={state} open={null} />
+            <ActionCardHeader
+              title={title}
+              detail={detail}
+              state={state}
+              open={null}
+            />
           </div>
         )}
         {hasDetails ? (
@@ -1569,7 +1772,10 @@ function ActionCard({
             )}
           >
             <div className="ml-[22px] pl-3 pr-1 pb-1.5 pt-1">
-              <ToolDetailRows rows={detailRows} mediaAttachments={mediaAttachments} />
+              <ToolDetailRows
+                rows={detailRows}
+                mediaAttachments={mediaAttachments}
+              />
             </div>
           </CollapsibleContent>
         ) : null}
@@ -1670,12 +1876,15 @@ interface ToolDetailRowsProps {
 }
 
 function ToolDetailRows({ rows, mediaAttachments }: ToolDetailRowsProps) {
-  const hasMedia = Boolean(mediaAttachments?.length)
+  const safeMediaAttachments = mediaAttachments ?? []
+  const hasMedia = safeMediaAttachments.length > 0
   const outputRow = rows.find((row) => /output/i.test(row.label))
   if (outputRow) {
     return (
       <div className="flex flex-col gap-2">
-        {hasMedia ? <ToolMediaAttachments attachments={mediaAttachments!} /> : null}
+        {hasMedia ? (
+          <ToolMediaAttachments attachments={safeMediaAttachments} />
+        ) : null}
         <div className="group/output relative">
           <pre
             className={cn(
@@ -1686,7 +1895,10 @@ function ToolDetailRows({ rows, mediaAttachments }: ToolDetailRowsProps) {
           >
             {outputRow.value}
           </pre>
-          <ToolOutputCopyAffordance text={outputRow.value} label="Copy tool output" />
+          <ToolOutputCopyAffordance
+            text={outputRow.value}
+            label="Copy tool output"
+          />
         </div>
       </div>
     )
@@ -1697,13 +1909,17 @@ function ToolDetailRows({ rows, mediaAttachments }: ToolDetailRowsProps) {
     rows.find((row) => /input|outcome|cmd|command/i.test(row.label)) ??
     rows[0]
   if (!fallback) {
-    return hasMedia ? <ToolMediaAttachments attachments={mediaAttachments!} /> : null
+    return hasMedia ? (
+      <ToolMediaAttachments attachments={safeMediaAttachments} />
+    ) : null
   }
 
   const isCommandLike = /^[A-Za-z][\w./-]*\s/.test(fallback.value.trim())
   return (
     <div className="flex flex-col gap-2">
-      {hasMedia ? <ToolMediaAttachments attachments={mediaAttachments!} /> : null}
+      {hasMedia ? (
+        <ToolMediaAttachments attachments={safeMediaAttachments} />
+      ) : null}
       <div className="group/output relative">
         <div
           className={cn(
@@ -1713,110 +1929,32 @@ function ToolDetailRows({ rows, mediaAttachments }: ToolDetailRowsProps) {
         >
           {isCommandLike ? (
             <span className="flex items-start gap-2">
-              <Terminal aria-hidden="true" className="mt-[2px] h-3 w-3 shrink-0 text-primary/75" />
+              <Terminal
+                aria-hidden="true"
+                className="mt-[2px] h-3 w-3 shrink-0 text-primary/75"
+              />
               <span className="min-w-0 flex-1">{fallback.value}</span>
             </span>
           ) : (
             fallback.value
           )}
         </div>
-        <ToolOutputCopyAffordance text={fallback.value} label="Copy tool output" />
+        <ToolOutputCopyAffordance
+          text={fallback.value}
+          label="Copy tool output"
+        />
       </div>
     </div>
   )
 }
 
-function ToolMediaAttachments({ attachments }: { attachments: ConversationMessageAttachment[] }) {
-  if (attachments.length === 0) return null
-  return (
-    <div className="flex max-w-full flex-wrap gap-2">
-      {attachments.map((attachment) => (
-        <ImageAttachmentPreview
-          key={attachment.id}
-          attachment={attachment}
-          className="max-w-[260px]"
-        />
-      ))}
-    </div>
-  )
-}
-
-function attachmentPreviewSrc(attachment: ConversationMessageAttachment): string | undefined {
-  if (attachment.previewSrc) return attachment.previewSrc
-  if (attachment.renderUrl) return attachment.renderUrl
-  if (attachment.source?.kind === 'data_url') return attachment.source.dataUrl
-  return undefined
-}
-
-function attachmentDisplayName(attachment: ConversationMessageAttachment): string {
-  return attachment.title?.trim() || attachment.originalName
-}
-
-function ImageAttachmentPreview({
-  attachment,
-  className,
+function ToolOutputCopyAffordance({
+  text,
+  label,
 }: {
-  attachment: ConversationMessageAttachment
-  className?: string
+  text: string
+  label: string
 }) {
-  const src = attachmentPreviewSrc(attachment)
-  const title = attachmentDisplayName(attachment)
-  const alt = attachment.alt?.trim() || title
-  const dimensions =
-    attachment.width && attachment.height ? `${attachment.width} x ${attachment.height}` : null
-
-  if (attachment.kind !== 'image' || !src) {
-    return <UserMessageAttachmentChip attachment={attachment} />
-  }
-
-  return (
-    <Dialog>
-      <DialogTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            'group/image relative overflow-hidden rounded-md border border-border/50 bg-background text-left shadow-sm',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-            className,
-          )}
-          title={title}
-          aria-label={`Open image preview for ${title}`}
-        >
-          <img
-            src={src}
-            alt={alt}
-            className="block max-h-44 w-auto max-w-full object-contain"
-            draggable={false}
-          />
-          <span
-            aria-hidden="true"
-            className="absolute right-1.5 top-1.5 inline-flex h-6 w-6 items-center justify-center rounded-md bg-background/80 text-muted-foreground opacity-0 shadow-sm ring-1 ring-border/50 backdrop-blur transition-opacity group-hover/image:opacity-100"
-          >
-            <Maximize2 className="h-3.5 w-3.5" />
-          </span>
-        </button>
-      </DialogTrigger>
-      <DialogContent className="max-w-[min(96vw,1100px)] gap-3 p-4 sm:max-w-[min(96vw,1100px)]">
-        <DialogHeader className="pr-8">
-          <DialogTitle className="truncate text-base">{title}</DialogTitle>
-          <DialogDescription>
-            {dimensions ?? attachment.mediaType}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="flex max-h-[78vh] items-center justify-center overflow-auto rounded-md bg-muted/20">
-          <img
-            src={src}
-            alt={alt}
-            className="max-h-[78vh] w-auto max-w-full object-contain"
-            draggable={false}
-          />
-        </div>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-function ToolOutputCopyAffordance({ text, label }: { text: string; label: string }) {
   if (text.trim().length === 0) return null
   return (
     <div
@@ -1866,25 +2004,34 @@ function formatSubagentStatusLabel(status: string): string {
   return status.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
-function formatBudgetUsage(used: number | null, max: number | null): string | null {
+function formatBudgetUsage(
+  used: number | null,
+  max: number | null,
+): string | null {
   if (used == null && max == null) return null
   if (used != null && max != null) return `${used}/${max}`
   if (used != null) return `${used}`
   return `0/${max}`
 }
 
-function formatTokenBudgetUsage(used: number | null, max: number | null): string | null {
+function formatTokenBudgetUsage(
+  used: number | null,
+  max: number | null,
+): string | null {
   if (used == null && max == null) return null
   const fmt = (value: number) =>
-    value >= 10_000 ? `${(value / 1000).toFixed(1).replace(/\.0$/, '')}k` : `${value}`
+    value >= 10_000
+      ? `${(value / 1000).toFixed(1).replace(/\.0$/, '')}k`
+      : `${value}`
   if (used != null && max != null) return `${fmt(used)}/${fmt(max)}`
   if (used != null) return fmt(used)
   return `0/${fmt(max ?? 0)}`
 }
 
-function subagentStatusToken(
-  status: string,
-): { className: string; Icon: typeof Loader2 | null } {
+function subagentStatusToken(status: string): {
+  className: string
+  Icon: typeof Loader2 | null
+} {
   if (status === 'completed' || status === 'handed_off') {
     return { className: 'text-success', Icon: CheckCircle2 }
   }
@@ -1938,7 +2085,9 @@ function SubagentGroupCard({
     }
   }, [isTerminal, autoCollapsed])
 
-  const { className: statusClassName, Icon: StatusIcon } = subagentStatusToken(turn.status)
+  const { className: statusClassName, Icon: StatusIcon } = subagentStatusToken(
+    turn.status,
+  )
   const toolBudget = formatBudgetUsage(turn.usedToolCalls, turn.maxToolCalls)
   const tokenBudget = formatTokenBudgetUsage(turn.usedTokens, turn.maxTokens)
   const childCount = turn.children.length
@@ -1994,7 +2143,9 @@ function SubagentGroupCard({
             {[
               toolBudget ? `Tools ${toolBudget}` : null,
               tokenBudget ? `Tokens ${tokenBudget}` : null,
-              hasChildren ? `${childCount} ${childCount === 1 ? 'turn' : 'turns'}` : null,
+              hasChildren
+                ? `${childCount} ${childCount === 1 ? 'turn' : 'turns'}`
+                : null,
             ]
               .filter(Boolean)
               .join(' · ')}
@@ -2024,12 +2175,13 @@ function SubagentGroupCard({
                 <GitBranch aria-hidden="true" className="h-2.5 w-2.5" />
                 Subagent prompt
               </span>
-              <div className="whitespace-pre-wrap break-words">{turn.prompt}</div>
+              <div className="whitespace-pre-wrap break-words">
+                {turn.prompt}
+              </div>
             </div>
           ) : null}
           {hasChildren ? (
             <ul
-              role="list"
               aria-label={`${turn.roleLabel} subagent transcript`}
               className="flex flex-col gap-2"
             >
@@ -2077,7 +2229,9 @@ function SubagentGroupCard({
                   ? 'Failure'
                   : 'Result summary'}
               </span>
-              <div className="whitespace-pre-wrap break-words">{turn.resultSummary}</div>
+              <div className="whitespace-pre-wrap break-words">
+                {turn.resultSummary}
+              </div>
             </div>
           ) : null}
         </div>
@@ -2128,7 +2282,10 @@ function ActionGroupCard({
       onOpenChange={setOpen}
       className="group/tool relative"
     >
-      <ToolChainConnectors connectsTop={connectsTop} connectsBottom={connectsBottom} />
+      <ToolChainConnectors
+        connectsTop={connectsTop}
+        connectsBottom={connectsBottom}
+      />
       {open ? (
         <span
           aria-hidden="true"
@@ -2199,7 +2356,8 @@ function ActionGroupItem({
   index?: number
 }) {
   const [open, setOpen] = useState(false)
-  const hasDetails = action.detailRows.length > 0 || Boolean(action.mediaAttachments?.length)
+  const hasDetails =
+    action.detailRows.length > 0 || Boolean(action.mediaAttachments?.length)
   const rowClass = cn(
     'flex w-full items-center gap-2 rounded-md py-0.5 text-left transition-colors',
     'hover:bg-foreground/[0.03]',
@@ -2224,7 +2382,10 @@ function ActionGroupItem({
             <button
               type="button"
               aria-label={`${open ? 'Hide' : 'Show'} tool details for ${action.title}`}
-              className={cn(rowClass, 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60')}
+              className={cn(
+                rowClass,
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+              )}
             >
               <ActionGroupItemHeader action={action} open={open} />
             </button>
@@ -2311,7 +2472,12 @@ interface UserMessageProps {
   accountLogin: string | null
 }
 
-function UserMessage({ text, attachments, accountAvatarUrl, accountLogin }: UserMessageProps) {
+function UserMessage({
+  text,
+  attachments,
+  accountAvatarUrl,
+  accountLogin,
+}: UserMessageProps) {
   const hasAttachments = attachments && attachments.length > 0
   const isTouch = useIsTouchDevice()
   const [tapCopied, setTapCopied] = useState(false)
@@ -2336,14 +2502,16 @@ function UserMessage({ text, attachments, accountAvatarUrl, accountLogin }: User
     }
   }, [canTapCopy, text])
 
-  const handleBubbleKey = useCallback(
-    (event: React.KeyboardEvent<HTMLDivElement>) => {
-      if (!canTapCopy) return
-      if (event.key !== 'Enter' && event.key !== ' ') return
-      event.preventDefault()
-      void handleBubbleTap()
-    },
-    [canTapCopy, handleBubbleTap],
+  const bubbleClassName = cn(
+    'rounded-2xl px-3.5 py-2',
+    'bg-primary/10 text-foreground',
+    'ring-1 ring-inset transition-[box-shadow,background-color] duration-150',
+    tapCopied ? 'ring-success/70 bg-success/10' : 'ring-primary/40',
+    'whitespace-pre-wrap break-words text-[14px] leading-relaxed select-text',
+    'agent-user-bubble-enter',
+    canTapCopy
+      ? 'cursor-pointer text-left active:bg-primary/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70'
+      : null,
   )
 
   return (
@@ -2352,32 +2520,29 @@ function UserMessage({ text, attachments, accountAvatarUrl, accountLogin }: User
         <span className="sr-only">You</span>
         {hasAttachments ? (
           <div className="flex max-w-full flex-wrap justify-end gap-1.5">
-            {attachments!.map((attachment) => (
-              <UserMessageAttachmentChip key={attachment.id} attachment={attachment} />
+            {attachments?.map((attachment) => (
+              <AttachmentPreviewChip
+                key={attachment.id}
+                attachment={attachment}
+              />
             ))}
           </div>
         ) : null}
         {text.length > 0 ? (
-          <div
-            role={canTapCopy ? 'button' : undefined}
-            tabIndex={canTapCopy ? 0 : undefined}
-            onClick={canTapCopy ? () => void handleBubbleTap() : undefined}
-            onKeyDown={canTapCopy ? handleBubbleKey : undefined}
-            aria-label={canTapCopy ? (tapCopied ? 'Copied your prompt' : 'Tap to copy your prompt') : undefined}
-            className={cn(
-              'rounded-2xl px-3.5 py-2',
-              'bg-primary/10 text-foreground',
-              'ring-1 ring-inset transition-[box-shadow,background-color] duration-150',
-              tapCopied ? 'ring-success/70 bg-success/10' : 'ring-primary/40',
-              'whitespace-pre-wrap break-words text-[14px] leading-relaxed select-text',
-              'agent-user-bubble-enter',
-              canTapCopy
-                ? 'cursor-pointer active:bg-primary/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70'
-                : null,
-            )}
-          >
-            {text}
-          </div>
+          canTapCopy ? (
+            <button
+              type="button"
+              onClick={() => void handleBubbleTap()}
+              aria-label={
+                tapCopied ? 'Copied your prompt' : 'Tap to copy your prompt'
+              }
+              className={bubbleClassName}
+            >
+              {text}
+            </button>
+          ) : (
+            <div className={bubbleClassName}>{text}</div>
+          )
         ) : null}
         {!isTouch && trimmedLength > 0 ? (
           <div
@@ -2401,7 +2566,10 @@ function UserMessage({ text, attachments, accountAvatarUrl, accountLogin }: User
         {canTapCopy && tapCopied ? (
           <div className="flex h-3 translate-y-1.5 items-center justify-end pr-0.5">
             <span className="inline-flex items-center gap-1 text-[10px] font-medium text-success">
-              <Check className="size-[11px] agent-copy-icon-pop" aria-hidden="true" />
+              <Check
+                className="size-[11px] agent-copy-icon-pop"
+                aria-hidden="true"
+              />
               Copied
             </span>
           </div>
@@ -2415,31 +2583,20 @@ function UserMessage({ text, attachments, accountAvatarUrl, accountLogin }: User
 function useIsTouchDevice(): boolean {
   const [isTouch, setIsTouch] = useState(false)
   useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    if (
+      typeof window === 'undefined' ||
+      typeof window.matchMedia !== 'function'
+    ) {
       return
     }
     const mediaQuery = window.matchMedia('(hover: none) and (pointer: coarse)')
     setIsTouch(mediaQuery.matches)
-    const handleChange = (event: MediaQueryListEvent) => setIsTouch(event.matches)
+    const handleChange = (event: MediaQueryListEvent) =>
+      setIsTouch(event.matches)
     mediaQuery.addEventListener('change', handleChange)
     return () => mediaQuery.removeEventListener('change', handleChange)
   }, [])
   return isTouch
-}
-
-function UserMessageAttachmentChip({ attachment }: { attachment: ConversationMessageAttachment }) {
-  if (attachment.kind === 'image' && attachmentPreviewSrc(attachment)) {
-    return <ImageAttachmentPreview attachment={attachment} className="max-w-[260px]" />
-  }
-  return (
-    <div
-      className="flex max-w-[260px] items-center gap-2 rounded-md border border-border/50 bg-muted/30 px-2 py-1 text-[11px] text-foreground"
-      title={attachment.originalName}
-    >
-      <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-      <span className="line-clamp-1 truncate">{attachment.originalName}</span>
-    </div>
-  )
 }
 
 // ---------------------------------------------------------------------------
@@ -2456,10 +2613,10 @@ interface AssistantSegment {
 function splitAssistantText(text: string): AssistantSegment[] {
   const segments: AssistantSegment[] = []
   let lastIndex = 0
-  let match: RegExpExecArray | null
 
   THINK_PATTERN.lastIndex = 0
-  while ((match = THINK_PATTERN.exec(text)) !== null) {
+  let match = THINK_PATTERN.exec(text)
+  while (match !== null) {
     if (match.index > lastIndex) {
       const before = text.slice(lastIndex, match.index)
       if (before.trim().length > 0) {
@@ -2471,6 +2628,7 @@ function splitAssistantText(text: string): AssistantSegment[] {
       segments.push({ kind: 'thinking', text: inner })
     }
     lastIndex = match.index + match[0].length
+    match = THINK_PATTERN.exec(text)
   }
 
   if (lastIndex < text.length) {
@@ -2523,7 +2681,11 @@ function AssistantMessage({
       <div className="flex w-full min-w-0 flex-col items-start gap-2">
         {segments.map((segment, index) =>
           segment.kind === 'thinking' ? (
-            <ThinkingBlock key={index} messageId={`${messageId}:thinking:${index}`} text={segment.text} />
+            <ThinkingBlock
+              key={index}
+              messageId={`${messageId}:thinking:${index}`}
+              text={segment.text}
+            />
           ) : (
             <ResponseBlock
               key={index}
@@ -2534,7 +2696,12 @@ function AssistantMessage({
             />
           ),
         )}
-        {hasAttachments ? <ToolMediaAttachments attachments={attachments!} /> : null}
+        {hasAttachments ? (
+          <ToolMediaAttachments
+            attachments={attachments ?? []}
+            variant="response"
+          />
+        ) : null}
       </div>
       {responseCopyText.length > 0 ? (
         <div
@@ -2592,7 +2759,13 @@ function StreamingCaret() {
   )
 }
 
-function ThinkingBlock({ messageId, text }: { messageId?: string; text: string }) {
+function ThinkingBlock({
+  messageId,
+  text,
+}: {
+  messageId?: string
+  text: string
+}) {
   return (
     <div className="w-full max-w-full min-w-0">
       <div className="flex items-center gap-1.5 text-[11.5px] font-semibold uppercase tracking-[0.07em] text-muted-foreground/90">
@@ -2608,12 +2781,11 @@ function ThinkingBlock({ messageId, text }: { messageId?: string; text: string }
 
 function AgentActivityIndicator() {
   return (
-    <div
+    <output
       className={cn(
         'flex items-center gap-2',
         'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1 motion-safe:duration-200 motion-safe:ease-out',
       )}
-      role="status"
       aria-label="Agent is thinking"
     >
       <AgentAvatar pulse />
@@ -2631,7 +2803,7 @@ function AgentActivityIndicator() {
           style={{ animationDelay: '400ms' }}
         />
       </span>
-    </div>
+    </output>
   )
 }
 
@@ -2651,7 +2823,10 @@ function HandoffFooterNotice({ onOpen }: { onOpen?: () => void }) {
         aria-label={`${title} — view handoff context`}
         className="agent-handoff-notice group flex w-full items-start gap-2 rounded-lg border border-border/50 bg-muted/30 px-3 py-2 text-left text-foreground hover:bg-muted/45 hover:border-primary/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <Info className="mt-[2px] h-3.5 w-3.5 shrink-0 text-primary/80" aria-hidden="true" />
+        <Info
+          className="mt-[2px] h-3.5 w-3.5 shrink-0 text-primary/80"
+          aria-hidden="true"
+        />
         <div className="min-w-0 flex-1">
           <p className="m-0 text-[13px] font-medium">{title}</p>
           <p className="mt-0.5 whitespace-pre-wrap break-words text-[12.5px] leading-relaxed">
@@ -2670,9 +2845,7 @@ function HandoffFooterNotice({ onOpen }: { onOpen?: () => void }) {
       </button>
     )
   }
-  return (
-    <NoticeRow tone="info" title={title} message={message} code={null} />
-  )
+  return <NoticeRow tone="info" title={title} message={message} code={null} />
 }
 
 interface NoticeRowProps {
@@ -2702,7 +2875,12 @@ function NoticeRow({ tone, title, message, code }: NoticeRowProps) {
             codeText: 'text-muted-foreground',
           }
 
-  const Icon = tone === 'destructive' ? AlertTriangle : tone === 'warning' ? AlertCircle : Info
+  const Icon =
+    tone === 'destructive'
+      ? AlertTriangle
+      : tone === 'warning'
+        ? AlertCircle
+        : Info
 
   return (
     <div
@@ -2718,7 +2896,12 @@ function NoticeRow({ tone, title, message, code }: NoticeRowProps) {
           {message}
         </p>
         {code ? (
-          <p className={cn('mt-1 break-words font-mono text-[10.5px]', toneStyles.codeText)}>
+          <p
+            className={cn(
+              'mt-1 break-words font-mono text-[10.5px]',
+              toneStyles.codeText,
+            )}
+          >
             code: {code}
           </p>
         ) : null}
@@ -2732,20 +2915,63 @@ function NoticeRow({ tone, title, message, code }: NoticeRowProps) {
 // ---------------------------------------------------------------------------
 
 function FailureCard({ message, code }: { message: string; code: string }) {
+  const presentation = failurePresentation(message, code)
+  const warning = presentation.tone === 'warning'
+  const Icon = warning ? AlertCircle : XCircle
   return (
-    <div className="agent-failure-shake flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/8 px-3 py-2 text-destructive">
-      <XCircle className="mt-[2px] h-3.5 w-3.5 shrink-0" />
+    <div
+      className={cn(
+        'flex items-start gap-2 rounded-lg border px-3 py-2',
+        warning
+          ? 'border-warning/30 bg-warning/8 text-foreground'
+          : 'agent-failure-shake border-destructive/30 bg-destructive/8 text-destructive',
+      )}
+    >
+      <Icon
+        className={cn(
+          'mt-[2px] h-3.5 w-3.5 shrink-0',
+          warning ? 'text-warning' : 'text-destructive',
+        )}
+      />
       <div className="min-w-0 flex-1">
-        <p className="m-0 text-[13px] font-medium">Agent run failed</p>
+        <p className="m-0 text-[13px] font-medium">{presentation.title}</p>
         <p className="mt-0.5 whitespace-pre-wrap break-words text-[12.5px] leading-relaxed">
-          {message}
+          {presentation.message}
         </p>
-        <p className="mt-1 break-words font-mono text-[10.5px] text-destructive/70">
+        <p
+          className={cn(
+            'mt-1 break-words font-mono text-[10.5px]',
+            warning ? 'text-muted-foreground' : 'text-destructive/70',
+          )}
+        >
           code: {code}
         </p>
       </div>
     </div>
   )
+}
+
+function failurePresentation(
+  message: string,
+  code: string,
+): {
+  tone: 'warning' | 'destructive'
+  title: string
+  message: string
+} {
+  if (code === 'browser_not_open') {
+    return {
+      tone: 'warning',
+      title: 'In-app browser not open',
+      message:
+        'The in-app browser is not open yet. Open the built-in browser, or continue from the visible desktop or another open app.',
+    }
+  }
+  return {
+    tone: 'destructive',
+    title: 'Agent run failed',
+    message,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2763,8 +2989,6 @@ function UserAvatar({ avatarUrl, login }: UserAvatarProps) {
 
   return (
     <span
-      aria-hidden={showImage ? undefined : 'true'}
-      aria-label={showImage && login ? `${login}'s avatar` : undefined}
       className={cn(
         'mt-[2px] flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full',
         showImage
@@ -2775,12 +2999,12 @@ function UserAvatar({ avatarUrl, login }: UserAvatarProps) {
       {showImage ? (
         <img
           src={avatarUrl ?? undefined}
-          alt=""
+          alt={login ? `${login}'s avatar` : ''}
           className="h-full w-full object-cover"
           onError={() => setFailed(true)}
         />
       ) : (
-        <User className="h-3 w-3" />
+        <User className="h-3 w-3" aria-hidden="true" />
       )}
     </span>
   )
@@ -2826,7 +3050,8 @@ function ToolStatusIcon({ state, className }: ToolStatusIconProps) {
           : 'text-muted-foreground/55'
 
   const pop = state === 'succeeded' || state === 'failed'
-  const iconSize = state === 'pending' || state === null ? 'h-3.5 w-3.5' : 'h-4 w-4'
+  const iconSize =
+    state === 'pending' || state === null ? 'h-3.5 w-3.5' : 'h-4 w-4'
   // Replays a soft halo only when the tool finishes — keyed on `state` so a
   // re-render with the same terminal state doesn't restart the animation,
   // but a transition (running → succeeded) does.
@@ -2851,7 +3076,9 @@ function ToolStatusIcon({ state, className }: ToolStatusIconProps) {
           tone,
           state === 'succeeded' && 'drop-shadow-[0_0_4px_rgba(34,197,94,0.25)]',
           'motion-safe:animate-in motion-safe:fade-in-0',
-          pop ? 'tool-status-icon-pop' : 'motion-safe:zoom-in-95 motion-safe:duration-150',
+          pop
+            ? 'tool-status-icon-pop'
+            : 'motion-safe:zoom-in-95 motion-safe:duration-150',
         )}
       />
       {flashTone ? (
@@ -2910,7 +3137,10 @@ function DenseTurnItem({
     return (
       <li className="flex items-start gap-1.5 px-1 text-destructive">
         <span className="shrink-0 select-none">✗</span>
-        <span className="min-w-0 flex-1 truncate" title={`${turn.code}: ${turn.message}`}>
+        <span
+          className="min-w-0 flex-1 truncate"
+          title={`${turn.code}: ${turn.message}`}
+        >
           {truncateForLine(turn.message)}
         </span>
       </li>
@@ -2919,32 +3149,40 @@ function DenseTurnItem({
 
   if (turn.kind === 'file_change') {
     const fileUndoState = turn.changeGroupId
-      ? codeUndoStates[getCodeUndoStateKey({
-          targetKind: 'file_change',
-          changeGroupId: turn.changeGroupId,
-          filePath: fileChangeUndoFilePath(turn),
-        })]
+      ? codeUndoStates[
+          getCodeUndoStateKey({
+            targetKind: 'file_change',
+            changeGroupId: turn.changeGroupId,
+            filePath: fileChangeUndoFilePath(turn),
+          })
+        ]
       : undefined
     const changeGroupUndoState = turn.changeGroupId
-      ? codeUndoStates[getCodeUndoStateKey({
-          targetKind: 'change_group',
-          changeGroupId: turn.changeGroupId,
-        })]
+      ? codeUndoStates[
+          getCodeUndoStateKey({
+            targetKind: 'change_group',
+            changeGroupId: turn.changeGroupId,
+          })
+        ]
       : undefined
     const hunkUndoState = turn.changeGroupId
-      ? codeUndoStates[getCodeUndoStateKey({
-          targetKind: 'hunks',
-          changeGroupId: turn.changeGroupId,
-          filePath: fileChangeUndoFilePath(turn),
-        })]
+      ? codeUndoStates[
+          getCodeUndoStateKey({
+            targetKind: 'hunks',
+            changeGroupId: turn.changeGroupId,
+            filePath: fileChangeUndoFilePath(turn),
+          })
+        ]
       : undefined
     const returnSessionState = turn.changeGroupId
-      ? returnSessionToHereStates[getReturnSessionToHereStateKey({
-          targetKind: 'run_boundary',
-          boundaryId: codeChangeGroupBoundaryId(turn.changeGroupId),
-          runId: turn.runId,
-          changeGroupId: turn.changeGroupId,
-        })]
+      ? returnSessionToHereStates[
+          getReturnSessionToHereStateKey({
+            targetKind: 'run_boundary',
+            boundaryId: codeChangeGroupBoundaryId(turn.changeGroupId),
+            runId: turn.runId,
+            changeGroupId: turn.changeGroupId,
+          })
+        ]
       : undefined
 
     return (
@@ -2987,7 +3225,10 @@ function DenseTurnItem({
     return (
       <li className="flex items-start gap-1.5 px-1 text-foreground/90">
         <span className="shrink-0 select-none text-primary/80">?</span>
-        <span className="min-w-0 flex-1 truncate" title={`${turn.title}: ${turn.detail}`}>
+        <span
+          className="min-w-0 flex-1 truncate"
+          title={`${turn.title}: ${turn.detail}`}
+        >
           {truncateForLine(turn.title)}
         </span>
       </li>
@@ -3002,13 +3243,19 @@ function DenseTurnItem({
           <button
             type="button"
             onClick={() =>
-              handler({ sourceRunId: turn.sourceRunId, targetRunId: turn.targetRunId })
+              handler({
+                sourceRunId: turn.sourceRunId,
+                targetRunId: turn.targetRunId,
+              })
             }
             aria-label="Run continued in a fresh session — view handoff context"
             className="flex w-full items-start gap-1.5 px-1 text-left text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <span className="shrink-0 select-none">⤳</span>
-            <span className="min-w-0 flex-1 truncate" title="Run continued in a fresh session">
+            <span
+              className="min-w-0 flex-1 truncate"
+              title="Run continued in a fresh session"
+            >
               handed off to a fresh same-type session
             </span>
           </button>
@@ -3018,7 +3265,10 @@ function DenseTurnItem({
     return (
       <li className="flex items-start gap-1.5 px-1 text-muted-foreground">
         <span className="shrink-0 select-none">⤳</span>
-        <span className="min-w-0 flex-1 truncate" title="Run continued in a fresh session">
+        <span
+          className="min-w-0 flex-1 truncate"
+          title="Run continued in a fresh session"
+        >
           handed off to a fresh same-type session
         </span>
       </li>
@@ -3029,7 +3279,10 @@ function DenseTurnItem({
     return (
       <li className="flex items-start gap-1.5 px-1 text-muted-foreground">
         <span className="shrink-0 select-none">↪</span>
-        <span className="min-w-0 flex-1 truncate" title={`Routing suggestion → ${turn.targetAgentId}`}>
+        <span
+          className="min-w-0 flex-1 truncate"
+          title={`Routing suggestion → ${turn.targetAgentId}`}
+        >
           suggested routing to {turn.targetAgentId}
         </span>
       </li>
@@ -3059,9 +3312,16 @@ function DenseFileChangeItem({
   const targetLabel = fileChangeTargetLabel(turn)
   const undoFilePath = fileChangeUndoFilePath(turn)
   const canUndo = Boolean(turn.changeGroupId && onUndoChangeGroup)
-  const canReturnSessionToHere = Boolean(turn.changeGroupId && turn.runId && onReturnSessionToHere)
+  const canReturnSessionToHere = Boolean(
+    turn.changeGroupId && turn.runId && onReturnSessionToHere,
+  )
   const textHunks = fileChangeTextHunks(turn)
-  const undoState = visibleCodeUndoState(fileUndoState, changeGroupUndoState, hunkUndoState, returnSessionState)
+  const undoState = visibleCodeUndoState(
+    fileUndoState,
+    changeGroupUndoState,
+    hunkUndoState,
+    returnSessionState,
+  )
   const statusTone =
     undoState?.status === 'failed'
       ? 'text-destructive'
@@ -3072,21 +3332,28 @@ function DenseFileChangeItem({
   return (
     <li className="px-1">
       <div className="flex items-start gap-2 text-foreground/85">
-        <FileText className="mt-[2px] h-3 w-3 shrink-0 text-primary/70" aria-hidden="true" />
+        <FileText
+          className="mt-[2px] h-3 w-3 shrink-0 text-primary/70"
+          aria-hidden="true"
+        />
         <div className="min-w-0 flex-1">
           <span className="block truncate" title={turn.detail}>
-            {truncateForLine(`${humanizeFileChangeOperation(turn.operation)} ${targetLabel}`)}
+            {truncateForLine(
+              `${humanizeFileChangeOperation(turn.operation)} ${targetLabel}`,
+            )}
           </span>
           {undoState ? (
             <>
-              <span
+              <output
                 className={cn('mt-0.5 block truncate text-[11px]', statusTone)}
-                role="status"
                 aria-live="polite"
               >
                 {undoState.message}
-              </span>
-              <CodeUndoConflictDetails summary={undoState.conflictSummary} dense />
+              </output>
+              <CodeUndoConflictDetails
+                summary={undoState.conflictSummary}
+                dense
+              />
             </>
           ) : null}
         </div>
@@ -3119,14 +3386,20 @@ interface DenseMessageItemProps {
   attachments?: ConversationMessageAttachment[]
 }
 
-function DenseMessageItem({ id, role, text, attachments }: DenseMessageItemProps) {
+function DenseMessageItem({
+  id,
+  role,
+  text,
+  attachments,
+}: DenseMessageItemProps) {
   const isUser = role === 'user'
   const [open, setOpen] = useState(!isUser)
   const marker = isUser ? '>' : '◆'
   const tone = isUser ? 'text-primary/85' : 'text-foreground/90'
   const normalized = text.trim()
   const hasAttachments = Boolean(attachments && attachments.length > 0)
-  const hasMore = normalized.length > 240 || /\r?\n/.test(normalized) || hasAttachments
+  const hasMore =
+    normalized.length > 240 || /\r?\n/.test(normalized) || hasAttachments
 
   return (
     <li className="px-1">
@@ -3134,7 +3407,9 @@ function DenseMessageItem({ id, role, text, attachments }: DenseMessageItemProps
         type="button"
         onClick={() => setOpen((prev) => !prev)}
         aria-expanded={hasMore ? open : undefined}
-        aria-label={hasMore ? `${open ? 'Hide' : 'Show'} full message` : undefined}
+        aria-label={
+          hasMore ? `${open ? 'Hide' : 'Show'} full message` : undefined
+        }
         disabled={!hasMore}
         className={cn(
           'flex w-full items-start gap-2 text-left',
@@ -3142,7 +3417,9 @@ function DenseMessageItem({ id, role, text, attachments }: DenseMessageItemProps
           'focus-visible:outline-none focus-visible:text-foreground',
         )}
       >
-        <span className={cn('shrink-0 select-none font-semibold', tone)}>{marker}</span>
+        <span className={cn('shrink-0 select-none font-semibold', tone)}>
+          {marker}
+        </span>
         <span
           className="min-w-0 flex-1 truncate text-foreground/85"
           title={hasMore && !open ? text : undefined}
@@ -3175,7 +3452,7 @@ function DenseMessageItem({ id, role, text, attachments }: DenseMessageItemProps
           )}
           {hasAttachments ? (
             <ul className="mt-1.5 flex flex-wrap gap-1 text-[11px] text-muted-foreground/80">
-              {attachments!.map((attachment) => (
+              {attachments?.map((attachment) => (
                 <li
                   key={attachment.id}
                   className="rounded-sm border border-border/40 bg-muted/20 px-1.5 py-0.5"
@@ -3206,7 +3483,9 @@ function DenseThinkingItem({ id, text }: { id: string; text: string }) {
         disabled={!hasMore}
         className={cn(
           'flex w-full items-start gap-2 text-left',
-          hasMore ? 'cursor-pointer hover:text-foreground/90' : 'cursor-default',
+          hasMore
+            ? 'cursor-pointer hover:text-foreground/90'
+            : 'cursor-default',
           'focus-visible:outline-none focus-visible:text-foreground',
         )}
       >
@@ -3249,9 +3528,18 @@ interface DenseActionItemProps {
   state: RuntimeStreamToolItemView['toolState'] | null
 }
 
-function DenseActionItem({ title, detail, detailRows, mediaAttachments, state }: DenseActionItemProps) {
+function DenseActionItem({
+  title,
+  detail,
+  detailRows,
+  mediaAttachments,
+  state,
+}: DenseActionItemProps) {
   const [open, setOpen] = useState(false)
-  const hasDetails = detailRows.length > 0 || detail.trim().length > 0 || Boolean(mediaAttachments?.length)
+  const hasDetails =
+    detailRows.length > 0 ||
+    detail.trim().length > 0 ||
+    Boolean(mediaAttachments?.length)
 
   return (
     <li className="px-1">
@@ -3259,11 +3547,17 @@ function DenseActionItem({ title, detail, detailRows, mediaAttachments, state }:
         type="button"
         onClick={() => setOpen((prev) => !prev)}
         aria-expanded={hasDetails ? open : undefined}
-        aria-label={hasDetails ? `${open ? 'Hide' : 'Show'} tool details for ${title}` : undefined}
+        aria-label={
+          hasDetails
+            ? `${open ? 'Hide' : 'Show'} tool details for ${title}`
+            : undefined
+        }
         disabled={!hasDetails}
         className={cn(
           'flex w-full items-start gap-2 text-left',
-          hasDetails ? 'cursor-pointer hover:text-foreground' : 'cursor-default',
+          hasDetails
+            ? 'cursor-pointer hover:text-foreground'
+            : 'cursor-default',
           'focus-visible:outline-none focus-visible:text-foreground',
         )}
       >
@@ -3316,7 +3610,12 @@ interface DenseActionGroupItemProps {
   }>
 }
 
-function DenseActionGroupItem({ title, detail, state, actions }: DenseActionGroupItemProps) {
+function DenseActionGroupItem({
+  title,
+  detail,
+  state,
+  actions,
+}: DenseActionGroupItemProps) {
   const [open, setOpen] = useState(false)
   const hasChildren = actions.length > 0
 
@@ -3326,11 +3625,17 @@ function DenseActionGroupItem({ title, detail, state, actions }: DenseActionGrou
         type="button"
         onClick={() => setOpen((prev) => !prev)}
         aria-expanded={hasChildren ? open : undefined}
-        aria-label={hasChildren ? `${open ? 'Hide' : 'Show'} grouped tool details for ${title}` : undefined}
+        aria-label={
+          hasChildren
+            ? `${open ? 'Hide' : 'Show'} grouped tool details for ${title}`
+            : undefined
+        }
         disabled={!hasChildren}
         className={cn(
           'flex w-full items-start gap-2 text-left',
-          hasChildren ? 'cursor-pointer hover:text-foreground' : 'cursor-default',
+          hasChildren
+            ? 'cursor-pointer hover:text-foreground'
+            : 'cursor-default',
           'focus-visible:outline-none focus-visible:text-foreground',
         )}
       >
@@ -3399,14 +3704,16 @@ function DenseToolDetails({
     <div className="flex flex-col gap-1.5 text-[11.5px]">
       {hasMedia ? (
         <ul className="flex flex-wrap gap-1 text-[11px] text-muted-foreground/80">
-          {mediaAttachments!.map((attachment) => (
+          {mediaAttachments?.map((attachment) => (
             <li
               key={attachment.id}
               className="inline-flex max-w-[220px] items-center gap-1 rounded-sm border border-border/40 bg-muted/20 px-1.5 py-0.5"
               title={attachmentDisplayName(attachment)}
             >
               <ImageIcon className="h-3 w-3 shrink-0" aria-hidden="true" />
-              <span className="truncate">{attachmentDisplayName(attachment)}</span>
+              <span className="truncate">
+                {attachmentDisplayName(attachment)}
+              </span>
             </li>
           ))}
         </ul>

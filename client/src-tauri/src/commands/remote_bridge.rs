@@ -26,8 +26,9 @@ use crate::{
         agent_session::{agent_session_dto, stop_idle_owned_runtime_run_before_archive},
         desktop_control::load_desktop_control_settings,
         global_computer_use::{
-            ensure_global_computer_use_session_record, GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
-            GLOBAL_COMPUTER_USE_PROJECT_ID, REMOTE_COMPUTER_USE_SESSION_ID,
+            ensure_global_computer_use_session_record, reset_global_computer_use_session_record,
+            GLOBAL_COMPUTER_USE_AGENT_SESSION_ID, GLOBAL_COMPUTER_USE_PROJECT_ID,
+            REMOTE_COMPUTER_USE_SESSION_ID,
         },
         list_projects::load_visible_project_summaries_from_registry,
         project_state::{read_app_ui_state_value, write_app_ui_state_value},
@@ -48,11 +49,11 @@ use crate::{
         start_runtime_run::start_runtime_run_blocking,
         stop_runtime_run::stop_runtime_run_blocking,
         update_runtime_run_controls::update_runtime_run_controls_blocking,
-        validate_non_empty, CommandError, CommandResult, DiscardAgentAttachmentRequestDto,
-        ProjectUpdateReason, ProviderModelThinkingEffortDto, ResolveOperatorActionRequestDto,
-        RuntimeAgentIdDto, RuntimeRunApprovalModeDto, RuntimeRunControlInputDto,
-        StageAgentAttachmentRequestDto, StagedAgentAttachmentDto, StartRuntimeRunRequestDto,
-        StopRuntimeRunRequestDto, UpdateRuntimeRunControlsRequestDto,
+        validate_non_empty, AgentRunDto, AgentRunEventKindDto, CommandError, CommandResult,
+        DiscardAgentAttachmentRequestDto, ProjectUpdateReason, ProviderModelThinkingEffortDto,
+        ResolveOperatorActionRequestDto, RuntimeAgentIdDto, RuntimeRunApprovalModeDto,
+        RuntimeRunControlInputDto, StageAgentAttachmentRequestDto, StagedAgentAttachmentDto,
+        StartRuntimeRunRequestDto, StopRuntimeRunRequestDto, UpdateRuntimeRunControlsRequestDto,
     },
     db::project_store::{
         self, AgentEventRecord, AgentSessionCreateRecord, AgentSessionRecord,
@@ -1054,7 +1055,8 @@ fn publish_remote_session_snapshot(
     located: LocatedRemoteSession,
 ) -> CommandResult<()> {
     let session_id = located.remote_session_id.clone();
-    let snapshot = remote_session_snapshot(app, state, &located)?;
+    let computer_id = bridge.computer_id().ok().flatten();
+    let snapshot = remote_session_snapshot(app, state, &located, computer_id.as_deref())?;
     bridge
         .snapshot(&session_id, snapshot)
         .map_err(map_bridge_error)?;
@@ -1198,7 +1200,23 @@ fn route_start_computer_use_session<R: Runtime + 'static>(
     command: InboundCommand,
     prompt: Option<&str>,
 ) -> CommandResult<()> {
-    let global = ensure_global_computer_use_session_record(app, state)?;
+    let reset_existing = payload_bool(
+        &command.payload,
+        &[
+            "resetExisting",
+            "reset_existing",
+            "clearExisting",
+            "clear_existing",
+            "clearChat",
+            "clear_chat",
+        ],
+    )
+    .unwrap_or(false);
+    let global = if reset_existing {
+        reset_global_computer_use_session_record(app, state)?
+    } else {
+        ensure_global_computer_use_session_record(app, state)?
+    };
     let run = match prompt.map(str::trim).filter(|prompt| !prompt.is_empty()) {
         Some(prompt) => {
             let existing = load_persisted_runtime_run(
@@ -1303,6 +1321,19 @@ fn route_start_computer_use_session<R: Runtime + 'static>(
             }),
         )
         .map_err(map_bridge_error)?;
+    if reset_existing {
+        publish_remote_session_snapshot(
+            app,
+            state,
+            bridge,
+            LocatedRemoteSession {
+                project_id: global.project_id,
+                repo_root: global.repo_root,
+                session: global.session,
+                remote_session_id: REMOTE_COMPUTER_USE_SESSION_ID.into(),
+            },
+        )?;
+    }
     Ok(())
 }
 
@@ -1686,8 +1717,25 @@ fn route_fetch_runtime_media_artifact<R: Runtime>(
     command: InboundCommand,
 ) -> CommandResult<()> {
     let session_id = required_command_session(&command)?.to_string();
-    let artifact_id =
-        required_payload_string(&command.payload, &["artifactId", "artifact_id"])?.to_string();
+    let Some(artifact_id) = payload_string(&command.payload, &["artifactId", "artifact_id"]) else {
+        bridge
+            .forward_control_event(
+                &session_id,
+                json!({
+                    "schema": "xero.remote_runtime_media_artifact.v1",
+                    "ok": false,
+                    "artifactId": "",
+                    "mediaType": "application/octet-stream",
+                    "error": CommandError::user_fixable(
+                        "remote_command_payload_invalid",
+                        "Remote runtime media request is missing an artifact id.",
+                    ),
+                }),
+            )
+            .map_err(map_bridge_error)?;
+        return Ok(());
+    };
+    let artifact_id = artifact_id.to_string();
     let located = locate_remote_session(app, state, &session_id)?;
     let result = read_runtime_media_artifact(&located.repo_root, &artifact_id);
     let payload = match result {
@@ -2802,14 +2850,28 @@ fn remote_session_snapshot<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
     located: &LocatedRemoteSession,
+    computer_id: Option<&str>,
 ) -> CommandResult<JsonValue> {
+    let remote_context = computer_id.map(|computer_id| RemoteRuntimeMediaContext {
+        computer_id,
+        session_id: located.remote_session_id.as_str(),
+    });
     let runs = project_store::load_agent_session_run_snapshots(
         &located.repo_root,
         &located.project_id,
         &located.session.agent_session_id,
     )?
     .into_iter()
-    .map(|(snapshot, _usage)| agent_run_dto(snapshot))
+    .map(|(snapshot, _usage)| {
+        let mut run = agent_run_dto(snapshot);
+        enrich_remote_run_media_attachments(
+            &located.repo_root,
+            &located.project_id,
+            remote_context,
+            &mut run,
+        );
+        run
+    })
     .collect::<Vec<_>>();
     let runtime_run = load_persisted_runtime_run(
         &located.repo_root,
@@ -2830,6 +2892,51 @@ fn remote_session_snapshot<R: Runtime>(
         "contextSnapshot": JsonValue::Null,
         "contextSnapshotError": JsonValue::Null,
     }))
+}
+
+fn enrich_remote_run_media_attachments(
+    repo_root: &Path,
+    project_id: &str,
+    remote_context: Option<RemoteRuntimeMediaContext<'_>>,
+    run: &mut AgentRunDto,
+) {
+    let Some(remote_context) = remote_context else {
+        return;
+    };
+    for event in &mut run.events {
+        if event.event_kind != AgentRunEventKindDto::ToolCompleted {
+            continue;
+        }
+        if !event
+            .payload
+            .get("ok")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let Some(output) = event.payload.get("output") else {
+            continue;
+        };
+        let media_attachments = extract_runtime_media_attachments(RuntimeMediaExtractionRequest {
+            repo_root,
+            project_id,
+            run_id: &run.run_id,
+            event_id: event.id,
+            tool_call_id: event.payload.get("toolCallId").and_then(JsonValue::as_str),
+            tool_name: event.payload.get("toolName").and_then(JsonValue::as_str),
+            output,
+            asset_state: None,
+            remote_context: Some(remote_context),
+        });
+        if media_attachments.is_empty() {
+            continue;
+        }
+        if let Some(object) = event.payload.as_object_mut() {
+            object.insert("mediaAttachments".into(), json!(media_attachments));
+            object.remove("modelVisibleToolResult");
+        }
+    }
 }
 
 fn remote_selected_composer_controls<R: Runtime>(
@@ -3622,7 +3729,10 @@ mod tests {
     use rusqlite::{params, Connection};
 
     use crate::{
-        commands::{ProjectOriginDto, ProjectSummaryDto, HARNESS_FIXTURE_PROJECT_ID},
+        commands::{
+            AgentRunEventDto, AgentRunStatusDto, ProjectOriginDto, ProjectSummaryDto,
+            HARNESS_FIXTURE_PROJECT_ID,
+        },
         db::{
             configure_connection, migrations::migrations, register_project_database_path_for_tests,
         },
@@ -4007,6 +4117,98 @@ mod tests {
         assert_eq!(payload["session"]["title"], "Simple Addition");
         assert_eq!(payload["session"]["remoteVisible"], true);
         assert_eq!(payload["session"]["updatedAt"], "2026-05-20T20:42:00Z");
+    }
+
+    #[test]
+    fn enrich_remote_run_media_attachments_adds_remote_artifacts_to_snapshot_events() {
+        const ONE_BY_ONE_PNG: &str =
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/axj3nQAAAAASUVORK5CYII=";
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let screenshot_path = tempdir.path().join("screen.png");
+        let png_bytes = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD
+                .decode(ONE_BY_ONE_PNG)
+                .expect("png")
+        };
+        fs::write(&screenshot_path, png_bytes).expect("write screenshot");
+        let mut run = AgentRunDto {
+            runtime_agent_id: RuntimeAgentIdDto::ComputerUse,
+            agent_definition_id: "computer_use".into(),
+            agent_definition_version: 1,
+            project_id: "project-1".into(),
+            agent_session_id: "session-1".into(),
+            run_id: "run-1".into(),
+            trace_id: "trace-1".into(),
+            lineage_kind: "root".into(),
+            parent_run_id: None,
+            parent_trace_id: None,
+            parent_subagent_id: None,
+            subagent_role: None,
+            provider_id: "openai".into(),
+            model_id: "gpt-5.5".into(),
+            status: AgentRunStatusDto::Completed,
+            prompt: "take a screenshot".into(),
+            system_prompt: String::new(),
+            started_at: "2026-05-30T19:00:00Z".into(),
+            last_heartbeat_at: None,
+            completed_at: Some("2026-05-30T19:01:00Z".into()),
+            cancelled_at: None,
+            last_error_code: None,
+            last_error: None,
+            updated_at: "2026-05-30T19:01:00Z".into(),
+            messages: Vec::new(),
+            events: vec![AgentRunEventDto {
+                id: 42,
+                project_id: "project-1".into(),
+                run_id: "run-1".into(),
+                event_kind: AgentRunEventKindDto::ToolCompleted,
+                payload: json!({
+                    "toolCallId": "call-macos-screenshot",
+                    "toolName": "macos_automation",
+                    "ok": true,
+                    "modelVisibleToolResult": "Screenshot captured.",
+                    "output": {
+                        "kind": "macos_automation",
+                        "screenshot": {
+                            "path": screenshot_path.to_string_lossy(),
+                            "width": 1,
+                            "height": 1,
+                        },
+                    },
+                }),
+                created_at: "2026-05-30T19:00:30Z".into(),
+            }],
+            tool_calls: Vec::new(),
+            file_changes: Vec::new(),
+            checkpoints: Vec::new(),
+            action_requests: Vec::new(),
+        };
+
+        enrich_remote_run_media_attachments(
+            tempdir.path(),
+            "project-1",
+            Some(RemoteRuntimeMediaContext {
+                computer_id: "computer-1",
+                session_id: "remote-session-1",
+            }),
+            &mut run,
+        );
+
+        let payload = &run.events[0].payload;
+        let attachments = payload["mediaAttachments"]
+            .as_array()
+            .expect("media attachments");
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0]["mediaType"], "image/png");
+        assert_eq!(attachments[0]["title"], "macOS screenshot");
+        assert_eq!(attachments[0]["source"]["kind"], "remote_artifact");
+        assert_eq!(attachments[0]["source"]["computer_id"], "computer-1");
+        assert_eq!(attachments[0]["source"]["session_id"], "remote-session-1");
+        assert!(attachments[0]["source"]["artifact_id"]
+            .as_str()
+            .is_some_and(|artifact_id| artifact_id.contains("run-1-42")));
+        assert!(payload.get("modelVisibleToolResult").is_none());
     }
 
     #[test]

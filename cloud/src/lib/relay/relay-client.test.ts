@@ -118,7 +118,7 @@ describe("pushInboundCommand", () => {
 	});
 
 	it("returns structured rate-limit acknowledgements from Phoenix errors", async () => {
-		let errorHandler: ((payload?: unknown) => void) | null = null;
+		const handlers: { error?: (payload?: unknown) => void } = {};
 		const push = vi.fn(() => {
 			const pushLike = {
 				receive: vi.fn(
@@ -126,7 +126,7 @@ describe("pushInboundCommand", () => {
 						status: "ok" | "error" | "timeout",
 						callback: (payload?: unknown) => void,
 					) => {
-						if (status === "error") errorHandler = callback;
+						if (status === "error") handlers.error = callback;
 						return pushLike;
 					},
 				),
@@ -141,7 +141,7 @@ describe("pushInboundCommand", () => {
 			streamToken: "stream-token-1",
 		});
 
-		errorHandler?.({
+		handlers.error?.({
 			reason: "rate_limited",
 			rateLimit: {
 				bucket: "frame:computer_use:manual_critical",
@@ -376,6 +376,34 @@ describe("pushInboundCommand", () => {
 					prompt: "",
 					sessionKind: "computer_use",
 					agent: "computer_use",
+				},
+			}),
+		);
+	});
+
+	it("requests a reset of the hidden Computer Use backing chat", () => {
+		const push = vi.fn();
+
+		requestStartSession({ push } as never, {
+			computerId: "desktop-1",
+			projectId: "global-computer-use",
+			deviceId: "web-1",
+			sessionKind: "computer_use",
+			agent: "computer_use",
+			resetExisting: true,
+		});
+
+		expect(push).toHaveBeenCalledWith(
+			"frame",
+			expect.objectContaining({
+				session_id: "__new__",
+				kind: "start_session",
+				payload: {
+					projectId: "global-computer-use",
+					prompt: "",
+					sessionKind: "computer_use",
+					agent: "computer_use",
+					resetExisting: true,
 				},
 			}),
 		);

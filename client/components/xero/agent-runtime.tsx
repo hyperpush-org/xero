@@ -52,7 +52,6 @@ import type {
   RuntimeStreamActionRequiredItemView,
   RuntimeStreamActivityItemView,
   RuntimeStreamFailureItemView,
-  RuntimeStreamMediaAttachmentDto,
   RuntimeStreamToolItemView,
   RuntimeStreamViewItem,
   ReturnSessionToHereResponseDto,
@@ -108,10 +107,14 @@ import {
   type CodeUndoRequest,
   type CodeUndoConflictSummary,
   type CodeUndoUiState,
-  type ConversationMessageAttachment,
   type ConversationTurn,
   type ReturnSessionToHereUiRequest,
 } from '@xero/ui/components/transcript/conversation-section'
+import {
+  mergeConversationAttachments,
+  promoteActionMediaIntoFollowingAssistantMessages,
+  runtimeMediaAttachmentsToConversation,
+} from '@xero/ui/components/transcript/runtime-media'
 import { EmptySessionState } from '@xero/ui/components/empty-session-state'
 import {
   getToolCardTitle,
@@ -403,44 +406,6 @@ function actionTurnFromItem(item: RuntimeStreamToolItemView): ConversationTurn {
   }
 }
 
-function runtimeMediaAttachmentsToConversation(
-  attachments: readonly RuntimeStreamMediaAttachmentDto[] | null | undefined,
-): ConversationMessageAttachment[] | undefined {
-  if (!attachments || attachments.length === 0) {
-    return undefined
-  }
-  return attachments.map((attachment) => {
-    const originalName = attachment.title?.trim()
-      || (attachment.source.kind === 'app_data_path'
-        ? attachment.source.absolutePath.split(/[\\/]/).pop()
-        : null)
-      || attachment.id
-    const absolutePath =
-      attachment.source.kind === 'app_data_path'
-        ? attachment.source.absolutePath
-        : attachment.source.kind === 'artifact'
-          ? attachment.source.absolutePath ?? undefined
-          : undefined
-    return {
-      id: attachment.id,
-      kind: attachment.kind,
-      mediaType: attachment.mediaType,
-      originalName,
-      sizeBytes: attachment.sizeBytes ?? 0,
-      title: attachment.title ?? null,
-      alt: attachment.alt ?? null,
-      width: attachment.width ?? null,
-      height: attachment.height ?? null,
-      source: attachment.source,
-      renderUrl: attachment.renderUrl ?? null,
-      previewSrc:
-        attachment.renderUrl ??
-        (attachment.source.kind === 'data_url' ? attachment.source.dataUrl : undefined),
-      absolutePath,
-    }
-  })
-}
-
 function fileChangeTurnFromItem(item: RuntimeStreamActivityItemView): ConversationTurn {
   const detail = item.detail ?? item.text ?? 'File changed.'
   const parsed = parseFileChangeActivityDetail(detail)
@@ -552,22 +517,6 @@ function mergeActionRows(
     }
   }
 
-  return merged
-}
-
-function mergeConversationAttachments(
-  existing: ConversationMessageAttachment[] | undefined,
-  incoming: ConversationMessageAttachment[] | undefined,
-): ConversationMessageAttachment[] | undefined {
-  if (!existing?.length) return incoming
-  if (!incoming?.length) return existing
-  const merged = existing.slice()
-  const seen = new Set(existing.map((attachment) => attachment.id))
-  for (const attachment of incoming) {
-    if (seen.has(attachment.id)) continue
-    seen.add(attachment.id)
-    merged.push(attachment)
-  }
   return merged
 }
 
@@ -1068,7 +1017,7 @@ function finalizeActionTurns(
 ): ConversationTurn[] {
   const projectedTurns =
     toolCallGroupingPreference === 'grouped' ? compactActionBursts(turns) : turns
-  return limitActionTurns(projectedTurns)
+  return limitActionTurns(promoteActionMediaIntoFollowingAssistantMessages(projectedTurns))
 }
 
 function buildConversationProjection(
@@ -3116,7 +3065,7 @@ export const AgentRuntime = memo(function AgentRuntime({
                 label={sessionLabel}
                 closeLabel="Close Computer Use"
                 onClose={onCloseSidebar}
-                className="pointer-events-auto"
+                className="pointer-events-auto translate-y-1"
               />
             ) : (
               <div
@@ -3304,10 +3253,14 @@ export const AgentRuntime = memo(function AgentRuntime({
               isDense
                 ? showAgentSetupEmptyState || showEmptySessionState
                   ? 'px-2 py-2'
-                  : 'px-2 pt-12'
+                  : isComputerUseSidebar
+                    ? 'px-2 pt-12'
+                    : 'px-2 pt-12'
                 : showAgentSetupEmptyState || showEmptySessionState
                   ? 'px-6 py-5'
-                  : 'px-4 pt-20',
+                  : isComputerUseSidebar
+                    ? 'px-4 pt-14'
+                    : 'px-4 pt-20',
             )}
           >
             {showAgentSetupEmptyState ? (

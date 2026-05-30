@@ -320,35 +320,33 @@ class RelayCommandScheduler {
 			return;
 		}
 
-		if (!push || typeof push.receive !== "function") {
+		const receive = push?.receive;
+		if (typeof receive !== "function") {
 			finish(commandResult(queued.command, "accepted", "push_unobservable"));
 			return;
 		}
 
-		push
-			.receive("ok", (payload) => {
-				finish(
-					commandOutcomeFromPayload(payload) ??
-						commandResult(queued.command, "accepted", null),
-				);
-			})
-			.receive("error", (payload) => {
-				const outcome = commandOutcomeFromPayload(payload);
-				finish(
-					outcome ??
-						commandResult(
-							queued.command,
-							rateLimitedPayload(payload) ? "rate_limited" : "rejected",
-							errorReason(payload),
-							rateLimitMetadata(payload),
-						),
-				);
-			})
-			.receive("timeout", () => {
-				retryOrFinish(
-					commandResult(queued.command, "timed_out", "push_timeout"),
-				);
-			});
+		receive.call(push, "ok", (payload) => {
+			finish(
+				commandOutcomeFromPayload(payload) ??
+					commandResult(queued.command, "accepted", null),
+			);
+		});
+		receive.call(push, "error", (payload) => {
+			const outcome = commandOutcomeFromPayload(payload);
+			finish(
+				outcome ??
+					commandResult(
+						queued.command,
+						rateLimitedPayload(payload) ? "rate_limited" : "rejected",
+						errorReason(payload),
+						rateLimitMetadata(payload),
+					),
+			);
+		});
+		receive.call(push, "timeout", () => {
+			retryOrFinish(commandResult(queued.command, "timed_out", "push_timeout"));
+		});
 	}
 }
 
@@ -792,6 +790,8 @@ export function requestRuntimeMediaArtifact(
 		artifactId: string;
 	},
 ): void {
+	const artifactId = options.artifactId.trim();
+	if (!artifactId) return;
 	pushInboundCommand(channel, {
 		v: 1,
 		seq: Date.now(),
@@ -799,7 +799,7 @@ export function requestRuntimeMediaArtifact(
 		session_id: options.sessionId,
 		device_id: options.deviceId,
 		kind: "fetch_runtime_media_artifact",
-		payload: { artifactId: options.artifactId },
+		payload: { artifactId },
 	});
 }
 
@@ -1139,6 +1139,7 @@ export function requestStartSession(
 		prompt?: string | null;
 		sessionKind?: "standard" | "computer_use";
 		agent?: string | null;
+		resetExisting?: boolean;
 	},
 ): void {
 	const payload: Record<string, unknown> = {
@@ -1148,6 +1149,7 @@ export function requestStartSession(
 	if (options.title?.trim()) payload.title = options.title.trim();
 	if (options.sessionKind) payload.sessionKind = options.sessionKind;
 	if (options.agent?.trim()) payload.agent = options.agent.trim();
+	if (options.resetExisting) payload.resetExisting = true;
 
 	pushInboundCommand(channel, {
 		v: 1,

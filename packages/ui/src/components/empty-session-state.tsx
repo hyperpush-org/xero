@@ -124,7 +124,7 @@ export function EmptySessionState({
 				? "The canvas is already included. Describe the agent or Workflow, then approve the saved definition when it is ready."
 				: "Start from a description. Agent Create will draft an agent or Workflow definition for review."
 			: isComputerUse
-				? "Give a concrete instruction and Xero will operate the visible computer with bounded UI control."
+				? "Give a concrete instruction and Xero will use the available computer and project tools."
 				: "Just ask — I can read your code, suggest changes, or run a task for you. Everything we do will show up right here.");
 
 	if (variant === "dense") {

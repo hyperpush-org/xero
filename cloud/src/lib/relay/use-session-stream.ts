@@ -94,6 +94,7 @@ export interface AccountRemoteSessionsState {
 		options?: { sessionKind?: SessionKind },
 	) => boolean;
 	archiveSession: (summary: VisibleSessionSummary) => boolean;
+	clearComputerUseChat: (summary: VisibleSessionSummary) => boolean;
 }
 
 const UNRECONCILED_REMOTE_LIST_RETRY_MS = 2_000;
@@ -718,6 +719,24 @@ export function useAccountRemoteSessions(
 		return true;
 	};
 
+	const clearComputerUseChat = (summary: VisibleSessionSummary): boolean => {
+		if (!webDeviceId || !summary.isComputerUse) return false;
+		if (remoteControlByComputer[summary.computerId]?.available === false) {
+			return false;
+		}
+		const channel = newSessionChannelsRef.current.get(summary.computerId);
+		if (!channel) return false;
+		requestStartSession(channel, {
+			computerId: summary.computerId,
+			projectId: summary.projectId || GLOBAL_COMPUTER_USE_PROJECT_ID,
+			deviceId: webDeviceId,
+			sessionKind: "computer_use",
+			agent: "computer_use",
+			resetExisting: true,
+		});
+		return true;
+	};
+
 	const projects = flattenRemoteProjects(remoteProjectsByComputer);
 	const sessions = withGlobalComputerUseSessions(
 		visibleSessions,
@@ -731,6 +750,7 @@ export function useAccountRemoteSessions(
 		remoteControlByComputer,
 		startSession,
 		archiveSession,
+		clearComputerUseChat,
 	};
 }
 

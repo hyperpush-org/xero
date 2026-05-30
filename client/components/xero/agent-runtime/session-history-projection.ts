@@ -5,10 +5,11 @@ import type {
   SessionTranscriptItemDto,
 } from '@/src/lib/xero-model'
 
-import type {
-  ConversationMessageAttachment,
-  ConversationTurn,
-} from '@xero/ui/components/transcript/conversation-section'
+import type { ConversationTurn } from '@xero/ui/components/transcript/conversation-section'
+import {
+  promoteActionMediaIntoFollowingAssistantMessages,
+  runtimeMediaAttachmentsToConversation,
+} from '@xero/ui/components/transcript/runtime-media'
 
 const HANDED_OFF_RUN_STATUS = 'handed_off'
 const MAX_HISTORICAL_CONVERSATION_TURNS = 80
@@ -119,11 +120,13 @@ export function buildHistoricalConversationTurns(
     }
   }
 
-  if (turns.length <= MAX_HISTORICAL_CONVERSATION_TURNS) {
-    return turns
+  const promotedTurns = promoteActionMediaIntoFollowingAssistantMessages(turns)
+
+  if (promotedTurns.length <= MAX_HISTORICAL_CONVERSATION_TURNS) {
+    return promotedTurns
   }
 
-  return turns.slice(-MAX_HISTORICAL_CONVERSATION_TURNS)
+  return promotedTurns.slice(-MAX_HISTORICAL_CONVERSATION_TURNS)
 }
 
 interface MessageDisplayPolicy {
@@ -212,42 +215,6 @@ function toMediaToolTurn(item: SessionTranscriptItemDto): Extract<ConversationTu
     state: item.toolState ?? 'succeeded',
     defaultOpen: true,
   }
-}
-
-function runtimeMediaAttachmentsToConversation(
-  attachments: SessionTranscriptItemDto['mediaAttachments'],
-): ConversationMessageAttachment[] | undefined {
-  if (!attachments?.length) return undefined
-  return attachments.map((attachment) => {
-    const originalName = attachment.title?.trim()
-      || (attachment.source.kind === 'app_data_path'
-        ? attachment.source.absolutePath.split(/[\\/]/).pop()
-        : null)
-      || attachment.id
-    const absolutePath =
-      attachment.source.kind === 'app_data_path'
-        ? attachment.source.absolutePath
-        : attachment.source.kind === 'artifact'
-          ? attachment.source.absolutePath ?? undefined
-          : undefined
-    return {
-      id: attachment.id,
-      kind: attachment.kind,
-      mediaType: attachment.mediaType,
-      originalName,
-      sizeBytes: attachment.sizeBytes ?? 0,
-      title: attachment.title ?? null,
-      alt: attachment.alt ?? null,
-      width: attachment.width ?? null,
-      height: attachment.height ?? null,
-      source: attachment.source,
-      renderUrl: attachment.renderUrl ?? null,
-      previewSrc:
-        attachment.renderUrl ??
-        (attachment.source.kind === 'data_url' ? attachment.source.dataUrl : undefined),
-      absolutePath,
-    }
-  })
 }
 
 const ROUTING_MARKER_REGEX = /<xero-routing-suggestion\s+([^/>]*?)\/>/i

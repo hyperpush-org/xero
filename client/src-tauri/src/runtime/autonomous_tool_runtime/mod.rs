@@ -348,22 +348,6 @@ const TOOL_ACCESS_EMULATOR_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_EMULATOR];
 const TOOL_ACCESS_DESKTOP_OBSERVE_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_DESKTOP_OBSERVE];
 const TOOL_ACCESS_DESKTOP_CONTROL_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_DESKTOP_CONTROL];
 const TOOL_ACCESS_DESKTOP_STREAM_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_DESKTOP_STREAM];
-const TOOL_ACCESS_COMPUTER_USE_TOOLS: &[&str] = &[
-    AUTONOMOUS_TOOL_TOOL_ACCESS,
-    AUTONOMOUS_TOOL_TOOL_SEARCH,
-    AUTONOMOUS_TOOL_TODO,
-    AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
-    AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
-    AUTONOMOUS_TOOL_BROWSER_OBSERVE,
-    AUTONOMOUS_TOOL_BROWSER_CONTROL,
-    AUTONOMOUS_TOOL_BROWSER,
-    AUTONOMOUS_TOOL_EMULATOR,
-    AUTONOMOUS_TOOL_MACOS_AUTOMATION,
-    AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
-    AUTONOMOUS_TOOL_DESKTOP_CONTROL,
-    AUTONOMOUS_TOOL_DESKTOP_STREAM,
-    AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
-];
 const TOOL_ACCESS_SOLANA_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_SOLANA_CLUSTER,
     AUTONOMOUS_TOOL_SOLANA_LOGS,
@@ -511,7 +495,7 @@ const TOOL_ACCESS_GROUP_DEFINITIONS: &[ToolAccessGroupDefinition] = &[
     },
     ToolAccessGroupDefinition {
         name: "macos",
-        description: "macOS permissions, app/window inspection, screenshots, and approval-gated automation.",
+        description: "macOS permissions, app/window inspection, screenshots, and bounded app/window automation.",
         tools: TOOL_ACCESS_MACOS_TOOLS,
         risk_class: "os_control",
     },
@@ -908,7 +892,6 @@ impl AutonomousAgentToolPolicy {
                     "planner",
                     "researcher",
                     "reviewer",
-                    "agent_builder",
                     "browser",
                     "emulator",
                     "solana",
@@ -992,55 +975,52 @@ impl AutonomousAgentToolPolicy {
                 destructive_write_allowed: false,
             },
             "computer_use" => Self {
-                allowed_effect_classes: BTreeSet::new(),
-                allowed_tools: TOOL_ACCESS_COMPUTER_USE_TOOLS
-                    .iter()
-                    .map(|tool| (*tool).to_owned())
-                    .collect(),
-                denied_tools: [
-                    AUTONOMOUS_TOOL_WRITE,
-                    AUTONOMOUS_TOOL_EDIT,
-                    AUTONOMOUS_TOOL_PATCH,
-                    AUTONOMOUS_TOOL_COPY,
-                    AUTONOMOUS_TOOL_FS_TRANSACTION,
-                    AUTONOMOUS_TOOL_JSON_EDIT,
-                    AUTONOMOUS_TOOL_TOML_EDIT,
-                    AUTONOMOUS_TOOL_YAML_EDIT,
-                    AUTONOMOUS_TOOL_DELETE,
-                    AUTONOMOUS_TOOL_RENAME,
-                    AUTONOMOUS_TOOL_MKDIR,
-                    AUTONOMOUS_TOOL_COMMAND,
-                    AUTONOMOUS_TOOL_COMMAND_RUN,
-                    AUTONOMOUS_TOOL_COMMAND_SESSION,
-                    AUTONOMOUS_TOOL_COMMAND_SESSION_START,
-                    AUTONOMOUS_TOOL_COMMAND_SESSION_READ,
-                    AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
-                    AUTONOMOUS_TOOL_POWERSHELL,
-                    AUTONOMOUS_TOOL_PROCESS_MANAGER,
-                    AUTONOMOUS_TOOL_GIT_STATUS,
-                    AUTONOMOUS_TOOL_GIT_DIFF,
-                    AUTONOMOUS_TOOL_MCP,
-                    AUTONOMOUS_TOOL_MCP_CALL_TOOL,
-                    AUTONOMOUS_TOOL_SKILL,
-                    AUTONOMOUS_TOOL_SUBAGENT,
+                allowed_effect_classes: [
+                    "observe",
+                    "runtime_state",
+                    "write",
+                    "destructive_write",
+                    "command",
+                    "process_control",
+                    "browser_control",
+                    "device_control",
+                    "desktop_control",
+                    "external_service",
+                    "skill_runtime",
+                    "agent_delegation",
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned)
                 .collect(),
+                allowed_tools: BTreeSet::new(),
+                denied_tools: BTreeSet::new(),
                 allowed_tool_packs: BTreeSet::new(),
                 denied_tool_packs: BTreeSet::new(),
                 allowed_mcp_servers: BTreeSet::new(),
                 denied_mcp_servers: BTreeSet::new(),
                 allowed_dynamic_tools: BTreeSet::new(),
                 denied_dynamic_tools: BTreeSet::new(),
-                external_service_allowed: false,
+                external_service_allowed: true,
                 browser_control_allowed: true,
-                skill_runtime_allowed: false,
-                subagent_allowed: false,
-                allowed_subagent_roles: BTreeSet::new(),
+                skill_runtime_allowed: true,
+                subagent_allowed: true,
+                allowed_subagent_roles: [
+                    "engineer",
+                    "debugger",
+                    "planner",
+                    "researcher",
+                    "reviewer",
+                    "browser",
+                    "emulator",
+                    "solana",
+                    "database",
+                ]
+                .into_iter()
+                .map(ToOwned::to_owned)
+                .collect(),
                 denied_subagent_roles: BTreeSet::new(),
                 command_allowed: true,
-                destructive_write_allowed: false,
+                destructive_write_allowed: true,
             },
             _ => Self {
                 allowed_effect_classes: ["observe"].into_iter().map(ToOwned::to_owned).collect(),
@@ -1919,7 +1899,7 @@ pub fn tool_allowed_for_runtime_agent(agent_id: RuntimeAgentIdDto, tool_name: &s
         }
         RuntimeAgentIdDto::Plan => TOOL_ACCESS_PLANNING_TOOLS.contains(&tool_name),
         RuntimeAgentIdDto::Crawl => TOOL_ACCESS_REPOSITORY_RECON_TOOLS.contains(&tool_name),
-        RuntimeAgentIdDto::ComputerUse => TOOL_ACCESS_COMPUTER_USE_TOOLS.contains(&tool_name),
+        RuntimeAgentIdDto::ComputerUse => true,
         RuntimeAgentIdDto::Ask | RuntimeAgentIdDto::AgentCreate => {
             matches!(tool_name, AUTONOMOUS_TOOL_TOOL_ACCESS)
                 || tool_effect_class(tool_name).is_ask_observe_only()
@@ -2754,7 +2734,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_MACOS_AUTOMATION,
             "macos",
-            "macOS app/system automation: check permissions, list/launch/activate/quit apps, list/focus windows, and capture approval-gated screenshots.",
+            "macOS app/system automation: check permissions, list/launch/activate/quit apps, list/focus windows, and capture screenshots.",
             &[
                 "macos",
                 "desktop",
@@ -2764,7 +2744,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
                 "permission",
             ],
             &["action", "bundleId", "appName", "windowId", "target"],
-            &["List running apps.", "Capture a screenshot after approval."],
+            &["List running apps.", "Capture a screenshot."],
             "os_control",
         ),
         catalog_entry(
@@ -2791,14 +2771,14 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             ],
             &[
                 "List displays before selecting a screenshot target.",
-                "Capture a screenshot after operator approval.",
+                "Capture a screenshot of a selected display.",
             ],
             "desktop_observe",
         ),
         catalog_entry(
             AUTONOMOUS_TOOL_DESKTOP_CONTROL,
             "desktop_control",
-            "Approval-gated native desktop control through the Computer Use broker: pointer movement, click, drag, scroll, keyboard, text entry, app/window, Accessibility, menu, and cancel actions.",
+            "Native desktop control through the Computer Use broker: pointer movement, click, drag, scroll, keyboard, text entry, app/window, Accessibility, menu, and cancel actions.",
             &[
                 "desktop",
                 "computer_use",
@@ -2806,7 +2786,6 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
                 "mouse",
                 "keyboard",
                 "accessibility",
-                "approval",
                 "audit",
             ],
             &[
@@ -2833,7 +2812,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
                 "sensitivity",
             ],
             &[
-                "Click a visible button after observing the desktop and receiving approval.",
+                "Click a visible button after observing the desktop.",
                 "Cancel the current desktop action and release the controller lock.",
             ],
             "desktop_control",
@@ -2863,7 +2842,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             ],
             &[
                 "Check stream capability before opening the cloud desktop viewport.",
-                "Start a degraded screenshot-fallback stream after approval.",
+                "Start a degraded screenshot-fallback stream.",
             ],
             "desktop_stream",
         ),
@@ -3641,7 +3620,8 @@ impl AutonomousToolRuntime {
         project_id: &str,
     ) -> CommandResult<Self> {
         let browser_executor = browser::tauri_browser_executor(app.clone(), state.clone());
-        let repo_root = resolve_imported_repo_root(app, state, project_id)?;
+        let repo_root =
+            crate::commands::runtime_support::resolve_project_root(app, state, project_id)?;
         let browser_control_preference = load_browser_control_settings(app, state)?.preference;
         let soul_settings = load_soul_settings(app, state)?;
         let skill_settings = load_skill_source_settings_from_path(&state.global_db_path(app)?)?;
@@ -5796,9 +5776,7 @@ impl AutonomousSubagentRole {
             Self::Browser => {
                 "Return browser evidence, selectors, screenshots, or accessibility findings."
             }
-            Self::Emulator => {
-                "Return device state, reproduction steps, and bounded automation evidence."
-            }
+            Self::Emulator => "Return device state, reproduction steps, and automation evidence.",
             Self::Solana => {
                 "Return cluster/program evidence and safety notes for chain-affecting work."
             }
@@ -8369,15 +8347,28 @@ mod tests {
     }
 
     #[test]
-    fn computer_use_policy_allows_bounded_ui_control_but_blocks_repo_mutation_and_commands() {
+    fn computer_use_policy_allows_general_purpose_tools_except_agent_builder_surfaces() {
         let policy = AutonomousAgentToolPolicy::from_policy_label("computer_use");
 
         for allowed_tool in [
+            AUTONOMOUS_TOOL_READ,
+            AUTONOMOUS_TOOL_WRITE,
+            AUTONOMOUS_TOOL_EDIT,
+            AUTONOMOUS_TOOL_PATCH,
+            AUTONOMOUS_TOOL_DELETE,
+            AUTONOMOUS_TOOL_COMMAND_RUN,
+            AUTONOMOUS_TOOL_COMMAND_SESSION,
+            AUTONOMOUS_TOOL_PROCESS_MANAGER,
+            AUTONOMOUS_TOOL_GIT_STATUS,
+            AUTONOMOUS_TOOL_MCP_CALL_TOOL,
+            AUTONOMOUS_TOOL_SKILL,
+            AUTONOMOUS_TOOL_SUBAGENT,
             AUTONOMOUS_TOOL_TOOL_ACCESS,
             AUTONOMOUS_TOOL_TOOL_SEARCH,
             AUTONOMOUS_TOOL_TODO,
             AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
             AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
             AUTONOMOUS_TOOL_BROWSER_OBSERVE,
             AUTONOMOUS_TOOL_BROWSER_CONTROL,
             AUTONOMOUS_TOOL_BROWSER,
@@ -8399,18 +8390,9 @@ mod tests {
         }
 
         for blocked_tool in [
-            AUTONOMOUS_TOOL_READ,
-            AUTONOMOUS_TOOL_WRITE,
-            AUTONOMOUS_TOOL_EDIT,
-            AUTONOMOUS_TOOL_PATCH,
-            AUTONOMOUS_TOOL_DELETE,
-            AUTONOMOUS_TOOL_COMMAND_RUN,
-            AUTONOMOUS_TOOL_COMMAND_SESSION,
-            AUTONOMOUS_TOOL_PROCESS_MANAGER,
-            AUTONOMOUS_TOOL_GIT_STATUS,
-            AUTONOMOUS_TOOL_MCP_CALL_TOOL,
-            AUTONOMOUS_TOOL_SKILL,
-            AUTONOMOUS_TOOL_SUBAGENT,
+            AUTONOMOUS_TOOL_HARNESS_RUNNER,
+            AUTONOMOUS_TOOL_AGENT_DEFINITION,
+            AUTONOMOUS_TOOL_WORKFLOW_DEFINITION,
         ] {
             assert!(
                 !tool_allowed_for_runtime_agent_with_policy(
@@ -8421,6 +8403,11 @@ mod tests {
                 "computer_use should block {blocked_tool}"
             );
         }
+
+        assert!(policy.allows_subagent_role(AutonomousSubagentRole::Engineer));
+        assert!(policy.allows_subagent_role(AutonomousSubagentRole::Browser));
+        assert!(policy.allows_subagent_role(AutonomousSubagentRole::Emulator));
+        assert!(!policy.allows_subagent_role(AutonomousSubagentRole::AgentBuilder));
     }
 
     #[test]

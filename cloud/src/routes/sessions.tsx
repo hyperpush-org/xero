@@ -107,6 +107,8 @@ function SessionsShell() {
 					<SessionTopBar
 						title={topBarTitle}
 						projectLabel={topBarProjectLabel}
+						emphasizeTitle={shell.activeSession?.isComputerUse ?? false}
+						liftContent={shell.activeSession?.isComputerUse ?? false}
 						accessorySlotRef={setTopBarAccessoryElement}
 						drawerTrigger={
 							<SessionDrawer
@@ -360,6 +362,7 @@ function useSessionsShellViewModel(
 			selectSession,
 			startSession,
 			archiveSession: remoteSessions.archiveSession,
+			clearComputerUseChat: remoteSessions.clearComputerUseChat,
 			reportActiveTargetInvalid,
 			pendingProjectKey: pendingNewSession?.projectKey ?? null,
 		}),
