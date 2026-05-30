@@ -174,6 +174,8 @@ function makeStatus(overrides: Partial<DesktopControlStatusDto> = {}): DesktopCo
       mouseInput: true,
       keyboardInput: true,
       clipboard: true,
+      windowFocus: true,
+      appControl: true,
       accessibilityActions: true,
       menuSelect: true,
       webrtcStream: false,

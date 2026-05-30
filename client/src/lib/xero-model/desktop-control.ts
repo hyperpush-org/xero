@@ -64,6 +64,8 @@ const desktopCapabilitiesSchema = z
     mouseInput: z.boolean(),
     keyboardInput: z.boolean(),
     clipboard: z.boolean(),
+    windowFocus: z.boolean(),
+    appControl: z.boolean(),
     accessibilityActions: z.boolean(),
     menuSelect: z.boolean(),
     webrtcStream: z.boolean(),

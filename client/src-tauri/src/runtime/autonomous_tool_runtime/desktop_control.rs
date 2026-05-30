@@ -376,6 +376,10 @@ pub struct AutonomousDesktopCapabilities {
     pub mouse_input: bool,
     pub keyboard_input: bool,
     pub clipboard: bool,
+    #[serde(default)]
+    pub window_focus: bool,
+    #[serde(default)]
+    pub app_control: bool,
     pub accessibility_actions: bool,
     pub menu_select: bool,
     pub webrtc_stream: bool,
@@ -702,6 +706,8 @@ impl From<DesktopSidecarCapabilities> for AutonomousDesktopCapabilities {
             mouse_input: capabilities.mouse_input,
             keyboard_input: capabilities.keyboard_input,
             clipboard: capabilities.clipboard,
+            window_focus: capabilities.window_focus,
+            app_control: capabilities.app_control,
             accessibility_actions: capabilities.accessibility_actions,
             menu_select: capabilities.menu_select,
             webrtc_stream: capabilities.webrtc_stream,
@@ -1956,22 +1962,33 @@ impl AutonomousToolRuntime {
             | AutonomousDesktopControlAction::ActivateApp
             | AutonomousDesktopControlAction::LaunchApp
             | AutonomousDesktopControlAction::QuitApp => {
-                let action = match request.action {
-                    AutonomousDesktopControlAction::FocusWindow => {
-                        AutonomousMacosAutomationAction::MacWindowFocus
-                    }
-                    AutonomousDesktopControlAction::ActivateApp => {
-                        AutonomousMacosAutomationAction::MacAppActivate
-                    }
-                    AutonomousDesktopControlAction::LaunchApp => {
-                        AutonomousMacosAutomationAction::MacAppLaunch
-                    }
-                    AutonomousDesktopControlAction::QuitApp => {
-                        AutonomousMacosAutomationAction::MacAppQuit
-                    }
-                    _ => unreachable!("desktop app-control action already matched"),
-                };
-                self.run_desktop_app_automation(&request, action, &mut output)
+                if let Some(message) =
+                    run_sidecar_desktop_control(&request, &output.policy.decision_id)?
+                {
+                    Ok(message)
+                } else if cfg!(target_os = "macos") {
+                    let action = match request.action {
+                        AutonomousDesktopControlAction::FocusWindow => {
+                            AutonomousMacosAutomationAction::MacWindowFocus
+                        }
+                        AutonomousDesktopControlAction::ActivateApp => {
+                            AutonomousMacosAutomationAction::MacAppActivate
+                        }
+                        AutonomousDesktopControlAction::LaunchApp => {
+                            AutonomousMacosAutomationAction::MacAppLaunch
+                        }
+                        AutonomousDesktopControlAction::QuitApp => {
+                            AutonomousMacosAutomationAction::MacAppQuit
+                        }
+                        _ => unreachable!("desktop app-control action already matched"),
+                    };
+                    self.run_desktop_app_automation(&request, action, &mut output)
+                } else {
+                    Err(CommandError::user_fixable(
+                        "sidecar_unavailable",
+                        "Desktop app launch, activation, quit, and window focus require the platform app-control backend.",
+                    ))
+                }
             }
             AutonomousDesktopControlAction::AxPress
             | AutonomousDesktopControlAction::AxSetValue
@@ -2973,6 +2990,18 @@ fn validate_desktop_control_request(
         AutonomousDesktopControlAction::TypeText | AutonomousDesktopControlAction::PasteText => {
             validate_non_empty(request.text.as_deref().unwrap_or_default(), "text")?;
         }
+        AutonomousDesktopControlAction::FocusWindow
+        | AutonomousDesktopControlAction::ActivateApp
+        | AutonomousDesktopControlAction::QuitApp => {
+            validate_desktop_app_or_window_target(request)?;
+        }
+        AutonomousDesktopControlAction::LaunchApp => {
+            if !has_non_empty_desktop_target(request.app_name.as_deref())
+                && !has_non_empty_desktop_target(request.bundle_id.as_deref())
+            {
+                return Err(CommandError::invalid_request("appName or bundleId"));
+            }
+        }
         AutonomousDesktopControlAction::AxSetValue => {
             validate_non_empty(request.value.as_deref().unwrap_or_default(), "value")?;
             validate_ax_target(request)?;
@@ -2988,6 +3017,25 @@ fn validate_desktop_control_request(
         _ => {}
     }
     Ok(())
+}
+
+fn validate_desktop_app_or_window_target(
+    request: &AutonomousDesktopControlRequest,
+) -> CommandResult<()> {
+    if has_non_empty_desktop_target(request.window_id.as_deref())
+        || has_non_empty_desktop_target(request.app_name.as_deref())
+        || has_non_empty_desktop_target(request.bundle_id.as_deref())
+    {
+        Ok(())
+    } else {
+        Err(CommandError::invalid_request(
+            "windowId, appName, or bundleId",
+        ))
+    }
+}
+
+fn has_non_empty_desktop_target(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !value.trim().is_empty())
 }
 
 fn validate_ax_target(request: &AutonomousDesktopControlRequest) -> CommandResult<()> {
@@ -4333,6 +4381,8 @@ fn merge_desktop_capabilities(
         mouse_input: sidecar.mouse_input || fallback.mouse_input,
         keyboard_input: sidecar.keyboard_input || fallback.keyboard_input,
         clipboard: sidecar.clipboard || fallback.clipboard,
+        window_focus: sidecar.window_focus || fallback.window_focus,
+        app_control: sidecar.app_control || fallback.app_control,
         accessibility_actions: sidecar.accessibility_actions || fallback.accessibility_actions,
         menu_select: sidecar.menu_select || fallback.menu_select,
         webrtc_stream: sidecar.webrtc_stream || fallback.webrtc_stream,
@@ -4377,6 +4427,8 @@ fn in_process_desktop_capabilities() -> AutonomousDesktopCapabilities {
         mouse_input: cfg!(target_os = "macos"),
         keyboard_input: cfg!(target_os = "macos"),
         clipboard: false,
+        window_focus: cfg!(target_os = "macos"),
+        app_control: cfg!(target_os = "macos"),
         accessibility_actions: false,
         menu_select: false,
         webrtc_stream: false,
@@ -4405,6 +4457,8 @@ fn disabled_desktop_capabilities() -> AutonomousDesktopCapabilities {
         mouse_input: false,
         keyboard_input: false,
         clipboard: false,
+        window_focus: false,
+        app_control: false,
         accessibility_actions: false,
         menu_select: false,
         webrtc_stream: false,
@@ -4483,6 +4537,10 @@ fn refreshed_desktop_permissions() -> Vec<AutonomousDesktopPermissionStatus> {
 }
 
 fn static_desktop_permissions() -> Vec<AutonomousDesktopPermissionStatus> {
+    if cfg!(target_os = "windows") {
+        return windows_desktop_permissions();
+    }
+
     vec![
         permission(
             "Screen Recording",
@@ -4564,6 +4622,10 @@ fn merge_desktop_permissions(
 }
 
 fn in_process_desktop_permissions() -> Vec<AutonomousDesktopPermissionStatus> {
+    if cfg!(target_os = "windows") {
+        return windows_desktop_permissions();
+    }
+
     vec![
         permission(
             "Screen Recording",
@@ -4601,6 +4663,40 @@ fn in_process_desktop_permissions() -> Vec<AutonomousDesktopPermissionStatus> {
     ]
 }
 
+fn windows_desktop_permissions() -> Vec<AutonomousDesktopPermissionStatus> {
+    vec![
+        permission(
+            "Screen Capture",
+            AutonomousDesktopPermissionGrant::Granted,
+            &["screenshot", "stream"],
+            "Windows desktop capture is available in the active user session; no macOS-style privacy grant is required.",
+        ),
+        permission(
+            "Desktop Input",
+            AutonomousDesktopPermissionGrant::Granted,
+            &[
+                "mouse",
+                "keyboard",
+                "clipboard",
+                "window_focus",
+                "app_control",
+            ],
+            "Windows desktop input is brokered through the active user session and the Computer Use controller lock.",
+        ),
+        permission(
+            "UI Automation",
+            AutonomousDesktopPermissionGrant::Unsupported,
+            &[
+                "accessibility_snapshot",
+                "accessibility_actions",
+                "menu_select",
+                "ocr_snapshot",
+            ],
+            "Windows UI Automation, OCR, and app-menu actions are not implemented in this build; use screenshots, window targeting, and pointer/keyboard control.",
+        ),
+    ]
+}
+
 #[cfg(target_os = "macos")]
 fn desktop_screen_recording_permission_status() -> AutonomousDesktopPermissionGrant {
     permission_grant_from_bool(unsafe { CGPreflightScreenCaptureAccess() })
@@ -4608,7 +4704,9 @@ fn desktop_screen_recording_permission_status() -> AutonomousDesktopPermissionGr
 
 #[cfg(not(target_os = "macos"))]
 fn desktop_screen_recording_permission_status() -> AutonomousDesktopPermissionGrant {
-    if cfg!(any(target_os = "windows", target_os = "linux")) {
+    if cfg!(target_os = "windows") {
+        AutonomousDesktopPermissionGrant::Granted
+    } else if cfg!(target_os = "linux") {
         AutonomousDesktopPermissionGrant::Unknown
     } else {
         AutonomousDesktopPermissionGrant::Unsupported
@@ -4632,7 +4730,11 @@ fn desktop_input_monitoring_permission_status() -> AutonomousDesktopPermissionGr
 
 #[cfg(not(target_os = "macos"))]
 fn desktop_input_monitoring_permission_status() -> AutonomousDesktopPermissionGrant {
-    AutonomousDesktopPermissionGrant::Unsupported
+    if cfg!(target_os = "windows") {
+        AutonomousDesktopPermissionGrant::Granted
+    } else {
+        AutonomousDesktopPermissionGrant::Unsupported
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -5760,6 +5862,10 @@ fn desktop_control_sidecar_operation(
         AutonomousDesktopControlAction::Hotkey => DesktopSidecarOperation::Hotkey,
         AutonomousDesktopControlAction::TypeText => DesktopSidecarOperation::TypeText,
         AutonomousDesktopControlAction::PasteText => DesktopSidecarOperation::PasteText,
+        AutonomousDesktopControlAction::FocusWindow => DesktopSidecarOperation::FocusWindow,
+        AutonomousDesktopControlAction::ActivateApp => DesktopSidecarOperation::ActivateApp,
+        AutonomousDesktopControlAction::LaunchApp => DesktopSidecarOperation::LaunchApp,
+        AutonomousDesktopControlAction::QuitApp => DesktopSidecarOperation::QuitApp,
         AutonomousDesktopControlAction::AxPress => DesktopSidecarOperation::AxPress,
         AutonomousDesktopControlAction::AxSetValue => DesktopSidecarOperation::AxSetValue,
         AutonomousDesktopControlAction::AxFocus => DesktopSidecarOperation::AxFocus,
@@ -5767,7 +5873,6 @@ fn desktop_control_sidecar_operation(
         AutonomousDesktopControlAction::CancelCurrentAction => {
             DesktopSidecarOperation::CancelCurrentAction
         }
-        _ => return None,
     })
 }
 
@@ -5775,6 +5880,10 @@ fn sidecar_control_request(
     request: &AutonomousDesktopControlRequest,
 ) -> DesktopSidecarControlRequest {
     DesktopSidecarControlRequest {
+        display_id: request.display_id.clone(),
+        window_id: request.window_id.clone(),
+        app_name: request.app_name.clone(),
+        bundle_id: request.bundle_id.clone(),
         element_id: request.element_id.clone(),
         x: request.x,
         y: request.y,
@@ -6624,6 +6733,25 @@ mod tests {
     }
 
     #[test]
+    fn app_control_targets_must_not_be_blank() {
+        let mut launch = desktop_control_request(AutonomousDesktopControlAction::LaunchApp);
+        launch.app_name = Some("   ".into());
+        assert!(validate_desktop_control_request(&launch).is_err());
+
+        launch.app_name = None;
+        launch.bundle_id = Some("Microsoft.WindowsNotepad_8wekyb3d8bbwe!App".into());
+        assert!(validate_desktop_control_request(&launch).is_ok());
+
+        let mut focus = desktop_control_request(AutonomousDesktopControlAction::FocusWindow);
+        focus.window_id = Some("   ".into());
+        assert!(validate_desktop_control_request(&focus).is_err());
+
+        focus.window_id = None;
+        focus.app_name = Some("Notepad".into());
+        assert!(validate_desktop_control_request(&focus).is_ok());
+    }
+
+    #[test]
     fn stream_start_is_allowed_without_approval() {
         let request = AutonomousDesktopStreamRequest {
             action: AutonomousDesktopStreamAction::StreamStart,
@@ -7439,10 +7567,10 @@ mod tests {
     fn sidecar_control_request_maps_pointer_and_keyboard_fields() {
         let request = AutonomousDesktopControlRequest {
             action: AutonomousDesktopControlAction::MouseClick,
-            display_id: None,
-            window_id: None,
-            app_name: None,
-            bundle_id: None,
+            display_id: Some("display-1".into()),
+            window_id: Some("42".into()),
+            app_name: Some("Notepad".into()),
+            bundle_id: Some("Microsoft.WindowsNotepad_8wekyb3d8bbwe!App".into()),
             element_id: Some("macos_ax:1:AXButton:10:20:30:40:10:20".into()),
             x: Some(10),
             y: Some(20),
@@ -7465,6 +7593,13 @@ mod tests {
 
         let sidecar = sidecar_control_request(&request);
 
+        assert_eq!(sidecar.display_id.as_deref(), Some("display-1"));
+        assert_eq!(sidecar.window_id.as_deref(), Some("42"));
+        assert_eq!(sidecar.app_name.as_deref(), Some("Notepad"));
+        assert_eq!(
+            sidecar.bundle_id.as_deref(),
+            Some("Microsoft.WindowsNotepad_8wekyb3d8bbwe!App")
+        );
         assert_eq!(
             sidecar.element_id.as_deref(),
             Some("macos_ax:1:AXButton:10:20:30:40:10:20")
@@ -7627,6 +7762,22 @@ mod tests {
             desktop_control_sidecar_operation(&AutonomousDesktopControlAction::MenuSelect),
             Some(DesktopSidecarOperation::MenuSelect)
         );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::FocusWindow),
+            Some(DesktopSidecarOperation::FocusWindow)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::ActivateApp),
+            Some(DesktopSidecarOperation::ActivateApp)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::LaunchApp),
+            Some(DesktopSidecarOperation::LaunchApp)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::QuitApp),
+            Some(DesktopSidecarOperation::QuitApp)
+        );
     }
 
     #[test]
@@ -7729,6 +7880,17 @@ mod tests {
     #[test]
     fn static_desktop_permissions_do_not_resolve_macos_tcc_status() {
         let permissions = static_desktop_permissions();
+        if cfg!(target_os = "windows") {
+            let input = permissions
+                .iter()
+                .find(|permission| permission.name == "Desktop Input")
+                .expect("desktop input permission");
+            assert_eq!(input.status, AutonomousDesktopPermissionGrant::Granted);
+            assert!(input.required_for.contains(&"window_focus".to_string()));
+            assert!(input.required_for.contains(&"app_control".to_string()));
+            return;
+        }
+
         let screen_recording = permissions
             .iter()
             .find(|permission| permission.name == "Screen Recording")

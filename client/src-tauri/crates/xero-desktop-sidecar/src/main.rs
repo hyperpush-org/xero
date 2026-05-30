@@ -340,6 +340,10 @@ fn handle_request(lease: &DesktopSidecarLease, line: &str) -> DesktopSidecarResp
         | DesktopSidecarOperation::Hotkey
         | DesktopSidecarOperation::TypeText
         | DesktopSidecarOperation::PasteText
+        | DesktopSidecarOperation::FocusWindow
+        | DesktopSidecarOperation::ActivateApp
+        | DesktopSidecarOperation::LaunchApp
+        | DesktopSidecarOperation::QuitApp
         | DesktopSidecarOperation::AxPress
         | DesktopSidecarOperation::AxSetValue
         | DesktopSidecarOperation::AxFocus
@@ -350,16 +354,6 @@ fn handle_request(lease: &DesktopSidecarLease, line: &str) -> DesktopSidecarResp
                 Err(error) => sidecar_error_response(request.request_id, request.operation, error),
             }
         }
-        _ => DesktopSidecarResponse::error(
-            request.request_id,
-            request.operation,
-            DesktopSidecarErrorBody::new(
-                "sidecar_operation_unimplemented",
-                "This platform sidecar operation is not implemented by the scaffold backend.",
-                false,
-                false,
-            ),
-        ),
     }
 }
 
@@ -422,6 +416,8 @@ fn sidecar_capabilities() -> DesktopSidecarCapabilities {
             target_os = "windows",
             target_os = "linux"
         )),
+        window_focus: cfg!(target_os = "windows"),
+        app_control: cfg!(target_os = "windows"),
         accessibility_actions: cfg!(target_os = "macos"),
         menu_select: cfg!(target_os = "macos"),
         webrtc_stream: native_webrtc_stream_available(),
@@ -435,6 +431,12 @@ fn sidecar_capabilities() -> DesktopSidecarCapabilities {
 }
 
 fn sidecar_permissions() -> DesktopSidecarPermissionsPayload {
+    if cfg!(target_os = "windows") {
+        return DesktopSidecarPermissionsPayload {
+            permissions: windows_desktop_permissions(),
+        };
+    }
+
     DesktopSidecarPermissionsPayload {
         permissions: vec![
             permission(
@@ -474,6 +476,40 @@ fn sidecar_permissions() -> DesktopSidecarPermissionsPayload {
     }
 }
 
+fn windows_desktop_permissions() -> Vec<DesktopSidecarPermissionStatus> {
+    vec![
+        permission(
+            "Screen Capture",
+            DesktopSidecarPermissionGrant::Granted,
+            &["screenshot", "stream"],
+            "Windows desktop capture is available in the active user session; no macOS-style privacy grant is required.",
+        ),
+        permission(
+            "Desktop Input",
+            DesktopSidecarPermissionGrant::Granted,
+            &[
+                "mouse",
+                "keyboard",
+                "clipboard",
+                "window_focus",
+                "app_control",
+            ],
+            "Windows desktop input is brokered through the active user session and the Computer Use controller lock.",
+        ),
+        permission(
+            "UI Automation",
+            DesktopSidecarPermissionGrant::Unsupported,
+            &[
+                "accessibility_snapshot",
+                "accessibility_actions",
+                "menu_select",
+                "ocr_snapshot",
+            ],
+            "Windows UI Automation, OCR, and app-menu actions are not implemented in this build; use screenshots, window targeting, and pointer/keyboard control.",
+        ),
+    ]
+}
+
 #[cfg(target_os = "macos")]
 fn desktop_screen_recording_permission_status() -> DesktopSidecarPermissionGrant {
     permission_grant_from_bool(unsafe { CGPreflightScreenCaptureAccess() })
@@ -481,7 +517,9 @@ fn desktop_screen_recording_permission_status() -> DesktopSidecarPermissionGrant
 
 #[cfg(not(target_os = "macos"))]
 fn desktop_screen_recording_permission_status() -> DesktopSidecarPermissionGrant {
-    if cfg!(any(target_os = "windows", target_os = "linux")) {
+    if cfg!(target_os = "windows") {
+        DesktopSidecarPermissionGrant::Granted
+    } else if cfg!(target_os = "linux") {
         DesktopSidecarPermissionGrant::Unknown
     } else {
         DesktopSidecarPermissionGrant::Unsupported
@@ -505,7 +543,11 @@ fn desktop_input_monitoring_permission_status() -> DesktopSidecarPermissionGrant
 
 #[cfg(not(target_os = "macos"))]
 fn desktop_input_monitoring_permission_status() -> DesktopSidecarPermissionGrant {
-    DesktopSidecarPermissionGrant::Unsupported
+    if cfg!(target_os = "windows") {
+        DesktopSidecarPermissionGrant::Granted
+    } else {
+        DesktopSidecarPermissionGrant::Unsupported
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -2536,6 +2578,19 @@ fn validate_control_request(
             .filter(|text| !text.is_empty())
             .map(|_| ())
             .ok_or_else(|| schema_error("text")),
+        DesktopSidecarOperation::FocusWindow => validate_app_or_window_target(request),
+        DesktopSidecarOperation::ActivateApp | DesktopSidecarOperation::QuitApp => {
+            validate_app_or_window_target(request)
+        }
+        DesktopSidecarOperation::LaunchApp => {
+            if has_non_empty_value(request.app_name.as_deref())
+                || has_non_empty_value(request.bundle_id.as_deref())
+            {
+                Ok(())
+            } else {
+                Err(schema_error("appName or bundleId"))
+            }
+        }
         DesktopSidecarOperation::AxPress | DesktopSidecarOperation::AxFocus => {
             validate_accessibility_control_target(request)
         }
@@ -2557,6 +2612,23 @@ fn validate_control_request(
         DesktopSidecarOperation::CancelCurrentAction => Ok(()),
         _ => Ok(()),
     }
+}
+
+fn validate_app_or_window_target(
+    request: &DesktopSidecarControlRequest,
+) -> Result<(), DesktopSidecarErrorBody> {
+    if has_non_empty_value(request.window_id.as_deref())
+        || has_non_empty_value(request.app_name.as_deref())
+        || has_non_empty_value(request.bundle_id.as_deref())
+    {
+        Ok(())
+    } else {
+        Err(schema_error("windowId, appName, or bundleId"))
+    }
+}
+
+fn has_non_empty_value(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !value.trim().is_empty())
 }
 
 fn validate_accessibility_control_target(
@@ -2737,6 +2809,46 @@ fn platform_control(
                 .filter(|text| !text.is_empty())
                 .ok_or_else(|| schema_error("text"))?;
             cross_platform_input::paste_text(text)
+        }
+        DesktopSidecarOperation::FocusWindow => {
+            #[cfg(target_os = "windows")]
+            {
+                windows_app_control::focus_window(&request)
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err(unimplemented_operation())
+            }
+        }
+        DesktopSidecarOperation::ActivateApp => {
+            #[cfg(target_os = "windows")]
+            {
+                windows_app_control::activate_app(&request)
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err(unimplemented_operation())
+            }
+        }
+        DesktopSidecarOperation::LaunchApp => {
+            #[cfg(target_os = "windows")]
+            {
+                windows_app_control::launch_app(&request)
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err(unimplemented_operation())
+            }
+        }
+        DesktopSidecarOperation::QuitApp => {
+            #[cfg(target_os = "windows")]
+            {
+                windows_app_control::quit_app(&request)
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err(unimplemented_operation())
+            }
         }
         _ => Err(unimplemented_operation()),
     }
@@ -3770,6 +3882,408 @@ mod macos_accessibility {
     }
 }
 
+#[cfg(target_os = "windows")]
+mod windows_app_control {
+    use std::{collections::BTreeSet, process::Command};
+
+    use xero_desktop_control_ipc::{
+        DesktopSidecarControlRequest, DesktopSidecarErrorBody, DesktopSidecarWindow,
+    };
+
+    use super::sidecar_window_rows;
+
+    const FOCUS_WINDOW_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+$WindowId = $env:XERO_DESKTOP_WINDOW_ID
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class XeroDesktopWin32 {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+}
+'@
+$handleValue = [Int64]::Parse($WindowId, [System.Globalization.CultureInfo]::InvariantCulture)
+$hwnd = [IntPtr]$handleValue
+if ([XeroDesktopWin32]::IsIconic($hwnd)) {
+  [void][XeroDesktopWin32]::ShowWindowAsync($hwnd, 9)
+}
+[void][XeroDesktopWin32]::ShowWindowAsync($hwnd, 5)
+if (-not [XeroDesktopWin32]::SetForegroundWindow($hwnd)) {
+  throw 'SetForegroundWindow returned false.'
+}
+"#;
+
+    const LAUNCH_APP_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+$AppName = $env:XERO_DESKTOP_APP_NAME
+$BundleId = $env:XERO_DESKTOP_BUNDLE_ID
+function Open-AppsFolderItem([string]$Needle) {
+  if ([string]::IsNullOrWhiteSpace($Needle)) { return $false }
+  $shell = New-Object -ComObject Shell.Application
+  $folder = $shell.Namespace('shell:AppsFolder')
+  if ($null -eq $folder) { return $false }
+  foreach ($item in $folder.Items()) {
+    if ($item.Name -eq $Needle -or $item.Path -eq $Needle) {
+      $item.InvokeVerb('open')
+      return $true
+    }
+  }
+  foreach ($item in $folder.Items()) {
+    if ($item.Name.IndexOf($Needle, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+      $item.InvokeVerb('open')
+      return $true
+    }
+  }
+  return $false
+}
+if (Open-AppsFolderItem $BundleId) { return }
+if (Open-AppsFolderItem $AppName) { return }
+if (-not [string]::IsNullOrWhiteSpace($BundleId)) {
+  Start-Process -FilePath explorer.exe -ArgumentList ("shell:AppsFolder\" + $BundleId)
+  return
+}
+if (-not [string]::IsNullOrWhiteSpace($AppName)) {
+  Start-Process -FilePath $AppName
+  return
+}
+throw 'No Windows app target was provided.'
+"#;
+
+    pub(super) fn focus_window(
+        request: &DesktopSidecarControlRequest,
+    ) -> Result<(), DesktopSidecarErrorBody> {
+        let window = resolve_window_target(request)?;
+        focus_window_id(&window.window_id)
+    }
+
+    pub(super) fn activate_app(
+        request: &DesktopSidecarControlRequest,
+    ) -> Result<(), DesktopSidecarErrorBody> {
+        let window = resolve_window_target(request)?;
+        focus_window_id(&window.window_id)
+    }
+
+    pub(super) fn launch_app(
+        request: &DesktopSidecarControlRequest,
+    ) -> Result<(), DesktopSidecarErrorBody> {
+        if let Ok(window) = resolve_window_target(request) {
+            return focus_window_id(&window.window_id);
+        }
+
+        run_powershell(
+            LAUNCH_APP_SCRIPT,
+            &[
+                (
+                    "XERO_DESKTOP_APP_NAME",
+                    request.app_name.as_deref().unwrap_or_default(),
+                ),
+                (
+                    "XERO_DESKTOP_BUNDLE_ID",
+                    request.bundle_id.as_deref().unwrap_or_default(),
+                ),
+            ],
+            "desktop_app_launch_failed",
+            "Windows refused to launch the requested app",
+        )
+    }
+
+    pub(super) fn quit_app(
+        request: &DesktopSidecarControlRequest,
+    ) -> Result<(), DesktopSidecarErrorBody> {
+        let pids = resolve_target_pids(request)?;
+        let mut errors = Vec::new();
+        for pid in pids {
+            let pid_arg = pid.to_string();
+            let output = Command::new("taskkill.exe")
+                .args(["/PID", pid_arg.as_str()])
+                .output()
+                .map_err(|error| {
+                    app_control_error(
+                        "desktop_app_quit_failed",
+                        format!("Windows could not invoke taskkill for PID {pid}: {error}"),
+                        true,
+                        true,
+                    )
+                })?;
+            if !output.status.success() {
+                errors.push(format!(
+                    "PID {pid}: {}",
+                    command_output_message(&output.stdout, &output.stderr)
+                ));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(app_control_error(
+                "desktop_app_quit_failed",
+                format!(
+                    "Windows refused to quit one or more target process(es): {}",
+                    errors.join("; ")
+                ),
+                true,
+                true,
+            ))
+        }
+    }
+
+    fn focus_window_id(window_id: &str) -> Result<(), DesktopSidecarErrorBody> {
+        let window_id = parse_window_id(window_id)
+            .ok_or_else(|| {
+                app_control_error(
+                    "desktop_window_target_invalid",
+                    format!(
+                        "Windows desktop window id `{}` is not numeric.",
+                        window_id.trim()
+                    ),
+                    false,
+                    true,
+                )
+            })?
+            .to_string();
+        run_powershell(
+            FOCUS_WINDOW_SCRIPT,
+            &[("XERO_DESKTOP_WINDOW_ID", window_id.as_str())],
+            "desktop_window_focus_failed",
+            "Windows refused to focus the requested window",
+        )
+    }
+
+    fn resolve_target_pids(
+        request: &DesktopSidecarControlRequest,
+    ) -> Result<BTreeSet<u32>, DesktopSidecarErrorBody> {
+        let windows = sidecar_window_rows().map_err(|error| {
+            app_control_error(
+                "desktop_app_target_resolution_failed",
+                format!("Windows window enumeration failed: {}", error.message),
+                true,
+                error.user_action_required,
+            )
+        })?;
+        let mut pids = BTreeSet::new();
+        if request
+            .window_id
+            .as_deref()
+            .is_some_and(|window_id| !window_id.trim().is_empty())
+        {
+            let window = find_window_by_id(&windows, request.window_id.as_deref().unwrap())?;
+            if window.pid > 0 {
+                pids.insert(window.pid);
+            }
+        } else {
+            if let Some(app_name) = request.app_name.as_deref() {
+                if !app_name.trim().is_empty() {
+                    for window in windows
+                        .iter()
+                        .filter(|window| app_name_matches(window, app_name))
+                    {
+                        if window.pid > 0 {
+                            pids.insert(window.pid);
+                        }
+                    }
+                }
+            }
+            if pids.is_empty() {
+                if let Some(bundle_id) = request.bundle_id.as_deref() {
+                    if !bundle_id.trim().is_empty() {
+                        for window in windows
+                            .iter()
+                            .filter(|window| app_name_matches(window, bundle_id))
+                        {
+                            if window.pid > 0 {
+                                pids.insert(window.pid);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if pids.is_empty() {
+            Err(app_control_error(
+                "desktop_app_target_not_found",
+                "Windows could not find a running app/window matching the requested target.",
+                false,
+                true,
+            ))
+        } else {
+            Ok(pids)
+        }
+    }
+
+    fn resolve_window_target(
+        request: &DesktopSidecarControlRequest,
+    ) -> Result<DesktopSidecarWindow, DesktopSidecarErrorBody> {
+        let windows = sidecar_window_rows().map_err(|error| {
+            app_control_error(
+                "desktop_window_target_resolution_failed",
+                format!("Windows window enumeration failed: {}", error.message),
+                true,
+                error.user_action_required,
+            )
+        })?;
+        if let Some(window_id) = request.window_id.as_deref() {
+            if !window_id.trim().is_empty() {
+                return find_window_by_id(&windows, window_id);
+            }
+        }
+        if let Some(app_name) = request.app_name.as_deref() {
+            if let Some(window) = find_window_by_app_name(&windows, app_name) {
+                return Ok(window.clone());
+            }
+        }
+        if let Some(bundle_id) = request.bundle_id.as_deref() {
+            if let Some(window) = find_window_by_app_name(&windows, bundle_id) {
+                return Ok(window.clone());
+            }
+        }
+        Err(app_control_error(
+            "desktop_window_target_not_found",
+            "Windows could not find a visible window matching the requested target.",
+            false,
+            true,
+        ))
+    }
+
+    fn find_window_by_id(
+        windows: &[DesktopSidecarWindow],
+        window_id: &str,
+    ) -> Result<DesktopSidecarWindow, DesktopSidecarErrorBody> {
+        windows
+            .iter()
+            .find(|window| window_id_matches(&window.window_id, window_id))
+            .cloned()
+            .ok_or_else(|| {
+                app_control_error(
+                    "desktop_window_target_not_found",
+                    format!(
+                        "Windows could not find desktop window `{}`.",
+                        window_id.trim()
+                    ),
+                    false,
+                    true,
+                )
+            })
+    }
+
+    fn find_window_by_app_name<'a>(
+        windows: &'a [DesktopSidecarWindow],
+        app_name: &str,
+    ) -> Option<&'a DesktopSidecarWindow> {
+        windows
+            .iter()
+            .find(|window| app_name_matches_exact(window, app_name))
+            .or_else(|| {
+                windows
+                    .iter()
+                    .find(|window| app_name_matches(window, app_name))
+            })
+    }
+
+    fn window_id_matches(actual: &str, requested: &str) -> bool {
+        let actual = actual.trim();
+        let requested = requested.trim();
+        if actual.eq_ignore_ascii_case(requested) {
+            return true;
+        }
+        parse_window_id(actual).is_some_and(|actual| {
+            parse_window_id(requested).is_some_and(|requested| requested == actual)
+        })
+    }
+
+    fn parse_window_id(value: &str) -> Option<u64> {
+        let value = value.trim();
+        if let Some(hex) = value
+            .strip_prefix("0x")
+            .or_else(|| value.strip_prefix("0X"))
+        {
+            u64::from_str_radix(hex, 16).ok()
+        } else {
+            value.parse::<u64>().ok()
+        }
+    }
+
+    fn app_name_matches_exact(window: &DesktopSidecarWindow, requested: &str) -> bool {
+        let requested = requested.trim();
+        !requested.is_empty() && window.app_name.trim().eq_ignore_ascii_case(requested)
+    }
+
+    fn app_name_matches(window: &DesktopSidecarWindow, requested: &str) -> bool {
+        let requested = requested.trim().to_ascii_lowercase();
+        if requested.is_empty() {
+            return false;
+        }
+        let app_name = window.app_name.trim().to_ascii_lowercase();
+        app_name == requested || app_name.contains(&requested)
+    }
+
+    fn run_powershell(
+        script: &str,
+        envs: &[(&str, &str)],
+        code: &'static str,
+        context: &'static str,
+    ) -> Result<(), DesktopSidecarErrorBody> {
+        let mut command = Command::new("powershell.exe");
+        command.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ]);
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+        let output = command.output().map_err(|error| {
+            app_control_error(
+                code,
+                format!("{context}: PowerShell was unavailable: {error}"),
+                true,
+                true,
+            )
+        })?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(app_control_error(
+                code,
+                format!(
+                    "{context}: {}",
+                    command_output_message(&output.stdout, &output.stderr)
+                ),
+                true,
+                true,
+            ))
+        }
+    }
+
+    fn command_output_message(stdout: &[u8], stderr: &[u8]) -> String {
+        let stderr = String::from_utf8_lossy(stderr).trim().to_string();
+        if !stderr.is_empty() {
+            return stderr;
+        }
+        let stdout = String::from_utf8_lossy(stdout).trim().to_string();
+        if stdout.is_empty() {
+            "command exited unsuccessfully without diagnostics".into()
+        } else {
+            stdout
+        }
+    }
+
+    fn app_control_error(
+        code: &'static str,
+        message: impl Into<String>,
+        retryable: bool,
+        user_action_required: bool,
+    ) -> DesktopSidecarErrorBody {
+        DesktopSidecarErrorBody::new(code, message, retryable, user_action_required)
+    }
+}
+
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod cross_platform_input {
     use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
@@ -4705,6 +5219,8 @@ mod tests {
         assert_eq!(capabilities.keyboard_input, native_input_platform);
         assert_eq!(capabilities.clipboard, native_input_platform);
         assert_eq!(capabilities.manual_cloud_control, native_input_platform);
+        assert_eq!(capabilities.window_focus, cfg!(target_os = "windows"));
+        assert_eq!(capabilities.app_control, cfg!(target_os = "windows"));
         assert_eq!(
             capabilities.accessibility_actions,
             cfg!(target_os = "macos")
@@ -4714,12 +5230,49 @@ mod tests {
     }
 
     #[test]
+    fn app_control_validation_rejects_blank_targets() {
+        let mut launch = DesktopSidecarControlRequest {
+            app_name: Some("   ".into()),
+            ..Default::default()
+        };
+        assert!(validate_control_request(DesktopSidecarOperation::LaunchApp, &launch).is_err());
+
+        launch.app_name = None;
+        launch.bundle_id = Some("Microsoft.WindowsNotepad_8wekyb3d8bbwe!App".into());
+        assert!(validate_control_request(DesktopSidecarOperation::LaunchApp, &launch).is_ok());
+
+        let mut focus = DesktopSidecarControlRequest {
+            window_id: Some("   ".into()),
+            ..Default::default()
+        };
+        assert!(validate_control_request(DesktopSidecarOperation::FocusWindow, &focus).is_err());
+
+        focus.window_id = None;
+        focus.app_name = Some("Notepad".into());
+        assert!(validate_control_request(DesktopSidecarOperation::FocusWindow, &focus).is_ok());
+    }
+
+    #[test]
     fn sidecar_permissions_include_platform_requirement_rows() {
         let permissions = sidecar_permissions().permissions;
         let names = permissions
             .iter()
             .map(|permission| permission.name.as_str())
             .collect::<Vec<_>>();
+
+        if cfg!(target_os = "windows") {
+            assert!(names.contains(&"Screen Capture"));
+            assert!(names.contains(&"Desktop Input"));
+            assert!(names.contains(&"UI Automation"));
+            let input = permissions
+                .iter()
+                .find(|permission| permission.name == "Desktop Input")
+                .expect("desktop input permission");
+            assert_eq!(input.status, DesktopSidecarPermissionGrant::Granted);
+            assert!(input.required_for.contains(&"window_focus".to_string()));
+            assert!(input.required_for.contains(&"app_control".to_string()));
+            return;
+        }
 
         assert!(names.contains(&"Screen Recording"));
         assert!(names.contains(&"Accessibility"));

@@ -584,6 +584,8 @@ function fallbackStatus(): DesktopControlStatusDto {
       mouseInput: false,
       keyboardInput: false,
       clipboard: false,
+      windowFocus: false,
+      appControl: false,
       accessibilityActions: false,
       menuSelect: false,
       webrtcStream: false,

@@ -201,6 +201,10 @@ pub struct DesktopSidecarCapabilities {
     pub mouse_input: bool,
     pub keyboard_input: bool,
     pub clipboard: bool,
+    #[serde(default)]
+    pub window_focus: bool,
+    #[serde(default)]
+    pub app_control: bool,
     pub accessibility_actions: bool,
     pub menu_select: bool,
     pub webrtc_stream: bool,
@@ -660,6 +664,14 @@ pub enum DesktopSidecarMouseButton {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DesktopSidecarControlRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub element_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

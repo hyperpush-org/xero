@@ -134,6 +134,8 @@ fn sidecar_ipc_handles_authenticated_capabilities_and_stream_fallback() {
     )
     .expect("decode capabilities");
     assert!(capabilities.screenshot);
+    assert_eq!(capabilities.window_focus, cfg!(target_os = "windows"));
+    assert_eq!(capabilities.app_control, cfg!(target_os = "windows"));
 
     let permissions_response =
         sidecar.request(DesktopSidecarOperation::PermissionsStatus, json!({}));
@@ -142,14 +144,25 @@ fn sidecar_ipc_handles_authenticated_capabilities_and_stream_fallback() {
         permissions_response.result.expect("permissions payload"),
     )
     .expect("decode permissions");
-    assert!(permissions
-        .permissions
-        .iter()
-        .any(|permission| permission.name == "Input Monitoring"));
-    assert!(permissions
-        .permissions
-        .iter()
-        .any(|permission| permission.name == "Remote Desktop Portal"));
+    if cfg!(target_os = "windows") {
+        assert!(permissions
+            .permissions
+            .iter()
+            .any(|permission| permission.name == "Desktop Input"));
+        assert!(permissions
+            .permissions
+            .iter()
+            .any(|permission| permission.name == "UI Automation"));
+    } else {
+        assert!(permissions
+            .permissions
+            .iter()
+            .any(|permission| permission.name == "Input Monitoring"));
+        assert!(permissions
+            .permissions
+            .iter()
+            .any(|permission| permission.name == "Remote Desktop Portal"));
+    }
 
     let stream_capabilities_response =
         sidecar.request(DesktopSidecarOperation::StreamCapabilities, json!({}));
@@ -317,6 +330,9 @@ fn sidecar_ipc_rejects_shell_like_payload_keys() {
 #[test]
 fn mouse_drag_control_contract_decodes_target_coordinates() {
     let request = serde_json::from_value::<DesktopSidecarControlRequest>(json!({
+        "displayId": "display-1",
+        "windowId": "42",
+        "appName": "Notepad",
         "x": 10,
         "y": 20,
         "toX": 300,
@@ -325,6 +341,9 @@ fn mouse_drag_control_contract_decodes_target_coordinates() {
     }))
     .expect("mouse drag control request");
 
+    assert_eq!(request.display_id.as_deref(), Some("display-1"));
+    assert_eq!(request.window_id.as_deref(), Some("42"));
+    assert_eq!(request.app_name.as_deref(), Some("Notepad"));
     assert_eq!(request.x, Some(10));
     assert_eq!(request.y, Some(20));
     assert_eq!(request.to_x, Some(300));
