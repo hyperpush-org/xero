@@ -163,6 +163,73 @@ describe("ComputerUseDesktopViewport click feedback", () => {
 		).toBeTruthy();
 	});
 
+	it("surfaces desktop-side stream start failures after the relay accepts Start", async () => {
+		let frameHandler: ((rawFrame: unknown) => void) | null = null;
+		const push = vi.fn();
+		const channel = {
+			on: vi.fn((event: string, handler: (rawFrame: unknown) => void) => {
+				if (event === "frame") frameHandler = handler;
+				return "frame-ref";
+			}),
+			off: vi.fn(),
+			push,
+		} as unknown as Channel;
+
+		render(
+			<ComputerUseDesktopViewport
+				channel={channel}
+				computerId="desktop-1"
+				deviceId="web-1"
+				iceServers={[]}
+				isAgentWorking={false}
+				isOnline
+				onPromptSubmit={vi.fn()}
+				previewUrl={null}
+				presentation={{
+					isMobile: false,
+					override: "desktop",
+					rotateDesktop: false,
+				}}
+				sessionId="session-1"
+				streamRunId="run-1"
+				streamToken="stream-token-1"
+			/>,
+		);
+
+		const desktop = screen.getByLabelText("Desktop");
+		const toolbar = within(desktop).getByRole("toolbar", {
+			name: "Desktop stream controls",
+		});
+		fireEvent.click(within(toolbar).getByRole("button", { name: /start/i }));
+		expect(screen.getByText("Connecting stream")).toBeTruthy();
+
+		act(() => {
+			frameHandler?.(
+				relayFrame({
+					schema: "xero.remote_command_result.v1",
+					ok: false,
+					kind: "computer_use_stream_request",
+					outcome: "rejected",
+					error: {
+						code: "policy_denied",
+						message:
+							"Remote command rejected because the web device is not linked or has been revoked.",
+					},
+				}),
+			);
+		});
+
+		expect(await screen.findByText("Desktop unavailable")).toBeTruthy();
+		expect(
+			screen.getByText(
+				"Remote command rejected because the web device is not linked or has been revoked.",
+			),
+		).toBeTruthy();
+		expect(
+			within(toolbar).getByRole("button", { name: /start/i }),
+		).toBeTruthy();
+	});
+
 	it("retries the desktop stream request when connecting stalls before media arrives", () => {
 		vi.useFakeTimers();
 		try {

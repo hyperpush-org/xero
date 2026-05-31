@@ -1085,6 +1085,7 @@ type DesktopViewportState =
 	| "paused"
 	| "manual"
 	| "blocked"
+	| "failed"
 	| "offline";
 
 type ManualControlState =
@@ -1994,6 +1995,9 @@ export function ComputerUseDesktopViewport({
 		useState<DesktopStreamQuality>("balanced");
 	const [hasLiveVideo, setHasLiveVideo] = useState(false);
 	const [toolbarPromptPending, setToolbarPromptPending] = useState(false);
+	const [streamFailureMessage, setStreamFailureMessage] = useState<
+		string | null
+	>(null);
 	const [clickRipples, setClickRipples] = useState<DesktopClickRipple[]>([]);
 	const [keyboardCaptureState, setKeyboardCaptureState] =
 		useState<ManualKeyboardCaptureState>("inactive");
@@ -2464,6 +2468,7 @@ export function ComputerUseDesktopViewport({
 					}
 					const peerConnection = ensurePeerConnection({ fresh: true });
 					if (!peerConnection) return;
+					setStreamFailureMessage(null);
 					setState("connecting");
 					await peerConnection.setRemoteDescription(offer);
 					await flushPendingDesktopIceCandidates(
@@ -2500,7 +2505,14 @@ export function ComputerUseDesktopViewport({
 				}
 			} catch {
 				clearDesktopStreamMedia();
-				setState(fallbackPreviewUrl ? "degraded" : "waiting");
+				if (fallbackPreviewUrl) {
+					setState("degraded");
+				} else {
+					setStreamFailureMessage(
+						"The desktop stream could not complete WebRTC negotiation. Try starting it again.",
+					);
+					setState("failed");
+				}
 			}
 		},
 		[
@@ -2514,6 +2526,24 @@ export function ComputerUseDesktopViewport({
 			streamRunId,
 			streamToken,
 		],
+	);
+	const handleRemoteCommandResult = useCallback(
+		(payload: RemoteCommandResultPayload) => {
+			if (!remoteCommandResultFailed(payload)) return false;
+			const kind = remoteCommandKind(payload);
+			if (!kind || !kind.startsWith("computer_use_stream_")) return false;
+			streamStopRequestedRef.current = true;
+			clearDesktopStreamMedia({ clearPreview: true, clearStreamId: true });
+			setStreamFailureMessage(remoteCommandFailureMessage(payload));
+			setState(
+				remoteCommandFailureReason(payload) ===
+					REMOTE_CONTROL_ALREADY_ACTIVE_REASON
+					? "blocked"
+					: "failed",
+			);
+			return true;
+		},
+		[clearDesktopStreamMedia],
 	);
 	const applyAdaptiveStreamQuality = useCallback(
 		(
@@ -2611,6 +2641,9 @@ export function ComputerUseDesktopViewport({
 		const ref = channel.on("frame", (rawFrame: unknown) => {
 			const envelope = decodeRelayFrame(rawFrame);
 			const payload = envelope?.payload;
+			if (isRemoteCommandResultPayload(payload)) {
+				if (handleRemoteCommandResult(payload)) return;
+			}
 			if (!isComputerUseDesktopPayload(payload)) return;
 			const isStreamStopPayload =
 				payload.schema === "xero.computer_use_stream_stop.v1";
@@ -2626,6 +2659,9 @@ export function ComputerUseDesktopViewport({
 			if (payload.streamId) {
 				streamIdRef.current = payload.streamId;
 				setStreamId(payload.streamId);
+			}
+			if (payload.ok !== false && payload.outcome !== "rejected") {
+				setStreamFailureMessage(null);
 			}
 			const nextStreamDetails = desktopStreamDetails(payload);
 			const shouldRecoverFromFallback = shouldRecoverDesktopWebRtcAfterFallback(
@@ -2745,6 +2781,7 @@ export function ComputerUseDesktopViewport({
 		applyAdaptiveStreamQuality,
 		channel,
 		clearDesktopStreamMedia,
+		handleRemoteCommandResult,
 		handleWebRtcSignal,
 		recoverDesktopWebRtcStream,
 		state,
@@ -3119,6 +3156,7 @@ export function ComputerUseDesktopViewport({
 		adaptiveQualityStableSamplesRef.current = 0;
 		adaptiveQualityLastChangedAtRef.current = Date.now();
 		clearDesktopStreamMedia({ clearPreview: true, clearStreamId: true });
+		setStreamFailureMessage(null);
 		setStreamQuality("balanced");
 		setState("connecting");
 		void requestComputerUseStream(channel, {
@@ -3145,6 +3183,7 @@ export function ComputerUseDesktopViewport({
 		const activeManualControlId = manualControlIdRef.current ?? manualControlId;
 		streamStopRequestedRef.current = true;
 		clearDesktopStreamMedia({ clearPreview: true, clearStreamId: true });
+		setStreamFailureMessage(null);
 		adaptiveQualityMetricsRef.current = null;
 		adaptiveQualityStableSamplesRef.current = 0;
 		if (state === "manual" || activeManualControlId) {
@@ -4481,7 +4520,11 @@ export function ComputerUseDesktopViewport({
 								draggable={false}
 							/>
 						) : (
-							<DesktopViewportEmptyState state={state} status={status} />
+							<DesktopViewportEmptyState
+								description={streamFailureMessage}
+								state={state}
+								status={status}
+							/>
 						)}
 					</div>
 					{clickRipples.length > 0 ? (
@@ -4771,9 +4814,11 @@ export function DesktopToolbarPromptForm({
 }
 
 function DesktopViewportEmptyState({
+	description,
 	state,
 	status,
 }: {
+	description?: string | null;
 	state: DesktopViewportState;
 	status: string;
 }) {
@@ -4802,7 +4847,7 @@ function DesktopViewportEmptyState({
 				{status}
 			</h3>
 			<p className="mt-1.5 text-[12px] leading-relaxed text-zinc-400">
-				{desktopViewportEmptyDescription(state)}
+				{description ?? desktopViewportEmptyDescription(state)}
 			</p>
 			<div className="mt-4 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.035] px-3 py-1 text-[11px] font-medium text-zinc-400">
 				<span
@@ -4820,6 +4865,7 @@ function desktopViewportEmptyDescription(state: DesktopViewportState): string {
 		return "This computer is not connected to Xero Cloud.";
 	if (state === "blocked")
 		return "Stop the running connection in the other cloud app before using it here.";
+	if (state === "failed") return "The desktop stream could not be started.";
 	if (state === "connecting") return "Opening the live desktop stream.";
 	if (state === "paused")
 		return "The desktop stream is stopped for this session.";
@@ -4829,6 +4875,7 @@ function desktopViewportEmptyDescription(state: DesktopViewportState): string {
 function desktopViewportEmptyBadge(state: DesktopViewportState): string {
 	if (state === "offline") return "offline";
 	if (state === "blocked") return "in use";
+	if (state === "failed") return "error";
 	if (state === "connecting") return "connecting";
 	if (state === "paused") return "paused";
 	return "ready";
@@ -4845,6 +4892,7 @@ function desktopViewportStatusLabel(
 	if (manualState === "manual_releasing") return "Releasing manual control";
 	if (state === "offline") return "Device offline";
 	if (state === "blocked") return "Already in use";
+	if (state === "failed") return "Desktop unavailable";
 	if (state === "connecting") return "Connecting stream";
 	if (state === "live") return "Live stream";
 	if (state === "manual") return "Manual control active";
@@ -4883,6 +4931,72 @@ function isCommandAckResult(value: unknown): value is CommandAckResult {
 		typeof payload.kind === "string" &&
 		typeof payload.outcome === "string"
 	);
+}
+
+function isRemoteCommandResultPayload(
+	value: unknown,
+): value is RemoteCommandResultPayload {
+	if (isCommandAckResult(value)) return true;
+	if (!value || typeof value !== "object") return false;
+	const payload = value as Partial<RemoteCommandExecutionResultPayload>;
+	return payload.schema === "xero.remote_command_result.v1";
+}
+
+function remoteCommandResultFailed(
+	payload: RemoteCommandResultPayload,
+): boolean {
+	if (payload.schema === "xero.remote_command_result.v1") {
+		return payload.ok === false;
+	}
+	return (
+		payload.outcome === "rejected" ||
+		payload.outcome === "rate_limited" ||
+		payload.outcome === "timed_out" ||
+		payload.outcome === "stale"
+	);
+}
+
+function remoteCommandKind(payload: RemoteCommandResultPayload): string | null {
+	return typeof payload.kind === "string" && payload.kind.length > 0
+		? payload.kind
+		: null;
+}
+
+function remoteCommandFailureReason(
+	payload: RemoteCommandResultPayload,
+): string | null {
+	if (typeof payload.reason === "string" && payload.reason.length > 0) {
+		return payload.reason;
+	}
+	if (
+		payload.schema === "xero.remote_command_result.v1" &&
+		typeof payload.error?.code === "string" &&
+		payload.error.code.length > 0
+	) {
+		return payload.error.code;
+	}
+	return null;
+}
+
+function remoteCommandFailureMessage(
+	payload: RemoteCommandResultPayload,
+): string {
+	if (
+		payload.schema === "xero.remote_command_result.v1" &&
+		typeof payload.error?.message === "string" &&
+		payload.error.message.length > 0
+	) {
+		return payload.error.message;
+	}
+	if (typeof payload.message === "string" && payload.message.length > 0) {
+		return payload.message;
+	}
+	if (
+		remoteCommandFailureReason(payload) === REMOTE_CONTROL_ALREADY_ACTIVE_REASON
+	) {
+		return "Stop the running connection in the other cloud app before using it here.";
+	}
+	return "The desktop app rejected the stream command. Try starting the desktop stream again.";
 }
 
 function remoteControlConnectionAlreadyActive(
@@ -5027,6 +5141,25 @@ interface ComputerUseDesktopPayload {
 		bytesBase64?: string | null;
 	};
 }
+
+interface RemoteCommandExecutionResultPayload {
+	schema: "xero.remote_command_result.v1";
+	ok?: boolean;
+	clientCommandId?: string | null;
+	clientSeq?: number | null;
+	kind?: string | null;
+	outcome?: string | null;
+	reason?: string | null;
+	message?: string | null;
+	error?: {
+		code?: string | null;
+		message?: string | null;
+	} | null;
+}
+
+type RemoteCommandResultPayload =
+	| CommandAckResult
+	| RemoteCommandExecutionResultPayload;
 
 interface DesktopStreamSignalPayload {
 	type?: string | null;

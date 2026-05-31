@@ -393,6 +393,145 @@ defmodule XeroWeb.RemoteChannelTest do
     end)
   end
 
+  test "computer-use stream e2e exchanges WebRTC signaling without a run id", %{conn: conn} do
+    with_github_env(fn ->
+      desktop = desktop_login!(conn)
+      web = web_login!(conn)
+      session_id = "__computer_use__"
+
+      {:ok, desktop_socket} =
+        connect(XeroWeb.RemoteDesktopSocket, %{"token" => desktop["desktop_jwt"]})
+
+      {:ok, _desktop_reply, desktop_socket} =
+        subscribe_and_join(desktop_socket, "desktop:#{desktop["desktop_device_id"]}", %{})
+
+      {:ok, _desktop_session_reply, desktop_session} =
+        subscribe_and_join(
+          desktop_socket,
+          "session:#{desktop["desktop_device_id"]}:#{session_id}",
+          %{}
+        )
+
+      {:ok, web_socket} =
+        connect(XeroWeb.RemoteWebSocket, %{"token" => web["web_jwt"]})
+
+      join_task =
+        Task.async(fn ->
+          subscribe_and_join(
+            web_socket,
+            "session:#{desktop["desktop_device_id"]}:#{session_id}",
+            %{
+              "join_ref" => "join-computer-use-stream"
+            }
+          )
+        end)
+
+      assert_push "session_join_requested", %{
+        auth_topic: auth_topic,
+        join_ref: "join-computer-use-stream",
+        session_id: "__computer_use__"
+      }
+
+      ref =
+        push(desktop_socket, "session_authorized", %{
+          "join_ref" => "join-computer-use-stream",
+          "auth_topic" => auth_topic,
+          "authorized" => true
+        })
+
+      assert_reply ref, :ok
+      {:ok, web_session_reply, web_session} = Task.await(join_task)
+      assert is_binary(web_session_reply.stream_token)
+      refute Map.has_key?(web_session_reply, :stream_run_id)
+
+      start_ref =
+        push(web_session, "frame", %{
+          "kind" => "computer_use_stream_request",
+          "clientCommandId" => "cmd-computer-use-start",
+          "payload" => %{
+            "quality" => "balanced",
+            "streamToken" => web_session_reply.stream_token
+          }
+        })
+
+      assert_reply start_ref, :ok
+
+      assert_push "computer_use_command_outcome", %{
+        kind: "computer_use_stream_request",
+        clientCommandId: "cmd-computer-use-start",
+        outcome: "accepted"
+      }
+
+      assert_push "frame", %{
+        from_kind: "web",
+        direction: "web_to_desktop",
+        payload: %{
+          "kind" => "computer_use_stream_request",
+          "payload" => %{
+            "quality" => "balanced",
+            "streamToken" => stream_token
+          }
+        }
+      }
+
+      assert stream_token == web_session_reply.stream_token
+
+      offer_ref =
+        push(desktop_session, "frame", %{
+          "schema" => "xero.computer_use_stream_offer.v1",
+          "streamId" => "stream-computer-use",
+          "ok" => true,
+          "payload" => %{"type" => "offer", "sdp" => "v=0\r\n"}
+        })
+
+      assert_reply offer_ref, :ok
+
+      assert_push "frame", %{
+        from_kind: "desktop",
+        direction: "desktop_to_web",
+        payload: %{
+          "schema" => "xero.computer_use_stream_offer.v1",
+          "streamId" => "stream-computer-use",
+          "payload" => %{"type" => "offer", "sdp" => "v=0\r\n"}
+        }
+      }
+
+      answer_ref =
+        push(web_session, "frame", %{
+          "kind" => "computer_use_stream_answer",
+          "clientCommandId" => "cmd-computer-use-answer",
+          "payload" => %{
+            "streamId" => "stream-computer-use",
+            "type" => "answer",
+            "sdp" => "v=0\r\n",
+            "streamToken" => web_session_reply.stream_token
+          }
+        })
+
+      assert_reply answer_ref, :ok
+
+      assert_push "computer_use_command_outcome", %{
+        kind: "computer_use_stream_answer",
+        clientCommandId: "cmd-computer-use-answer",
+        outcome: "accepted"
+      }
+
+      assert_push "frame", %{
+        from_kind: "web",
+        direction: "web_to_desktop",
+        payload: %{
+          "kind" => "computer_use_stream_answer",
+          "payload" => %{
+            "streamId" => "stream-computer-use",
+            "type" => "answer",
+            "sdp" => "v=0\r\n",
+            "streamToken" => ^stream_token
+          }
+        }
+      }
+    end)
+  end
+
   test "computer-use desktop stream connects to only one cloud client at a time", %{conn: conn} do
     with_github_env(fn ->
       Process.flag(:trap_exit, true)
