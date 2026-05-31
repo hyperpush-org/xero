@@ -713,8 +713,13 @@ impl PhoenixChannelClient {
 
     pub fn read_timeout(&mut self, timeout: Duration) -> BridgeResult<Option<PhoenixMessage>> {
         self.set_read_timeout(Some(timeout))?;
-        match self.read() {
-            Ok(message) => Ok(Some(message)),
+        let read_result = self.read();
+        let restore_result = self.set_read_timeout(None);
+        match read_result {
+            Ok(message) => {
+                restore_result?;
+                Ok(Some(message))
+            }
             Err(BridgeError::WebSocket(error))
                 if matches!(
                     error.as_ref(),
@@ -725,6 +730,7 @@ impl PhoenixChannelClient {
                         )
                 ) =>
             {
+                restore_result?;
                 Ok(None)
             }
             Err(error) => Err(error),
@@ -1594,7 +1600,6 @@ where
         options: &DesktopBridgeLoopOptions,
     ) -> BridgeResult<()> {
         let mut connection = self.connect_desktop_channel()?;
-        connection.set_read_timeout(Some(options.read_timeout))?;
         connection.join_control()?;
         let mut joined_sessions = BTreeSet::new();
         for session_id in initial_desktop_session_ids() {
@@ -2630,6 +2635,56 @@ mod tests {
         client
             .push_and_wait("session:desktop-1:session-1", "frame", json!({"ok": true}))
             .expect("push frame");
+
+        server.join().expect("fake relay thread");
+    }
+
+    #[test]
+    fn phoenix_read_timeout_does_not_poison_later_join_waits() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake relay");
+        let relay_url = format!(
+            "http://{}",
+            listener.local_addr().expect("listener address")
+        );
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept websocket");
+            let mut socket = tungstenite::accept(stream).expect("accept websocket handshake");
+
+            let join_message = read_text_message(&mut socket);
+            let join: PhoenixMessage = serde_json::from_str(&join_message).expect("join json");
+            thread::sleep(Duration::from_millis(120));
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&PhoenixMessage(
+                        join.0.clone(),
+                        join.1.clone(),
+                        join.2.clone(),
+                        "phx_reply".into(),
+                        json!({"status": "ok", "response": {}}),
+                    ))
+                    .expect("join reply json")
+                    .into(),
+                ))
+                .expect("send delayed join reply");
+        });
+
+        let mut client = PhoenixChannelClient::connect(
+            &BridgeConfig {
+                relay_url,
+                device_name: Some("Xero Test Web".into()),
+            },
+            "token",
+            PhoenixSocketKind::Web,
+        )
+        .expect("connect fake relay");
+
+        assert!(client
+            .read_timeout(Duration::from_millis(20))
+            .expect("idle read timeout")
+            .is_none());
+        client
+            .join("session:desktop-1:session-1", json!({}))
+            .expect("delayed join reply should still be allowed");
 
         server.join().expect("fake relay thread");
     }
