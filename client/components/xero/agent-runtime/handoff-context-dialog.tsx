@@ -11,15 +11,13 @@ import {
   Target,
   X,
 } from 'lucide-react'
+import { BaseDialog } from '@xero/ui/components/base-dialog'
 
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
-  Dialog,
-  DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
@@ -49,12 +47,15 @@ export function HandoffContextDialog({
   onRefresh,
 }: HandoffContextDialogProps) {
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        className="max-h-[85vh] w-full max-w-3xl overflow-hidden p-0 sm:max-w-3xl"
-        aria-label="Agent handoff context summary"
-        showCloseButton={false}
-      >
+    <BaseDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      variant="custom"
+      title="What carried over in this handoff"
+      contentClassName="max-h-[85vh] w-full max-w-3xl overflow-hidden p-0 sm:max-w-3xl"
+      contentProps={{ 'aria-label': 'Agent handoff context summary' }}
+      showCloseButton={false}
+      header={
         <DialogHeader className="border-b border-border/40 px-5 py-3.5">
           <div className="flex items-start justify-between gap-3">
             <div className="flex flex-col gap-1">
@@ -98,6 +99,15 @@ export function HandoffContextDialog({
             </div>
           </div>
         </DialogHeader>
+      }
+      footerClassName="border-t border-border/40 bg-muted/20 px-5 py-2.5"
+      footer={
+        <p className="text-[11px] text-muted-foreground">
+          Raw bundle payloads are never shown here — only redaction-safe previews. Source-cited
+          text is preserved; secret-shaped values are hidden.
+        </p>
+      }
+    >
 
         <div className="max-h-[calc(85vh-9rem)] overflow-y-auto px-5 py-4">
           {status === 'loading' && !summary ? (
@@ -110,15 +120,7 @@ export function HandoffContextDialog({
             <SummaryBody summary={summary} />
           )}
         </div>
-
-        <DialogFooter className="border-t border-border/40 bg-muted/20 px-5 py-2.5">
-          <p className="text-[11px] text-muted-foreground">
-            Raw bundle payloads are never shown here — only redaction-safe previews. Source-cited
-            text is preserved; secret-shaped values are hidden.
-          </p>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    </BaseDialog>
   )
 }
 

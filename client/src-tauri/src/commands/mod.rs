@@ -143,7 +143,8 @@ pub use create_repository::create_repository;
 pub use desktop_control::{
     desktop_control_open_permission_settings, desktop_control_status, desktop_control_stop,
     desktop_control_update_settings, DesktopControlOpenPermissionSettingsRequestDto,
-    DesktopControlSettingsDto, DesktopControlStatusDto, UpsertDesktopControlSettingsRequestDto,
+    DesktopControlPolicyProfileDto, DesktopControlSettingsDto, DesktopControlStatusDto,
+    UpsertDesktopControlSettingsRequestDto,
 };
 pub use developer_tool_harness::{
     developer_tool_catalog, developer_tool_dry_run, developer_tool_harness_project,

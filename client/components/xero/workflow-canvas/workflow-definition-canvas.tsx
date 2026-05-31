@@ -57,16 +57,9 @@ import {
 import '@xyflow/react/dist/style.css'
 import './agent-visualization.css'
 
+import { BaseDialog } from '@xero/ui/components/base-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -1183,14 +1176,25 @@ function WorkflowDefinitionCanvasInner({
         />
       ) : null}
 
-      <Dialog open={startDialogOpen} onOpenChange={setStartDialogOpen}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Start {definition.name}</DialogTitle>
-            <DialogDescription>
-              Run inputs are captured before Xero creates the Workflow run.
-            </DialogDescription>
-          </DialogHeader>
+      <BaseDialog
+        open={startDialogOpen}
+        onOpenChange={setStartDialogOpen}
+        variant="form"
+        title={<>Start {definition.name}</>}
+        description="Run inputs are captured before Xero creates the Workflow run."
+        contentClassName="sm:max-w-lg"
+        footer={
+          <>
+            <Button type="button" variant="ghost" onClick={() => setStartDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={() => void handleStart()} disabled={runningAction || !startInputValid}>
+              {runningAction ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
+              Start
+            </Button>
+          </>
+        }
+      >
           <div className="space-y-4">
             {startInputFields.length > 0 ? (
               <div className="space-y-3">
@@ -1216,17 +1220,7 @@ function WorkflowDefinitionCanvasInner({
             ) : null}
             <WorkflowStartPreview preview={startPreview} />
           </div>
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => setStartDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="button" onClick={() => void handleStart()} disabled={runningAction || !startInputValid}>
-              {runningAction ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
-              Start
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      </BaseDialog>
     </div>
   )
 }

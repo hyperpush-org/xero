@@ -19,6 +19,8 @@ import type {
 } from "@/src/lib/xero-model/desktop-control"
 import { SectionHeader } from "./section-header"
 
+const OWNER_ADMIN_DURATION_MINUTES = 30
+
 export type DesktopControlSettingsAdapter = Pick<
   XeroDesktopAdapter,
   | "isDesktopRuntime"
@@ -97,6 +99,7 @@ export function DesktopControlSection({ adapter }: DesktopControlSectionProps) {
   ): UpsertDesktopControlSettingsRequestDto => ({
     cloudStreamingEnabled: status?.settings.cloudStreamingEnabled ?? false,
     manualCloudControlEnabled: status?.settings.manualCloudControlEnabled ?? false,
+    policyProfile: status?.settings.policyProfile ?? "default_safe",
     ...patch,
   })
 
@@ -144,6 +147,7 @@ export function DesktopControlSection({ adapter }: DesktopControlSectionProps) {
   const isStatusLoading = canUseAdapter && status === null && error === null
   const activeLock = selectedStatus?.controllerLock ?? null
   const stream = selectedStatus?.stream ?? null
+  const ownerAdminActive = selectedStatus ? isOwnerAdminActive(selectedStatus) : false
 
   return (
     <div className="flex flex-col gap-7">
@@ -206,6 +210,54 @@ export function DesktopControlSection({ adapter }: DesktopControlSectionProps) {
                 label="Controller"
                 value={activeLock ? activeLock.actor.replace(/_/g, " ") : "idle"}
               />
+            </div>
+          </section>
+
+          <section className="flex flex-col gap-3">
+            <h4 className="text-[12.5px] font-semibold text-foreground">Policy profile</h4>
+            <div className="overflow-hidden rounded-md border border-border/60">
+              <div className="flex flex-col gap-3 px-4 py-3">
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <ProfileButton
+                    label="Default"
+                    active={selectedStatus.settings.policyProfile === "default_safe"}
+                    disabled={!canUseAdapter || !status || saving !== null}
+                    onClick={() => updateSetting("policyProfile", "default_safe")}
+                  />
+                  <ProfileButton
+                    label="Developer"
+                    active={selectedStatus.settings.policyProfile === "developer_workstation"}
+                    disabled={!canUseAdapter || !status || saving !== null}
+                    onClick={() => updateSetting("policyProfile", "developer_workstation")}
+                  />
+                  <ProfileButton
+                    label="Owner Admin"
+                    active={ownerAdminActive}
+                    disabled={!canUseAdapter || !status || saving !== null}
+                    onClick={() =>
+                      void saveSettings(
+                        currentSettingsRequest({
+                          policyProfile: ownerAdminActive ? "default_safe" : "owner_admin",
+                          ownerAdminDurationMinutes: ownerAdminActive
+                            ? undefined
+                            : OWNER_ADMIN_DURATION_MINUTES,
+                        }),
+                        "policyProfile",
+                      )
+                    }
+                  />
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant={ownerAdminActive ? "destructive" : "outline"}>
+                    {formatPolicyProfile(selectedStatus.settings.policyProfile)}
+                  </Badge>
+                  {ownerAdminActive && selectedStatus.settings.ownerAdminExpiresAt ? (
+                    <span className="text-[11.5px] leading-[1.45] text-muted-foreground">
+                      Expires {formatDateTime(selectedStatus.settings.ownerAdminExpiresAt)}
+                    </span>
+                  ) : null}
+                </div>
+              </div>
             </div>
           </section>
 
@@ -297,7 +349,7 @@ export function DesktopControlSection({ adapter }: DesktopControlSectionProps) {
             <h4 className="text-[12.5px] font-semibold text-foreground">Emergency stop</h4>
             <div className="flex flex-col gap-3 rounded-md border border-border/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-[12px] leading-[1.55] text-muted-foreground">
-                Release the desktop controller lock and stop the active desktop stream.
+                Release the desktop controller lock, stop the active desktop stream, and revoke Owner Admin mode.
               </p>
               <Button
                 type="button"
@@ -333,6 +385,27 @@ function formatPermissionPurpose(value: string): string {
   return value.replace(/_/g, " ")
 }
 
+function formatPolicyProfile(value: DesktopControlStatusDto["settings"]["policyProfile"]): string {
+  return value.replace(/_/g, " ")
+}
+
+function isOwnerAdminActive(status: DesktopControlStatusDto): boolean {
+  if (status.settings.policyProfile !== "owner_admin" || !status.settings.ownerAdminExpiresAt) {
+    return false
+  }
+  const expiresAt = Date.parse(status.settings.ownerAdminExpiresAt)
+  return Number.isFinite(expiresAt) && expiresAt > Date.now()
+}
+
+function formatDateTime(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date)
+}
+
 function permissionActionId(action: DesktopPermissionAction): string {
   return `${action.kind}:${action.target}`
 }
@@ -363,6 +436,17 @@ function DesktopControlLoadingState() {
           <StatusTileSkeleton label="Broker" />
           <StatusTileSkeleton label="Stream" />
           <StatusTileSkeleton label="Controller" />
+        </div>
+      </section>
+
+      <section className="flex flex-col gap-3">
+        <h4 className="text-[12.5px] font-semibold text-foreground">Policy profile</h4>
+        <div className="overflow-hidden rounded-md border border-border/60 px-4 py-3">
+          <div className="grid gap-2 sm:grid-cols-3">
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
+          </div>
         </div>
       </section>
 
@@ -421,6 +505,11 @@ function DesktopControlUnavailableState({
       </section>
 
       <section className="flex flex-col gap-3">
+        <h4 className="text-[12.5px] font-semibold text-foreground">Policy profile</h4>
+        <UnavailablePanel message="Policy settings are unavailable until status loads." />
+      </section>
+
+      <section className="flex flex-col gap-3">
         <h4 className="text-[12.5px] font-semibold text-foreground">Cloud access</h4>
         <UnavailablePanel message="Cloud access settings are unavailable until status loads." />
       </section>
@@ -434,7 +523,7 @@ function DesktopControlUnavailableState({
         <h4 className="text-[12.5px] font-semibold text-foreground">Emergency stop</h4>
         <div className="flex flex-col gap-3 rounded-md border border-border/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-[12px] leading-[1.55] text-muted-foreground">
-            Release the desktop controller lock and stop the active desktop stream.
+            Release the desktop controller lock, stop the active desktop stream, and revoke Owner Admin mode.
           </p>
           <Button
             type="button"
@@ -469,6 +558,32 @@ function StatusTileSkeleton({ label }: { label: string }) {
       </div>
       <Skeleton className="mt-2 h-3.5 w-24" />
     </div>
+  )
+}
+
+function ProfileButton({
+  label,
+  active,
+  disabled,
+  onClick,
+}: {
+  label: string
+  active: boolean
+  disabled: boolean
+  onClick: () => void
+}) {
+  return (
+    <Button
+      type="button"
+      size="sm"
+      variant={active ? "secondary" : "outline"}
+      className="h-8 justify-center text-[12px]"
+      disabled={disabled}
+      onClick={onClick}
+      aria-pressed={active}
+    >
+      {label}
+    </Button>
   )
 }
 
@@ -577,6 +692,7 @@ function fallbackStatus(): DesktopControlStatusDto {
       screenshot: false,
       windowList: false,
       appList: false,
+      notificationObservation: false,
       foregroundState: false,
       cursorState: false,
       accessibilitySnapshot: false,
@@ -613,6 +729,8 @@ function fallbackStatus(): DesktopControlStatusDto {
     settings: {
       cloudStreamingEnabled: false,
       manualCloudControlEnabled: false,
+      policyProfile: "default_safe",
+      ownerAdminExpiresAt: null,
       updatedAt: null,
     },
     auditLogPath: "",

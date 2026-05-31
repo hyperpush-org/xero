@@ -2200,6 +2200,8 @@ fn capture_desktop_stream_fallback_frame(
         region: None,
         x: None,
         y: None,
+        include_data: None,
+        max_bytes: None,
     };
     let runtime = desktop_runtime_for_located(located, command)?;
     let result = runtime.desktop_observe_with_operator_approval(request)?;
@@ -2388,11 +2390,29 @@ fn manual_control_input_request(
         to_y: payload_i32(payload, &["toY", "to_y"]),
         delta_x: payload_i32(payload, &["deltaX", "delta_x"]),
         delta_y: payload_i32(payload, &["deltaY", "delta_y"]),
+        width: payload_u64(payload, &["width"]).and_then(|value| u32::try_from(value).ok()),
+        height: payload_u64(payload, &["height"]).and_then(|value| u32::try_from(value).ok()),
+        include_data: payload_bool(payload, &["includeData", "include_data"]),
+        max_bytes: payload_u64(payload, &["maxBytes", "max_bytes"])
+            .and_then(|value| usize::try_from(value).ok()),
+        media_type: payload_string(payload, &["mediaType", "media_type"]).map(ToOwned::to_owned),
+        image_data_base64: payload_string(payload, &["imageDataBase64", "image_data_base64"])
+            .map(ToOwned::to_owned),
+        file_paths: payload_string_array(payload, &["filePaths", "file_paths"]),
         button: payload_string(payload, &["button"]).and_then(mouse_button_from_str),
         clicks: payload_u64(payload, &["clicks"]).and_then(|value| u8::try_from(value).ok()),
         key: payload_string(payload, &["key"]).map(ToOwned::to_owned),
         keys: payload_string_array(payload, &["keys"]),
         text: payload_string(payload, &["text"]).map(ToOwned::to_owned),
+        html: payload_string(payload, &["html"]).map(ToOwned::to_owned),
+        rtf: payload_string(payload, &["rtf"]).map(ToOwned::to_owned),
+        alt_text: payload_string(payload, &["altText", "alt_text"]).map(ToOwned::to_owned),
+        target_label: payload_string(payload, &["targetLabel", "target_label"])
+            .map(ToOwned::to_owned),
+        selection_start: payload_u64(payload, &["selectionStart", "selection_start"])
+            .and_then(|value| usize::try_from(value).ok()),
+        selection_end: payload_u64(payload, &["selectionEnd", "selection_end"])
+            .and_then(|value| usize::try_from(value).ok()),
         value: payload_string(payload, &["value"]).map(ToOwned::to_owned),
         menu_path: payload_string_array(payload, &["menuPath", "menu_path"]),
         reason: payload_string(payload, &["reason"])

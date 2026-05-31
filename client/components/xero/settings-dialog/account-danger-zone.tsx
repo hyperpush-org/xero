@@ -1,16 +1,7 @@
 import { useCallback, useMemo, useState } from "react"
 import { Loader2, Trash2 } from "lucide-react"
+import { BaseAlertDialog } from "@xero/ui/components/base-dialog"
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -220,58 +211,60 @@ export function AccountDangerZone({ projects, activeProjectId, adapter }: Accoun
         </DangerRow>
       </div>
 
-      <AlertDialog
+      <BaseAlertDialog
         open={confirmProjectOpen}
         onOpenChange={(open) => {
           if (pending === "project") return
           setConfirmProjectOpen(open)
         }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Wipe project data?</AlertDialogTitle>
-            <AlertDialogDescription>
+        variant="destructive-confirmation"
+        title="Wipe project data?"
+        description={
+          <>
               This deletes every Xero record for{" "}
               <span className="font-medium text-foreground">
                 {targetProject?.name ?? selectedProjectId ?? "this project"}
               </span>
               : SQLite store, vector index, code-history, and backups. The source repository on
               disk is not touched. This cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={pending === "project"}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={(event) => {
-                event.preventDefault()
-                void handleWipeProject()
-              }}
-              disabled={pending === "project"}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
+          </>
+        }
+        cancelAction={{
+          label: "Cancel",
+          disabled: pending === "project",
+        }}
+        action={{
+          label: (
+            <>
               {pending === "project" ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
                 <Trash2 className="h-3.5 w-3.5" />
               )}
               Wipe project
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+            </>
+          ),
+          disabled: pending === "project",
+          className: "bg-destructive text-destructive-foreground hover:bg-destructive/90",
+          destructive: false,
+          onClick: (event) => {
+            event.preventDefault()
+            void handleWipeProject()
+          },
+        }}
+      />
 
-      <AlertDialog
+      <BaseAlertDialog
         open={confirmAllOpen}
         onOpenChange={(open) => {
           if (pending === "all") return
           setConfirmAllOpen(open)
           if (!open) setConfirmAllInput("")
         }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Wipe ALL Xero data?</AlertDialogTitle>
-            <AlertDialogDescription>
+        variant="destructive-confirmation"
+        title="Wipe ALL Xero data?"
+        description={
+          <>
               This deletes the entire Xero app-data directory, including every project's SQLite +
               Lance store, every backup, UI state, and stored credentials. Source repositories on
               disk are not touched, but Xero will lose every reference to them. Type{" "}
@@ -279,8 +272,32 @@ export function AccountDangerZone({ projects, activeProjectId, adapter }: Accoun
                 {WIPE_ALL_CONFIRMATION}
               </span>{" "}
               to confirm.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
+          </>
+        }
+        cancelAction={{
+          label: "Cancel",
+          disabled: pending === "all",
+        }}
+        action={{
+          label: (
+            <>
+              {pending === "all" ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Trash2 className="h-3.5 w-3.5" />
+              )}
+              Wipe everything
+            </>
+          ),
+          disabled: pending === "all" || !wipeAllConfirmed,
+          className: "bg-destructive text-destructive-foreground hover:bg-destructive/90",
+          destructive: false,
+          onClick: (event) => {
+            event.preventDefault()
+            void handleWipeAll()
+          },
+        }}
+      >
           <Input
             value={confirmAllInput}
             onChange={(event) => setConfirmAllInput(event.target.value)}
@@ -290,26 +307,7 @@ export function AccountDangerZone({ projects, activeProjectId, adapter }: Accoun
             className="mt-2"
             data-testid="danger-wipe-all-input"
           />
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={pending === "all"}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={(event) => {
-                event.preventDefault()
-                void handleWipeAll()
-              }}
-              disabled={pending === "all" || !wipeAllConfirmed}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {pending === "all" ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Trash2 className="h-3.5 w-3.5" />
-              )}
-              Wipe everything
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      </BaseAlertDialog>
     </section>
   )
 }

@@ -27,6 +27,7 @@
     "./components/computer-use-sidebar": "./src/components/computer-use-sidebar.tsx",
     "./components/resizable-sidebar": "./src/components/resizable-sidebar.tsx",
     "./components/app-logo": "./src/components/app-logo.tsx",
+    "./components/base-dialog": "./src/components/base-dialog.tsx",
     "./components/empty-session-state": "./src/components/empty-session-state.tsx"
   },
   "scripts": {

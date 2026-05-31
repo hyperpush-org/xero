@@ -134,6 +134,7 @@ function makeStatus(overrides: Partial<DesktopControlStatusDto> = {}): DesktopCo
       screenshot: true,
       windowList: true,
       appList: true,
+      notificationObservation: true,
       foregroundState: true,
       cursorState: true,
       accessibilitySnapshot: true,
@@ -170,6 +171,8 @@ function makeStatus(overrides: Partial<DesktopControlStatusDto> = {}): DesktopCo
     settings: {
       cloudStreamingEnabled: true,
       manualCloudControlEnabled: true,
+      policyProfile: 'default_safe',
+      ownerAdminExpiresAt: null,
       updatedAt: '2026-05-26T12:00:00Z',
     },
     auditLogPath: '/tmp/xero/desktop-control/audit.jsonl',

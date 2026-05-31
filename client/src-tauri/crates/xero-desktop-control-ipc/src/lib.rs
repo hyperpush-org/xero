@@ -91,14 +91,22 @@ pub enum DesktopSidecarOperation {
     Capabilities,
     PermissionsStatus,
     DisplayList,
+    DisplayArrangement,
     WindowList,
     AppList,
+    AppInventory,
+    NotificationSnapshot,
     ForegroundState,
     Screenshot,
     CursorState,
     AccessibilitySnapshot,
     OcrSnapshot,
     ElementAtPoint,
+    ClipboardReadText,
+    ClipboardReadHtml,
+    ClipboardReadRtf,
+    ClipboardReadImage,
+    ClipboardReadFiles,
     MouseDown,
     MouseMove,
     MouseClick,
@@ -112,14 +120,38 @@ pub enum DesktopSidecarOperation {
     Hotkey,
     TypeText,
     PasteText,
+    ClipboardWriteText,
+    ClipboardWriteHtml,
+    ClipboardWriteRtf,
+    ClipboardWriteImage,
+    ClipboardWriteFiles,
+    FileDrop,
     FocusWindow,
+    WindowMaximize,
+    WindowMinimize,
+    WindowRestore,
+    WindowMoveResize,
+    WindowClose,
     ActivateApp,
     LaunchApp,
     QuitApp,
     AxPress,
     AxSetValue,
     AxFocus,
+    AxSelect,
+    AxConfirm,
+    AxCancel,
+    AxIncrement,
+    AxDecrement,
+    AxExpand,
+    AxCollapse,
+    AxScrollToVisible,
+    AxToggle,
     MenuSelect,
+    DockItemPress,
+    StatusItemPress,
+    FileDialogSetPath,
+    FileDialogConfirm,
     CancelCurrentAction,
     StreamCapabilities,
     StreamStart,
@@ -140,14 +172,22 @@ impl DesktopSidecarOperation {
             Capabilities,
             PermissionsStatus,
             DisplayList,
+            DisplayArrangement,
             WindowList,
             AppList,
+            AppInventory,
+            NotificationSnapshot,
             ForegroundState,
             Screenshot,
             CursorState,
             AccessibilitySnapshot,
             OcrSnapshot,
             ElementAtPoint,
+            ClipboardReadText,
+            ClipboardReadHtml,
+            ClipboardReadRtf,
+            ClipboardReadImage,
+            ClipboardReadFiles,
             MouseDown,
             MouseMove,
             MouseClick,
@@ -161,14 +201,38 @@ impl DesktopSidecarOperation {
             Hotkey,
             TypeText,
             PasteText,
+            ClipboardWriteText,
+            ClipboardWriteHtml,
+            ClipboardWriteRtf,
+            ClipboardWriteImage,
+            ClipboardWriteFiles,
+            FileDrop,
             FocusWindow,
+            WindowMaximize,
+            WindowMinimize,
+            WindowRestore,
+            WindowMoveResize,
+            WindowClose,
             ActivateApp,
             LaunchApp,
             QuitApp,
             AxPress,
             AxSetValue,
             AxFocus,
+            AxSelect,
+            AxConfirm,
+            AxCancel,
+            AxIncrement,
+            AxDecrement,
+            AxExpand,
+            AxCollapse,
+            AxScrollToVisible,
+            AxToggle,
             MenuSelect,
+            DockItemPress,
+            StatusItemPress,
+            FileDialogSetPath,
+            FileDialogConfirm,
             CancelCurrentAction,
             StreamCapabilities,
             StreamStart,
@@ -194,6 +258,8 @@ pub struct DesktopSidecarCapabilities {
     pub screenshot: bool,
     pub window_list: bool,
     pub app_list: bool,
+    #[serde(default)]
+    pub notification_observation: bool,
     pub foreground_state: bool,
     pub cursor_state: bool,
     pub accessibility_snapshot: bool,
@@ -256,6 +322,29 @@ pub struct DesktopSidecarDisplayListPayload {
     pub displays: Vec<DesktopSidecarDisplay>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DesktopSidecarDisplayBounds {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DesktopSidecarDisplayArrangementPayload {
+    pub displays: Vec<DesktopSidecarDisplay>,
+    pub display_count: usize,
+    pub virtual_bounds: DesktopSidecarDisplayBounds,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_display_id: Option<String>,
+    pub scale_factors: Vec<f32>,
+    pub has_overlaps: bool,
+    pub has_gaps_in_virtual_bounds: bool,
+    pub diagnostics: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DesktopSidecarWindow {
@@ -295,6 +384,65 @@ pub struct DesktopSidecarAppListPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DesktopSidecarAppInventoryEntry {
+    pub app_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_target: Option<String>,
+    pub launch_kind: String,
+    pub source: String,
+    pub installed: bool,
+    pub running: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    pub window_count: usize,
+    pub focused: bool,
+    pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DesktopSidecarAppInventoryPayload {
+    pub apps: Vec<DesktopSidecarAppInventoryEntry>,
+    pub count: usize,
+    pub sources: Vec<String>,
+    pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DesktopSidecarNotificationEntry {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivered_at: Option<String>,
+    pub source: String,
+    pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DesktopSidecarNotificationSnapshotPayload {
+    pub available: bool,
+    pub permission_status: String,
+    pub notifications: Vec<DesktopSidecarNotificationEntry>,
+    pub count: usize,
+    pub source: String,
+    pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DesktopSidecarForegroundStatePayload {
     pub foreground: Option<DesktopSidecarWindow>,
 }
@@ -322,6 +470,12 @@ pub struct DesktopSidecarAccessibilityElement {
     pub element_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ancestry_path: Vec<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -474,6 +628,58 @@ pub struct DesktopSidecarOcrSnapshotPayload {
     pub truncated: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DesktopSidecarClipboardTextPayload {
+    pub available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    pub length: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DesktopSidecarClipboardHtmlPayload {
+    pub available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub html: Option<String>,
+    pub byte_length: usize,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DesktopSidecarClipboardRtfPayload {
+    pub available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtf: Option<String>,
+    pub byte_length: usize,
+    pub truncated: bool,
+    pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DesktopSidecarClipboardImagePayload {
+    pub available: bool,
+    pub media_type: String,
+    pub width: u32,
+    pub height: u32,
+    pub byte_length: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_base64: Option<String>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DesktopSidecarClipboardFilesPayload {
+    pub available: bool,
+    pub files: Vec<String>,
+    pub count: usize,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -686,6 +892,32 @@ pub struct DesktopSidecarControlRequest {
     pub delta_x: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delta_y: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_data: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_data_base64: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub html: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtf: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_start: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_end: Option<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub file_paths: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub button: Option<DesktopSidecarMouseButton>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1198,6 +1430,12 @@ mod tests {
             "elementId": "macos_ax:1:AXButton:10:20:30:40:10:20",
             "keys": ["command", "a"],
             "text": "hello",
+            "html": "<strong>hello</strong>",
+            "rtf": "{\\rtf1 hello}",
+            "altText": "hello",
+            "targetLabel": "Wi-Fi",
+            "selectionStart": 1,
+            "selectionEnd": 4,
             "value": "updated",
             "menuPath": ["File", "New"]
         }))
@@ -1211,6 +1449,12 @@ mod tests {
         assert_eq!(request.button, Some(DesktopSidecarMouseButton::Right));
         assert_eq!(request.keys, vec!["command".to_string(), "a".to_string()]);
         assert_eq!(request.text.as_deref(), Some("hello"));
+        assert_eq!(request.html.as_deref(), Some("<strong>hello</strong>"));
+        assert_eq!(request.rtf.as_deref(), Some("{\\rtf1 hello}"));
+        assert_eq!(request.alt_text.as_deref(), Some("hello"));
+        assert_eq!(request.target_label.as_deref(), Some("Wi-Fi"));
+        assert_eq!(request.selection_start, Some(1));
+        assert_eq!(request.selection_end, Some(4));
         assert_eq!(request.value.as_deref(), Some("updated"));
         assert_eq!(
             request.menu_path,
@@ -1251,6 +1495,9 @@ mod tests {
             "element": {
                 "elementId": "macos_ax:1:button:10:20:30:40",
                 "pid": 1,
+                "appName": "Notes",
+                "windowTitle": "Untitled",
+                "ancestryPath": [0, 2],
                 "role": "AXButton",
                 "title": "Continue",
                 "enabled": true,
@@ -1270,6 +1517,13 @@ mod tests {
                 .as_ref()
                 .map(|element| element.role.as_deref()),
             Some(Some("AXButton"))
+        );
+        assert_eq!(
+            payload
+                .element
+                .as_ref()
+                .map(|element| element.ancestry_path.clone()),
+            Some(vec![0, 2])
         );
     }
 
@@ -1296,6 +1550,9 @@ mod tests {
                 "element": {
                     "elementId": "macos_ax:1:AXWindow:0:0:800:600:0:0",
                     "pid": 1,
+                    "appName": "Notes",
+                    "windowTitle": "Untitled",
+                    "ancestryPath": [0],
                     "role": "AXWindow",
                     "title": "Untitled",
                     "enabled": true
@@ -1309,6 +1566,8 @@ mod tests {
         assert!(payload.performed);
         assert_eq!(payload.rows.len(), 1);
         assert_eq!(payload.rows[0].element.role.as_deref(), Some("AXWindow"));
+        assert_eq!(payload.rows[0].element.app_name.as_deref(), Some("Notes"));
+        assert_eq!(payload.rows[0].element.ancestry_path, vec![0]);
     }
 
     #[test]
@@ -1472,5 +1731,48 @@ mod tests {
                 DesktopSidecarStreamQuality::High
             ]
         );
+    }
+
+    #[test]
+    fn parses_notification_snapshot_contract() {
+        let payload = serde_json::from_value::<DesktopSidecarNotificationSnapshotPayload>(json!({
+            "available": true,
+            "permissionStatus": "allowed",
+            "source": "windows_user_notification_listener",
+            "count": 1,
+            "notifications": [{
+                "id": "42",
+                "appName": "Mail",
+                "title": "Build finished",
+                "body": "All checks passed.",
+                "deliveredAt": "2026-05-30T12:00:00Z",
+                "source": "windows_user_notification_listener",
+                "diagnostics": []
+            }],
+            "diagnostics": []
+        }))
+        .expect("notification snapshot");
+
+        assert!(payload.available);
+        assert_eq!(payload.count, 1);
+        assert_eq!(
+            payload.notifications[0].title.as_deref(),
+            Some("Build finished")
+        );
+    }
+
+    #[test]
+    fn parses_clipboard_rtf_contract() {
+        let payload = serde_json::from_value::<DesktopSidecarClipboardRtfPayload>(json!({
+            "available": true,
+            "rtf": "{\\rtf1 hello}",
+            "byteLength": 13,
+            "truncated": false,
+            "diagnostics": []
+        }))
+        .expect("clipboard RTF payload");
+
+        assert!(payload.available);
+        assert_eq!(payload.rtf.as_deref(), Some("{\\rtf1 hello}"));
     }
 }

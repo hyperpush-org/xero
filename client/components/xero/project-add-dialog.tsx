@@ -2,13 +2,11 @@
 
 import { useEffect, useState } from 'react'
 import { ArrowLeft, ChevronRight, FolderOpen, FolderPlus, Loader2, Sparkles } from 'lucide-react'
+import { BaseDialog } from '@xero/ui/components/base-dialog'
 
 import { Button } from '@/components/ui/button'
 import {
-  Dialog,
-  DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
@@ -114,13 +112,20 @@ export function ProjectAddDialog({
   const dialogBusy = busy || isImporting
 
   return (
-    <Dialog open={open} onOpenChange={(next) => !dialogBusy && onOpenChange(next)}>
-      <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-[460px]">
+    <BaseDialog
+      open={open}
+      onOpenChange={(next) => !dialogBusy && onOpenChange(next)}
+      variant="custom"
+      title="Add a project"
+      busy={dialogBusy}
+      contentClassName="gap-0 overflow-hidden p-0 sm:max-w-[460px]"
+      leading={
         <div
           aria-hidden
           className="pointer-events-none absolute inset-x-0 top-0 h-32 bg-gradient-to-b from-primary/[0.06] to-transparent"
         />
-
+      }
+      header={
         <div className="relative px-6 pb-2 pt-6">
           <DialogHeader className="space-y-2">
             <div className="flex items-center gap-2.5">
@@ -136,7 +141,57 @@ export function ProjectAddDialog({
             </DialogDescription>
           </DialogHeader>
         </div>
-
+      }
+      footerClassName="border-t border-border/60 bg-secondary/20 px-6 py-3 sm:justify-between"
+      footer={
+        mode === 'choose' ? (
+          <>
+            <p className="hidden text-[11px] text-muted-foreground/70 sm:block">
+              Projects stay local — Xero never uploads your code.
+            </p>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onOpenChange(false)}
+              disabled={dialogBusy}
+              className="text-muted-foreground hover:text-foreground"
+            >
+              Cancel
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setMode('choose')
+                setError(null)
+              }}
+              disabled={dialogBusy}
+              className="text-muted-foreground hover:text-foreground"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" />
+              Back
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => void submitCreate()}
+              disabled={!canCreate || dialogBusy}
+            >
+              {dialogBusy ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Creating…
+                </>
+              ) : (
+                'Create project'
+              )}
+            </Button>
+          </>
+        )
+      }
+    >
         <div className="relative px-6 pb-5">
           {mode === 'choose' ? (
             <div className="flex flex-col gap-2">
@@ -225,57 +280,7 @@ export function ProjectAddDialog({
             </div>
           )}
         </div>
-
-        <DialogFooter className="border-t border-border/60 bg-secondary/20 px-6 py-3 sm:justify-between">
-          {mode === 'choose' ? (
-            <>
-              <p className="hidden text-[11px] text-muted-foreground/70 sm:block">
-                Projects stay local — Xero never uploads your code.
-              </p>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => onOpenChange(false)}
-                disabled={dialogBusy}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                Cancel
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setMode('choose')
-                  setError(null)
-                }}
-                disabled={dialogBusy}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                <ArrowLeft className="h-3.5 w-3.5" />
-                Back
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => void submitCreate()}
-                disabled={!canCreate || dialogBusy}
-              >
-                {dialogBusy ? (
-                  <>
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    Creating…
-                  </>
-                ) : (
-                  'Create project'
-                )}
-              </Button>
-            </>
-          )}
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    </BaseDialog>
   )
 }
 

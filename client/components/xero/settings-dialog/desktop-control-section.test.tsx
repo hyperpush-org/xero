@@ -118,23 +118,76 @@ describe('DesktopControlSection', () => {
     expect(screen.getByText('Required for wayland capture, wayland input.')).toBeVisible()
     expect(screen.queryByRole('button', { name: /Open/ })).not.toBeInTheDocument()
   })
+
+  it('enables owner-admin mode with a bounded local duration and revokes it on stop', async () => {
+    const activeUntil = new Date(Date.now() + 15 * 60 * 1000).toISOString()
+    const status = makeStatus()
+    const adapter = makeAdapter({
+      status,
+      updateStatus: makeStatus({
+        settings: {
+          ...status.settings,
+          policyProfile: 'owner_admin',
+          ownerAdminExpiresAt: activeUntil,
+          updatedAt: '2026-05-26T12:01:00Z',
+        },
+      }),
+      stopStatus: makeStatus({
+        settings: {
+          ...status.settings,
+          policyProfile: 'default_safe',
+          ownerAdminExpiresAt: null,
+          updatedAt: '2026-05-26T12:02:00Z',
+        },
+      }),
+    })
+
+    render(<DesktopControlSection adapter={adapter} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Owner Admin' }))
+
+    await waitFor(() =>
+      expect(adapter.desktopControlUpdateSettings).toHaveBeenCalledWith({
+        cloudStreamingEnabled: true,
+        manualCloudControlEnabled: true,
+        policyProfile: 'owner_admin',
+        ownerAdminDurationMinutes: 30,
+      }),
+    )
+    expect(await screen.findByText('owner admin')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
+
+    await waitFor(() => expect(adapter.desktopControlStop).toHaveBeenCalled())
+  })
 })
 
-function makeAdapter({ status }: { status: DesktopControlStatusDto }) {
+function makeAdapter({
+  status,
+  updateStatus,
+  stopStatus,
+}: {
+  status: DesktopControlStatusDto
+  updateStatus?: DesktopControlStatusDto
+  stopStatus?: DesktopControlStatusDto
+}) {
   return {
     isDesktopRuntime: vi.fn(() => true),
     desktopControlStatus: vi.fn(async () => status),
     desktopControlUpdateSettings: vi.fn(
-      async (request: UpsertDesktopControlSettingsRequestDto) => ({
+      async (request: UpsertDesktopControlSettingsRequestDto) =>
+        updateStatus ?? {
         ...status,
         settings: {
           ...status.settings,
           ...request,
+          ownerAdminExpiresAt:
+            request.policyProfile === 'owner_admin' ? status.settings.ownerAdminExpiresAt : null,
           updatedAt: '2026-05-26T12:01:00Z',
         },
-      }),
+      },
     ),
-    desktopControlStop: vi.fn(async () => status),
+    desktopControlStop: vi.fn(async () => stopStatus ?? status),
     desktopControlOpenPermissionSettings: vi.fn(async () => undefined),
   }
 }
@@ -167,6 +220,7 @@ function makeStatus(overrides: Partial<DesktopControlStatusDto> = {}): DesktopCo
       screenshot: true,
       windowList: true,
       appList: true,
+      notificationObservation: true,
       foregroundState: true,
       cursorState: true,
       accessibilitySnapshot: true,
@@ -203,6 +257,8 @@ function makeStatus(overrides: Partial<DesktopControlStatusDto> = {}): DesktopCo
     settings: {
       cloudStreamingEnabled: true,
       manualCloudControlEnabled: true,
+      policyProfile: 'default_safe',
+      ownerAdminExpiresAt: null,
       updatedAt: '2026-05-26T12:00:00Z',
     },
     auditLogPath: '/tmp/xero/desktop-control/audit.jsonl',

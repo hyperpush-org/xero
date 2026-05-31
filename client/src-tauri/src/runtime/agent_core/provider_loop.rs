@@ -1484,6 +1484,9 @@ fn command_metadata_lines(output: &JsonValue) -> Vec<String> {
     if let Some(intent) = json_str(output, "intent") {
         lines.push(format!("intent: {intent}"));
     }
+    if let Some(token) = json_str(output, "previewToken") {
+        lines.push(format!("previewToken: {token}"));
+    }
     let mut fields = Vec::new();
     for key in ["operation", "sessionId", "processId"] {
         if let Some(value) = json_str(output, key) {
@@ -3095,6 +3098,7 @@ fn compact_command_output(output: &JsonValue) -> JsonValue {
             "exitCode",
             "timedOut",
             "spawned",
+            "previewToken",
             "changedFilesTruncated",
             "outputArtifact",
             "suggestedNextActions",
@@ -7828,6 +7832,7 @@ mod tests {
                     "exitCode": 101,
                     "timedOut": false,
                     "spawned": true,
+                    "previewToken": "preview-token-123",
                     "changedFiles": [{
                         "path": "src/lib.rs",
                         "staged": null,
@@ -7856,6 +7861,7 @@ mod tests {
             serialize_model_visible_tool_result(&result).expect("serialize command result");
 
         assert!(serialized.contains("intent: read_only_verification"));
+        assert!(serialized.contains("previewToken: preview-token-123"));
         assert!(serialized.contains("changedFiles: src/lib.rs"));
         assert!(serialized.contains("outputArtifact: /tmp/command-output.json"));
         assert!(serialized.contains("suggestedNextActions: Use outputArtifact.path"));

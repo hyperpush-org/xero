@@ -1,10 +1,9 @@
 "use client"
 
 import { Play } from "lucide-react"
+import { BaseDialog } from "@xero/ui/components/base-dialog"
 
 import {
-  Dialog,
-  DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
@@ -44,12 +43,19 @@ export function StartTargetsDialog({
   modelOptions,
 }: StartTargetsDialogProps) {
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="grid max-h-[min(760px,calc(100vh-4rem))] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0 sm:max-w-[560px]">
+    <BaseDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      variant="editor"
+      title="Project start targets"
+      contentClassName="grid max-h-[min(760px,calc(100vh-4rem))] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0 sm:max-w-[560px]"
+      leading={
         <div
           aria-hidden
           className="pointer-events-none absolute inset-x-0 top-0 h-32 bg-gradient-to-b from-primary/[0.06] to-transparent"
         />
+      }
+      header={
         <div className="relative px-6 pb-2 pt-6">
           <DialogHeader className="space-y-2">
             <div className="flex items-center gap-2.5">
@@ -66,6 +72,8 @@ export function StartTargetsDialog({
             </DialogDescription>
           </DialogHeader>
         </div>
+      }
+    >
 
         <div className="relative min-h-0">
           <StartTargetsEditor
@@ -81,7 +89,6 @@ export function StartTargetsDialog({
             modelOptions={modelOptions}
           />
         </div>
-      </DialogContent>
-    </Dialog>
+    </BaseDialog>
   )
 }

@@ -7,6 +7,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::runtime::autonomous_tool_runtime::AUTONOMOUS_TOOL_HOST_COMMAND;
+
 use super::*;
 
 const PROMPT_CONTEXT_CACHE_TTL: Duration = Duration::from_secs(30);
@@ -1301,7 +1303,7 @@ fn tool_policy_fragment(
             "Available observe-only tools: {tool_names}\n\nUse tools only to inspect project information needed to answer. Use `project_context_search` and `project_context_get` to read durable context; Ask's default surface does not expose durable-context writes. If the user explicitly asks to save a note, use only an approved context-write action when Xero exposes one for this turn. `tool_search` and `tool_access` are filtered to Ask-safe observe-only capabilities; do not ask for repo mutation, command, browser-control, MCP, skill, subagent, device, or external-service tools.{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::ComputerUse => format!(
-            "Available Computer Use tools: {tool_names}\n\nUse the smallest appropriate tool or tool group for the user's task, and follow each tool's schema, risk class, approval flow, and output contract. Prefer observe/read actions before state-changing actions when context is missing. Use `tool_search` and `tool_access` to activate additional Computer Use capabilities when the current tool list is insufficient.{browser_control_guidance}"
+            "Available Computer Use tools: {tool_names}\n\nUse the smallest appropriate tool or tool group for the user's task, and follow each tool's schema, risk class, approval flow, and output contract. Prefer structured browser tools for browser tasks, command/process tools for shellable or process tasks, native desktop structured actions for app UI, and pointer/pixel input only when no more precise tool fits. Prefer observe/read actions before state-changing actions when context is missing. Use `tool_search` and `tool_access` to activate additional Computer Use capabilities when the current tool list is insufficient.{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::Plan => format!(
             "Available planning tools: {tool_names}\n\nUse repository read/read_many/result_page/stat/search/find/list/list_tree/directory_digest/hash, safe git status/diff, workspace index, durable context search/get, tool discovery, and `todo` for runtime-owned planning state. Use context retrieval before drafting when prior plans, decisions, constraints, project facts, questions, or handoffs may matter. Use `project_context_record` only after explicit acceptance, with `recordKind: \"plan\"` and `contentJson.schema: \"xero.plan_pack.v1\"`; Plan cannot use it for generic notes, drafts, or non-plan records. `tool_search` and `tool_access` are filtered to planning-safe capabilities; do not ask for repo mutation, shell commands, browser-control, MCP, skill, subagent, device, network, external-service, branch, stash, commit, push, deploy, or other durable-context write tools.{browser_control_guidance}"
@@ -2644,6 +2646,33 @@ pub(crate) fn plan_tool_exposure_for_prompt(
         );
     }
 
+    if contains_any(
+        &lowered,
+        &[
+            "host admin",
+            "owner admin",
+            "administrator",
+            "admin mode",
+            "brew",
+            "winget",
+            "service",
+            "services",
+            "registry",
+            "system setting",
+            "login item",
+            "startup item",
+            "package manager",
+        ],
+    ) {
+        add_tool_group_with_reason(
+            &mut plan,
+            "host_admin",
+            "planner_classification",
+            "host_admin_intent",
+            "Task text asks for owner-approved host administration.",
+        );
+    }
+
     if contains_any(&lowered, &["powershell", "pwsh", "windows shell"]) {
         add_tool_group_with_reason(
             &mut plan,
@@ -3021,6 +3050,9 @@ fn explicit_tool_names_from_prompt(prompt: &str) -> BTreeSet<String> {
             }
             line if line.starts_with("tool:command_session") => {
                 names.insert(AUTONOMOUS_TOOL_COMMAND_SESSION.into());
+            }
+            line if line.starts_with("tool:host_command ") => {
+                names.insert(AUTONOMOUS_TOOL_HOST_COMMAND.into());
             }
             line if line.starts_with("tool:process_manager ") => {
                 names.insert(AUTONOMOUS_TOOL_PROCESS_MANAGER.into());
@@ -4110,6 +4142,11 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
             command_schema(),
         ),
         descriptor(
+            AUTONOMOUS_TOOL_HOST_COMMAND,
+            "Run a host-wide workstation administration command only when local Owner Admin mode is active and approval policy permits it.",
+            host_command_schema(),
+        ),
+        descriptor(
             AUTONOMOUS_TOOL_COMMAND_SESSION,
             "Start, read, or stop a repo-scoped long-running command session.",
             command_session_schema(),
@@ -4136,12 +4173,12 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
-            "Computer Use desktop observation: permissions, displays, windows, apps, foreground state, screenshots, cursor state, OCR/Accessibility placeholders, element lookup, and health.",
+            "Computer Use desktop observation: permissions, displays, windows, apps, app inventory/launch targets, notification snapshots, foreground state, screenshots, cursor state, OCR/Accessibility, element lookup, clipboard text/HTML/RTF/image/files, browser/terminal bridge affordances, and health.",
             desktop_observe_schema(),
         ),
         descriptor(
             AUTONOMOUS_TOOL_DESKTOP_CONTROL,
-            "Computer Use native desktop control with controller lock, audit, pointer, keyboard, app/window, Accessibility, clipboard, menu, and cancel actions.",
+            "Computer Use native desktop control with controller lock, audit, pointer, keyboard, app/window, Accessibility, clipboard text/HTML/RTF/image/files, menu, and cancel actions.",
             desktop_control_schema(),
         ),
         descriptor(
@@ -5093,6 +5130,66 @@ fn command_schema() -> JsonValue {
     )
 }
 
+fn host_command_schema() -> JsonValue {
+    object_schema(
+        &["argv", "reason"],
+        &[
+            (
+                "argv",
+                json!({
+                    "type": "array",
+                    "description": "Host command argv. The first item is the executable. Use explicit argv instead of shell strings where possible.",
+                    "items": { "type": "string" },
+                    "minItems": 1
+                }),
+            ),
+            (
+                "cwd",
+                bounded_string_schema(
+                    "Optional absolute or ~-relative working directory. Unlike command_run, this is not repo-scoped and requires Owner Admin mode.",
+                    DESCRIPTOR_MAX_PATH_CHARS,
+                ),
+            ),
+            (
+                "timeoutMs",
+                bounded_integer_schema(
+                    "Optional timeout in milliseconds.",
+                    1,
+                    Some(300_000),
+                ),
+            ),
+            (
+                "preview",
+                boolean_schema(
+                    "When true, validate and audit the command plan without spawning it. Required before destructive, privileged, network/security, startup-item, credential-adjacent, or privacy-sensitive operations.",
+                ),
+            ),
+            (
+                "previewToken",
+                bounded_string_schema(
+                    "Token returned by a prior host_command preview for this exact high-impact command plan. Required to execute destructive, privileged, network/security, startup-item, credential-adjacent, or privacy-sensitive operations after owner approval.",
+                    128,
+                ),
+            ),
+            (
+                "reason",
+                bounded_string_schema(
+                    "Short owner-visible reason for the host administration action.",
+                    240,
+                ),
+            ),
+            (
+                "rollbackHints",
+                string_array_schema(
+                    "Optional rollback metadata hints such as files, registry keys, services, packages, or settings expected to change.",
+                    16,
+                    240,
+                ),
+            ),
+        ],
+    )
+}
+
 fn command_session_schema() -> JsonValue {
     object_schema(
         &["action"],
@@ -5981,18 +6078,27 @@ fn desktop_observe_schema() -> JsonValue {
             (
                 "action",
                 enum_schema(
-                    "Desktop observation action. Observation is read-only and does not require operator approval.",
+                    "Desktop observation action. Observation is read-only; sensitive local data reads such as clipboard and notifications require operator approval.",
                     &[
                         "permissions_status",
                         "display_list",
+                        "display_arrangement",
                         "window_list",
                         "app_list",
+                        "app_inventory",
+                        "notification_snapshot",
                         "foreground_state",
                         "screenshot",
                         "cursor_state",
                         "accessibility_snapshot",
                         "ocr_snapshot",
                         "element_at_point",
+                        "clipboard_read_text",
+                        "clipboard_read_html",
+                        "clipboard_read_rtf",
+                        "clipboard_read_image",
+                        "clipboard_read_files",
+                        "bridge_affordances",
                         "health",
                     ],
                 ),
@@ -6015,6 +6121,20 @@ fn desktop_observe_schema() -> JsonValue {
             ),
             ("x", integer_schema("Display x coordinate for element_at_point.")),
             ("y", integer_schema("Display y coordinate for element_at_point.")),
+            (
+                "includeData",
+                boolean_schema(
+                    "For clipboard_read_image only, include base64 PNG bytes when they fit maxBytes. Requires operator approval.",
+                ),
+            ),
+            (
+                "maxBytes",
+                bounded_integer_schema(
+                    "Maximum bytes to return for clipboard_read_html or clipboard_read_rtf, or maximum PNG bytes for clipboard_read_image includeData.",
+                    1,
+                    Some(786_432),
+                ),
+            ),
         ],
     )
 }
@@ -6028,24 +6148,57 @@ fn desktop_control_schema() -> JsonValue {
                 enum_schema(
                     "Desktop control action. Non-destructive input runs directly; quitting apps requires operator approval.",
                     &[
+                        "mouse_down",
                         "mouse_move",
                         "mouse_click",
                         "mouse_double_click",
                         "mouse_right_click",
                         "mouse_drag",
+                        "mouse_drag_move",
+                        "mouse_up",
                         "scroll",
                         "key_press",
                         "hotkey",
+                        "volume_up",
+                        "volume_down",
+                        "volume_mute",
+                        "media_play_pause",
+                        "media_next_track",
+                        "media_prev_track",
                         "type_text",
                         "paste_text",
+                        "clipboard_write_text",
+                        "clipboard_write_html",
+                        "clipboard_write_rtf",
+                        "clipboard_write_image",
+                        "clipboard_write_files",
+                        "file_drop",
                         "focus_window",
+                        "window_maximize",
+                        "window_minimize",
+                        "window_restore",
+                        "window_move_resize",
+                        "window_close",
                         "activate_app",
                         "launch_app",
                         "quit_app",
                         "ax_press",
                         "ax_set_value",
                         "ax_focus",
+                        "ax_select",
+                        "ax_confirm",
+                        "ax_cancel",
+                        "ax_increment",
+                        "ax_decrement",
+                        "ax_expand",
+                        "ax_collapse",
+                        "ax_scroll_to_visible",
+                        "ax_toggle",
                         "menu_select",
+                        "dock_item_press",
+                        "status_item_press",
+                        "file_dialog_set_path",
+                        "file_dialog_confirm",
                         "cancel_current_action",
                     ],
                 ),
@@ -6054,16 +6207,62 @@ fn desktop_control_schema() -> JsonValue {
             ("windowId", string_schema("Window id from desktop_observe.window_list.")),
             ("appName", string_schema("Target visible app name.")),
             ("bundleId", string_schema("Target app bundle/package identifier when available.")),
-            ("elementId", string_schema("Target Accessibility/UI Automation element id.")),
-            ("x", integer_schema("Source or click x coordinate in desktop coordinates.")),
-            ("y", integer_schema("Source or click y coordinate in desktop coordinates.")),
+            (
+                "elementId",
+                string_schema(
+                    "Target Accessibility/UI Automation element id from accessibility_snapshot or element_at_point; macOS ids include app, window, role/title, bounds, and ancestry hints for re-resolution.",
+                ),
+            ),
+            ("x", integer_schema("Source, click, or pointer-state x coordinate in desktop or source coordinates.")),
+            ("y", integer_schema("Source, click, or pointer-state y coordinate in desktop or source coordinates.")),
+            (
+                "sourceWidth",
+                integer_schema("Width of the screenshot or stream frame that x/y were measured against; pair with sourceHeight when using rendered source coordinates."),
+            ),
+            (
+                "sourceHeight",
+                integer_schema("Height of the screenshot or stream frame that x/y were measured against; pair with sourceWidth when using rendered source coordinates."),
+            ),
             ("toX", integer_schema("Drag target x coordinate in desktop coordinates.")),
             ("toY", integer_schema("Drag target y coordinate in desktop coordinates.")),
             ("deltaX", integer_schema("Horizontal scroll delta.")),
             ("deltaY", integer_schema("Vertical scroll delta.")),
+            ("width", integer_schema("Window width for window_move_resize.")),
+            ("height", integer_schema("Window height for window_move_resize.")),
+            (
+                "includeData",
+                boolean_schema("Reserved for clipboard/resource actions that optionally include payload bytes."),
+            ),
+            (
+                "maxBytes",
+                bounded_integer_schema("Reserved maximum byte count for clipboard/resource payloads.", 1, Some(786_432)),
+            ),
+            (
+                "mediaType",
+                enum_schema("Clipboard image media type. Currently only image/png is accepted.", &["image/png"]),
+            ),
+            (
+                "imageDataBase64",
+                bounded_string_schema(
+                    "Base64-encoded PNG data for clipboard_write_image. Do not include secrets.",
+                    1_048_576,
+                ),
+            ),
+            (
+                "filePaths",
+                json!({
+                    "type": "array",
+                    "description": "Absolute local file paths for clipboard_write_files or file_drop.",
+                    "items": { "type": "string" },
+                    "maxItems": 64
+                }),
+            ),
             ("button", enum_schema("Mouse button.", &["left", "right", "middle"])),
             ("clicks", integer_schema("Click count.")),
-            ("key", string_schema("Single key name for key_press.")),
+            (
+                "key",
+                string_schema("Single key name for key_press. Prefer the explicit volume_* and media_* actions for common system/media keys where supported."),
+            ),
             (
                 "keys",
                 json!({
@@ -6072,8 +6271,26 @@ fn desktop_control_schema() -> JsonValue {
                     "items": { "type": "string" }
                 }),
             ),
-            ("text", string_schema("Text for type_text or paste_text. Do not include secrets.")),
-            ("value", string_schema("Value for ax_set_value. Do not include secrets.")),
+            ("text", string_schema("Text for type_text, paste_text, or clipboard_write_text. Do not include secrets.")),
+            ("html", string_schema("HTML fragment for clipboard_write_html. Do not include secrets.")),
+            ("rtf", string_schema("RTF payload for clipboard_write_rtf. Do not include secrets.")),
+            (
+                "altText",
+                string_schema("Plain-text alternative for clipboard_write_html. Do not include secrets."),
+            ),
+            (
+                "targetLabel",
+                string_schema("Visible label for Dock items, menu bar status items, or file dialog confirmation buttons."),
+            ),
+            (
+                "selectionStart",
+                integer_schema("Zero-based start offset for ax_set_value text-range replacement."),
+            ),
+            (
+                "selectionEnd",
+                integer_schema("Zero-based exclusive end offset for ax_set_value text-range replacement."),
+            ),
+            ("value", string_schema("Value for ax_set_value, or replacement text when selectionStart/selectionEnd are supplied. Do not include secrets.")),
             (
                 "menuPath",
                 json!({
@@ -6099,6 +6316,9 @@ fn desktop_stream_schema() -> JsonValue {
                     &[
                         "stream_capabilities",
                         "stream_start",
+                        "stream_offer",
+                        "stream_answer",
+                        "stream_ice_candidate",
                         "stream_stop",
                         "stream_status",
                         "stream_set_quality",
@@ -6114,6 +6334,67 @@ fn desktop_stream_schema() -> JsonValue {
             ("maxFrameRate", integer_schema("Maximum stream or fallback frame rate.")),
             ("includeCursor", boolean_schema("Include cursor in the stream when supported.")),
             ("quality", enum_schema("Stream quality.", &["low", "balanced", "high"])),
+            (
+                "iceServers",
+                json!({
+                    "type": "array",
+                    "description": "Optional WebRTC ICE server list for stream_start.",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["urls"],
+                        "properties": {
+                            "urls": {
+                                "oneOf": [
+                                    { "type": "string", "minLength": 1 },
+                                    {
+                                        "type": "array",
+                                        "minItems": 1,
+                                        "items": { "type": "string", "minLength": 1 }
+                                    }
+                                ]
+                            },
+                            "username": { "type": "string" },
+                            "credential": { "type": "string" },
+                            "credentialType": {
+                                "type": "string",
+                                "enum": ["password", "oauth"]
+                            }
+                        }
+                    }
+                }),
+            ),
+            (
+                "sessionDescription",
+                json!({
+                    "type": "object",
+                    "description": "Validated WebRTC SDP offer/answer payload for stream_offer or stream_answer.",
+                    "additionalProperties": false,
+                    "required": ["type", "sdp"],
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": ["offer", "answer", "pranswer"]
+                        },
+                        "sdp": { "type": "string", "minLength": 1 }
+                    }
+                }),
+            ),
+            (
+                "iceCandidate",
+                json!({
+                    "type": "object",
+                    "description": "Validated WebRTC ICE candidate payload for stream_ice_candidate.",
+                    "additionalProperties": false,
+                    "required": ["candidate"],
+                    "properties": {
+                        "candidate": { "type": "string", "minLength": 1 },
+                        "sdpMid": { "type": "string" },
+                        "sdpMLineIndex": { "type": "integer", "minimum": 0 },
+                        "usernameFragment": { "type": "string" }
+                    }
+                }),
+            ),
         ],
     )
 }
@@ -7260,6 +7541,156 @@ mod tests {
                     descriptor.name
                 );
             }
+        }
+    }
+
+    #[test]
+    fn desktop_control_schema_exposes_runtime_pointer_actions_and_source_dimensions() {
+        let schema = desktop_control_schema();
+        let properties = schema
+            .get("properties")
+            .and_then(JsonValue::as_object)
+            .expect("desktop_control properties");
+        let actions = properties
+            .get("action")
+            .and_then(|action| action.get("enum"))
+            .and_then(JsonValue::as_array)
+            .expect("desktop_control action enum")
+            .iter()
+            .filter_map(JsonValue::as_str)
+            .collect::<Vec<_>>();
+
+        for action in [
+            "mouse_down",
+            "mouse_drag_move",
+            "mouse_up",
+            "volume_up",
+            "volume_down",
+            "volume_mute",
+            "media_play_pause",
+            "media_next_track",
+            "media_prev_track",
+            "ax_select",
+            "ax_confirm",
+            "ax_cancel",
+            "ax_increment",
+            "ax_decrement",
+            "ax_expand",
+            "ax_collapse",
+            "ax_scroll_to_visible",
+            "ax_toggle",
+            "clipboard_write_text",
+            "clipboard_write_html",
+            "clipboard_write_rtf",
+            "clipboard_write_image",
+            "clipboard_write_files",
+            "file_drop",
+            "window_maximize",
+            "window_minimize",
+            "window_restore",
+            "window_move_resize",
+            "window_close",
+            "dock_item_press",
+            "status_item_press",
+            "file_dialog_set_path",
+            "file_dialog_confirm",
+        ] {
+            assert!(
+                actions.contains(&action),
+                "desktop_control schema must expose runtime action {action}"
+            );
+        }
+        for field in [
+            "sourceWidth",
+            "sourceHeight",
+            "width",
+            "height",
+            "mediaType",
+            "imageDataBase64",
+            "filePaths",
+            "html",
+            "rtf",
+            "altText",
+            "targetLabel",
+            "selectionStart",
+            "selectionEnd",
+        ] {
+            assert!(
+                properties.contains_key(field),
+                "desktop_control schema must expose {field} for scaled stream/screenshot coordinates"
+            );
+        }
+    }
+
+    #[test]
+    fn desktop_observe_schema_exposes_display_arrangement() {
+        let schema = desktop_observe_schema();
+        let properties = schema
+            .get("properties")
+            .and_then(JsonValue::as_object)
+            .expect("desktop_observe properties");
+        let actions = properties
+            .get("action")
+            .and_then(|action| action.get("enum"))
+            .and_then(JsonValue::as_array)
+            .expect("desktop_observe action enum")
+            .iter()
+            .filter_map(JsonValue::as_str)
+            .collect::<Vec<_>>();
+
+        assert!(
+            actions.contains(&"display_arrangement"),
+            "desktop_observe schema must expose prompt-visible display layout diagnostics"
+        );
+        assert!(
+            actions.contains(&"app_inventory"),
+            "desktop_observe schema must expose app launch-target inventory"
+        );
+        assert!(
+            actions.contains(&"notification_snapshot"),
+            "desktop_observe schema must expose notification observation diagnostics"
+        );
+        assert!(
+            actions.contains(&"clipboard_read_html"),
+            "desktop_observe schema must expose approval-gated HTML clipboard reads"
+        );
+        assert!(
+            actions.contains(&"clipboard_read_rtf"),
+            "desktop_observe schema must expose approval-gated RTF clipboard reads"
+        );
+        assert!(
+            actions.contains(&"bridge_affordances"),
+            "desktop_observe schema must expose browser/terminal bridge guidance"
+        );
+    }
+
+    #[test]
+    fn desktop_stream_schema_exposes_validated_signaling_payloads() {
+        let schema = desktop_stream_schema();
+        let properties = schema
+            .get("properties")
+            .and_then(JsonValue::as_object)
+            .expect("desktop_stream properties");
+        let actions = properties
+            .get("action")
+            .and_then(|action| action.get("enum"))
+            .and_then(JsonValue::as_array)
+            .expect("desktop_stream action enum")
+            .iter()
+            .filter_map(JsonValue::as_str)
+            .collect::<Vec<_>>();
+
+        for action in ["stream_offer", "stream_answer", "stream_ice_candidate"] {
+            assert!(
+                actions.contains(&action),
+                "desktop_stream schema must expose runtime signaling action {action}"
+            );
+        }
+        for field in ["iceServers", "sessionDescription", "iceCandidate"] {
+            assert!(
+                properties.contains_key(field),
+                "desktop_stream schema must expose {field} for WebRTC signaling"
+            );
         }
     }
 

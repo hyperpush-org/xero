@@ -1,12 +1,10 @@
 import { type ReactNode } from 'react'
 import { ArrowLeft, ChevronRight } from 'lucide-react'
+import { BaseDialog } from '@xero/ui/components/base-dialog'
 
 import { Button } from '@/components/ui/button'
 import {
-  Dialog,
-  DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
@@ -55,13 +53,19 @@ export function CreateEntityDialog({
 }: CreateEntityDialogProps) {
   const isChoice = view === 'choice'
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-[460px]">
+    <BaseDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      variant="custom"
+      title={title}
+      contentClassName="gap-0 overflow-hidden p-0 sm:max-w-[460px]"
+      leading={
         <div
           aria-hidden
           className="pointer-events-none absolute inset-x-0 top-0 h-32 bg-gradient-to-b from-primary/[0.06] to-transparent"
         />
-
+      }
+      header={
         <div className="relative px-6 pb-2 pt-6">
           <DialogHeader className="space-y-2">
             <div className="flex items-center gap-2.5">
@@ -75,7 +79,46 @@ export function CreateEntityDialog({
             </DialogDescription>
           </DialogHeader>
         </div>
-
+      }
+      footerClassName="border-t border-border/60 bg-secondary/20 px-6 py-3 sm:justify-between"
+      footer={
+        isChoice ? (
+          <>
+            <p className="hidden text-[11px] text-muted-foreground/70 sm:block">
+              {footerNote}
+            </p>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onOpenChange(false)}
+              className="text-muted-foreground hover:text-foreground"
+            >
+              Cancel
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onSetView('choice')}
+              className="text-muted-foreground hover:text-foreground"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" />
+              Back
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onOpenChange(false)}
+              className="text-muted-foreground hover:text-foreground"
+            >
+              Cancel
+            </Button>
+          </>
+        )
+      }
+    >
         <div className="relative mt-4 px-6 pb-5">
           {isChoice ? (
             <div className="flex flex-col gap-2">
@@ -89,46 +132,7 @@ export function CreateEntityDialog({
             templatesContent
           )}
         </div>
-
-        <DialogFooter className="border-t border-border/60 bg-secondary/20 px-6 py-3 sm:justify-between">
-          {isChoice ? (
-            <>
-              <p className="hidden text-[11px] text-muted-foreground/70 sm:block">
-                {footerNote}
-              </p>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => onOpenChange(false)}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                Cancel
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => onSetView('choice')}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                <ArrowLeft className="h-3.5 w-3.5" />
-                Back
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => onOpenChange(false)}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                Cancel
-              </Button>
-            </>
-          )}
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    </BaseDialog>
   )
 }
 

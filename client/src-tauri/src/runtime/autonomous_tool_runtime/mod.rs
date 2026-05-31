@@ -178,6 +178,7 @@ pub const AUTONOMOUS_TOOL_COMMAND_PROBE: &str = "command_probe";
 pub const AUTONOMOUS_TOOL_COMMAND_VERIFY: &str = "command_verify";
 pub const AUTONOMOUS_TOOL_COMMAND_RUN: &str = "command_run";
 pub const AUTONOMOUS_TOOL_COMMAND_SESSION: &str = "command_session";
+pub const AUTONOMOUS_TOOL_HOST_COMMAND: &str = "host_command";
 pub const AUTONOMOUS_TOOL_PROCESS_MANAGER: &str = "process_manager";
 pub const AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS: &str = "system_diagnostics";
 pub const AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE: &str = "system_diagnostics_observe";
@@ -299,6 +300,7 @@ const TOOL_ACCESS_COMMAND_READONLY_TOOLS: &[&str] = &[
 const TOOL_ACCESS_COMMAND_MUTATING_TOOLS: &[&str] =
     &[AUTONOMOUS_TOOL_COMMAND_RUN, AUTONOMOUS_TOOL_COMMAND_SESSION];
 const TOOL_ACCESS_COMMAND_SESSION_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_COMMAND_SESSION];
+const TOOL_ACCESS_HOST_ADMIN_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_HOST_COMMAND];
 const TOOL_ACCESS_REPOSITORY_RECON_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_READ,
     AUTONOMOUS_TOOL_READ_MANY,
@@ -470,6 +472,12 @@ const TOOL_ACCESS_GROUP_DEFINITIONS: &[ToolAccessGroupDefinition] = &[
         risk_class: "command",
     },
     ToolAccessGroupDefinition {
+        name: "host_admin",
+        description: "Owner Admin gated host-wide commands for local workstation administration.",
+        tools: TOOL_ACCESS_HOST_ADMIN_TOOLS,
+        risk_class: "host_admin",
+    },
+    ToolAccessGroupDefinition {
         name: "process_manager",
         description: "Xero-owned process lifecycle, output, and external process observation/control surfaces.",
         tools: TOOL_ACCESS_PROCESS_MANAGER_TOOLS,
@@ -537,7 +545,7 @@ const TOOL_ACCESS_GROUP_DEFINITIONS: &[ToolAccessGroupDefinition] = &[
     },
     ToolAccessGroupDefinition {
         name: "desktop_observe",
-        description: "Observe native desktop displays, windows, apps, screenshots, cursor state, permissions, and sidecar health.",
+        description: "Observe native desktop displays, windows, apps, app inventory, screenshots, cursor state, permissions, and sidecar health.",
         tools: TOOL_ACCESS_DESKTOP_OBSERVE_TOOLS,
         risk_class: "desktop_observe",
     },
@@ -1672,6 +1680,11 @@ pub fn tool_available_on_current_host(tool: &str) -> bool {
             )) && desktop_tool_available_by_rollout(tool)
         }
         AUTONOMOUS_TOOL_POWERSHELL => cfg!(target_os = "windows"),
+        AUTONOMOUS_TOOL_HOST_COMMAND => cfg!(any(
+            target_os = "macos",
+            target_os = "windows",
+            target_os = "linux"
+        )),
         _ => true,
     }
 }
@@ -1826,6 +1839,7 @@ pub fn tool_effect_class(tool_name: &str) -> AutonomousToolEffectClass {
         | AUTONOMOUS_TOOL_COMMAND_SESSION_START
         | AUTONOMOUS_TOOL_COMMAND_SESSION_READ
         | AUTONOMOUS_TOOL_COMMAND_SESSION_STOP
+        | AUTONOMOUS_TOOL_HOST_COMMAND
         | AUTONOMOUS_TOOL_POWERSHELL => AutonomousToolEffectClass::Command,
         AUTONOMOUS_TOOL_PROCESS_MANAGER
         | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS
@@ -1884,6 +1898,7 @@ pub fn tool_allowed_for_runtime_agent(agent_id: RuntimeAgentIdDto, tool_name: &s
         AUTONOMOUS_TOOL_DESKTOP_OBSERVE
             | AUTONOMOUS_TOOL_DESKTOP_CONTROL
             | AUTONOMOUS_TOOL_DESKTOP_STREAM
+            | AUTONOMOUS_TOOL_HOST_COMMAND
     ) {
         return agent_id == RuntimeAgentIdDto::ComputerUse;
     }
@@ -2625,6 +2640,36 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             "command",
         ),
         catalog_entry(
+            AUTONOMOUS_TOOL_HOST_COMMAND,
+            "host_admin",
+            "Run a host-wide workstation administration command when local Owner Admin mode is active, with preview, approval, and audit metadata.",
+            &[
+                "command",
+                "host",
+                "admin",
+                "owner_admin",
+                "shell",
+                "powershell",
+                "brew",
+                "winget",
+                "service",
+            ],
+            &[
+                "argv",
+                "cwd",
+                "timeoutMs",
+                "preview",
+                "previewToken",
+                "reason",
+                "rollbackHints",
+            ],
+            &[
+                "Preview a package-manager command before running it in Owner Admin mode.",
+                "Run a local service-management command after owner approval.",
+            ],
+            "host_admin",
+        ),
+        catalog_entry(
             AUTONOMOUS_TOOL_COMMAND_SESSION,
             "command",
             "Start, read, or stop a repo-scoped long-running command session.",
@@ -2756,7 +2801,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
             "desktop_observe",
-            "Observe native desktop state through the Computer Use desktop broker: permissions, displays, windows, apps, foreground state, screenshots, cursor state, OCR/Accessibility placeholders, and health.",
+            "Observe native desktop state through the Computer Use desktop broker: permissions, displays, windows, apps, app inventory/launch targets, notifications, foreground state, screenshots, cursor state, OCR/Accessibility, clipboard text/HTML/RTF/image/files, browser/terminal bridge affordances, and health.",
             &[
                 "desktop",
                 "computer_use",
@@ -2774,6 +2819,8 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
                 "region",
                 "x",
                 "y",
+                "includeData",
+                "maxBytes",
             ],
             &[
                 "List displays before selecting a screenshot target.",
@@ -2784,7 +2831,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_DESKTOP_CONTROL,
             "desktop_control",
-            "Native desktop control through the Computer Use broker: pointer movement, click, drag, scroll, keyboard, text entry, app/window, Accessibility, menu, and cancel actions.",
+            "Native desktop control through the Computer Use broker: pointer movement, press-hold-release drag, click, scroll, keyboard, text entry, clipboard text/HTML/RTF/image/files, app/window, re-resolved Accessibility elements, menu, Dock/status item/file dialog helpers, and cancel actions.",
             &[
                 "desktop",
                 "computer_use",
@@ -2803,15 +2850,30 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
                 "elementId",
                 "x",
                 "y",
+                "sourceWidth",
+                "sourceHeight",
                 "toX",
                 "toY",
                 "deltaX",
                 "deltaY",
+                "width",
+                "height",
+                "includeData",
+                "maxBytes",
+                "mediaType",
+                "imageDataBase64",
+                "filePaths",
                 "button",
                 "clicks",
                 "key",
                 "keys",
                 "text",
+                "html",
+                "rtf",
+                "altText",
+                "targetLabel",
+                "selectionStart",
+                "selectionEnd",
                 "value",
                 "menuPath",
                 "reason",
@@ -2826,7 +2888,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_DESKTOP_STREAM,
             "desktop_stream",
-            "Manage Computer Use desktop streaming state, WebRTC capability negotiation, and degraded screenshot fallback metadata.",
+            "Manage Computer Use desktop streaming state, WebRTC capability negotiation/signaling, and degraded screenshot fallback metadata.",
             &[
                 "desktop",
                 "computer_use",
@@ -2845,6 +2907,9 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
                 "maxFrameRate",
                 "includeCursor",
                 "quality",
+                "iceServers",
+                "sessionDescription",
+                "iceCandidate",
             ],
             &[
                 "Check stream capability before opening the cloud desktop viewport.",
@@ -3102,6 +3167,718 @@ fn catalog_entry(
         examples,
         risk_class,
     }
+}
+
+fn computer_use_default_tool_names() -> BTreeSet<&'static str> {
+    [
+        AUTONOMOUS_TOOL_READ,
+        AUTONOMOUS_TOOL_READ_MANY,
+        AUTONOMOUS_TOOL_RESULT_PAGE,
+        AUTONOMOUS_TOOL_STAT,
+        AUTONOMOUS_TOOL_SEARCH,
+        AUTONOMOUS_TOOL_FIND,
+        AUTONOMOUS_TOOL_GIT_STATUS,
+        AUTONOMOUS_TOOL_GIT_DIFF,
+        AUTONOMOUS_TOOL_LIST_TREE,
+        AUTONOMOUS_TOOL_TOOL_ACCESS,
+        AUTONOMOUS_TOOL_TOOL_SEARCH,
+        AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+        AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+        AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+        AUTONOMOUS_TOOL_LIST,
+        AUTONOMOUS_TOOL_DIRECTORY_DIGEST,
+        AUTONOMOUS_TOOL_HASH,
+        AUTONOMOUS_TOOL_TODO,
+        AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
+        AUTONOMOUS_TOOL_DESKTOP_CONTROL,
+        AUTONOMOUS_TOOL_DESKTOP_STREAM,
+        AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+        AUTONOMOUS_TOOL_BROWSER_CONTROL,
+        AUTONOMOUS_TOOL_EMULATOR,
+        AUTONOMOUS_TOOL_MACOS_AUTOMATION,
+        AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
+    ]
+    .into_iter()
+    .collect()
+}
+
+fn computer_use_manifest_actions_for_tool(tool_name: &str) -> Vec<&'static str> {
+    match tool_name {
+        AUTONOMOUS_TOOL_DESKTOP_OBSERVE => vec![
+            "permissions_status",
+            "display_list",
+            "display_arrangement",
+            "window_list",
+            "app_list",
+            "app_inventory",
+            "notification_snapshot",
+            "foreground_state",
+            "screenshot",
+            "cursor_state",
+            "accessibility_snapshot",
+            "ocr_snapshot",
+            "element_at_point",
+            "clipboard_read_text",
+            "clipboard_read_html",
+            "clipboard_read_rtf",
+            "clipboard_read_image",
+            "clipboard_read_files",
+            "bridge_affordances",
+            "health",
+        ],
+        AUTONOMOUS_TOOL_DESKTOP_CONTROL => vec![
+            "mouse_down",
+            "mouse_move",
+            "mouse_click",
+            "mouse_double_click",
+            "mouse_right_click",
+            "mouse_drag",
+            "mouse_drag_move",
+            "mouse_up",
+            "scroll",
+            "key_press",
+            "hotkey",
+            "volume_up",
+            "volume_down",
+            "volume_mute",
+            "media_play_pause",
+            "media_next_track",
+            "media_prev_track",
+            "type_text",
+            "paste_text",
+            "clipboard_write_text",
+            "clipboard_write_html",
+            "clipboard_write_rtf",
+            "clipboard_write_image",
+            "clipboard_write_files",
+            "file_drop",
+            "focus_window",
+            "window_maximize",
+            "window_minimize",
+            "window_restore",
+            "window_move_resize",
+            "window_close",
+            "activate_app",
+            "launch_app",
+            "quit_app",
+            "ax_press",
+            "ax_set_value",
+            "ax_focus",
+            "ax_select",
+            "ax_confirm",
+            "ax_cancel",
+            "ax_increment",
+            "ax_decrement",
+            "ax_expand",
+            "ax_collapse",
+            "ax_scroll_to_visible",
+            "ax_toggle",
+            "menu_select",
+            "dock_item_press",
+            "status_item_press",
+            "file_dialog_set_path",
+            "file_dialog_confirm",
+            "cancel_current_action",
+        ],
+        AUTONOMOUS_TOOL_DESKTOP_STREAM => vec![
+            "stream_capabilities",
+            "stream_start",
+            "stream_offer",
+            "stream_answer",
+            "stream_ice_candidate",
+            "stream_stop",
+            "stream_status",
+            "stream_set_quality",
+            "stream_request_keyframe",
+        ],
+        AUTONOMOUS_TOOL_MACOS_AUTOMATION => vec![
+            "mac_permissions",
+            "mac_app_list",
+            "mac_app_launch",
+            "mac_app_activate",
+            "mac_app_quit",
+            "mac_window_list",
+            "mac_window_focus",
+            "mac_screenshot",
+        ],
+        AUTONOMOUS_TOOL_HOST_COMMAND => vec!["preview", "run"],
+        _ => Vec::new(),
+    }
+}
+
+fn computer_use_manifest_rollout_gate(tool_name: &str) -> JsonValue {
+    match tool_name {
+        AUTONOMOUS_TOOL_DESKTOP_OBSERVE
+        | AUTONOMOUS_TOOL_DESKTOP_CONTROL
+        | AUTONOMOUS_TOOL_DESKTOP_STREAM => json!({
+            "controlledBy": [
+                DESKTOP_FEATURE_MASTER_ENV,
+                desktop_tool_feature_env(tool_name).unwrap_or(DESKTOP_FEATURE_MASTER_ENV),
+                DESKTOP_FEATURE_ROLLOUT_PERCENT_ENV,
+                DESKTOP_FEATURE_ROLLOUT_ID_ENV
+            ],
+            "defaultEnabled": desktop_tool_default_enabled(),
+            "currentlyEnabled": desktop_tool_available_by_rollout(tool_name),
+        }),
+        _ => json!({
+            "controlledBy": [],
+            "defaultEnabled": true,
+            "currentlyEnabled": true,
+        }),
+    }
+}
+
+fn computer_use_manifest_platform_gate(tool_name: &str) -> JsonValue {
+    match tool_name {
+        AUTONOMOUS_TOOL_MACOS_AUTOMATION | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED => json!({
+            "supportedPlatforms": ["macos"],
+            "currentPlatformSupported": cfg!(target_os = "macos"),
+        }),
+        AUTONOMOUS_TOOL_DESKTOP_OBSERVE
+        | AUTONOMOUS_TOOL_DESKTOP_CONTROL
+        | AUTONOMOUS_TOOL_DESKTOP_STREAM => json!({
+            "supportedPlatforms": ["macos", "windows", "linux"],
+            "currentPlatformSupported": cfg!(any(target_os = "macos", target_os = "windows", target_os = "linux")),
+        }),
+        AUTONOMOUS_TOOL_POWERSHELL => json!({
+            "supportedPlatforms": ["windows"],
+            "currentPlatformSupported": cfg!(target_os = "windows"),
+        }),
+        AUTONOMOUS_TOOL_HOST_COMMAND => json!({
+            "supportedPlatforms": ["macos", "windows", "linux"],
+            "currentPlatformSupported": cfg!(any(target_os = "macos", target_os = "windows", target_os = "linux")),
+        }),
+        _ => json!({
+            "supportedPlatforms": ["macos", "windows", "linux"],
+            "currentPlatformSupported": true,
+        }),
+    }
+}
+
+fn computer_use_manifest_approval_requirement(tool_name: &str) -> &'static str {
+    match tool_name {
+        AUTONOMOUS_TOOL_DESKTOP_CONTROL => {
+            "desktop policy gate; app quit and high-risk text/actions require operator approval or denial"
+        }
+        AUTONOMOUS_TOOL_DESKTOP_STREAM => {
+            "desktop policy gate; stream start/stop and signaling are audited"
+        }
+        AUTONOMOUS_TOOL_MACOS_AUTOMATION => {
+            "macOS app quit requires operator approval; observation and app/window focus are bounded"
+        }
+        AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED => {
+            "operator approval required for privileged diagnostics"
+        }
+        AUTONOMOUS_TOOL_COMMAND_RUN
+        | AUTONOMOUS_TOOL_COMMAND_SESSION
+        | AUTONOMOUS_TOOL_POWERSHELL => {
+            "repo-scoped command policy; unsafe or mutating commands require approval"
+        }
+        AUTONOMOUS_TOOL_HOST_COMMAND => {
+            "Owner Admin mode must be locally enabled and unexpired; non-preview host commands require per-command operator approval"
+        }
+        AUTONOMOUS_TOOL_PROCESS_MANAGER => {
+            "process-control policy; external or destructive process actions require approval"
+        }
+        _ => "tool-specific safety policy",
+    }
+}
+
+fn computer_use_manifest_permission_gate(tool_name: &str) -> JsonValue {
+    match tool_name {
+        AUTONOMOUS_TOOL_DESKTOP_OBSERVE
+        | AUTONOMOUS_TOOL_DESKTOP_CONTROL
+        | AUTONOMOUS_TOOL_DESKTOP_STREAM => json!({
+            "state": "checked_by_desktop_runtime",
+            "missingReasonCode": "permission_denied",
+            "statusSource": "desktop_observe.permissions_status",
+            "requiredPermissions": [
+                "macos_screen_recording",
+                "macos_accessibility",
+                "macos_input_monitoring",
+                "windows_active_user_session",
+                "windows_notification_listener"
+            ],
+            "userAction": "Open desktop_observe with action=permissions_status for current OS permission state and remediation."
+        }),
+        AUTONOMOUS_TOOL_MACOS_AUTOMATION => json!({
+            "state": "checked_by_macos_automation_runtime",
+            "missingReasonCode": "permission_denied",
+            "statusSource": "macos_automation.mac_permissions",
+            "requiredPermissions": [
+                "macos_screen_recording",
+                "macos_accessibility"
+            ],
+            "userAction": "Open macos_automation with action=mac_permissions for current TCC state and remediation."
+        }),
+        AUTONOMOUS_TOOL_HOST_COMMAND => json!({
+            "state": "owner_admin_mode_required",
+            "missingReasonCode": "owner_admin_mode_inactive_or_expired",
+            "statusSource": "desktop_control_settings.policyProfile and ownerAdminExpiresAt",
+            "requiredPermissions": [
+                "local_owner_admin_mode",
+                "operator_approval_for_run",
+                "os_native_elevation_prompt_when_required"
+            ],
+            "userAction": "Enable local Owner Admin mode in desktop-control settings, preview high-impact commands, then approve the exact run."
+        }),
+        AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED => json!({
+            "state": "operator_approval_required",
+            "missingReasonCode": "privileged_diagnostics_approval_required",
+            "statusSource": "tool policy decision",
+            "requiredPermissions": ["operator_approval"],
+            "userAction": "Request approval before running privileged diagnostics."
+        }),
+        _ => json!({
+            "state": "not_applicable",
+            "missingReasonCode": null,
+            "statusSource": null,
+            "requiredPermissions": [],
+            "userAction": null
+        }),
+    }
+}
+
+fn computer_use_manifest_runtime_gate(
+    tool_name: &str,
+    runtime_available: bool,
+    skill_tool_enabled: bool,
+) -> JsonValue {
+    let pack_ids = domain_tool_pack_ids_for_tool(tool_name);
+    let missing_reason = if runtime_available {
+        None
+    } else if tool_name == AUTONOMOUS_TOOL_SKILL && !skill_tool_enabled {
+        Some("skill_runtime_not_enabled")
+    } else if pack_ids.iter().any(|pack_id| pack_id == "browser") {
+        Some("browser_executor_not_installed")
+    } else if pack_ids.iter().any(|pack_id| pack_id == "emulator") {
+        Some("emulator_executor_not_installed")
+    } else if pack_ids.iter().any(|pack_id| pack_id == "solana") {
+        Some("solana_executor_not_installed")
+    } else {
+        Some("runtime_executor_or_installation_unavailable")
+    };
+
+    json!({
+        "available": runtime_available,
+        "missingReasonCode": missing_reason,
+        "toolPackIds": pack_ids,
+        "statusSource": "AutonomousToolRuntime::tool_available_by_runtime"
+    })
+}
+
+fn computer_use_manifest_activation_gate(
+    active_by_default: bool,
+    available_through_tool_access: bool,
+    activation_groups: &[String],
+) -> JsonValue {
+    let state = if active_by_default {
+        "active_by_default_when_selected_by_planner"
+    } else if available_through_tool_access {
+        "requestable_through_tool_access"
+    } else {
+        "not_active_or_not_requestable"
+    };
+    let missing_reason = if active_by_default || available_through_tool_access {
+        None
+    } else {
+        Some("not_activated_or_not_requestable")
+    };
+
+    json!({
+        "state": state,
+        "missingReasonCode": missing_reason,
+        "activationGroups": activation_groups,
+        "statusSource": "tool_access.available_groups and ToolRegistrySnapshot.exposurePlan"
+    })
+}
+
+fn computer_use_manifest_provider_gate(
+    active_by_default: bool,
+    available_through_tool_access: bool,
+) -> JsonValue {
+    let eligible = active_by_default || available_through_tool_access;
+    json!({
+        "eligibleForProviderProjection": eligible,
+        "missingReasonCode": if eligible { JsonValue::Null } else { json!("provider_limit_or_projection_filter") },
+        "statusSource": "tool_access.exposure_diagnostics.traceLocation",
+        "debugSurface": "xero.tool_exposure_diagnostics.v1"
+    })
+}
+
+fn computer_use_manifest_availability_reasons(
+    allowed_by_policy: bool,
+    host_available: bool,
+    runtime_available: bool,
+    active_by_default: bool,
+    available_through_tool_access: bool,
+) -> Vec<&'static str> {
+    let mut reasons = Vec::new();
+    if !allowed_by_policy {
+        reasons.push("blocked_by_computer_use_policy");
+    }
+    if !host_available {
+        reasons.push("blocked_by_platform_or_rollout");
+    }
+    if host_available && !runtime_available {
+        reasons.push("runtime_executor_or_installation_unavailable");
+    }
+    if active_by_default {
+        reasons.push("active_by_default_when_selected_by_planner");
+    }
+    if available_through_tool_access {
+        reasons.push("requestable_through_tool_access");
+    }
+    if reasons.is_empty() {
+        reasons.push("not_active_or_not_requestable_in_current_runtime");
+    }
+    reasons
+}
+
+fn computer_use_manifest_availability_diagnostics(
+    tool_name: &str,
+    allowed_by_policy: bool,
+    host_available: bool,
+    runtime_available: bool,
+    active_by_default: bool,
+    available_through_tool_access: bool,
+    activation_groups: &[String],
+    skill_tool_enabled: bool,
+) -> JsonValue {
+    let rollout_gate = computer_use_manifest_rollout_gate(tool_name);
+    let platform_gate = computer_use_manifest_platform_gate(tool_name);
+    let availability_reasons = computer_use_manifest_availability_reasons(
+        allowed_by_policy,
+        host_available,
+        runtime_available,
+        active_by_default,
+        available_through_tool_access,
+    );
+
+    json!({
+        "schema": "xero.computer_use_tool_availability_diagnostics.v1",
+        "policy": {
+            "allowed": allowed_by_policy,
+            "missingReasonCode": if allowed_by_policy { JsonValue::Null } else { json!("blocked_by_computer_use_policy") },
+            "statusSource": "runtime agent policy"
+        },
+        "providerProjection": computer_use_manifest_provider_gate(active_by_default, available_through_tool_access),
+        "rollout": {
+            "currentlyEnabled": rollout_gate["currentlyEnabled"].clone(),
+            "controlledBy": rollout_gate["controlledBy"].clone(),
+            "missingReasonCode": if rollout_gate["currentlyEnabled"].as_bool().unwrap_or(true) { JsonValue::Null } else { json!("blocked_by_rollout_flag") },
+            "statusSource": "desktop rollout environment"
+        },
+        "platform": {
+            "currentPlatformSupported": platform_gate["currentPlatformSupported"].clone(),
+            "supportedPlatforms": platform_gate["supportedPlatforms"].clone(),
+            "missingReasonCode": if platform_gate["currentPlatformSupported"].as_bool().unwrap_or(true) { JsonValue::Null } else { json!("platform_unsupported") },
+            "statusSource": "compile-time target cfg"
+        },
+        "permission": computer_use_manifest_permission_gate(tool_name),
+        "runtime": computer_use_manifest_runtime_gate(tool_name, runtime_available, skill_tool_enabled),
+        "activation": computer_use_manifest_activation_gate(active_by_default, available_through_tool_access, activation_groups),
+        "reasonCodes": availability_reasons
+    })
+}
+
+fn workstation_control_pack_status(runtime: &AutonomousToolRuntime) -> JsonValue {
+    json!({
+        "desktopSidecar": {
+            "available": runtime.tool_available_by_runtime(AUTONOMOUS_TOOL_DESKTOP_OBSERVE)
+                || runtime.tool_available_by_runtime(AUTONOMOUS_TOOL_DESKTOP_CONTROL)
+                || runtime.tool_available_by_runtime(AUTONOMOUS_TOOL_DESKTOP_STREAM),
+            "tools": [
+                AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
+                AUTONOMOUS_TOOL_DESKTOP_CONTROL,
+                AUTONOMOUS_TOOL_DESKTOP_STREAM
+            ],
+        },
+        "browserControl": {
+            "available": runtime.tool_available_by_runtime(AUTONOMOUS_TOOL_BROWSER_OBSERVE)
+                || runtime.tool_available_by_runtime(AUTONOMOUS_TOOL_BROWSER_CONTROL),
+            "tools": [
+                AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+                AUTONOMOUS_TOOL_BROWSER_CONTROL
+            ],
+        },
+        "hostCommandAdmin": {
+            "available": runtime.tool_available_by_runtime(AUTONOMOUS_TOOL_COMMAND_RUN)
+                || runtime.tool_available_by_runtime(AUTONOMOUS_TOOL_COMMAND_SESSION)
+                || runtime.tool_available_by_runtime(AUTONOMOUS_TOOL_HOST_COMMAND)
+                || runtime.tool_available_by_runtime(AUTONOMOUS_TOOL_POWERSHELL),
+            "tools": [
+                AUTONOMOUS_TOOL_COMMAND_RUN,
+                AUTONOMOUS_TOOL_COMMAND_SESSION,
+                AUTONOMOUS_TOOL_HOST_COMMAND,
+                AUTONOMOUS_TOOL_POWERSHELL
+            ],
+            "mode": "host_command_requires_unexpired_owner_admin_mode",
+        },
+        "clipboardFileDrop": {
+            "available": runtime.tool_available_by_runtime(AUTONOMOUS_TOOL_DESKTOP_CONTROL),
+            "tools": [AUTONOMOUS_TOOL_DESKTOP_CONTROL],
+            "mode": "clipboard_read_text/html/rtf/image/files require operator approval; clipboard_write_text/html/rtf/image/files, paste_text, and file_drop are audited desktop_control actions; uncommon rich clipboard formats beyond HTML and RTF remain future work",
+        },
+        "browserTerminalBridge": {
+            "available": runtime.tool_available_by_runtime(AUTONOMOUS_TOOL_DESKTOP_OBSERVE),
+            "tools": [
+                AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
+                AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+                AUTONOMOUS_TOOL_BROWSER_CONTROL,
+                AUTONOMOUS_TOOL_COMMAND_RUN,
+                AUTONOMOUS_TOOL_COMMAND_SESSION,
+                AUTONOMOUS_TOOL_HOST_COMMAND
+            ],
+            "mode": "desktop_observe.bridge_affordances reports when focused desktop state should hand off to browser or command tools instead of pixel input",
+        },
+        "appInventory": {
+            "available": runtime.tool_available_by_runtime(AUTONOMOUS_TOOL_DESKTOP_OBSERVE),
+            "tools": [AUTONOMOUS_TOOL_DESKTOP_OBSERVE],
+            "mode": "desktop_observe.app_inventory reports installed launch targets and merges running window state when platform APIs permit it",
+        },
+        "notificationObservation": {
+            "available": runtime.tool_available_by_runtime(AUTONOMOUS_TOOL_DESKTOP_OBSERVE),
+            "tools": [AUTONOMOUS_TOOL_DESKTOP_OBSERVE],
+            "mode": "desktop_observe.notification_snapshot is approval-gated; Windows uses the UserNotificationListener when OS permission is granted, while macOS reports platform-policy diagnostics",
+        },
+        "ocrUiTree": {
+            "available": runtime.tool_available_by_runtime(AUTONOMOUS_TOOL_DESKTOP_OBSERVE),
+            "tools": [AUTONOMOUS_TOOL_DESKTOP_OBSERVE],
+            "platformNotes": "macOS exposes Accessibility and Vision OCR; Windows exposes UI Automation and Windows.Media.Ocr through the desktop sidecar when the active user profile has an OCR engine.",
+        },
+        "diagnostics": {
+            "available": runtime.tool_available_by_runtime(AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE),
+            "tools": [
+                AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
+                AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED
+            ],
+        },
+    })
+}
+
+fn workstation_capability_report_fixtures() -> JsonValue {
+    json!([
+        {
+            "platform": "macos",
+            "capabilities": [
+                "screen_capture",
+                "accessibility_tree",
+                "vision_ocr",
+                "pointer_keyboard_text",
+                "clipboard_text_html_rtf_image_files",
+                "file_drop_handoff",
+                "app_inventory_launch_targets",
+                "notification_observation_diagnostics",
+                "app_window_control",
+                "native_webrtc_stream",
+                "volume_media_keys"
+            ],
+            "permissionStates": [
+                "screen_recording_granted_or_denied",
+                "accessibility_granted_or_denied",
+                "input_monitoring_granted_or_denied"
+            ],
+            "verificationScenarios": [
+                {
+                    "id": "macos_screen_recording_denied",
+                    "category": "permission",
+                    "evidence": "permissions_status row: Screen Recording=denied; screenshot/stream actions return user-actionable permission diagnostics"
+                },
+                {
+                    "id": "macos_screen_recording_granted",
+                    "category": "permission",
+                    "evidence": "permissions_status row: Screen Recording=granted; screenshot and native WebRTC stream start can capture a display"
+                },
+                {
+                    "id": "macos_accessibility_denied",
+                    "category": "permission",
+                    "evidence": "permissions_status row: Accessibility=denied; AX actions fail with permission_accessibility_denied"
+                },
+                {
+                    "id": "macos_accessibility_granted",
+                    "category": "permission",
+                    "evidence": "permissions_status row: Accessibility=granted; accessibility_snapshot, element_at_point, and AX actions return structured results"
+                },
+                {
+                    "id": "macos_input_monitoring_denied",
+                    "category": "permission",
+                    "evidence": "permissions_status row: Input Monitoring=denied or backend diagnostic; keyboard/pointer actions return user-actionable diagnostics"
+                },
+                {
+                    "id": "macos_input_monitoring_granted",
+                    "category": "permission",
+                    "evidence": "permissions_status row: Input Monitoring=granted or not required; pointer, keyboard, paste, and media-key actions execute through the sidecar"
+                },
+                {
+                    "id": "macos_multiple_displays",
+                    "category": "hardware",
+                    "evidence": "display_arrangement reports multiple display rows, virtual bounds, primary display, scale factors, gaps, and overlaps"
+                },
+                {
+                    "id": "macos_retina_scaling",
+                    "category": "hardware",
+                    "evidence": "display_list/display_arrangement include scaleFactor > 1 and screenshot dimensions match captured pixels"
+                },
+                {
+                    "id": "macos_secure_input",
+                    "category": "os_boundary",
+                    "evidence": "keyboard/AX failure diagnostics identify secure input or protected surfaces without attempting a bypass"
+                }
+            ],
+            "knownUnavailable": [
+                "tcc_sip_secure_input_bypass",
+                "credential_prompt_bypass",
+                "uncommon_rich_clipboard_formats",
+                "notification_center_observation",
+                "spaces_mission_control_structured_automation"
+            ]
+        },
+        {
+            "platform": "windows",
+            "capabilities": [
+                "screen_capture",
+                "uia_tree",
+                "windows_media_ocr",
+                "pointer_keyboard_text",
+                "clipboard_text_html_rtf_image_files",
+                "file_drop_handoff",
+                "app_inventory_launch_targets",
+                "notification_observation_with_user_listener_permission",
+                "app_window_control",
+                "native_webrtc_stream",
+                "dxgi_output_duplication_capture",
+                "openh264_software_encoding",
+                "best_effort_cursor_overlay",
+                "screenshot_fallback_stream",
+                "volume_media_keys"
+            ],
+            "permissionStates": [
+                "screen_capture_active_user_session",
+                "desktop_input_active_user_session",
+                "uia_active_user_session",
+                "notification_listener_allowed_or_diagnostic",
+                "ocr_engine_available_or_diagnostic"
+            ],
+            "verificationScenarios": [
+                {
+                    "id": "windows_standard_user",
+                    "category": "session",
+                    "evidence": "permissions_status reports active-user-session capture/input/UIA; non-elevated apps support screenshots, OCR, UIA, pointer, keyboard, clipboard, and WebRTC stream"
+                },
+                {
+                    "id": "windows_administrator",
+                    "category": "session",
+                    "evidence": "owner-admin mode and host_command remain approval-gated; elevated OS prompts are surfaced to the local user rather than bypassed"
+                },
+                {
+                    "id": "windows_uac_prompt",
+                    "category": "os_boundary",
+                    "evidence": "secure desktop/UAC surfaces are reported as unavailable for automation; host_command asks the user to approve OS-native elevation prompts"
+                },
+                {
+                    "id": "windows_multiple_dpi_scales",
+                    "category": "hardware",
+                    "evidence": "display_list/display_arrangement report per-display scale factors; desktop_control maps sourceWidth/sourceHeight into native coordinates"
+                },
+                {
+                    "id": "windows_multiple_monitors",
+                    "category": "hardware",
+                    "evidence": "display_arrangement reports virtual bounds, primary display, gaps, overlaps, and WebRTC capture target selection by displayId"
+                },
+                {
+                    "id": "windows_rdp_session",
+                    "category": "session",
+                    "evidence": "capability report records active session capture/UIA/OCR availability or user-actionable unavailable diagnostics"
+                },
+                {
+                    "id": "windows_store_app",
+                    "category": "application",
+                    "evidence": "app_inventory includes AppsFolder launch targets; UIA snapshot/control returns structured rows or actionable unsupported diagnostics"
+                },
+                {
+                    "id": "windows_win32_app",
+                    "category": "application",
+                    "evidence": "window_list/focus/app_control work with HWND-backed windows; UIA Invoke/Value/Focus patterns operate where providers expose them"
+                },
+                {
+                    "id": "windows_electron_app",
+                    "category": "application",
+                    "evidence": "UIA snapshot/control and OCR work for Chromium/Electron controls, with browser bridge affordances when a precise browser tool is better"
+                },
+                {
+                    "id": "windows_browser_app",
+                    "category": "application",
+                    "evidence": "bridge_affordances prefers browser_observe/browser_control over pixel input for browser surfaces"
+                },
+                {
+                    "id": "windows_explorer_app",
+                    "category": "application",
+                    "evidence": "window/app inventory, UIA menus/items, file clipboard, file_drop, and dialogs helpers support Explorer-style workflows"
+                },
+                {
+                    "id": "windows_office_style_app",
+                    "category": "application",
+                    "evidence": "UIA snapshot/control, OCR, rich clipboard HTML/RTF, and file dialogs expose Office-style app workflows with unsupported-control diagnostics"
+                }
+            ],
+            "knownUnavailable": [
+                "uac_secure_desktop_bypass",
+                "credential_provider_bypass",
+                "uncommon_rich_clipboard_formats"
+            ]
+        },
+        {
+            "platform": "cross_platform_failure_modes",
+            "capabilities": [
+                "failure_diagnostics",
+                "approval_audit",
+                "emergency_stop"
+            ],
+            "permissionStates": [],
+            "verificationScenarios": [
+                {
+                    "id": "sidecar_unavailable",
+                    "category": "failure_mode",
+                    "evidence": "desktop status and tool calls return sidecar health/error rows when the sidecar cannot start or authenticate"
+                },
+                {
+                    "id": "sidecar_operation_unimplemented",
+                    "category": "failure_mode",
+                    "evidence": "unimplemented sidecar operations return sidecar_operation_unimplemented without silent coordinate fallback"
+                },
+                {
+                    "id": "screenshot_capture_denied",
+                    "category": "failure_mode",
+                    "evidence": "screenshot/capture APIs return permission diagnostics and preserve independent input-command budgeting"
+                },
+                {
+                    "id": "uia_unavailable",
+                    "category": "failure_mode",
+                    "evidence": "Windows UIA failures return desktop_windows_uia_* diagnostics and keep pointer/keyboard fallback explicit"
+                },
+                {
+                    "id": "ocr_unavailable",
+                    "category": "failure_mode",
+                    "evidence": "OCR snapshots return performed=false or desktop_windows_ocr_unavailable diagnostics when language engines are missing"
+                },
+                {
+                    "id": "stream_start_failure",
+                    "category": "failure_mode",
+                    "evidence": "stream_start failures populate stream status/fallbackReason without leaking frame bytes into audit logs"
+                },
+                {
+                    "id": "local_user_takeover",
+                    "category": "failure_mode",
+                    "evidence": "controller lock and emergency-stop tests prove local-user takeover blocks remote reacquire"
+                }
+            ],
+            "knownUnavailable": [
+                "os_security_boundary_bypass",
+                "credential_prompt_bypass"
+            ]
+        }
+    ])
 }
 
 fn solana_tool_catalog_entries() -> Vec<AutonomousToolCatalogEntry> {
@@ -4080,6 +4857,7 @@ impl AutonomousToolRuntime {
             AutonomousToolRequest::CommandSessionStop(request) => {
                 self.command_session_stop(request)
             }
+            AutonomousToolRequest::HostCommand(request) => self.host_command(request),
             AutonomousToolRequest::ProcessManager(request) => self.process_manager(request),
             AutonomousToolRequest::SystemDiagnostics(request) => self.system_diagnostics(request),
             AutonomousToolRequest::MacosAutomation(request) => self.macos_automation(request),
@@ -4234,6 +5012,9 @@ impl AutonomousToolRuntime {
             AutonomousToolRequest::CommandSessionStart(request) => {
                 self.command_session_start_with_operator_approval(request)
             }
+            AutonomousToolRequest::HostCommand(request) => {
+                self.host_command_with_operator_approval(request)
+            }
             AutonomousToolRequest::PowerShell(request) => {
                 self.powershell_with_operator_approval(request)
             }
@@ -4357,6 +5138,7 @@ impl AutonomousToolRuntime {
                 available_groups: self.available_tool_access_groups(),
                 available_tool_packs: self.available_tool_pack_manifests(),
                 tool_pack_health: self.tool_pack_health_reports(),
+                capability_manifest: Some(self.computer_use_capability_manifest()),
                 exposure_diagnostics: Some(Self::tool_access_exposure_diagnostics(None)),
                 message:
                     "Available tool groups returned. Request a group or specific tool by name."
@@ -4418,6 +5200,7 @@ impl AutonomousToolRuntime {
                     available_groups: self.available_tool_access_groups(),
                     available_tool_packs: self.available_tool_pack_manifests(),
                     tool_pack_health: self.tool_pack_health_reports(),
+                    capability_manifest: Some(self.computer_use_capability_manifest()),
                     exposure_diagnostics: Some(Self::tool_access_exposure_diagnostics(
                         request.reason.as_deref(),
                     )),
@@ -4578,6 +5361,92 @@ impl AutonomousToolRuntime {
         }
     }
 
+    fn computer_use_capability_manifest(&self) -> JsonValue {
+        let computer_use_policy = AutonomousAgentToolPolicy::from_policy_label("computer_use");
+        let default_tools = computer_use_default_tool_names();
+        let tools = deferred_tool_catalog(self.skill_tool_enabled())
+            .into_iter()
+            .map(|entry| {
+                let tool_name = entry.tool_name;
+                let allowed_by_policy = tool_allowed_for_runtime_agent_with_policy(
+                    RuntimeAgentIdDto::ComputerUse,
+                    tool_name,
+                    Some(&computer_use_policy),
+                );
+                let host_available = tool_available_on_current_host(tool_name);
+                let runtime_available = self.tool_available_by_runtime(tool_name);
+                let active_by_default =
+                    allowed_by_policy && runtime_available && default_tools.contains(&tool_name);
+                let activation_groups = tool_catalog_activation_groups(tool_name);
+                let available_through_tool_access = allowed_by_policy
+                    && runtime_available
+                    && !active_by_default
+                    && !activation_groups.is_empty();
+                let availability_diagnostics = computer_use_manifest_availability_diagnostics(
+                    tool_name,
+                    allowed_by_policy,
+                    host_available,
+                    runtime_available,
+                    active_by_default,
+                    available_through_tool_access,
+                    &activation_groups,
+                    self.skill_tool_enabled(),
+                );
+                json!({
+                    "toolName": tool_name,
+                    "group": entry.group,
+                    "description": entry.description,
+                    "riskClass": entry.risk_class,
+                    "effectClass": tool_effect_class(tool_name).as_str(),
+                    "schemaFields": entry.schema_fields,
+                    "actions": computer_use_manifest_actions_for_tool(tool_name),
+                    "toolPackIds": domain_tool_pack_ids_for_tool(tool_name),
+                    "allowedByComputerUsePolicy": allowed_by_policy,
+                    "runtimeAvailable": runtime_available,
+                    "defaultAvailability": if active_by_default { "active_by_default" } else if available_through_tool_access { "available_through_tool_access" } else { "not_available" },
+                    "toolAccessAvailability": if available_through_tool_access { "requestable" } else if active_by_default { "already_default" } else { "unavailable" },
+                    "activationGroups": activation_groups,
+                    "rolloutGate": computer_use_manifest_rollout_gate(tool_name),
+                    "platformGate": computer_use_manifest_platform_gate(tool_name),
+                    "approvalRequirement": computer_use_manifest_approval_requirement(tool_name),
+                    "availabilityReasons": computer_use_manifest_availability_reasons(
+                        allowed_by_policy,
+                        host_available,
+                        runtime_available,
+                        active_by_default,
+                        available_through_tool_access,
+                    ),
+                    "availabilityDiagnostics": availability_diagnostics,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        json!({
+            "schema": "xero.computer_use_capability_manifest.v1",
+            "generatedAt": crate::auth::now_timestamp(),
+            "host": runtime_host_metadata(),
+            "runtimeAgentId": RuntimeAgentIdDto::ComputerUse.as_str(),
+            "policyProfile": "computer_use",
+            "surfaces": {
+                "manualWebRtcControl": "Manual cloud streaming and pointer forwarding use the desktop broker but are separate from LLM-chosen Computer Use tools.",
+                "llmDrivenTools": "Computer Use chooses among repository, command, browser, desktop, diagnostics, MCP, skill, subagent, context, and domain tools exposed for the current turn.",
+            },
+            "workstationControlPack": {
+                "requiredFamilies": [
+                    "desktop_sidecar",
+                    "browser_control",
+                    "host_command_admin",
+                    "clipboard_file_drop",
+                    "ocr_ui_tree",
+                    "diagnostics"
+                ],
+                "status": workstation_control_pack_status(self),
+                "capabilityReportFixtures": workstation_capability_report_fixtures(),
+            },
+            "tools": tools,
+        })
+    }
+
     pub(super) fn active_runtime_agent_id(&self) -> RuntimeAgentIdDto {
         self.command_controls
             .as_ref()
@@ -4697,6 +5566,7 @@ pub enum AutonomousToolRequest {
     CommandSessionStart(AutonomousCommandSessionStartRequest),
     CommandSessionRead(AutonomousCommandSessionReadRequest),
     CommandSessionStop(AutonomousCommandSessionStopRequest),
+    HostCommand(AutonomousHostCommandRequest),
     ProcessManager(AutonomousProcessManagerRequest),
     SystemDiagnostics(AutonomousSystemDiagnosticsRequest),
     MacosAutomation(AutonomousMacosAutomationRequest),
@@ -4781,6 +5651,7 @@ impl AutonomousToolRequest {
             Self::CommandSessionStart(_) => AUTONOMOUS_TOOL_COMMAND_SESSION_START,
             Self::CommandSessionRead(_) => AUTONOMOUS_TOOL_COMMAND_SESSION_READ,
             Self::CommandSessionStop(_) => AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
+            Self::HostCommand(_) => AUTONOMOUS_TOOL_HOST_COMMAND,
             Self::ProcessManager(_) => AUTONOMOUS_TOOL_PROCESS_MANAGER,
             Self::SystemDiagnostics(_) => AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS,
             Self::MacosAutomation(_) => AUTONOMOUS_TOOL_MACOS_AUTOMATION,
@@ -5404,6 +6275,24 @@ pub struct AutonomousCommandSessionReadRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousCommandSessionStopRequest {
     pub session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousHostCommandRequest {
+    pub argv: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub preview: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rollback_hints: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -6806,6 +7695,8 @@ pub struct AutonomousToolAccessOutput {
     #[serde(default)]
     pub tool_pack_health: Vec<DomainToolPackHealthReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_manifest: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exposure_diagnostics: Option<JsonValue>,
     pub message: String,
 }
@@ -7329,6 +8220,8 @@ pub struct AutonomousCommandOutput {
     pub exit_code: Option<i32>,
     pub timed_out: bool,
     pub spawned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_token: Option<String>,
     pub policy: AutonomousCommandPolicyTrace,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub changed_files: Vec<RepositoryStatusEntryDto>,
@@ -7338,7 +8231,44 @@ pub struct AutonomousCommandOutput {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub suggested_next_actions: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_command_impact: Option<AutonomousHostCommandImpact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<SandboxExecutionMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousHostCommandImpact {
+    pub schema: String,
+    pub policy_profile: AutonomousCommandPolicyProfile,
+    pub requires_preview: bool,
+    pub requires_owner_approval: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_token_validated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub detected_surfaces: Vec<AutonomousHostCommandImpactSurface>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rollback_hints: Vec<String>,
+    pub elevation: AutonomousHostCommandElevationAssessment,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_admin_expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousHostCommandImpactSurface {
+    pub category: String,
+    pub evidence: String,
+    pub impact: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousHostCommandElevationAssessment {
+    pub uses_os_native_prompt: bool,
+    pub bypasses_os_protection: bool,
+    pub protected_boundaries: Vec<String>,
+    pub user_action: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -8192,6 +9122,7 @@ mod tests {
             AUTONOMOUS_TOOL_COMMAND_VERIFY,
             AUTONOMOUS_TOOL_COMMAND_RUN,
             AUTONOMOUS_TOOL_COMMAND_SESSION,
+            AUTONOMOUS_TOOL_HOST_COMMAND,
             AUTONOMOUS_TOOL_PROCESS_MANAGER,
             AUTONOMOUS_TOOL_BROWSER_OBSERVE,
             AUTONOMOUS_TOOL_BROWSER_CONTROL,
@@ -8414,6 +9345,311 @@ mod tests {
         assert!(policy.allows_subagent_role(AutonomousSubagentRole::Browser));
         assert!(policy.allows_subagent_role(AutonomousSubagentRole::Emulator));
         assert!(!policy.allows_subagent_role(AutonomousSubagentRole::AgentBuilder));
+    }
+
+    #[test]
+    fn desktop_tool_catalog_metadata_mentions_prompt_visible_runtime_fields() {
+        let control = tool_catalog_metadata_for_tool(AUTONOMOUS_TOOL_DESKTOP_CONTROL, true)
+            .expect("desktop_control catalog metadata");
+        let control_fields = control["schemaFields"]
+            .as_array()
+            .expect("control schema fields")
+            .iter()
+            .filter_map(JsonValue::as_str)
+            .collect::<Vec<_>>();
+        for field in [
+            "sourceWidth",
+            "sourceHeight",
+            "mediaType",
+            "imageDataBase64",
+            "filePaths",
+            "html",
+            "rtf",
+            "altText",
+            "targetLabel",
+            "selectionStart",
+            "selectionEnd",
+        ] {
+            assert!(
+                control_fields.contains(&field),
+                "desktop_control catalog metadata must mention {field}"
+            );
+        }
+
+        let stream = tool_catalog_metadata_for_tool(AUTONOMOUS_TOOL_DESKTOP_STREAM, true)
+            .expect("desktop_stream catalog metadata");
+        let stream_fields = stream["schemaFields"]
+            .as_array()
+            .expect("stream schema fields")
+            .iter()
+            .filter_map(JsonValue::as_str)
+            .collect::<Vec<_>>();
+        for field in ["iceServers", "sessionDescription", "iceCandidate"] {
+            assert!(
+                stream_fields.contains(&field),
+                "desktop_stream catalog metadata must mention {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_access_list_returns_computer_use_capability_manifest() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let runtime = AutonomousToolRuntime::new(tempdir.path()).expect("runtime");
+        let result = runtime
+            .tool_access(AutonomousToolAccessRequest {
+                action: AutonomousToolAccessAction::List,
+                groups: Vec::new(),
+                tools: Vec::new(),
+                reason: None,
+            })
+            .expect("tool access list");
+        let AutonomousToolOutput::ToolAccess(output) = result.output else {
+            panic!("unexpected output");
+        };
+        let manifest = output
+            .capability_manifest
+            .expect("Computer Use capability manifest");
+
+        assert_eq!(
+            manifest["schema"],
+            json!("xero.computer_use_capability_manifest.v1")
+        );
+        assert_eq!(manifest["runtimeAgentId"], json!("computer_use"));
+        let capability_fixtures = manifest["workstationControlPack"]["capabilityReportFixtures"]
+            .as_array()
+            .expect("platform capability report fixtures");
+        assert!(
+            capability_fixtures
+                .iter()
+                .any(|fixture| fixture["platform"] == "windows"
+                    && fixture["capabilities"].as_array().is_some_and(|items| items
+                        .contains(&json!("native_webrtc_stream"))
+                        && items.contains(&json!("dxgi_output_duplication_capture"))
+                        && items.contains(&json!("openh264_software_encoding"))
+                        && items.contains(&json!("best_effort_cursor_overlay")))),
+            "manifest should include a Windows native WebRTC capability report fixture"
+        );
+        assert!(
+            capability_fixtures
+                .iter()
+                .any(|fixture| fixture["platform"] == "macos"
+                    && fixture["capabilities"]
+                        .as_array()
+                        .is_some_and(|items| items.contains(&json!("native_webrtc_stream")))),
+            "manifest should include a macOS capability report fixture"
+        );
+        let scenario_ids = |fixture: &JsonValue| {
+            fixture["verificationScenarios"]
+                .as_array()
+                .expect("verification scenarios")
+                .iter()
+                .filter_map(|scenario| scenario["id"].as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        };
+        let macos_fixture = capability_fixtures
+            .iter()
+            .find(|fixture| fixture["platform"] == "macos")
+            .expect("macOS capability fixture");
+        let macos_scenarios = scenario_ids(macos_fixture);
+        for scenario in [
+            "macos_screen_recording_denied",
+            "macos_screen_recording_granted",
+            "macos_accessibility_denied",
+            "macos_accessibility_granted",
+            "macos_input_monitoring_denied",
+            "macos_input_monitoring_granted",
+            "macos_multiple_displays",
+            "macos_retina_scaling",
+            "macos_secure_input",
+        ] {
+            assert!(
+                macos_scenarios.iter().any(|observed| observed == scenario),
+                "macOS verification matrix should include {scenario}"
+            );
+        }
+        let windows_fixture = capability_fixtures
+            .iter()
+            .find(|fixture| fixture["platform"] == "windows")
+            .expect("Windows capability fixture");
+        let windows_scenarios = scenario_ids(windows_fixture);
+        for scenario in [
+            "windows_standard_user",
+            "windows_administrator",
+            "windows_uac_prompt",
+            "windows_multiple_dpi_scales",
+            "windows_multiple_monitors",
+            "windows_rdp_session",
+            "windows_store_app",
+            "windows_win32_app",
+            "windows_electron_app",
+            "windows_browser_app",
+            "windows_explorer_app",
+            "windows_office_style_app",
+        ] {
+            assert!(
+                windows_scenarios
+                    .iter()
+                    .any(|observed| observed == scenario),
+                "Windows verification matrix should include {scenario}"
+            );
+        }
+        let failure_fixture = capability_fixtures
+            .iter()
+            .find(|fixture| fixture["platform"] == "cross_platform_failure_modes")
+            .expect("cross-platform failure mode fixture");
+        let failure_scenarios = scenario_ids(failure_fixture);
+        for scenario in [
+            "sidecar_unavailable",
+            "sidecar_operation_unimplemented",
+            "screenshot_capture_denied",
+            "uia_unavailable",
+            "ocr_unavailable",
+            "stream_start_failure",
+            "local_user_takeover",
+        ] {
+            assert!(
+                failure_scenarios
+                    .iter()
+                    .any(|observed| observed == scenario),
+                "failure-mode verification matrix should include {scenario}"
+            );
+        }
+        let tools = manifest["tools"].as_array().expect("manifest tools");
+        let desktop_observe = tools
+            .iter()
+            .find(|tool| tool["toolName"] == AUTONOMOUS_TOOL_DESKTOP_OBSERVE)
+            .expect("desktop_observe manifest row");
+        let observe_actions = desktop_observe["actions"]
+            .as_array()
+            .expect("desktop_observe actions")
+            .iter()
+            .filter_map(JsonValue::as_str)
+            .collect::<Vec<_>>();
+        assert!(
+            observe_actions.contains(&"clipboard_read_text"),
+            "manifest should expose approval-gated clipboard read"
+        );
+        assert!(
+            observe_actions.contains(&"clipboard_read_html"),
+            "manifest should expose approval-gated rich clipboard read"
+        );
+        assert!(
+            observe_actions.contains(&"clipboard_read_rtf"),
+            "manifest should expose approval-gated RTF clipboard read"
+        );
+        assert!(
+            observe_actions.contains(&"display_arrangement"),
+            "manifest should expose prompt-visible display layout diagnostics"
+        );
+        assert!(
+            observe_actions.contains(&"app_inventory"),
+            "manifest should expose launch-target app inventory"
+        );
+        assert!(
+            observe_actions.contains(&"notification_snapshot"),
+            "manifest should expose approval-gated notification observation"
+        );
+        assert!(
+            observe_actions.contains(&"bridge_affordances"),
+            "manifest should expose browser/terminal bridge affordances"
+        );
+        assert!(
+            observe_actions.contains(&"clipboard_read_image")
+                && observe_actions.contains(&"clipboard_read_files"),
+            "manifest should expose approval-gated clipboard resource reads"
+        );
+        let desktop_control = tools
+            .iter()
+            .find(|tool| tool["toolName"] == AUTONOMOUS_TOOL_DESKTOP_CONTROL)
+            .expect("desktop_control manifest row");
+        let actions = desktop_control["actions"]
+            .as_array()
+            .expect("desktop_control actions")
+            .iter()
+            .filter_map(JsonValue::as_str)
+            .collect::<Vec<_>>();
+        for action in [
+            "mouse_down",
+            "mouse_drag_move",
+            "mouse_up",
+            "volume_up",
+            "volume_down",
+            "volume_mute",
+            "media_play_pause",
+            "media_next_track",
+            "media_prev_track",
+            "ax_select",
+            "ax_confirm",
+            "ax_cancel",
+            "ax_increment",
+            "ax_decrement",
+            "ax_expand",
+            "ax_collapse",
+            "ax_scroll_to_visible",
+            "ax_toggle",
+            "clipboard_write_text",
+            "clipboard_write_html",
+            "clipboard_write_rtf",
+            "clipboard_write_image",
+            "clipboard_write_files",
+            "file_drop",
+            "window_maximize",
+            "window_minimize",
+            "window_restore",
+            "window_move_resize",
+            "window_close",
+            "dock_item_press",
+            "status_item_press",
+            "file_dialog_set_path",
+            "file_dialog_confirm",
+        ] {
+            assert!(
+                actions.contains(&action),
+                "manifest should expose desktop_control action {action}"
+            );
+        }
+        assert!(
+            desktop_control["availabilityReasons"].is_array(),
+            "manifest rows should carry availability diagnostics"
+        );
+        assert_eq!(
+            desktop_control["availabilityDiagnostics"]["schema"],
+            json!("xero.computer_use_tool_availability_diagnostics.v1")
+        );
+        for gate in [
+            "policy",
+            "providerProjection",
+            "rollout",
+            "platform",
+            "permission",
+            "runtime",
+            "activation",
+        ] {
+            assert!(
+                desktop_control["availabilityDiagnostics"][gate].is_object(),
+                "manifest availability diagnostics should expose {gate} gate"
+            );
+        }
+        assert_eq!(
+            desktop_control["availabilityDiagnostics"]["permission"]["missingReasonCode"],
+            json!("permission_denied"),
+            "desktop tools should point developers to permission-denied diagnostics"
+        );
+        assert_eq!(
+            desktop_control["availabilityDiagnostics"]["providerProjection"]["debugSurface"],
+            json!("xero.tool_exposure_diagnostics.v1"),
+            "manifest should link provider projection diagnostics to the visible debug surface"
+        );
+        let powershell = tools
+            .iter()
+            .find(|tool| tool["toolName"] == AUTONOMOUS_TOOL_POWERSHELL)
+            .expect("powershell manifest row");
+        assert_eq!(
+            powershell["availabilityDiagnostics"]["platform"]["missingReasonCode"],
+            json!("platform_unsupported"),
+            "unsupported host platform should be an explicit diagnostic, not folded into rollout"
+        );
     }
 
     #[test]

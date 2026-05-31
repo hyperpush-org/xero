@@ -8,6 +8,7 @@ import {
   Loader2,
   ListTree,
 } from 'lucide-react'
+import { BaseDialog } from '@xero/ui/components/base-dialog'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -19,8 +20,6 @@ import {
   CommandList,
 } from '@/components/ui/command'
 import {
-  Dialog,
-  DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
@@ -88,20 +87,27 @@ export function EditorNavigationDialog({
         : 'Quick open'
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        className="overflow-hidden p-0 sm:max-w-2xl"
-        onCloseAutoFocus={(event) => {
+    <BaseDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      variant="custom"
+      title={title}
+      contentClassName="overflow-hidden p-0 sm:max-w-2xl"
+      contentProps={{
+        onCloseAutoFocus: (event) => {
           if (onCloseFocus) {
             event.preventDefault()
             onCloseFocus()
           }
-        }}
-      >
+        },
+      }}
+      header={
         <DialogHeader className="sr-only">
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>Navigate inside the current project.</DialogDescription>
         </DialogHeader>
+      }
+    >
         {mode === 'go-line' ? (
           <GoToLineSurface
             activeLineCount={activeLineCount}
@@ -135,8 +141,7 @@ export function EditorNavigationDialog({
             truncated={fileIndexTruncated}
           />
         )}
-      </DialogContent>
-    </Dialog>
+    </BaseDialog>
   )
 }
 

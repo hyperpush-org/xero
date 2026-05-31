@@ -17,6 +17,7 @@ import {
   X,
   XCircle,
 } from "lucide-react"
+import { BaseDialog } from "@xero/ui/components/base-dialog"
 import type {
   DoctorReportRunStatus,
   OperatorActionErrorView,
@@ -48,14 +49,6 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -776,14 +769,58 @@ function AddToolDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={close}>
-      <DialogContent className="max-w-md gap-4 rounded-lg p-5">
-        <DialogHeader className="gap-1.5">
-          <DialogTitle className="text-[15px] font-semibold tracking-tight">Add developer tool</DialogTitle>
-          <DialogDescription className="text-[12.5px] leading-[1.55]">
-            Xero will run <span className="font-mono text-foreground">{consentCommand}</span> to verify the tool. The first non-empty line of output with secrets redacted is stored as the version.
-          </DialogDescription>
-        </DialogHeader>
+    <BaseDialog
+      open={open}
+      onOpenChange={close}
+      variant="form"
+      title="Add developer tool"
+      description={
+        <>
+          Xero will run <span className="font-mono text-foreground">{consentCommand}</span> to verify the tool. The first non-empty line of output with secrets redacted is stored as the version.
+        </>
+      }
+      contentClassName="max-w-md gap-4 rounded-lg p-5"
+      headerClassName="gap-1.5"
+      titleClassName="text-[15px] font-semibold tracking-tight"
+      descriptionClassName="text-[12.5px] leading-[1.55]"
+      footerClassName="gap-2 sm:justify-between"
+      footer={
+        <>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-9 gap-1.5 text-[12.5px]"
+            disabled={!onVerify || isVerifying || isSaving}
+            onClick={verify}
+          >
+            {isVerifying ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+            Verify
+          </Button>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-9 text-[12.5px]"
+              onClick={() => close(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="h-9 gap-1.5 text-[12.5px]"
+              disabled={!canSave}
+              onClick={save}
+            >
+              {isSaving ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+              Save
+            </Button>
+          </div>
+        </>
+      }
+    >
 
         <div className="grid gap-3">
           <FieldRow label="Tool name">
@@ -830,43 +867,7 @@ function AddToolDialog({
         </div>
 
         <VerifyResult result={verification} error={formError} command={command.trim()} />
-
-        <DialogFooter className="gap-2 sm:justify-between">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-9 gap-1.5 text-[12.5px]"
-            disabled={!onVerify || isVerifying || isSaving}
-            onClick={verify}
-          >
-            {isVerifying ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
-            Verify
-          </Button>
-          <div className="flex gap-2">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-9 text-[12.5px]"
-              onClick={() => close(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              className="h-9 gap-1.5 text-[12.5px]"
-              disabled={!canSave}
-              onClick={save}
-            >
-              {isSaving ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-              Save
-            </Button>
-          </div>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    </BaseDialog>
   )
 }
 

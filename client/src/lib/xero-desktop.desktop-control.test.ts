@@ -48,6 +48,7 @@ describe('XeroDesktopAdapter desktop control', () => {
         screenshot: true,
         windowList: true,
         appList: true,
+        notificationObservation: true,
         foregroundState: true,
         cursorState: true,
         accessibilitySnapshot: true,
@@ -97,6 +98,8 @@ describe('XeroDesktopAdapter desktop control', () => {
       settings: {
         cloudStreamingEnabled: false,
         manualCloudControlEnabled: false,
+        policyProfile: 'default_safe',
+        ownerAdminExpiresAt: null,
         updatedAt: null,
       },
       auditLogPath: '/tmp/xero/desktop-control/audit.jsonl',
@@ -222,6 +225,7 @@ function makeDesktopControlStatus(overrides: Record<string, unknown> = {}) {
       screenshot: true,
       windowList: true,
       appList: true,
+      notificationObservation: true,
       foregroundState: true,
       cursorState: true,
       accessibilitySnapshot: true,
@@ -258,6 +262,8 @@ function makeDesktopControlStatus(overrides: Record<string, unknown> = {}) {
     settings: {
       cloudStreamingEnabled: false,
       manualCloudControlEnabled: false,
+      policyProfile: 'default_safe',
+      ownerAdminExpiresAt: null,
       updatedAt: null,
     },
     auditLogPath: '/tmp/xero/desktop-control/audit.jsonl',

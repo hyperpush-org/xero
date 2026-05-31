@@ -12,6 +12,7 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react'
+import { BaseAlertDialog } from '@xero/ui/components/base-dialog'
 import type {
   AgentPaneView,
   OperatorActionErrorView,
@@ -32,17 +33,6 @@ import {
   type UpdateProjectSkillSourceRequestDto,
   type UpsertSkillLocalRootRequestDto,
 } from '@/src/lib/xero-model'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -782,8 +772,17 @@ function SkillRow({
             }}
           />
           {removable ? (
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
+            <BaseAlertDialog
+              variant="destructive-confirmation"
+              title="Remove installed skill"
+              description={
+                <>
+                  {entry.name} will be removed from this project. Discoverable source metadata will remain visible if the source is still enabled.
+                </>
+              }
+              titleClassName="text-[15px] font-semibold tracking-tight"
+              descriptionClassName="text-[12.5px] leading-[1.55]"
+              trigger={
                 <Button
                   type="button"
                   variant="ghost"
@@ -794,30 +793,20 @@ function SkillRow({
                 >
                   <Trash2 className="h-4 w-4" />
                 </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle className="text-[15px] font-semibold tracking-tight">Remove installed skill</AlertDialogTitle>
-                  <AlertDialogDescription className="text-[12.5px] leading-[1.55]">
-                    {entry.name} will be removed from this project. Discoverable source metadata will remain visible if the source is still enabled.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                  <AlertDialogAction
-                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                    onClick={() => {
-                      if (!projectId) {
-                        return
-                      }
-                      void onRemoveSkill?.({ projectId, sourceId: entry.sourceId }).catch(() => undefined)
-                    }}
-                  >
-                    Remove
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
+              }
+              cancelAction={{ label: 'Cancel' }}
+              action={{
+                label: 'Remove',
+                className: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
+                destructive: false,
+                onClick: () => {
+                  if (!projectId) {
+                    return
+                  }
+                  void onRemoveSkill?.({ projectId, sourceId: entry.sourceId }).catch(() => undefined)
+                },
+              }}
+            />
           ) : null}
         </div>
       </div>

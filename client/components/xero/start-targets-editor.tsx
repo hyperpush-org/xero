@@ -2,17 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react"
 import { Globe2, Loader2, Plus, Save, Sparkles, Trash2 } from "lucide-react"
+import { BaseAlertDialog } from "@xero/ui/components/base-dialog"
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
@@ -576,36 +567,31 @@ export function StartTargetsEditor({
         </Button>
       </div>
 
-      <AlertDialog
+      <BaseAlertDialog
         open={pendingSuggestion !== null}
         onOpenChange={(open) => {
           if (!open) setPendingSuggestion(null)
         }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Replace current targets?</AlertDialogTitle>
-            <AlertDialogDescription>
+        variant="confirmation"
+        title="Replace current targets?"
+        description={
+          <>
               AI suggested {pendingSuggestion?.length ?? 0} target
               {pendingSuggestion?.length === 1 ? "" : "s"}. This will replace
               your unsaved changes.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Keep current</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                if (pendingSuggestion) {
-                  replaceRowsWithSuggestion(pendingSuggestion)
-                }
-                setPendingSuggestion(null)
-              }}
-            >
-              Replace
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+          </>
+        }
+        cancelAction={{ label: "Keep current" }}
+        action={{
+          label: "Replace",
+          onClick: () => {
+            if (pendingSuggestion) {
+              replaceRowsWithSuggestion(pendingSuggestion)
+            }
+            setPendingSuggestion(null)
+          },
+        }}
+      />
     </div>
   )
 }

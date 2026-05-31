@@ -10,6 +10,7 @@ import {
   ShieldAlert,
   Trash2,
 } from 'lucide-react'
+import { BaseAlertDialog } from '@xero/ui/components/base-dialog'
 import type {
   AgentPaneView,
   OperatorActionErrorView,
@@ -28,17 +29,6 @@ import {
   type SkillRegistryDto,
   type UpsertPluginRootRequestDto,
 } from '@/src/lib/xero-model'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -530,8 +520,15 @@ function PluginRow({
               void onSetPluginEnabled?.({ projectId, pluginId: plugin.pluginId, enabled }).catch(() => undefined)
             }}
           />
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
+          <BaseAlertDialog
+            variant="destructive-confirmation"
+            title="Remove plugin"
+            description={
+              <>
+                {plugin.name} will be marked unavailable for this project. Its contributed skills and commands will stop loading.
+              </>
+            }
+            trigger={
               <Button
                 type="button"
                 variant="ghost"
@@ -542,30 +539,20 @@ function PluginRow({
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Remove plugin</AlertDialogTitle>
-                <AlertDialogDescription>
-                  {plugin.name} will be marked unavailable for this project. Its contributed skills and commands will stop loading.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction
-                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                  onClick={() => {
-                    if (!projectId) {
-                      return
-                    }
-                    void onRemovePlugin?.({ projectId, pluginId: plugin.pluginId }).catch(() => undefined)
-                  }}
-                >
-                  Remove
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+            }
+            cancelAction={{ label: 'Cancel' }}
+            action={{
+              label: 'Remove',
+              className: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
+              destructive: false,
+              onClick: () => {
+                if (!projectId) {
+                  return
+                }
+                void onRemovePlugin?.({ projectId, pluginId: plugin.pluginId }).catch(() => undefined)
+              },
+            }}
+          />
         </div>
       </div>
 

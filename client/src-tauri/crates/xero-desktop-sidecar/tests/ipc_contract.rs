@@ -176,14 +176,18 @@ fn sidecar_ipc_handles_authenticated_capabilities_and_stream_fallback() {
             .expect("stream capabilities payload"),
     )
     .expect("decode stream capabilities");
-    assert_eq!(stream_capabilities.webrtc_stream, cfg!(target_os = "macos"));
+    let native_webrtc_stream_available = cfg!(any(target_os = "macos", target_os = "windows"));
+    assert_eq!(
+        stream_capabilities.webrtc_stream,
+        native_webrtc_stream_available
+    );
     assert_eq!(
         stream_capabilities.native_video_track,
-        cfg!(target_os = "macos")
+        native_webrtc_stream_available
     );
     assert_eq!(
         stream_capabilities.preferred_codec.as_deref(),
-        Some("video/H264")
+        native_webrtc_stream_available.then_some("video/H264")
     );
 
     let stream_start_response = sidecar.request(
@@ -198,7 +202,7 @@ fn sidecar_ipc_handles_authenticated_capabilities_and_stream_fallback() {
             "quality": "balanced"
         }),
     );
-    if !cfg!(target_os = "macos") {
+    if !native_webrtc_stream_available {
         assert!(
             !stream_start_response.ok,
             "unsupported host should reject native stream start"

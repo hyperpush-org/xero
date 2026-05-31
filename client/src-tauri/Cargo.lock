@@ -11959,6 +11959,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "objc2-vision",
+ "openh264",
  "screencapturekit",
  "serde",
  "serde_json",
@@ -11966,6 +11967,7 @@ dependencies = [
  "tokio",
  "videotoolbox",
  "webrtc",
+ "windows 0.54.0",
  "xcap",
  "xero-desktop-control-ipc",
 ]

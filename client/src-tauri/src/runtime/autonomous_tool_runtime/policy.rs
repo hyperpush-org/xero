@@ -14,7 +14,8 @@ use super::{
     AutonomousSafetyPolicyAction, AutonomousSafetyPolicyDecision,
     AutonomousSystemDiagnosticsAction, AutonomousSystemDiagnosticsPolicyTrace,
     AutonomousToolRequest, AutonomousToolRuntime, AutonomousWorkflowDefinitionAction,
-    AUTONOMOUS_TOOL_COMMAND_PROBE, AUTONOMOUS_TOOL_COMMAND_VERIFY, DEFAULT_COMMAND_TIMEOUT_MS,
+    AUTONOMOUS_TOOL_COMMAND_PROBE, AUTONOMOUS_TOOL_COMMAND_VERIFY, AUTONOMOUS_TOOL_HOST_COMMAND,
+    DEFAULT_COMMAND_TIMEOUT_MS,
 };
 use crate::commands::{
     validate_non_empty, CommandError, CommandErrorClass, CommandResult, RuntimeRunApprovalModeDto,
@@ -365,6 +366,21 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
                     | AutonomousDesktopObserveAction::AccessibilitySnapshot
                     | AutonomousDesktopObserveAction::OcrSnapshot
                     | AutonomousDesktopObserveAction::ElementAtPoint
+                    | AutonomousDesktopObserveAction::ClipboardReadText
+                    | AutonomousDesktopObserveAction::ClipboardReadHtml
+                    | AutonomousDesktopObserveAction::ClipboardReadRtf
+                    | AutonomousDesktopObserveAction::ClipboardReadImage
+                    | AutonomousDesktopObserveAction::ClipboardReadFiles
+                    | AutonomousDesktopObserveAction::NotificationSnapshot
+            );
+            let requires_approval = matches!(
+                request.action,
+                AutonomousDesktopObserveAction::ClipboardReadText
+                    | AutonomousDesktopObserveAction::ClipboardReadHtml
+                    | AutonomousDesktopObserveAction::ClipboardReadRtf
+                    | AutonomousDesktopObserveAction::ClipboardReadImage
+                    | AutonomousDesktopObserveAction::ClipboardReadFiles
+                    | AutonomousDesktopObserveAction::NotificationSnapshot
             );
             SafetyPolicyMetadata {
                 risk_class: if sensitive {
@@ -376,9 +392,17 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
                 credential_sensitivity: if sensitive { "possible" } else { "low" },
                 os_target: Some("desktop"),
                 prior_observation_required: false,
-                requires_approval: false,
-                require_approval_code: "policy_allows_desktop_observe",
-                require_approval_reason: "Desktop observation is read-only and does not require operator approval.",
+                requires_approval,
+                require_approval_code: if requires_approval {
+                    "policy_requires_approval_sensitive_desktop_observe"
+                } else {
+                    "policy_allows_desktop_observe"
+                },
+                require_approval_reason: if requires_approval {
+                    "Reading system clipboard or notification content can expose sensitive local data and requires operator approval."
+                } else {
+                    "Desktop observation is read-only and does not require operator approval."
+                },
             }
         }
         AutonomousToolRequest::DesktopControl(request) => {
@@ -406,7 +430,7 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
                     "policy_allows_non_destructive_desktop_control"
                 },
                 require_approval_reason: if requires_approval {
-                    "Quitting an app can lose unsaved work and requires operator approval."
+                    "This desktop action can affect apps or expose local resources and requires operator approval."
                 } else {
                     "Non-destructive desktop control does not require operator approval."
                 },
@@ -435,6 +459,17 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
             requires_approval: false,
             require_approval_code: "policy_requires_approval_command",
             require_approval_reason: "The command policy requires operator approval.",
+        },
+        AutonomousToolRequest::HostCommand(_) => SafetyPolicyMetadata {
+            risk_class: "host_admin",
+            network_intent: "command_dependent",
+            credential_sensitivity: "possible",
+            os_target: Some("host"),
+            prior_observation_required: false,
+            requires_approval: true,
+            require_approval_code: "policy_requires_approval_host_command",
+            require_approval_reason:
+                "Host administration requires local Owner Admin mode and per-command approval.",
         },
         AutonomousToolRequest::ProcessManager(request) => {
             let trace = process_manager_policy_trace(
@@ -608,7 +643,16 @@ fn macos_automation_risk_class(action: AutonomousMacosAutomationAction) -> &'sta
 }
 
 fn desktop_control_action_requires_approval(action: &AutonomousDesktopControlAction) -> bool {
-    matches!(action, AutonomousDesktopControlAction::QuitApp)
+    matches!(
+        action,
+        AutonomousDesktopControlAction::QuitApp
+            | AutonomousDesktopControlAction::WindowClose
+            | AutonomousDesktopControlAction::ClipboardWriteHtml
+            | AutonomousDesktopControlAction::ClipboardWriteRtf
+            | AutonomousDesktopControlAction::ClipboardWriteImage
+            | AutonomousDesktopControlAction::ClipboardWriteFiles
+            | AutonomousDesktopControlAction::FileDrop
+    )
 }
 
 fn project_context_action_mutates_app_state(request: &AutonomousToolRequest) -> bool {
@@ -671,6 +715,30 @@ fn command_family_policy_decision(
     tool_name: &str,
     request: &AutonomousToolRequest,
 ) -> CommandResult<Option<(AutonomousSafetyPolicyAction, String, String)>> {
+    if tool_name == AUTONOMOUS_TOOL_HOST_COMMAND {
+        let AutonomousToolRequest::HostCommand(request) = request else {
+            return Ok(None);
+        };
+        let mode = runtime.owner_admin_mode_status();
+        if !mode.active {
+            return Ok(Some((
+                AutonomousSafetyPolicyAction::Deny,
+                "policy_denied_owner_admin_mode_inactive".into(),
+                format!(
+                    "Xero denied host_command because local Owner Admin mode is not active: {}",
+                    mode.reason
+                ),
+            )));
+        }
+        let policy = runtime.host_command_policy_trace(request, &mode)?;
+        let action = if policy.outcome == AutonomousCommandPolicyOutcome::Allowed {
+            AutonomousSafetyPolicyAction::Allow
+        } else {
+            AutonomousSafetyPolicyAction::RequireApproval
+        };
+        return Ok(Some((action, policy.code, policy.reason)));
+    }
+
     let command_request = match request {
         AutonomousToolRequest::Command(request) => Some(request.clone()),
         AutonomousToolRequest::CommandSessionStart(request) => Some(AutonomousCommandRequest {
@@ -1792,6 +1860,7 @@ mod tests {
     use crate::commands::{
         RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto, RuntimeRunControlStateDto,
     };
+    use crate::runtime::AutonomousToolOutput;
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -1991,6 +2060,8 @@ mod tests {
                         region: None,
                         x: None,
                         y: None,
+                        include_data: None,
+                        max_bytes: None,
                     },
                 ),
             ),
@@ -2068,11 +2139,24 @@ mod tests {
                         to_y: None,
                         delta_x: None,
                         delta_y: None,
+                        width: None,
+                        height: None,
+                        include_data: None,
+                        max_bytes: None,
+                        media_type: None,
+                        image_data_base64: None,
+                        file_paths: Vec::new(),
                         button: None,
                         clicks: None,
                         key: None,
                         keys: Vec::new(),
                         text: None,
+                        html: None,
+                        rtf: None,
+                        alt_text: None,
+                        target_label: None,
+                        selection_start: None,
+                        selection_end: None,
                         value: None,
                         menu_path: Vec::new(),
                         reason: None,
@@ -2158,6 +2242,300 @@ mod tests {
             .expect("verify policy");
 
         assert_eq!(verify_decision.action, AutonomousSafetyPolicyAction::Allow);
+    }
+
+    #[test]
+    fn host_command_denied_until_owner_admin_mode_is_active() {
+        let tempdir = tempdir().expect("tempdir");
+        let app_data = tempdir.path();
+        let repo_root = app_data.join("computer-use");
+        fs::create_dir_all(&repo_root).expect("repo");
+        fs::create_dir_all(app_data.join("desktop-control")).expect("settings dir");
+        fs::write(
+            app_data.join("desktop-control").join("settings.json"),
+            r#"{"cloudStreamingEnabled":false,"manualCloudControlEnabled":false,"policyProfile":"default_safe","ownerAdminExpiresAt":null,"updatedAt":null}"#,
+        )
+        .expect("settings");
+        let runtime = test_runtime_for_agent(
+            &repo_root,
+            RuntimeRunApprovalModeDto::Yolo,
+            RuntimeAgentIdDto::ComputerUse,
+        );
+        let request =
+            AutonomousToolRequest::HostCommand(super::super::AutonomousHostCommandRequest {
+                argv: vec!["echo".into(), "hello".into()],
+                cwd: Some(app_data.to_string_lossy().into_owned()),
+                timeout_ms: Some(1_000),
+                preview: true,
+                preview_token: None,
+                reason: Some("check owner admin gate".into()),
+                rollback_hints: Vec::new(),
+            });
+
+        let decision = runtime
+            .evaluate_safety_policy(
+                AUTONOMOUS_TOOL_HOST_COMMAND,
+                &json!({}),
+                &request,
+                false,
+                "input",
+            )
+            .expect("decision");
+
+        assert_eq!(decision.action, AutonomousSafetyPolicyAction::Deny);
+        assert_eq!(decision.code, "policy_denied_owner_admin_mode_inactive");
+    }
+
+    #[test]
+    fn host_command_preview_allowed_when_owner_admin_mode_is_active() {
+        let tempdir = tempdir().expect("tempdir");
+        let app_data = tempdir.path();
+        let repo_root = app_data.join("computer-use");
+        fs::create_dir_all(&repo_root).expect("repo");
+        fs::create_dir_all(app_data.join("desktop-control")).expect("settings dir");
+        fs::write(
+            app_data.join("desktop-control").join("settings.json"),
+            r#"{"cloudStreamingEnabled":false,"manualCloudControlEnabled":false,"policyProfile":"owner_admin","ownerAdminExpiresAt":"2999-01-01T00:00:00Z","updatedAt":null}"#,
+        )
+        .expect("settings");
+        let runtime = test_runtime_for_agent(
+            &repo_root,
+            RuntimeRunApprovalModeDto::Yolo,
+            RuntimeAgentIdDto::ComputerUse,
+        );
+        let request =
+            AutonomousToolRequest::HostCommand(super::super::AutonomousHostCommandRequest {
+                argv: vec!["echo".into(), "hello".into()],
+                cwd: Some(app_data.to_string_lossy().into_owned()),
+                timeout_ms: Some(1_000),
+                preview: true,
+                preview_token: None,
+                reason: Some("preview host command".into()),
+                rollback_hints: Vec::new(),
+            });
+
+        let decision = runtime
+            .evaluate_safety_policy(
+                AUTONOMOUS_TOOL_HOST_COMMAND,
+                &json!({}),
+                &request,
+                false,
+                "input",
+            )
+            .expect("decision");
+
+        assert_eq!(decision.action, AutonomousSafetyPolicyAction::Allow);
+        assert_eq!(decision.code, "policy_allowed_host_command_preview");
+    }
+
+    #[test]
+    fn high_impact_host_command_requires_preview_token_before_approval() {
+        let tempdir = tempdir().expect("tempdir");
+        let app_data = tempdir.path();
+        let repo_root = app_data.join("computer-use");
+        fs::create_dir_all(&repo_root).expect("repo");
+        fs::create_dir_all(app_data.join("desktop-control")).expect("settings dir");
+        fs::write(
+            app_data.join("desktop-control").join("settings.json"),
+            r#"{"cloudStreamingEnabled":false,"manualCloudControlEnabled":false,"policyProfile":"owner_admin","ownerAdminExpiresAt":"2999-01-01T00:00:00Z","updatedAt":null}"#,
+        )
+        .expect("settings");
+        let runtime = test_runtime_for_agent(
+            &repo_root,
+            RuntimeRunApprovalModeDto::Yolo,
+            RuntimeAgentIdDto::ComputerUse,
+        );
+        let request =
+            AutonomousToolRequest::HostCommand(super::super::AutonomousHostCommandRequest {
+                argv: vec!["echo".into(), "install".into()],
+                cwd: Some(app_data.to_string_lossy().into_owned()),
+                timeout_ms: Some(1_000),
+                preview: false,
+                preview_token: None,
+                reason: Some("simulate high-impact package operation".into()),
+                rollback_hints: vec!["package operation".into()],
+            });
+
+        let decision = runtime
+            .evaluate_safety_policy(
+                AUTONOMOUS_TOOL_HOST_COMMAND,
+                &json!({}),
+                &request,
+                true,
+                "input",
+            )
+            .expect("decision");
+
+        assert_eq!(
+            decision.action,
+            AutonomousSafetyPolicyAction::RequireApproval
+        );
+        assert_eq!(decision.code, "policy_requires_host_command_preview");
+
+        let AutonomousToolRequest::HostCommand(host_request) = request else {
+            panic!("host command request");
+        };
+        let result = runtime
+            .host_command_with_operator_approval(host_request)
+            .expect("unspawned host command result");
+        let AutonomousToolOutput::Command(output) = result.output else {
+            panic!("command output");
+        };
+        assert!(!output.spawned);
+        assert_eq!(output.policy.code, "policy_requires_host_command_preview");
+        assert!(output.preview_token.is_none());
+        let impact = output
+            .host_command_impact
+            .expect("host command impact metadata");
+        assert!(impact.requires_preview);
+        assert_eq!(impact.preview_token_validated, None);
+        assert!(impact
+            .detected_surfaces
+            .iter()
+            .any(|surface| surface.category == "package_manager"));
+        assert!(impact.elevation.uses_os_native_prompt);
+        assert!(!impact.elevation.bypasses_os_protection);
+    }
+
+    #[test]
+    fn high_impact_host_command_preview_token_unlocks_approval_request() {
+        let tempdir = tempdir().expect("tempdir");
+        let app_data = tempdir.path();
+        let repo_root = app_data.join("computer-use");
+        fs::create_dir_all(&repo_root).expect("repo");
+        fs::create_dir_all(app_data.join("desktop-control")).expect("settings dir");
+        fs::write(
+            app_data.join("desktop-control").join("settings.json"),
+            r#"{"cloudStreamingEnabled":false,"manualCloudControlEnabled":false,"policyProfile":"owner_admin","ownerAdminExpiresAt":"2999-01-01T00:00:00Z","updatedAt":null}"#,
+        )
+        .expect("settings");
+        let runtime = test_runtime_for_agent(
+            &repo_root,
+            RuntimeRunApprovalModeDto::Yolo,
+            RuntimeAgentIdDto::ComputerUse,
+        );
+        let preview = runtime
+            .host_command(super::super::AutonomousHostCommandRequest {
+                argv: vec!["echo".into(), "install".into()],
+                cwd: Some(app_data.to_string_lossy().into_owned()),
+                timeout_ms: Some(1_000),
+                preview: true,
+                preview_token: None,
+                reason: Some("simulate high-impact package operation".into()),
+                rollback_hints: vec!["package operation".into()],
+            })
+            .expect("preview result");
+        let AutonomousToolOutput::Command(preview_output) = preview.output else {
+            panic!("command output");
+        };
+        assert!(!preview_output.spawned);
+        let preview_token = preview_output
+            .preview_token
+            .expect("preview token for high-impact command");
+
+        let host_request = super::super::AutonomousHostCommandRequest {
+            argv: vec!["echo".into(), "install".into()],
+            cwd: Some(app_data.to_string_lossy().into_owned()),
+            timeout_ms: Some(1_000),
+            preview: false,
+            preview_token: Some(preview_token),
+            reason: Some("simulate high-impact package operation".into()),
+            rollback_hints: vec!["package operation".into()],
+        };
+        let review_result = runtime
+            .host_command(host_request.clone())
+            .expect("review result after valid preview token");
+        let AutonomousToolOutput::Command(review_output) = review_result.output else {
+            panic!("command output");
+        };
+        assert!(!review_output.spawned);
+        let impact = review_output
+            .host_command_impact
+            .expect("host command impact metadata");
+        assert_eq!(impact.preview_token_validated, Some(true));
+        assert!(impact
+            .elevation
+            .protected_boundaries
+            .iter()
+            .any(|boundary| boundary == "windows_uac"));
+        assert!(review_output
+            .suggested_next_actions
+            .iter()
+            .any(|action| action.contains("will not automate or bypass")));
+
+        let request = AutonomousToolRequest::HostCommand(host_request);
+        let decision = runtime
+            .evaluate_safety_policy(
+                AUTONOMOUS_TOOL_HOST_COMMAND,
+                &json!({}),
+                &request,
+                false,
+                "input",
+            )
+            .expect("decision");
+
+        assert_eq!(
+            decision.action,
+            AutonomousSafetyPolicyAction::RequireApproval
+        );
+        assert_eq!(decision.code, "policy_escalated_owner_admin_host_command");
+    }
+
+    #[test]
+    fn host_command_preview_reports_structured_impact_and_elevation_boundaries() {
+        let tempdir = tempdir().expect("tempdir");
+        let app_data = tempdir.path();
+        let repo_root = app_data.join("computer-use");
+        fs::create_dir_all(&repo_root).expect("repo");
+        fs::create_dir_all(app_data.join("desktop-control")).expect("settings dir");
+        fs::write(
+            app_data.join("desktop-control").join("settings.json"),
+            r#"{"cloudStreamingEnabled":false,"manualCloudControlEnabled":false,"policyProfile":"owner_admin","ownerAdminExpiresAt":"2999-01-01T00:00:00Z","updatedAt":null}"#,
+        )
+        .expect("settings");
+        let runtime = test_runtime_for_agent(
+            &repo_root,
+            RuntimeRunApprovalModeDto::Yolo,
+            RuntimeAgentIdDto::ComputerUse,
+        );
+
+        let preview = runtime
+            .host_command(super::super::AutonomousHostCommandRequest {
+                argv: vec!["winget".into(), "install".into(), "Git.Git".into()],
+                cwd: Some(app_data.to_string_lossy().into_owned()),
+                timeout_ms: Some(1_000),
+                preview: true,
+                preview_token: None,
+                reason: Some("preview workstation package installation".into()),
+                rollback_hints: vec!["package: Git.Git".into()],
+            })
+            .expect("preview result");
+        let AutonomousToolOutput::Command(output) = preview.output else {
+            panic!("command output");
+        };
+        let impact = output
+            .host_command_impact
+            .expect("host command impact metadata");
+
+        assert_eq!(impact.schema, "xero.host_command_impact.v1");
+        assert_eq!(
+            impact.policy_profile,
+            AutonomousCommandPolicyProfile::DependencyInstallation
+        );
+        assert!(impact.requires_preview);
+        assert!(impact.requires_owner_approval);
+        assert_eq!(impact.preview_token_validated, None);
+        assert_eq!(impact.rollback_hints, vec!["package: Git.Git"]);
+        assert!(impact.detected_surfaces.iter().any(|surface| {
+            surface.category == "package_manager" && surface.evidence == "winget"
+        }));
+        assert!(impact.elevation.uses_os_native_prompt);
+        assert!(!impact.elevation.bypasses_os_protection);
+        assert!(impact
+            .elevation
+            .protected_boundaries
+            .iter()
+            .any(|boundary| boundary == "macos_tcc"));
     }
 
     fn prepared_command<const N: usize>(cwd: &Path, argv: [&str; N]) -> PreparedCommandRequest {

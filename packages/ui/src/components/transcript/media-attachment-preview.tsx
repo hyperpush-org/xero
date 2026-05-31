@@ -9,13 +9,11 @@ import {
 import { useCallback, useState } from 'react'
 
 import { cn } from '../../lib/utils'
+import { BaseDialog } from '../base-dialog'
 import {
-  Dialog,
   DialogClose,
-  DialogContent,
   DialogDescription,
   DialogTitle,
-  DialogTrigger,
 } from '../ui/dialog'
 import type { ConversationMessageAttachment } from './conversation-section'
 
@@ -151,8 +149,26 @@ export function ImageAttachmentPreview({
   }
 
   return (
-    <Dialog open={isPreviewOpen} onOpenChange={handlePreviewOpenChange}>
-      <DialogTrigger asChild>
+    <BaseDialog
+      open={isPreviewOpen}
+      onOpenChange={handlePreviewOpenChange}
+      variant="custom"
+      title={title}
+      overlayClassName="bg-black/80 backdrop-blur-[4px]"
+      showCloseButton={false}
+      contentClassName={cn(
+        'left-0 top-0 h-screen w-screen max-w-none translate-x-0 translate-y-0 gap-0 rounded-none border-0 bg-transparent p-0 shadow-none',
+        'sm:max-w-none',
+      )}
+      header={
+        <>
+          <DialogTitle className="sr-only">{title}</DialogTitle>
+          <DialogDescription className="sr-only">
+            {dimensions ?? attachment.mediaType}
+          </DialogDescription>
+        </>
+      }
+      trigger={
         <button
           type="button"
           className={cn(
@@ -176,19 +192,8 @@ export function ImageAttachmentPreview({
             <Maximize2 className="h-3.5 w-3.5" />
           </span>
         </button>
-      </DialogTrigger>
-      <DialogContent
-        overlayClassName="bg-black/80 backdrop-blur-[4px]"
-        showCloseButton={false}
-        className={cn(
-          'left-0 top-0 h-screen w-screen max-w-none translate-x-0 translate-y-0 gap-0 rounded-none border-0 bg-transparent p-0 shadow-none',
-          'sm:max-w-none',
-        )}
-      >
-        <DialogTitle className="sr-only">{title}</DialogTitle>
-        <DialogDescription className="sr-only">
-          {dimensions ?? attachment.mediaType}
-        </DialogDescription>
+      }
+    >
         <div className="relative flex h-full w-full items-center justify-center px-5 pb-24 pt-20 sm:px-10 sm:pb-28 sm:pt-24">
           <img
             src={src}
@@ -264,7 +269,6 @@ export function ImageAttachmentPreview({
             </button>
           </div>
         </div>
-      </DialogContent>
-    </Dialog>
+    </BaseDialog>
   )
 }

@@ -4684,10 +4684,9 @@ describe('AgentRuntime current UI', () => {
                   createdAt: '2026-05-30T20:22:01Z',
                   toolCallId: 'call-macos-screenshot',
                   toolName: 'macos_automation',
-                  title: 'macos automation',
                   detail: 'Captured macOS screenshot.',
                   toolState: 'succeeded',
-                  toolInputPreview: null,
+                  toolSummary: null,
                   toolResultPreview: 'Captured macOS screenshot.',
                   mediaAttachments: [
                     {

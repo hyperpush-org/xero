@@ -64,9 +64,8 @@ import type {
   GitHubSessionView,
 } from "@/src/lib/github-auth"
 import { Activity, ArrowLeft, Bot, Brain, Cloud, Code2, Database, Globe, HardDrive, Heart, Keyboard, KeyRound, Mic, Monitor, Palette, PlaySquare, Plug, PlugZap, Power, UserRound, WandSparkles, Wrench } from "lucide-react"
+import { BaseDialog } from "@xero/ui/components/base-dialog"
 import {
-  Dialog,
-  DialogContent,
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog"
@@ -890,15 +889,22 @@ export function SettingsDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        className="left-0 top-0 flex h-screen w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 p-0 shadow-none sm:max-w-none"
-        showCloseButton={false}
-      >
+    <BaseDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      variant="custom"
+      title="Settings"
+      contentClassName="left-0 top-0 flex h-screen w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 p-0 shadow-none sm:max-w-none"
+      showCloseButton={false}
+      header={
+        <>
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <DialogDescription className="sr-only">
           Configure providers, skills, agent tooling, and development options.
         </DialogDescription>
+        </>
+      }
+    >
 
         <div className="flex min-h-0 flex-1">
           <nav className="flex w-64 shrink-0 flex-col border-r border-border/70 bg-sidebar">
@@ -979,8 +985,7 @@ export function SettingsDialog({
             })}
           </div>
         </div>
-      </DialogContent>
-    </Dialog>
+    </BaseDialog>
   )
 }
 
