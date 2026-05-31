@@ -1,11 +1,9 @@
 "use client"
 
 import { useEffect, useState } from 'react'
+import { BaseDialog } from '@xero/ui/components/base-dialog'
 import {
-  Dialog,
-  DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
@@ -70,8 +68,13 @@ export function NewFileDialog({ open, onOpenChange, parentPath, type, onCreate }
   const placeholder = type === 'file' ? 'filename.ext' : 'folder-name'
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+    <BaseDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      variant="form"
+      title={`New ${type}`}
+      contentClassName="sm:max-w-md"
+      header={
         <DialogHeader>
           <div className="flex items-center gap-2">
             <Icon className="h-5 w-5 text-muted-foreground" />
@@ -82,6 +85,18 @@ export function NewFileDialog({ open, onOpenChange, parentPath, type, onCreate }
             <span className="font-mono">{parentPath === '/' ? '/' : parentPath}</span>
           </DialogDescription>
         </DialogHeader>
+      }
+      footer={
+        <>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button onClick={() => void submit()} disabled={isSubmitting || !name.trim()}>
+            {isSubmitting ? 'Creating…' : 'Create'}
+          </Button>
+        </>
+      }
+    >
         <div className="space-y-2 py-2">
           <Input
             autoFocus
@@ -96,15 +111,6 @@ export function NewFileDialog({ open, onOpenChange, parentPath, type, onCreate }
           />
           {error ? <p className="text-[12px] text-destructive">{error}</p> : null}
         </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button onClick={() => void submit()} disabled={isSubmitting || !name.trim()}>
-            {isSubmitting ? 'Creating…' : 'Create'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    </BaseDialog>
   )
 }

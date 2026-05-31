@@ -1484,6 +1484,9 @@ fn command_metadata_lines(output: &JsonValue) -> Vec<String> {
     if let Some(intent) = json_str(output, "intent") {
         lines.push(format!("intent: {intent}"));
     }
+    if let Some(token) = json_str(output, "previewToken") {
+        lines.push(format!("previewToken: {token}"));
+    }
     let mut fields = Vec::new();
     for key in ["operation", "sessionId", "processId"] {
         if let Some(value) = json_str(output, key) {
@@ -3095,6 +3098,7 @@ fn compact_command_output(output: &JsonValue) -> JsonValue {
             "exitCode",
             "timedOut",
             "spawned",
+            "previewToken",
             "changedFilesTruncated",
             "outputArtifact",
             "suggestedNextActions",
@@ -7146,6 +7150,193 @@ mod tests {
     }
 
     #[test]
+    fn model_visible_environment_context_outputs_are_scoped_and_bounded() {
+        let cases = [
+            (
+                "summary",
+                sample_environment_context_output(
+                    "summary",
+                    sample_environment_tool_groups(|_| true),
+                    sample_environment_capabilities(),
+                ),
+                24_000,
+            ),
+            (
+                "category",
+                sample_environment_context_output(
+                    "category",
+                    sample_environment_tool_groups(|entry| {
+                        entry.category.as_str() == "language_runtime"
+                    }),
+                    json!([]),
+                ),
+                8_000,
+            ),
+            (
+                "tool",
+                sample_environment_context_output(
+                    "tool",
+                    sample_environment_tool_groups(|entry| {
+                        matches!(entry.id.as_str(), "node" | "protoc" | "cargo")
+                    }),
+                    json!([]),
+                ),
+                4_000,
+            ),
+            (
+                "capability",
+                sample_environment_context_output(
+                    "capability",
+                    json!({}),
+                    json!([
+                        {
+                            "id": "protobuf_build_ready",
+                            "state": "ready",
+                            "evidence": ["protoc"]
+                        }
+                    ]),
+                ),
+                3_000,
+            ),
+        ];
+
+        for (action, output, max_bytes) in cases {
+            let result = AgentToolResult {
+                tool_call_id: format!("call-environment-{action}"),
+                tool_name: AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT.into(),
+                ok: true,
+                summary: format!("Returned environment context {action}."),
+                output: json!({
+                    "toolName": AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT,
+                    "summary": format!("Returned environment context {action}."),
+                    "commandResult": null,
+                    "output": output,
+                }),
+                persistence: None,
+                parent_assistant_message_id: None,
+            };
+
+            let serialized = serialize_model_visible_tool_result(&result)
+                .expect("serialize environment_context result");
+            let visible =
+                serde_json::from_str::<JsonValue>(&serialized).expect("decode compact result");
+
+            assert!(
+                serialized.len() <= max_bytes,
+                "{action} environment_context projection used {} byte(s), above the {max_bytes} byte budget (roughly {} token(s))",
+                serialized.len(),
+                max_bytes.div_ceil(4)
+            );
+            assert_eq!(
+                visible["output"]["xeroCompact"]["format"],
+                json!("environment_context_summary_json")
+            );
+            assert!(!serialized.contains("/Users/alice"));
+            assert!(!serialized.contains("rawPath"));
+        }
+    }
+
+    fn sample_environment_context_output(
+        action: &str,
+        tool_groups: JsonValue,
+        capabilities: JsonValue,
+    ) -> JsonValue {
+        json!({
+            "kind": "environment_context",
+            "action": action,
+            "status": "ready",
+            "stale": false,
+            "refreshStarted": false,
+            "refreshedAt": "2026-05-30T00:00:00Z",
+            "message": "Returned compact environment profile facts.",
+            "platform": {
+                "osKind": "macos",
+                "osVersion": "15.4",
+                "arch": "aarch64",
+                "defaultShell": "zsh"
+            },
+            "toolGroups": tool_groups,
+            "capabilities": capabilities,
+            "permissionRequests": [],
+            "diagnostics": []
+        })
+    }
+
+    fn sample_environment_tool_groups(
+        include: impl Fn(&crate::environment::probe::EnvironmentProbeCatalogEntry) -> bool,
+    ) -> JsonValue {
+        let mut groups = JsonMap::new();
+        for entry in crate::environment::probe::built_in_environment_probe_catalog()
+            .into_iter()
+            .filter(include)
+        {
+            let category = entry.category.as_str().to_string();
+            let present = matches!(
+                entry.id.as_str(),
+                "node" | "pnpm" | "rustc" | "cargo" | "protoc"
+            );
+            let version = if present {
+                json!("1.2.3")
+            } else {
+                JsonValue::Null
+            };
+            let display_path = if present {
+                json!(format!("~/bin/{}", entry.command))
+            } else {
+                JsonValue::Null
+            };
+            let probe_status = if present { "ok" } else { "missing" };
+            let tool = json!({
+                "id": entry.id,
+                "category": entry.category.as_str(),
+                "custom": entry.custom,
+                "present": present,
+                "version": version,
+                "displayPath": display_path,
+                "probeStatus": probe_status
+            });
+            groups
+                .entry(category)
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .expect("tool group array")
+                .push(tool);
+        }
+        JsonValue::Object(groups)
+    }
+
+    fn sample_environment_capabilities() -> JsonValue {
+        json!([
+            {
+                "id": "node_project_ready",
+                "state": "ready",
+                "evidence": ["node", "pnpm"]
+            },
+            {
+                "id": "rust_project_ready",
+                "state": "ready",
+                "evidence": ["cargo", "rustc"]
+            },
+            {
+                "id": "tauri_desktop_build",
+                "state": "ready",
+                "evidence": ["cargo", "node", "pnpm", "protoc", "rustc"]
+            },
+            {
+                "id": "docker_available",
+                "state": "missing",
+                "evidence": [],
+                "message": "Docker CLI was not found."
+            },
+            {
+                "id": "protobuf_build_ready",
+                "state": "ready",
+                "evidence": ["protoc"]
+            }
+        ])
+    }
+
+    #[test]
     fn model_visible_workspace_index_status_uses_plain_text_summary() {
         let result = AgentToolResult {
             tool_call_id: "call-index".into(),
@@ -7641,6 +7832,7 @@ mod tests {
                     "exitCode": 101,
                     "timedOut": false,
                     "spawned": true,
+                    "previewToken": "preview-token-123",
                     "changedFiles": [{
                         "path": "src/lib.rs",
                         "staged": null,
@@ -7669,6 +7861,7 @@ mod tests {
             serialize_model_visible_tool_result(&result).expect("serialize command result");
 
         assert!(serialized.contains("intent: read_only_verification"));
+        assert!(serialized.contains("previewToken: preview-token-123"));
         assert!(serialized.contains("changedFiles: src/lib.rs"));
         assert!(serialized.contains("outputArtifact: /tmp/command-output.json"));
         assert!(serialized.contains("suggestedNextActions: Use outputArtifact.path"));

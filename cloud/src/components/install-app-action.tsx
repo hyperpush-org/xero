@@ -1,13 +1,5 @@
+import { BaseDialog } from "@xero/ui/components/base-dialog";
 import { Button } from "@xero/ui/components/ui/button";
-import {
-	Dialog,
-	DialogClose,
-	DialogContent,
-	DialogDescription,
-	DialogFooter,
-	DialogHeader,
-	DialogTitle,
-} from "@xero/ui/components/ui/dialog";
 import { Download, MousePointerClick, Plus, Share } from "lucide-react";
 import { type ComponentPropsWithoutRef, useState } from "react";
 
@@ -114,55 +106,53 @@ export function IosInstallInstructionsDialog({
 	onOpenChange: (open: boolean) => void;
 }) {
 	return (
-		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="max-w-[min(28rem,calc(100vw-2rem))]">
-				<DialogHeader>
-					<DialogTitle className="font-display text-[20px] font-medium tracking-tight">
-						Install <em className="font-display-italic text-primary">Xero</em>
-					</DialogTitle>
-					<DialogDescription className="text-[13px] leading-relaxed">
-						Add Xero Cloud to your home screen for a standalone app experience.
-					</DialogDescription>
-				</DialogHeader>
-				<ol className="flex flex-col gap-3 text-[13px] text-foreground">
-					<li className="flex items-start gap-3">
-						<span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-muted/40 text-muted-foreground">
-							<Share className="h-3.5 w-3.5" aria-hidden />
-						</span>
-						<span>
-							Tap the <span className="font-medium">Share</span> button at the
-							bottom of Safari.
-						</span>
-					</li>
-					<li className="flex items-start gap-3">
-						<span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-muted/40 text-muted-foreground">
-							<Plus className="h-3.5 w-3.5" aria-hidden />
-						</span>
-						<span>
-							Choose <span className="font-medium">Add to Home Screen</span> (or{" "}
-							<span className="font-medium">Open as Web App</span> on recent
-							iOS).
-						</span>
-					</li>
-					<li className="flex items-start gap-3">
-						<span className="font-display flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-muted/40 text-[12px] font-medium text-muted-foreground">
-							3
-						</span>
-						<span>
-							Confirm the name and tap <span className="font-medium">Add</span>{" "}
-							to install Xero on your home screen.
-						</span>
-					</li>
-				</ol>
-				<DialogFooter>
-					<DialogClose asChild>
-						<Button type="button" size="sm" variant="secondary">
-							Got it
-						</Button>
-					</DialogClose>
-				</DialogFooter>
-			</DialogContent>
-		</Dialog>
+		<BaseDialog
+			open={open}
+			onOpenChange={onOpenChange}
+			variant="info"
+			title={
+				<>
+					Install <em className="font-display-italic text-primary">Xero</em>
+				</>
+			}
+			description="Add Xero Cloud to your home screen for a standalone app experience."
+			contentClassName="max-w-[min(28rem,calc(100vw-2rem))]"
+			titleClassName="font-display text-[20px] font-medium tracking-tight"
+			descriptionClassName="text-[13px] leading-relaxed"
+			actions={[
+				{ label: "Got it", size: "sm", variant: "secondary", close: true },
+			]}
+		>
+			<ol className="flex flex-col gap-3 text-[13px] text-foreground">
+				<li className="flex items-start gap-3">
+					<span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-muted/40 text-muted-foreground">
+						<Share className="h-3.5 w-3.5" aria-hidden />
+					</span>
+					<span>
+						Tap the <span className="font-medium">Share</span> button at the
+						bottom of Safari.
+					</span>
+				</li>
+				<li className="flex items-start gap-3">
+					<span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-muted/40 text-muted-foreground">
+						<Plus className="h-3.5 w-3.5" aria-hidden />
+					</span>
+					<span>
+						Choose <span className="font-medium">Add to Home Screen</span> (or{" "}
+						<span className="font-medium">Open as Web App</span> on recent iOS).
+					</span>
+				</li>
+				<li className="flex items-start gap-3">
+					<span className="font-display flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-muted/40 text-[12px] font-medium text-muted-foreground">
+						3
+					</span>
+					<span>
+						Confirm the name and tap <span className="font-medium">Add</span> to
+						install Xero on your home screen.
+					</span>
+				</li>
+			</ol>
+		</BaseDialog>
 	);
 }
 
@@ -174,53 +164,51 @@ export function ChromiumInstallInstructionsDialog({
 	onOpenChange: (open: boolean) => void;
 }) {
 	return (
-		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="max-w-[min(28rem,calc(100vw-2rem))]">
-				<DialogHeader>
-					<DialogTitle className="font-display text-[20px] font-medium tracking-tight">
-						Install <em className="font-display-italic text-primary">Xero</em>
-					</DialogTitle>
-					<DialogDescription className="text-[13px] leading-relaxed">
-						Install Xero Cloud as an app for a faster, full-screen experience.
-					</DialogDescription>
-				</DialogHeader>
-				<ol className="flex flex-col gap-3 text-[13px] text-foreground">
-					<li className="flex items-start gap-3">
-						<span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-muted/40 text-muted-foreground">
-							<Download className="h-3.5 w-3.5" aria-hidden />
-						</span>
-						<span>
-							Click the <span className="font-medium">install icon</span> in the
-							address bar, or open your browser menu.
-						</span>
-					</li>
-					<li className="flex items-start gap-3">
-						<span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-muted/40 text-muted-foreground">
-							<MousePointerClick className="h-3.5 w-3.5" aria-hidden />
-						</span>
-						<span>
-							Choose <span className="font-medium">Install Xero</span> (or{" "}
-							<span className="font-medium">Add to Home screen</span> on
-							mobile).
-						</span>
-					</li>
-					<li className="flex items-start gap-3">
-						<span className="font-display flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-muted/40 text-[12px] font-medium text-muted-foreground">
-							3
-						</span>
-						<span>
-							Confirm to add Xero to your apps and launch it in its own window.
-						</span>
-					</li>
-				</ol>
-				<DialogFooter>
-					<DialogClose asChild>
-						<Button type="button" size="sm" variant="secondary">
-							Got it
-						</Button>
-					</DialogClose>
-				</DialogFooter>
-			</DialogContent>
-		</Dialog>
+		<BaseDialog
+			open={open}
+			onOpenChange={onOpenChange}
+			variant="info"
+			title={
+				<>
+					Install <em className="font-display-italic text-primary">Xero</em>
+				</>
+			}
+			description="Install Xero Cloud as an app for a faster, full-screen experience."
+			contentClassName="max-w-[min(28rem,calc(100vw-2rem))]"
+			titleClassName="font-display text-[20px] font-medium tracking-tight"
+			descriptionClassName="text-[13px] leading-relaxed"
+			actions={[
+				{ label: "Got it", size: "sm", variant: "secondary", close: true },
+			]}
+		>
+			<ol className="flex flex-col gap-3 text-[13px] text-foreground">
+				<li className="flex items-start gap-3">
+					<span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-muted/40 text-muted-foreground">
+						<Download className="h-3.5 w-3.5" aria-hidden />
+					</span>
+					<span>
+						Click the <span className="font-medium">install icon</span> in the
+						address bar, or open your browser menu.
+					</span>
+				</li>
+				<li className="flex items-start gap-3">
+					<span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-muted/40 text-muted-foreground">
+						<MousePointerClick className="h-3.5 w-3.5" aria-hidden />
+					</span>
+					<span>
+						Choose <span className="font-medium">Install Xero</span> (or{" "}
+						<span className="font-medium">Add to Home screen</span> on mobile).
+					</span>
+				</li>
+				<li className="flex items-start gap-3">
+					<span className="font-display flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-muted/40 text-[12px] font-medium text-muted-foreground">
+						3
+					</span>
+					<span>
+						Confirm to add Xero to your apps and launch it in its own window.
+					</span>
+				</li>
+			</ol>
+		</BaseDialog>
 	);
 }

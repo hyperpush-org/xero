@@ -1,7 +1,7 @@
 use super::*;
 use crate::runtime::{
-    redaction::redact_json_for_persistence, AutonomousSafetyPolicyAction,
-    AutonomousSafetyPolicyDecision,
+    autonomous_tool_runtime::AUTONOMOUS_TOOL_HOST_COMMAND, redaction::redact_json_for_persistence,
+    AutonomousSafetyPolicyAction, AutonomousSafetyPolicyDecision,
 };
 use sha2::{Digest, Sha256};
 use std::sync::{Arc, Mutex};
@@ -1257,6 +1257,7 @@ fn push_tool_revocation_subject(
 #[derive(Debug)]
 struct ProductionToolSandbox {
     inner: PermissionProfileSandbox,
+    app_data_roots: Vec<String>,
 }
 
 impl ProductionToolSandbox {
@@ -1277,14 +1278,27 @@ impl ProductionToolSandbox {
         Self {
             inner: PermissionProfileSandbox::new(SandboxExecutionContext {
                 workspace_root: repo_root.to_string_lossy().into_owned(),
-                app_data_roots,
+                app_data_roots: app_data_roots.clone(),
                 project_trust: ProjectTrustState::Trusted,
                 approval_source: SandboxApprovalSource::Policy,
                 platform: SandboxPlatform::current(),
                 preserved_environment_keys: vec!["PATH".into()],
                 ..SandboxExecutionContext::default()
             }),
+            app_data_roots,
         }
+    }
+
+    fn host_admin_sandbox(&self, call: &ToolCallInput) -> PermissionProfileSandbox {
+        PermissionProfileSandbox::new(SandboxExecutionContext {
+            workspace_root: host_admin_workspace_root(call),
+            app_data_roots: self.app_data_roots.clone(),
+            project_trust: ProjectTrustState::Trusted,
+            approval_source: SandboxApprovalSource::Policy,
+            platform: SandboxPlatform::current(),
+            preserved_environment_keys: vec!["PATH".into()],
+            ..SandboxExecutionContext::default()
+        })
     }
 }
 
@@ -1295,8 +1309,43 @@ impl ToolSandbox for ProductionToolSandbox {
         call: &ToolCallInput,
         context: &ToolExecutionContext,
     ) -> ToolSandboxResult {
+        if descriptor.name == AUTONOMOUS_TOOL_HOST_COMMAND {
+            return self
+                .host_admin_sandbox(call)
+                .evaluate(descriptor, call, context);
+        }
         self.inner.evaluate(descriptor, call, context)
     }
+}
+
+fn host_admin_workspace_root(call: &ToolCallInput) -> String {
+    if !cfg!(target_os = "windows") {
+        return "/".into();
+    }
+
+    let cwd = call
+        .input
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    windows_host_admin_workspace_root(cwd)
+}
+
+fn windows_host_admin_workspace_root(cwd: &str) -> String {
+    if cwd.len() >= 3 {
+        let bytes = cwd.as_bytes();
+        if bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/') {
+            let drive = (bytes[0] as char).to_ascii_uppercase();
+            if drive.is_ascii_alphabetic() {
+                return format!("{drive}:\\");
+            }
+        }
+    }
+    if cwd.starts_with("\\\\") {
+        return cwd.into();
+    }
+    "C:\\".into()
 }
 
 struct AgentToolRollback {
@@ -1422,6 +1471,7 @@ fn policy_approval_is_reported_by_handler(call: &ToolCallInput) -> bool {
             | AUTONOMOUS_TOOL_COMMAND_RUN
             | AUTONOMOUS_TOOL_COMMAND_SESSION
             | AUTONOMOUS_TOOL_COMMAND_SESSION_START
+            | AUTONOMOUS_TOOL_HOST_COMMAND
             | AUTONOMOUS_TOOL_PROCESS_MANAGER
             | AUTONOMOUS_TOOL_POWERSHELL
     )
@@ -2103,6 +2153,13 @@ mod tests {
     use crate::db::{
         configure_connection, migrations::migrations, register_project_database_path_for_tests,
     };
+
+    #[test]
+    fn host_admin_windows_workspace_root_follows_requested_drive() {
+        assert_eq!(windows_host_admin_workspace_root(r"D:\Tools"), r"D:\");
+        assert_eq!(windows_host_admin_workspace_root("e:/Work"), r"E:\");
+        assert_eq!(windows_host_admin_workspace_root("relative"), r"C:\");
+    }
 
     #[test]
     fn tool_completed_payload_uses_canonical_code_history_fields() {

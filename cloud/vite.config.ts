@@ -18,6 +18,11 @@ const config = defineConfig(({ mode }) => {
 		resolve: { tsconfigPaths: true },
 		build: {
 			chunkSizeWarningLimit: 1000,
+			rolldownOptions: {
+				checks: {
+					pluginTimings: false,
+				},
+			},
 		},
 		// Mark Shiki + Mermaid as external for the SSR builds — both ship runtime
 		// assets (onig.wasm, dynamic d3 graphs) that the bundler cannot follow at

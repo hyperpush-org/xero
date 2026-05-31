@@ -7,7 +7,7 @@ import {
 	screen,
 	waitFor,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CloudSession } from "#/lib/auth/session";
 
@@ -22,6 +22,24 @@ const session: CloudSession = {
 	relayToken: "relay-token",
 	relayTokenExpiresAt: "2026-05-17T08:00:00Z",
 };
+
+const COLLAPSED_GROUPS_STORAGE_KEY = "xero.cloud.sidebar.projectCollapsed.v1";
+
+function mockLocalStorage() {
+	const values = new Map<string, string>();
+	Object.defineProperty(window, "localStorage", {
+		configurable: true,
+		writable: true,
+		value: {
+			clear: vi.fn(() => values.clear()),
+			getItem: vi.fn((key: string) => values.get(key) ?? null),
+			removeItem: vi.fn((key: string) => values.delete(key)),
+			setItem: vi.fn((key: string, value: string) => {
+				values.set(key, value);
+			}),
+		},
+	});
+}
 
 function mockMobileViewport() {
 	Object.defineProperty(window, "matchMedia", {
@@ -45,15 +63,13 @@ function mockMobileViewport() {
 }
 
 describe("SessionDrawer", () => {
+	beforeEach(() => {
+		mockLocalStorage();
+	});
+
 	afterEach(() => {
 		cleanup();
-		try {
-			window.localStorage?.removeItem?.(
-				"xero.cloud.sidebar.projectCollapsed.v1",
-			);
-		} catch {
-			// Test-runner localStorage stubs vary; ignore failures.
-		}
+		window.localStorage.removeItem(COLLAPSED_GROUPS_STORAGE_KEY);
 	});
 
 	it("closes after a session is selected", async () => {

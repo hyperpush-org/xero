@@ -151,26 +151,30 @@ fn macos_automation_policy_trace(
         }
     };
 
-    let (approval_required, code, reason) = match risk_level {
-        AutonomousProcessActionRiskLevel::Observe => (
+    let (approval_required, code, reason) = match action {
+        AutonomousMacosAutomationAction::MacPermissions
+        | AutonomousMacosAutomationAction::MacAppList
+        | AutonomousMacosAutomationAction::MacWindowList => (
             false,
             "macos_policy_observe",
             "macOS permission, app, and window observation is read-only.",
         ),
-        AutonomousProcessActionRiskLevel::SystemRead => (
-            true,
-            "macos_policy_screenshot_requires_approval",
-            "Screen or window capture may expose private desktop contents and requires explicit operator approval.",
+        AutonomousMacosAutomationAction::MacScreenshot => (
+            false,
+            "macos_policy_screenshot_allowed",
+            "Screen and window capture is read-only.",
         ),
-        AutonomousProcessActionRiskLevel::OsAutomation => (
-            true,
-            "macos_policy_os_automation_requires_approval",
-            "Launching, activating, quitting, or focusing external apps requires explicit operator approval.",
+        AutonomousMacosAutomationAction::MacAppLaunch
+        | AutonomousMacosAutomationAction::MacAppActivate
+        | AutonomousMacosAutomationAction::MacWindowFocus => (
+            false,
+            "macos_policy_non_destructive_automation_allowed",
+            "Launching, activating, and focusing apps or windows is non-destructive.",
         ),
-        _ => (
+        AutonomousMacosAutomationAction::MacAppQuit => (
             true,
-            "macos_policy_automation_requires_approval",
-            "macOS automation requires explicit operator approval.",
+            "macos_policy_app_quit_requires_approval",
+            "Quitting an app can lose unsaved work and requires explicit operator approval.",
         ),
     };
 
@@ -179,6 +183,35 @@ fn macos_automation_policy_trace(
         approval_required,
         code: code.into(),
         reason: reason.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macos_screenshot_policy_is_read_only_without_approval() {
+        let policy = macos_automation_policy_trace(AutonomousMacosAutomationAction::MacScreenshot);
+
+        assert_eq!(
+            policy.risk_level,
+            AutonomousProcessActionRiskLevel::SystemRead
+        );
+        assert!(!policy.approval_required);
+        assert_eq!(policy.code, "macos_policy_screenshot_allowed");
+    }
+
+    #[test]
+    fn macos_app_quit_policy_requires_approval() {
+        let policy = macos_automation_policy_trace(AutonomousMacosAutomationAction::MacAppQuit);
+
+        assert_eq!(
+            policy.risk_level,
+            AutonomousProcessActionRiskLevel::OsAutomation
+        );
+        assert!(policy.approval_required);
+        assert_eq!(policy.code, "macos_policy_app_quit_requires_approval");
     }
 }
 
@@ -223,6 +256,97 @@ fn macos_action_label(action: AutonomousMacosAutomationAction) -> &'static str {
         AutonomousMacosAutomationAction::MacWindowList => "mac_window_list",
         AutonomousMacosAutomationAction::MacWindowFocus => "mac_window_focus",
         AutonomousMacosAutomationAction::MacScreenshot => "mac_screenshot",
+    }
+}
+
+fn resolve_monitor_index(
+    monitor_ids: &[Option<u32>],
+    primary_flags: &[bool],
+    requested_monitor: Option<u32>,
+) -> Option<usize> {
+    if monitor_ids.is_empty() {
+        return None;
+    }
+
+    if let Some(requested) = requested_monitor {
+        if let Some(index) = monitor_ids.iter().position(|id| *id == Some(requested)) {
+            return Some(index);
+        }
+        let zero_based_index = requested as usize;
+        if zero_based_index < monitor_ids.len() {
+            return Some(zero_based_index);
+        }
+        if requested > 0 {
+            let one_based_index = requested.saturating_sub(1) as usize;
+            if one_based_index < monitor_ids.len() {
+                return Some(one_based_index);
+            }
+        }
+        return None;
+    }
+
+    primary_flags
+        .iter()
+        .position(|is_primary| *is_primary)
+        .or(Some(0))
+}
+
+fn monitor_not_found_message(requested_monitor: u32, monitor_ids: &[Option<u32>]) -> String {
+    let available = monitor_ids
+        .iter()
+        .enumerate()
+        .map(|(index, id)| match id {
+            Some(id) => format!("index {index} / id {id}"),
+            None => format!("index {index}"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    if available.is_empty() {
+        format!("Xero could not find macOS monitor `{requested_monitor}`.")
+    } else {
+        format!(
+            "Xero could not find macOS monitor `{requested_monitor}`. Available monitors: {available}."
+        )
+    }
+}
+
+#[cfg(test)]
+mod monitor_selection_tests {
+    use super::*;
+
+    #[test]
+    fn monitor_selection_accepts_zero_based_index_after_id_lookup() {
+        let ids = [Some(12), Some(34)];
+        let primary = [false, true];
+
+        assert_eq!(resolve_monitor_index(&ids, &primary, Some(0)), Some(0));
+        assert_eq!(resolve_monitor_index(&ids, &primary, Some(1)), Some(1));
+    }
+
+    #[test]
+    fn monitor_selection_prefers_real_monitor_id_over_index() {
+        let ids = [Some(1), Some(7)];
+        let primary = [false, true];
+
+        assert_eq!(resolve_monitor_index(&ids, &primary, Some(1)), Some(0));
+        assert_eq!(resolve_monitor_index(&ids, &primary, Some(7)), Some(1));
+    }
+
+    #[test]
+    fn monitor_selection_uses_primary_or_first_when_omitted() {
+        let ids = [Some(12), Some(34)];
+
+        assert_eq!(resolve_monitor_index(&ids, &[false, true], None), Some(1));
+        assert_eq!(resolve_monitor_index(&ids, &[false, false], None), Some(0));
+    }
+
+    #[test]
+    fn monitor_selection_reports_unknown_requested_monitor() {
+        let ids = [Some(12), Some(34)];
+        let primary = [false, true];
+
+        assert_eq!(resolve_monitor_index(&ids, &primary, Some(99)), None);
+        assert!(monitor_not_found_message(99, &ids).contains("index 0 / id 12"));
     }
 }
 
@@ -691,32 +815,32 @@ mod macos {
                         format!("Xero could not enumerate displays for screenshot: {error}"),
                     )
                 })?;
-                let monitor = if let Some(monitor_id) = request.monitor_id {
-                    monitors
-                        .into_iter()
-                        .find(|monitor| monitor.id().ok() == Some(monitor_id))
-                        .ok_or_else(|| {
-                            CommandError::user_fixable(
+                let monitor_ids = monitors
+                    .iter()
+                    .map(|monitor| monitor.id().ok())
+                    .collect::<Vec<_>>();
+                let primary_flags = monitors
+                    .iter()
+                    .map(|monitor| monitor.is_primary().unwrap_or(false))
+                    .collect::<Vec<_>>();
+                let monitor_index =
+                    resolve_monitor_index(&monitor_ids, &primary_flags, request.monitor_id)
+                        .ok_or_else(|| match request.monitor_id {
+                            Some(monitor_id) => CommandError::user_fixable(
                                 "autonomous_tool_macos_monitor_not_found",
-                                format!("Xero could not find macOS monitor `{monitor_id}`."),
-                            )
-                        })?
-                } else {
-                    monitors
-                        .into_iter()
-                        .find(|monitor| monitor.is_primary().unwrap_or(false))
-                        .or_else(|| {
-                            xcap::Monitor::all()
-                                .ok()
-                                .and_then(|mut monitors| monitors.pop())
-                        })
-                        .ok_or_else(|| {
-                            CommandError::system_fault(
+                                monitor_not_found_message(monitor_id, &monitor_ids),
+                            ),
+                            None => CommandError::system_fault(
                                 "autonomous_tool_macos_monitor_not_found",
                                 "Xero could not find a macOS monitor to screenshot.",
-                            )
-                        })?
-                };
+                            ),
+                        })?;
+                let monitor = monitors.into_iter().nth(monitor_index).ok_or_else(|| {
+                    CommandError::system_fault(
+                        "autonomous_tool_macos_monitor_not_found",
+                        "Xero could not resolve the selected macOS monitor.",
+                    )
+                })?;
                 let monitor_id = monitor.id().ok();
                 let image = monitor.capture_image().map_err(|error| {
                     CommandError::system_fault(

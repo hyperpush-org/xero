@@ -1,7 +1,9 @@
 use std::{
     collections::BTreeMap,
-    env, fs,
-    io::Read,
+    env,
+    fs::{self, OpenOptions},
+    io::{Read, Write},
+    path::{Path, PathBuf},
     process::{Child, Command},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -19,12 +21,15 @@ use super::{
     AutonomousCommandSessionChunk, AutonomousCommandSessionOperation,
     AutonomousCommandSessionOutput, AutonomousCommandSessionReadRequest,
     AutonomousCommandSessionStartRequest, AutonomousCommandSessionStopRequest,
-    AutonomousCommandSessionStream, AutonomousToolCommandResult, AutonomousToolOutput,
-    AutonomousToolResult, AutonomousToolRuntime, AUTONOMOUS_TOOL_COMMAND,
-    AUTONOMOUS_TOOL_COMMAND_SESSION_READ, AUTONOMOUS_TOOL_COMMAND_SESSION_START,
-    AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
+    AutonomousCommandSessionStream, AutonomousHostCommandElevationAssessment,
+    AutonomousHostCommandImpact, AutonomousHostCommandImpactSurface, AutonomousHostCommandRequest,
+    AutonomousToolCommandResult, AutonomousToolOutput, AutonomousToolResult, AutonomousToolRuntime,
+    AUTONOMOUS_TOOL_COMMAND, AUTONOMOUS_TOOL_COMMAND_SESSION_READ,
+    AUTONOMOUS_TOOL_COMMAND_SESSION_START, AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
+    AUTONOMOUS_TOOL_HOST_COMMAND,
 };
 
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
@@ -58,6 +63,12 @@ const MAX_COMMAND_SESSIONS: usize = 8;
 const MAX_COMMAND_SESSION_STORED_CHUNKS: usize = 512;
 const MAX_COMMAND_SESSION_STORED_BYTES: usize = 1024 * 1024;
 const MAX_COMMAND_CHANGED_FILES: usize = 32;
+const MAX_HOST_COMMAND_TIMEOUT_MS: u64 = 300_000;
+const HOST_ADMIN_AUDIT_FILE: &str = "host-admin/audit.jsonl";
+const DESKTOP_CONTROL_SETTINGS_ENV: &str = "XERO_DESKTOP_CONTROL_SETTINGS_PATH";
+const DESKTOP_CONTROL_DIR: &str = "desktop-control";
+const DESKTOP_CONTROL_SETTINGS_FILE: &str = "settings.json";
+const GLOBAL_COMPUTER_USE_DIR: &str = "computer-use";
 pub(super) const SAFE_COMMAND_ENV_KEYS: &[&str] = &[
     "PATH",
     "HOME",
@@ -82,6 +93,43 @@ pub(super) const SAFE_COMMAND_ENV_KEYS: &[&str] = &[
     "LOCALAPPDATA",
 ];
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OwnerAdminModeStatus {
+    pub active: bool,
+    pub profile: String,
+    pub expires_at: Option<String>,
+    pub settings_path: Option<PathBuf>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedHostCommandRequest {
+    pub argv: Vec<String>,
+    pub cwd: PathBuf,
+    pub timeout_ms: u64,
+    pub preview: bool,
+    pub preview_token: Option<String>,
+    pub reason: String,
+    pub rollback_hints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum HostCommandPolicyProfile {
+    DefaultSafe,
+    DeveloperWorkstation,
+    OwnerAdmin,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostCommandDesktopSettings {
+    #[serde(default = "default_host_command_policy_profile")]
+    policy_profile: HostCommandPolicyProfile,
+    #[serde(default)]
+    owner_admin_expires_at: Option<String>,
+}
+
 struct CommandOutputArtifactRequest<'a> {
     tool_name: &'a str,
     prepared: &'a PreparedCommandRequest,
@@ -90,6 +138,17 @@ struct CommandOutputArtifactRequest<'a> {
     stdout_excerpt: &'a SanitizedCommandOutput,
     stderr_excerpt: &'a SanitizedCommandOutput,
     exit_code: Option<i32>,
+}
+
+struct HostCommandAuditRecord<'a> {
+    prepared: &'a PreparedHostCommandRequest,
+    policy: &'a AutonomousCommandPolicyTrace,
+    mode: &'a OwnerAdminModeStatus,
+    spawned: bool,
+    exit_code: Option<i32>,
+    stdout_redacted: bool,
+    stderr_redacted: bool,
+    disposition: &'a str,
 }
 
 #[derive(Debug, Default)]
@@ -476,6 +535,56 @@ impl AutonomousToolRuntime {
         }
     }
 
+    pub fn host_command(
+        &self,
+        request: AutonomousHostCommandRequest,
+    ) -> CommandResult<AutonomousToolResult> {
+        self.host_command_with_approval(request, false)
+    }
+
+    pub fn host_command_with_operator_approval(
+        &self,
+        request: AutonomousHostCommandRequest,
+    ) -> CommandResult<AutonomousToolResult> {
+        self.host_command_with_approval(request, true)
+    }
+
+    fn host_command_with_approval(
+        &self,
+        request: AutonomousHostCommandRequest,
+        operator_approved: bool,
+    ) -> CommandResult<AutonomousToolResult> {
+        let mode = self.owner_admin_mode_status();
+        if !mode.active {
+            return Err(CommandError::new(
+                "policy_denied_owner_admin_mode_inactive",
+                crate::commands::CommandErrorClass::PolicyDenied,
+                format!(
+                    "Xero denied host_command because Owner Admin mode is not active: {}",
+                    mode.reason
+                ),
+                false,
+            ));
+        }
+
+        let prepared = self.prepare_host_command_request(request)?;
+        let policy = self.host_command_policy_trace_for_prepared(&prepared, &mode)?;
+        if prepared.preview {
+            return self.unspawned_host_command_result(prepared, policy, mode, "preview");
+        }
+        if host_command_requires_preview(&prepared)
+            && !host_command_preview_token_matches(&prepared, &mode)?
+        {
+            return self.unspawned_host_command_result(prepared, policy, mode, "requires_preview");
+        }
+        if !operator_approved {
+            return self.unspawned_host_command_result(prepared, policy, mode, "requires_approval");
+        }
+
+        let policy = operator_approved_policy(policy, &prepared.argv);
+        self.spawn_host_command(prepared, policy, mode)
+    }
+
     fn command_policy_decision_for_tool(
         &self,
         tool_name: &str,
@@ -620,11 +729,13 @@ impl AutonomousToolRuntime {
                 exit_code,
                 timed_out: false,
                 spawned: true,
+                preview_token: None,
                 policy,
                 changed_files,
                 changed_files_truncated,
                 output_artifact,
                 suggested_next_actions,
+                host_command_impact: None,
                 sandbox: Some(sandbox_output.metadata),
             }),
         })
@@ -847,11 +958,13 @@ impl AutonomousToolRuntime {
                 exit_code,
                 timed_out: false,
                 spawned: true,
+                preview_token: None,
                 policy,
                 changed_files,
                 changed_files_truncated,
                 output_artifact,
                 suggested_next_actions,
+                host_command_impact: None,
                 sandbox: Some(sandboxed_process.metadata),
             }),
         })
@@ -897,12 +1010,374 @@ impl AutonomousToolRuntime {
                 exit_code: None,
                 timed_out: false,
                 spawned: false,
+                preview_token: None,
                 policy,
                 changed_files: Vec::new(),
                 changed_files_truncated: false,
                 output_artifact: None,
                 suggested_next_actions,
+                host_command_impact: None,
                 sandbox: None,
+            }),
+        })
+    }
+
+    pub(crate) fn prepare_host_command_request(
+        &self,
+        request: AutonomousHostCommandRequest,
+    ) -> CommandResult<PreparedHostCommandRequest> {
+        let argv = normalize_host_command_argv(&request.argv)?;
+        let cwd = resolve_host_command_cwd(request.cwd.as_deref())?;
+        let timeout_ms = request
+            .timeout_ms
+            .unwrap_or(self.limits.default_command_timeout_ms)
+            .clamp(1, MAX_HOST_COMMAND_TIMEOUT_MS);
+        let reason = request
+            .reason
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                CommandError::user_fixable(
+                    "host_command_reason_required",
+                    "host_command requires a short owner-visible reason.",
+                )
+            })?;
+        if find_prohibited_persistence_content(reason).is_some() {
+            return Err(CommandError::new(
+                "host_command_reason_secret_like",
+                crate::commands::CommandErrorClass::PolicyDenied,
+                "Xero denied host_command because its reason contains credential-like material.",
+                false,
+            ));
+        }
+        let rollback_hints = request
+            .rollback_hints
+            .into_iter()
+            .map(|hint| hint.trim().to_owned())
+            .filter(|hint| !hint.is_empty())
+            .take(16)
+            .collect::<Vec<_>>();
+
+        Ok(PreparedHostCommandRequest {
+            argv,
+            cwd,
+            timeout_ms,
+            preview: request.preview,
+            preview_token: request
+                .preview_token
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| {
+                    if value.len() > 128 {
+                        return Err(CommandError::user_fixable(
+                            "host_command_preview_token_invalid",
+                            "host_command previewToken must be 128 characters or fewer.",
+                        ));
+                    }
+                    Ok(value.to_owned())
+                })
+                .transpose()?,
+            reason: reason.to_owned(),
+            rollback_hints,
+        })
+    }
+
+    pub(crate) fn host_command_policy_trace(
+        &self,
+        request: &AutonomousHostCommandRequest,
+        mode: &OwnerAdminModeStatus,
+    ) -> CommandResult<AutonomousCommandPolicyTrace> {
+        let prepared = self.prepare_host_command_request(request.clone())?;
+        self.host_command_policy_trace_for_prepared(&prepared, mode)
+    }
+
+    fn host_command_policy_trace_for_prepared(
+        &self,
+        prepared: &PreparedHostCommandRequest,
+        mode: &OwnerAdminModeStatus,
+    ) -> CommandResult<AutonomousCommandPolicyTrace> {
+        let approval_mode = self
+            .command_controls
+            .as_ref()
+            .map(|controls| controls.active.approval_mode.clone())
+            .unwrap_or(crate::commands::RuntimeRunApprovalModeDto::Suggest);
+        if prepared.preview {
+            return Ok(AutonomousCommandPolicyTrace {
+                outcome: AutonomousCommandPolicyOutcome::Allowed,
+                approval_mode,
+                profile: AutonomousCommandPolicyProfile::ReadOnlyVerification,
+                code: "policy_allowed_host_command_preview".into(),
+                reason: format!(
+                    "Xero prepared host_command `{}` as a non-spawning preview under active Owner Admin mode.",
+                    render_command_for_summary(&prepared.argv)
+                ),
+            });
+        }
+        let profile = host_command_policy_profile(&prepared.argv);
+        if host_command_requires_preview(prepared)
+            && !host_command_preview_token_matches(prepared, mode)?
+        {
+            return Ok(AutonomousCommandPolicyTrace {
+                outcome: AutonomousCommandPolicyOutcome::Escalated,
+                approval_mode,
+                profile,
+                code: "policy_requires_host_command_preview".into(),
+                reason: format!(
+                    "Xero requires a prior host_command preview token before this high-impact command plan can run: `{}`.",
+                    render_command_for_summary(&prepared.argv)
+                ),
+            });
+        }
+        Ok(AutonomousCommandPolicyTrace {
+            outcome: AutonomousCommandPolicyOutcome::Escalated,
+            approval_mode,
+            profile,
+            code: "policy_escalated_owner_admin_host_command".into(),
+            reason: format!(
+                "Xero requires per-command operator approval before host_command `{}` can run, even while Owner Admin mode is active.",
+                render_command_for_summary(&prepared.argv)
+            ),
+        })
+    }
+
+    fn unspawned_host_command_result(
+        &self,
+        prepared: PreparedHostCommandRequest,
+        policy: AutonomousCommandPolicyTrace,
+        mode: OwnerAdminModeStatus,
+        disposition: &str,
+    ) -> CommandResult<AutonomousToolResult> {
+        self.record_host_command_audit(&HostCommandAuditRecord {
+            prepared: &prepared,
+            policy: &policy,
+            mode: &mode,
+            spawned: false,
+            exit_code: None,
+            stdout_redacted: false,
+            stderr_redacted: false,
+            disposition,
+        })?;
+        let preview_token = if prepared.preview {
+            Some(host_command_preview_token(&prepared, &mode)?)
+        } else {
+            None
+        };
+        let summary = if prepared.preview {
+            format!(
+                "Prepared host_command preview for `{}`; no process was spawned.",
+                render_command_for_summary(&prepared.argv)
+            )
+        } else if disposition == "requires_preview" {
+            format!(
+                "host_command `{}` requires a prior preview token before Xero can request approval to run it.",
+                render_command_for_summary(&prepared.argv)
+            )
+        } else {
+            format!(
+                "host_command `{}` requires operator approval before Xero can run it.",
+                render_command_for_summary(&prepared.argv)
+            )
+        };
+        let mut suggested_next_actions =
+            command_suggested_next_actions(false, None, &policy, false, None, 0, false);
+        if let Some(token) = preview_token.as_deref() {
+            suggested_next_actions.insert(
+                0,
+                format!(
+                    "After owner review, retry this exact host_command with previewToken `{token}` and operator approval."
+                ),
+            );
+        } else if disposition == "requires_preview" {
+            suggested_next_actions.insert(
+                0,
+                "Run host_command again with preview=true to create an audit record and previewToken for this high-impact command plan.".into(),
+            );
+        }
+        suggested_next_actions.push(host_command_os_prompt_next_action());
+        let host_command_impact = host_command_impact_assessment(&prepared, &mode)?;
+
+        Ok(AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_HOST_COMMAND.into(),
+            summary: summary.clone(),
+            command_result: Some(AutonomousToolCommandResult {
+                exit_code: None,
+                timed_out: false,
+                summary,
+                policy: policy.clone(),
+            }),
+            output: AutonomousToolOutput::Command(AutonomousCommandOutput {
+                argv: redact_command_argv_for_persistence(&prepared.argv),
+                cwd: prepared.cwd.to_string_lossy().into_owned(),
+                intent: "host_admin".into(),
+                stdout: None,
+                stderr: None,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_redacted: false,
+                stderr_redacted: false,
+                exit_code: None,
+                timed_out: false,
+                spawned: false,
+                preview_token,
+                policy,
+                changed_files: Vec::new(),
+                changed_files_truncated: false,
+                output_artifact: None,
+                suggested_next_actions,
+                host_command_impact: Some(host_command_impact),
+                sandbox: None,
+            }),
+        })
+    }
+
+    fn spawn_host_command(
+        &self,
+        prepared: PreparedHostCommandRequest,
+        policy: AutonomousCommandPolicyTrace,
+        mode: OwnerAdminModeStatus,
+    ) -> CommandResult<AutonomousToolResult> {
+        let sandbox_metadata = self.host_command_sandbox_metadata(
+            &prepared,
+            sandbox_approval_source_for_policy(&policy),
+        )?;
+        let sandbox_output = SandboxedProcessRunner::new()
+            .run(
+                SandboxedProcessRequest {
+                    argv: prepared.argv.clone(),
+                    cwd: Some(prepared.cwd.to_string_lossy().into_owned()),
+                    timeout_ms: Some(prepared.timeout_ms),
+                    stdout_limit_bytes: self.limits.max_command_capture_bytes,
+                    stderr_limit_bytes: self.limits.max_command_capture_bytes,
+                    metadata: sandbox_metadata,
+                },
+                || self.is_cancelled(),
+            )
+            .map_err(|error| {
+                sandbox_runner_error_to_command_error(
+                    error,
+                    &prepared.argv,
+                    prepared.timeout_ms,
+                    "autonomous_tool_host_command",
+                )
+            })?;
+
+        let stdout_excerpt = sanitize_command_output(
+            sandbox_output
+                .stdout
+                .as_deref()
+                .unwrap_or_default()
+                .as_bytes(),
+            sandbox_output.stdout_truncated,
+            self.limits.max_command_excerpt_chars,
+        );
+        let stderr_excerpt = sanitize_command_output(
+            sandbox_output
+                .stderr
+                .as_deref()
+                .unwrap_or_default()
+                .as_bytes(),
+            sandbox_output.stderr_truncated,
+            self.limits.max_command_excerpt_chars,
+        );
+        let stdout_bytes = sandbox_output
+            .stdout
+            .as_deref()
+            .unwrap_or_default()
+            .as_bytes();
+        let stderr_bytes = sandbox_output
+            .stderr
+            .as_deref()
+            .unwrap_or_default()
+            .as_bytes();
+        let exit_code = sandbox_output.exit_code;
+        let command_prepared = PreparedCommandRequest {
+            argv: prepared.argv.clone(),
+            cwd_relative: None,
+            cwd: prepared.cwd.clone(),
+            timeout_ms: prepared.timeout_ms,
+        };
+        let output_artifact =
+            self.command_output_artifact_if_needed(CommandOutputArtifactRequest {
+                tool_name: AUTONOMOUS_TOOL_HOST_COMMAND,
+                prepared: &command_prepared,
+                stdout_bytes,
+                stderr_bytes,
+                stdout_excerpt: &stdout_excerpt,
+                stderr_excerpt: &stderr_excerpt,
+                exit_code,
+            })?;
+        let mut suggested_next_actions = command_suggested_next_actions(
+            true,
+            exit_code,
+            &policy,
+            stdout_excerpt.truncated || stderr_excerpt.truncated,
+            output_artifact.as_ref(),
+            0,
+            false,
+        );
+        suggested_next_actions.push(host_command_os_prompt_next_action());
+        let host_command_impact = host_command_impact_assessment(&prepared, &mode)?;
+        self.record_host_command_audit(&HostCommandAuditRecord {
+            prepared: &prepared,
+            policy: &policy,
+            mode: &mode,
+            spawned: true,
+            exit_code,
+            stdout_redacted: stdout_excerpt.redacted,
+            stderr_redacted: stderr_excerpt.redacted,
+            disposition: "executed",
+        })?;
+        let command_result = AutonomousToolCommandResult {
+            exit_code,
+            timed_out: false,
+            summary: command_result_summary(&prepared.argv, exit_code),
+            policy: policy.clone(),
+        };
+        let summary = match exit_code {
+            Some(0) => format!(
+                "host_command `{}` exited successfully in `{}`.",
+                render_command_for_summary(&prepared.argv),
+                prepared.cwd.display()
+            ),
+            Some(code) => format!(
+                "host_command `{}` exited with code {code} in `{}`.",
+                render_command_for_summary(&prepared.argv),
+                prepared.cwd.display()
+            ),
+            None => format!(
+                "host_command `{}` terminated without an exit code in `{}`.",
+                render_command_for_summary(&prepared.argv),
+                prepared.cwd.display()
+            ),
+        };
+
+        Ok(AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_HOST_COMMAND.into(),
+            summary,
+            command_result: Some(command_result),
+            output: AutonomousToolOutput::Command(AutonomousCommandOutput {
+                argv: redact_command_argv_for_persistence(&prepared.argv),
+                cwd: prepared.cwd.to_string_lossy().into_owned(),
+                intent: "host_admin".into(),
+                stdout: stdout_excerpt.text,
+                stderr: stderr_excerpt.text,
+                stdout_truncated: stdout_excerpt.truncated,
+                stderr_truncated: stderr_excerpt.truncated,
+                stdout_redacted: stdout_excerpt.redacted,
+                stderr_redacted: stderr_excerpt.redacted,
+                exit_code,
+                timed_out: false,
+                spawned: true,
+                preview_token: None,
+                policy,
+                changed_files: Vec::new(),
+                changed_files_truncated: false,
+                output_artifact,
+                suggested_next_actions,
+                host_command_impact: Some(host_command_impact),
+                sandbox: Some(sandbox_output.metadata),
             }),
         })
     }
@@ -1307,10 +1782,711 @@ impl AutonomousToolRuntime {
             .evaluate(&descriptor, &call, &ToolExecutionContext::default())
             .map_err(|denied| CommandError::user_fixable(denied.error.code, denied.error.message))
     }
+
+    fn host_command_sandbox_metadata(
+        &self,
+        prepared: &PreparedHostCommandRequest,
+        approval_source: SandboxApprovalSource,
+    ) -> CommandResult<SandboxExecutionMetadata> {
+        let descriptor = ToolDescriptorV2 {
+            name: AUTONOMOUS_TOOL_HOST_COMMAND.into(),
+            description:
+                "Launch an owner-approved host administration subprocess through the production sandbox runner."
+                    .into(),
+            input_schema: json!({ "type": "object" }),
+            capability_tags: vec!["subprocess".into(), "host_admin".into()],
+            application_metadata: Default::default(),
+            effect_class: ToolEffectClass::CommandExecution,
+            mutability: ToolMutability::Mutating,
+            sandbox_requirement: ToolSandboxRequirement::FullLocal,
+            approval_requirement: ToolApprovalRequirement::Policy,
+            telemetry_attributes: BTreeMap::from([
+                ("xero.tool.name".into(), AUTONOMOUS_TOOL_HOST_COMMAND.into()),
+                ("xero.sandbox.runner".into(), "production".into()),
+                ("xero.owner_admin.mode".into(), "active".into()),
+            ]),
+            result_truncation: Default::default(),
+        };
+        let mut app_data_roots = self
+            .environment_profile_database_path
+            .as_ref()
+            .and_then(|path| path.parent())
+            .map(|path| vec![path.to_string_lossy().into_owned()])
+            .unwrap_or_default();
+        app_data_roots.push(
+            project_app_data_dir_for_repo(&self.repo_root)
+                .to_string_lossy()
+                .into_owned(),
+        );
+        if let Some(settings_path) = owner_admin_settings_path_for_repo(&self.repo_root) {
+            if let Some(parent) = settings_path.parent() {
+                app_data_roots.push(parent.to_string_lossy().into_owned());
+            }
+        }
+        app_data_roots.sort();
+        app_data_roots.dedup();
+        let sandbox = PermissionProfileSandbox::new(SandboxExecutionContext {
+            workspace_root: host_command_sandbox_root(&prepared.cwd),
+            app_data_roots,
+            project_trust: ProjectTrustState::Trusted,
+            approval_source,
+            platform: SandboxPlatform::current(),
+            explicit_git_mutation_allowed: false,
+            legacy_xero_migration_allowed: false,
+            preserved_environment_keys: SAFE_COMMAND_ENV_KEYS
+                .iter()
+                .map(|key| (*key).to_owned())
+                .collect(),
+        });
+        let call = ToolCallInput {
+            tool_call_id: "host-command-subprocess".into(),
+            tool_name: AUTONOMOUS_TOOL_HOST_COMMAND.into(),
+            input: json!({
+                "argv": &prepared.argv,
+                "cwd": prepared.cwd.to_string_lossy(),
+                "timeoutMs": prepared.timeout_ms,
+                "reason": &prepared.reason,
+                "rollbackHints": &prepared.rollback_hints,
+                "detectedSurfaces": host_command_detected_surfaces(&prepared.argv),
+            }),
+        };
+        sandbox
+            .evaluate(&descriptor, &call, &ToolExecutionContext::default())
+            .map_err(|denied| CommandError::user_fixable(denied.error.code, denied.error.message))
+    }
+
+    pub(crate) fn owner_admin_mode_status(&self) -> OwnerAdminModeStatus {
+        let Some(settings_path) = owner_admin_settings_path_for_repo(&self.repo_root) else {
+            return OwnerAdminModeStatus {
+                active: false,
+                profile: "unknown".into(),
+                expires_at: None,
+                settings_path: None,
+                reason: "desktop-control settings path is unavailable for this runtime".into(),
+            };
+        };
+        let bytes = match fs::read(&settings_path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return OwnerAdminModeStatus {
+                    active: false,
+                    profile: "default_safe".into(),
+                    expires_at: None,
+                    settings_path: Some(settings_path),
+                    reason: "Owner Admin mode has not been enabled locally".into(),
+                };
+            }
+            Err(error) => {
+                return OwnerAdminModeStatus {
+                    active: false,
+                    profile: "unknown".into(),
+                    expires_at: None,
+                    settings_path: Some(settings_path),
+                    reason: format!("desktop-control settings could not be read: {error}"),
+                };
+            }
+        };
+        let settings = match serde_json::from_slice::<HostCommandDesktopSettings>(&bytes) {
+            Ok(settings) => settings,
+            Err(error) => {
+                return OwnerAdminModeStatus {
+                    active: false,
+                    profile: "unknown".into(),
+                    expires_at: None,
+                    settings_path: Some(settings_path),
+                    reason: format!("desktop-control settings could not be decoded: {error}"),
+                };
+            }
+        };
+        let profile = host_command_policy_profile_label(settings.policy_profile);
+        if settings.policy_profile != HostCommandPolicyProfile::OwnerAdmin {
+            return OwnerAdminModeStatus {
+                active: false,
+                profile: profile.into(),
+                expires_at: settings.owner_admin_expires_at,
+                settings_path: Some(settings_path),
+                reason: format!("policy profile is `{profile}`, not `owner_admin`"),
+            };
+        }
+        let Some(expires_at) = settings.owner_admin_expires_at else {
+            return OwnerAdminModeStatus {
+                active: false,
+                profile: profile.into(),
+                expires_at: None,
+                settings_path: Some(settings_path),
+                reason: "Owner Admin mode is missing an expiration timestamp".into(),
+            };
+        };
+        let Ok(expires_at_timestamp) = time::OffsetDateTime::parse(
+            &expires_at,
+            &time::format_description::well_known::Rfc3339,
+        ) else {
+            return OwnerAdminModeStatus {
+                active: false,
+                profile: profile.into(),
+                expires_at: Some(expires_at),
+                settings_path: Some(settings_path),
+                reason: "Owner Admin mode expiration timestamp is invalid".into(),
+            };
+        };
+        let active = expires_at_timestamp > time::OffsetDateTime::now_utc();
+        OwnerAdminModeStatus {
+            active,
+            profile: profile.into(),
+            expires_at: Some(expires_at),
+            settings_path: Some(settings_path),
+            reason: if active {
+                "Owner Admin mode is active and unexpired".into()
+            } else {
+                "Owner Admin mode has expired".into()
+            },
+        }
+    }
+
+    fn record_host_command_audit(&self, record: &HostCommandAuditRecord<'_>) -> CommandResult<()> {
+        let path = project_app_data_dir_for_repo(&self.repo_root).join(HOST_ADMIN_AUDIT_FILE);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                CommandError::system_fault(
+                    "host_command_audit_dir_failed",
+                    format!("Xero could not create host-command audit storage: {error}"),
+                )
+            })?;
+        }
+        let preview_token = if record.prepared.preview {
+            Some(host_command_preview_token(record.prepared, record.mode)?)
+        } else {
+            None
+        };
+        let preview_token_validated = if record.prepared.preview_token.is_some() {
+            Some(host_command_preview_token_matches(
+                record.prepared,
+                record.mode,
+            )?)
+        } else {
+            None
+        };
+        let impact = host_command_impact_assessment(record.prepared, record.mode)?;
+        let payload = json!({
+            "schema": "xero.host_command_audit.v1",
+            "timestamp": crate::auth::now_timestamp(),
+            "toolName": AUTONOMOUS_TOOL_HOST_COMMAND,
+            "argv": redact_command_argv_for_persistence(&record.prepared.argv),
+            "cwd": record.prepared.cwd.to_string_lossy(),
+            "preview": record.prepared.preview,
+            "previewToken": preview_token,
+            "previewTokenProvided": record.prepared.preview_token.is_some(),
+            "previewTokenValidated": preview_token_validated,
+            "reason": &record.prepared.reason,
+            "rollbackHints": &record.prepared.rollback_hints,
+            "policy": record.policy,
+            "ownerAdmin": {
+                "active": record.mode.active,
+                "profile": record.mode.profile,
+                "expiresAt": record.mode.expires_at,
+                "settingsPath": record.mode.settings_path.as_ref().map(|path| path.to_string_lossy().into_owned()),
+                "reason": record.mode.reason,
+            },
+            "spawned": record.spawned,
+            "exitCode": record.exit_code,
+            "stdoutRedacted": record.stdout_redacted,
+            "stderrRedacted": record.stderr_redacted,
+            "disposition": record.disposition,
+            "impact": impact,
+        });
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|error| {
+                CommandError::system_fault(
+                    "host_command_audit_open_failed",
+                    format!("Xero could not open host-command audit log: {error}"),
+                )
+            })?;
+        serde_json::to_writer(&mut file, &payload).map_err(|error| {
+            CommandError::system_fault(
+                "host_command_audit_encode_failed",
+                format!("Xero could not encode host-command audit record: {error}"),
+            )
+        })?;
+        file.write_all(b"\n").map_err(|error| {
+            CommandError::system_fault(
+                "host_command_audit_write_failed",
+                format!("Xero could not write host-command audit record: {error}"),
+            )
+        })
+    }
 }
 
 fn render_command_for_summary(argv: &[String]) -> String {
     render_command_for_persistence(argv)
+}
+
+fn normalize_host_command_argv(argv: &[String]) -> CommandResult<Vec<String>> {
+    if argv.is_empty() {
+        return Err(CommandError::user_fixable(
+            "host_command_argv_required",
+            "host_command requires at least one argv item.",
+        ));
+    }
+    if argv.len() > 128 {
+        return Err(CommandError::user_fixable(
+            "host_command_argv_too_long",
+            "host_command accepts at most 128 argv items.",
+        ));
+    }
+    let mut normalized = Vec::with_capacity(argv.len());
+    for item in argv {
+        let value = item.trim();
+        if value.is_empty() {
+            return Err(CommandError::user_fixable(
+                "host_command_argv_item_empty",
+                "host_command argv items cannot be empty.",
+            ));
+        }
+        if find_prohibited_persistence_content(value).is_some() {
+            return Err(CommandError::new(
+                "host_command_argv_secret_like",
+                crate::commands::CommandErrorClass::PolicyDenied,
+                "Xero denied host_command because argv contains credential-like material.",
+                false,
+            ));
+        }
+        normalized.push(value.to_owned());
+    }
+    Ok(normalized)
+}
+
+fn resolve_host_command_cwd(cwd: Option<&str>) -> CommandResult<PathBuf> {
+    let path = match cwd.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => expand_home_path(value)?,
+        None => host_default_cwd(),
+    };
+    if !path.is_absolute() {
+        return Err(CommandError::user_fixable(
+            "host_command_cwd_must_be_absolute",
+            "host_command cwd must be absolute or ~-relative.",
+        ));
+    }
+    let canonical = fs::canonicalize(&path).map_err(|error| {
+        CommandError::user_fixable(
+            "host_command_cwd_unavailable",
+            format!(
+                "Xero could not resolve host_command cwd `{}`: {error}",
+                path.display()
+            ),
+        )
+    })?;
+    if !canonical.is_dir() {
+        return Err(CommandError::user_fixable(
+            "host_command_cwd_not_directory",
+            format!(
+                "host_command cwd `{}` is not a directory.",
+                canonical.display()
+            ),
+        ));
+    }
+    Ok(canonical)
+}
+
+fn expand_home_path(value: &str) -> CommandResult<PathBuf> {
+    if value == "~" {
+        return host_home_dir();
+    }
+    if let Some(rest) = value
+        .strip_prefix("~/")
+        .or_else(|| value.strip_prefix("~\\"))
+    {
+        return Ok(host_home_dir()?.join(rest));
+    }
+    Ok(PathBuf::from(value))
+}
+
+fn host_home_dir() -> CommandResult<PathBuf> {
+    env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "host_command_home_unavailable",
+                "Xero could not resolve the current user's home directory for host_command.",
+            )
+        })
+}
+
+fn host_default_cwd() -> PathBuf {
+    host_home_dir()
+        .or_else(|_| env::current_dir().map_err(|_| CommandError::project_not_found()))
+        .unwrap_or_else(|_| {
+            PathBuf::from(if cfg!(target_os = "windows") {
+                "C:\\"
+            } else {
+                "/"
+            })
+        })
+}
+
+fn host_command_policy_profile(argv: &[String]) -> AutonomousCommandPolicyProfile {
+    let surfaces = host_command_detected_surfaces(argv);
+    if surfaces.iter().any(|surface| {
+        matches!(
+            surface.category.as_str(),
+            "privileged_shell"
+                | "registry"
+                | "service"
+                | "startup_item"
+                | "network_security"
+                | "credential_adjacent"
+                | "privacy_sensitive"
+                | "host_file_operation"
+        )
+    }) {
+        AutonomousCommandPolicyProfile::DestructiveOperation
+    } else if surfaces
+        .iter()
+        .any(|surface| surface.category == "package_manager")
+    {
+        AutonomousCommandPolicyProfile::DependencyInstallation
+    } else if surfaces
+        .iter()
+        .any(|surface| surface.category == "remote_transfer")
+    {
+        AutonomousCommandPolicyProfile::ExternalNetwork
+    } else {
+        AutonomousCommandPolicyProfile::GeneralExecution
+    }
+}
+
+fn host_command_requires_preview(prepared: &PreparedHostCommandRequest) -> bool {
+    matches!(
+        host_command_policy_profile(&prepared.argv),
+        AutonomousCommandPolicyProfile::DestructiveOperation
+            | AutonomousCommandPolicyProfile::DependencyInstallation
+            | AutonomousCommandPolicyProfile::ExternalNetwork
+    )
+}
+
+fn host_command_impact_assessment(
+    prepared: &PreparedHostCommandRequest,
+    mode: &OwnerAdminModeStatus,
+) -> CommandResult<AutonomousHostCommandImpact> {
+    Ok(AutonomousHostCommandImpact {
+        schema: "xero.host_command_impact.v1".into(),
+        policy_profile: host_command_policy_profile(&prepared.argv),
+        requires_preview: host_command_requires_preview(prepared),
+        requires_owner_approval: true,
+        preview_token_validated: if prepared.preview_token.is_some() {
+            Some(host_command_preview_token_matches(prepared, mode)?)
+        } else {
+            None
+        },
+        detected_surfaces: host_command_detected_surfaces(&prepared.argv),
+        rollback_hints: prepared.rollback_hints.clone(),
+        elevation: host_command_elevation_assessment(),
+        owner_admin_expires_at: mode.expires_at.clone(),
+    })
+}
+
+fn host_command_elevation_assessment() -> AutonomousHostCommandElevationAssessment {
+    AutonomousHostCommandElevationAssessment {
+        uses_os_native_prompt: true,
+        bypasses_os_protection: false,
+        protected_boundaries: vec![
+            "windows_uac".into(),
+            "windows_secure_desktop".into(),
+            "macos_tcc".into(),
+            "macos_sip".into(),
+            "credential_prompts".into(),
+        ],
+        user_action:
+            "If the OS shows an elevation, privacy, secure desktop, or credential prompt, only the local owner can approve it; Xero will not automate or bypass that prompt."
+                .into(),
+    }
+}
+
+fn host_command_os_prompt_next_action() -> String {
+    host_command_elevation_assessment().user_action
+}
+
+fn host_command_detected_surfaces(argv: &[String]) -> Vec<AutonomousHostCommandImpactSurface> {
+    let joined = format!(" {} ", argv.join(" ").to_ascii_lowercase());
+    let mut surfaces = Vec::new();
+
+    push_host_command_surface(
+        &mut surfaces,
+        &joined,
+        "privileged_shell",
+        &[
+            " sudo ",
+            " su ",
+            " doas ",
+            " runas ",
+            " administrator ",
+            "-verb runas",
+            " elevated ",
+        ],
+        "May request administrator privileges through an OS-native prompt.",
+    );
+    push_host_command_surface(
+        &mut surfaces,
+        &joined,
+        "package_manager",
+        &[
+            " brew ",
+            " winget ",
+            " choco ",
+            " scoop ",
+            " msiexec ",
+            " installer ",
+            " apt ",
+            " apt-get ",
+            " yum ",
+            " dnf ",
+            " pacman ",
+            " npm ",
+            " pnpm ",
+            " yarn ",
+            " pip ",
+            " cargo ",
+            " install ",
+            " uninstall ",
+        ],
+        "May install, remove, or run package-provided code on the workstation.",
+    );
+    push_host_command_surface(
+        &mut surfaces,
+        &joined,
+        "registry",
+        &[" reg ", " reg.exe ", " registry ", " hklm", " hkcu"],
+        "May mutate Windows registry state.",
+    );
+    push_host_command_surface(
+        &mut surfaces,
+        &joined,
+        "service",
+        &[
+            " launchctl ",
+            " systemctl ",
+            " sc.exe ",
+            " service ",
+            " daemon ",
+            " launchdaemon ",
+            " launchagent ",
+            " plist ",
+        ],
+        "May start, stop, install, remove, or reconfigure services or daemons.",
+    );
+    push_host_command_surface(
+        &mut surfaces,
+        &joined,
+        "startup_item",
+        &[
+            " schtasks ",
+            " startup ",
+            " login item ",
+            " run key ",
+            " launchagent ",
+            " launchdaemon ",
+        ],
+        "May change startup or login behavior.",
+    );
+    push_host_command_surface(
+        &mut surfaces,
+        &joined,
+        "network_security",
+        &[
+            " firewall ",
+            " netsh ",
+            " pfctl ",
+            " security policy ",
+            " proxy ",
+            " vpn ",
+        ],
+        "May affect network access, firewall rules, or security posture.",
+    );
+    push_host_command_surface(
+        &mut surfaces,
+        &joined,
+        "credential_adjacent",
+        &[
+            " credential ",
+            " keychain ",
+            " secret ",
+            " token ",
+            " password ",
+            " security ",
+        ],
+        "May interact with credential-adjacent storage or prompts.",
+    );
+    push_host_command_surface(
+        &mut surfaces,
+        &joined,
+        "privacy_sensitive",
+        &[
+            " privacy ",
+            " tcc ",
+            " screen recording ",
+            " accessibility ",
+            " input monitoring ",
+            " contacts ",
+            " microphone ",
+            " camera ",
+        ],
+        "May request or alter privacy-sensitive OS permissions.",
+    );
+    push_host_command_surface(
+        &mut surfaces,
+        &joined,
+        "host_file_operation",
+        &[
+            " rm ",
+            " del ",
+            " delete ",
+            " remove ",
+            " chmod ",
+            " chown ",
+            " takeown ",
+            " icacls ",
+            " diskutil ",
+            " mkfs ",
+            " format ",
+        ],
+        "May mutate host files, permissions, disks, or ownership.",
+    );
+    push_host_command_surface(
+        &mut surfaces,
+        &joined,
+        "remote_transfer",
+        &[
+            " curl ",
+            " wget ",
+            " ssh ",
+            " scp ",
+            " rsync ",
+            " invoke-webrequest ",
+        ],
+        "May fetch from or connect to external hosts.",
+    );
+    push_host_command_surface(
+        &mut surfaces,
+        &joined,
+        "app_launch_arguments",
+        &[
+            " open ",
+            " start-process ",
+            " explorer.exe ",
+            " application ",
+            " --args ",
+        ],
+        "May launch apps or pass host-level launch arguments.",
+    );
+
+    surfaces
+}
+
+fn push_host_command_surface(
+    surfaces: &mut Vec<AutonomousHostCommandImpactSurface>,
+    joined: &str,
+    category: &str,
+    needles: &[&str],
+    impact: &str,
+) {
+    if surfaces
+        .iter()
+        .any(|surface| surface.category.as_str() == category)
+    {
+        return;
+    }
+    let Some(needle) = needles.iter().find(|needle| joined.contains(**needle)) else {
+        return;
+    };
+    surfaces.push(AutonomousHostCommandImpactSurface {
+        category: category.into(),
+        evidence: needle.trim().into(),
+        impact: impact.into(),
+    });
+}
+
+fn host_command_preview_token_matches(
+    prepared: &PreparedHostCommandRequest,
+    mode: &OwnerAdminModeStatus,
+) -> CommandResult<bool> {
+    let Some(token) = prepared.preview_token.as_deref() else {
+        return Ok(false);
+    };
+    Ok(token == host_command_preview_token(prepared, mode)?)
+}
+
+fn host_command_preview_token(
+    prepared: &PreparedHostCommandRequest,
+    mode: &OwnerAdminModeStatus,
+) -> CommandResult<String> {
+    let payload = json!({
+        "schema": "xero.host_command_preview.v1",
+        "argv": &prepared.argv,
+        "cwd": prepared.cwd.to_string_lossy(),
+        "timeoutMs": prepared.timeout_ms,
+        "reason": &prepared.reason,
+        "rollbackHints": &prepared.rollback_hints,
+        "ownerAdminExpiresAt": mode.expires_at,
+    });
+    let bytes = serde_json::to_vec(&payload).map_err(|error| {
+        CommandError::system_fault(
+            "host_command_preview_token_encode_failed",
+            format!("Xero could not encode host-command preview token payload: {error}"),
+        )
+    })?;
+    Ok(sha256_hex(&bytes))
+}
+
+fn owner_admin_settings_path_for_repo(repo_root: &Path) -> Option<PathBuf> {
+    if let Some(path) = env::var_os(DESKTOP_CONTROL_SETTINGS_ENV)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+    {
+        return Some(path);
+    }
+    let parent = repo_root.parent()?;
+    if repo_root.file_name().and_then(|name| name.to_str()) == Some(GLOBAL_COMPUTER_USE_DIR) {
+        return Some(
+            parent
+                .join(DESKTOP_CONTROL_DIR)
+                .join(DESKTOP_CONTROL_SETTINGS_FILE),
+        );
+    }
+    None
+}
+
+fn host_command_sandbox_root(cwd: &Path) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        use std::path::{Component, Prefix};
+        if let Some(Component::Prefix(prefix)) = cwd.components().next() {
+            if let Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) = prefix.kind() {
+                return format!("{}:\\", char::from(letter));
+            }
+        }
+        return "C:\\".into();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = cwd;
+        "/".into()
+    }
+}
+
+fn default_host_command_policy_profile() -> HostCommandPolicyProfile {
+    HostCommandPolicyProfile::DefaultSafe
+}
+
+fn host_command_policy_profile_label(profile: HostCommandPolicyProfile) -> &'static str {
+    match profile {
+        HostCommandPolicyProfile::DefaultSafe => "default_safe",
+        HostCommandPolicyProfile::DeveloperWorkstation => "developer_workstation",
+        HostCommandPolicyProfile::OwnerAdmin => "owner_admin",
+    }
 }
 
 fn sandbox_approval_source_for_policy(

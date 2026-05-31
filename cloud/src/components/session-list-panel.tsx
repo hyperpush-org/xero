@@ -127,9 +127,10 @@ function groupSessionsByProject(
 }
 
 function loadCollapsedGroups(): Record<string, boolean> {
-	if (typeof window === "undefined") return {};
+	const storage = getBrowserLocalStorage();
+	if (!storage) return {};
 	try {
-		const raw = window.localStorage.getItem(COLLAPSED_GROUPS_STORAGE_KEY);
+		const raw = storage.getItem(COLLAPSED_GROUPS_STORAGE_KEY);
 		if (!raw) return {};
 		const parsed = JSON.parse(raw) as unknown;
 		if (!parsed || typeof parsed !== "object") return {};
@@ -142,6 +143,21 @@ function loadCollapsedGroups(): Record<string, boolean> {
 		return result;
 	} catch {
 		return {};
+	}
+}
+
+function getBrowserLocalStorage(): Storage | null {
+	if (typeof document === "undefined") return null;
+	const view = document.defaultView;
+	if (!view) return null;
+	try {
+		const storage = view.localStorage;
+		if (import.meta.env.MODE === "test" && !Object.hasOwn(storage, "getItem")) {
+			return null;
+		}
+		return storage;
+	} catch {
+		return null;
 	}
 }
 
@@ -179,9 +195,11 @@ export function SessionListPanel({
 		setCollapsedGroupsLoaded(true);
 	}, []);
 	useEffect(() => {
-		if (!collapsedGroupsLoaded || typeof window === "undefined") return;
+		if (!collapsedGroupsLoaded) return;
+		const storage = getBrowserLocalStorage();
+		if (!storage) return;
 		try {
-			window.localStorage.setItem(
+			storage.setItem(
 				COLLAPSED_GROUPS_STORAGE_KEY,
 				JSON.stringify(collapsedGroups),
 			);

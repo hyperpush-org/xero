@@ -116,6 +116,10 @@ prepare_macos_dev_bundle() {
   plist_set_string "$info_plist" LSMinimumSystemVersion 10.15
 
   sync_resources_if_present "$target_dir/resources" "$resources_dir/resources"
+  mkdir -p "$resources_dir/resources"
+  for desktop_sidecar in "$target_dir"/xero-desktop-sidecar*; do
+    copy_sidecar_if_present "$desktop_sidecar" "$resources_dir/resources" "$identifier"
+  done
 
   copy_sidecar_if_present "$target_dir/xero-cookie-importer" "$macos_dir" "$identifier"
   copy_sidecar_if_present "$target_dir/xero-ios-helper" "$macos_dir" "$identifier"

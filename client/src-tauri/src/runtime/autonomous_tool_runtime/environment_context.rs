@@ -356,7 +356,7 @@ mod tests {
         let search = runtime
             .tool_search(
                 crate::runtime::autonomous_tool_runtime::AutonomousToolSearchRequest {
-                    query: "installed cli tools protoc node rust".into(),
+                    query: "fetch_dev_tools installed cli tools protoc node rust".into(),
                     limit: Some(5),
                 },
             )

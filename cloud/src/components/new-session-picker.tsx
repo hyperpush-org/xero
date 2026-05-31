@@ -2,6 +2,7 @@ import { Button } from "@xero/ui/components/ui/button";
 import {
 	Drawer,
 	DrawerContent,
+	DrawerDescription,
 	DrawerHeader,
 	DrawerTitle,
 	DrawerTrigger,
@@ -128,6 +129,9 @@ export function NewSessionPicker({
 								{projectCount} {projectCount === 1 ? "project" : "projects"}
 							</span>
 						</div>
+						<DrawerDescription className="sr-only">
+							Choose a desktop project to start a new cloud session.
+						</DrawerDescription>
 					</DrawerHeader>
 					<div className="flex max-h-[60vh] flex-col overflow-y-auto px-1.5 pb-1.5">
 						{projects.map((project) => (

@@ -14,17 +14,10 @@ import {
   Trash2,
   X,
 } from "lucide-react"
+import { BaseDialog } from "@xero/ui/components/base-dialog"
 
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -422,31 +415,16 @@ export function MemoryReviewSection({
         </section>
       ) : null}
 
-      <Dialog open={editing !== null} onOpenChange={(open) => (open ? null : closeEditor())}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="text-[15px] font-semibold tracking-tight">Correct memory</DialogTitle>
-            <DialogDescription className="text-[12.5px] leading-[1.55]">
-              Submitting a correction creates a new approved memory that cites this one. The original record stays in the audit
-              trail.
-            </DialogDescription>
-          </DialogHeader>
-          <Textarea
-            aria-label="Corrected memory text"
-            value={editText}
-            onChange={(event) => {
-              setEditText(event.target.value)
-              if (editError) setEditError(null)
-            }}
-            rows={6}
-            className="font-mono text-[12.5px]"
-          />
-          {editError ? (
-            <p role="alert" className="text-[12.5px] text-destructive">
-              {editError}
-            </p>
-          ) : null}
-          <DialogFooter>
+      <BaseDialog
+        open={editing !== null}
+        onOpenChange={(open) => (open ? null : closeEditor())}
+        variant="form"
+        title="Correct memory"
+        description="Submitting a correction creates a new approved memory that cites this one. The original record stays in the audit trail."
+        titleClassName="text-[15px] font-semibold tracking-tight"
+        descriptionClassName="text-[12.5px] leading-[1.55]"
+        footer={
+          <>
             <Button
               variant="ghost"
               size="sm"
@@ -470,9 +448,25 @@ export function MemoryReviewSection({
               )}
               Save correction
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </>
+        }
+      >
+          <Textarea
+            aria-label="Corrected memory text"
+            value={editText}
+            onChange={(event) => {
+              setEditText(event.target.value)
+              if (editError) setEditError(null)
+            }}
+            rows={6}
+            className="font-mono text-[12.5px]"
+          />
+          {editError ? (
+            <p role="alert" className="text-[12.5px] text-destructive">
+              {editError}
+            </p>
+          ) : null}
+      </BaseDialog>
     </div>
   )
 }

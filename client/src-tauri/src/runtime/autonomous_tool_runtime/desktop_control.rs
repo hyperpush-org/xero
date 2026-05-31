@@ -16,29 +16,35 @@ use sha2::{Digest, Sha256};
 use xcap::{Monitor, Window};
 use xero_desktop_control_ipc::{
     hash_session_token, validate_sidecar_response, DesktopSidecarAccessibilitySnapshotPayload,
-    DesktopSidecarAccessibilitySnapshotRequest, DesktopSidecarApp, DesktopSidecarAppListPayload,
-    DesktopSidecarAuth, DesktopSidecarAuthScheme, DesktopSidecarCapabilities,
+    DesktopSidecarAccessibilitySnapshotRequest, DesktopSidecarApp, DesktopSidecarAppInventoryEntry,
+    DesktopSidecarAppInventoryPayload, DesktopSidecarAppListPayload, DesktopSidecarAuth,
+    DesktopSidecarAuthScheme, DesktopSidecarCapabilities, DesktopSidecarClipboardFilesPayload,
+    DesktopSidecarClipboardHtmlPayload, DesktopSidecarClipboardImagePayload,
+    DesktopSidecarClipboardRtfPayload, DesktopSidecarClipboardTextPayload,
     DesktopSidecarControlRequest, DesktopSidecarCursorStatePayload, DesktopSidecarDisplay,
+    DesktopSidecarDisplayArrangementPayload, DesktopSidecarDisplayBounds,
     DesktopSidecarDisplayListPayload, DesktopSidecarElementAtPointPayload, DesktopSidecarErrorBody,
     DesktopSidecarForegroundStatePayload, DesktopSidecarHandshake, DesktopSidecarIceCandidate,
     DesktopSidecarIceServer, DesktopSidecarIceServerUrls, DesktopSidecarMouseButton,
-    DesktopSidecarOcrSnapshotPayload, DesktopSidecarOcrSnapshotRequest, DesktopSidecarOperation,
-    DesktopSidecarPermissionGrant, DesktopSidecarPermissionStatus,
-    DesktopSidecarPermissionsPayload, DesktopSidecarPointRequest, DesktopSidecarRegion,
-    DesktopSidecarRequest, DesktopSidecarResponse, DesktopSidecarScreenshotPayload,
-    DesktopSidecarScreenshotRequest, DesktopSidecarSessionDescription,
-    DesktopSidecarStreamCapabilitiesPayload, DesktopSidecarStreamMetrics,
-    DesktopSidecarStreamPayload, DesktopSidecarStreamQuality, DesktopSidecarStreamRequest,
-    DesktopSidecarStreamStatus, DesktopSidecarStreamTransport, DesktopSidecarWindow,
-    DesktopSidecarWindowListPayload, DESKTOP_SIDECAR_PROTOCOL, DESKTOP_SIDECAR_SCHEMA_VERSION,
+    DesktopSidecarNotificationSnapshotPayload, DesktopSidecarOcrSnapshotPayload,
+    DesktopSidecarOcrSnapshotRequest, DesktopSidecarOperation, DesktopSidecarPermissionGrant,
+    DesktopSidecarPermissionStatus, DesktopSidecarPermissionsPayload, DesktopSidecarPointRequest,
+    DesktopSidecarRegion, DesktopSidecarRequest, DesktopSidecarResponse,
+    DesktopSidecarScreenshotPayload, DesktopSidecarScreenshotRequest,
+    DesktopSidecarSessionDescription, DesktopSidecarStreamCapabilitiesPayload,
+    DesktopSidecarStreamMetrics, DesktopSidecarStreamPayload, DesktopSidecarStreamQuality,
+    DesktopSidecarStreamRequest, DesktopSidecarStreamStatus, DesktopSidecarStreamTransport,
+    DesktopSidecarWindow, DesktopSidecarWindowListPayload, DESKTOP_SIDECAR_PROTOCOL,
+    DESKTOP_SIDECAR_SCHEMA_VERSION,
 };
 
 use super::{
     AutonomousMacosAutomationAction, AutonomousMacosAutomationRequest,
     AutonomousSystemDiagnosticsAction, AutonomousSystemDiagnosticsArtifactMode,
     AutonomousSystemDiagnosticsRequest, AutonomousToolOutput, AutonomousToolResult,
-    AutonomousToolRuntime, AUTONOMOUS_TOOL_DESKTOP_CONTROL, AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
-    AUTONOMOUS_TOOL_DESKTOP_STREAM,
+    AutonomousToolRuntime, AUTONOMOUS_TOOL_BROWSER_CONTROL, AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+    AUTONOMOUS_TOOL_COMMAND_RUN, AUTONOMOUS_TOOL_COMMAND_SESSION, AUTONOMOUS_TOOL_DESKTOP_CONTROL,
+    AUTONOMOUS_TOOL_DESKTOP_OBSERVE, AUTONOMOUS_TOOL_DESKTOP_STREAM, AUTONOMOUS_TOOL_HOST_COMMAND,
 };
 use crate::{
     commands::{validate_non_empty, CommandError, CommandErrorClass, CommandResult},
@@ -57,6 +63,9 @@ const DEFAULT_LOCK_LEASE_MS: u64 = 30_000;
 const DEFAULT_SIDECAR_LEASE_MS: u64 = 5 * 60 * 1_000;
 const MAX_TYPE_TEXT_CHARS: usize = 8_000;
 const MAX_MENU_PATH_SEGMENTS: usize = 8;
+const MAX_CLIPBOARD_FILE_PATHS: usize = 64;
+const MAX_CLIPBOARD_IMAGE_BASE64_CHARS: usize = 1_048_576;
+const MAX_CLIPBOARD_RTF_CHARS: usize = 512 * 1024;
 const DESKTOP_STATUS_SCHEMA: &str = "xero.desktop_control_status.v1";
 #[cfg(not(test))]
 const DESKTOP_SIDECAR_BINARY_NAME: &str = "xero-desktop-sidecar";
@@ -68,14 +77,23 @@ const DESKTOP_SIDECAR_SHA256_ENV: &str = "XERO_DESKTOP_SIDECAR_SHA256";
 pub enum AutonomousDesktopObserveAction {
     PermissionsStatus,
     DisplayList,
+    DisplayArrangement,
     WindowList,
     AppList,
+    AppInventory,
+    NotificationSnapshot,
     ForegroundState,
     Screenshot,
     CursorState,
     AccessibilitySnapshot,
     OcrSnapshot,
     ElementAtPoint,
+    ClipboardReadText,
+    ClipboardReadHtml,
+    ClipboardReadRtf,
+    ClipboardReadImage,
+    ClipboardReadFiles,
+    BridgeAffordances,
     Health,
 }
 
@@ -84,14 +102,23 @@ impl AutonomousDesktopObserveAction {
         match self {
             Self::PermissionsStatus => "permissions_status",
             Self::DisplayList => "display_list",
+            Self::DisplayArrangement => "display_arrangement",
             Self::WindowList => "window_list",
             Self::AppList => "app_list",
+            Self::AppInventory => "app_inventory",
+            Self::NotificationSnapshot => "notification_snapshot",
             Self::ForegroundState => "foreground_state",
             Self::Screenshot => "screenshot",
             Self::CursorState => "cursor_state",
             Self::AccessibilitySnapshot => "accessibility_snapshot",
             Self::OcrSnapshot => "ocr_snapshot",
             Self::ElementAtPoint => "element_at_point",
+            Self::ClipboardReadText => "clipboard_read_text",
+            Self::ClipboardReadHtml => "clipboard_read_html",
+            Self::ClipboardReadRtf => "clipboard_read_rtf",
+            Self::ClipboardReadImage => "clipboard_read_image",
+            Self::ClipboardReadFiles => "clipboard_read_files",
+            Self::BridgeAffordances => "bridge_affordances",
             Self::Health => "health",
         }
     }
@@ -103,6 +130,12 @@ impl AutonomousDesktopObserveAction {
                 | Self::AccessibilitySnapshot
                 | Self::OcrSnapshot
                 | Self::ElementAtPoint
+                | Self::ClipboardReadText
+                | Self::ClipboardReadHtml
+                | Self::ClipboardReadRtf
+                | Self::ClipboardReadImage
+                | Self::ClipboardReadFiles
+                | Self::NotificationSnapshot
         )
     }
 }
@@ -110,48 +143,114 @@ impl AutonomousDesktopObserveAction {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AutonomousDesktopControlAction {
+    MouseDown,
     MouseMove,
     MouseClick,
     MouseDoubleClick,
     MouseRightClick,
     MouseDrag,
+    MouseDragMove,
+    MouseUp,
     Scroll,
     KeyPress,
     Hotkey,
+    VolumeUp,
+    VolumeDown,
+    VolumeMute,
+    MediaPlayPause,
+    MediaNextTrack,
+    MediaPrevTrack,
     TypeText,
     PasteText,
+    ClipboardWriteText,
+    ClipboardWriteHtml,
+    ClipboardWriteRtf,
+    ClipboardWriteImage,
+    ClipboardWriteFiles,
+    FileDrop,
     FocusWindow,
+    WindowMaximize,
+    WindowMinimize,
+    WindowRestore,
+    WindowMoveResize,
+    WindowClose,
     ActivateApp,
     LaunchApp,
     QuitApp,
     AxPress,
     AxSetValue,
     AxFocus,
+    AxSelect,
+    AxConfirm,
+    AxCancel,
+    AxIncrement,
+    AxDecrement,
+    AxExpand,
+    AxCollapse,
+    AxScrollToVisible,
+    AxToggle,
     MenuSelect,
+    DockItemPress,
+    StatusItemPress,
+    FileDialogSetPath,
+    FileDialogConfirm,
     CancelCurrentAction,
 }
 
 impl AutonomousDesktopControlAction {
     fn as_str(&self) -> &'static str {
         match self {
+            Self::MouseDown => "mouse_down",
             Self::MouseMove => "mouse_move",
             Self::MouseClick => "mouse_click",
             Self::MouseDoubleClick => "mouse_double_click",
             Self::MouseRightClick => "mouse_right_click",
             Self::MouseDrag => "mouse_drag",
+            Self::MouseDragMove => "mouse_drag_move",
+            Self::MouseUp => "mouse_up",
             Self::Scroll => "scroll",
             Self::KeyPress => "key_press",
             Self::Hotkey => "hotkey",
+            Self::VolumeUp => "volume_up",
+            Self::VolumeDown => "volume_down",
+            Self::VolumeMute => "volume_mute",
+            Self::MediaPlayPause => "media_play_pause",
+            Self::MediaNextTrack => "media_next_track",
+            Self::MediaPrevTrack => "media_prev_track",
             Self::TypeText => "type_text",
             Self::PasteText => "paste_text",
+            Self::ClipboardWriteText => "clipboard_write_text",
+            Self::ClipboardWriteHtml => "clipboard_write_html",
+            Self::ClipboardWriteRtf => "clipboard_write_rtf",
+            Self::ClipboardWriteImage => "clipboard_write_image",
+            Self::ClipboardWriteFiles => "clipboard_write_files",
+            Self::FileDrop => "file_drop",
             Self::FocusWindow => "focus_window",
+            Self::WindowMaximize => "window_maximize",
+            Self::WindowMinimize => "window_minimize",
+            Self::WindowRestore => "window_restore",
+            Self::WindowMoveResize => "window_move_resize",
+            Self::WindowClose => "window_close",
             Self::ActivateApp => "activate_app",
             Self::LaunchApp => "launch_app",
             Self::QuitApp => "quit_app",
             Self::AxPress => "ax_press",
             Self::AxSetValue => "ax_set_value",
             Self::AxFocus => "ax_focus",
+            Self::AxSelect => "ax_select",
+            Self::AxConfirm => "ax_confirm",
+            Self::AxCancel => "ax_cancel",
+            Self::AxIncrement => "ax_increment",
+            Self::AxDecrement => "ax_decrement",
+            Self::AxExpand => "ax_expand",
+            Self::AxCollapse => "ax_collapse",
+            Self::AxScrollToVisible => "ax_scroll_to_visible",
+            Self::AxToggle => "ax_toggle",
             Self::MenuSelect => "menu_select",
+            Self::DockItemPress => "dock_item_press",
+            Self::StatusItemPress => "status_item_press",
+            Self::FileDialogSetPath => "file_dialog_set_path",
+            Self::FileDialogConfirm => "file_dialog_confirm",
             Self::CancelCurrentAction => "cancel_current_action",
         }
     }
@@ -201,6 +300,10 @@ pub struct AutonomousDesktopObserveRequest {
     pub x: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub y: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_data: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -234,6 +337,20 @@ pub struct AutonomousDesktopControlRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delta_y: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_data: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_data_base64: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub file_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub button: Option<AutonomousDesktopMouseButton>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clicks: Option<u8>,
@@ -243,6 +360,18 @@ pub struct AutonomousDesktopControlRequest {
     pub keys: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub html: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtf: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_start: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_end: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -363,6 +492,8 @@ pub struct AutonomousDesktopCapabilities {
     pub screenshot: bool,
     pub window_list: bool,
     pub app_list: bool,
+    #[serde(default)]
+    pub notification_observation: bool,
     pub foreground_state: bool,
     pub cursor_state: bool,
     pub accessibility_snapshot: bool,
@@ -370,6 +501,10 @@ pub struct AutonomousDesktopCapabilities {
     pub mouse_input: bool,
     pub keyboard_input: bool,
     pub clipboard: bool,
+    #[serde(default)]
+    pub window_focus: bool,
+    #[serde(default)]
+    pub app_control: bool,
     pub accessibility_actions: bool,
     pub menu_select: bool,
     pub webrtc_stream: bool,
@@ -689,6 +824,7 @@ impl From<DesktopSidecarCapabilities> for AutonomousDesktopCapabilities {
             screenshot: capabilities.screenshot,
             window_list: capabilities.window_list,
             app_list: capabilities.app_list,
+            notification_observation: capabilities.notification_observation,
             foreground_state: capabilities.foreground_state,
             cursor_state: capabilities.cursor_state,
             accessibility_snapshot: capabilities.accessibility_snapshot,
@@ -696,6 +832,8 @@ impl From<DesktopSidecarCapabilities> for AutonomousDesktopCapabilities {
             mouse_input: capabilities.mouse_input,
             keyboard_input: capabilities.keyboard_input,
             clipboard: capabilities.clipboard,
+            window_focus: capabilities.window_focus,
+            app_control: capabilities.app_control,
             accessibility_actions: capabilities.accessibility_actions,
             menu_select: capabilities.menu_select,
             webrtc_stream: capabilities.webrtc_stream,
@@ -1020,7 +1158,7 @@ impl AutonomousToolRuntime {
                 request.action.as_str(),
                 policy,
                 AutonomousDesktopToolStatus::ApprovalRequired,
-                "Desktop observation requires operator approval before sensitive screen state is captured.",
+                "Desktop observation was paused by policy.",
             )?;
             return Ok(desktop_result(AUTONOMOUS_TOOL_DESKTOP_OBSERVE, output));
         }
@@ -1145,7 +1283,7 @@ impl AutonomousToolRuntime {
                 request.action.as_str(),
                 policy,
                 AutonomousDesktopToolStatus::ApprovalRequired,
-                "Desktop control requires operator approval before native input is sent.",
+                "Desktop control requires operator approval before a destructive action is performed.",
             )?;
             return Ok(desktop_result(AUTONOMOUS_TOOL_DESKTOP_CONTROL, output));
         }
@@ -1427,7 +1565,7 @@ impl AutonomousToolRuntime {
                 request.action.as_str(),
                 policy,
                 AutonomousDesktopToolStatus::ApprovalRequired,
-                "Desktop streaming requires operator approval before screen media is exposed.",
+                "Desktop streaming was paused by policy.",
             )?;
             return Ok(desktop_result(AUTONOMOUS_TOOL_DESKTOP_STREAM, output));
         }
@@ -1468,6 +1606,21 @@ impl AutonomousToolRuntime {
                 output.displays = desktop_displays()?;
                 output.message = format!("Returned {} desktop display(s).", output.displays.len());
             }
+            AutonomousDesktopObserveAction::DisplayArrangement => {
+                let (arrangement, source) = desktop_display_arrangement()?;
+                output.displays = arrangement
+                    .displays
+                    .iter()
+                    .cloned()
+                    .map(AutonomousDesktopDisplay::from)
+                    .collect();
+                output.structured_snapshot =
+                    Some(display_arrangement_snapshot(&arrangement, source));
+                output.message = format!(
+                    "Returned desktop display arrangement for {} display(s).",
+                    arrangement.display_count
+                );
+            }
             AutonomousDesktopObserveAction::WindowList => {
                 output.windows = desktop_windows()?;
                 output.message = format!("Returned {} desktop window(s).", output.windows.len());
@@ -1475,6 +1628,53 @@ impl AutonomousToolRuntime {
             AutonomousDesktopObserveAction::AppList => {
                 output.apps = desktop_apps()?;
                 output.message = format!("Returned {} desktop app(s).", output.apps.len());
+            }
+            AutonomousDesktopObserveAction::AppInventory => {
+                let (inventory, source) = desktop_app_inventory()?;
+                output.apps = inventory
+                    .apps
+                    .iter()
+                    .filter(|app| app.running)
+                    .map(|app| AutonomousDesktopApp {
+                        app_name: app.app_name.clone(),
+                        pid: app.pid.unwrap_or_default(),
+                        window_count: app.window_count,
+                        focused: app.focused,
+                    })
+                    .collect();
+                output.structured_snapshot = Some(json!({
+                    "schema": "xero.desktop_app_inventory.v1",
+                    "platform": std::env::consts::OS,
+                    "source": source,
+                    "observedAt": now_timestamp(),
+                    "apps": &inventory.apps,
+                    "count": inventory.count,
+                    "sources": &inventory.sources,
+                    "diagnostics": &inventory.diagnostics,
+                }));
+                output.message = format!(
+                    "Returned desktop app inventory with {} launch target(s).",
+                    inventory.count
+                );
+            }
+            AutonomousDesktopObserveAction::NotificationSnapshot => {
+                let (snapshot, source) = desktop_notification_snapshot()?;
+                output.structured_snapshot = Some(json!({
+                    "schema": "xero.desktop_notifications.v1",
+                    "platform": std::env::consts::OS,
+                    "source": source,
+                    "observedAt": now_timestamp(),
+                    "available": snapshot.available,
+                    "permissionStatus": snapshot.permission_status,
+                    "notifications": &snapshot.notifications,
+                    "count": snapshot.count,
+                    "diagnostics": &snapshot.diagnostics,
+                }));
+                output.message = if snapshot.available {
+                    format!("Returned {} desktop notification(s).", snapshot.count)
+                } else {
+                    "Desktop notification observation is unavailable on this host or needs OS-level permission.".into()
+                };
             }
             AutonomousDesktopObserveAction::ForegroundState => {
                 output.foreground = foreground_window()?;
@@ -1528,12 +1728,113 @@ impl AutonomousToolRuntime {
                     }
                 }
             }
+            AutonomousDesktopObserveAction::ClipboardReadText => {
+                self.attach_clipboard_text(&mut output)?;
+            }
+            AutonomousDesktopObserveAction::ClipboardReadHtml => {
+                self.attach_clipboard_html(&request, &mut output)?;
+            }
+            AutonomousDesktopObserveAction::ClipboardReadRtf => {
+                self.attach_clipboard_rtf(&request, &mut output)?;
+            }
+            AutonomousDesktopObserveAction::ClipboardReadImage => {
+                self.attach_clipboard_image(&request, &mut output)?;
+            }
+            AutonomousDesktopObserveAction::ClipboardReadFiles => {
+                self.attach_clipboard_files(&mut output)?;
+            }
+            AutonomousDesktopObserveAction::BridgeAffordances => {
+                output.structured_snapshot = Some(self.desktop_bridge_affordances()?);
+                output.message =
+                    "Returned desktop bridge affordances for browser and terminal routing.".into();
+            }
             AutonomousDesktopObserveAction::Health => {
                 output.message = "Desktop sidecar contract is healthy.".into();
             }
         }
         output.audit_id = Some(self.write_desktop_audit(&output, None)?);
         Ok(output)
+    }
+
+    fn desktop_bridge_affordances(&self) -> CommandResult<serde_json::Value> {
+        let mut diagnostics = Vec::new();
+        let foreground = match foreground_window() {
+            Ok(foreground) => foreground,
+            Err(error) => {
+                diagnostics.push(format!("foreground_unavailable: {}", error.message));
+                None
+            }
+        };
+        let app_name = foreground.as_ref().map(|window| window.app_name.as_str());
+        let title = foreground.as_ref().map(|window| window.title.as_str());
+        let bridge = classify_desktop_bridge_target(app_name, title);
+        let browser_tools = [
+            AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+            AUTONOMOUS_TOOL_BROWSER_CONTROL,
+        ]
+        .into_iter()
+        .filter(|tool| self.tool_available_by_runtime(tool))
+        .collect::<Vec<_>>();
+        let command_tools = [
+            AUTONOMOUS_TOOL_COMMAND_RUN,
+            AUTONOMOUS_TOOL_COMMAND_SESSION,
+            AUTONOMOUS_TOOL_HOST_COMMAND,
+        ]
+        .into_iter()
+        .filter(|tool| self.tool_available_by_runtime(tool))
+        .collect::<Vec<_>>();
+        let desktop_tools = [
+            AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
+            AUTONOMOUS_TOOL_DESKTOP_CONTROL,
+        ]
+        .into_iter()
+        .filter(|tool| self.tool_available_by_runtime(tool))
+        .collect::<Vec<_>>();
+        let preferred_tools = match bridge.family {
+            "browser" if !browser_tools.is_empty() => browser_tools.clone(),
+            "terminal" if !command_tools.is_empty() => command_tools.clone(),
+            _ => desktop_tools.clone(),
+        };
+
+        Ok(json!({
+            "schema": "xero.desktop_bridge_affordances.v1",
+            "platform": std::env::consts::OS,
+            "observedAt": now_timestamp(),
+            "foreground": foreground.as_ref().map(|window| {
+                json!({
+                    "appName": window.app_name.as_str(),
+                    "title": window.title.as_str(),
+                    "pid": window.pid,
+                    "windowId": window.window_id.as_str(),
+                })
+            }),
+            "recommendation": {
+                "toolFamily": bridge.family,
+                "confidence": bridge.confidence,
+                "reason": bridge.reason,
+                "preferredTools": preferred_tools,
+            },
+            "availability": {
+                "browser": {
+                    "available": !browser_tools.is_empty(),
+                    "tools": browser_tools,
+                },
+                "command": {
+                    "available": !command_tools.is_empty(),
+                    "tools": command_tools,
+                },
+                "desktop": {
+                    "available": !desktop_tools.is_empty(),
+                    "tools": desktop_tools,
+                },
+            },
+            "handoffGuidance": [
+                "Use browser_observe/browser_control for browser navigation, DOM actions, page text, storage, console, and network diagnostics when available.",
+                "Use command_run/command_session, or owner-approved host_command for host-administration tasks, instead of typing shell commands into a terminal window.",
+                "Use desktop_observe/desktop_control when the task depends on native app UI state that structured browser or command tools cannot reach."
+            ],
+            "diagnostics": diagnostics,
+        }))
     }
 
     fn attach_accessibility_snapshot(
@@ -1735,6 +2036,237 @@ impl AutonomousToolRuntime {
         Ok(())
     }
 
+    fn attach_clipboard_text(&self, output: &mut AutonomousDesktopToolOutput) -> CommandResult<()> {
+        match desktop_clipboard_read_text(&output.policy.decision_id) {
+            Ok(clipboard) => {
+                output.structured_snapshot = Some(json!({
+                    "schema": "xero.desktop_clipboard_text.v1",
+                    "available": clipboard.available,
+                    "text": clipboard.text,
+                    "length": clipboard.length,
+                    "storage": "ephemeral",
+                    "approval": "operator_approved",
+                }));
+                output.status = AutonomousDesktopToolStatus::Executed;
+                output.message = format!(
+                    "Returned clipboard text with {} character(s).",
+                    clipboard.length
+                );
+            }
+            Err(error) => {
+                output.status = if matches!(
+                    error.code.as_str(),
+                    "sidecar_unavailable" | "sidecar_operation_unimplemented"
+                ) {
+                    AutonomousDesktopToolStatus::Unavailable
+                } else {
+                    AutonomousDesktopToolStatus::Failed
+                };
+                output.error = Some(desktop_error(
+                    &error.code,
+                    &error.message,
+                    error.retryable,
+                    error.user_action_required,
+                    "Use clipboard_write_text or ask the user to paste the needed non-secret text.",
+                ));
+                output.message = error.message;
+            }
+        }
+        Ok(())
+    }
+
+    fn attach_clipboard_html(
+        &self,
+        request: &AutonomousDesktopObserveRequest,
+        output: &mut AutonomousDesktopToolOutput,
+    ) -> CommandResult<()> {
+        match desktop_clipboard_read_html(request, &output.policy.decision_id) {
+            Ok(clipboard) => {
+                output.structured_snapshot = Some(json!({
+                    "schema": "xero.desktop_clipboard_html.v1",
+                    "available": clipboard.available,
+                    "html": clipboard.html,
+                    "byteLength": clipboard.byte_length,
+                    "truncated": clipboard.truncated,
+                    "storage": "ephemeral",
+                    "approval": "operator_approved",
+                }));
+                output.status = AutonomousDesktopToolStatus::Executed;
+                output.message = if clipboard.available {
+                    format!(
+                        "Returned clipboard HTML with {} byte(s).",
+                        clipboard.byte_length
+                    )
+                } else {
+                    "The clipboard does not currently contain HTML.".into()
+                };
+            }
+            Err(error) => {
+                output.status = if matches!(
+                    error.code.as_str(),
+                    "sidecar_unavailable" | "sidecar_operation_unimplemented"
+                ) {
+                    AutonomousDesktopToolStatus::Unavailable
+                } else {
+                    AutonomousDesktopToolStatus::Failed
+                };
+                output.error = Some(desktop_error(
+                    &error.code,
+                    &error.message,
+                    error.retryable,
+                    error.user_action_required,
+                    "Ask the user to provide the rich clipboard payload another way or retry after the clipboard is available.",
+                ));
+                output.message = error.message;
+            }
+        }
+        Ok(())
+    }
+
+    fn attach_clipboard_rtf(
+        &self,
+        request: &AutonomousDesktopObserveRequest,
+        output: &mut AutonomousDesktopToolOutput,
+    ) -> CommandResult<()> {
+        match desktop_clipboard_read_rtf(request, &output.policy.decision_id) {
+            Ok(clipboard) => {
+                output.structured_snapshot = Some(json!({
+                    "schema": "xero.desktop_clipboard_rtf.v1",
+                    "available": clipboard.available,
+                    "rtf": clipboard.rtf,
+                    "byteLength": clipboard.byte_length,
+                    "truncated": clipboard.truncated,
+                    "diagnostics": clipboard.diagnostics,
+                    "storage": "ephemeral",
+                    "approval": "operator_approved",
+                }));
+                output.status = AutonomousDesktopToolStatus::Executed;
+                output.message = if clipboard.available {
+                    format!(
+                        "Returned clipboard RTF with {} byte(s).",
+                        clipboard.byte_length
+                    )
+                } else {
+                    "The clipboard does not currently contain RTF.".into()
+                };
+            }
+            Err(error) => {
+                output.status = if matches!(
+                    error.code.as_str(),
+                    "sidecar_unavailable" | "sidecar_operation_unimplemented"
+                ) {
+                    AutonomousDesktopToolStatus::Unavailable
+                } else {
+                    AutonomousDesktopToolStatus::Failed
+                };
+                output.error = Some(desktop_error(
+                    &error.code,
+                    &error.message,
+                    error.retryable,
+                    error.user_action_required,
+                    "Ask the user to provide the rich clipboard payload another way or retry after the clipboard is available.",
+                ));
+                output.message = error.message;
+            }
+        }
+        Ok(())
+    }
+
+    fn attach_clipboard_image(
+        &self,
+        request: &AutonomousDesktopObserveRequest,
+        output: &mut AutonomousDesktopToolOutput,
+    ) -> CommandResult<()> {
+        match desktop_clipboard_read_image(request, &output.policy.decision_id) {
+            Ok(clipboard) => {
+                output.structured_snapshot = Some(json!({
+                    "schema": "xero.desktop_clipboard_image.v1",
+                    "available": clipboard.available,
+                    "mediaType": clipboard.media_type,
+                    "width": clipboard.width,
+                    "height": clipboard.height,
+                    "byteLength": clipboard.byte_length,
+                    "dataBase64": clipboard.data_base64,
+                    "truncated": clipboard.truncated,
+                    "storage": "ephemeral",
+                    "approval": "operator_approved",
+                }));
+                output.status = AutonomousDesktopToolStatus::Executed;
+                output.message = if clipboard.available {
+                    format!(
+                        "Returned clipboard image metadata for {}x{} image.",
+                        clipboard.width, clipboard.height
+                    )
+                } else {
+                    "The clipboard does not currently contain an image.".into()
+                };
+            }
+            Err(error) => {
+                output.status = if matches!(
+                    error.code.as_str(),
+                    "sidecar_unavailable" | "sidecar_operation_unimplemented"
+                ) {
+                    AutonomousDesktopToolStatus::Unavailable
+                } else {
+                    AutonomousDesktopToolStatus::Failed
+                };
+                output.error = Some(desktop_error(
+                    &error.code,
+                    &error.message,
+                    error.retryable,
+                    error.user_action_required,
+                    "Ask the user to provide the image another way or retry after the clipboard is available.",
+                ));
+                output.message = error.message;
+            }
+        }
+        Ok(())
+    }
+
+    fn attach_clipboard_files(
+        &self,
+        output: &mut AutonomousDesktopToolOutput,
+    ) -> CommandResult<()> {
+        match desktop_clipboard_read_files(&output.policy.decision_id) {
+            Ok(clipboard) => {
+                output.structured_snapshot = Some(json!({
+                    "schema": "xero.desktop_clipboard_files.v1",
+                    "available": clipboard.available,
+                    "files": clipboard.files,
+                    "count": clipboard.count,
+                    "truncated": clipboard.truncated,
+                    "storage": "ephemeral",
+                    "approval": "operator_approved",
+                }));
+                output.status = AutonomousDesktopToolStatus::Executed;
+                output.message = if clipboard.available {
+                    format!("Returned {} clipboard file path(s).", clipboard.count)
+                } else {
+                    "The clipboard does not currently contain file paths.".into()
+                };
+            }
+            Err(error) => {
+                output.status = if matches!(
+                    error.code.as_str(),
+                    "sidecar_unavailable" | "sidecar_operation_unimplemented"
+                ) {
+                    AutonomousDesktopToolStatus::Unavailable
+                } else {
+                    AutonomousDesktopToolStatus::Failed
+                };
+                output.error = Some(desktop_error(
+                    &error.code,
+                    &error.message,
+                    error.retryable,
+                    error.user_action_required,
+                    "Ask the user to provide the file paths another way or retry after the clipboard is available.",
+                ));
+                output.message = error.message;
+            }
+        }
+        Ok(())
+    }
+
     fn run_desktop_control(
         &self,
         mut request: AutonomousDesktopControlRequest,
@@ -1801,6 +2333,19 @@ impl AutonomousToolRuntime {
                     Ok("Cancelled current desktop action and released the controller lock.".into())
                 }
             }
+            AutonomousDesktopControlAction::MouseDown => {
+                if let Some(message) =
+                    run_sidecar_desktop_control(&request, &output.policy.decision_id)?
+                {
+                    Ok(message)
+                } else {
+                    platform_input::mouse_down(
+                        required_point(&request)?,
+                        request.button.unwrap_or_default(),
+                    )?;
+                    Ok("Pressed desktop pointer button.".into())
+                }
+            }
             AutonomousDesktopControlAction::MouseMove => {
                 if let Some(message) =
                     run_sidecar_desktop_control(&request, &output.policy.decision_id)?
@@ -1846,6 +2391,29 @@ impl AutonomousToolRuntime {
                     Ok("Dragged desktop pointer target.".into())
                 }
             }
+            AutonomousDesktopControlAction::MouseDragMove => {
+                if let Some(message) =
+                    run_sidecar_desktop_control(&request, &output.policy.decision_id)?
+                {
+                    Ok(message)
+                } else {
+                    platform_input::mouse_drag_move(required_point(&request)?)?;
+                    Ok("Moved held desktop pointer.".into())
+                }
+            }
+            AutonomousDesktopControlAction::MouseUp => {
+                if let Some(message) =
+                    run_sidecar_desktop_control(&request, &output.policy.decision_id)?
+                {
+                    Ok(message)
+                } else {
+                    platform_input::mouse_up(
+                        required_point(&request)?,
+                        request.button.unwrap_or_default(),
+                    )?;
+                    Ok("Released desktop pointer button.".into())
+                }
+            }
             AutonomousDesktopControlAction::Scroll => {
                 let delta_x = request.delta_x.unwrap_or(0);
                 let delta_y = request.delta_y.unwrap_or(0);
@@ -1860,17 +2428,23 @@ impl AutonomousToolRuntime {
                     Ok("Sent desktop scroll input.".into())
                 }
             }
-            AutonomousDesktopControlAction::KeyPress => {
+            AutonomousDesktopControlAction::KeyPress
+            | AutonomousDesktopControlAction::VolumeUp
+            | AutonomousDesktopControlAction::VolumeDown
+            | AutonomousDesktopControlAction::VolumeMute
+            | AutonomousDesktopControlAction::MediaPlayPause
+            | AutonomousDesktopControlAction::MediaNextTrack
+            | AutonomousDesktopControlAction::MediaPrevTrack => {
+                let key = desktop_control_key_for_action(&request)?;
+                let mut key_request = request.clone();
+                key_request.action = AutonomousDesktopControlAction::KeyPress;
+                key_request.key = Some(key.clone());
                 if let Some(message) =
-                    run_sidecar_desktop_control(&request, &output.policy.decision_id)?
+                    run_sidecar_desktop_control(&key_request, &output.policy.decision_id)?
                 {
                     Ok(message)
                 } else {
-                    let key = request
-                        .key
-                        .as_deref()
-                        .ok_or_else(|| CommandError::invalid_request("key"))?;
-                    platform_input::key_press(key)?;
+                    platform_input::key_press(&key)?;
                     Ok("Sent desktop key press.".into())
                 }
             }
@@ -1910,30 +2484,105 @@ impl AutonomousToolRuntime {
                     ))
                 }
             }
+            AutonomousDesktopControlAction::ClipboardWriteText => {
+                if let Some(message) =
+                    run_sidecar_desktop_control(&request, &output.policy.decision_id)?
+                {
+                    Ok(message)
+                } else {
+                    Err(CommandError::user_fixable(
+                        "sidecar_unavailable",
+                        "Clipboard text writes require the clipboard sidecar backend for the active platform.",
+                    ))
+                }
+            }
+            AutonomousDesktopControlAction::ClipboardWriteHtml
+            | AutonomousDesktopControlAction::ClipboardWriteRtf => {
+                if let Some(message) =
+                    run_sidecar_desktop_control(&request, &output.policy.decision_id)?
+                {
+                    Ok(message)
+                } else {
+                    Err(CommandError::user_fixable(
+                        "sidecar_unavailable",
+                        "Rich clipboard writes require the clipboard sidecar backend for the active platform.",
+                    ))
+                }
+            }
+            AutonomousDesktopControlAction::ClipboardWriteImage
+            | AutonomousDesktopControlAction::ClipboardWriteFiles
+            | AutonomousDesktopControlAction::FileDrop => {
+                if let Some(message) =
+                    run_sidecar_desktop_control(&request, &output.policy.decision_id)?
+                {
+                    Ok(message)
+                } else {
+                    Err(CommandError::user_fixable(
+                        "sidecar_unavailable",
+                        "Clipboard image, file-list, and file-drop actions require the clipboard sidecar backend for the active platform.",
+                    ))
+                }
+            }
+            AutonomousDesktopControlAction::WindowMaximize
+            | AutonomousDesktopControlAction::WindowMinimize
+            | AutonomousDesktopControlAction::WindowRestore
+            | AutonomousDesktopControlAction::WindowMoveResize
+            | AutonomousDesktopControlAction::WindowClose => {
+                if let Some(message) =
+                    run_sidecar_desktop_control(&request, &output.policy.decision_id)?
+                {
+                    Ok(message)
+                } else {
+                    Err(CommandError::user_fixable(
+                        "sidecar_unavailable",
+                        "Desktop window layout actions require the platform window-control sidecar backend.",
+                    ))
+                }
+            }
             AutonomousDesktopControlAction::FocusWindow
             | AutonomousDesktopControlAction::ActivateApp
             | AutonomousDesktopControlAction::LaunchApp
             | AutonomousDesktopControlAction::QuitApp => {
-                let action = match request.action {
-                    AutonomousDesktopControlAction::FocusWindow => {
-                        AutonomousMacosAutomationAction::MacWindowFocus
-                    }
-                    AutonomousDesktopControlAction::ActivateApp => {
-                        AutonomousMacosAutomationAction::MacAppActivate
-                    }
-                    AutonomousDesktopControlAction::LaunchApp => {
-                        AutonomousMacosAutomationAction::MacAppLaunch
-                    }
-                    AutonomousDesktopControlAction::QuitApp => {
-                        AutonomousMacosAutomationAction::MacAppQuit
-                    }
-                    _ => unreachable!("desktop app-control action already matched"),
-                };
-                self.run_desktop_app_automation(&request, action, &mut output)
+                if let Some(message) =
+                    run_sidecar_desktop_control(&request, &output.policy.decision_id)?
+                {
+                    Ok(message)
+                } else if cfg!(target_os = "macos") {
+                    let action = match request.action {
+                        AutonomousDesktopControlAction::FocusWindow => {
+                            AutonomousMacosAutomationAction::MacWindowFocus
+                        }
+                        AutonomousDesktopControlAction::ActivateApp => {
+                            AutonomousMacosAutomationAction::MacAppActivate
+                        }
+                        AutonomousDesktopControlAction::LaunchApp => {
+                            AutonomousMacosAutomationAction::MacAppLaunch
+                        }
+                        AutonomousDesktopControlAction::QuitApp => {
+                            AutonomousMacosAutomationAction::MacAppQuit
+                        }
+                        _ => unreachable!("desktop app-control action already matched"),
+                    };
+                    self.run_desktop_app_automation(&request, action, &mut output)
+                } else {
+                    Err(CommandError::user_fixable(
+                        "sidecar_unavailable",
+                        "Desktop app launch, activation, quit, and window focus require the platform app-control backend.",
+                    ))
+                }
             }
             AutonomousDesktopControlAction::AxPress
             | AutonomousDesktopControlAction::AxSetValue
-            | AutonomousDesktopControlAction::AxFocus => {
+            | AutonomousDesktopControlAction::AxFocus
+            | AutonomousDesktopControlAction::AxSelect
+            | AutonomousDesktopControlAction::AxConfirm
+            | AutonomousDesktopControlAction::AxCancel
+            | AutonomousDesktopControlAction::AxIncrement
+            | AutonomousDesktopControlAction::AxDecrement
+            | AutonomousDesktopControlAction::AxExpand
+            | AutonomousDesktopControlAction::AxCollapse
+            | AutonomousDesktopControlAction::AxScrollToVisible
+            | AutonomousDesktopControlAction::AxToggle => {
                 if let Some(message) =
                     run_sidecar_desktop_control(&request, &output.policy.decision_id)?
                 {
@@ -1954,6 +2603,21 @@ impl AutonomousToolRuntime {
                     Err(CommandError::user_fixable(
                         "sidecar_unavailable",
                         "This desktop action requires a platform app-menu backend that is not available in the current sidecar.",
+                    ))
+                }
+            }
+            AutonomousDesktopControlAction::DockItemPress
+            | AutonomousDesktopControlAction::StatusItemPress
+            | AutonomousDesktopControlAction::FileDialogSetPath
+            | AutonomousDesktopControlAction::FileDialogConfirm => {
+                if let Some(message) =
+                    run_sidecar_desktop_control(&request, &output.policy.decision_id)?
+                {
+                    Ok(message)
+                } else {
+                    Err(CommandError::user_fixable(
+                        "sidecar_unavailable",
+                        "This desktop action requires a macOS Dock, status item, or file-dialog helper that is not available in the current sidecar.",
                     ))
                 }
             }
@@ -2627,6 +3291,7 @@ impl AutonomousToolRuntime {
             })?;
         }
         let summary = desktop_audit_summary(output, reason);
+        let redacted_payload_kinds = desktop_audit_payload_kinds(output);
         let record = json!({
             "schema": "xero.desktop_control_audit.v1",
             "id": audit_id,
@@ -2645,6 +3310,8 @@ impl AutonomousToolRuntime {
             "status": output.status,
             "errorCode": output.error.as_ref().map(|error| error.code.as_str()),
             "summary": summary,
+            "payloadRedacted": !redacted_payload_kinds.is_empty(),
+            "redactedPayloadKinds": redacted_payload_kinds,
         });
         let mut file = open_desktop_metadata_append_file(&audit_path).map_err(|error| {
             CommandError::system_fault(
@@ -2869,6 +3536,25 @@ fn validate_desktop_observe_request(
     Ok(())
 }
 
+fn desktop_control_key_for_action(
+    request: &AutonomousDesktopControlRequest,
+) -> CommandResult<String> {
+    match request.action {
+        AutonomousDesktopControlAction::VolumeUp => Ok("volume_up".into()),
+        AutonomousDesktopControlAction::VolumeDown => Ok("volume_down".into()),
+        AutonomousDesktopControlAction::VolumeMute => Ok("volume_mute".into()),
+        AutonomousDesktopControlAction::MediaPlayPause => Ok("media_play_pause".into()),
+        AutonomousDesktopControlAction::MediaNextTrack => Ok("media_next_track".into()),
+        AutonomousDesktopControlAction::MediaPrevTrack => Ok("media_prev_track".into()),
+        AutonomousDesktopControlAction::KeyPress => request
+            .key
+            .as_deref()
+            .map(str::to_owned)
+            .ok_or_else(|| CommandError::invalid_request("key")),
+        _ => Err(CommandError::invalid_request("action")),
+    }
+}
+
 fn validate_desktop_control_request(
     request: &AutonomousDesktopControlRequest,
 ) -> CommandResult<()> {
@@ -2879,6 +3565,9 @@ fn validate_desktop_control_request(
     validate_optional_id(request.app_name.as_deref(), "appName")?;
     if let Some(reason) = request.reason.as_deref() {
         validate_non_empty(reason, "reason")?;
+    }
+    if let Some(target_label) = request.target_label.as_deref() {
+        validate_non_empty(target_label, "targetLabel")?;
     }
     if let Some(text) = request.text.as_deref() {
         if text.chars().count() > MAX_TYPE_TEXT_CHARS {
@@ -2900,10 +3589,13 @@ fn validate_desktop_control_request(
     }
 
     match request.action {
-        AutonomousDesktopControlAction::MouseMove
+        AutonomousDesktopControlAction::MouseDown
+        | AutonomousDesktopControlAction::MouseMove
         | AutonomousDesktopControlAction::MouseClick
         | AutonomousDesktopControlAction::MouseDoubleClick
-        | AutonomousDesktopControlAction::MouseRightClick => {
+        | AutonomousDesktopControlAction::MouseRightClick
+        | AutonomousDesktopControlAction::MouseDragMove
+        | AutonomousDesktopControlAction::MouseUp => {
             let _ = required_point(request)?;
         }
         AutonomousDesktopControlAction::MouseDrag => {
@@ -2914,8 +3606,15 @@ fn validate_desktop_control_request(
             // Zero-distance wheel events can come from touchpads or web clients during
             // inertial gesture teardown. Treat them as harmless no-ops at execution time.
         }
-        AutonomousDesktopControlAction::KeyPress => {
-            validate_non_empty(request.key.as_deref().unwrap_or_default(), "key")?;
+        AutonomousDesktopControlAction::KeyPress
+        | AutonomousDesktopControlAction::VolumeUp
+        | AutonomousDesktopControlAction::VolumeDown
+        | AutonomousDesktopControlAction::VolumeMute
+        | AutonomousDesktopControlAction::MediaPlayPause
+        | AutonomousDesktopControlAction::MediaNextTrack
+        | AutonomousDesktopControlAction::MediaPrevTrack => {
+            let key = desktop_control_key_for_action(request)?;
+            validate_non_empty(&key, "key")?;
         }
         AutonomousDesktopControlAction::Hotkey => {
             if request.keys.is_empty() {
@@ -2925,14 +3624,63 @@ fn validate_desktop_control_request(
                 validate_non_empty(key, "keys")?;
             }
         }
-        AutonomousDesktopControlAction::TypeText | AutonomousDesktopControlAction::PasteText => {
+        AutonomousDesktopControlAction::TypeText
+        | AutonomousDesktopControlAction::PasteText
+        | AutonomousDesktopControlAction::ClipboardWriteText => {
             validate_non_empty(request.text.as_deref().unwrap_or_default(), "text")?;
         }
+        AutonomousDesktopControlAction::ClipboardWriteHtml => {
+            validate_non_empty(request.html.as_deref().unwrap_or_default(), "html")?;
+        }
+        AutonomousDesktopControlAction::ClipboardWriteRtf => {
+            let rtf = request.rtf.as_deref().unwrap_or_default();
+            validate_non_empty(rtf, "rtf")?;
+            if rtf.len() > MAX_CLIPBOARD_RTF_CHARS {
+                return Err(CommandError::invalid_request("rtf"));
+            }
+        }
+        AutonomousDesktopControlAction::ClipboardWriteImage => {
+            validate_clipboard_image_write(request)?;
+        }
+        AutonomousDesktopControlAction::ClipboardWriteFiles
+        | AutonomousDesktopControlAction::FileDrop => {
+            validate_clipboard_file_paths(request)?;
+        }
+        AutonomousDesktopControlAction::FocusWindow
+        | AutonomousDesktopControlAction::WindowMaximize
+        | AutonomousDesktopControlAction::WindowMinimize
+        | AutonomousDesktopControlAction::WindowRestore
+        | AutonomousDesktopControlAction::WindowClose
+        | AutonomousDesktopControlAction::ActivateApp
+        | AutonomousDesktopControlAction::QuitApp => {
+            validate_desktop_app_or_window_target(request)?;
+        }
+        AutonomousDesktopControlAction::WindowMoveResize => {
+            validate_desktop_app_or_window_target(request)?;
+            validate_window_layout_bounds(request)?;
+        }
+        AutonomousDesktopControlAction::LaunchApp => {
+            if !has_non_empty_desktop_target(request.app_name.as_deref())
+                && !has_non_empty_desktop_target(request.bundle_id.as_deref())
+            {
+                return Err(CommandError::invalid_request("appName or bundleId"));
+            }
+        }
         AutonomousDesktopControlAction::AxSetValue => {
-            validate_non_empty(request.value.as_deref().unwrap_or_default(), "value")?;
+            validate_ax_value_request(request)?;
             validate_ax_target(request)?;
         }
-        AutonomousDesktopControlAction::AxPress | AutonomousDesktopControlAction::AxFocus => {
+        AutonomousDesktopControlAction::AxPress
+        | AutonomousDesktopControlAction::AxFocus
+        | AutonomousDesktopControlAction::AxSelect
+        | AutonomousDesktopControlAction::AxConfirm
+        | AutonomousDesktopControlAction::AxCancel
+        | AutonomousDesktopControlAction::AxIncrement
+        | AutonomousDesktopControlAction::AxDecrement
+        | AutonomousDesktopControlAction::AxExpand
+        | AutonomousDesktopControlAction::AxCollapse
+        | AutonomousDesktopControlAction::AxScrollToVisible
+        | AutonomousDesktopControlAction::AxToggle => {
             validate_ax_target(request)?;
         }
         AutonomousDesktopControlAction::MenuSelect => {
@@ -2940,9 +3688,126 @@ fn validate_desktop_control_request(
                 return Err(CommandError::invalid_request("menuPath"));
             }
         }
+        AutonomousDesktopControlAction::DockItemPress => {
+            if !has_non_empty_desktop_target(request.app_name.as_deref())
+                && !has_non_empty_desktop_target(request.target_label.as_deref())
+            {
+                return Err(CommandError::invalid_request("appName or targetLabel"));
+            }
+        }
+        AutonomousDesktopControlAction::StatusItemPress => {
+            if !has_non_empty_desktop_target(request.target_label.as_deref()) {
+                validate_ax_target(request)?;
+            }
+        }
+        AutonomousDesktopControlAction::FileDialogSetPath => {
+            validate_file_dialog_path(request)?;
+        }
+        AutonomousDesktopControlAction::FileDialogConfirm => {}
         _ => {}
     }
     Ok(())
+}
+
+fn validate_desktop_app_or_window_target(
+    request: &AutonomousDesktopControlRequest,
+) -> CommandResult<()> {
+    if has_non_empty_desktop_target(request.window_id.as_deref())
+        || has_non_empty_desktop_target(request.app_name.as_deref())
+        || has_non_empty_desktop_target(request.bundle_id.as_deref())
+    {
+        Ok(())
+    } else {
+        Err(CommandError::invalid_request(
+            "windowId, appName, or bundleId",
+        ))
+    }
+}
+
+fn validate_window_layout_bounds(request: &AutonomousDesktopControlRequest) -> CommandResult<()> {
+    let has_position = matches!((request.x, request.y), (Some(x), Some(y)) if x >= 0 && y >= 0);
+    let partial_position = matches!((request.x, request.y), (Some(_), None) | (None, Some(_)));
+    if partial_position {
+        return Err(CommandError::invalid_request("x/y"));
+    }
+    let has_size = matches!((request.width, request.height), (Some(width), Some(height)) if width > 0 && height > 0);
+    let partial_size = matches!(
+        (request.width, request.height),
+        (Some(_), None) | (None, Some(_))
+    );
+    if partial_size {
+        return Err(CommandError::invalid_request("width/height"));
+    }
+    if request.width == Some(0) || request.height == Some(0) {
+        return Err(CommandError::invalid_request("width/height"));
+    }
+    if has_position || has_size {
+        Ok(())
+    } else {
+        Err(CommandError::invalid_request("x/y or width/height"))
+    }
+}
+
+fn validate_clipboard_image_write(request: &AutonomousDesktopControlRequest) -> CommandResult<()> {
+    let media_type = request
+        .media_type
+        .as_deref()
+        .unwrap_or("image/png")
+        .trim()
+        .to_ascii_lowercase();
+    if media_type != "image/png" {
+        return Err(CommandError::invalid_request("mediaType"));
+    }
+    let image_data = request
+        .image_data_base64
+        .as_deref()
+        .ok_or_else(|| CommandError::invalid_request("imageDataBase64"))?
+        .trim();
+    validate_non_empty(image_data, "imageDataBase64")?;
+    if image_data.len() > MAX_CLIPBOARD_IMAGE_BASE64_CHARS {
+        return Err(CommandError::invalid_request("imageDataBase64"));
+    }
+    Ok(())
+}
+
+fn validate_clipboard_file_paths(request: &AutonomousDesktopControlRequest) -> CommandResult<()> {
+    if request.file_paths.is_empty() || request.file_paths.len() > MAX_CLIPBOARD_FILE_PATHS {
+        return Err(CommandError::invalid_request("filePaths"));
+    }
+    for path in &request.file_paths {
+        let trimmed = path.trim();
+        validate_non_empty(trimmed, "filePaths")?;
+        if !std::path::Path::new(trimmed).is_absolute() {
+            return Err(CommandError::invalid_request("filePaths"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_file_dialog_path(request: &AutonomousDesktopControlRequest) -> CommandResult<()> {
+    if request.file_paths.len() != 1 {
+        return Err(CommandError::invalid_request("filePaths"));
+    }
+    let path = request.file_paths[0].trim();
+    validate_non_empty(path, "filePaths")?;
+    if !std::path::Path::new(path).is_absolute() {
+        return Err(CommandError::invalid_request("filePaths"));
+    }
+    Ok(())
+}
+
+fn has_non_empty_desktop_target(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !value.trim().is_empty())
+}
+
+fn validate_ax_value_request(request: &AutonomousDesktopControlRequest) -> CommandResult<()> {
+    let has_value = request.value.is_some();
+    match (request.selection_start, request.selection_end) {
+        (Some(start), Some(end)) if start <= end && has_value => Ok(()),
+        (Some(_), Some(_)) => Err(CommandError::invalid_request("selectionStart/selectionEnd")),
+        (None, None) => validate_non_empty(request.value.as_deref().unwrap_or_default(), "value"),
+        _ => Err(CommandError::invalid_request("selectionStart/selectionEnd")),
+    }
 }
 
 fn validate_ax_target(request: &AutonomousDesktopControlRequest) -> CommandResult<()> {
@@ -3045,12 +3910,21 @@ fn desktop_observe_policy(
     request: &AutonomousDesktopObserveRequest,
     operator_approved: bool,
 ) -> AutonomousDesktopPolicyTrace {
-    if request.action.sensitive() && !operator_approved {
+    if matches!(
+        request.action,
+        AutonomousDesktopObserveAction::ClipboardReadText
+            | AutonomousDesktopObserveAction::ClipboardReadHtml
+            | AutonomousDesktopObserveAction::ClipboardReadRtf
+            | AutonomousDesktopObserveAction::ClipboardReadImage
+            | AutonomousDesktopObserveAction::ClipboardReadFiles
+            | AutonomousDesktopObserveAction::NotificationSnapshot
+    ) && !operator_approved
+    {
         return desktop_policy(
             AutonomousDesktopPolicyCategory::ObserveSensitive,
             AutonomousDesktopPolicyDecision::ApprovalRequired,
-            "desktop_policy_observe_sensitive_requires_approval",
-            "Screenshots, OCR, Accessibility snapshots, and element lookup can expose private desktop content.",
+            "desktop_policy_sensitive_observe_requires_approval",
+            "Reading local clipboard or notification content can expose sensitive local data and requires operator approval.",
             true,
             true,
         );
@@ -3066,6 +3940,19 @@ fn desktop_observe_policy(
         "Desktop observation is allowed under the active Computer Use policy.",
         false,
         false,
+    )
+}
+
+fn desktop_control_action_requires_approval(action: &AutonomousDesktopControlAction) -> bool {
+    matches!(
+        action,
+        AutonomousDesktopControlAction::QuitApp
+            | AutonomousDesktopControlAction::WindowClose
+            | AutonomousDesktopControlAction::ClipboardWriteHtml
+            | AutonomousDesktopControlAction::ClipboardWriteRtf
+            | AutonomousDesktopControlAction::ClipboardWriteImage
+            | AutonomousDesktopControlAction::ClipboardWriteFiles
+            | AutonomousDesktopControlAction::FileDrop
     )
 }
 
@@ -3091,7 +3978,7 @@ fn desktop_control_policy(
             AutonomousDesktopPolicyCategory::ControlDenied,
             AutonomousDesktopPolicyDecision::Denied,
             "desktop_policy_secret_text_denied",
-            "Computer Use cannot type or paste secret text into the desktop.",
+            "Computer Use cannot type, paste, or stage secret text through desktop input or clipboard actions.",
             false,
             true,
         );
@@ -3109,21 +3996,34 @@ fn desktop_control_policy(
             false,
         );
     }
-    if !operator_approved {
+    let requires_approval = desktop_control_action_requires_approval(&request.action);
+    if requires_approval && !operator_approved {
         return desktop_policy(
             AutonomousDesktopPolicyCategory::ControlApprovalRequired,
             AutonomousDesktopPolicyDecision::ApprovalRequired,
-            "desktop_policy_control_requires_approval",
-            "Native desktop input, app control, clipboard use, and Accessibility actions require explicit operator approval.",
+            "desktop_policy_destructive_control_requires_approval",
+            "This desktop action can affect apps or expose local resources and requires explicit operator approval.",
             true,
             true,
         );
     }
     desktop_policy(
-        AutonomousDesktopPolicyCategory::ControlApprovalRequired,
+        if requires_approval {
+            AutonomousDesktopPolicyCategory::ControlApprovalRequired
+        } else {
+            AutonomousDesktopPolicyCategory::ControlSafe
+        },
         AutonomousDesktopPolicyDecision::Allowed,
-        "desktop_policy_control_allowed_after_approval",
-        "Desktop control was allowed after operator approval.",
+        if requires_approval {
+            "desktop_policy_destructive_control_allowed_after_approval"
+        } else {
+            "desktop_policy_control_allowed"
+        },
+        if requires_approval {
+            "Approval-gated desktop control was allowed after operator approval."
+        } else {
+            "Desktop control is non-destructive under the active Computer Use policy."
+        },
         false,
         false,
     )
@@ -3481,7 +4381,7 @@ fn desktop_target_contains(haystack: &str, term: &str) -> bool {
 
 fn desktop_stream_policy(
     request: &AutonomousDesktopStreamRequest,
-    operator_approved: bool,
+    _operator_approved: bool,
 ) -> AutonomousDesktopPolicyTrace {
     match request.action {
         AutonomousDesktopStreamAction::StreamCapabilities
@@ -3493,16 +4393,8 @@ fn desktop_stream_policy(
             false,
             false,
         ),
-        AutonomousDesktopStreamAction::StreamStart if !operator_approved => desktop_policy(
-            AutonomousDesktopPolicyCategory::StreamApprovalRequired,
-            AutonomousDesktopPolicyDecision::ApprovalRequired,
-            "desktop_policy_stream_start_requires_approval",
-            "Starting a desktop stream exposes live screen media and requires operator approval.",
-            true,
-            true,
-        ),
         _ => desktop_policy(
-            AutonomousDesktopPolicyCategory::StreamApprovalRequired,
+            AutonomousDesktopPolicyCategory::StreamSafe,
             AutonomousDesktopPolicyDecision::Allowed,
             "desktop_policy_stream_allowed",
             "Desktop stream action is allowed under the active policy.",
@@ -4055,7 +4947,7 @@ fn verify_desktop_sidecar_binary(path: &Path) -> Result<bool, String> {
                         signature_error
                     )
                 })?;
-                return Ok(true);
+                Ok(true)
             }
             #[cfg(not(target_os = "macos"))]
             {
@@ -4078,7 +4970,7 @@ fn verify_desktop_sidecar_binary(path: &Path) -> Result<bool, String> {
                         signature_error
                     )
                 })?;
-                return Ok(true);
+                Ok(true)
             }
             #[cfg(not(target_os = "macos"))]
             {
@@ -4282,6 +5174,8 @@ fn merge_desktop_capabilities(
         screenshot: sidecar.screenshot || fallback.screenshot,
         window_list: sidecar.window_list || fallback.window_list,
         app_list: sidecar.app_list || fallback.app_list,
+        notification_observation: sidecar.notification_observation
+            || fallback.notification_observation,
         foreground_state: sidecar.foreground_state || fallback.foreground_state,
         cursor_state: sidecar.cursor_state || fallback.cursor_state,
         accessibility_snapshot: sidecar.accessibility_snapshot || fallback.accessibility_snapshot,
@@ -4289,6 +5183,8 @@ fn merge_desktop_capabilities(
         mouse_input: sidecar.mouse_input || fallback.mouse_input,
         keyboard_input: sidecar.keyboard_input || fallback.keyboard_input,
         clipboard: sidecar.clipboard || fallback.clipboard,
+        window_focus: sidecar.window_focus || fallback.window_focus,
+        app_control: sidecar.app_control || fallback.app_control,
         accessibility_actions: sidecar.accessibility_actions || fallback.accessibility_actions,
         menu_select: sidecar.menu_select || fallback.menu_select,
         webrtc_stream: sidecar.webrtc_stream || fallback.webrtc_stream,
@@ -4326,6 +5222,7 @@ fn in_process_desktop_capabilities() -> AutonomousDesktopCapabilities {
         screenshot: true,
         window_list: true,
         app_list: true,
+        notification_observation: false,
         foreground_state: true,
         cursor_state: cfg!(target_os = "macos"),
         accessibility_snapshot: cfg!(target_os = "macos"),
@@ -4333,6 +5230,8 @@ fn in_process_desktop_capabilities() -> AutonomousDesktopCapabilities {
         mouse_input: cfg!(target_os = "macos"),
         keyboard_input: cfg!(target_os = "macos"),
         clipboard: false,
+        window_focus: cfg!(target_os = "macos"),
+        app_control: cfg!(target_os = "macos"),
         accessibility_actions: false,
         menu_select: false,
         webrtc_stream: false,
@@ -4354,6 +5253,7 @@ fn disabled_desktop_capabilities() -> AutonomousDesktopCapabilities {
         screenshot: false,
         window_list: false,
         app_list: false,
+        notification_observation: false,
         foreground_state: false,
         cursor_state: false,
         accessibility_snapshot: false,
@@ -4361,6 +5261,8 @@ fn disabled_desktop_capabilities() -> AutonomousDesktopCapabilities {
         mouse_input: false,
         keyboard_input: false,
         clipboard: false,
+        window_focus: false,
+        app_control: false,
         accessibility_actions: false,
         menu_select: false,
         webrtc_stream: false,
@@ -4439,6 +5341,10 @@ fn refreshed_desktop_permissions() -> Vec<AutonomousDesktopPermissionStatus> {
 }
 
 fn static_desktop_permissions() -> Vec<AutonomousDesktopPermissionStatus> {
+    if cfg!(target_os = "windows") {
+        return windows_desktop_permissions();
+    }
+
     vec![
         permission(
             "Screen Recording",
@@ -4478,6 +5384,12 @@ fn static_desktop_permissions() -> Vec<AutonomousDesktopPermissionStatus> {
             },
             &["keyboard", "hotkey"],
             "Grant Input Monitoring only if the selected keyboard backend requires it.",
+        ),
+        permission(
+            "Notifications",
+            AutonomousDesktopPermissionGrant::Unsupported,
+            &["notification_snapshot"],
+            "macOS does not expose other apps' Notification Center history through a public sidecar API; use Accessibility or OCR when notification UI is visible.",
         ),
         permission(
             "Remote Desktop Portal",
@@ -4520,6 +5432,10 @@ fn merge_desktop_permissions(
 }
 
 fn in_process_desktop_permissions() -> Vec<AutonomousDesktopPermissionStatus> {
+    if cfg!(target_os = "windows") {
+        return windows_desktop_permissions();
+    }
+
     vec![
         permission(
             "Screen Recording",
@@ -4545,6 +5461,12 @@ fn in_process_desktop_permissions() -> Vec<AutonomousDesktopPermissionStatus> {
             "Grant Input Monitoring only if the selected keyboard backend requires it.",
         ),
         permission(
+            "Notifications",
+            AutonomousDesktopPermissionGrant::Unsupported,
+            &["notification_snapshot"],
+            "macOS does not expose other apps' Notification Center history through a public sidecar API; use Accessibility or OCR when notification UI is visible.",
+        ),
+        permission(
             "Remote Desktop Portal",
             if cfg!(target_os = "linux") {
                 AutonomousDesktopPermissionGrant::Unknown
@@ -4557,6 +5479,51 @@ fn in_process_desktop_permissions() -> Vec<AutonomousDesktopPermissionStatus> {
     ]
 }
 
+fn windows_desktop_permissions() -> Vec<AutonomousDesktopPermissionStatus> {
+    vec![
+        permission(
+            "Screen Capture",
+            AutonomousDesktopPermissionGrant::Granted,
+            &["screenshot", "stream"],
+            "Windows desktop capture is available in the active user session; no macOS-style privacy grant is required.",
+        ),
+        permission(
+            "Desktop Input",
+            AutonomousDesktopPermissionGrant::Granted,
+            &[
+                "mouse",
+                "keyboard",
+                "clipboard",
+                "window_focus",
+                "app_control",
+            ],
+            "Windows desktop input is brokered through the active user session and the Computer Use controller lock.",
+        ),
+        permission(
+            "UI Automation",
+            AutonomousDesktopPermissionGrant::Granted,
+            &[
+                "accessibility_snapshot",
+                "accessibility_actions",
+                "menu_select",
+            ],
+            "Windows UI Automation is available through the desktop sidecar for inspectable controls. Elevated or secure-desktop surfaces still require local user approval.",
+        ),
+        permission(
+            "OCR",
+            AutonomousDesktopPermissionGrant::Granted,
+            &["ocr_snapshot"],
+            "Windows OCR uses Windows.Media.Ocr in the active user session. If the OCR engine or language pack is unavailable, the sidecar returns a performed=false diagnostic.",
+        ),
+        permission(
+            "Notification Listener",
+            AutonomousDesktopPermissionGrant::Unknown,
+            &["notification_snapshot"],
+            "Windows notification observation uses UserNotificationListener and only returns notification text after the active user grants notification-listener access.",
+        ),
+    ]
+}
+
 #[cfg(target_os = "macos")]
 fn desktop_screen_recording_permission_status() -> AutonomousDesktopPermissionGrant {
     permission_grant_from_bool(unsafe { CGPreflightScreenCaptureAccess() })
@@ -4564,7 +5531,9 @@ fn desktop_screen_recording_permission_status() -> AutonomousDesktopPermissionGr
 
 #[cfg(not(target_os = "macos"))]
 fn desktop_screen_recording_permission_status() -> AutonomousDesktopPermissionGrant {
-    if cfg!(any(target_os = "windows", target_os = "linux")) {
+    if cfg!(target_os = "windows") {
+        AutonomousDesktopPermissionGrant::Granted
+    } else if cfg!(target_os = "linux") {
         AutonomousDesktopPermissionGrant::Unknown
     } else {
         AutonomousDesktopPermissionGrant::Unsupported
@@ -4588,7 +5557,11 @@ fn desktop_input_monitoring_permission_status() -> AutonomousDesktopPermissionGr
 
 #[cfg(not(target_os = "macos"))]
 fn desktop_input_monitoring_permission_status() -> AutonomousDesktopPermissionGrant {
-    AutonomousDesktopPermissionGrant::Unsupported
+    if cfg!(target_os = "windows") {
+        AutonomousDesktopPermissionGrant::Granted
+    } else {
+        AutonomousDesktopPermissionGrant::Unsupported
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -4665,6 +5638,204 @@ fn desktop_displays() -> CommandResult<Vec<AutonomousDesktopDisplay>> {
         .collect()
 }
 
+fn desktop_display_arrangement(
+) -> CommandResult<(DesktopSidecarDisplayArrangementPayload, &'static str)> {
+    match sidecar_json_result_with_error(
+        DesktopSidecarOperation::DisplayArrangement,
+        json!({}),
+        "desktop_sidecar_display_arrangement",
+    ) {
+        Ok(payload) => {
+            let arrangement =
+                serde_json::from_value::<DesktopSidecarDisplayArrangementPayload>(payload)
+                    .map_err(|error| {
+                        CommandError::system_fault(
+                            "sidecar_response_invalid",
+                            format!(
+                        "Desktop sidecar returned an invalid display arrangement payload: {error}"
+                    ),
+                        )
+                    })?;
+            Ok((arrangement, "authenticated_sidecar"))
+        }
+        Err(error) if sidecar_control_error_allows_fallback(&error) => {
+            let displays = desktop_displays()?
+                .into_iter()
+                .map(runtime_display_to_sidecar_display)
+                .collect();
+            Ok((
+                display_arrangement_from_sidecar_displays(displays),
+                "runtime_fallback",
+            ))
+        }
+        Err(error) => Err(command_error_from_sidecar(error)),
+    }
+}
+
+fn display_arrangement_snapshot(
+    arrangement: &DesktopSidecarDisplayArrangementPayload,
+    source: &'static str,
+) -> serde_json::Value {
+    json!({
+        "schema": "xero.desktop_display_arrangement.v1",
+        "platform": std::env::consts::OS,
+        "source": source,
+        "observedAt": now_timestamp(),
+        "displays": &arrangement.displays,
+        "displayCount": arrangement.display_count,
+        "virtualBounds": &arrangement.virtual_bounds,
+        "primaryDisplayId": &arrangement.primary_display_id,
+        "scaleFactors": &arrangement.scale_factors,
+        "hasOverlaps": arrangement.has_overlaps,
+        "hasGapsInVirtualBounds": arrangement.has_gaps_in_virtual_bounds,
+        "diagnostics": &arrangement.diagnostics,
+    })
+}
+
+fn runtime_display_to_sidecar_display(display: AutonomousDesktopDisplay) -> DesktopSidecarDisplay {
+    DesktopSidecarDisplay {
+        display_id: display.display_id,
+        name: display.name,
+        x: display.x,
+        y: display.y,
+        width: display.width,
+        height: display.height,
+        scale_factor: display.scale_factor,
+        rotation: display.rotation,
+        primary: display.primary,
+    }
+}
+
+fn display_arrangement_from_sidecar_displays(
+    displays: Vec<DesktopSidecarDisplay>,
+) -> DesktopSidecarDisplayArrangementPayload {
+    let display_count = displays.len();
+    let virtual_bounds = display_virtual_bounds(&displays);
+    let primary_display_id = displays
+        .iter()
+        .find(|display| display.primary)
+        .or_else(|| displays.first())
+        .map(|display| display.display_id.clone());
+    let scale_factors = display_scale_factors(&displays);
+    let has_overlaps = displays_have_overlaps(&displays);
+    let has_gaps_in_virtual_bounds =
+        displays_have_gaps_in_virtual_bounds(&displays, &virtual_bounds, has_overlaps);
+    let mut diagnostics = Vec::new();
+    if displays.is_empty() {
+        diagnostics.push("display_arrangement_empty".into());
+    }
+    if displays
+        .iter()
+        .any(|display| display.width == 0 || display.height == 0)
+    {
+        diagnostics.push("display_arrangement_contains_zero_sized_display".into());
+    }
+    if primary_display_id.is_none() {
+        diagnostics.push("display_arrangement_primary_unknown".into());
+    }
+    if scale_factors.len() > 1 {
+        diagnostics.push("display_arrangement_multiple_scale_factors".into());
+    }
+    if has_overlaps {
+        diagnostics.push("display_arrangement_overlapping_bounds".into());
+    }
+    if has_gaps_in_virtual_bounds {
+        diagnostics.push("display_arrangement_virtual_bounds_include_gaps".into());
+    }
+
+    DesktopSidecarDisplayArrangementPayload {
+        displays,
+        display_count,
+        virtual_bounds,
+        primary_display_id,
+        scale_factors,
+        has_overlaps,
+        has_gaps_in_virtual_bounds,
+        diagnostics,
+    }
+}
+
+fn display_virtual_bounds(displays: &[DesktopSidecarDisplay]) -> DesktopSidecarDisplayBounds {
+    let Some(first) = displays.first() else {
+        return DesktopSidecarDisplayBounds {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+    };
+    let mut min_x = first.x as i64;
+    let mut min_y = first.y as i64;
+    let mut max_x = first.x as i64 + first.width as i64;
+    let mut max_y = first.y as i64 + first.height as i64;
+    for display in displays.iter().skip(1) {
+        let left = display.x as i64;
+        let top = display.y as i64;
+        let right = left + display.width as i64;
+        let bottom = top + display.height as i64;
+        min_x = min_x.min(left);
+        min_y = min_y.min(top);
+        max_x = max_x.max(right);
+        max_y = max_y.max(bottom);
+    }
+    DesktopSidecarDisplayBounds {
+        x: min_x.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+        y: min_y.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+        width: (max_x - min_x).clamp(0, u32::MAX as i64) as u32,
+        height: (max_y - min_y).clamp(0, u32::MAX as i64) as u32,
+    }
+}
+
+fn display_scale_factors(displays: &[DesktopSidecarDisplay]) -> Vec<f32> {
+    let mut scale_factors = displays
+        .iter()
+        .map(|display| display.scale_factor)
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+        .collect::<Vec<_>>();
+    scale_factors.sort_by(|left, right| left.total_cmp(right));
+    scale_factors.dedup_by(|left, right| (*left - *right).abs() < 0.001);
+    scale_factors
+}
+
+fn displays_have_overlaps(displays: &[DesktopSidecarDisplay]) -> bool {
+    displays.iter().enumerate().any(|(index, left)| {
+        displays
+            .iter()
+            .skip(index + 1)
+            .any(|right| display_overlap_area(left, right) > 0)
+    })
+}
+
+fn displays_have_gaps_in_virtual_bounds(
+    displays: &[DesktopSidecarDisplay],
+    bounds: &DesktopSidecarDisplayBounds,
+    has_overlaps: bool,
+) -> bool {
+    if displays.len() <= 1 || has_overlaps {
+        return false;
+    }
+    let total_display_area = displays
+        .iter()
+        .map(|display| display.width as u64 * display.height as u64)
+        .sum::<u64>();
+    let virtual_area = bounds.width as u64 * bounds.height as u64;
+    virtual_area > total_display_area
+}
+
+fn display_overlap_area(left: &DesktopSidecarDisplay, right: &DesktopSidecarDisplay) -> u64 {
+    let left_right = left.x as i64 + left.width as i64;
+    let left_bottom = left.y as i64 + left.height as i64;
+    let right_right = right.x as i64 + right.width as i64;
+    let right_bottom = right.y as i64 + right.height as i64;
+    let width = left_right.min(right_right) - (left.x as i64).max(right.x as i64);
+    let height = left_bottom.min(right_bottom) - (left.y as i64).max(right.y as i64);
+    if width <= 0 || height <= 0 {
+        0
+    } else {
+        width as u64 * height as u64
+    }
+}
+
 fn desktop_windows() -> CommandResult<Vec<AutonomousDesktopWindow>> {
     if let Ok(payload) = sidecar_json_result(
         DesktopSidecarOperation::WindowList,
@@ -4737,6 +5908,149 @@ fn desktop_apps() -> CommandResult<Vec<AutonomousDesktopApp>> {
         entry.focused |= window.focused;
     }
     Ok(apps.into_values().collect())
+}
+
+fn desktop_app_inventory() -> CommandResult<(DesktopSidecarAppInventoryPayload, &'static str)> {
+    match sidecar_json_result_with_error(
+        DesktopSidecarOperation::AppInventory,
+        json!({}),
+        "desktop_sidecar_app_inventory",
+    ) {
+        Ok(payload) => {
+            let inventory = serde_json::from_value::<DesktopSidecarAppInventoryPayload>(payload)
+                .map_err(|error| {
+                    CommandError::system_fault(
+                        "sidecar_response_invalid",
+                        format!(
+                            "Desktop sidecar returned an invalid app inventory payload: {error}"
+                        ),
+                    )
+                })?;
+            Ok((inventory, "authenticated_sidecar"))
+        }
+        Err(error) if sidecar_control_error_allows_fallback(&error) => {
+            let apps = desktop_apps()?
+                .into_iter()
+                .map(|app| DesktopSidecarAppInventoryEntry {
+                    app_name: app.app_name.clone(),
+                    bundle_id: None,
+                    executable_path: None,
+                    launch_target: Some(app.app_name),
+                    launch_kind: "app_name".into(),
+                    source: "runtime_running_windows".into(),
+                    installed: false,
+                    running: true,
+                    pid: Some(app.pid),
+                    window_count: app.window_count,
+                    focused: app.focused,
+                    diagnostics: vec!["installed_inventory_unavailable".into()],
+                })
+                .collect::<Vec<_>>();
+            let count = apps.len();
+            Ok((
+                DesktopSidecarAppInventoryPayload {
+                    apps,
+                    count,
+                    sources: vec!["runtime_running_windows".into()],
+                    diagnostics: vec!["sidecar_app_inventory_unavailable".into()],
+                },
+                "runtime_fallback",
+            ))
+        }
+        Err(error) => Err(command_error_from_sidecar(error)),
+    }
+}
+
+fn desktop_notification_snapshot(
+) -> CommandResult<(DesktopSidecarNotificationSnapshotPayload, &'static str)> {
+    match sidecar_json_result_with_error(
+        DesktopSidecarOperation::NotificationSnapshot,
+        json!({}),
+        "desktop_sidecar_notification_snapshot",
+    ) {
+        Ok(payload) => {
+            let snapshot =
+                serde_json::from_value::<DesktopSidecarNotificationSnapshotPayload>(payload)
+                    .map_err(|error| {
+                        CommandError::system_fault(
+                            "sidecar_response_invalid",
+                            format!(
+                                "Desktop sidecar returned an invalid notification snapshot payload: {error}"
+                            ),
+                        )
+                    })?;
+            Ok((snapshot, "authenticated_sidecar"))
+        }
+        Err(error) if sidecar_control_error_allows_fallback(&error) => Ok((
+            DesktopSidecarNotificationSnapshotPayload {
+                available: false,
+                permission_status: "unavailable".into(),
+                notifications: Vec::new(),
+                count: 0,
+                source: "runtime_fallback".into(),
+                diagnostics: vec!["sidecar_notification_snapshot_unavailable".into()],
+            },
+            "runtime_fallback",
+        )),
+        Err(error) => Err(command_error_from_sidecar(error)),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DesktopBridgeClassification {
+    family: &'static str,
+    confidence: u8,
+    reason: &'static str,
+}
+
+fn classify_desktop_bridge_target(
+    app_name: Option<&str>,
+    title: Option<&str>,
+) -> DesktopBridgeClassification {
+    let app = app_name.unwrap_or_default().to_ascii_lowercase();
+    let haystack = format!("{} {}", app, title.unwrap_or_default().to_ascii_lowercase());
+    if contains_any(
+        &app,
+        &[
+            "safari", "chrome", "chromium", "firefox", "edge", "brave", "arc", "opera", "vivaldi",
+        ],
+    ) {
+        return DesktopBridgeClassification {
+            family: "browser",
+            confidence: 90,
+            reason: "The focused app looks like a web browser; structured browser tools are usually more precise than desktop pixels.",
+        };
+    }
+    if contains_any(
+        &haystack,
+        &[
+            "terminal",
+            "iterm",
+            "warp",
+            "powershell",
+            "cmd.exe",
+            "command prompt",
+            "windows terminal",
+            "alacritty",
+            "wezterm",
+            "kitty",
+        ],
+    ) {
+        return DesktopBridgeClassification {
+            family: "terminal",
+            confidence: 90,
+            reason: "The focused app looks like a terminal; command tools are usually safer and more observable than typing into the terminal UI.",
+        };
+    }
+    DesktopBridgeClassification {
+        family: "desktop",
+        confidence: if app_name.is_some() { 60 } else { 30 },
+        reason: "No browser or terminal bridge was detected; native desktop observation/control is the best visible surface.",
+    }
+}
+
+fn contains_any(value: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| value.contains(needle))
 }
 
 fn foreground_window() -> CommandResult<Option<AutonomousDesktopWindow>> {
@@ -4854,6 +6168,106 @@ fn desktop_ocr_snapshot(
         DesktopSidecarErrorBody::new(
             "desktop_ocr_snapshot_decode_failed",
             format!("Xero could not decode the desktop OCR sidecar response: {error}"),
+            false,
+            false,
+        )
+    })
+}
+
+fn desktop_clipboard_read_text(
+    policy_decision_id: &str,
+) -> Result<DesktopSidecarClipboardTextPayload, DesktopSidecarErrorBody> {
+    let payload = sidecar_json_result_with_error(
+        DesktopSidecarOperation::ClipboardReadText,
+        json!({}),
+        policy_decision_id,
+    )?;
+    serde_json::from_value::<DesktopSidecarClipboardTextPayload>(payload).map_err(|error| {
+        DesktopSidecarErrorBody::new(
+            "desktop_clipboard_text_decode_failed",
+            format!("Xero could not decode the desktop clipboard text sidecar response: {error}"),
+            false,
+            false,
+        )
+    })
+}
+
+fn desktop_clipboard_read_html(
+    request: &AutonomousDesktopObserveRequest,
+    policy_decision_id: &str,
+) -> Result<DesktopSidecarClipboardHtmlPayload, DesktopSidecarErrorBody> {
+    let payload = sidecar_json_result_with_error(
+        DesktopSidecarOperation::ClipboardReadHtml,
+        json!({
+            "maxBytes": request.max_bytes,
+        }),
+        policy_decision_id,
+    )?;
+    serde_json::from_value::<DesktopSidecarClipboardHtmlPayload>(payload).map_err(|error| {
+        DesktopSidecarErrorBody::new(
+            "desktop_clipboard_html_decode_failed",
+            format!("Xero could not decode the desktop clipboard HTML sidecar response: {error}"),
+            false,
+            false,
+        )
+    })
+}
+
+fn desktop_clipboard_read_rtf(
+    request: &AutonomousDesktopObserveRequest,
+    policy_decision_id: &str,
+) -> Result<DesktopSidecarClipboardRtfPayload, DesktopSidecarErrorBody> {
+    let payload = sidecar_json_result_with_error(
+        DesktopSidecarOperation::ClipboardReadRtf,
+        json!({
+            "maxBytes": request.max_bytes,
+        }),
+        policy_decision_id,
+    )?;
+    serde_json::from_value::<DesktopSidecarClipboardRtfPayload>(payload).map_err(|error| {
+        DesktopSidecarErrorBody::new(
+            "desktop_clipboard_rtf_decode_failed",
+            format!("Xero could not decode the desktop clipboard RTF sidecar response: {error}"),
+            false,
+            false,
+        )
+    })
+}
+
+fn desktop_clipboard_read_image(
+    request: &AutonomousDesktopObserveRequest,
+    policy_decision_id: &str,
+) -> Result<DesktopSidecarClipboardImagePayload, DesktopSidecarErrorBody> {
+    let payload = sidecar_json_result_with_error(
+        DesktopSidecarOperation::ClipboardReadImage,
+        json!({
+            "includeData": request.include_data.unwrap_or(false),
+            "maxBytes": request.max_bytes,
+        }),
+        policy_decision_id,
+    )?;
+    serde_json::from_value::<DesktopSidecarClipboardImagePayload>(payload).map_err(|error| {
+        DesktopSidecarErrorBody::new(
+            "desktop_clipboard_image_decode_failed",
+            format!("Xero could not decode the desktop clipboard image sidecar response: {error}"),
+            false,
+            false,
+        )
+    })
+}
+
+fn desktop_clipboard_read_files(
+    policy_decision_id: &str,
+) -> Result<DesktopSidecarClipboardFilesPayload, DesktopSidecarErrorBody> {
+    let payload = sidecar_json_result_with_error(
+        DesktopSidecarOperation::ClipboardReadFiles,
+        json!({}),
+        policy_decision_id,
+    )?;
+    serde_json::from_value::<DesktopSidecarClipboardFilesPayload>(payload).map_err(|error| {
+        DesktopSidecarErrorBody::new(
+            "desktop_clipboard_files_decode_failed",
+            format!("Xero could not decode the desktop clipboard files sidecar response: {error}"),
             false,
             false,
         )
@@ -5701,6 +7115,7 @@ fn desktop_control_sidecar_operation(
     action: &AutonomousDesktopControlAction,
 ) -> Option<DesktopSidecarOperation> {
     Some(match action {
+        AutonomousDesktopControlAction::MouseDown => DesktopSidecarOperation::MouseDown,
         AutonomousDesktopControlAction::MouseMove => DesktopSidecarOperation::MouseMove,
         AutonomousDesktopControlAction::MouseClick => DesktopSidecarOperation::MouseClick,
         AutonomousDesktopControlAction::MouseDoubleClick => {
@@ -5708,19 +7123,72 @@ fn desktop_control_sidecar_operation(
         }
         AutonomousDesktopControlAction::MouseRightClick => DesktopSidecarOperation::MouseRightClick,
         AutonomousDesktopControlAction::MouseDrag => DesktopSidecarOperation::MouseDrag,
+        AutonomousDesktopControlAction::MouseDragMove => DesktopSidecarOperation::MouseDragMove,
+        AutonomousDesktopControlAction::MouseUp => DesktopSidecarOperation::MouseUp,
         AutonomousDesktopControlAction::Scroll => DesktopSidecarOperation::Scroll,
-        AutonomousDesktopControlAction::KeyPress => DesktopSidecarOperation::KeyPress,
+        AutonomousDesktopControlAction::KeyPress
+        | AutonomousDesktopControlAction::VolumeUp
+        | AutonomousDesktopControlAction::VolumeDown
+        | AutonomousDesktopControlAction::VolumeMute
+        | AutonomousDesktopControlAction::MediaPlayPause
+        | AutonomousDesktopControlAction::MediaNextTrack
+        | AutonomousDesktopControlAction::MediaPrevTrack => DesktopSidecarOperation::KeyPress,
         AutonomousDesktopControlAction::Hotkey => DesktopSidecarOperation::Hotkey,
         AutonomousDesktopControlAction::TypeText => DesktopSidecarOperation::TypeText,
         AutonomousDesktopControlAction::PasteText => DesktopSidecarOperation::PasteText,
+        AutonomousDesktopControlAction::ClipboardWriteText => {
+            DesktopSidecarOperation::ClipboardWriteText
+        }
+        AutonomousDesktopControlAction::ClipboardWriteHtml => {
+            DesktopSidecarOperation::ClipboardWriteHtml
+        }
+        AutonomousDesktopControlAction::ClipboardWriteRtf => {
+            DesktopSidecarOperation::ClipboardWriteRtf
+        }
+        AutonomousDesktopControlAction::ClipboardWriteImage => {
+            DesktopSidecarOperation::ClipboardWriteImage
+        }
+        AutonomousDesktopControlAction::ClipboardWriteFiles => {
+            DesktopSidecarOperation::ClipboardWriteFiles
+        }
+        AutonomousDesktopControlAction::FileDrop => DesktopSidecarOperation::FileDrop,
+        AutonomousDesktopControlAction::FocusWindow => DesktopSidecarOperation::FocusWindow,
+        AutonomousDesktopControlAction::WindowMaximize => DesktopSidecarOperation::WindowMaximize,
+        AutonomousDesktopControlAction::WindowMinimize => DesktopSidecarOperation::WindowMinimize,
+        AutonomousDesktopControlAction::WindowRestore => DesktopSidecarOperation::WindowRestore,
+        AutonomousDesktopControlAction::WindowMoveResize => {
+            DesktopSidecarOperation::WindowMoveResize
+        }
+        AutonomousDesktopControlAction::WindowClose => DesktopSidecarOperation::WindowClose,
+        AutonomousDesktopControlAction::ActivateApp => DesktopSidecarOperation::ActivateApp,
+        AutonomousDesktopControlAction::LaunchApp => DesktopSidecarOperation::LaunchApp,
+        AutonomousDesktopControlAction::QuitApp => DesktopSidecarOperation::QuitApp,
         AutonomousDesktopControlAction::AxPress => DesktopSidecarOperation::AxPress,
         AutonomousDesktopControlAction::AxSetValue => DesktopSidecarOperation::AxSetValue,
         AutonomousDesktopControlAction::AxFocus => DesktopSidecarOperation::AxFocus,
+        AutonomousDesktopControlAction::AxSelect => DesktopSidecarOperation::AxSelect,
+        AutonomousDesktopControlAction::AxConfirm => DesktopSidecarOperation::AxConfirm,
+        AutonomousDesktopControlAction::AxCancel => DesktopSidecarOperation::AxCancel,
+        AutonomousDesktopControlAction::AxIncrement => DesktopSidecarOperation::AxIncrement,
+        AutonomousDesktopControlAction::AxDecrement => DesktopSidecarOperation::AxDecrement,
+        AutonomousDesktopControlAction::AxExpand => DesktopSidecarOperation::AxExpand,
+        AutonomousDesktopControlAction::AxCollapse => DesktopSidecarOperation::AxCollapse,
+        AutonomousDesktopControlAction::AxScrollToVisible => {
+            DesktopSidecarOperation::AxScrollToVisible
+        }
+        AutonomousDesktopControlAction::AxToggle => DesktopSidecarOperation::AxToggle,
         AutonomousDesktopControlAction::MenuSelect => DesktopSidecarOperation::MenuSelect,
+        AutonomousDesktopControlAction::DockItemPress => DesktopSidecarOperation::DockItemPress,
+        AutonomousDesktopControlAction::StatusItemPress => DesktopSidecarOperation::StatusItemPress,
+        AutonomousDesktopControlAction::FileDialogSetPath => {
+            DesktopSidecarOperation::FileDialogSetPath
+        }
+        AutonomousDesktopControlAction::FileDialogConfirm => {
+            DesktopSidecarOperation::FileDialogConfirm
+        }
         AutonomousDesktopControlAction::CancelCurrentAction => {
             DesktopSidecarOperation::CancelCurrentAction
         }
-        _ => return None,
     })
 }
 
@@ -5728,6 +7196,10 @@ fn sidecar_control_request(
     request: &AutonomousDesktopControlRequest,
 ) -> DesktopSidecarControlRequest {
     DesktopSidecarControlRequest {
+        display_id: request.display_id.clone(),
+        window_id: request.window_id.clone(),
+        app_name: request.app_name.clone(),
+        bundle_id: request.bundle_id.clone(),
         element_id: request.element_id.clone(),
         x: request.x,
         y: request.y,
@@ -5735,6 +7207,13 @@ fn sidecar_control_request(
         to_y: request.to_y,
         delta_x: request.delta_x,
         delta_y: request.delta_y,
+        width: request.width,
+        height: request.height,
+        include_data: request.include_data,
+        max_bytes: request.max_bytes,
+        media_type: request.media_type.clone(),
+        image_data_base64: request.image_data_base64.clone(),
+        file_paths: request.file_paths.clone(),
         button: request.button.map(|button| match button {
             AutonomousDesktopMouseButton::Left => DesktopSidecarMouseButton::Left,
             AutonomousDesktopMouseButton::Right => DesktopSidecarMouseButton::Right,
@@ -5744,6 +7223,12 @@ fn sidecar_control_request(
         key: request.key.clone(),
         keys: request.keys.clone(),
         text: request.text.clone(),
+        html: request.html.clone(),
+        rtf: request.rtf.clone(),
+        alt_text: request.alt_text.clone(),
+        target_label: request.target_label.clone(),
+        selection_start: request.selection_start,
+        selection_end: request.selection_end,
         value: request.value.clone(),
         menu_path: request.menu_path.clone(),
     }
@@ -5884,6 +7369,19 @@ fn desktop_audit_summary(output: &AutonomousDesktopToolOutput, reason: Option<&s
     }
 }
 
+fn desktop_audit_payload_kinds(output: &AutonomousDesktopToolOutput) -> Vec<&'static str> {
+    match output.action.as_str() {
+        "type_text" | "paste_text" | "clipboard_read_text" | "clipboard_write_text" => {
+            vec!["text"]
+        }
+        "clipboard_read_html" | "clipboard_write_html" => vec!["html"],
+        "clipboard_read_rtf" | "clipboard_write_rtf" => vec!["rtf"],
+        "clipboard_read_image" | "clipboard_write_image" => vec!["image"],
+        "clipboard_read_files" | "clipboard_write_files" | "file_drop" => vec!["file_paths"],
+        _ => Vec::new(),
+    }
+}
+
 fn desktop_label_preview(value: &str) -> String {
     value.chars().take(240).collect()
 }
@@ -5967,6 +7465,46 @@ mod platform_input {
     }
 
     #[cfg(target_os = "macos")]
+    pub(super) fn mouse_down(
+        point: (i32, i32),
+        button: AutonomousDesktopMouseButton,
+    ) -> CommandResult<()> {
+        use core_graphics::{
+            event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton},
+            event_source::{CGEventSource, CGEventSourceStateID},
+            geometry::CGPoint,
+        };
+        let cg_button = match button {
+            AutonomousDesktopMouseButton::Left => CGMouseButton::Left,
+            AutonomousDesktopMouseButton::Right => CGMouseButton::Right,
+            AutonomousDesktopMouseButton::Middle => CGMouseButton::Center,
+        };
+        let event_type = match button {
+            AutonomousDesktopMouseButton::Right => CGEventType::RightMouseDown,
+            _ => CGEventType::LeftMouseDown,
+        };
+        let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+            .map_err(|_| input_source_error())?;
+        let event = CGEvent::new_mouse_event(
+            source,
+            event_type,
+            CGPoint::new(point.0 as f64, point.1 as f64),
+            cg_button,
+        )
+        .map_err(|_| event_error("mouse down"))?;
+        event.post(CGEventTapLocation::HID);
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub(super) fn mouse_down(
+        _point: (i32, i32),
+        _button: AutonomousDesktopMouseButton,
+    ) -> CommandResult<()> {
+        unsupported_input()
+    }
+
+    #[cfg(target_os = "macos")]
     pub(super) fn mouse_click(
         point: (i32, i32),
         button: AutonomousDesktopMouseButton,
@@ -6044,6 +7582,71 @@ mod platform_input {
 
     #[cfg(not(target_os = "macos"))]
     pub(super) fn mouse_drag(_from: (i32, i32), _to: (i32, i32)) -> CommandResult<()> {
+        unsupported_input()
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn mouse_drag_move(point: (i32, i32)) -> CommandResult<()> {
+        use core_graphics::{
+            event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton},
+            event_source::{CGEventSource, CGEventSourceStateID},
+            geometry::CGPoint,
+        };
+        let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+            .map_err(|_| input_source_error())?;
+        let event = CGEvent::new_mouse_event(
+            source,
+            CGEventType::LeftMouseDragged,
+            CGPoint::new(point.0 as f64, point.1 as f64),
+            CGMouseButton::Left,
+        )
+        .map_err(|_| event_error("mouse drag move"))?;
+        event.post(CGEventTapLocation::HID);
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub(super) fn mouse_drag_move(_point: (i32, i32)) -> CommandResult<()> {
+        unsupported_input()
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn mouse_up(
+        point: (i32, i32),
+        button: AutonomousDesktopMouseButton,
+    ) -> CommandResult<()> {
+        use core_graphics::{
+            event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton},
+            event_source::{CGEventSource, CGEventSourceStateID},
+            geometry::CGPoint,
+        };
+        let cg_button = match button {
+            AutonomousDesktopMouseButton::Left => CGMouseButton::Left,
+            AutonomousDesktopMouseButton::Right => CGMouseButton::Right,
+            AutonomousDesktopMouseButton::Middle => CGMouseButton::Center,
+        };
+        let event_type = match button {
+            AutonomousDesktopMouseButton::Right => CGEventType::RightMouseUp,
+            _ => CGEventType::LeftMouseUp,
+        };
+        let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+            .map_err(|_| input_source_error())?;
+        let event = CGEvent::new_mouse_event(
+            source,
+            event_type,
+            CGPoint::new(point.0 as f64, point.1 as f64),
+            cg_button,
+        )
+        .map_err(|_| event_error("mouse up"))?;
+        event.post(CGEventTapLocation::HID);
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub(super) fn mouse_up(
+        _point: (i32, i32),
+        _button: AutonomousDesktopMouseButton,
+    ) -> CommandResult<()> {
         unsupported_input()
     }
 
@@ -6322,11 +7925,24 @@ mod tests {
             to_y: None,
             delta_x: None,
             delta_y: None,
+            width: None,
+            height: None,
+            include_data: None,
+            max_bytes: None,
+            media_type: None,
+            image_data_base64: None,
+            file_paths: Vec::new(),
             button: None,
             clicks: None,
             key: None,
             keys: Vec::new(),
             text: None,
+            html: None,
+            rtf: None,
+            alt_text: None,
+            target_label: None,
+            selection_start: None,
+            selection_end: None,
             value: None,
             menu_path: Vec::new(),
             reason: None,
@@ -6335,7 +7951,7 @@ mod tests {
     }
 
     #[test]
-    fn observe_screenshot_requires_approval() {
+    fn observe_screenshot_is_allowed_without_approval() {
         let request = AutonomousDesktopObserveRequest {
             action: AutonomousDesktopObserveAction::Screenshot,
             display_id: None,
@@ -6343,12 +7959,68 @@ mod tests {
             region: None,
             x: None,
             y: None,
+            include_data: None,
+            max_bytes: None,
         };
         let policy = desktop_observe_policy(&request, false);
+        assert_eq!(policy.decision, AutonomousDesktopPolicyDecision::Allowed);
+        assert!(!policy.approval_required);
+        assert_eq!(policy.code, "desktop_policy_observe_allowed");
+    }
+
+    #[test]
+    fn observe_display_arrangement_is_allowed_without_approval() {
+        let request = AutonomousDesktopObserveRequest {
+            action: AutonomousDesktopObserveAction::DisplayArrangement,
+            display_id: None,
+            window_id: None,
+            region: None,
+            x: None,
+            y: None,
+            include_data: None,
+            max_bytes: None,
+        };
+
+        let policy = desktop_observe_policy(&request, false);
+
+        assert_eq!(policy.decision, AutonomousDesktopPolicyDecision::Allowed);
+        assert!(!policy.approval_required);
         assert_eq!(
-            policy.decision,
-            AutonomousDesktopPolicyDecision::ApprovalRequired
+            policy.category,
+            AutonomousDesktopPolicyCategory::ObserveSafe
         );
+    }
+
+    #[test]
+    fn sensitive_observe_reads_require_operator_approval() {
+        for action in [
+            AutonomousDesktopObserveAction::ClipboardReadText,
+            AutonomousDesktopObserveAction::ClipboardReadHtml,
+            AutonomousDesktopObserveAction::ClipboardReadRtf,
+            AutonomousDesktopObserveAction::ClipboardReadImage,
+            AutonomousDesktopObserveAction::ClipboardReadFiles,
+            AutonomousDesktopObserveAction::NotificationSnapshot,
+        ] {
+            let request = AutonomousDesktopObserveRequest {
+                action,
+                display_id: None,
+                window_id: None,
+                region: None,
+                x: None,
+                y: None,
+                include_data: None,
+                max_bytes: None,
+            };
+            let blocked = desktop_observe_policy(&request, false);
+            assert_eq!(
+                blocked.decision,
+                AutonomousDesktopPolicyDecision::ApprovalRequired
+            );
+            assert!(blocked.approval_required);
+
+            let approved = desktop_observe_policy(&request, true);
+            assert_eq!(approved.decision, AutonomousDesktopPolicyDecision::Allowed);
+        }
     }
 
     #[test]
@@ -6368,11 +8040,24 @@ mod tests {
             to_y: None,
             delta_x: None,
             delta_y: None,
+            width: None,
+            height: None,
+            include_data: None,
+            max_bytes: None,
+            media_type: None,
+            image_data_base64: None,
+            file_paths: Vec::new(),
             button: None,
             clicks: None,
             key: None,
             keys: Vec::new(),
             text: Some("hunter2".into()),
+            html: None,
+            rtf: None,
+            alt_text: None,
+            target_label: None,
+            selection_start: None,
+            selection_end: None,
             value: None,
             menu_path: Vec::new(),
             reason: Some("test".into()),
@@ -6446,7 +8131,247 @@ mod tests {
         let policy = desktop_control_policy(&request, true);
 
         assert_eq!(policy.decision, AutonomousDesktopPolicyDecision::Allowed);
-        assert_eq!(policy.code, "desktop_policy_control_allowed_after_approval");
+        assert_eq!(policy.code, "desktop_policy_control_allowed");
+    }
+
+    #[test]
+    fn media_control_actions_are_explicit_key_press_aliases() {
+        for (action, expected_key) in [
+            (AutonomousDesktopControlAction::VolumeUp, "volume_up"),
+            (AutonomousDesktopControlAction::VolumeDown, "volume_down"),
+            (AutonomousDesktopControlAction::VolumeMute, "volume_mute"),
+            (
+                AutonomousDesktopControlAction::MediaPlayPause,
+                "media_play_pause",
+            ),
+            (
+                AutonomousDesktopControlAction::MediaNextTrack,
+                "media_next_track",
+            ),
+            (
+                AutonomousDesktopControlAction::MediaPrevTrack,
+                "media_prev_track",
+            ),
+        ] {
+            let request = desktop_control_request(action);
+
+            validate_desktop_control_request(&request).expect("media action is valid");
+            assert_eq!(
+                desktop_control_key_for_action(&request).expect("media key"),
+                expected_key
+            );
+            assert_eq!(
+                desktop_control_sidecar_operation(&request.action),
+                Some(DesktopSidecarOperation::KeyPress)
+            );
+            assert_eq!(
+                desktop_control_policy(&request, false).decision,
+                AutonomousDesktopPolicyDecision::Allowed
+            );
+        }
+    }
+
+    #[test]
+    fn control_quit_app_requires_approval() {
+        let mut request = desktop_control_request(AutonomousDesktopControlAction::QuitApp);
+        request.app_name = Some("TextEdit".into());
+
+        let blocked = desktop_control_policy(&request, false);
+        assert_eq!(
+            blocked.decision,
+            AutonomousDesktopPolicyDecision::ApprovalRequired
+        );
+        assert_eq!(
+            blocked.code,
+            "desktop_policy_destructive_control_requires_approval"
+        );
+
+        let approved = desktop_control_policy(&request, true);
+        assert_eq!(approved.decision, AutonomousDesktopPolicyDecision::Allowed);
+        assert_eq!(
+            approved.code,
+            "desktop_policy_destructive_control_allowed_after_approval"
+        );
+    }
+
+    #[test]
+    fn window_close_requires_approval() {
+        let mut request = desktop_control_request(AutonomousDesktopControlAction::WindowClose);
+        request.window_id = Some("42".into());
+
+        let blocked = desktop_control_policy(&request, false);
+        assert_eq!(
+            blocked.decision,
+            AutonomousDesktopPolicyDecision::ApprovalRequired
+        );
+
+        let approved = desktop_control_policy(&request, true);
+        assert_eq!(approved.decision, AutonomousDesktopPolicyDecision::Allowed);
+    }
+
+    #[test]
+    fn clipboard_resource_writes_and_file_drop_require_approval() {
+        for action in [
+            AutonomousDesktopControlAction::ClipboardWriteHtml,
+            AutonomousDesktopControlAction::ClipboardWriteRtf,
+            AutonomousDesktopControlAction::ClipboardWriteImage,
+            AutonomousDesktopControlAction::ClipboardWriteFiles,
+            AutonomousDesktopControlAction::FileDrop,
+        ] {
+            let request = desktop_control_request(action);
+
+            let blocked = desktop_control_policy(&request, false);
+            assert_eq!(
+                blocked.decision,
+                AutonomousDesktopPolicyDecision::ApprovalRequired
+            );
+
+            let approved = desktop_control_policy(&request, true);
+            assert_eq!(approved.decision, AutonomousDesktopPolicyDecision::Allowed);
+        }
+    }
+
+    #[test]
+    fn app_control_targets_must_not_be_blank() {
+        let mut launch = desktop_control_request(AutonomousDesktopControlAction::LaunchApp);
+        launch.app_name = Some("   ".into());
+        assert!(validate_desktop_control_request(&launch).is_err());
+
+        launch.app_name = None;
+        launch.bundle_id = Some("Microsoft.WindowsNotepad_8wekyb3d8bbwe!App".into());
+        assert!(validate_desktop_control_request(&launch).is_ok());
+
+        let mut focus = desktop_control_request(AutonomousDesktopControlAction::FocusWindow);
+        focus.window_id = Some("   ".into());
+        assert!(validate_desktop_control_request(&focus).is_err());
+
+        focus.window_id = None;
+        focus.app_name = Some("Notepad".into());
+        assert!(validate_desktop_control_request(&focus).is_ok());
+    }
+
+    #[test]
+    fn window_move_resize_requires_target_and_position_or_size() {
+        let mut request = desktop_control_request(AutonomousDesktopControlAction::WindowMoveResize);
+        request.window_id = Some("42".into());
+        assert!(validate_desktop_control_request(&request).is_err());
+
+        request.x = Some(20);
+        assert!(validate_desktop_control_request(&request).is_err());
+
+        request.y = Some(30);
+        assert!(validate_desktop_control_request(&request).is_ok());
+
+        request.x = None;
+        request.y = None;
+        request.width = Some(800);
+        request.height = Some(0);
+        assert!(validate_desktop_control_request(&request).is_err());
+
+        request.height = Some(600);
+        assert!(validate_desktop_control_request(&request).is_ok());
+    }
+
+    #[test]
+    fn clipboard_resource_controls_validate_payloads() {
+        let mut html = desktop_control_request(AutonomousDesktopControlAction::ClipboardWriteHtml);
+        assert!(validate_desktop_control_request(&html).is_err());
+
+        html.html = Some("<p>Hello</p>".into());
+        html.alt_text = Some("Hello".into());
+        assert!(validate_desktop_control_request(&html).is_ok());
+
+        let mut rtf = desktop_control_request(AutonomousDesktopControlAction::ClipboardWriteRtf);
+        assert!(validate_desktop_control_request(&rtf).is_err());
+        rtf.rtf = Some("{\\rtf1 Hello}".into());
+        assert!(validate_desktop_control_request(&rtf).is_ok());
+
+        let mut image =
+            desktop_control_request(AutonomousDesktopControlAction::ClipboardWriteImage);
+        assert!(validate_desktop_control_request(&image).is_err());
+
+        image.media_type = Some("image/jpeg".into());
+        image.image_data_base64 = Some("abcd".into());
+        assert!(validate_desktop_control_request(&image).is_err());
+
+        image.media_type = Some("image/png".into());
+        assert!(validate_desktop_control_request(&image).is_ok());
+
+        let mut files =
+            desktop_control_request(AutonomousDesktopControlAction::ClipboardWriteFiles);
+        assert!(validate_desktop_control_request(&files).is_err());
+
+        files.file_paths = vec!["relative.txt".into()];
+        assert!(validate_desktop_control_request(&files).is_err());
+
+        files.file_paths = vec![std::env::current_exe()
+            .expect("current exe")
+            .to_string_lossy()
+            .into_owned()];
+        assert!(validate_desktop_control_request(&files).is_ok());
+    }
+
+    #[test]
+    fn ax_set_value_accepts_text_range_replacement() {
+        let mut request = desktop_control_request(AutonomousDesktopControlAction::AxSetValue);
+        request.element_id = Some("macos_ax:1:AXTextField:10:20:120:24:10:20".into());
+        request.value = Some("new".into());
+        assert!(validate_desktop_control_request(&request).is_ok());
+
+        request.value = Some(String::new());
+        request.selection_start = Some(2);
+        request.selection_end = Some(5);
+        assert!(validate_desktop_control_request(&request).is_ok());
+
+        request.selection_start = Some(8);
+        request.selection_end = Some(5);
+        assert!(validate_desktop_control_request(&request).is_err());
+    }
+
+    #[test]
+    fn macos_helper_controls_validate_targets_without_coordinate_input() {
+        let mut dock = desktop_control_request(AutonomousDesktopControlAction::DockItemPress);
+        assert!(validate_desktop_control_request(&dock).is_err());
+        dock.app_name = Some("Finder".into());
+        assert!(validate_desktop_control_request(&dock).is_ok());
+
+        let mut status = desktop_control_request(AutonomousDesktopControlAction::StatusItemPress);
+        assert!(validate_desktop_control_request(&status).is_err());
+        status.target_label = Some("Wi-Fi".into());
+        assert!(validate_desktop_control_request(&status).is_ok());
+
+        let mut dialog = desktop_control_request(AutonomousDesktopControlAction::FileDialogSetPath);
+        dialog.file_paths = vec!["relative.txt".into()];
+        assert!(validate_desktop_control_request(&dialog).is_err());
+        dialog.file_paths = vec!["/tmp/example.txt".into()];
+        assert!(validate_desktop_control_request(&dialog).is_ok());
+
+        let confirm = desktop_control_request(AutonomousDesktopControlAction::FileDialogConfirm);
+        assert!(validate_desktop_control_request(&confirm).is_ok());
+    }
+
+    #[test]
+    fn stream_start_is_allowed_without_approval() {
+        let request = AutonomousDesktopStreamRequest {
+            action: AutonomousDesktopStreamAction::StreamStart,
+            session_id: Some("session-1".into()),
+            run_id: Some("run-1".into()),
+            display_id: None,
+            stream_id: None,
+            max_width: None,
+            max_frame_rate: None,
+            include_cursor: None,
+            quality: None,
+            ice_servers: Vec::new(),
+            session_description: None,
+            ice_candidate: None,
+        };
+
+        let policy = desktop_stream_policy(&request, false);
+
+        assert_eq!(policy.decision, AutonomousDesktopPolicyDecision::Allowed);
+        assert!(!policy.approval_required);
+        assert_eq!(policy.code, "desktop_policy_stream_allowed");
     }
 
     #[test]
@@ -6636,11 +8561,24 @@ mod tests {
             to_y: None,
             delta_x: None,
             delta_y: None,
+            width: None,
+            height: None,
+            include_data: None,
+            max_bytes: None,
+            media_type: None,
+            image_data_base64: None,
+            file_paths: Vec::new(),
             button: None,
             clicks: None,
             key: None,
             keys: Vec::new(),
             text: None,
+            html: None,
+            rtf: None,
+            alt_text: None,
+            target_label: None,
+            selection_start: None,
+            selection_end: None,
             value: None,
             menu_path: Vec::new(),
             reason: Some("cloud_manual_control_input".into()),
@@ -6712,11 +8650,24 @@ mod tests {
             to_y: None,
             delta_x: None,
             delta_y: None,
+            width: None,
+            height: None,
+            include_data: None,
+            max_bytes: None,
+            media_type: None,
+            image_data_base64: None,
+            file_paths: Vec::new(),
             button: None,
             clicks: None,
             key: None,
             keys: Vec::new(),
             text: None,
+            html: None,
+            rtf: None,
+            alt_text: None,
+            target_label: None,
+            selection_start: None,
+            selection_end: None,
             value: None,
             menu_path: Vec::new(),
             reason: Some("cloud_manual_control_input".into()),
@@ -7028,6 +8979,16 @@ mod tests {
             .as_ref()
             .and_then(|stream| stream.stream_id.clone())
             .expect("stream id");
+        if std::env::var_os(DESKTOP_SIDECAR_PATH_ENV).is_some() {
+            let stream = start_output.stream.as_ref().expect("stream state");
+            assert_eq!(stream.transport, AutonomousDesktopStreamTransport::WebRtc);
+            assert_eq!(stream.status, AutonomousDesktopStreamStatus::Starting);
+            assert!(start_output
+                .stream_signal
+                .as_ref()
+                .and_then(|signal| signal.session_description.as_ref())
+                .is_some());
+        }
 
         runtime
             .desktop_stream_with_operator_approval(AutonomousDesktopStreamRequest {
@@ -7155,6 +9116,54 @@ mod tests {
         assert!(summary.contains("reason=paste password"));
     }
 
+    #[test]
+    fn desktop_audit_marks_and_redacts_clipboard_payloads() {
+        let repo = tempdir().expect("tempdir");
+        let runtime = AutonomousToolRuntime::new(repo.path()).expect("runtime");
+        let mut output = runtime
+            .desktop_base_output(
+                AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
+                "clipboard_read_text",
+                desktop_policy(
+                    AutonomousDesktopPolicyCategory::ObserveSensitive,
+                    AutonomousDesktopPolicyDecision::Allowed,
+                    "desktop_policy_sensitive_observe_allowed",
+                    "Sensitive observation was approved.",
+                    false,
+                    false,
+                ),
+                AutonomousDesktopToolStatus::Executed,
+                "Returned clipboard text.",
+            )
+            .expect("desktop output");
+        output.structured_snapshot = Some(json!({
+            "schema": "xero.desktop_clipboard_text.v1",
+            "text": "secret clipboard text",
+            "html": "<strong>secret clipboard html</strong>",
+            "rtf": "{\\rtf1 secret clipboard rtf}",
+            "dataBase64": "c2VjcmV0LWNsaXBib2FyZC1pbWFnZQ=="
+        }));
+
+        runtime
+            .write_desktop_audit(&output, None)
+            .expect("write audit");
+
+        let audit_path = project_app_data_dir_for_repo(repo.path()).join(DESKTOP_AUDIT_FILE);
+        let audit_records = std::fs::read_to_string(audit_path).expect("audit records");
+        assert!(!audit_records.contains("secret clipboard text"));
+        assert!(!audit_records.contains("secret clipboard html"));
+        assert!(!audit_records.contains("secret clipboard rtf"));
+        assert!(!audit_records.contains("c2VjcmV0LWNsaXBib2FyZC1pbWFnZQ=="));
+
+        let record = audit_records
+            .lines()
+            .next()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("json record"))
+            .expect("audit record");
+        assert_eq!(record["payloadRedacted"], json!(true));
+        assert_eq!(record["redactedPayloadKinds"], json!(["text"]));
+    }
+
     #[cfg(unix)]
     fn mode_of(path: &Path) -> u32 {
         use std::os::unix::fs::PermissionsExt;
@@ -7219,6 +9228,8 @@ mod tests {
             }),
             x: None,
             y: None,
+            include_data: None,
+            max_bytes: None,
         };
 
         let sidecar = sidecar_screenshot_request(&request);
@@ -7231,10 +9242,10 @@ mod tests {
     fn sidecar_control_request_maps_pointer_and_keyboard_fields() {
         let request = AutonomousDesktopControlRequest {
             action: AutonomousDesktopControlAction::MouseClick,
-            display_id: None,
-            window_id: None,
-            app_name: None,
-            bundle_id: None,
+            display_id: Some("display-1".into()),
+            window_id: Some("42".into()),
+            app_name: Some("Notepad".into()),
+            bundle_id: Some("Microsoft.WindowsNotepad_8wekyb3d8bbwe!App".into()),
             element_id: Some("macos_ax:1:AXButton:10:20:30:40:10:20".into()),
             x: Some(10),
             y: Some(20),
@@ -7244,11 +9255,24 @@ mod tests {
             to_y: None,
             delta_x: None,
             delta_y: None,
+            width: Some(800),
+            height: Some(600),
+            include_data: Some(true),
+            max_bytes: Some(4096),
+            media_type: Some("image/png".into()),
+            image_data_base64: Some("iVBORw0KGgo=".into()),
+            file_paths: vec!["/tmp/example.txt".into()],
             button: Some(AutonomousDesktopMouseButton::Right),
             clicks: Some(2),
             key: Some("a".into()),
             keys: vec!["command".into(), "a".into()],
             text: Some("hello".into()),
+            html: Some("<strong>hello</strong>".into()),
+            rtf: Some("{\\rtf1 hello}".into()),
+            alt_text: Some("hello".into()),
+            target_label: Some("Wi-Fi".into()),
+            selection_start: Some(1),
+            selection_end: Some(4),
             value: Some("updated".into()),
             menu_path: vec!["File".into(), "New".into()],
             reason: None,
@@ -7257,15 +9281,35 @@ mod tests {
 
         let sidecar = sidecar_control_request(&request);
 
+        assert_eq!(sidecar.display_id.as_deref(), Some("display-1"));
+        assert_eq!(sidecar.window_id.as_deref(), Some("42"));
+        assert_eq!(sidecar.app_name.as_deref(), Some("Notepad"));
+        assert_eq!(
+            sidecar.bundle_id.as_deref(),
+            Some("Microsoft.WindowsNotepad_8wekyb3d8bbwe!App")
+        );
         assert_eq!(
             sidecar.element_id.as_deref(),
             Some("macos_ax:1:AXButton:10:20:30:40:10:20")
         );
         assert_eq!(sidecar.x, Some(10));
+        assert_eq!(sidecar.width, Some(800));
+        assert_eq!(sidecar.height, Some(600));
+        assert_eq!(sidecar.include_data, Some(true));
+        assert_eq!(sidecar.max_bytes, Some(4096));
+        assert_eq!(sidecar.media_type.as_deref(), Some("image/png"));
+        assert_eq!(sidecar.image_data_base64.as_deref(), Some("iVBORw0KGgo="));
+        assert_eq!(sidecar.file_paths, vec!["/tmp/example.txt"]);
         assert_eq!(sidecar.button, Some(DesktopSidecarMouseButton::Right));
         assert_eq!(sidecar.clicks, Some(2));
         assert_eq!(sidecar.keys, vec!["command".to_string(), "a".to_string()]);
         assert_eq!(sidecar.text.as_deref(), Some("hello"));
+        assert_eq!(sidecar.html.as_deref(), Some("<strong>hello</strong>"));
+        assert_eq!(sidecar.rtf.as_deref(), Some("{\\rtf1 hello}"));
+        assert_eq!(sidecar.alt_text.as_deref(), Some("hello"));
+        assert_eq!(sidecar.target_label.as_deref(), Some("Wi-Fi"));
+        assert_eq!(sidecar.selection_start, Some(1));
+        assert_eq!(sidecar.selection_end, Some(4));
         assert_eq!(sidecar.value.as_deref(), Some("updated"));
         assert_eq!(
             sidecar.menu_path,
@@ -7294,11 +9338,24 @@ mod tests {
             to_y: Some(240),
             delta_x: None,
             delta_y: None,
+            width: None,
+            height: None,
+            include_data: None,
+            max_bytes: None,
+            media_type: None,
+            image_data_base64: None,
+            file_paths: Vec::new(),
             button: Some(AutonomousDesktopMouseButton::Left),
             clicks: None,
             key: None,
             keys: Vec::new(),
             text: None,
+            html: None,
+            rtf: None,
+            alt_text: None,
+            target_label: None,
+            selection_start: None,
+            selection_end: None,
             value: None,
             menu_path: Vec::new(),
             reason: Some("cloud_manual_control_input".into()),
@@ -7317,6 +9374,73 @@ mod tests {
         assert_eq!(sidecar.to_x, Some(300));
         assert_eq!(sidecar.to_y, Some(240));
         assert_eq!(sidecar.button, Some(DesktopSidecarMouseButton::Left));
+    }
+
+    #[test]
+    fn stateful_manual_drag_actions_map_to_sidecar_operations() {
+        for (action, operation) in [
+            (
+                AutonomousDesktopControlAction::MouseDown,
+                DesktopSidecarOperation::MouseDown,
+            ),
+            (
+                AutonomousDesktopControlAction::MouseDragMove,
+                DesktopSidecarOperation::MouseDragMove,
+            ),
+            (
+                AutonomousDesktopControlAction::MouseUp,
+                DesktopSidecarOperation::MouseUp,
+            ),
+        ] {
+            let request = AutonomousDesktopControlRequest {
+                action,
+                display_id: None,
+                window_id: None,
+                app_name: None,
+                bundle_id: None,
+                element_id: None,
+                x: Some(10),
+                y: Some(20),
+                source_width: Some(1280),
+                source_height: Some(720),
+                to_x: None,
+                to_y: None,
+                delta_x: None,
+                delta_y: None,
+                width: None,
+                height: None,
+                include_data: None,
+                max_bytes: None,
+                media_type: None,
+                image_data_base64: None,
+                file_paths: Vec::new(),
+                button: Some(AutonomousDesktopMouseButton::Left),
+                clicks: None,
+                key: None,
+                keys: Vec::new(),
+                text: None,
+                html: None,
+                rtf: None,
+                alt_text: None,
+                target_label: None,
+                selection_start: None,
+                selection_end: None,
+                value: None,
+                menu_path: Vec::new(),
+                reason: Some("cloud_manual_control_input".into()),
+                sensitivity: None,
+            };
+
+            validate_desktop_control_request(&request).expect("valid stateful drag request");
+            let sidecar = sidecar_control_request(&request);
+            assert_eq!(
+                desktop_control_sidecar_operation(&request.action),
+                Some(operation)
+            );
+            assert_eq!(sidecar.x, Some(10));
+            assert_eq!(sidecar.y, Some(20));
+            assert_eq!(sidecar.button, Some(DesktopSidecarMouseButton::Left));
+        }
     }
 
     #[test]
@@ -7354,6 +9478,30 @@ mod tests {
             Some(DesktopSidecarOperation::PasteText)
         );
         assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::ClipboardWriteText),
+            Some(DesktopSidecarOperation::ClipboardWriteText)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::ClipboardWriteHtml),
+            Some(DesktopSidecarOperation::ClipboardWriteHtml)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::ClipboardWriteRtf),
+            Some(DesktopSidecarOperation::ClipboardWriteRtf)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::ClipboardWriteImage),
+            Some(DesktopSidecarOperation::ClipboardWriteImage)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::ClipboardWriteFiles),
+            Some(DesktopSidecarOperation::ClipboardWriteFiles)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::FileDrop),
+            Some(DesktopSidecarOperation::FileDrop)
+        );
+        assert_eq!(
             desktop_control_sidecar_operation(&AutonomousDesktopControlAction::AxSetValue),
             Some(DesktopSidecarOperation::AxSetValue)
         );
@@ -7362,8 +9510,96 @@ mod tests {
             Some(DesktopSidecarOperation::AxFocus)
         );
         assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::AxSelect),
+            Some(DesktopSidecarOperation::AxSelect)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::AxConfirm),
+            Some(DesktopSidecarOperation::AxConfirm)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::AxCancel),
+            Some(DesktopSidecarOperation::AxCancel)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::AxIncrement),
+            Some(DesktopSidecarOperation::AxIncrement)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::AxDecrement),
+            Some(DesktopSidecarOperation::AxDecrement)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::AxExpand),
+            Some(DesktopSidecarOperation::AxExpand)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::AxCollapse),
+            Some(DesktopSidecarOperation::AxCollapse)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::AxScrollToVisible),
+            Some(DesktopSidecarOperation::AxScrollToVisible)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::AxToggle),
+            Some(DesktopSidecarOperation::AxToggle)
+        );
+        assert_eq!(
             desktop_control_sidecar_operation(&AutonomousDesktopControlAction::MenuSelect),
             Some(DesktopSidecarOperation::MenuSelect)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::DockItemPress),
+            Some(DesktopSidecarOperation::DockItemPress)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::StatusItemPress),
+            Some(DesktopSidecarOperation::StatusItemPress)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::FileDialogSetPath),
+            Some(DesktopSidecarOperation::FileDialogSetPath)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::FileDialogConfirm),
+            Some(DesktopSidecarOperation::FileDialogConfirm)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::FocusWindow),
+            Some(DesktopSidecarOperation::FocusWindow)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::WindowMaximize),
+            Some(DesktopSidecarOperation::WindowMaximize)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::WindowMinimize),
+            Some(DesktopSidecarOperation::WindowMinimize)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::WindowRestore),
+            Some(DesktopSidecarOperation::WindowRestore)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::WindowMoveResize),
+            Some(DesktopSidecarOperation::WindowMoveResize)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::WindowClose),
+            Some(DesktopSidecarOperation::WindowClose)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::ActivateApp),
+            Some(DesktopSidecarOperation::ActivateApp)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::LaunchApp),
+            Some(DesktopSidecarOperation::LaunchApp)
+        );
+        assert_eq!(
+            desktop_control_sidecar_operation(&AutonomousDesktopControlAction::QuitApp),
+            Some(DesktopSidecarOperation::QuitApp)
         );
     }
 
@@ -7467,6 +9703,17 @@ mod tests {
     #[test]
     fn static_desktop_permissions_do_not_resolve_macos_tcc_status() {
         let permissions = static_desktop_permissions();
+        if cfg!(target_os = "windows") {
+            let input = permissions
+                .iter()
+                .find(|permission| permission.name == "Desktop Input")
+                .expect("desktop input permission");
+            assert_eq!(input.status, AutonomousDesktopPermissionGrant::Granted);
+            assert!(input.required_for.contains(&"window_focus".to_string()));
+            assert!(input.required_for.contains(&"app_control".to_string()));
+            return;
+        }
+
         let screen_recording = permissions
             .iter()
             .find(|permission| permission.name == "Screen Recording")
@@ -7478,6 +9725,92 @@ mod tests {
                 AutonomousDesktopPermissionGrant::Unknown
             );
         }
+    }
+
+    fn display(
+        display_id: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        scale_factor: f32,
+        primary: bool,
+    ) -> DesktopSidecarDisplay {
+        DesktopSidecarDisplay {
+            display_id: display_id.into(),
+            name: format!("Display {display_id}"),
+            x,
+            y,
+            width,
+            height,
+            scale_factor,
+            rotation: 0.0,
+            primary,
+        }
+    }
+
+    #[test]
+    fn display_arrangement_reports_virtual_bounds_primary_and_scale_factors() {
+        let arrangement = display_arrangement_from_sidecar_displays(vec![
+            display("main", 0, 0, 1920, 1080, 2.0, true),
+            display("side", 1920, 0, 1920, 1080, 1.0, false),
+        ]);
+
+        assert_eq!(arrangement.display_count, 2);
+        assert_eq!(arrangement.primary_display_id.as_deref(), Some("main"));
+        assert_eq!(
+            arrangement.virtual_bounds,
+            DesktopSidecarDisplayBounds {
+                x: 0,
+                y: 0,
+                width: 3840,
+                height: 1080,
+            }
+        );
+        assert_eq!(arrangement.scale_factors, vec![1.0, 2.0]);
+        assert!(!arrangement.has_overlaps);
+        assert!(!arrangement.has_gaps_in_virtual_bounds);
+        assert_eq!(
+            arrangement.diagnostics,
+            vec!["display_arrangement_multiple_scale_factors"]
+        );
+    }
+
+    #[test]
+    fn display_arrangement_flags_virtual_gaps_and_overlaps() {
+        let offset = display_arrangement_from_sidecar_displays(vec![
+            display("main", 0, 0, 100, 100, 1.0, true),
+            display("corner", 100, 100, 100, 100, 1.0, false),
+        ]);
+        assert!(offset.has_gaps_in_virtual_bounds);
+        assert!(offset
+            .diagnostics
+            .contains(&"display_arrangement_virtual_bounds_include_gaps".into()));
+
+        let overlapping = display_arrangement_from_sidecar_displays(vec![
+            display("main", 0, 0, 100, 100, 1.0, true),
+            display("overlap", 50, 50, 100, 100, 1.0, false),
+        ]);
+        assert!(overlapping.has_overlaps);
+        assert!(!overlapping.has_gaps_in_virtual_bounds);
+        assert!(overlapping
+            .diagnostics
+            .contains(&"display_arrangement_overlapping_bounds".into()));
+    }
+
+    #[test]
+    fn bridge_affordances_classify_browser_terminal_and_desktop_targets() {
+        let browser = classify_desktop_bridge_target(Some("Google Chrome"), Some("Inbox"));
+        assert_eq!(browser.family, "browser");
+        assert_eq!(browser.confidence, 90);
+
+        let terminal = classify_desktop_bridge_target(Some("Windows Terminal"), Some("pwsh"));
+        assert_eq!(terminal.family, "terminal");
+        assert_eq!(terminal.confidence, 90);
+
+        let desktop = classify_desktop_bridge_target(Some("Preview"), Some("contract.pdf"));
+        assert_eq!(desktop.family, "desktop");
+        assert_eq!(desktop.confidence, 60);
     }
 
     #[test]
@@ -7504,6 +9837,8 @@ mod tests {
             region: None,
             x: Some(10),
             y: Some(20),
+            include_data: None,
+            max_bytes: None,
         };
 
         let sidecar = sidecar_element_at_point_request(&request);
@@ -7521,6 +9856,8 @@ mod tests {
             region: None,
             x: None,
             y: None,
+            include_data: None,
+            max_bytes: None,
         };
 
         let sidecar = sidecar_accessibility_snapshot_request(&request);
@@ -7546,6 +9883,8 @@ mod tests {
             }),
             x: None,
             y: None,
+            include_data: None,
+            max_bytes: None,
         };
 
         let sidecar = sidecar_ocr_snapshot_request(&request);
@@ -7564,6 +9903,7 @@ mod tests {
             "screenshot": true,
             "windowList": true,
             "appList": true,
+            "notificationObservation": false,
             "foregroundState": true,
             "cursorState": true,
             "accessibilitySnapshot": false,
@@ -7583,7 +9923,44 @@ mod tests {
 
         assert_eq!(decoded.schema_version, DESKTOP_SIDECAR_SCHEMA_VERSION);
         assert!(decoded.display_list);
+        assert!(!decoded.notification_observation);
         assert!(decoded.screenshot_fallback_stream);
+    }
+
+    #[test]
+    fn windows_permission_rows_report_uia_and_ocr_support() {
+        let permissions = windows_desktop_permissions();
+        let uia = permissions
+            .iter()
+            .find(|permission| permission.name == "UI Automation")
+            .expect("UI Automation permission row");
+        let ocr = permissions
+            .iter()
+            .find(|permission| permission.name == "OCR")
+            .expect("OCR permission row");
+        let notifications = permissions
+            .iter()
+            .find(|permission| permission.name == "Notification Listener")
+            .expect("notification listener permission row");
+
+        assert_eq!(uia.status, AutonomousDesktopPermissionGrant::Granted);
+        assert!(uia
+            .required_for
+            .iter()
+            .any(|required| required == "accessibility_snapshot"));
+        assert_eq!(ocr.status, AutonomousDesktopPermissionGrant::Granted);
+        assert!(ocr
+            .required_for
+            .iter()
+            .any(|required| required == "ocr_snapshot"));
+        assert_eq!(
+            notifications.status,
+            AutonomousDesktopPermissionGrant::Unknown
+        );
+        assert!(notifications
+            .required_for
+            .iter()
+            .any(|required| required == "notification_snapshot"));
     }
 
     #[cfg(target_os = "macos")]

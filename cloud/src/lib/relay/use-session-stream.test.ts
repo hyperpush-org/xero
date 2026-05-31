@@ -7,6 +7,7 @@ import {
 } from "./session-store";
 import {
 	iceServersFromJoinPayload,
+	remoteControlFromJoinPayload,
 	remoteSnapshotControlSelection,
 	streamRunIdFromJoinPayload,
 	streamTokenFromJoinPayload,
@@ -58,6 +59,27 @@ describe("remoteVisibleSessionUpdateFromEnvelope", () => {
 		);
 		expect(streamRunIdFromJoinPayload({ streamRunId: "run-2" })).toBe("run-2");
 		expect(streamRunIdFromJoinPayload({ stream_run_id: "" })).toBeNull();
+	});
+
+	it("normalizes remote-control availability from session joins", () => {
+		expect(
+			remoteControlFromJoinPayload({
+				remote_control: {
+					available: false,
+					reason: "computer_use_connection_already_active",
+					message: "Stop the running connection first.",
+					ownerDeviceId: "web-1",
+					startedAt: "2026-05-29T18:29:00Z",
+				},
+			}),
+		).toEqual({
+			available: false,
+			reason: "computer_use_connection_already_active",
+			message: "Stop the running connection first.",
+			ownerDeviceId: "web-1",
+			startedAt: "2026-05-29T18:29:00Z",
+		});
+		expect(remoteControlFromJoinPayload({})).toBeNull();
 	});
 
 	it("uses durable composer settings when a snapshot has no active runtime run", () => {

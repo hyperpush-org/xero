@@ -49,7 +49,9 @@ function main() {
   }
 
   logger.log(`Launching Xero (${binary})`)
-  const child = spawn(binary, [], { stdio: 'inherit' })
+  const env = { ...process.env }
+  delete env.XERO_DESKTOP_SIDECAR_PATH
+  const child = spawn(binary, [], { env, stdio: 'inherit' })
 
   const forward = (signal) => () => {
     if (!child.killed) child.kill(signal)

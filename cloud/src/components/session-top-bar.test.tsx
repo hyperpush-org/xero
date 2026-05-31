@@ -23,9 +23,14 @@ describe("SessionTopBar", () => {
 	});
 
 	it("renders Computer Use without a header badge", () => {
-		render(<SessionTopBar title="Computer Use" />);
+		render(<SessionTopBar title="Computer Use" emphasizeTitle liftContent />);
 
-		expect(screen.getByText("Computer Use")).toBeTruthy();
+		expect(screen.getByText("Computer Use").className).toContain(
+			"text-foreground",
+		);
+		expect(screen.getByText("Computer Use").parentElement?.className).toContain(
+			"-translate-y-[2px]",
+		);
 		expect(screen.queryByText(/^Computer$/i)).toBeNull();
 	});
 });

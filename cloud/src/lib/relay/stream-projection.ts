@@ -2,6 +2,12 @@ import type {
 	ConversationMessageAttachment,
 	ConversationTurn,
 } from "@xero/ui/components/transcript/conversation-section";
+import {
+	mergeConversationAttachments,
+	promotableActionAttachments,
+	promoteActionMediaIntoFollowingAssistantMessages,
+	runtimeMediaAttachmentsToConversation as runtimeMediaAttachmentsToConversationBase,
+} from "@xero/ui/components/transcript/runtime-media";
 import type {
 	RuntimeStreamItemDto,
 	RuntimeStreamMediaAttachmentDto,
@@ -37,6 +43,7 @@ type ToolState = ActionTurn["state"];
 interface TurnProjectionContext {
 	turns: ConversationTurn[];
 	actionTurnIndexByToolCallId: Map<string, number>;
+	pendingAssistantAttachments: ConversationMessageAttachment[] | undefined;
 }
 
 /**
@@ -69,7 +76,7 @@ export function projectRemotePayloadToTurns(
 	payload: unknown,
 ): ConversationTurn[] {
 	if (Array.isArray(payload)) {
-		return payload.flatMap((item) => projectRemotePayloadToTurns(item));
+		return projectRemotePayloadArrayToTurns(payload);
 	}
 	if (!isRecord(payload)) return [];
 	if (isRuntimeStreamItemPayload(payload)) {
@@ -78,7 +85,7 @@ export function projectRemotePayloadToTurns(
 	if (payload.schema === REMOTE_SESSION_SNAPSHOT_SCHEMA) {
 		const transcript = recordArray(payload, "transcript");
 		if (transcript.length > 0) {
-			return transcript.flatMap((item) => projectRemotePayloadToTurns(item));
+			return projectRemotePayloadArrayToTurns(transcript);
 		}
 		return projectRemoteSnapshotRunsToTurns(recordArray(payload, "runs"));
 	}
@@ -210,7 +217,21 @@ function projectRemoteSnapshotRunsToTurns(
 		}
 	}
 
-	return turns;
+	return promoteActionMediaIntoFollowingAssistantMessages(turns);
+}
+
+function projectRemotePayloadArrayToTurns(
+	payload: readonly unknown[],
+): ConversationTurn[] {
+	const context = createTurnProjectionContext();
+	for (const item of payload) {
+		for (const turn of projectRemotePayloadToTurns(item)) {
+			appendProjectedTurn(context, turn);
+		}
+	}
+	return promoteActionMediaIntoFollowingAssistantMessages(
+		compactActionBursts(context.turns),
+	);
 }
 
 function projectTerminalRemoteRunToTurns(
@@ -767,6 +788,7 @@ function createTurnProjectionContext(): TurnProjectionContext {
 	return {
 		turns: [],
 		actionTurnIndexByToolCallId: new Map(),
+		pendingAssistantAttachments: undefined,
 	};
 }
 
@@ -786,6 +808,10 @@ function appendProjectedTurn(
 	context: TurnProjectionContext,
 	turn: ConversationTurn,
 ): void {
+	if (turn.kind === "message" && turn.role === "assistant") {
+		promotePendingAssistantAttachments(context, turn);
+	}
+
 	const previous = context.turns.at(-1);
 	if (
 		turn.kind === "message" &&
@@ -802,6 +828,10 @@ function appendProjectedTurn(
 		return;
 	}
 
+	if (turn.kind === "message" && turn.role === "user") {
+		context.pendingAssistantAttachments = undefined;
+	}
+
 	if (turn.kind === "thinking" && previous?.kind === "thinking") {
 		previous.text = `${previous.text}${turn.text}`;
 		previous.sequence = turn.sequence;
@@ -816,15 +846,45 @@ function appendProjectedTurn(
 			existingIndex != null ? context.turns[existingIndex] : undefined;
 		if (existing?.kind === "action") {
 			mergeActionTurn(existing, turn);
+			rememberActionMediaForAssistant(context, existing);
 			return;
 		}
 		context.actionTurnIndexByToolCallId.set(
 			turn.toolCallId,
 			context.turns.length,
 		);
+		rememberActionMediaForAssistant(context, turn);
+	}
+
+	if (turn.kind === "failure") {
+		context.pendingAssistantAttachments = undefined;
 	}
 
 	context.turns.push(turn);
+}
+
+function promotePendingAssistantAttachments(
+	context: TurnProjectionContext,
+	turn: Extract<ConversationTurn, { kind: "message" }>,
+): void {
+	if (!context.pendingAssistantAttachments?.length) return;
+	turn.attachments = mergeConversationAttachments(
+		turn.attachments,
+		context.pendingAssistantAttachments,
+	);
+	context.pendingAssistantAttachments = undefined;
+}
+
+function rememberActionMediaForAssistant(
+	context: TurnProjectionContext,
+	action: ActionTurn,
+): void {
+	const attachments = promotableActionAttachments(action);
+	if (!attachments?.length) return;
+	context.pendingAssistantAttachments = mergeConversationAttachments(
+		context.pendingAssistantAttachments,
+		attachments,
+	);
 }
 
 function expandActionGroups(
@@ -929,22 +989,6 @@ function mergeActionRows(
 		if (seen.has(key)) continue;
 		seen.add(key);
 		merged.push(row);
-	}
-	return merged;
-}
-
-function mergeConversationAttachments(
-	existing: ConversationMessageAttachment[] | undefined,
-	incoming: ConversationMessageAttachment[] | undefined,
-): ConversationMessageAttachment[] | undefined {
-	if (!existing?.length) return incoming;
-	if (!incoming?.length) return existing;
-	const merged = existing.map((attachment) => ({ ...attachment }));
-	const seen = new Set(merged.map((attachment) => attachment.id));
-	for (const attachment of incoming) {
-		if (seen.has(attachment.id)) continue;
-		seen.add(attachment.id);
-		merged.push({ ...attachment });
 	}
 	return merged;
 }
@@ -1119,42 +1163,93 @@ function runtimeToolDetailRows(
 }
 
 function runtimeMediaAttachmentsToConversation(
-	attachments: readonly RuntimeStreamMediaAttachmentDto[] | null | undefined,
+	attachments: readonly unknown[] | null | undefined,
 ): ConversationMessageAttachment[] | undefined {
 	if (!attachments?.length) return undefined;
-	return attachments.map((attachment) => {
-		const originalName =
-			attachment.title?.trim() ||
-			(attachment.source.kind === "app_data_path"
-				? attachment.source.absolutePath.split(/[\\/]/).pop()
-				: null) ||
-			attachment.id;
-		const absolutePath =
-			attachment.source.kind === "app_data_path"
-				? attachment.source.absolutePath
-				: attachment.source.kind === "artifact"
-					? (attachment.source.absolutePath ?? undefined)
-					: undefined;
+	const normalized = attachments
+		.map(normalizeRuntimeMediaAttachment)
+		.filter((attachment): attachment is RuntimeStreamMediaAttachmentDto =>
+			Boolean(attachment),
+		);
+	return runtimeMediaAttachmentsToConversationBase(normalized);
+}
+
+function normalizeRuntimeMediaAttachment(
+	value: unknown,
+): RuntimeStreamMediaAttachmentDto | null {
+	if (!isRecord(value)) return null;
+	const id = nonEmptyStringField(value, "id");
+	const kind = stringField(value, "kind");
+	const mediaType = normalizeRuntimeImageMediaType(
+		nonEmptyStringField(value, "mediaType", "media_type"),
+	);
+	const source = normalizeRuntimeMediaSource(recordField(value, "source"));
+	if (!id || kind !== "image" || !mediaType || !source) return null;
+	return {
+		id,
+		kind,
+		mediaType,
+		title: nonEmptyStringField(value, "title"),
+		alt: nonEmptyStringField(value, "alt"),
+		sizeBytes: numberField(value, "sizeBytes", "size_bytes") ?? undefined,
+		width: numberField(value, "width") ?? undefined,
+		height: numberField(value, "height") ?? undefined,
+		source,
+		renderUrl: nonEmptyStringField(value, "renderUrl", "render_url"),
+	};
+}
+
+function normalizeRuntimeImageMediaType(
+	value: string | null,
+): RuntimeStreamMediaAttachmentDto["mediaType"] | null {
+	switch (value) {
+		case "image/png":
+		case "image/jpeg":
+		case "image/gif":
+		case "image/webp":
+			return value;
+		default:
+			return null;
+	}
+}
+
+function normalizeRuntimeMediaSource(
+	source: Record<string, unknown> | null,
+): RuntimeStreamMediaAttachmentDto["source"] | null {
+	const kind = stringField(source, "kind");
+	if (kind === "app_data_path") {
+		const absolutePath = nonEmptyStringField(
+			source,
+			"absolutePath",
+			"absolute_path",
+		);
+		return absolutePath ? { kind, absolutePath } : null;
+	}
+	if (kind === "artifact") {
+		const artifactId = nonEmptyStringField(source, "artifactId", "artifact_id");
+		if (!artifactId) return null;
 		return {
-			id: attachment.id,
-			kind: attachment.kind,
-			mediaType: attachment.mediaType,
-			originalName,
-			sizeBytes: attachment.sizeBytes ?? 0,
-			title: attachment.title ?? null,
-			alt: attachment.alt ?? null,
-			width: attachment.width ?? null,
-			height: attachment.height ?? null,
-			source: attachment.source,
-			renderUrl: attachment.renderUrl ?? null,
-			previewSrc:
-				attachment.renderUrl ??
-				(attachment.source.kind === "data_url"
-					? attachment.source.dataUrl
-					: undefined),
-			absolutePath,
+			kind,
+			artifactId,
+			absolutePath: nonEmptyStringField(
+				source,
+				"absolutePath",
+				"absolute_path",
+			),
 		};
-	});
+	}
+	if (kind === "data_url") {
+		const dataUrl = nonEmptyStringField(source, "dataUrl", "data_url");
+		return dataUrl ? { kind, dataUrl } : null;
+	}
+	if (kind === "remote_artifact") {
+		const artifactId = nonEmptyStringField(source, "artifactId", "artifact_id");
+		const computerId = nonEmptyStringField(source, "computerId", "computer_id");
+		const sessionId = nonEmptyStringField(source, "sessionId", "session_id");
+		if (!artifactId || !computerId || !sessionId) return null;
+		return { kind, artifactId, computerId, sessionId };
+	}
+	return null;
 }
 
 function remoteCommandOutputDetail(payload: Record<string, unknown>): string {

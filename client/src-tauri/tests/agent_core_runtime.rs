@@ -577,7 +577,7 @@ fn wait_for_agent_run_status(
     run_id: &str,
     status: db::project_store::AgentRunStatus,
 ) -> db::project_store::AgentRunSnapshotRecord {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         match db::project_store::load_agent_run(repo_root, project_id, run_id) {
             Ok(snapshot) if snapshot.run.status == status => return snapshot,

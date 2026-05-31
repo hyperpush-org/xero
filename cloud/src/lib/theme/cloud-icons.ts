@@ -138,7 +138,7 @@ export function createCloudThemeIconDataUrl(
 	ctx.fill(new Path2D(LOGO_PATHS.primaryBottomRight));
 
 	ctx.globalAlpha = 0.32;
-	ctx.fillStyle = theme.colors.foreground;
+	ctx.fillStyle = theme.colors.primary;
 	ctx.fill(new Path2D(LOGO_PATHS.mutedTopRight));
 	ctx.fill(new Path2D(LOGO_PATHS.mutedBottomLeft));
 

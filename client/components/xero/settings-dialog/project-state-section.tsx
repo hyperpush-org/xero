@@ -12,17 +12,8 @@ import {
   ShieldCheck,
   Wrench,
 } from "lucide-react"
+import { BaseAlertDialog } from "@xero/ui/components/base-dialog"
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type {
@@ -415,40 +406,42 @@ export function ProjectStateSection({ projectId, projectLabel, adapter }: Projec
 
       {repairFooter}
 
-      <AlertDialog
+      <BaseAlertDialog
         open={restoreTarget !== null}
         onOpenChange={(open) => {
           if (!open) setRestoreTarget(null)
         }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Restore project state?</AlertDialogTitle>
-            <AlertDialogDescription>
+        variant="confirmation"
+        title="Restore project state?"
+        description={
+          <>
               This replaces the current SQLite + Lance store with{" "}
               <span className="font-medium text-foreground">{restoreTarget?.backupId}</span>. Xero
               will snapshot the current state as a pre-restore backup first, but anything not yet
               backed up will be overwritten.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={pendingAction === "restore"}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                if (restoreTarget) void handleRestore(restoreTarget)
-              }}
-              disabled={pendingAction === "restore"}
-            >
+          </>
+        }
+        cancelAction={{
+          label: "Cancel",
+          disabled: pendingAction === "restore",
+        }}
+        action={{
+          label: (
+            <>
               {pendingAction === "restore" ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
                 <RotateCcw className="h-3.5 w-3.5" />
               )}
               Restore
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+            </>
+          ),
+          disabled: pendingAction === "restore",
+          onClick: () => {
+            if (restoreTarget) void handleRestore(restoreTarget)
+          },
+        }}
+      />
     </div>
   )
 }

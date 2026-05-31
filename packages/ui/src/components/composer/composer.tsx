@@ -20,10 +20,9 @@ import {
 	classifyAttachment,
 } from "../../lib/agent-attachments";
 import { cn } from "../../lib/utils";
+import { BaseDialog } from "../base-dialog";
 import { Button } from "../ui/button";
 import {
-	Dialog,
-	DialogContent,
 	DialogDescription,
 	DialogHeader,
 	DialogTitle,
@@ -702,18 +701,27 @@ export function Composer({
 				<div className="ml-auto flex shrink-0 items-center gap-1">
 					{contextMeter ? <div className="shrink-0">{contextMeter}</div> : null}
 					{!useDrawer && hasDesktopSettingsFields ? (
-						<Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-							<SettingsTriggerButton
-								open={settingsOpen}
-								disabled={!hasDesktopSettingsFields}
-								onClick={() => setSettingsOpen((open) => !open)}
-								className={actionDensity === "md" ? "h-8 w-8" : undefined}
-							/>
-							<DialogContent className="gap-0 overflow-hidden border-border/70 bg-background p-0 text-foreground sm:max-w-[420px]">
+						<BaseDialog
+							open={settingsOpen}
+							onOpenChange={setSettingsOpen}
+							variant="form"
+							title="Composer settings"
+							contentClassName="gap-0 overflow-hidden border-border/70 bg-background p-0 text-foreground sm:max-w-[420px]"
+							leading={
 								<div
 									aria-hidden="true"
 									className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-primary/[0.06] to-transparent"
 								/>
+							}
+							trigger={
+								<SettingsTriggerButton
+									open={settingsOpen}
+									disabled={!hasDesktopSettingsFields}
+									onClick={() => setSettingsOpen((open) => !open)}
+									className={actionDensity === "md" ? "h-8 w-8" : undefined}
+								/>
+							}
+							header={
 								<div className="relative px-5 pb-2 pt-5">
 									<DialogHeader className="gap-1 pr-7">
 										<div className="flex items-center gap-2.5">
@@ -727,9 +735,10 @@ export function Composer({
 										Adjust approval mode and auto-compact.
 									</DialogDescription>
 								</div>
+							}
+						>
 								<div className="relative px-5 pb-5 pt-3">{desktopSettingsBody}</div>
-							</DialogContent>
-						</Dialog>
+						</BaseDialog>
 					) : null}
 					{dictationVisible ? (
 						<ComposerMicButton density={actionDensity} dictation={dictation} />

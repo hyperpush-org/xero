@@ -3,10 +3,13 @@ import { ChevronRight, Menu } from "lucide-react";
 import type { ReactNode, Ref } from "react";
 
 import { BrandLogo } from "#/components/brand-logo";
+import { cn } from "#/lib/utils";
 
 interface SessionTopBarProps {
 	title: string;
 	projectLabel?: string;
+	emphasizeTitle?: boolean;
+	liftContent?: boolean;
 	drawerTrigger?: ReactNode;
 	accessorySlotRef?: Ref<HTMLDivElement>;
 }
@@ -14,9 +17,13 @@ interface SessionTopBarProps {
 export function SessionTopBar({
 	title,
 	projectLabel,
+	emphasizeTitle = false,
+	liftContent = false,
 	drawerTrigger,
 	accessorySlotRef,
 }: SessionTopBarProps) {
+	const contentClassName = cn(liftContent && "-translate-y-[2px]");
+
 	return (
 		<header className="sticky top-0 z-20 flex shrink-0 items-center justify-between gap-1.5 bg-background px-3.5 lg:px-5 pb-2 pt-[max(env(safe-area-inset-top),0.5rem)] lg:py-4">
 			<span
@@ -27,7 +34,12 @@ export function SessionTopBar({
 						"radial-gradient(60% 100% at 50% 0%, var(--cloud-halo-soft), transparent 75%)",
 				}}
 			/>
-			<div className="relative flex min-w-0 items-center gap-1.5 text-[12.5px] text-muted-foreground">
+			<div
+				className={cn(
+					"relative flex min-w-0 items-center gap-1.5 text-[12.5px] text-muted-foreground",
+					contentClassName,
+				)}
+			>
 				<BrandLogo className="size-3.5 shrink-0 lg:hidden" aria-label="Xero" />
 				<ChevronRight
 					aria-hidden="true"
@@ -47,11 +59,22 @@ export function SessionTopBar({
 						/>
 					</span>
 				) : null}
-				<span className="truncate font-medium" title={title}>
+				<span
+					className={cn(
+						"truncate font-medium",
+						emphasizeTitle && "text-foreground",
+					)}
+					title={title}
+				>
 					{title}
 				</span>
 			</div>
-			<div className="relative flex shrink-0 items-center gap-1">
+			<div
+				className={cn(
+					"relative flex shrink-0 items-center gap-1",
+					contentClassName,
+				)}
+			>
 				<div
 					ref={accessorySlotRef}
 					className="flex shrink-0 items-center gap-1"

@@ -107,6 +107,8 @@ function SessionsShell() {
 					<SessionTopBar
 						title={topBarTitle}
 						projectLabel={topBarProjectLabel}
+						emphasizeTitle={shell.activeSession?.isComputerUse ?? false}
+						liftContent={shell.activeSession?.isComputerUse ?? false}
 						accessorySlotRef={setTopBarAccessoryElement}
 						drawerTrigger={
 							<SessionDrawer
@@ -188,6 +190,9 @@ function useSessionsShellViewModel(
 			? Boolean(state.visibleSessionsByComputerVersion[activeComputerId])
 			: false,
 	);
+	const currentComputerRemoteControl = activeComputerId
+		? (remoteSessions.remoteControlByComputer[activeComputerId] ?? null)
+		: null;
 	const desktopDeviceIds = useMemo(
 		() =>
 			session.devices
@@ -349,12 +354,15 @@ function useSessionsShellViewModel(
 			computerPresenceKnown,
 			currentComputerOnline,
 			currentComputerReconciled,
+			currentComputerRemoteControl,
 			isSessionDirectoryLoading,
+			remoteControlByComputer: remoteSessions.remoteControlByComputer,
 			topBarAccessoryElement: null,
 			visibleSessionsVersion,
 			selectSession,
 			startSession,
 			archiveSession: remoteSessions.archiveSession,
+			clearComputerUseChat: remoteSessions.clearComputerUseChat,
 			reportActiveTargetInvalid,
 			pendingProjectKey: pendingNewSession?.projectKey ?? null,
 		}),
@@ -367,6 +375,7 @@ function useSessionsShellViewModel(
 			computerPresenceKnown,
 			currentComputerOnline,
 			currentComputerReconciled,
+			currentComputerRemoteControl,
 			isSessionDirectoryLoading,
 			pendingNewSession,
 			remoteSessions,
@@ -392,6 +401,7 @@ function SessionsIndexContent() {
 		action: "archive";
 	} | null>(null);
 	const hasSessions = visibleSessions.length > 0;
+	const showDirectoryLoading = isSessionDirectoryLoading && !hasSessions;
 
 	const openSession = (summary: VisibleSessionSummary) => {
 		selectSession(summary.computerId, summary.sessionId);
@@ -410,7 +420,7 @@ function SessionsIndexContent() {
 		<div className="relative flex min-h-0 w-full flex-1 items-center justify-center px-6 py-12">
 			<Empty className="border-0">
 				<EmptyHeader>
-					{isSessionDirectoryLoading ? (
+					{showDirectoryLoading ? (
 						<EmptyMedia
 							variant="icon"
 							className="cloud-halo-soft size-16 border-border/60 bg-card/40"
@@ -423,7 +433,7 @@ function SessionsIndexContent() {
 						</EmptyMedia>
 					)}
 					<EmptyTitle className="font-display mt-4 text-[26px] font-medium leading-tight tracking-[-0.02em] text-foreground">
-						{isSessionDirectoryLoading ? (
+						{showDirectoryLoading ? (
 							<>Loading desktop sessions</>
 						) : hasSessions ? (
 							<>
@@ -440,14 +450,14 @@ function SessionsIndexContent() {
 						)}
 					</EmptyTitle>
 					<EmptyDescription className="mx-auto mt-1 max-w-sm text-[13px] leading-relaxed text-muted-foreground">
-						{isSessionDirectoryLoading
+						{showDirectoryLoading
 							? "Your desktop sessions will appear here as soon as Xero finishes syncing."
 							: hasSessions
 								? "Conversation content stays on the desktop until you open a session."
 								: "Open Xero on your desktop to make your coding sessions available here."}
 					</EmptyDescription>
 				</EmptyHeader>
-				{isSessionDirectoryLoading ? (
+				{showDirectoryLoading ? (
 					<EmptyContent>
 						<output
 							aria-label="Loading desktop sessions"

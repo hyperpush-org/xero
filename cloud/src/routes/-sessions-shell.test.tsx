@@ -32,6 +32,7 @@ const streamMock = vi.hoisted(() => ({
 	projects: [] as RemoteProjectSummary[],
 	startSession: vi.fn(() => true),
 	archiveSession: vi.fn(() => true),
+	clearComputerUseChat: vi.fn(() => true),
 	composerProps: [] as Array<Record<string, unknown>>,
 	accountHookMounts: 0,
 	accountHookUnmounts: 0,
@@ -39,6 +40,23 @@ const streamMock = vi.hoisted(() => ({
 		on: ReturnType<typeof vi.fn>;
 		off: ReturnType<typeof vi.fn>;
 	},
+	remoteControl: null as null | {
+		available: boolean;
+		reason: string | null;
+		message: string | null;
+		ownerDeviceId: string | null;
+		startedAt: string | null;
+	},
+	remoteControlByComputer: {} as Record<
+		string,
+		{
+			available: boolean;
+			reason: string | null;
+			message: string | null;
+			ownerDeviceId: string | null;
+			startedAt: string | null;
+		}
+	>,
 }));
 
 const DESKTOP_CONTROL_PRESENTATION_STORAGE_KEY =
@@ -104,14 +122,17 @@ vi.mock("#/lib/relay/use-session-stream", async () => {
 			return {
 				sessions: streamMock.sessions,
 				projects: streamMock.projects,
+				remoteControlByComputer: streamMock.remoteControlByComputer,
 				startSession: streamMock.startSession,
 				archiveSession: streamMock.archiveSession,
+				clearComputerUseChat: streamMock.clearComputerUseChat,
 			};
 		},
 		useSessionStream: () => ({
 			channel: streamMock.channel,
 			iceServers: [],
 			joinRejected: false,
+			remoteControl: streamMock.remoteControl,
 			streamRunId: null,
 			streamToken: null,
 		}),
@@ -250,10 +271,13 @@ beforeEach(() => {
 	streamMock.projects = projects;
 	streamMock.startSession.mockClear();
 	streamMock.archiveSession.mockClear();
+	streamMock.clearComputerUseChat.mockClear();
 	streamMock.composerProps = [];
 	streamMock.accountHookMounts = 0;
 	streamMock.accountHookUnmounts = 0;
 	streamMock.channel = null;
+	streamMock.remoteControl = null;
+	streamMock.remoteControlByComputer = {};
 	window.localStorage.removeItem(DESKTOP_CONTROL_PRESENTATION_STORAGE_KEY);
 	useSessionStore.setState({
 		transcripts: {},
@@ -605,9 +629,16 @@ describe.sequential("cloud sessions shell", () => {
 		renderCloudRoute(`/sessions/desktop-1/${REMOTE_COMPUTER_USE_SESSION_ID}`);
 
 		expect(screen.queryByLabelText("Desktop")).toBeNull();
-		fireEvent.click(
-			await screen.findByRole("button", { name: "Open desktop controls" }),
-		);
+		const desktopTrigger = await screen.findByRole("button", {
+			name: "Open desktop controls",
+		});
+		expect(desktopTrigger.className).toContain("text-[12px]");
+		expect(desktopTrigger.className).toContain("gap-2");
+		expect(desktopTrigger.className).toContain("hover:bg-transparent");
+		expect(
+			desktopTrigger.querySelector("svg")?.getAttribute("class"),
+		).toContain("h-3.5");
+		fireEvent.click(desktopTrigger);
 		const controls = await screen.findByRole("region", {
 			name: "Desktop controls",
 		});
@@ -689,6 +720,119 @@ describe.sequential("cloud sessions shell", () => {
 		});
 	});
 
+	it("clears Computer Use chat without navigating to a visible replacement session", async () => {
+		setupComputerUseSession();
+		useSessionStore
+			.getState()
+			.replaceWithSnapshot(`desktop-1:${REMOTE_COMPUTER_USE_SESSION_ID}`, {
+				turns: [
+					{
+						id: "turn-1",
+						kind: "message",
+						role: "user",
+						sequence: 1,
+						text: "Take a screenshot and show it to me",
+					},
+				],
+				lastSeq: 1,
+				isLive: false,
+				availableAgents: [{ id: "computer_use", label: "Computer Use" }],
+				availableModels: [],
+				currentAgentId: "computer_use",
+				currentModelId: null,
+				currentThinkingEffort: null,
+				currentApprovalMode: "suggest",
+				currentAutoCompactEnabled: true,
+			});
+
+		const router = renderCloudRoute(
+			`/sessions/desktop-1/${REMOTE_COMPUTER_USE_SESSION_ID}`,
+		);
+		const clearButton = await screen.findByRole("button", {
+			name: "Clear Computer Use chat",
+		});
+		expect(clearButton.className).toContain("text-[12px]");
+		expect(clearButton.className).toContain("gap-2");
+		expect(clearButton.className).toContain("hover:bg-transparent");
+		expect(clearButton.querySelector("svg")?.getAttribute("class")).toContain(
+			"h-3.5",
+		);
+		const separator = screen.getByText("|");
+		expect(separator.getAttribute("aria-hidden")).toBe("true");
+
+		fireEvent.click(clearButton);
+
+		expect(streamMock.clearComputerUseChat).toHaveBeenCalledWith(
+			expect.objectContaining({
+				computerId: "desktop-1",
+				sessionId: REMOTE_COMPUTER_USE_SESSION_ID,
+				isComputerUse: true,
+			}),
+		);
+		expect(router.state.location.pathname).toBe(
+			`/sessions/desktop-1/${REMOTE_COMPUTER_USE_SESSION_ID}`,
+		);
+		expect(streamMock.startSession).not.toHaveBeenCalled();
+	});
+
+	it("disables Computer Use when another cloud app owns the connection", async () => {
+		setupComputerUseSession({ withSnapshot: false });
+		streamMock.remoteControlByComputer = {
+			"desktop-1": {
+				available: false,
+				reason: "computer_use_connection_already_active",
+				message:
+					"Stop the running connection in the other cloud app before using it here.",
+				ownerDeviceId: "web-other",
+				startedAt: "2026-05-29T18:29:00Z",
+			},
+		};
+
+		renderCloudRoute(`/sessions/desktop-1/${REMOTE_COMPUTER_USE_SESSION_ID}`);
+
+		const desktopButton = await screen.findByRole("button", {
+			name: "Open desktop controls",
+		});
+		expect((desktopButton as HTMLButtonElement).disabled).toBe(true);
+		expect(
+			screen.getByRole("heading", { name: "Computer Use is already in use" }),
+		).toBeTruthy();
+		expect(
+			screen.getByText(
+				"Stop the running connection in the other cloud app before using it here.",
+			),
+		).toBeTruthy();
+		expect(screen.queryByText("Use an app")).toBeNull();
+
+		expect(screen.queryByTestId("composer")).toBeNull();
+		expect(streamMock.composerProps).toHaveLength(0);
+	});
+
+	it("disables standard sessions when another cloud app owns the desktop", async () => {
+		streamMock.remoteControlByComputer = {
+			"desktop-1": {
+				available: false,
+				reason: "computer_use_connection_already_active",
+				message:
+					"Stop the running connection in the other cloud app before using it here.",
+				ownerDeviceId: "web-other",
+				startedAt: "2026-05-29T18:29:00Z",
+			},
+		};
+
+		renderCloudRoute("/sessions/desktop-1/session-1");
+
+		expect(
+			await screen.findByRole("heading", {
+				name: "Xero Cloud is already connected elsewhere",
+			}),
+		).toBeTruthy();
+		expect(screen.queryByLabelText("Loading")).toBeNull();
+
+		expect(screen.queryByTestId("composer")).toBeNull();
+		expect(streamMock.composerProps).toHaveLength(0);
+	});
+
 	it("renders Computer Use after reload before the synthetic session has a transcript snapshot", async () => {
 		setupComputerUseSession({ withSnapshot: false });
 
@@ -698,10 +842,17 @@ describe.sequential("cloud sessions shell", () => {
 			await screen.findByRole("button", { name: "Open desktop controls" }),
 		).toBeTruthy();
 		expect(screen.queryByLabelText("Loading")).toBeNull();
+		expect(
+			document.querySelector("header span[title='Computer Use']")?.className,
+		).toContain("text-foreground");
+		expect(
+			document.querySelector("header span[title='Computer Use']")?.parentElement
+				?.className,
+		).toContain("-translate-y-[2px]");
 		expect(screen.getByRole("heading", { name: "Computer Use" })).toBeTruthy();
 		expect(
 			screen.getByText(
-				"Give a concrete instruction and Xero will operate the visible computer with bounded UI control.",
+				"Give a concrete instruction and Xero will use the available computer and project tools.",
 			),
 		).toBeTruthy();
 		expect(screen.getByTestId("composer")).toBeTruthy();

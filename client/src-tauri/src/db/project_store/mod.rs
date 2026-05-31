@@ -43,7 +43,10 @@ pub use agent_mailbox::*;
 pub use agent_memory::*;
 pub use agent_retrieval::*;
 pub use agent_session::*;
-pub(crate) use agent_session::{ensure_agent_session_active, touch_agent_session_runtime_run};
+pub(crate) use agent_session::{
+    delete_agent_session_without_replacement, ensure_agent_session_active,
+    touch_agent_session_runtime_run,
+};
 pub use autonomous::*;
 pub use code_history::*;
 pub use code_rollback::*;

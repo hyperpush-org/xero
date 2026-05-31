@@ -1,11 +1,18 @@
 import { z } from 'zod'
 
 const desktopControlPermissionActionKindSchema = z.enum(['open_macos_privacy_pane'])
+const desktopControlPolicyProfileSchema = z.enum([
+  'default_safe',
+  'developer_workstation',
+  'owner_admin',
+])
 
 export const desktopControlSettingsSchema = z
   .object({
     cloudStreamingEnabled: z.boolean(),
     manualCloudControlEnabled: z.boolean(),
+    policyProfile: desktopControlPolicyProfileSchema.default('default_safe'),
+    ownerAdminExpiresAt: z.string().nullable().default(null),
     updatedAt: z.string().nullable(),
   })
   .strict()
@@ -14,6 +21,8 @@ export const upsertDesktopControlSettingsRequestSchema = z
   .object({
     cloudStreamingEnabled: z.boolean(),
     manualCloudControlEnabled: z.boolean(),
+    policyProfile: desktopControlPolicyProfileSchema.default('default_safe'),
+    ownerAdminDurationMinutes: z.number().int().min(1).max(120).optional(),
   })
   .strict()
 
@@ -57,6 +66,7 @@ const desktopCapabilitiesSchema = z
     screenshot: z.boolean(),
     windowList: z.boolean(),
     appList: z.boolean(),
+    notificationObservation: z.boolean().default(false),
     foregroundState: z.boolean(),
     cursorState: z.boolean(),
     accessibilitySnapshot: z.boolean(),
@@ -64,6 +74,8 @@ const desktopCapabilitiesSchema = z
     mouseInput: z.boolean(),
     keyboardInput: z.boolean(),
     clipboard: z.boolean(),
+    windowFocus: z.boolean(),
+    appControl: z.boolean(),
     accessibilityActions: z.boolean(),
     menuSelect: z.boolean(),
     webrtcStream: z.boolean(),

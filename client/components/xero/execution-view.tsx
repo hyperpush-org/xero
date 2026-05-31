@@ -35,12 +35,10 @@ import type {
 import type { ExecutionPaneView } from '@/src/features/xero/use-xero-desktop-state'
 import { DeleteFileDialog } from './delete-file-dialog'
 import { RenameFileDialog } from './rename-file-dialog'
+import { BaseDialog } from '@xero/ui/components/base-dialog'
 import { Button } from '@/components/ui/button'
 import {
-  Dialog,
-  DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
@@ -2093,8 +2091,13 @@ function AgentEditPreviewDialog({
   const textHunks = patchAvailability?.textHunks?.filter((hunk) => `/${hunk.filePath.replace(/^\/+/, '')}` === activity?.path) ?? []
 
   return (
-    <Dialog open={!!activity} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-4xl">
+    <BaseDialog
+      open={!!activity}
+      onOpenChange={onOpenChange}
+      variant="editor"
+      title="Agent edit preview"
+      contentClassName="sm:max-w-4xl"
+      header={
         <DialogHeader>
           <div className="flex items-center gap-2 text-info">
             <Bot className="h-5 w-5" aria-hidden="true" />
@@ -2104,6 +2107,13 @@ function AgentEditPreviewDialog({
             {activity?.path} {activity?.operation ? `was ${activity.operation}` : 'was changed'} by an agent.
           </DialogDescription>
         </DialogHeader>
+      }
+      footer={
+        <Button variant="ghost" onClick={() => onOpenChange(false)} type="button">
+          Close
+        </Button>
+      }
+    >
 
         {isOpenDirtyFile ? (
           <div className="rounded-md border border-warning/35 bg-warning/10 px-3 py-2 text-[12px] text-warning">
@@ -2152,14 +2162,7 @@ function AgentEditPreviewDialog({
             <ConflictColumn label="Agent / disk" value={diskText ?? ''} />
           </div>
         )}
-
-        <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)} type="button">
-            Close
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    </BaseDialog>
   )
 }
 
@@ -2191,18 +2194,23 @@ function UnsavedChangesDialog({
 }) {
   const count = guard?.paths.length ?? 0
   return (
-    <Dialog open={!!guard} onOpenChange={(open) => {
-      if (!open) onCancel()
-    }}>
-      <DialogContent
-        className="sm:max-w-lg"
-        onCloseAutoFocus={(event) => {
+    <BaseDialog
+      open={!!guard}
+      onOpenChange={(open) => {
+        if (!open) onCancel()
+      }}
+      variant="confirmation"
+      title="Unsaved changes"
+      contentClassName="sm:max-w-lg"
+      contentProps={{
+        onCloseAutoFocus: (event) => {
           if (onCloseFocus) {
             event.preventDefault()
             onCloseFocus()
           }
-        }}
-      >
+        },
+      }}
+      header={
         <DialogHeader>
           <div className="flex items-center gap-2 text-warning">
             <AlertTriangle className="h-5 w-5" aria-hidden="true" />
@@ -2214,14 +2222,9 @@ function UnsavedChangesDialog({
               : `${count} files have unsaved changes.`}
           </DialogDescription>
         </DialogHeader>
-        <div className="max-h-40 overflow-auto rounded-md border border-border bg-muted/30 p-2 font-mono text-[11px]">
-          {(guard?.paths ?? []).map((path) => (
-            <div className="truncate" key={path} title={path}>
-              {path}
-            </div>
-          ))}
-        </div>
-        <DialogFooter>
+      }
+      footer={
+        <>
           <Button variant="ghost" onClick={onCancel} type="button">
             Cancel
           </Button>
@@ -2231,9 +2234,17 @@ function UnsavedChangesDialog({
           <Button onClick={onSave} type="button">
             Save
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </>
+      }
+    >
+        <div className="max-h-40 overflow-auto rounded-md border border-border bg-muted/30 p-2 font-mono text-[11px]">
+          {(guard?.paths ?? []).map((path) => (
+            <div className="truncate" key={path} title={path}>
+              {path}
+            </div>
+          ))}
+        </div>
+    </BaseDialog>
   )
 }
 
@@ -2257,18 +2268,23 @@ function SaveConflictDialog({
   }, [conflict])
 
   return (
-    <Dialog open={!!conflict} onOpenChange={(open) => {
-      if (!open) onKeepMine()
-    }}>
-      <DialogContent
-        className="sm:max-w-3xl"
-        onCloseAutoFocus={(event) => {
+    <BaseDialog
+      open={!!conflict}
+      onOpenChange={(open) => {
+        if (!open) onKeepMine()
+      }}
+      variant="confirmation"
+      title="File changed on disk"
+      contentClassName="sm:max-w-3xl"
+      contentProps={{
+        onCloseAutoFocus: (event) => {
           if (onCloseFocus) {
             event.preventDefault()
             onCloseFocus()
           }
-        }}
-      >
+        },
+      }}
+      header={
         <DialogHeader>
           <div className="flex items-center gap-2 text-warning">
             <GitCompare className="h-5 w-5" aria-hidden="true" />
@@ -2278,13 +2294,10 @@ function SaveConflictDialog({
             {conflict?.path} changed outside Xero after this tab loaded.
           </DialogDescription>
         </DialogHeader>
-        {showCompare && conflict ? (
-          <div className="grid max-h-72 min-h-0 grid-cols-2 gap-2 overflow-hidden">
-            <ConflictColumn label="Mine" value={conflict.mine} />
-            <ConflictColumn label="On disk" value={conflict.disk} />
-          </div>
-        ) : null}
-        <DialogFooter className="gap-2 sm:justify-between">
+      }
+      footerClassName="gap-2 sm:justify-between"
+      footer={
+        <>
           <Button variant="outline" onClick={() => setShowCompare((current) => !current)} type="button">
             <GitCompare className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
             Compare
@@ -2301,9 +2314,16 @@ function SaveConflictDialog({
               Overwrite
             </Button>
           </div>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </>
+      }
+    >
+        {showCompare && conflict ? (
+          <div className="grid max-h-72 min-h-0 grid-cols-2 gap-2 overflow-hidden">
+            <ConflictColumn label="Mine" value={conflict.mine} />
+            <ConflictColumn label="On disk" value={conflict.disk} />
+          </div>
+        ) : null}
+    </BaseDialog>
   )
 }
 
@@ -2343,16 +2363,21 @@ function GitHunkDialog({
         : []
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        className="sm:max-w-3xl"
-        onCloseAutoFocus={(event) => {
+    <BaseDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      variant="editor"
+      title="Git changes"
+      contentClassName="sm:max-w-3xl"
+      contentProps={{
+        onCloseAutoFocus: (event) => {
           if (onCloseFocus) {
             event.preventDefault()
             onCloseFocus()
           }
-        }}
-      >
+        },
+      }}
+      header={
         <DialogHeader>
           <div className="flex items-center gap-2 text-primary">
             <GitCompare className="h-5 w-5" aria-hidden="true" />
@@ -2362,6 +2387,13 @@ function GitHunkDialog({
             {path} {status ? `is ${status.description}.` : 'has no current Git status.'}
           </DialogDescription>
         </DialogHeader>
+      }
+      footer={
+        <Button variant="ghost" onClick={() => onOpenChange(false)} type="button">
+          Close
+        </Button>
+      }
+    >
         {isDirty ? (
           <div className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-[12px] text-warning">
             Save or discard unsaved editor changes before reverting Git hunks.
@@ -2414,13 +2446,7 @@ function GitHunkDialog({
             {action.error}
           </div>
         ) : null}
-        <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)} type="button">
-            Close
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    </BaseDialog>
   )
 }
 

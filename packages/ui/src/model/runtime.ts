@@ -217,9 +217,9 @@ export const ALL_RUNTIME_AGENT_DESCRIPTORS = [
     label: 'Computer Use',
     shortLabel: 'Computer',
     description:
-      'Follow direct user instructions by observing and controlling the local computer through bounded automation tools.',
+      'Follow direct user instructions using the tools available for the current turn.',
     taskPurpose:
-      'Observe visible computer state, perform bounded UI automation, ask before risky actions, and stop immediately when cancelled.',
+      'Complete general-purpose computer, project, automation, and tool-assisted tasks while respecting approvals, secrets, and safety boundaries.',
     scope: 'built_in',
     lifecycleState: 'active',
     baseCapabilityProfile: 'computer_use',

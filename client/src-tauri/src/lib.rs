@@ -228,7 +228,6 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::local_environment::get_local_environment_config,
             commands::local_environment::save_local_environment_config,
             commands::local_environment::regenerate_secret_key_base,
-            commands::dock_icon::set_theme_dock_icon,
             commands::developer_tool_harness::developer_tool_catalog,
             commands::developer_tool_harness::developer_tool_dry_run,
             commands::developer_tool_harness::developer_tool_harness_project,

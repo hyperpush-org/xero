@@ -142,11 +142,40 @@ describe("cloud themed icons", () => {
 		expect(translateCalls[0]?.args[0]).toBeCloseTo((512 - 455 * 0.46) / 2, 6);
 		expect(translateCalls[0]?.args[1]).toBeCloseTo((512 - 455 * 0.46) / 2, 6);
 	});
+
+	it("renders every logo block from the selected primary color", () => {
+		const theme = {
+			...THEMES[0],
+			colors: {
+				...THEMES[0].colors,
+				primary: "#1d7afc",
+				foreground: "#101828",
+			},
+		};
+		const { drawCalls } = installCanvasMock();
+
+		createCloudThemeIconDataUrl(theme, { size: 512 });
+
+		const logoFills = drawCalls
+			.filter((call) => call.name === "fill")
+			.slice(-4);
+		expect(logoFills.map((call) => call.fillStyle)).toEqual([
+			theme.colors.primary,
+			theme.colors.primary,
+			theme.colors.primary,
+			theme.colors.primary,
+		]);
+		expect(logoFills.map((call) => call.globalAlpha)).toEqual([
+			1, 1, 0.32, 0.32,
+		]);
+	});
 });
 
 interface DrawCall {
 	name: string;
 	args: number[];
+	fillStyle?: string;
+	globalAlpha?: number;
 }
 
 function installCanvasMock(): {
@@ -154,16 +183,22 @@ function installCanvasMock(): {
 	toDataURL: ReturnType<typeof vi.fn>;
 } {
 	const drawCalls: DrawCall[] = [];
-	const record = (name: string, args: number[] = []) => {
-		drawCalls.push({ name, args });
+	const record = (
+		name: string,
+		args: number[] = [],
+		state?: Pick<DrawCall, "fillStyle" | "globalAlpha">,
+	) => {
+		drawCalls.push({ name, args, ...state });
 	};
+	let fillStyle = "";
+	let globalAlpha = 1;
 	const ctx = {
 		clearRect: vi.fn((...args: number[]) => record("clearRect", args)),
 		save: vi.fn(() => record("save")),
 		scale: vi.fn((x: number, y: number) => record("scale", [x, y])),
 		fillRect: vi.fn((...args: number[]) => record("fillRect", args)),
 		translate: vi.fn((x: number, y: number) => record("translate", [x, y])),
-		fill: vi.fn(() => record("fill")),
+		fill: vi.fn(() => record("fill", [], { fillStyle, globalAlpha })),
 		beginPath: vi.fn(() => record("beginPath")),
 		moveTo: vi.fn((x: number, y: number) => record("moveTo", [x, y])),
 		lineTo: vi.fn((x: number, y: number) => record("lineTo", [x, y])),
@@ -172,9 +207,21 @@ function installCanvasMock(): {
 		),
 		closePath: vi.fn(() => record("closePath")),
 		restore: vi.fn(() => record("restore")),
-		fillStyle: "",
-		globalAlpha: 1,
 	} as unknown as CanvasRenderingContext2D;
+	Object.defineProperties(ctx, {
+		fillStyle: {
+			get: () => fillStyle,
+			set: (next: string) => {
+				fillStyle = next;
+			},
+		},
+		globalAlpha: {
+			get: () => globalAlpha,
+			set: (next: number) => {
+				globalAlpha = next;
+			},
+		},
+	});
 	const toDataURL = vi.fn(() => "data:image/png;base64,themed");
 	const canvas = {
 		width: 0,

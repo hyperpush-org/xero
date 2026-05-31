@@ -1,11 +1,9 @@
 "use client"
 
 import { useEffect, useState } from 'react'
+import { BaseDialog } from '@xero/ui/components/base-dialog'
 import {
-  Dialog,
-  DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
@@ -79,8 +77,13 @@ export function RenameFileDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+    <BaseDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      variant="form"
+      title={`Rename ${type}`}
+      contentClassName="sm:max-w-md"
+      header={
         <DialogHeader>
           <div className="flex items-center gap-2">
             {type === 'folder' ? (
@@ -94,6 +97,18 @@ export function RenameFileDialog({
             Enter a new name for <span className="font-mono">{currentName}</span>
           </DialogDescription>
         </DialogHeader>
+      }
+      footer={
+        <>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button onClick={() => void submit()} disabled={isSubmitting || !newName.trim()}>
+            {isSubmitting ? 'Renaming…' : 'Rename'}
+          </Button>
+        </>
+      }
+    >
         <div className="space-y-2 py-2">
           <Input
             autoFocus
@@ -108,15 +123,6 @@ export function RenameFileDialog({
           />
           {error ? <p className="text-[12px] text-destructive">{error}</p> : null}
         </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button onClick={() => void submit()} disabled={isSubmitting || !newName.trim()}>
-            {isSubmitting ? 'Renaming…' : 'Rename'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    </BaseDialog>
   )
 }

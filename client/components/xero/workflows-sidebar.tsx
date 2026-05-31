@@ -23,29 +23,12 @@ import {
   Wrench,
   type LucideIcon,
 } from "lucide-react"
+import { BaseAlertDialog, BaseDialog } from "@xero/ui/components/base-dialog"
 
 import { cn } from "@/lib/utils"
 import { useDeferredFilterQuery } from "@/lib/input-priority"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button, buttonVariants } from "@/components/ui/button"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -1392,37 +1375,38 @@ function DeleteAgentConfirmationDialog({
   }
 
   return (
-    <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>
-            Delete {agent?.displayName ?? "agent"}?
-          </AlertDialogTitle>
-          <AlertDialogDescription>
-            This removes the user-created agent from the agents list. Existing chat history stays
-            available.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        {error ? (
-          <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">
-            {error}
-          </p>
-        ) : null}
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            className={buttonVariants({ variant: "destructive" })}
-            disabled={deleting || !agent}
-            onClick={(event) => {
-              event.preventDefault()
-              void handleDelete()
-            }}
-          >
-            {deleting ? "Deleting..." : "Delete"}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+    <BaseAlertDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      variant="destructive-confirmation"
+      title={`Delete ${agent?.displayName ?? "agent"}?`}
+      description={
+        <>
+          This removes the user-created agent from the agents list. Existing chat history stays
+          available.
+        </>
+      }
+      cancelAction={{
+        label: "Cancel",
+        disabled: deleting,
+      }}
+      action={{
+        label: deleting ? "Deleting..." : "Delete",
+        className: buttonVariants({ variant: "destructive" }),
+        destructive: false,
+        disabled: deleting || !agent,
+        onClick: (event) => {
+          event.preventDefault()
+          void handleDelete()
+        },
+      }}
+    >
+      {error ? (
+        <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">
+          {error}
+        </p>
+      ) : null}
+    </BaseAlertDialog>
   )
 }
 
@@ -1528,14 +1512,24 @@ function AgentDefaultModelDialog({
   const hasModels = modelOptions.length > 0
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[520px]">
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>
-            Pick the model new runs should use when this agent is selected.
-          </DialogDescription>
-        </DialogHeader>
+    <BaseDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      variant="form"
+      title={title}
+      description="Pick the model new runs should use when this agent is selected."
+      contentClassName="sm:max-w-[520px]"
+      footer={
+        <>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+            Cancel
+          </Button>
+          <Button onClick={() => void handleSave()} disabled={saving || !agent}>
+            {saving ? "Saving..." : "Save"}
+          </Button>
+        </>
+      }
+    >
 
         <div className="grid gap-4">
           <div className="grid gap-2">
@@ -1594,17 +1588,7 @@ function AgentDefaultModelDialog({
             </p>
           ) : null}
         </div>
-
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
-            Cancel
-          </Button>
-          <Button onClick={() => void handleSave()} disabled={saving || !agent}>
-            {saving ? "Saving..." : "Save"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    </BaseDialog>
   )
 }
 

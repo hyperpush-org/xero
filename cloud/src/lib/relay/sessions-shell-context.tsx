@@ -6,6 +6,7 @@ import type {
 	SessionKind,
 	VisibleSessionSummary,
 } from "#/lib/relay/session-store";
+import type { RemoteControlJoinState } from "#/lib/relay/use-session-stream";
 
 export interface ActiveSessionTarget {
 	computerId: string;
@@ -24,7 +25,9 @@ export interface SessionsShellContextValue {
 	computerPresenceKnown: boolean;
 	currentComputerOnline: boolean;
 	currentComputerReconciled: boolean;
+	currentComputerRemoteControl: RemoteControlJoinState | null;
 	isSessionDirectoryLoading: boolean;
+	remoteControlByComputer: Record<string, RemoteControlJoinState>;
 	topBarAccessoryElement: HTMLDivElement | null;
 	visibleSessionsVersion: number;
 	selectSession: (computerId: string, sessionId: string) => void;
@@ -33,6 +36,7 @@ export interface SessionsShellContextValue {
 		options?: { sessionKind?: SessionKind },
 	) => void;
 	archiveSession: (summary: VisibleSessionSummary) => boolean;
+	clearComputerUseChat: (summary: VisibleSessionSummary) => boolean;
 	reportActiveTargetInvalid: (targetKey: string) => void;
 	pendingProjectKey: string | null;
 }

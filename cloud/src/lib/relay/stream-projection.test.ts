@@ -2,6 +2,7 @@ import type { RuntimeStreamMediaAttachmentDto } from "@xero/ui/model/runtime-str
 import { describe, expect, it } from "vitest";
 
 import {
+	appendConversationTurn,
 	projectRemotePayloadToTurns,
 	projectStreamItemsToTurns,
 } from "./stream-projection";
@@ -296,6 +297,121 @@ describe("projectRemotePayloadToTurns", () => {
 		]);
 	});
 
+	it("keeps tool image output on assistant messages after terminal snapshot reloads", () => {
+		const turns = projectRemotePayloadToTurns({
+			schema: "xero.remote_session_snapshot.v1",
+			runs: [
+				{
+					runId: "run-macos-screenshot",
+					prompt: "Take a screenshot of mac and show me",
+					status: "completed",
+					messages: [
+						{
+							id: 29,
+							role: "user",
+							content: "Take a screenshot of mac and show me",
+						},
+						{
+							id: 30,
+							role: "assistant",
+							content: "Screenshot captured.",
+						},
+					],
+					events: [
+						{
+							id: 1,
+							eventKind: "message_delta",
+							payload: {
+								role: "user",
+								text: "Take a screenshot of mac and show me",
+							},
+						},
+						{
+							id: 2,
+							eventKind: "tool_completed",
+							payload: {
+								toolCallId: "call-macos-screenshot",
+								toolName: "macos_automation",
+								ok: true,
+								summary: "Captured macOS screenshot.",
+								mediaAttachments: [imageMediaAttachment()],
+							},
+						},
+					],
+				},
+			],
+		});
+
+		expect(turns).toEqual([
+			expect.objectContaining({
+				kind: "message",
+				role: "user",
+				text: "Take a screenshot of mac and show me",
+			}),
+			expect.objectContaining({
+				kind: "action",
+				mediaAttachments: [
+					expect.objectContaining({ id: "media-browser-screenshot" }),
+				],
+			}),
+			expect.objectContaining({
+				kind: "message",
+				role: "assistant",
+				text: "Screenshot captured.",
+				attachments: [
+					expect.objectContaining({ id: "media-browser-screenshot" }),
+				],
+			}),
+		]);
+	});
+
+	it("keeps tool image output on assistant messages from snapshot transcript arrays", () => {
+		const turns = projectRemotePayloadToTurns({
+			schema: "xero.remote_session_snapshot.v1",
+			transcript: [
+				{
+					schema: "xero.remote_runtime_event.v1",
+					runId: "run-media",
+					eventId: 4,
+					eventKind: "tool_completed",
+					payload: {
+						toolCallId: "call-macos-screenshot",
+						toolName: "macos_automation",
+						ok: true,
+						summary: "Captured macOS screenshot.",
+						mediaAttachments: [imageMediaAttachment()],
+					},
+				},
+				{
+					schema: "xero.remote_runtime_event.v1",
+					runId: "run-media",
+					eventId: 5,
+					eventKind: "message_delta",
+					payload: {
+						role: "assistant",
+						text: "Screenshot captured.",
+					},
+				},
+			],
+		});
+
+		expect(turns).toEqual([
+			expect.objectContaining({
+				kind: "action",
+				mediaAttachments: [
+					expect.objectContaining({ id: "media-browser-screenshot" }),
+				],
+			}),
+			expect.objectContaining({
+				kind: "message",
+				role: "assistant",
+				attachments: [
+					expect.objectContaining({ id: "media-browser-screenshot" }),
+				],
+			}),
+		]);
+	});
+
 	it("maps wrapped remote runtime message events", () => {
 		const turns = projectRemotePayloadToTurns({
 			schema: "xero.remote_runtime_event.v1",
@@ -352,6 +468,51 @@ describe("projectRemotePayloadToTurns", () => {
 						source: expect.objectContaining({
 							kind: "remote_artifact",
 							artifactId: "artifact-browser-screenshot",
+						}),
+					}),
+				],
+			}),
+		]);
+	});
+
+	it("normalizes remote media attachment source keys before requesting artifacts", () => {
+		const turns = projectRemotePayloadToTurns({
+			schema: "xero.remote_runtime_event.v1",
+			runId: "run-media",
+			eventId: 10,
+			eventKind: "tool_completed",
+			payload: {
+				toolCallId: "call-macos-screenshot",
+				toolName: "macos_automation",
+				ok: true,
+				summary: "Captured macOS screenshot.",
+				mediaAttachments: [
+					{
+						id: "media-macos-screenshot",
+						kind: "image",
+						media_type: "image/png",
+						title: "macOS screenshot",
+						source: {
+							kind: "remote_artifact",
+							artifact_id: "artifact-macos-screenshot",
+							computer_id: "computer-1",
+							session_id: "session-1",
+						},
+					},
+				],
+			},
+		});
+
+		expect(turns).toEqual([
+			expect.objectContaining({
+				kind: "action",
+				mediaAttachments: [
+					expect.objectContaining({
+						source: expect.objectContaining({
+							kind: "remote_artifact",
+							artifactId: "artifact-macos-screenshot",
+							computerId: "computer-1",
+							sessionId: "session-1",
 						}),
 					}),
 				],
@@ -460,5 +621,80 @@ describe("projectStreamItemsToTurns", () => {
 				],
 			}),
 		]);
+	});
+
+	it("promotes tool image output into the following assistant response", () => {
+		const turns = projectStreamItemsToTurns([
+			{
+				kind: "tool",
+				runId: "run-media",
+				sequence: 4,
+				createdAt: "2026-05-17T00:00:02.000Z",
+				toolCallId: "call-macos-screenshot",
+				toolName: "macos_automation",
+				toolState: "succeeded",
+				detail: "Captured macOS screenshot.",
+				mediaAttachments: [imageMediaAttachment()],
+			},
+			{
+				kind: "transcript",
+				runId: "run-media",
+				sequence: 5,
+				createdAt: "2026-05-17T00:00:03.000Z",
+				transcriptRole: "assistant",
+				text: "Screenshot captured.",
+			},
+		]);
+
+		expect(turns).toEqual([
+			expect.objectContaining({
+				kind: "action",
+				mediaAttachments: [
+					expect.objectContaining({ id: "media-browser-screenshot" }),
+				],
+			}),
+			expect.objectContaining({
+				kind: "message",
+				role: "assistant",
+				text: "Screenshot captured.",
+				attachments: [
+					expect.objectContaining({ id: "media-browser-screenshot" }),
+				],
+			}),
+		]);
+	});
+
+	it("promotes tool image output during incremental live updates", () => {
+		const turns = appendConversationTurn(
+			projectStreamItemsToTurns([
+				{
+					kind: "tool",
+					runId: "run-media",
+					sequence: 4,
+					createdAt: "2026-05-17T00:00:02.000Z",
+					toolCallId: "call-macos-screenshot",
+					toolName: "macos_automation",
+					toolState: "succeeded",
+					detail: "Captured macOS screenshot.",
+					mediaAttachments: [imageMediaAttachment()],
+				},
+			]),
+			{
+				id: "transcript:run-media:5",
+				kind: "message",
+				role: "assistant",
+				sequence: 5,
+				text: "Screenshot captured.",
+			},
+		);
+
+		expect(turns.at(-1)).toEqual(
+			expect.objectContaining({
+				kind: "message",
+				attachments: [
+					expect.objectContaining({ id: "media-browser-screenshot" }),
+				],
+			}),
+		);
 	});
 });

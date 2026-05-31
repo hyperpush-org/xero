@@ -1,17 +1,8 @@
 import { memo, useCallback, useEffect, useState } from 'react'
 import { Loader2, Plus, RefreshCw, Settings } from 'lucide-react'
+import { BaseAlertDialog } from '@xero/ui/components/base-dialog'
 
 import { cn } from '@/lib/utils'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { buttonVariants } from '@/components/ui/button'
 import type { ProjectListItem } from '@/src/lib/xero-model'
 
@@ -184,7 +175,7 @@ const ProjectRailItem = memo(function ProjectRailItem({
   const projectInitial = Array.from(project.name.trim())[0]?.toUpperCase() ?? '?'
 
   return (
-    <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+    <>
       <div className="group relative mx-auto w-8">
         <button
           aria-label={`Open ${project.name}${isActive ? ' (active)' : ''}`}
@@ -218,25 +209,29 @@ const ProjectRailItem = memo(function ProjectRailItem({
         </button>
       </div>
 
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Remove {project.name} from the sidebar?</AlertDialogTitle>
-          <AlertDialogDescription>
+      <BaseAlertDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        variant="destructive-confirmation"
+        title={`Remove ${project.name} from the sidebar?`}
+        description={
+          <>
             Xero will only forget this project in the desktop registry. The repo and its app-data
             project state stay untouched. You can import the same folder again any time.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={isRemovalPending}>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            className={buttonVariants({ variant: 'destructive' })}
-            disabled={isRemovalPending}
-            onClick={() => onRemoveProject(project.id)}
-          >
-            {isRemovalPending ? 'Removing…' : 'Remove'}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+          </>
+        }
+        cancelAction={{
+          label: 'Cancel',
+          disabled: isRemovalPending,
+        }}
+        action={{
+          label: isRemovalPending ? 'Removing…' : 'Remove',
+          className: buttonVariants({ variant: 'destructive' }),
+          destructive: false,
+          disabled: isRemovalPending,
+          onClick: () => onRemoveProject(project.id),
+        }}
+      />
+    </>
   )
 })

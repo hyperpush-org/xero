@@ -290,7 +290,7 @@ impl TuiRemoteBridgeState {
             return Ok(());
         }
 
-        let mut inbound = bridge.subscribe_inbound();
+        let inbound = bridge.subscribe_inbound().map_err(map_bridge_error)?;
         let globals = globals.clone();
         let handle = thread::spawn(move || {
             while !shutdown.load(Ordering::Relaxed) {

@@ -98,6 +98,15 @@ export const Route = createRootRoute({
 });
 
 function RootDocument({ children }: { children: ReactNode }) {
+	if (import.meta.env.MODE === "test") {
+		return (
+			<>
+				{children}
+				<Toaster />
+			</>
+		);
+	}
+
 	return (
 		<html className="theme-dusk dark" data-theme="dusk" lang="en">
 			<head>

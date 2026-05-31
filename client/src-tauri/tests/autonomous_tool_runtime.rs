@@ -3,6 +3,7 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     net::TcpListener,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicUsize, Ordering},
     thread,
 };
 
@@ -12,8 +13,9 @@ use tempfile::TempDir;
 use xero_agent_core::DomainToolPackHealthStatus;
 use xero_desktop_lib::{
     commands::{
-        RepositoryDiffScope, RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto,
-        RuntimeRunApprovalModeDto, RuntimeRunControlStateDto, RuntimeRunPendingControlSnapshotDto,
+        global_computer_use::GLOBAL_COMPUTER_USE_PROJECT_ID, RepositoryDiffScope,
+        RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto,
+        RuntimeRunControlStateDto, RuntimeRunPendingControlSnapshotDto,
     },
     configure_builder_with_state, db,
     git::{diff::MAX_PATCH_BYTES, repository::CanonicalRepository},
@@ -53,6 +55,8 @@ use xero_desktop_lib::{
 #[path = "support/runtime_shell.rs"]
 mod runtime_shell;
 
+static NEXT_PROJECT_ID: AtomicUsize = AtomicUsize::new(1);
+
 fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
     configure_builder_with_state(tauri::test::mock_builder(), state)
         .build(tauri::generate_context!())
@@ -75,8 +79,13 @@ fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (
     let canonical_root = fs::canonicalize(&repo_root).expect("canonical repo root");
     let root_path_string = canonical_root.to_string_lossy().into_owned();
 
+    let project_id = format!(
+        "project-{}",
+        NEXT_PROJECT_ID.fetch_add(1, Ordering::Relaxed)
+    );
+
     let repository = CanonicalRepository {
-        project_id: "project-1".into(),
+        project_id,
         repository_id: "repo-1".into(),
         root_path: canonical_root.clone(),
         root_path_string: root_path_string.clone(),
@@ -289,8 +298,7 @@ fn spawn_mcp_http_server(sse_result: bool) -> String {
     let address = listener.local_addr().expect("test mcp http server addr");
 
     thread::spawn(move || {
-        for _ in 0..12 {
-            let (mut stream, _) = listener.accept().expect("accept test mcp request");
+        while let Ok((mut stream, _)) = listener.accept() {
             let body = read_http_request_body(&mut stream);
             let value: serde_json::Value =
                 serde_json::from_str(&body).unwrap_or_else(|_| serde_json::json!({}));
@@ -303,7 +311,7 @@ fn spawn_mcp_http_server(sse_result: bool) -> String {
             if id.is_none() {
                 write!(
                     stream,
-                    "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n"
+                    "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 )
                 .expect("write notification response");
                 continue;
@@ -347,7 +355,7 @@ fn spawn_mcp_http_server(sse_result: bool) -> String {
             };
             write!(
                 stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nmcp-session-id: test-session\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{}",
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nmcp-session-id: test-session\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 response_body.len(),
                 response_body,
             )
@@ -614,10 +622,10 @@ fn tool_runtime_macos_automation_checks_permissions_and_gates_control() {
         other => panic!("unexpected output: {other:?}"),
     }
 
-    let blocked_activate = runtime
+    let blocked_quit = runtime
         .execute(AutonomousToolRequest::MacosAutomation(
             AutonomousMacosAutomationRequest {
-                action: AutonomousMacosAutomationAction::MacAppActivate,
+                action: AutonomousMacosAutomationAction::MacAppQuit,
                 app_name: Some("Finder".into()),
                 bundle_id: None,
                 pid: None,
@@ -626,38 +634,10 @@ fn tool_runtime_macos_automation_checks_permissions_and_gates_control() {
                 screenshot_target: None,
             },
         ))
-        .expect("macOS app activation should return approval boundary");
-    match blocked_activate.output {
+        .expect("macOS app quit should return approval boundary");
+    match blocked_quit.output {
         AutonomousToolOutput::MacosAutomation(output) => {
-            assert_eq!(
-                output.action,
-                AutonomousMacosAutomationAction::MacAppActivate
-            );
-            assert!(!output.performed);
-            assert!(output.policy.approval_required);
-        }
-        other => panic!("unexpected output: {other:?}"),
-    }
-
-    let blocked_screenshot = runtime
-        .execute(AutonomousToolRequest::MacosAutomation(
-            AutonomousMacosAutomationRequest {
-                action: AutonomousMacosAutomationAction::MacScreenshot,
-                app_name: None,
-                bundle_id: None,
-                pid: None,
-                window_id: None,
-                monitor_id: None,
-                screenshot_target: None,
-            },
-        ))
-        .expect("macOS screenshot should return approval boundary");
-    match blocked_screenshot.output {
-        AutonomousToolOutput::MacosAutomation(output) => {
-            assert_eq!(
-                output.action,
-                AutonomousMacosAutomationAction::MacScreenshot
-            );
+            assert_eq!(output.action, AutonomousMacosAutomationAction::MacAppQuit);
             assert!(!output.performed);
             assert!(output.policy.approval_required);
         }
@@ -5209,6 +5189,28 @@ fn tool_runtime_returns_project_not_found_for_unknown_projects() {
     )
     .expect_err("unknown projects should not resolve a repo root");
     assert_eq!(error.code, "project_not_found");
+}
+
+#[test]
+fn tool_runtime_resolves_global_computer_use_project_from_app_data() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+
+    let runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        GLOBAL_COMPUTER_USE_PROJECT_ID,
+    )
+    .expect("global Computer Use project should resolve from app-data");
+
+    assert_eq!(
+        runtime
+            .repo_root()
+            .file_name()
+            .and_then(|name| name.to_str()),
+        Some("computer-use")
+    );
+    assert!(runtime.repo_root().join("state.db").is_file());
 }
 
 #[cfg(unix)]

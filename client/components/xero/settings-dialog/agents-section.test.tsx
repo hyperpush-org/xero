@@ -27,7 +27,7 @@ const computerUseBuiltin: AgentDefinitionSummaryDto = {
   definitionId: 'computer_use',
   displayName: 'Computer Use',
   shortLabel: 'Computer',
-  description: 'Control the visible computer through bounded automation.',
+  description: 'Use the tools available for the current turn.',
   baseCapabilityProfile: 'computer_use',
 }
 

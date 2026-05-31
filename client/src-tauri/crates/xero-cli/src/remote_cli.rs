@@ -806,6 +806,7 @@ fn map_bridge_error(error: BridgeError) -> CliError {
         | BridgeError::Decode(_)
         | BridgeError::Json(_)
         | BridgeError::MissingServerField(_)
+        | BridgeError::OutboundQueueFull { .. }
         | BridgeError::LockPoisoned => {
             CliError::system_fault("xero_cli_remote_bridge_failed", error.to_string())
         }

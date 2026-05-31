@@ -4737,7 +4737,7 @@ fn builtin_agent_definition_seed(definition_id: &str) -> Option<BuiltinAgentDefi
             short_label: "Computer",
             base_capability_profile: "computer_use",
             updated_at: "2026-05-24T00:00:00Z",
-            snapshot_json: r#"{"schema":"xero.agent_definition.v1","id":"computer_use","version":1,"displayName":"Computer Use","shortLabel":"Computer","description":"Operate the visible computer through bounded UI control without repository mutation tools.","taskPurpose":"Use the currently visible computer directly for the user's task, asking before risky actions and reporting the result.","scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"computer_use","defaultApprovalMode":"suggest","allowedApprovalModes":["suggest"],"promptPolicy":"computer_use","toolPolicy":"computer_use","outputContract":"answer","attachedSkills":[]}"#,
+            snapshot_json: r#"{"schema":"xero.agent_definition.v1","id":"computer_use","version":1,"displayName":"Computer Use","shortLabel":"Computer","description":"Follow direct user instructions using the tools available for the current turn.","taskPurpose":"Complete general-purpose computer, project, automation, and tool-assisted tasks while respecting approvals, secrets, and safety boundaries.","scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"computer_use","defaultApprovalMode":"suggest","allowedApprovalModes":["suggest"],"promptPolicy":"computer_use","toolPolicy":"computer_use","outputContract":"answer","attachedSkills":[]}"#,
         },
         "generalist" => BuiltinAgentDefinitionSeed {
             definition_id: "generalist",

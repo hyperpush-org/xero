@@ -1,8 +1,15 @@
-import { render, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { THEMES, type ThemeDefinition } from '@xero/ui/theme'
 import { XeroDesktopAdapter } from '@/src/lib/xero-desktop'
-import { ThemeProvider } from './theme-provider'
+import { ThemeProvider, useTheme } from './theme-provider'
+
+const tauriInvokeMock = vi.hoisted(() => vi.fn())
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: tauriInvokeMock,
+  isTauri: () => true,
+}))
 
 const originalAdapter = {
   isDesktopRuntime: XeroDesktopAdapter.isDesktopRuntime,
@@ -12,6 +19,7 @@ const originalAdapter = {
 }
 
 afterEach(() => {
+  tauriInvokeMock.mockClear()
   window.localStorage.clear()
   document.documentElement.removeAttribute('class')
   document.documentElement.removeAttribute('style')
@@ -21,6 +29,11 @@ afterEach(() => {
   XeroDesktopAdapter.readAppUiState = originalAdapter.readAppUiState
   XeroDesktopAdapter.writeAppUiState = originalAdapter.writeAppUiState
 })
+
+function ThemeSwitchButton() {
+  const { setThemeId } = useTheme()
+  return <button onClick={() => setThemeId('midnight')}>Use midnight</button>
+}
 
 describe('ThemeProvider cloud sync', () => {
   it('publishes only the theme id for built-in themes', async () => {
@@ -87,5 +100,36 @@ describe('ThemeProvider cloud sync', () => {
         customTheme,
       })
     })
+  })
+
+  it('does not invoke runtime OS app icon updates on initial paint or theme changes', async () => {
+    const publishThemeToCloud = vi.fn(async () => undefined)
+    XeroDesktopAdapter.isDesktopRuntime = () => true
+    XeroDesktopAdapter.publishThemeToCloud = publishThemeToCloud
+    XeroDesktopAdapter.writeAppUiState = vi.fn(async ({ key, value }) => ({
+      schema: 'xero.app_ui_state.v1' as const,
+      key,
+      value,
+      storageScope: 'os_app_data' as const,
+      uiDeferred: false,
+    }))
+
+    render(
+      <ThemeProvider initialThemeId="dusk">
+        <ThemeSwitchButton />
+      </ThemeProvider>,
+    )
+
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe('dusk')
+    })
+    expect(tauriInvokeMock).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Use midnight' }))
+
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe('midnight')
+    })
+    expect(tauriInvokeMock).not.toHaveBeenCalled()
   })
 })

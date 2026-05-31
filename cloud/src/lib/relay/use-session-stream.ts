@@ -1,5 +1,5 @@
 import { type Channel, Presence, type Socket } from "phoenix";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { applyRemoteThemeEnvelope } from "#/lib/theme/cloud-theme";
 import type { AccountDevice } from "../auth/session";
 import { decodeRelayFrame } from "./envelope";
@@ -88,11 +88,13 @@ interface UseSessionStreamOptions {
 export interface AccountRemoteSessionsState {
 	sessions: VisibleSessionSummary[];
 	projects: RemoteProjectSummary[];
+	remoteControlByComputer: Record<string, RemoteControlJoinState>;
 	startSession: (
 		project: RemoteProjectSummary,
 		options?: { sessionKind?: SessionKind },
 	) => boolean;
 	archiveSession: (summary: VisibleSessionSummary) => boolean;
+	clearComputerUseChat: (summary: VisibleSessionSummary) => boolean;
 }
 
 const UNRECONCILED_REMOTE_LIST_RETRY_MS = 2_000;
@@ -101,6 +103,14 @@ const RECONCILED_REMOTE_LIST_REFRESH_MS = 15_000;
 type RelayIceServer = RTCIceServer & {
 	credentialType?: "password" | "oauth";
 };
+
+export interface RemoteControlJoinState {
+	available: boolean;
+	reason: string | null;
+	message: string | null;
+	ownerDeviceId: string | null;
+	startedAt: string | null;
+}
 
 /**
  * Connects to a remote session channel and pushes decoded snapshot/event frames
@@ -116,12 +126,15 @@ export function useSessionStream({
 	channel: Channel | null;
 	iceServers: RTCIceServer[];
 	joinRejected: boolean;
+	remoteControl: RemoteControlJoinState | null;
 	streamRunId: string | null;
 	streamToken: string | null;
 } {
 	const [channel, setChannel] = useState<Channel | null>(null);
 	const [iceServers, setIceServers] = useState<RTCIceServer[]>([]);
 	const [joinRejected, setJoinRejected] = useState(false);
+	const [remoteControl, setRemoteControl] =
+		useState<RemoteControlJoinState | null>(null);
 	const [streamRunId, setStreamRunId] = useState<string | null>(null);
 	const [streamToken, setStreamToken] = useState<string | null>(null);
 	const replaceWithSnapshot = useSessionStore((s) => s.replaceWithSnapshot);
@@ -137,6 +150,7 @@ export function useSessionStream({
 			setChannel(null);
 			setIceServers([]);
 			setJoinRejected(false);
+			setRemoteControl(null);
 			setStreamRunId(null);
 			setStreamToken(null);
 			return;
@@ -155,6 +169,7 @@ export function useSessionStream({
 			initialLastSeq,
 			(joinedChannel, payload) => {
 				setIceServers(iceServersFromJoinPayload(payload));
+				setRemoteControl(remoteControlFromJoinPayload(payload));
 				setStreamRunId(streamRunIdFromJoinPayload(payload));
 				setStreamToken(streamTokenFromJoinPayload(payload));
 				if (!disposed) setChannel(joinedChannel);
@@ -164,6 +179,7 @@ export function useSessionStream({
 				removeVisibleSession(computerId, sessionId);
 				setLive(key, false);
 				setIceServers([]);
+				setRemoteControl(null);
 				setStreamRunId(null);
 				setStreamToken(null);
 				setJoinRejected(true);
@@ -257,6 +273,7 @@ export function useSessionStream({
 		return () => {
 			disposed = true;
 			setLive(key, false);
+			setRemoteControl(null);
 			setStreamRunId(null);
 			setStreamToken(null);
 			sessionChannel.leave();
@@ -275,21 +292,73 @@ export function useSessionStream({
 		updateControls,
 	]);
 
-	return { channel, iceServers, joinRejected, streamRunId, streamToken };
+	return {
+		channel,
+		iceServers,
+		joinRejected,
+		remoteControl,
+		streamRunId,
+		streamToken,
+	};
+}
+
+export function remoteControlFromJoinPayload(
+	payload: unknown,
+): RemoteControlJoinState | null {
+	if (!payload || typeof payload !== "object") return null;
+	const record = payload as Record<string, unknown>;
+	const value = record.remote_control ?? record.remoteControl;
+	if (!value || typeof value !== "object") return null;
+	const remoteControl = value as Record<string, unknown>;
+	return {
+		available: remoteControl.available !== false,
+		reason: stringFromJoinPayload(remoteControl.reason),
+		message: stringFromJoinPayload(remoteControl.message),
+		ownerDeviceId: stringFromJoinPayload(
+			remoteControl.ownerDeviceId ?? remoteControl.owner_device_id,
+		),
+		startedAt: stringFromJoinPayload(
+			remoteControl.startedAt ?? remoteControl.started_at,
+		),
+	};
+}
+
+function availableRemoteControlJoinState(): RemoteControlJoinState {
+	return {
+		available: true,
+		reason: null,
+		message: null,
+		ownerDeviceId: null,
+		startedAt: null,
+	};
+}
+
+function remoteControlJoinStatesEqual(
+	left: RemoteControlJoinState | undefined,
+	right: RemoteControlJoinState,
+): boolean {
+	if (!left) return false;
+	return (
+		left.available === right.available &&
+		left.reason === right.reason &&
+		left.message === right.message &&
+		left.ownerDeviceId === right.ownerDeviceId &&
+		left.startedAt === right.startedAt
+	);
 }
 
 export function streamRunIdFromJoinPayload(payload: unknown): string | null {
 	if (!payload || typeof payload !== "object") return null;
 	const record = payload as Record<string, unknown>;
 	const runId = record.stream_run_id ?? record.streamRunId;
-	return typeof runId === "string" && runId.trim() ? runId.trim() : null;
+	return stringFromJoinPayload(runId);
 }
 
 export function streamTokenFromJoinPayload(payload: unknown): string | null {
 	if (!payload || typeof payload !== "object") return null;
 	const record = payload as Record<string, unknown>;
 	const token = record.stream_token ?? record.streamToken;
-	return typeof token === "string" && token.trim() ? token.trim() : null;
+	return stringFromJoinPayload(token);
 }
 
 export function iceServersFromJoinPayload(payload: unknown): RTCIceServer[] {
@@ -321,6 +390,10 @@ function iceServerUrls(value: unknown): string | string[] | null {
 		typeof url === "string" && url.trim().length > 0 ? [url.trim()] : [],
 	);
 	return urls.length > 0 ? urls : null;
+}
+
+function stringFromJoinPayload(value: unknown): string | null {
+	return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 /** Subscribe account presence and request visible sessions from online desktops. */
@@ -356,6 +429,24 @@ export function useAccountRemoteSessions(
 	const projectListChannelsRef = useRef(new Map<string, Channel>());
 	const newSessionChannelsRef = useRef(new Map<string, Channel>());
 	const themeChannelsRef = useRef(new Map<string, Channel>());
+	const [remoteControlByComputer, setRemoteControlByComputer] = useState<
+		Record<string, RemoteControlJoinState>
+	>({});
+	const applyRemoteControlJoinState = useCallback(
+		(computerId: string, payload: unknown) => {
+			const remoteControl =
+				remoteControlFromJoinPayload(payload) ??
+				availableRemoteControlJoinState();
+			setRemoteControlByComputer((current) => {
+				const previous = current[computerId];
+				if (remoteControlJoinStatesEqual(previous, remoteControl)) {
+					return current;
+				}
+				return { ...current, [computerId]: remoteControl };
+			});
+		},
+		[],
+	);
 
 	useEffect(() => {
 		if (!relayTokenRef.current || !accountId) return;
@@ -405,6 +496,17 @@ export function useAccountRemoteSessions(
 		);
 		clearVisibleSessionsForComputers(offlineComputerIds);
 		clearRemoteProjectsForComputers(offlineComputerIds);
+		setRemoteControlByComputer((current) => {
+			let changed = false;
+			const next = { ...current };
+			for (const computerId of offlineComputerIds) {
+				if (computerId in next) {
+					delete next[computerId];
+					changed = true;
+				}
+			}
+			return changed ? next : current;
+		});
 		const applyUpdate = (update: RemoteVisibleSessionUpdate) => {
 			if (update.kind === "replace") {
 				replaceVisibleSessionsForComputer(update.computerId, update.sessions);
@@ -423,8 +525,9 @@ export function useAccountRemoteSessions(
 				computerId,
 				"__sessions__",
 				0,
-				(joinedChannel) => {
+				(joinedChannel, payload) => {
 					if (disposed || !webDeviceId) return;
+					applyRemoteControlJoinState(computerId, payload);
 					stopReconciliationTimers.push(
 						scheduleRemoteListReconciliation({
 							isDisposed: () => disposed,
@@ -569,6 +672,7 @@ export function useAccountRemoteSessions(
 		clearVisibleSessionsForComputers,
 		devices,
 		onlineComputerIds,
+		applyRemoteControlJoinState,
 		relayTokenRef,
 		removeVisibleSession,
 		replaceRemoteProjectsForComputer,
@@ -582,6 +686,9 @@ export function useAccountRemoteSessions(
 		options: { sessionKind?: SessionKind } = {},
 	): boolean => {
 		if (!webDeviceId) return false;
+		if (remoteControlByComputer[project.computerId]?.available === false) {
+			return false;
+		}
 		const channel = newSessionChannelsRef.current.get(project.computerId);
 		if (!channel) return false;
 		const sessionKind = options.sessionKind ?? "standard";
@@ -597,6 +704,9 @@ export function useAccountRemoteSessions(
 
 	const archiveSession = (summary: VisibleSessionSummary): boolean => {
 		if (!webDeviceId) return false;
+		if (remoteControlByComputer[summary.computerId]?.available === false) {
+			return false;
+		}
 		const channel = sessionListChannelsRef.current.get(summary.computerId);
 		if (!channel) return false;
 		requestSessionArchive(channel, {
@@ -605,6 +715,24 @@ export function useAccountRemoteSessions(
 			sessionId: summary.sessionId,
 			agentSessionId: summary.agentSessionId,
 			deviceId: webDeviceId,
+		});
+		return true;
+	};
+
+	const clearComputerUseChat = (summary: VisibleSessionSummary): boolean => {
+		if (!webDeviceId || !summary.isComputerUse) return false;
+		if (remoteControlByComputer[summary.computerId]?.available === false) {
+			return false;
+		}
+		const channel = newSessionChannelsRef.current.get(summary.computerId);
+		if (!channel) return false;
+		requestStartSession(channel, {
+			computerId: summary.computerId,
+			projectId: summary.projectId || GLOBAL_COMPUTER_USE_PROJECT_ID,
+			deviceId: webDeviceId,
+			sessionKind: "computer_use",
+			agent: "computer_use",
+			resetExisting: true,
 		});
 		return true;
 	};
@@ -619,8 +747,10 @@ export function useAccountRemoteSessions(
 	return {
 		sessions,
 		projects,
+		remoteControlByComputer,
 		startSession,
 		archiveSession,
+		clearComputerUseChat,
 	};
 }
 

@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use serde_json::json;
@@ -23,6 +24,8 @@ use xero_desktop_lib::{
     state::DesktopState,
 };
 
+static NEXT_PROJECT_ID: AtomicUsize = AtomicUsize::new(1);
+
 fn seed_project(root: &TempDir) -> (String, PathBuf) {
     let repo_root = root.path().join("repo");
     fs::create_dir_all(&repo_root).expect("create repo root");
@@ -36,7 +39,10 @@ fn seed_project(root: &TempDir) -> (String, PathBuf) {
         fs::write(&full_path, format!("// fixture for {path}\n")).expect("write fixture file");
     }
     let canonical_root = fs::canonicalize(&repo_root).expect("canonical repo root");
-    let project_id = "project-continuity".to_string();
+    let project_id = format!(
+        "project-continuity-{}",
+        NEXT_PROJECT_ID.fetch_add(1, Ordering::Relaxed)
+    );
     let repository = CanonicalRepository {
         project_id: project_id.clone(),
         repository_id: "repo-continuity".into(),

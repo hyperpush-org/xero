@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ArrowRight, ChevronDown, Loader2, ShieldCheck, Sparkles } from 'lucide-react'
+import { BaseDialog } from '@xero/ui/components/base-dialog'
 
 import {
-  Dialog,
-  DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
@@ -101,13 +99,16 @@ export function AgentApprovalReviewDialog({
   }, [open, review?.definitionId, review?.toVersion])
 
   return (
-    <Dialog
+    <BaseDialog
       open={open}
       onOpenChange={(next) => {
         if (!next && !busy) onCancel()
       }}
-    >
-      <DialogContent className="max-w-lg gap-0 overflow-hidden p-0">
+      variant="confirmation"
+      title={title}
+      busy={busy}
+      contentClassName="max-w-lg gap-0 overflow-hidden p-0"
+      header={
         <DialogHeader className="border-b border-border/50 p-5 pb-4">
           <DialogTitle className="flex items-center gap-2 text-[15px]">
             <span className="flex size-7 items-center justify-center rounded-md border border-primary/20 bg-primary/10">
@@ -119,6 +120,35 @@ export function AgentApprovalReviewDialog({
             {description}
           </DialogDescription>
         </DialogHeader>
+      }
+      footerClassName="border-t border-border/50 bg-background/40 p-3"
+      footer={
+        <>
+          <Button
+            variant="ghost"
+            onClick={onCancel}
+            disabled={busy}
+            className="h-8 text-[12.5px]"
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={onApprove}
+            disabled={busy || !review}
+            className="h-8 gap-1.5 text-[12.5px]"
+          >
+            {busy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            ) : null}
+            {review?.isInitialVersion
+              ? 'Approve and save'
+              : !review?.changed
+                ? 'Approve no-change save'
+                : 'Approve and save changes'}
+          </Button>
+        </>
+      }
+    >
 
         <div className="flex flex-col gap-3 px-5 py-4">
           {!review ? (
@@ -238,33 +268,7 @@ export function AgentApprovalReviewDialog({
             {errorMessage}
           </div>
         ) : null}
-
-        <DialogFooter className="border-t border-border/50 bg-background/40 p-3">
-          <Button
-            variant="ghost"
-            onClick={onCancel}
-            disabled={busy}
-            className="h-8 text-[12.5px]"
-          >
-            Cancel
-          </Button>
-          <Button
-            onClick={onApprove}
-            disabled={busy || !review}
-            className="h-8 gap-1.5 text-[12.5px]"
-          >
-            {busy ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-            ) : null}
-            {review?.isInitialVersion
-              ? 'Approve and save'
-              : !review?.changed
-                ? 'Approve no-change save'
-                : 'Approve and save changes'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    </BaseDialog>
   )
 }
 

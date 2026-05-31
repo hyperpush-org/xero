@@ -151,7 +151,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     }
 
     if footer_rows > 0 {
-        lines.push(agent_footer_line(app));
+        lines.push(agent_footer_line(app, surface_area.width));
     }
 
     // Bottom padding.
@@ -192,7 +192,7 @@ fn render_approval_panel(
         lines.push(stripe_only_line(bg));
     }
     if footer_rows > 0 {
-        lines.push(agent_footer_line(app));
+        lines.push(agent_footer_line(app, surface_area.width));
     }
     for _ in 0..bottom_pad_rows {
         lines.push(stripe_only_line(bg));
@@ -367,7 +367,7 @@ fn placeholder_for(app: &App) -> &'static str {
     }
 }
 
-fn agent_footer_line(app: &App) -> Line<'static> {
+fn agent_footer_line(app: &App, width: u16) -> Line<'static> {
     let bg = theme::composer_bg_color();
     let agent = app.selected_agent_label().to_owned();
     let model = app
@@ -389,18 +389,65 @@ fn agent_footer_line(app: &App) -> Line<'static> {
     let effort = format!("think:{}", app.thinking_effort.label());
     let approval = format!("approval:{}", app.selected_approval_mode().footer_label());
 
-    Line::from(vec![
-        Span::styled(format!("{} ", theme::STRIPE_GLYPH), theme::accent().bg(bg)),
-        Span::styled(agent, theme::accent().bg(bg)),
-        Span::styled(" · ", theme::dim().bg(bg)),
-        Span::styled(model, theme::muted().bg(bg)),
-        Span::styled(" · ", theme::dim().bg(bg)),
-        Span::styled(profile, profile_style),
-        Span::styled(" · ", theme::dim().bg(bg)),
-        Span::styled(effort, theme::muted().bg(bg)),
-        Span::styled(" · ", theme::dim().bg(bg)),
-        Span::styled(approval, theme::muted().bg(bg)),
-    ])
+    let accent = theme::accent().bg(bg);
+    let muted = theme::muted().bg(bg);
+    let dim = theme::dim().bg(bg);
+    let full = vec![
+        (agent.clone(), accent),
+        (model.clone(), muted),
+        (profile, profile_style),
+        (effort.clone(), muted),
+        (approval.clone(), muted),
+    ];
+    let without_profile = vec![
+        (agent.clone(), accent),
+        (model, muted),
+        (effort.clone(), muted),
+        (approval.clone(), muted),
+    ];
+    let compact = vec![
+        (agent, accent),
+        (effort.clone(), muted),
+        (approval.clone(), muted),
+    ];
+    let minimal = vec![(effort, muted), (approval.clone(), muted)];
+    let approval_only = vec![(approval, muted)];
+    for parts in [full, without_profile, compact, minimal, approval_only] {
+        if footer_parts_width(&parts) <= width as usize {
+            return footer_line_from_parts(parts, dim, bg);
+        }
+    }
+    footer_line_from_parts(Vec::new(), dim, bg)
+}
+
+fn footer_line_from_parts(
+    parts: Vec<(String, Style)>,
+    separator_style: Style,
+    bg: ratatui::style::Color,
+) -> Line<'static> {
+    let mut spans = Vec::with_capacity(parts.len().saturating_mul(2) + 1);
+    spans.push(Span::styled(
+        format!("{} ", theme::STRIPE_GLYPH),
+        theme::accent().bg(bg),
+    ));
+    for (index, (text, style)) in parts.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" · ", separator_style));
+        }
+        spans.push(Span::styled(text, style));
+    }
+    Line::from(spans)
+}
+
+fn footer_parts_width(parts: &[(String, Style)]) -> usize {
+    let stripe_width = 2;
+    let separator_width = parts.len().saturating_sub(1) * 3;
+    stripe_width
+        + separator_width
+        + parts
+            .iter()
+            .map(|(text, _)| text.chars().count())
+            .sum::<usize>()
 }
 
 fn pending_attachment_line(app: &App, width: u16) -> Line<'static> {

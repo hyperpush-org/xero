@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react"
 import { AlertTriangle, BatteryCharging, Laptop, LoaderCircle, RefreshCw, Zap } from "lucide-react"
+import { BaseAlertDialog } from "@xero/ui/components/base-dialog"
 
 import type { XeroDesktopAdapter } from "@/src/lib/xero-desktop"
 import type {
@@ -9,16 +10,6 @@ import type {
   UpsertClosedLidModeSettingsRequestDto,
 } from "@/src/lib/xero-model"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { cn } from "@/lib/utils"
@@ -333,29 +324,28 @@ export function PowerSection({ adapter }: PowerSectionProps) {
             </AlertDescription>
           </Alert>
 
-          <AlertDialog open={confirmClosedLidOpen} onOpenChange={setConfirmClosedLidOpen}>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Enable Closed-Lid Mode?</AlertDialogTitle>
-                <AlertDialogDescription>
+          <BaseAlertDialog
+            open={confirmClosedLidOpen}
+            onOpenChange={setConfirmClosedLidOpen}
+            variant="confirmation"
+            title="Enable Closed-Lid Mode?"
+            description={
+              <>
                   Xero will ask the operating system for administrator approval if needed and set a
                   global power option so work can continue after this device lid closes. The setting
                   remains active until you turn it off here.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel disabled={saveTarget === "closed_lid"}>
-                  Cancel
-                </AlertDialogCancel>
-                <AlertDialogAction
-                  disabled={saveTarget === "closed_lid"}
-                  onClick={() => updateClosedLidMode(true, true)}
-                >
-                  Enable
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+              </>
+            }
+            cancelAction={{
+              label: "Cancel",
+              disabled: saveTarget === "closed_lid",
+            }}
+            action={{
+              label: "Enable",
+              disabled: saveTarget === "closed_lid",
+              onClick: () => updateClosedLidMode(true, true),
+            }}
+          />
         </>
       )}
     </div>

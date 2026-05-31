@@ -51,16 +51,7 @@ import {
   buildEditorAgentActivities,
   type EditorAgentContextRequest,
 } from '@/components/xero/execution-view/agent-aware-editor-hooks'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
+import { BaseAlertDialog } from '@xero/ui/components/base-dialog'
 import { XeroDesktopAdapter as DefaultXeroDesktopAdapter, type XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 import {
   applyRuntimeRun,
@@ -4509,32 +4500,28 @@ export function XeroApp({ adapter }: XeroAppProps) {
           onFocusPane={handleFocusPane}
           onCycleFocus={cycleFocusPane}
         />
-        <AlertDialog
+        <BaseAlertDialog
           open={pendingPaneCloseId !== null}
           onOpenChange={(open) => {
             if (!open) {
               setPendingPaneCloseId(null)
             }
           }}
-        >
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Close agent pane?</AlertDialogTitle>
-              <AlertDialogDescription>
-                {pendingPaneCloseCopy} Closing keeps the session in the sidebar, but this pane will stop showing it.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction
-                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                onClick={handleConfirmClosePane}
-              >
-                Close pane
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+          variant="destructive-confirmation"
+          title="Close agent pane?"
+          description={
+            <>
+              {pendingPaneCloseCopy} Closing keeps the session in the sidebar, but this pane will stop showing it.
+            </>
+          }
+          cancelAction={{ label: 'Cancel' }}
+          action={{
+            label: 'Close pane',
+            className: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
+            destructive: false,
+            onClick: handleConfirmClosePane,
+          }}
+        />
         <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
           {workflowView ? (
             <LazyActivityPane

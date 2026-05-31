@@ -17,13 +17,11 @@ import {
   Wrench,
   X,
 } from "lucide-react"
+import { BaseDialog } from "@xero/ui/components/base-dialog"
 
 import { Button } from "@/components/ui/button"
 import {
-  Dialog,
-  DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
@@ -376,13 +374,14 @@ export function ProjectRecordsSection({
         </section>
       ) : null}
 
-      <Dialog
+      <BaseDialog
         open={deleteTarget !== null}
         onOpenChange={(open) => {
           if (!open) setDeleteTarget(null)
         }}
-      >
-        <DialogContent>
+        variant="destructive-confirmation"
+        title="Delete project record"
+        header={
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <AlertTriangle className="h-4 w-4 text-destructive" />
@@ -393,15 +392,9 @@ export function ProjectRecordsSection({
               pinned to the prior version.
             </DialogDescription>
           </DialogHeader>
-          {deleteTarget ? (
-            <div className="space-y-1.5 rounded-md border border-border/60 bg-secondary/20 px-3 py-2 text-[12.5px]">
-              <p className="font-medium text-foreground">{deleteTarget.title}</p>
-              <p className="font-mono text-[11.5px] text-muted-foreground">
-                {deleteTarget.recordId}
-              </p>
-            </div>
-          ) : null}
-          <DialogFooter>
+        }
+        footer={
+          <>
             <Button
               variant="ghost"
               size="sm"
@@ -426,17 +419,27 @@ export function ProjectRecordsSection({
               )}
               Delete
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </>
+        }
+      >
+          {deleteTarget ? (
+            <div className="space-y-1.5 rounded-md border border-border/60 bg-secondary/20 px-3 py-2 text-[12.5px]">
+              <p className="font-medium text-foreground">{deleteTarget.title}</p>
+              <p className="font-mono text-[11.5px] text-muted-foreground">
+                {deleteTarget.recordId}
+              </p>
+            </div>
+          ) : null}
+      </BaseDialog>
 
-      <Dialog
+      <BaseDialog
         open={supersedeDialog.open}
         onOpenChange={(open) => {
           if (!open) setSupersedeDialog(INITIAL_SUPERSEDE_DIALOG)
         }}
-      >
-        <DialogContent>
+        variant="form"
+        title="Supersede project record"
+        header={
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <ArrowRight className="h-4 w-4" />
@@ -446,6 +449,35 @@ export function ProjectRecordsSection({
               Retrieval will prefer the superseding record and treat this one as historical.
             </DialogDescription>
           </DialogHeader>
+        }
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 gap-1.5 text-[12px]"
+              onClick={() => setSupersedeDialog(INITIAL_SUPERSEDE_DIALOG)}
+              disabled={!!pendingRecordId}
+            >
+              <X className="h-3.5 w-3.5" />
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              className="h-8 gap-1.5 text-[12px]"
+              onClick={() => void handleSupersede()}
+              disabled={!!pendingRecordId}
+            >
+              {pendingRecordId === supersedeDialog.superseded?.recordId ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Check className="h-3.5 w-3.5" />
+              )}
+              Supersede
+            </Button>
+          </>
+        }
+      >
           {supersedeDialog.superseded ? (
             <div className="space-y-3 text-[12.5px]">
               <div className="space-y-1.5 rounded-md border border-border/60 bg-secondary/20 px-3 py-2">
@@ -486,33 +518,7 @@ export function ProjectRecordsSection({
               ) : null}
             </div>
           ) : null}
-          <DialogFooter>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 gap-1.5 text-[12px]"
-              onClick={() => setSupersedeDialog(INITIAL_SUPERSEDE_DIALOG)}
-              disabled={!!pendingRecordId}
-            >
-              <X className="h-3.5 w-3.5" />
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              className="h-8 gap-1.5 text-[12px]"
-              onClick={() => void handleSupersede()}
-              disabled={!!pendingRecordId}
-            >
-              {pendingRecordId === supersedeDialog.superseded?.recordId ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Check className="h-3.5 w-3.5" />
-              )}
-              Supersede
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      </BaseDialog>
     </div>
   )
 }

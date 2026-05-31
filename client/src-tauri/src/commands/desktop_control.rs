@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Runtime, State};
@@ -21,12 +21,24 @@ use crate::{
 const DESKTOP_CONTROL_DIR: &str = "desktop-control";
 const DESKTOP_CONTROL_SETTINGS_FILE: &str = "settings.json";
 const DESKTOP_CONTROL_AUDIT_FILE: &str = "desktop-control/audit.jsonl";
+const DEFAULT_OWNER_ADMIN_DURATION_MINUTES: u16 = 30;
+const MAX_OWNER_ADMIN_DURATION_MINUTES: u16 = 120;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopControlPolicyProfileDto {
+    DefaultSafe,
+    DeveloperWorkstation,
+    OwnerAdmin,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DesktopControlSettingsDto {
     pub cloud_streaming_enabled: bool,
     pub manual_cloud_control_enabled: bool,
+    pub policy_profile: DesktopControlPolicyProfileDto,
+    pub owner_admin_expires_at: Option<String>,
     pub updated_at: Option<String>,
 }
 
@@ -35,6 +47,8 @@ impl Default for DesktopControlSettingsDto {
         Self {
             cloud_streaming_enabled: false,
             manual_cloud_control_enabled: false,
+            policy_profile: DesktopControlPolicyProfileDto::DefaultSafe,
+            owner_admin_expires_at: None,
             updated_at: None,
         }
     }
@@ -45,6 +59,10 @@ impl Default for DesktopControlSettingsDto {
 pub struct UpsertDesktopControlSettingsRequestDto {
     pub cloud_streaming_enabled: bool,
     pub manual_cloud_control_enabled: bool,
+    #[serde(default = "default_desktop_control_policy_profile")]
+    pub policy_profile: DesktopControlPolicyProfileDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_admin_duration_minutes: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -157,9 +175,13 @@ fn desktop_control_update_settings_blocking<R: Runtime + 'static>(
     state: DesktopState,
     request: UpsertDesktopControlSettingsRequestDto,
 ) -> CommandResult<DesktopControlStatusDto> {
+    let current = load_desktop_control_settings(&app, &state)?;
+    let owner_admin_expires_at = owner_admin_expiration_for_update(&request, &current)?;
     let settings = DesktopControlSettingsDto {
         cloud_streaming_enabled: request.cloud_streaming_enabled,
         manual_cloud_control_enabled: request.manual_cloud_control_enabled,
+        policy_profile: request.policy_profile,
+        owner_admin_expires_at,
         updated_at: Some(crate::auth::now_timestamp()),
     };
     write_desktop_control_settings(&app, &state, &settings)?;
@@ -191,7 +213,13 @@ fn desktop_control_stop_blocking<R: Runtime + 'static>(
 ) -> CommandResult<DesktopControlStatusDto> {
     let runtime = global_computer_use_desktop_runtime(&app, &state, "emergency-stop")?;
     let snapshot = runtime.desktop_emergency_stop("local_desktop_control_stop")?;
-    let settings = load_desktop_control_settings(&app, &state)?;
+    let mut settings = load_desktop_control_settings(&app, &state)?;
+    if settings.policy_profile == DesktopControlPolicyProfileDto::OwnerAdmin {
+        settings.policy_profile = DesktopControlPolicyProfileDto::DefaultSafe;
+        settings.owner_admin_expires_at = None;
+        settings.updated_at = Some(crate::auth::now_timestamp());
+        write_desktop_control_settings(&app, &state, &settings)?;
+    }
     let audit_log_path = global_computer_use_audit_log_path(&app, &state)?;
     Ok(desktop_status_dto(snapshot, settings, audit_log_path))
 }
@@ -292,6 +320,60 @@ fn desktop_control_settings_path<R: Runtime>(
         .app_data_dir(app)?
         .join(DESKTOP_CONTROL_DIR)
         .join(DESKTOP_CONTROL_SETTINGS_FILE))
+}
+
+fn default_desktop_control_policy_profile() -> DesktopControlPolicyProfileDto {
+    DesktopControlPolicyProfileDto::DefaultSafe
+}
+
+fn owner_admin_expiration_for_update(
+    request: &UpsertDesktopControlSettingsRequestDto,
+    current: &DesktopControlSettingsDto,
+) -> CommandResult<Option<String>> {
+    if request.policy_profile != DesktopControlPolicyProfileDto::OwnerAdmin {
+        return Ok(None);
+    }
+
+    if let Some(expires_at) = current.owner_admin_expires_at.as_ref() {
+        if current.policy_profile == DesktopControlPolicyProfileDto::OwnerAdmin
+            && timestamp_is_future(expires_at)
+            && request.owner_admin_duration_minutes.is_none()
+        {
+            return Ok(Some(expires_at.clone()));
+        }
+    }
+
+    let minutes = request
+        .owner_admin_duration_minutes
+        .unwrap_or(DEFAULT_OWNER_ADMIN_DURATION_MINUTES);
+    if minutes == 0 || minutes > MAX_OWNER_ADMIN_DURATION_MINUTES {
+        return Err(CommandError::user_fixable(
+            "desktop_control_owner_admin_duration_invalid",
+            format!(
+                "Owner Admin mode can be enabled for 1 to {MAX_OWNER_ADMIN_DURATION_MINUTES} minutes."
+            ),
+        ));
+    }
+    Ok(Some(timestamp_after(Duration::from_secs(
+        u64::from(minutes) * 60,
+    ))))
+}
+
+fn timestamp_after(duration: Duration) -> String {
+    let now = time::OffsetDateTime::now_utc();
+    let expires_at = now + time::Duration::try_from(duration).unwrap_or(time::Duration::ZERO);
+    expires_at
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| crate::auth::now_timestamp())
+}
+
+fn timestamp_is_future(value: &str) -> bool {
+    let Ok(timestamp) =
+        time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+    else {
+        return false;
+    };
+    timestamp > time::OffsetDateTime::now_utc()
 }
 
 fn global_computer_use_audit_log_path<R: Runtime>(
@@ -413,6 +495,45 @@ mod tests {
         let settings = DesktopControlSettingsDto::default();
         assert!(!settings.cloud_streaming_enabled);
         assert!(!settings.manual_cloud_control_enabled);
+        assert_eq!(
+            settings.policy_profile,
+            DesktopControlPolicyProfileDto::DefaultSafe
+        );
+        assert!(settings.owner_admin_expires_at.is_none());
+    }
+
+    #[test]
+    fn owner_admin_update_is_time_bound() {
+        let current = DesktopControlSettingsDto::default();
+        let request = UpsertDesktopControlSettingsRequestDto {
+            cloud_streaming_enabled: false,
+            manual_cloud_control_enabled: false,
+            policy_profile: DesktopControlPolicyProfileDto::OwnerAdmin,
+            owner_admin_duration_minutes: Some(15),
+        };
+
+        let expires_at = owner_admin_expiration_for_update(&request, &current).expect("expiration");
+
+        assert!(expires_at.is_some());
+        assert!(timestamp_is_future(
+            expires_at.as_deref().expect("timestamp")
+        ));
+    }
+
+    #[test]
+    fn owner_admin_update_rejects_unbounded_duration() {
+        let current = DesktopControlSettingsDto::default();
+        let request = UpsertDesktopControlSettingsRequestDto {
+            cloud_streaming_enabled: false,
+            manual_cloud_control_enabled: false,
+            policy_profile: DesktopControlPolicyProfileDto::OwnerAdmin,
+            owner_admin_duration_minutes: Some(MAX_OWNER_ADMIN_DURATION_MINUTES + 1),
+        };
+
+        let error = owner_admin_expiration_for_update(&request, &current)
+            .expect_err("invalid duration rejected");
+
+        assert_eq!(error.code, "desktop_control_owner_admin_duration_invalid");
     }
 
     #[test]

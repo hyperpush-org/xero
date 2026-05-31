@@ -88,7 +88,7 @@ describe("getRelaySocket", () => {
 });
 
 describe("pushInboundCommand", () => {
-	it("sends the command as the Phoenix frame payload", () => {
+	it("sends the command as an enveloped Phoenix frame payload", async () => {
 		const push = vi.fn();
 		const command: InboundCommand = {
 			v: 1,
@@ -100,9 +100,164 @@ describe("pushInboundCommand", () => {
 			payload: {},
 		};
 
-		pushInboundCommand({ push } as never, command);
+		const result = await pushInboundCommand({ push } as never, command);
 
-		expect(push).toHaveBeenCalledWith("frame", command);
+		expect(result.outcome).toBe("accepted");
+		expect(push).toHaveBeenCalledWith(
+			"frame",
+			expect.objectContaining({
+				...command,
+				clientCommandId: expect.any(String),
+				clientSeq: expect.any(Number),
+				dedupeKey: expect.any(String),
+				expiresAt: expect.any(Number),
+				priority: "reliable_idempotent",
+				sentAt: expect.any(Number),
+			}),
+		);
+	});
+
+	it("returns structured rate-limit acknowledgements from Phoenix errors", async () => {
+		const handlers: { error?: (payload?: unknown) => void } = {};
+		const push = vi.fn(() => {
+			const pushLike = {
+				receive: vi.fn(
+					(
+						status: "ok" | "error" | "timeout",
+						callback: (payload?: unknown) => void,
+					) => {
+						if (status === "error") handlers.error = callback;
+						return pushLike;
+					},
+				),
+			};
+			return pushLike;
+		});
+		const resultPromise = requestComputerUseManualControl({ push } as never, {
+			computerId: "desktop-1",
+			sessionId: "session-1",
+			deviceId: "web-1",
+			manualControlId: "manual-web-1",
+			streamToken: "stream-token-1",
+		});
+
+		handlers.error?.({
+			reason: "rate_limited",
+			rateLimit: {
+				bucket: "frame:computer_use:manual_critical",
+				class: "manual_critical",
+				kind: "computer_use_manual_control_request",
+				limit: 1,
+				retryAfterMs: 250,
+				windowMs: 60_000,
+			},
+		});
+
+		await expect(resultPromise).resolves.toEqual(
+			expect.objectContaining({
+				kind: "computer_use_manual_control_request",
+				outcome: "rate_limited",
+				retryAfterMs: 250,
+				rateLimit: expect.objectContaining({
+					class: "manual_critical",
+				}),
+			}),
+		);
+	});
+
+	it("retries timed-out critical commands and then fails visibly", async () => {
+		vi.useFakeTimers();
+		try {
+			const push = vi.fn(() => ({
+				receive: vi.fn(() => ({
+					receive: vi.fn(() => ({
+						receive: vi.fn(),
+					})),
+				})),
+			}));
+			const resultPromise = requestComputerUseManualControl({ push } as never, {
+				computerId: "desktop-1",
+				sessionId: "session-1",
+				deviceId: "web-1",
+				manualControlId: "manual-web-1",
+				streamToken: "stream-token-1",
+			});
+
+			await vi.advanceTimersByTimeAsync(16_000);
+
+			await expect(resultPromise).resolves.toEqual(
+				expect.objectContaining({
+					kind: "computer_use_manual_control_request",
+					outcome: "timed_out",
+					reason: "push_timeout",
+				}),
+			);
+			expect(push).toHaveBeenCalledTimes(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("coalesces queued pointer movement instead of letting it starve critical input", async () => {
+		vi.useFakeTimers();
+		try {
+			const push = vi.fn(() => ({
+				receive: vi.fn(() => ({
+					receive: vi.fn(() => ({
+						receive: vi.fn(),
+					})),
+				})),
+			}));
+			const channel = { push } as never;
+			for (let index = 0; index < 4; index += 1) {
+				void requestComputerUseManualControl(channel, {
+					computerId: "desktop-1",
+					sessionId: "session-1",
+					deviceId: "web-1",
+					manualControlId: `manual-web-${index}`,
+					streamToken: "stream-token-1",
+				});
+			}
+
+			const staleMove = sendComputerUseManualInput(channel, {
+				computerId: "desktop-1",
+				sessionId: "session-1",
+				deviceId: "web-1",
+				manualControlId: "manual-web-1",
+				streamToken: "stream-token-1",
+				input: {
+					action: "mouse_move",
+					x: 10,
+					y: 10,
+					sourceWidth: 100,
+					sourceHeight: 100,
+				},
+			});
+			void sendComputerUseManualInput(channel, {
+				computerId: "desktop-1",
+				sessionId: "session-1",
+				deviceId: "web-1",
+				manualControlId: "manual-web-1",
+				streamToken: "stream-token-1",
+				input: {
+					action: "mouse_move",
+					x: 20,
+					y: 20,
+					sourceWidth: 100,
+					sourceHeight: 100,
+				},
+			});
+
+			await expect(staleMove).resolves.toEqual(
+				expect.objectContaining({
+					outcome: "stale",
+					reason: "coalesced",
+				}),
+			);
+			expect(push).toHaveBeenCalledTimes(4);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("requests a fresh snapshot using the desktop session-attached command", () => {
@@ -221,6 +376,34 @@ describe("pushInboundCommand", () => {
 					prompt: "",
 					sessionKind: "computer_use",
 					agent: "computer_use",
+				},
+			}),
+		);
+	});
+
+	it("requests a reset of the hidden Computer Use backing chat", () => {
+		const push = vi.fn();
+
+		requestStartSession({ push } as never, {
+			computerId: "desktop-1",
+			projectId: "global-computer-use",
+			deviceId: "web-1",
+			sessionKind: "computer_use",
+			agent: "computer_use",
+			resetExisting: true,
+		});
+
+		expect(push).toHaveBeenCalledWith(
+			"frame",
+			expect.objectContaining({
+				session_id: "__new__",
+				kind: "start_session",
+				payload: {
+					projectId: "global-computer-use",
+					prompt: "",
+					sessionKind: "computer_use",
+					agent: "computer_use",
+					resetExisting: true,
 				},
 			}),
 		);
@@ -584,6 +767,84 @@ describe("pushInboundCommand", () => {
 				},
 			}),
 		);
+	});
+
+	it("sends manual stateful drag inputs with stream security fields", () => {
+		const push = vi.fn();
+		const baseOptions = {
+			computerId: "desktop-1",
+			sessionId: "session-1",
+			deviceId: "web-1",
+			manualControlId: "manual-web-1",
+			runId: "run-1",
+			streamToken: "stream-token-1",
+		};
+
+		sendComputerUseManualInput({ push } as never, {
+			...baseOptions,
+			input: {
+				action: "mouse_down",
+				x: 100,
+				y: 120,
+				sourceWidth: 1280,
+				sourceHeight: 720,
+				button: "left",
+			},
+		});
+		sendComputerUseManualInput({ push } as never, {
+			...baseOptions,
+			input: {
+				action: "mouse_drag_move",
+				x: 540,
+				y: 360,
+				sourceWidth: 1280,
+				sourceHeight: 720,
+				button: "left",
+			},
+		});
+		sendComputerUseManualInput({ push } as never, {
+			...baseOptions,
+			input: {
+				action: "mouse_up",
+				x: 540,
+				y: 360,
+				sourceWidth: 1280,
+				sourceHeight: 720,
+				button: "left",
+			},
+		});
+
+		expect(
+			push.mock.calls.map(
+				([, frame]) =>
+					(frame as { payload?: { action?: string; runId?: string } }).payload,
+			),
+		).toEqual([
+			expect.objectContaining({
+				action: "mouse_down",
+				x: 100,
+				y: 120,
+				button: "left",
+				runId: "run-1",
+				streamToken: "stream-token-1",
+			}),
+			expect.objectContaining({
+				action: "mouse_drag_move",
+				x: 540,
+				y: 360,
+				button: "left",
+				runId: "run-1",
+				streamToken: "stream-token-1",
+			}),
+			expect.objectContaining({
+				action: "mouse_up",
+				x: 540,
+				y: 360,
+				button: "left",
+				runId: "run-1",
+				streamToken: "stream-token-1",
+			}),
+		]);
 	});
 
 	it("sends manual keyboard payloads through the brokered input frame", () => {

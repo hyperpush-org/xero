@@ -84,12 +84,12 @@ function XeroGlyph({ className }: { className?: string }) {
       />
       <path
         d="M0 256.395H197.935V454.33H50.0001C22.3858 454.33 0 431.944 0 404.33L0 256.395Z"
-        fill="var(--foreground)"
+        fill="var(--primary)"
         fillOpacity="0.32"
       />
       <path
         d="M256.392 0L404.327 0C431.941 0 454.327 22.3858 454.327 50V197.935H256.392V0Z"
-        fill="var(--foreground)"
+        fill="var(--primary)"
         fillOpacity="0.32"
       />
     </svg>
