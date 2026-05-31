@@ -259,6 +259,7 @@ fn macos_action_label(action: AutonomousMacosAutomationAction) -> &'static str {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn resolve_monitor_index(
     monitor_ids: &[Option<u32>],
     primary_flags: &[bool],
@@ -291,6 +292,7 @@ fn resolve_monitor_index(
         .or(Some(0))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn monitor_not_found_message(requested_monitor: u32, monitor_ids: &[Option<u32>]) -> String {
     let available = monitor_ids
         .iter()

@@ -2,8 +2,8 @@ use std::{
     collections::BTreeMap,
     fs,
     io::{self, BufRead, Cursor, Write},
-    path::{Path, PathBuf},
-    process::{self, Command},
+    path::Path,
+    process,
     sync::{
         atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
@@ -11,18 +11,24 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(target_os = "macos")]
+use std::path::PathBuf;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use std::process::Command;
+
 use base64::Engine as _;
 use image::{ImageFormat, RgbaImage};
 use serde::Deserialize;
 use serde_json::json;
 use time::format_description::well_known::Rfc3339;
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+use webrtc::media::Sample;
 use webrtc::{
     api::{
         media_engine::{MediaEngine, MIME_TYPE_H264},
         APIBuilder,
     },
     ice_transport::{ice_candidate::RTCIceCandidateInit, ice_server::RTCIceServer},
-    media::Sample,
     peer_connection::{
         configuration::RTCConfiguration, sdp::session_description::RTCSessionDescription,
         RTCPeerConnection,
@@ -38,10 +44,11 @@ use webrtc::{
 use xcap::{Monitor, Window};
 #[cfg(target_os = "windows")]
 use xero_desktop_control_ipc::DesktopSidecarNotificationEntry;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use xero_desktop_control_ipc::DesktopSidecarOcrTextBlock;
 use xero_desktop_control_ipc::{
-    validate_sidecar_handshake, validate_sidecar_request, DesktopSidecarAccessibilityElement,
+    validate_sidecar_handshake, validate_sidecar_request,
     DesktopSidecarAccessibilitySnapshotPayload, DesktopSidecarAccessibilitySnapshotRequest,
-    DesktopSidecarAccessibilitySnapshotRow, DesktopSidecarAccessibilitySnapshotTarget,
     DesktopSidecarApp, DesktopSidecarAppInventoryEntry, DesktopSidecarAppInventoryPayload,
     DesktopSidecarAppListPayload, DesktopSidecarCapabilities, DesktopSidecarClipboardFilesPayload,
     DesktopSidecarClipboardHtmlPayload, DesktopSidecarClipboardImagePayload,
@@ -51,14 +58,19 @@ use xero_desktop_control_ipc::{
     DesktopSidecarDisplayListPayload, DesktopSidecarElementAtPointPayload, DesktopSidecarErrorBody,
     DesktopSidecarForegroundStatePayload, DesktopSidecarHandshake, DesktopSidecarLease,
     DesktopSidecarNotificationSnapshotPayload, DesktopSidecarOcrSnapshotPayload,
-    DesktopSidecarOcrSnapshotRequest, DesktopSidecarOcrTextBlock, DesktopSidecarOperation,
-    DesktopSidecarPermissionGrant, DesktopSidecarPermissionStatus,
-    DesktopSidecarPermissionsPayload, DesktopSidecarPointRequest, DesktopSidecarRequest,
-    DesktopSidecarResponse, DesktopSidecarScreenshotPayload, DesktopSidecarScreenshotRequest,
-    DesktopSidecarSessionDescription, DesktopSidecarStreamCapabilitiesPayload,
-    DesktopSidecarStreamMetrics, DesktopSidecarStreamPayload, DesktopSidecarStreamQuality,
-    DesktopSidecarStreamRequest, DesktopSidecarStreamStatus, DesktopSidecarStreamTransport,
-    DesktopSidecarWindow, DesktopSidecarWindowListPayload,
+    DesktopSidecarOcrSnapshotRequest, DesktopSidecarOperation, DesktopSidecarPermissionGrant,
+    DesktopSidecarPermissionStatus, DesktopSidecarPermissionsPayload, DesktopSidecarPointRequest,
+    DesktopSidecarRequest, DesktopSidecarResponse, DesktopSidecarScreenshotPayload,
+    DesktopSidecarScreenshotRequest, DesktopSidecarSessionDescription,
+    DesktopSidecarStreamCapabilitiesPayload, DesktopSidecarStreamMetrics,
+    DesktopSidecarStreamPayload, DesktopSidecarStreamQuality, DesktopSidecarStreamRequest,
+    DesktopSidecarStreamStatus, DesktopSidecarStreamTransport, DesktopSidecarWindow,
+    DesktopSidecarWindowListPayload,
+};
+#[cfg(target_os = "macos")]
+use xero_desktop_control_ipc::{
+    DesktopSidecarAccessibilityElement, DesktopSidecarAccessibilitySnapshotRow,
+    DesktopSidecarAccessibilitySnapshotTarget,
 };
 
 const WEBRTC_MAX_WIDTH: u32 = 1920;
@@ -8440,6 +8452,7 @@ mod cross_platform_input {
             "volumeup" | "volume_up" | "audio_volume_up" => Ok(Key::VolumeUp),
             "volumedown" | "volume_down" | "audio_volume_down" => Ok(Key::VolumeDown),
             "volumemute" | "volume_mute" | "mute" | "audio_mute" => Ok(Key::VolumeMute),
+            #[cfg(all(unix, not(target_os = "macos")))]
             "micmute" | "mic_mute" => Ok(Key::MicMute),
             "mediaplaypause" | "media_play_pause" | "playpause" | "play_pause" => {
                 Ok(Key::MediaPlayPause)
@@ -8450,12 +8463,6 @@ mod cross_platform_input {
             "mediaprevious" | "media_previous" | "media_prev" | "media_prev_track"
             | "previous_track" | "prev_track" => Ok(Key::MediaPrevTrack),
             "mediastop" | "media_stop" => Ok(Key::MediaStop),
-            "mediafast" | "media_fast" | "media_fast_forward" | "fast_forward" => {
-                Ok(Key::MediaFast)
-            }
-            "mediarewind" | "media_rewind" | "rewind" => Ok(Key::MediaRewind),
-            "brightnessup" | "brightness_up" => Ok(Key::BrightnessUp),
-            "brightnessdown" | "brightness_down" => Ok(Key::BrightnessDown),
             "shift" => Ok(Key::Shift),
             "ctrl" | "control" => Ok(Key::Control),
             "alt" | "option" => Ok(Key::Alt),
@@ -8492,6 +8499,36 @@ mod cross_platform_input {
             assert_eq!(key_for("Backspace").expect("backspace"), Key::Backspace);
             assert_eq!(key_for("Delete").expect("delete"), Key::Delete);
             assert_eq!(key_for("v").expect("v"), Key::Unicode('v'));
+        }
+
+        #[test]
+        fn key_mapper_rejects_macos_only_keys() {
+            for key in [
+                "media_fast_forward",
+                "media_rewind",
+                "brightness_up",
+                "brightness_down",
+            ] {
+                assert_eq!(
+                    key_for(key).expect_err("macOS-only key").code,
+                    "desktop_key_unsupported"
+                );
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        #[test]
+        fn key_mapper_rejects_linux_only_keys_on_windows() {
+            assert_eq!(
+                key_for("mic_mute").expect_err("Linux-only key").code,
+                "desktop_key_unsupported"
+            );
+        }
+
+        #[cfg(all(unix, not(target_os = "macos")))]
+        #[test]
+        fn key_mapper_accepts_linux_mic_mute_key() {
+            assert_eq!(key_for("mic_mute").expect("mic mute"), Key::MicMute);
         }
 
         #[test]

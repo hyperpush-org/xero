@@ -109,7 +109,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           otp-version: 26.2.1
-          elixir-version: 1.15.7
+          elixir-version: 1.16.3
 
       - name: Cache Mix
         uses: actions/cache@v5

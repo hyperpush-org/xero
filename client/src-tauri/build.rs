@@ -82,9 +82,6 @@ fn compile_dictation_shim() {
     println!("cargo:rustc-link-lib=framework=Security");
 
     if std::env::var_os("XERO_SKIP_DICTATION_SHIM").is_some() {
-        println!(
-            "cargo:warning=XERO_SKIP_DICTATION_SHIM is set; dictation status will report the native shim unavailable."
-        );
         return;
     }
 
@@ -200,9 +197,6 @@ fn compile_ios_helper() {
     println!("cargo:rerun-if-env-changed=XERO_SKIP_IOS_HELPER");
 
     if std::env::var_os("XERO_SKIP_IOS_HELPER").is_some() {
-        println!(
-            "cargo:warning=XERO_SKIP_IOS_HELPER is set; iOS helper binary will not be compiled."
-        );
         return;
     }
 
