@@ -1155,6 +1155,11 @@ where
         }
     }
 
+    pub fn refresh_account_devices(&self) -> BridgeResult<Vec<AccountDevice>> {
+        self.clear_account_devices_cache()?;
+        self.list_account_devices()
+    }
+
     fn list_account_devices_once(&self) -> BridgeResult<Vec<AccountDevice>> {
         let Some(identity) = self.identity_store.load()? else {
             return Ok(Vec::new());
@@ -2391,6 +2396,60 @@ mod tests {
             .cached_account_devices(&identity, std::time::Instant::now())
             .expect("cleared cache")
             .is_none());
+    }
+
+    #[test]
+    fn refresh_account_devices_bypasses_fresh_cache() {
+        let (relay_url, server) = serve_http_responses(vec![(
+            200,
+            json!({
+                "devices": [{
+                    "id": "web-2",
+                    "account_id": "account-1",
+                    "kind": "web",
+                    "name": "Xero Web",
+                    "user_agent": "browser",
+                    "last_seen": null,
+                    "created_at": "2026-05-31T00:00:00Z",
+                    "revoked_at": null
+                }]
+            })
+            .to_string(),
+        )]);
+        let temp = tempfile_path("device-cache-refresh");
+        let identity_store = FileIdentityStore::new(temp.join("identity.json"));
+        let identity = test_identity();
+        identity_store.save(&identity).expect("identity");
+        let bridge = RemoteBridge::new(
+            BridgeConfig {
+                relay_url,
+                device_name: Some("Xero Test".into()),
+            },
+            identity_store,
+        );
+        bridge
+            .store_account_devices_cache(
+                &identity,
+                vec![AccountDevice {
+                    id: "web-1".into(),
+                    account_id: "account-1".into(),
+                    kind: "web".into(),
+                    name: Some("Old Web".into()),
+                    user_agent: Some("browser".into()),
+                    last_seen: None,
+                    created_at: "2026-05-30T00:00:00Z".into(),
+                    revoked_at: None,
+                }],
+            )
+            .expect("store stale devices");
+
+        let devices = bridge.refresh_account_devices().expect("devices");
+
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].id, "web-2");
+        let requests = server.join().expect("fake relay thread");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("GET /api/devices "));
     }
 
     #[test]

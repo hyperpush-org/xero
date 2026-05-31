@@ -684,14 +684,13 @@ fn handle_inbound_command<R: Runtime + 'static>(
     }
     let result = route_inbound_command(app, state, Arc::clone(&bridge), command.clone());
     if let Err(error) = &result {
-        let _ = bridge.forward_control_event(
-            &response_session,
-            json!({
-                "schema": "xero.remote_command_result.v1",
-                "ok": false,
-                "error": error,
-            }),
-        );
+        let mut payload = json!({
+            "schema": "xero.remote_command_result.v1",
+            "ok": false,
+            "error": error,
+        });
+        attach_command_context(&mut payload, &command, Some("rejected"));
+        let _ = bridge.forward_control_event(&response_session, payload);
     }
     if let Err(error) = &result {
         let _ = bridge.forward_control_event(
@@ -963,16 +962,24 @@ fn route_inbound_command<R: Runtime + 'static>(
 fn ensure_known_web_device(bridge: &AppRemoteBridge, device_id: &str) -> CommandResult<()> {
     validate_non_empty(device_id, "deviceId")?;
     let devices = bridge.list_account_devices().map_err(map_bridge_error)?;
-    if devices
-        .iter()
-        .any(|device| device.kind == "web" && device.revoked_at.is_none() && device.id == device_id)
-    {
+    if account_devices_include_web_device(&devices, device_id) {
+        return Ok(());
+    }
+
+    let devices = bridge.refresh_account_devices().map_err(map_bridge_error)?;
+    if account_devices_include_web_device(&devices, device_id) {
         return Ok(());
     }
 
     Err(CommandError::policy_denied(
         "Remote command rejected because the web device is not linked or has been revoked.",
     ))
+}
+
+fn account_devices_include_web_device(devices: &[AccountDevice], device_id: &str) -> bool {
+    devices
+        .iter()
+        .any(|device| device.kind == "web" && device.revoked_at.is_none() && device.id == device_id)
 }
 
 fn route_authorize_session_join<R: Runtime>(
@@ -4793,6 +4800,46 @@ mod tests {
 
         command.kind = InboundCommandKind::ListSessions;
         assert!(!command_is_duplicate(&command));
+    }
+
+    #[test]
+    fn known_web_device_check_ignores_revoked_and_desktop_devices() {
+        let devices = vec![
+            AccountDevice {
+                id: "desktop-1".into(),
+                account_id: "account-1".into(),
+                kind: "desktop".into(),
+                name: Some("Xero Desktop".into()),
+                user_agent: None,
+                last_seen: None,
+                created_at: "2026-05-31T00:00:00Z".into(),
+                revoked_at: None,
+            },
+            AccountDevice {
+                id: "web-1".into(),
+                account_id: "account-1".into(),
+                kind: "web".into(),
+                name: Some("Old Web".into()),
+                user_agent: Some("browser".into()),
+                last_seen: None,
+                created_at: "2026-05-31T00:00:00Z".into(),
+                revoked_at: Some("2026-05-31T00:05:00Z".into()),
+            },
+            AccountDevice {
+                id: "web-2".into(),
+                account_id: "account-1".into(),
+                kind: "web".into(),
+                name: Some("Xero Web".into()),
+                user_agent: Some("browser".into()),
+                last_seen: None,
+                created_at: "2026-05-31T00:10:00Z".into(),
+                revoked_at: None,
+            },
+        ];
+
+        assert!(!account_devices_include_web_device(&devices, "desktop-1"));
+        assert!(!account_devices_include_web_device(&devices, "web-1"));
+        assert!(account_devices_include_web_device(&devices, "web-2"));
     }
 
     #[test]
