@@ -46,6 +46,12 @@ import {
   shouldShowCandidate,
   type TerminalSuggestionSnapshot,
 } from "./terminal-suggestions"
+import {
+  loadTerminalSuggestionSettings,
+  persistTerminalSuggestionSettings,
+  subscribeTerminalSuggestionSettings,
+  type TerminalSuggestionSettings,
+} from "./terminal-suggestion-settings"
 
 import "@xterm/xterm/css/xterm.css"
 
@@ -59,7 +65,6 @@ const TERMINAL_SHIFT_ENTER_SEQUENCE = "\x1b[13;2u"
 const MAX_TAB_LABEL_LENGTH = 48
 const TERMINAL_TABS_UI_STATE_KEY = "terminal.tabs.v1"
 const TERMINAL_TABS_STATE_SCHEMA = "xero.terminal.tabs.v1"
-const TERMINAL_SUGGESTION_SETTINGS_KEY = "xero.terminal.suggestions.settings.v1"
 const MAX_PERSISTED_TERMINAL_TABS = 24
 const MAX_PERSISTED_COMMAND_LENGTH = 20_000
 const MAX_PERSISTED_INPUT_BUFFER_LENGTH = 4096
@@ -175,11 +180,6 @@ interface LoadedTerminalTabsState {
   exists: boolean
   state: PersistedTerminalTabsState | null
   malformed: boolean
-}
-
-interface TerminalSuggestionSettings {
-  enabled: boolean
-  aiEnabled: boolean
 }
 
 interface TerminalSuggestionState {
@@ -354,30 +354,6 @@ function createTerminalClientId(): string {
       ? window.crypto.randomUUID()
       : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
   return `term-tab-${randomId.replace(/[^A-Za-z0-9_-]/g, "-")}`
-}
-
-function loadTerminalSuggestionSettings(): TerminalSuggestionSettings {
-  if (typeof window === "undefined") {
-    return { enabled: true, aiEnabled: false }
-  }
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(TERMINAL_SUGGESTION_SETTINGS_KEY) ?? "null")
-    return {
-      enabled: parsed?.enabled !== false,
-      aiEnabled: parsed?.aiEnabled === true,
-    }
-  } catch {
-    return { enabled: true, aiEnabled: false }
-  }
-}
-
-function persistTerminalSuggestionSettings(settings: TerminalSuggestionSettings): void {
-  if (typeof window === "undefined") return
-  try {
-    window.localStorage.setItem(TERMINAL_SUGGESTION_SETTINGS_KEY, JSON.stringify(settings))
-  } catch {
-    // Best effort; suggestions still work with in-memory settings.
-  }
 }
 
 function normalizePersistedInputBuffer(value: string | null | undefined): string | null {
@@ -571,12 +547,19 @@ export function TerminalSidebar({
   suggestionSettingsRef.current = suggestionSettings
 
   useEffect(() => {
-    persistTerminalSuggestionSettings(suggestionSettings)
     if (!suggestionSettings.enabled) {
       suggestionGateRef.current.invalidate()
       setSuggestionState(null)
     }
   }, [suggestionSettings])
+
+  useEffect(
+    () =>
+      subscribeTerminalSuggestionSettings((settings) => {
+        setSuggestionSettings(settings)
+      }),
+    [],
+  )
 
   const handleTerminalLink = useCallback((uri: string) => {
     if (isBrowserSupportedDevServerUrl(uri)) {
@@ -633,6 +616,8 @@ export function TerminalSidebar({
       const requestId = suggestionGateRef.current.next()
       suggestionDebounceRef.current = window.setTimeout(() => {
         suggestionDebounceRef.current = null
+        const settings = suggestionSettingsRef.current
+        const modelSelection = settings.modelSelection
         void defaultAdapter.terminalSuggest?.({
           projectId: tab.projectId,
           terminalId: tab.id,
@@ -642,7 +627,12 @@ export function TerminalSidebar({
           shell: tab.shell,
           recentBlockContext: null,
           requestId,
-          enableAi: suggestionSettingsRef.current.aiEnabled,
+          enableAi: settings.aiEnabled,
+          providerId: modelSelection?.providerId ?? null,
+          providerProfileId: modelSelection?.providerProfileId ?? null,
+          modelId: modelSelection?.modelId ?? null,
+          runtimeAgentId: modelSelection?.runtimeAgentId ?? null,
+          thinkingEffort: modelSelection?.thinkingEffort ?? null,
         }).then((response) => {
           if (!suggestionGateRef.current.isCurrent(response.requestId)) return
           const candidates = response.candidates.filter((candidate) =>
@@ -1327,8 +1317,12 @@ export function TerminalSidebar({
       : undefined
 
   const updateSuggestionSetting = useCallback(
-    (key: keyof TerminalSuggestionSettings, value: boolean) => {
-      setSuggestionSettings((current) => ({ ...current, [key]: value }))
+    (key: "enabled" | "aiEnabled", value: boolean) => {
+      setSuggestionSettings((current) => {
+        const next = { ...current, [key]: value }
+        persistTerminalSuggestionSettings(next)
+        return next
+      })
     },
     [],
   )
@@ -1441,9 +1435,6 @@ export function TerminalSidebar({
                   <div className="border-b border-border/70 pb-2">
                     <div className="text-[12px] font-medium text-foreground">
                       Inline terminal suggestions
-                    </div>
-                    <div className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
-                      Suggestions appear as dim text after the cursor and never run until accepted.
                     </div>
                   </div>
 

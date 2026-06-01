@@ -118,6 +118,7 @@ vi.mock("@/src/lib/xero-desktop", () => ({
 }))
 
 import { TerminalSidebar } from "./terminal-sidebar"
+import { TERMINAL_SUGGESTION_SETTINGS_KEY } from "./terminal-suggestion-settings"
 
 const basePersistedTab = {
   clientId: "client-web",
@@ -548,6 +549,46 @@ describe("TerminalSidebar persistence", () => {
     mocks.terminals[0].customKeyHandler?.(new KeyboardEvent("keydown", { key: "Tab" }))
 
     expect(mocks.adapter.terminalWrite).toHaveBeenCalledWith("pty-1", " status")
+  })
+
+  it("uses the configured AI model when requesting terminal suggestions", async () => {
+    window.localStorage.setItem(
+      TERMINAL_SUGGESTION_SETTINGS_KEY,
+      JSON.stringify({
+        enabled: true,
+        aiEnabled: true,
+        modelSelection: {
+          providerId: "openai_codex",
+          providerProfileId: "openai_codex-default",
+          modelId: "gpt-5.4",
+          runtimeAgentId: "ask",
+          thinkingEffort: "low",
+        },
+      }),
+    )
+    mocks.adapter.terminalSuggest.mockImplementation(async (request) => ({
+      requestId: request.requestId,
+      candidates: [],
+      deterministicExhausted: true,
+      aiAttempted: true,
+    }))
+
+    render(<TerminalSidebar open projectId="project-a" />)
+    await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1))
+
+    mocks.terminals[0].dataHandler?.("git")
+    await waitFor(() =>
+      expect(mocks.adapter.terminalSuggest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          enableAi: true,
+          providerId: "openai_codex",
+          providerProfileId: "openai_codex-default",
+          modelId: "gpt-5.4",
+          runtimeAgentId: "ask",
+          thinkingEffort: "low",
+        }),
+      ),
+    )
   })
 
   it("records submitted commands and dismisses bad suggestions through app-data", async () => {

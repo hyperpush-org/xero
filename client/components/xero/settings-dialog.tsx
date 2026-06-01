@@ -64,7 +64,7 @@ import type {
   GitHubAuthStatus,
   GitHubSessionView,
 } from "@/src/lib/github-auth"
-import { Activity, ArrowLeft, Bot, Brain, Cloud, Code2, Database, Globe, HardDrive, Heart, Keyboard, KeyRound, Mic, Monitor, Palette, PlaySquare, Plug, PlugZap, Power, Search, UserRound, WandSparkles, Wrench } from "lucide-react"
+import { Activity, ArrowLeft, Bot, Brain, Cloud, Code2, Database, Globe, HardDrive, Heart, Keyboard, KeyRound, Mic, Monitor, Palette, PlaySquare, Plug, PlugZap, Power, Search, Terminal, UserRound, WandSparkles, Wrench } from "lucide-react"
 import { BaseDialog } from "@xero/ui/components/base-dialog"
 import {
   DialogDescription,
@@ -92,6 +92,7 @@ export type SettingsSection =
   | "workspaceIndex"
   | "projectState"
   | "projectRunner"
+  | "terminal"
   | "themes"
   | "shortcuts"
   | "development"
@@ -116,6 +117,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   "workspaceIndex",
   "projectState",
   "projectRunner",
+  "terminal",
   "themes",
   "shortcuts",
   "development",
@@ -209,6 +211,10 @@ const loadProjectRunnerSection = () =>
   import("@/components/xero/settings-dialog/project-runner-section").then((module) => ({
     default: module.ProjectRunnerSection,
   }))
+const loadTerminalSection = () =>
+  import("@/components/xero/settings-dialog/terminal-section").then((module) => ({
+    default: module.TerminalSection,
+  }))
 
 const LazyAccountSection = lazy(loadAccountSection)
 const LazyCloudAccountSection = lazy(loadCloudAccountSection)
@@ -232,6 +238,7 @@ const LazyThemesSection = lazy(loadThemesSection)
 const LazyWorkspaceIndexSection = lazy(loadWorkspaceIndexSection)
 const LazyProjectStateSection = lazy(loadProjectStateSection)
 const LazyProjectRunnerSection = lazy(loadProjectRunnerSection)
+const LazyTerminalSection = lazy(loadTerminalSection)
 
 const SETTINGS_SECTION_LOADERS: Record<SettingsSection, () => Promise<unknown>> = {
   account: loadAccountSection,
@@ -253,6 +260,7 @@ const SETTINGS_SECTION_LOADERS: Record<SettingsSection, () => Promise<unknown>> 
   workspaceIndex: loadWorkspaceIndexSection,
   projectState: loadProjectStateSection,
   projectRunner: loadProjectRunnerSection,
+  terminal: loadTerminalSection,
   themes: loadThemesSection,
   shortcuts: loadShortcutsSection,
   development: loadDevelopmentSection,
@@ -318,6 +326,7 @@ const WORKSPACE_GROUP: NavGroup = {
     { id: "workspaceIndex", label: "Workspace Index", icon: Database },
     { id: "projectState", label: "Project State", icon: HardDrive },
     { id: "projectRunner", label: "Project Runner", icon: PlaySquare },
+    { id: "terminal", label: "Terminal", icon: Terminal },
   ],
 }
 
@@ -881,6 +890,10 @@ export function SettingsDialog({
           modelOptions={projectRunnerModelOptions}
         />
       )
+    }
+
+    if (renderedSection === "terminal") {
+      return <LazyTerminalSection modelOptions={projectRunnerModelOptions} />
     }
 
     if (renderedSection === "themes") {
