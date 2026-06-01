@@ -98,8 +98,10 @@ export const ComposerModelSelect = memo(function ComposerModelSelect({
 	const showThinking = typeof onThinkingChange === "function";
 	const triggerLabel =
 		showThinking && selectedThinkingLabel ? (
-			<span className="flex min-w-0 items-center gap-1.5">
-				<span className="min-w-0 truncate">{selectedLabel ?? placeholder}</span>
+			<span className="flex min-w-0 max-w-full flex-1 items-center gap-1.5">
+				<span className="min-w-0 max-w-full truncate">
+					{selectedLabel ?? placeholder}
+				</span>
 				<span className="text-muted-foreground/45">·</span>
 				<span className="shrink-0 text-muted-foreground/75">
 					{selectedThinkingLabel}
@@ -201,7 +203,9 @@ export const ComposerModelSelect = memo(function ComposerModelSelect({
 						disabled={disabled}
 						className={cn(fieldTriggerClassName, triggerClassName)}
 					>
-						<span className="line-clamp-1 min-w-0 truncate">{triggerLabel}</span>
+						<span className="flex min-w-0 flex-1 items-center overflow-hidden text-left">
+							{triggerLabel}
+						</span>
 						<ChevronDown
 							aria-hidden="true"
 							className="size-3.5 text-muted-foreground/70"

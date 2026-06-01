@@ -4,6 +4,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Composer, type ComposerDictationLike, type ComposerProps } from "./composer";
+import { ComposerModelSelect } from "./composer-model-select";
 
 const inertDictation: ComposerDictationLike = {
 	ariaLabel: "Start dictation",
@@ -242,6 +243,35 @@ describe("Composer", () => {
 		fireEvent.wheel(modelList, { deltaY: 80 });
 
 		expect(modelList.scrollTop).toBe(80);
+	});
+
+	it("lets field model and thinking labels use the available trigger width", () => {
+		render(
+			<ComposerModelSelect
+				groups={[
+					{
+						id: "models",
+						options: [{ id: "grok", label: "Grok 4.3" }],
+					},
+				]}
+				value="grok"
+				onChange={vi.fn()}
+				thinkingOptions={[{ id: "low", label: "Low" }]}
+				selectedThinkingId="low"
+				onThinkingChange={vi.fn()}
+				variant="field"
+			/>,
+		);
+
+		const selector = screen.getByRole("combobox", {
+			name: "Model and thinking selector",
+		});
+		const label = selector.firstElementChild;
+
+		expect(selector).toHaveTextContent("Grok 4.3");
+		expect(selector).toHaveTextContent("Low");
+		expect(label).toHaveClass("flex-1");
+		expect(label).not.toHaveClass("line-clamp-1");
 	});
 
 	it("keeps the combined selector open after choosing a model so thinking can be adjusted", () => {
