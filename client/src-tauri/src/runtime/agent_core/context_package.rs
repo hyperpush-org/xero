@@ -943,19 +943,16 @@ fn agent_memory_kind_policy_label(kind: &project_store::AgentMemoryKind) -> &'st
 }
 
 fn provider_context_runtime_metadata(
-    input: &ProviderContextPackageInput<'_>,
+    _input: &ProviderContextPackageInput<'_>,
     fallback_timestamp: &str,
 ) -> RuntimeHostMetadata {
-    let timestamp = project_store::load_agent_run(input.repo_root, input.project_id, input.run_id)
-        .map(|snapshot| snapshot.run.started_at)
-        .unwrap_or_else(|_| fallback_timestamp.to_string());
     let mut metadata = runtime_host_metadata();
-    metadata.date_utc = timestamp
+    metadata.date_utc = fallback_timestamp
         .split_once('T')
         .map(|(date, _)| date)
-        .unwrap_or(timestamp.as_str())
+        .unwrap_or(fallback_timestamp)
         .to_owned();
-    metadata.timestamp_utc = timestamp;
+    metadata.timestamp_utc = fallback_timestamp.to_owned();
     metadata
 }
 
@@ -2714,6 +2711,41 @@ mod tests {
             },
         )
         .expect("seed agent run");
+    }
+
+    #[test]
+    fn provider_context_runtime_metadata_uses_current_date_not_run_start_date() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let (project_id, repo_root) = seed_project(&root);
+        seed_run(&repo_root, &project_id);
+        let messages = Vec::new();
+        let input = ProviderContextPackageInput {
+            repo_root: &repo_root,
+            project_id: &project_id,
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID,
+            run_id: "run-context-package",
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: "engineer",
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+            agent_definition_snapshot: None,
+            provider_id: OPENAI_CODEX_PROVIDER_ID,
+            model_id: OPENAI_CODEX_PROVIDER_ID,
+            turn_index: 0,
+            browser_control_preference: BrowserControlPreferenceDto::Default,
+            tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
+            soul_settings: None,
+            tools: &[],
+            tool_exposure_plan: None,
+            messages: &messages,
+            owned_process_summary: None,
+            provider_preflight: None,
+        };
+
+        let metadata = provider_context_runtime_metadata(&input, "2026-06-01T09:30:00Z");
+
+        assert_eq!(metadata.timestamp_utc, "2026-06-01T09:30:00Z");
+        assert_eq!(metadata.date_utc, "2026-06-01");
+        assert_ne!(metadata.date_utc, "2026-05-01");
     }
 
     fn seed_retrievable_context(repo_root: &Path, project_id: &str) {

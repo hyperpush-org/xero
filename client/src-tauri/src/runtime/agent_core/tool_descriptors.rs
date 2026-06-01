@@ -689,8 +689,7 @@ fn subagent_delegation_fragment() -> &'static str {
 
 fn runtime_metadata_fragment(metadata: &RuntimeHostMetadata) -> String {
     format!(
-        "Runtime metadata for this provider turn (authoritative Xero host facts):\n- Current timestamp (UTC): {}\n- Current date (UTC): {}\n- Host operating system: {} (`{}`)\n- Host architecture: `{}`\n- Host OS family: `{}`\nUse these facts when reasoning about dates, commands, paths, and OS-specific tools. Do not request or rely on tools that are unavailable for this host operating system.",
-        metadata.timestamp_utc,
+        "Runtime metadata for this provider turn (authoritative Xero host facts):\n- Current date (UTC): {}\n- Host operating system: {} (`{}`)\n- Host architecture: `{}`\n- Host OS family: `{}`\nUse the current date when interpreting relative dates such as today, yesterday, tomorrow, latest, and current before answering or deciding which tools to call. Use the host facts when reasoning about commands, paths, and OS-specific tools. Do not request or rely on tools that are unavailable for this host operating system.",
         metadata.date_utc,
         metadata.operating_system_label,
         metadata.operating_system,
@@ -8382,8 +8381,10 @@ mod tests {
 
             assert_eq!(metadata.priority, 990);
             assert_eq!(metadata.provenance, "xero-runtime:host");
-            assert!(metadata.body.contains("Current timestamp (UTC):"));
             assert!(metadata.body.contains("Current date (UTC):"));
+            assert!(metadata
+                .body
+                .contains("today, yesterday, tomorrow, latest, and current"));
             assert!(metadata.body.contains("Host operating system:"));
             assert!(metadata.body.contains(std::env::consts::OS));
             assert!(metadata.body.contains("OS-specific tools"));

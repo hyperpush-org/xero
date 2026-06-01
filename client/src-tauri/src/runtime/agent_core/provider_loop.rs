@@ -5835,6 +5835,7 @@ mod tests {
         emit_message_deltas: bool,
         provider_id: &'static str,
         requests: Mutex<Vec<Vec<ProviderMessage>>>,
+        system_prompts: Mutex<Vec<String>>,
     }
 
     impl ScriptedProvider {
@@ -5844,6 +5845,7 @@ mod tests {
                 emit_message_deltas: true,
                 provider_id: OPENAI_CODEX_PROVIDER_ID,
                 requests: Mutex::new(Vec::new()),
+                system_prompts: Mutex::new(Vec::new()),
             }
         }
 
@@ -5856,6 +5858,13 @@ mod tests {
             self.requests
                 .lock()
                 .expect("scripted provider request lock")
+                .clone()
+        }
+
+        fn captured_system_prompts(&self) -> Vec<String> {
+            self.system_prompts
+                .lock()
+                .expect("scripted provider system prompt lock")
                 .clone()
         }
     }
@@ -5874,6 +5883,10 @@ mod tests {
             request: &ProviderTurnRequest,
             emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
         ) -> CommandResult<ProviderTurnOutcome> {
+            self.system_prompts
+                .lock()
+                .expect("scripted provider system prompt lock")
+                .push(request.system_prompt.clone());
             self.requests
                 .lock()
                 .expect("scripted provider request lock")
@@ -8709,6 +8722,48 @@ mod tests {
             "- none",
         ]
         .join("\n")
+    }
+
+    #[test]
+    fn provider_turn_system_prompt_includes_current_date_before_web_search_use() {
+        let _guard = project_state_test_lock()
+            .lock()
+            .expect("project state test lock");
+        let run_id = "web-search-date-context";
+        let (_tempdir, repo_root, project_id, controls, tool_runtime, messages) =
+            setup_test_agent_provider_loop(run_id);
+        let registry = registry_for_test_tools(&[AUTONOMOUS_TOOL_WEB_SEARCH]);
+        let provider = ScriptedProvider::new(vec![ProviderTurnOutcome::Complete {
+            message: harness_report(),
+            reasoning_content: None,
+            reasoning_details: None,
+            usage: Some(ProviderUsage::default()),
+        }]);
+
+        drive_provider_loop(
+            &provider,
+            messages,
+            controls,
+            registry,
+            &tool_runtime,
+            &repo_root,
+            &project_id,
+            run_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+            None,
+            &AgentRunCancellationToken::default(),
+        )
+        .expect("provider loop should complete");
+
+        let prompt = provider
+            .captured_system_prompts()
+            .into_iter()
+            .next()
+            .expect("captured provider prompt");
+        let current_date = runtime_host_metadata().date_utc;
+        assert!(prompt.contains(&format!("Current date (UTC): {current_date}")));
+        assert!(prompt.contains("today, yesterday, tomorrow, latest, and current"));
+        assert!(prompt.contains(AUTONOMOUS_TOOL_WEB_SEARCH));
     }
 
     #[test]
