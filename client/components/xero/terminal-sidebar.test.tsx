@@ -551,6 +551,35 @@ describe("TerminalSidebar persistence", () => {
     expect(mocks.adapter.terminalWrite).toHaveBeenCalledWith("pty-1", " status")
   })
 
+  it("forwards common terminal text-navigation shortcuts as shell control sequences", async () => {
+    render(<TerminalSidebar open projectId="project-a" />)
+    await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1))
+
+    const handler = mocks.terminals[0].customKeyHandler
+    expect(handler).toBeDefined()
+
+    expect(handler?.(new KeyboardEvent("keydown", { key: "Backspace", metaKey: true }))).toBe(false)
+    expect(handler?.(new KeyboardEvent("keydown", { key: "Backspace", ctrlKey: true }))).toBe(false)
+    expect(handler?.(new KeyboardEvent("keydown", { key: "Backspace", altKey: true }))).toBe(false)
+    expect(handler?.(new KeyboardEvent("keydown", { key: "Delete", metaKey: true }))).toBe(false)
+    expect(handler?.(new KeyboardEvent("keydown", { key: "ArrowLeft", metaKey: true }))).toBe(false)
+    expect(handler?.(new KeyboardEvent("keydown", { key: "ArrowRight", metaKey: true }))).toBe(false)
+    expect(handler?.(new KeyboardEvent("keydown", { key: "ArrowUp", metaKey: true }))).toBe(false)
+    expect(handler?.(new KeyboardEvent("keydown", { key: "ArrowDown", metaKey: true }))).toBe(false)
+    expect(handler?.(new KeyboardEvent("keydown", { key: "ArrowLeft", altKey: true }))).toBe(false)
+    expect(handler?.(new KeyboardEvent("keydown", { key: "ArrowRight", altKey: true }))).toBe(false)
+    expect(handler?.(new KeyboardEvent("keydown", { key: "Delete", ctrlKey: true }))).toBe(false)
+
+    expect(mocks.adapter.terminalWrite).toHaveBeenCalledWith("pty-1", "\x15")
+    expect(mocks.adapter.terminalWrite).toHaveBeenCalledWith("pty-1", "\x17")
+    expect(mocks.adapter.terminalWrite).toHaveBeenCalledWith("pty-1", "\x0b")
+    expect(mocks.adapter.terminalWrite).toHaveBeenCalledWith("pty-1", "\x01")
+    expect(mocks.adapter.terminalWrite).toHaveBeenCalledWith("pty-1", "\x05")
+    expect(mocks.adapter.terminalWrite).toHaveBeenCalledWith("pty-1", "\x1bb")
+    expect(mocks.adapter.terminalWrite).toHaveBeenCalledWith("pty-1", "\x1bf")
+    expect(mocks.adapter.terminalWrite).toHaveBeenCalledWith("pty-1", "\x1bd")
+  })
+
   it("uses the configured AI model when requesting terminal suggestions", async () => {
     window.localStorage.setItem(
       TERMINAL_SUGGESTION_SETTINGS_KEY,

@@ -142,10 +142,41 @@ export class TerminalInputTracker {
       return { kind: "submit", command, snapshot: this.snapshot() }
     }
 
-    if (data === "\x03" || data === "\x15" || data === "\x1b") {
+    if (data === "\x03" || data === "\x1b") {
       this.resetLine()
       this.suppressedUntilSubmit = null
       return { kind: "reset", snapshot: this.snapshot() }
+    }
+
+    if (data === "\x15") {
+      this.deleteBeforeCursor()
+      this.suppressedUntilSubmit = null
+      return { kind: "edit", snapshot: this.snapshot() }
+    }
+
+    if (data === "\x02") {
+      this.cursor = Math.max(0, this.cursor - 1)
+      return { kind: "edit", snapshot: this.snapshot() }
+    }
+
+    if (data === "\x06") {
+      this.cursor = Math.min([...this.buffer].length, this.cursor + 1)
+      return { kind: "edit", snapshot: this.snapshot() }
+    }
+
+    if (data === "\x04" || data === "\x1b[3~") {
+      this.deleteAtCursor()
+      return { kind: "edit", snapshot: this.snapshot() }
+    }
+
+    if (data === "\x0b") {
+      this.deleteAfterCursor()
+      return { kind: "edit", snapshot: this.snapshot() }
+    }
+
+    if (data === "\x17") {
+      this.deleteWordBeforeCursor()
+      return { kind: "edit", snapshot: this.snapshot() }
     }
 
     if (data === "\x7f" || data === "\b") {
@@ -178,6 +209,21 @@ export class TerminalInputTracker {
       return { kind: "edit", snapshot: this.snapshot() }
     }
 
+    if (data === "\x1bb") {
+      this.cursor = this.previousWordCursor()
+      return { kind: "edit", snapshot: this.snapshot() }
+    }
+
+    if (data === "\x1bf") {
+      this.cursor = this.nextWordCursor()
+      return { kind: "edit", snapshot: this.snapshot() }
+    }
+
+    if (data === "\x1bd") {
+      this.deleteWordAfterCursor()
+      return { kind: "edit", snapshot: this.snapshot() }
+    }
+
     if (data.startsWith("\x1b") || PRINTABLE_CONTROL.test(data)) {
       this.suppressedUntilSubmit = "control-sequence"
       return { kind: "reset", snapshot: this.snapshot() }
@@ -203,5 +249,57 @@ export class TerminalInputTracker {
   private resetLine(): void {
     this.buffer = ""
     this.cursor = 0
+  }
+
+  private deleteBeforeCursor(): void {
+    const chars = [...this.buffer]
+    chars.splice(0, this.cursor)
+    this.buffer = chars.join("")
+    this.cursor = 0
+  }
+
+  private deleteAfterCursor(): void {
+    const chars = [...this.buffer]
+    chars.splice(this.cursor)
+    this.buffer = chars.join("")
+  }
+
+  private deleteAtCursor(): void {
+    const chars = [...this.buffer]
+    if (this.cursor < chars.length) {
+      chars.splice(this.cursor, 1)
+      this.buffer = chars.join("")
+    }
+  }
+
+  private deleteWordBeforeCursor(): void {
+    const chars = [...this.buffer]
+    const previousCursor = this.previousWordCursor()
+    chars.splice(previousCursor, this.cursor - previousCursor)
+    this.buffer = chars.join("")
+    this.cursor = previousCursor
+  }
+
+  private deleteWordAfterCursor(): void {
+    const chars = [...this.buffer]
+    const nextCursor = this.nextWordCursor()
+    chars.splice(this.cursor, nextCursor - this.cursor)
+    this.buffer = chars.join("")
+  }
+
+  private previousWordCursor(): number {
+    const chars = [...this.buffer]
+    let index = Math.min(this.cursor, chars.length)
+    while (index > 0 && /\s/.test(chars[index - 1] ?? "")) index -= 1
+    while (index > 0 && !/\s/.test(chars[index - 1] ?? "")) index -= 1
+    return index
+  }
+
+  private nextWordCursor(): number {
+    const chars = [...this.buffer]
+    let index = Math.min(this.cursor, chars.length)
+    while (index < chars.length && /\s/.test(chars[index] ?? "")) index += 1
+    while (index < chars.length && !/\s/.test(chars[index] ?? "")) index += 1
+    return index
   }
 }

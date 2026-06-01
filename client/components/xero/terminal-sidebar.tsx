@@ -332,6 +332,31 @@ function isPlainShiftEnter(event: KeyboardEvent): boolean {
   )
 }
 
+function terminalShortcutWrite(event: KeyboardEvent): string | null {
+  if (event.type !== "keydown") return null
+  if (event.shiftKey) return null
+
+  const hasWordModifier = event.altKey || event.ctrlKey
+  if (event.metaKey && !event.altKey && !event.ctrlKey) {
+    if (event.key === "ArrowLeft") return "\x01"
+    if (event.key === "ArrowRight") return "\x05"
+    if (event.key === "ArrowUp") return "\x01"
+    if (event.key === "ArrowDown") return "\x05"
+    if (event.key === "Backspace") return "\x15"
+    if (event.key === "Delete") return "\x0b"
+    return null
+  }
+
+  if (hasWordModifier && !event.metaKey) {
+    if (event.key === "ArrowLeft") return "\x1bb"
+    if (event.key === "ArrowRight") return "\x1bf"
+    if (event.key === "Backspace") return "\x17"
+    if (event.key === "Delete") return "\x1bd"
+  }
+
+  return null
+}
+
 function sanitizeTerminalTabLabel(label: string): string | null {
   const compact = label.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim()
   if (compact.length === 0) return null
@@ -1025,6 +1050,22 @@ export function TerminalSidebar({
               acceptSuggestion(currentTab, currentCandidate, acceptsWord ? "word" : "full")
               return false
             }
+          }
+
+          const shortcutWrite = terminalShortcutWrite(event)
+          if (shortcutWrite) {
+            event.preventDefault()
+            event.stopPropagation()
+            suppressingLiveOutputIdsRef.current.delete(response.terminalId)
+            const tracker = trackerForTerminal(response.terminalId)
+            const tracked = tracker.applyInput(shortcutWrite)
+            const currentTab = tabsRef.current.find((entry) => entry.id === response.terminalId)
+            clearSuggestion()
+            if (currentTab && tracked.kind === "edit") {
+              scheduleSuggestions(currentTab, tracked.snapshot)
+            }
+            void defaultAdapter.terminalWrite?.(response.terminalId, shortcutWrite)
+            return false
           }
 
           if (!isPlainShiftEnter(event)) return true

@@ -48,6 +48,28 @@ describe("TerminalInputTracker", () => {
     expect(tracker.snapshot()).toMatchObject({ buffer: "", cursor: 0, suppressed: false })
   })
 
+  it("tracks shell editing shortcuts used by terminal keybindings", () => {
+    const tracker = new TerminalInputTracker()
+
+    tracker.applyInput("git checkout main")
+    tracker.applyInput("\x1bb")
+    tracker.applyInput("\x17")
+
+    expect(tracker.snapshot()).toMatchObject({ buffer: "git main", cursor: 4 })
+
+    tracker.applyInput("\x1bf")
+    tracker.applyInput("\x15")
+
+    expect(tracker.snapshot()).toMatchObject({ buffer: "", cursor: 0 })
+
+    tracker.applyInput("git status")
+    tracker.applyInput("\x01")
+    tracker.applyInput("\x1bf")
+    tracker.applyInput("\x1bd")
+
+    expect(tracker.snapshot()).toMatchObject({ buffer: "git", cursor: 3 })
+  })
+
   it("suppresses suggestions for paste bursts, password prompts, and alternate-screen apps", () => {
     const tracker = new TerminalInputTracker()
 
