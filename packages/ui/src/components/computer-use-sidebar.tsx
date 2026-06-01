@@ -1,4 +1,4 @@
-import { Monitor, X } from "lucide-react";
+import { Eraser, Monitor, X } from "lucide-react";
 import {
 	type ComponentPropsWithoutRef,
 	type ReactNode,
@@ -70,41 +70,70 @@ export function ComputerUseSidebar({
 
 export interface ComputerUseSidebarHeaderProps
 	extends ComponentPropsWithoutRef<"div"> {
+	clearDisabled?: boolean;
+	clearLabel?: string;
+	clearPending?: boolean;
+	clearTitle?: string;
 	closeLabel?: string;
 	label?: ReactNode;
+	onClear?: () => void;
 	onClose?: () => void;
 }
 
 export function ComputerUseSidebarHeader({
 	className,
+	clearDisabled = false,
+	clearLabel = "Clear Computer Use chat",
+	clearPending = false,
+	clearTitle,
 	closeLabel = "Close Computer Use",
 	label = "Computer Use",
+	onClear,
 	onClose,
 	...props
 }: ComputerUseSidebarHeaderProps) {
+	const effectiveClearDisabled = clearDisabled || clearPending;
+
 	return (
 		<div
 			{...props}
 			className={cn(
-				"flex h-10 shrink-0 items-center justify-between gap-1.5 bg-sidebar px-3.5",
+				"flex min-h-12 shrink-0 items-center justify-between gap-1.5 bg-sidebar px-3.5 py-2",
 				className,
 			)}
 		>
 			<div className="flex min-w-0 items-center gap-2 text-[12.5px]">
-				<span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+				<span className="inline-flex h-6 w-6 shrink-0 items-center justify-center text-primary">
 					<Monitor className="h-3.5 w-3.5" aria-hidden="true" />
 				</span>
 				<h2 className="truncate font-semibold text-foreground">{label}</h2>
 			</div>
-			{onClose ? (
-				<button
-					type="button"
-					aria-label={closeLabel}
-					onClick={onClose}
-					className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
-				>
-					<X className="h-3.5 w-3.5" aria-hidden="true" />
-				</button>
+			{onClear || onClose ? (
+				<div className="flex shrink-0 items-center gap-1">
+					{onClear ? (
+						<button
+							type="button"
+							aria-busy={clearPending || undefined}
+							aria-label={clearLabel}
+							disabled={effectiveClearDisabled}
+							onClick={onClear}
+							title={clearTitle ?? clearLabel}
+							className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-45"
+						>
+							<Eraser className="h-3.5 w-3.5" aria-hidden="true" />
+						</button>
+					) : null}
+					{onClose ? (
+						<button
+							type="button"
+							aria-label={closeLabel}
+							onClick={onClose}
+							className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
+						>
+							<X className="h-3.5 w-3.5" aria-hidden="true" />
+						</button>
+					) : null}
+				</div>
 			) : null}
 		</div>
 	);

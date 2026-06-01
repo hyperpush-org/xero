@@ -4,15 +4,20 @@ use reqwest::{blocking::Client, header::CONTENT_TYPE, redirect::Policy};
 
 use crate::commands::{CommandError, CommandResult};
 
-use super::{
-    AutonomousWebRuntime, AutonomousWebSearchProviderConfig, MAX_REDIRECTS,
-    SEARCH_PROVIDER_BEARER_TOKEN_ENV, SEARCH_PROVIDER_URL_ENV,
-};
+use super::{AutonomousWebRuntime, MAX_REDIRECTS};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutonomousWebHttpMethod {
+    Get,
+    Post,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutonomousWebTransportRequest {
+    pub method: AutonomousWebHttpMethod,
     pub url: String,
     pub headers: Vec<(String, String)>,
+    pub body: Option<Vec<u8>>,
     pub timeout_ms: u64,
     pub max_response_bytes: usize,
 }
@@ -59,9 +64,15 @@ impl AutonomousWebTransport for ReqwestAutonomousWebTransport {
                 ))
             })?;
 
-        let mut http_request = client.get(&request.url);
+        let mut http_request = match request.method {
+            AutonomousWebHttpMethod::Get => client.get(&request.url),
+            AutonomousWebHttpMethod::Post => client.post(&request.url),
+        };
         for (name, value) in &request.headers {
             http_request = http_request.header(name, value);
+        }
+        if let Some(body) = &request.body {
+            http_request = http_request.body(body.clone());
         }
 
         let mut response = http_request.send().map_err(map_transport_error)?;
@@ -111,22 +122,6 @@ impl AutonomousWebRuntime {
     }
 }
 
-pub(super) fn search_provider_from_env() -> Option<AutonomousWebSearchProviderConfig> {
-    let endpoint = std::env::var(SEARCH_PROVIDER_URL_ENV)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())?;
-    let bearer_token = std::env::var(SEARCH_PROVIDER_BEARER_TOKEN_ENV)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-
-    Some(AutonomousWebSearchProviderConfig {
-        endpoint,
-        bearer_token,
-    })
-}
-
 fn map_transport_error(error: reqwest::Error) -> AutonomousWebTransportError {
     if error.is_timeout() {
         return AutonomousWebTransportError::Timeout(
@@ -141,8 +136,51 @@ fn map_transport_error(error: reqwest::Error) -> AutonomousWebTransportError {
     }
 
     AutonomousWebTransportError::Transport(format!(
-        "Xero could not execute the autonomous web request: {error}"
+        "Xero could not execute the autonomous web request: {}",
+        redact_transport_error(&error.to_string())
     ))
+}
+
+fn redact_transport_error(message: &str) -> String {
+    message
+        .split_whitespace()
+        .map(redact_possible_url)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn redact_possible_url(value: &str) -> String {
+    let trimmed = value.trim_matches(|ch: char| matches!(ch, '"' | '\'' | ',' | ')' | '('));
+    let Ok(mut url) = url::Url::parse(trimmed) else {
+        return value.to_owned();
+    };
+    if url.query().is_some() {
+        let pairs = url
+            .query_pairs()
+            .map(|(key, value)| {
+                let redacted = matches!(
+                    key.as_ref(),
+                    "api_key" | "key" | "token" | "access_token" | "subscription-token"
+                );
+                (
+                    key.into_owned(),
+                    if redacted {
+                        "<redacted>".to_owned()
+                    } else {
+                        value.into_owned()
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        url.set_query(None);
+        {
+            let mut query = url.query_pairs_mut();
+            for (key, value) in pairs {
+                query.append_pair(&key, &value);
+            }
+        }
+    }
+    value.replace(trimmed, url.as_str())
 }
 
 fn map_transport_failure(error: AutonomousWebTransportError) -> CommandError {

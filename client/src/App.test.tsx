@@ -119,6 +119,9 @@ afterEach(() => {
 })
 
 import {
+  APP_BOOT_LOADING_EXIT_MS,
+  AppBootLoadingOverlay,
+  AppWideLoadingOverlay,
   XeroApp,
   projectRunnerSuggestRequestFromStoredComposerSettings,
   useActivatedSurface,
@@ -2228,6 +2231,11 @@ function createAdapter(options?: {
       agentSessionId: GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
       session: makeComputerUseAgentSession(),
     }),
+    resetGlobalComputerUseSession: async () => ({
+      projectId: GLOBAL_COMPUTER_USE_PROJECT_ID,
+      agentSessionId: GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
+      session: makeComputerUseAgentSession(),
+    }),
     getRuntimeRun: async (projectId) =>
       currentRuntimeRun?.projectId === projectId ? currentRuntimeRun : null,
     listMcpServers,
@@ -2612,6 +2620,76 @@ describe('useStickyPrewarmedSurface', () => {
     rerender(<StickyPrewarmedSurfaceProbe active={false} prewarm={false} />)
 
     expect(screen.getByText('sticky surface')).toHaveAttribute('data-mounted', 'true')
+  })
+})
+
+describe('AppBootLoadingOverlay', () => {
+  it('animates out before unmounting when loading completes', () => {
+    vi.useFakeTimers()
+
+    try {
+      const { container, rerender } = render(<AppBootLoadingOverlay active />)
+
+      const overlay = screen.getByRole('status', { name: 'Loading' }).parentElement
+      expect(overlay).toHaveAttribute('data-state', 'open')
+
+      rerender(<AppBootLoadingOverlay active={false} />)
+
+      const closingOverlay = screen.getByRole('status', { name: 'Loading', hidden: true }).parentElement
+      const closingScreen = screen.getByRole('status', { name: 'Loading', hidden: true })
+      expect(closingOverlay).toHaveAttribute('data-state', 'closed')
+      expect(closingOverlay).toHaveAttribute('aria-hidden', 'true')
+      expect(closingScreen).toHaveAttribute('data-state', 'closed')
+      expect(closingScreen).toHaveClass('xero-loading-screen')
+
+      act(() => {
+        vi.advanceTimersByTime(APP_BOOT_LOADING_EXIT_MS - 1)
+      })
+      expect(screen.getByRole('status', { name: 'Loading', hidden: true })).toHaveAttribute('data-state', 'closed')
+
+      act(() => {
+        vi.advanceTimersByTime(1)
+      })
+      expect(container.querySelector('[data-state="closed"]')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('AppWideLoadingOverlay', () => {
+  it('keeps the wide loading surface mounted for its exit animation', () => {
+    vi.useFakeTimers()
+
+    try {
+      const { container, rerender } = render(
+        <div className="relative h-96 w-96">
+          <AppWideLoadingOverlay active />
+        </div>,
+      )
+
+      expect(container.querySelector('[data-state="open"]')).not.toBeNull()
+
+      rerender(
+        <div className="relative h-96 w-96">
+          <AppWideLoadingOverlay active={false} />
+        </div>,
+      )
+
+      const closingOverlay = screen.getByRole('status', { name: 'Loading', hidden: true }).parentElement
+      const closingScreen = screen.getByRole('status', { name: 'Loading', hidden: true })
+      expect(closingOverlay).toHaveClass('absolute')
+      expect(closingOverlay).toHaveAttribute('data-state', 'closed')
+      expect(closingScreen).toHaveAttribute('data-state', 'closed')
+      expect(closingScreen).toHaveClass('xero-loading-screen')
+
+      act(() => {
+        vi.advanceTimersByTime(APP_BOOT_LOADING_EXIT_MS)
+      })
+      expect(container.querySelector('[data-state="closed"]')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -3033,6 +3111,23 @@ describe('XeroApp current UI', () => {
     expect(within(dialog).getByRole('button', { name: /Create new/ })).toBeVisible()
   })
 
+  it('opens generic settings from the project rail on the Account tab', async () => {
+    const { adapter } = createAdapter()
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    const projectRail = screen.getByRole('complementary', { name: 'Projects' })
+    fireEvent.click(within(projectRail).getByRole('button', { name: 'Settings' }))
+
+    expect(await screen.findByRole('heading', { name: 'Account' }, { timeout: 5000 })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Account' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('button', { name: 'Providers' })).not.toHaveAttribute('aria-current')
+  })
+
   it('defaults the agent dock composer to Agent Create when opened from Workflow', async () => {
     const { adapter } = createAdapter()
 
@@ -3084,6 +3179,40 @@ describe('XeroApp current UI', () => {
       'true',
     )
     expect(screen.getAllByText('mesh-lang')[0]).toBeVisible()
+  })
+
+  it('clears the Computer Use sidebar chat from the header', async () => {
+    const { adapter } = createAdapter({
+      projects: [makeProjectSummary('project-1', 'mesh-lang')],
+      snapshot: makeSnapshot('project-1', 'mesh-lang'),
+      status: makeStatus('project-1', 'mesh-lang'),
+    })
+    const resetGlobalComputerUseSession = vi.fn(async () => ({
+      projectId: GLOBAL_COMPUTER_USE_PROJECT_ID,
+      agentSessionId: GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
+      session: makeComputerUseAgentSession(),
+    }))
+    adapter.resetGlobalComputerUseSession = resetGlobalComputerUseSession
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Computer Use' }))
+
+    const dock = await screen.findByLabelText('Agent dock')
+    await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'false'))
+    const clearButton = within(dock).getByRole('button', {
+      name: 'Clear Computer Use chat',
+    })
+    expect(clearButton).not.toBeDisabled()
+    fireEvent.click(clearButton)
+
+    await waitFor(() => {
+      expect(resetGlobalComputerUseSession).toHaveBeenCalledTimes(1)
+    })
   })
 
   it('lazy-activates the agent pane only after the Agent view is opened', async () => {

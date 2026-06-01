@@ -1364,17 +1364,78 @@ function SolanaWorkbenchSurface({ open, prewarm = false }: { open: boolean; prew
   )
 }
 
-function AppBootLoadingOverlay({ active }: { active: boolean }) {
-  if (!active) {
+export const APP_BOOT_LOADING_EXIT_MS = 160
+
+function DismissingLoadingOverlay({
+  active,
+  className,
+  loadingClassName,
+}: {
+  active: boolean
+  className?: string
+  loadingClassName?: string
+}) {
+  const [rendered, setRendered] = useState(active)
+
+  useEffect(() => {
+    if (active) {
+      setRendered(true)
+      return
+    }
+
+    if (!rendered) {
+      return
+    }
+
+    const timeout = window.setTimeout(() => {
+      setRendered(false)
+    }, APP_BOOT_LOADING_EXIT_MS)
+
+    return () => {
+      window.clearTimeout(timeout)
+    }
+  }, [active, rendered])
+
+  if (!rendered) {
     return null
   }
 
+  const closing = !active
+
+  return (
+    <div
+      aria-hidden={closing}
+      className={cn(
+        closing && 'pointer-events-none',
+        className,
+      )}
+      data-state={closing ? 'closed' : 'open'}
+      inert={closing ? true : undefined}
+    >
+      <LoadingScreen className={loadingClassName} state={closing ? 'closed' : 'open'} />
+    </div>
+  )
+}
+
+export function AppWideLoadingOverlay({ active }: { active: boolean }) {
+  return (
+    <DismissingLoadingOverlay
+      active={active}
+      className="absolute inset-0 z-40"
+      loadingClassName="h-full w-full"
+    />
+  )
+}
+
+export function AppBootLoadingOverlay({ active }: { active: boolean }) {
   // Rendered as an app-root sibling of XeroShell; the shell main row uses
   // paint containment, which would otherwise clip fixed descendants.
   return (
-    <div className="fixed inset-0 z-[2147483647] bg-background">
-      <LoadingScreen className="h-screen w-screen" />
-    </div>
+    <DismissingLoadingOverlay
+      active={active}
+      className="fixed inset-0 z-[2147483647]"
+      loadingClassName="h-screen w-screen"
+    />
   )
 }
 
@@ -1585,7 +1646,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
   } = useGitHubAuth()
 
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>('providers')
+  const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>('account')
   const [toolCallGroupingPreference, setToolCallGroupingPreference] =
     useState<ToolCallGroupingPreference>(() => readStoredToolCallGroupingPreference())
   const [pendingAgentSessionId, setPendingAgentSessionId] = useState<string | null>(null)
@@ -1701,6 +1762,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     useState<RuntimeRunActionKind | null>(null)
   const [computerUseRuntimeRunActionError, setComputerUseRuntimeRunActionError] =
     useState<OperatorActionErrorView | null>(null)
+  const [computerUseClearChatPending, setComputerUseClearChatPending] = useState(false)
   const computerUseRuntimeActionRefreshKeysRef = useRef<Record<string, Set<string>>>({})
   const computerUseRuntimeMetadataRefreshTimeoutRef = useRef<number | null>(null)
   const [terminalOpen, setTerminalOpen] = useState(false)
@@ -1870,7 +1932,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     }
   }, [activeProjectId, customAgentDefinitionsRevision, resolvedAdapter])
 
-  const openSettings = useCallback((section: SettingsSection = 'providers') => {
+  const openSettings = useCallback((section: SettingsSection = 'account') => {
     preloadSurfaceChunk('settings')
     setSettingsInitialSection(section)
     setSettingsOpen(true)
@@ -2283,6 +2345,55 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const computerUseRunning = Boolean(
     computerUseRuntimeRun?.isActive && !computerUseRuntimeRun.isTerminal,
   )
+
+  const clearComputerUseChat = useCallback(async () => {
+    if (
+      !resolvedAdapter.resetGlobalComputerUseSession ||
+      computerUseRunning ||
+      computerUseClearChatPending
+    ) {
+      return
+    }
+
+    setComputerUseClearChatPending(true)
+    setComputerUseRuntimeRunActionError(null)
+    try {
+      await resolvedAdapter.resetGlobalComputerUseSession()
+      computerUseRuntimeActionRefreshKeysRef.current = {}
+      highChurnStore.setRuntimeStreams((currentStreams) =>
+        removeRuntimeStreamForSession(
+          currentStreams,
+          GLOBAL_COMPUTER_USE_PROJECT_ID,
+          GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
+        ),
+      )
+      setComputerUseRuntimeRun(null)
+      await loadComputerUseProject()
+    } catch (error) {
+      setComputerUseRuntimeRunActionError(
+        getOperatorActionError(error, 'Xero could not clear the Computer Use chat.'),
+      )
+    } finally {
+      setComputerUseClearChatPending(false)
+    }
+  }, [
+    computerUseClearChatPending,
+    computerUseRunning,
+    highChurnStore,
+    loadComputerUseProject,
+    resolvedAdapter,
+  ])
+
+  const canClearComputerUseChat = Boolean(resolvedAdapter.resetGlobalComputerUseSession) &&
+    !computerUseRunning &&
+    !computerUseClearChatPending
+  const clearComputerUseChatTitle = !resolvedAdapter.resetGlobalComputerUseSession
+    ? 'Clear chat is unavailable in this build.'
+    : computerUseRunning
+      ? 'Stop the current run before clearing chat'
+      : computerUseClearChatPending
+        ? 'Clearing Computer Use chat'
+        : undefined
 
   const closeComputerUse = useCallback(() => {
     setComputerUseOpen(false)
@@ -4900,7 +5011,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
             isImporting={isImporting}
             isLoading={isLoading || (isProjectLoading && foregroundProjectLoad)}
             onImportProject={() => setProjectAddOpen(true)}
-            onOpenSettings={() => openSettings('providers')}
+            onOpenSettings={() => openSettings()}
             onPreloadProject={prefetchProject}
             onPreviewProject={handlePreviewProject}
             onRemoveProject={handleRemoveProject}
@@ -4920,7 +5031,12 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 : undefined
             }
           />
-          {isProjectSelectionShellPending ? <LoadingScreen /> : renderBody()}
+          <div className="relative flex min-h-0 min-w-0 flex-1">
+            <div className="flex min-h-0 min-w-0 flex-1">
+              {isProjectSelectionShellPending ? null : renderBody()}
+            </div>
+            <AppWideLoadingOverlay active={isProjectSelectionShellPending} />
+          </div>
           <LazyPrerenderedSurface
             open={browserOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
@@ -5108,6 +5224,12 @@ export function XeroApp({ adapter }: XeroAppProps) {
                     ? updateComputerUseRuntimeRunControls
                     : (request) => updateRuntimeRunControls(request)
                 }
+                onClearSidebarChat={computerUseOpen ? clearComputerUseChat : undefined}
+                sidebarChatClearDisabled={computerUseOpen ? !canClearComputerUseChat : undefined}
+                sidebarChatClearPending={
+                  computerUseOpen ? computerUseClearChatPending : undefined
+                }
+                sidebarChatClearTitle={computerUseOpen ? clearComputerUseChatTitle : undefined}
                 onComposerControlsChange={(controls) => {
                   persistComposerSettings(controls)
                   if (!computerUseOpen) {
@@ -5221,6 +5343,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 desktopControlAdapter={resolvedAdapter}
                 soulAdapter={resolvedAdapter}
                 agentToolingAdapter={resolvedAdapter}
+                webSearchAdapter={resolvedAdapter}
                 powerAdapter={resolvedAdapter}
                 toolCallGroupingPreference={toolCallGroupingPreference}
                 onToolCallGroupingPreferenceChange={handleToolCallGroupingPreferenceChange}

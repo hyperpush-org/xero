@@ -34,6 +34,7 @@ export function CloudAccountSection() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [revoking, setRevoking] = useState<string | null>(null)
+  const [unlinkConfirmationDeviceId, setUnlinkConfirmationDeviceId] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     if (!isTauri()) {
@@ -61,6 +62,7 @@ export function CloudAccountSection() {
 
   const handleRevoke = async (deviceId: string) => {
     setRevoking(deviceId)
+    setUnlinkConfirmationDeviceId(null)
     setError(null)
     try {
       await invoke("bridge_revoke_device", { request: { deviceId } })
@@ -71,6 +73,10 @@ export function CloudAccountSection() {
       setRevoking(null)
     }
   }
+
+  const clearUnlinkConfirmation = useCallback(() => {
+    setUnlinkConfirmationDeviceId(null)
+  }, [])
 
   return (
     <div className="flex flex-col gap-7">
@@ -95,47 +101,84 @@ export function CloudAccountSection() {
           </p>
         ) : (
           <ul className="flex flex-col divide-y divide-border/60 rounded-md border border-border/60 bg-secondary/10">
-            {devices.map((device) => (
-              <li
-                key={device.id}
-                className="flex items-center justify-between gap-3 px-3.5 py-3"
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  {device.kind === "desktop" ? (
-                    <Laptop className="h-4 w-4 shrink-0 text-muted-foreground" />
-                  ) : (
-                    <Globe className="h-4 w-4 shrink-0 text-muted-foreground" />
-                  )}
-                  <div className="min-w-0">
-                    <p className="truncate text-[12.5px] font-medium text-foreground">
-                      {device.name ?? (device.kind === "desktop" ? "Desktop" : "Browser")}
-                    </p>
-                    <p className="truncate text-[11.5px] text-muted-foreground">
-                      {device.kind === "desktop" ? "Desktop" : "Browser"}
-                      {device.lastSeen ? ` · last seen ${formatRelative(device.lastSeen)}` : ""}
-                    </p>
-                  </div>
-                </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                  onClick={() => {
-                    void handleRevoke(device.id)
-                  }}
-                  disabled={revoking === device.id}
-                  aria-label={`Revoke ${device.name ?? device.kind}`}
-                  title="Revoke device"
+            {devices.map((device) => {
+              const deviceLabel = device.name ?? (device.kind === "desktop" ? "Desktop" : "Browser")
+              const isRevoking = revoking === device.id
+              const isUnlinkConfirming = unlinkConfirmationDeviceId === device.id && !isRevoking
+              const unlinkActionLabel = isUnlinkConfirming
+                ? `Confirm unlink ${deviceLabel}`
+                : `Unlink ${deviceLabel}`
+              const unlinkActionTitle = isUnlinkConfirming
+                ? `Press again to unlink ${deviceLabel}`
+                : `Unlink ${deviceLabel}`
+
+              return (
+                <li
+                  key={device.id}
+                  className="flex items-center justify-between gap-3 px-3.5 py-3"
                 >
-                  {revoking === device.id ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Trash2 className="h-3.5 w-3.5" />
-                  )}
-                </Button>
-              </li>
-            ))}
+                  <div className="flex items-center gap-3 min-w-0">
+                    {device.kind === "desktop" ? (
+                      <Laptop className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <Globe className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    )}
+                    <div className="min-w-0">
+                      <p className="truncate text-[12.5px] font-medium text-foreground">
+                        {deviceLabel}
+                      </p>
+                      <p className="truncate text-[11.5px] text-muted-foreground">
+                        {device.kind === "desktop" ? "Desktop" : "Browser"}
+                        {device.lastSeen ? ` · last seen ${formatRelative(device.lastSeen)}` : ""}
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className={[
+                      "h-7 p-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive",
+                      isUnlinkConfirming
+                        ? "w-auto min-w-[60px] px-2 text-[11.5px] font-semibold text-destructive hover:bg-destructive/15"
+                        : "w-7",
+                    ].join(" ")}
+                    onClick={() => {
+                      if (isUnlinkConfirming) {
+                        void handleRevoke(device.id)
+                        return
+                      }
+                      setUnlinkConfirmationDeviceId(device.id)
+                    }}
+                    onBlur={(event) => {
+                      const nextFocused = event.relatedTarget
+                      if (nextFocused instanceof Node && event.currentTarget.contains(nextFocused)) {
+                        return
+                      }
+                      clearUnlinkConfirmation()
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
+                        event.stopPropagation()
+                        clearUnlinkConfirmation()
+                      }
+                    }}
+                    onPointerLeave={clearUnlinkConfirmation}
+                    disabled={isRevoking}
+                    aria-label={unlinkActionLabel}
+                    title={unlinkActionTitle}
+                  >
+                    {isRevoking ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : isUnlinkConfirming ? (
+                      <span>Unlink</span>
+                    ) : (
+                      <Trash2 className="h-3.5 w-3.5" />
+                    )}
+                  </Button>
+                </li>
+              )
+            })}
           </ul>
         )}
         {account?.githubLogin ? (

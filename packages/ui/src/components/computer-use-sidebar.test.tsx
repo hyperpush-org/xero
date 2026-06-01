@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	COMPUTER_USE_SIDEBAR_DEFAULT_WIDTH,
 	ComputerUseSidebar,
+	ComputerUseSidebarHeader,
 	type ComputerUseSidebarDensity,
 } from "./computer-use-sidebar";
 
@@ -55,6 +56,59 @@ describe("ComputerUseSidebar", () => {
 		expect(
 			screen.queryByRole("separator", { name: "Resize Computer Use sidebar" }),
 		).toBeNull();
+	});
+
+	it("renders a flush taller header", () => {
+		render(<ComputerUseSidebarHeader data-testid="computer-use-header" />);
+
+		const header = screen.getByTestId("computer-use-header");
+		expect(header).toHaveClass("min-h-12");
+		expect(header).toHaveClass("py-2");
+		expect(header).not.toHaveClass("h-10");
+		expect(header.querySelector("span")?.className).not.toContain(
+			"bg-primary/10",
+		);
+	});
+
+	it("renders clear and close icon actions in the header", () => {
+		const onClear = vi.fn();
+		const onClose = vi.fn();
+		render(
+			<ComputerUseSidebarHeader
+				clearTitle="Clear the Computer Use transcript"
+				onClear={onClear}
+				onClose={onClose}
+			/>,
+		);
+
+		const clearButton = screen.getByRole("button", {
+			name: "Clear Computer Use chat",
+		});
+		expect(clearButton).toHaveAttribute(
+			"title",
+			"Clear the Computer Use transcript",
+		);
+		expect(clearButton.querySelector("svg")?.getAttribute("class")).toContain(
+			"h-3.5",
+		);
+		fireEvent.click(clearButton);
+		expect(onClear).toHaveBeenCalledTimes(1);
+
+		fireEvent.click(screen.getByRole("button", { name: "Close Computer Use" }));
+		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	it("disables the clear action while pending", () => {
+		const onClear = vi.fn();
+		render(<ComputerUseSidebarHeader clearPending onClear={onClear} />);
+
+		const clearButton = screen.getByRole("button", {
+			name: "Clear Computer Use chat",
+		});
+		expect(clearButton).toBeDisabled();
+		expect(clearButton).toHaveAttribute("aria-busy", "true");
+		fireEvent.click(clearButton);
+		expect(onClear).not.toHaveBeenCalled();
 	});
 
 	it("resizes from the left edge and reports compact density", async () => {

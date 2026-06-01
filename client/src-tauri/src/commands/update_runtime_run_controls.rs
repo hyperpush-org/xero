@@ -287,8 +287,13 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
     )?;
     let tool_application_policy =
         resolve_agent_tool_application_style(app, state, &provider_id, &model_id)?;
-    let tool_runtime = AutonomousToolRuntime::for_project(app, state, &snapshot.run.project_id)?
-        .with_tool_application_policy(tool_application_policy);
+    let tool_runtime = AutonomousToolRuntime::for_project_with_provider_config(
+        app,
+        state,
+        &snapshot.run.project_id,
+        Some(&provider_config),
+    )?
+    .with_tool_application_policy(tool_application_policy);
     match project_store::load_agent_run(repo_root, &snapshot.run.project_id, &snapshot.run.run_id) {
         Ok(agent_snapshot) => {
             let answer_pending_actions = agent_snapshot

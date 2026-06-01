@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Bot, Plus } from "lucide-react"
 
 import { cn } from "@/lib/utils"
@@ -24,7 +24,27 @@ import type {
 const MIN_WIDTH = 320
 const MAX_WIDTH = 720
 const DEFAULT_WIDTH = 560
+const MOBILE_OVERLAY_BREAKPOINT = 768
 const WIDTH_STORAGE_KEY = "xero.agentDock.width"
+
+function readViewportWidth(): number | null {
+  if (typeof window === "undefined") return null
+  return window.innerWidth
+}
+
+function useViewportWidth(): number | null {
+  const [viewportWidth, setViewportWidth] = useState<number | null>(() => readViewportWidth())
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const updateViewportWidth = () => setViewportWidth(window.innerWidth)
+    updateViewportWidth()
+    window.addEventListener("resize", updateViewportWidth)
+    return () => window.removeEventListener("resize", updateViewportWidth)
+  }, [])
+
+  return viewportWidth
+}
 
 function readPersistedWidth(): number | null {
   if (typeof window === "undefined") return null
@@ -75,6 +95,11 @@ export interface AgentDockSidebarProps {
   onStartRuntimeRun?: AgentRuntimeProps["onStartRuntimeRun"]
   onUpdateRuntimeRunControls?: AgentRuntimeProps["onUpdateRuntimeRunControls"]
   onComposerControlsChange?: AgentRuntimeProps["onComposerControlsChange"]
+  onClearSidebarChat?: AgentRuntimeProps["onClearSidebarChat"]
+  sidebarChatClearDisabled?: AgentRuntimeProps["sidebarChatClearDisabled"]
+  sidebarChatClearLabel?: AgentRuntimeProps["sidebarChatClearLabel"]
+  sidebarChatClearPending?: AgentRuntimeProps["sidebarChatClearPending"]
+  sidebarChatClearTitle?: AgentRuntimeProps["sidebarChatClearTitle"]
   onStartRuntimeSession?: AgentRuntimeProps["onStartRuntimeSession"]
   onStopRuntimeRun?: AgentRuntimeProps["onStopRuntimeRun"]
   onSubmitManualCallback?: AgentRuntimeProps["onSubmitManualCallback"]
@@ -107,8 +132,11 @@ export function AgentDockSidebar({
 }: AgentDockSidebarProps) {
   const [width, setWidth] = useState<number>(() => readPersistedWidth() ?? DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
+  const viewportWidth = useViewportWidth()
+  const isMobileOverlay = viewportWidth !== null && viewportWidth < MOBILE_OVERLAY_BREAKPOINT
+  const renderedWidth = isMobileOverlay && viewportWidth !== null ? viewportWidth : width
   const motionOpen = useSidebarOpenMotion(open)
-  const targetWidth = motionOpen ? width : 0
+  const targetWidth = motionOpen ? renderedWidth : 0
   const widthMotion = useSidebarWidthMotion(targetWidth, { isResizing })
   const widthRef = useRef(width)
   widthRef.current = width
@@ -171,11 +199,17 @@ export function AgentDockSidebar({
       aria-label="Agent dock"
       className={cn(
         widthMotion.islandClassName,
-        "relative flex shrink-0 flex-col overflow-hidden bg-sidebar",
+        "flex shrink-0 flex-col overflow-hidden bg-sidebar",
+        isMobileOverlay
+          ? "fixed inset-y-0 right-0 z-50 max-w-[100dvw] shadow-2xl"
+          : "relative",
         open ? "border-l border-border/80" : "border-l-0",
       )}
       inert={!open ? true : undefined}
-      style={widthMotion.style}
+      style={{
+        ...widthMotion.style,
+        maxWidth: isMobileOverlay ? "100dvw" : undefined,
+      }}
     >
       <div
         aria-label="Resize agent dock"
@@ -187,16 +221,20 @@ export function AgentDockSidebar({
           "absolute inset-y-0 -left-[3px] z-10 w-[6px] cursor-col-resize bg-transparent transition-colors",
           "hover:bg-primary/30",
           isResizing && "bg-primary/40",
+          isMobileOverlay && "hidden",
         )}
         onKeyDown={handleResizeKey}
         onPointerDown={handleResizeStart}
         role="separator"
-        tabIndex={open ? 0 : -1}
+        tabIndex={open && !isMobileOverlay ? 0 : -1}
       />
 
       <div
         className="flex h-full min-w-0 shrink-0 flex-col"
-        style={{ width }}
+        style={{
+          width: renderedWidth,
+          maxWidth: isMobileOverlay ? "100dvw" : undefined,
+        }}
       >
         <div className="flex min-h-0 flex-1 flex-col">
           {open && agent ? (
@@ -205,7 +243,7 @@ export function AgentDockSidebar({
               active={open}
               agent={agent}
               highChurnStore={highChurnStore}
-              density={width < SIDEBAR_AGENT_PANE_COMPACT_WIDTH_PX ? "compact" : "comfortable"}
+              density={renderedWidth < SIDEBAR_AGENT_PANE_COMPACT_WIDTH_PX ? "compact" : "comfortable"}
               onCreateSession={onCreateSession}
               isCreatingSession={isCreatingSession}
               inSidebar

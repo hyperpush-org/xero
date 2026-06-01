@@ -135,36 +135,12 @@
 	}
 
 	.desktop-control-toolbar-working {
-		position: relative;
-		isolation: isolate;
 		border-color: color-mix(in oklab, var(--primary) 26%, white 16%);
-	}
-
-	.desktop-control-toolbar-working::after {
-		content: "";
-		position: absolute;
-		inset: -1px;
-		pointer-events: none;
-		border-radius: inherit;
-		padding: 1px;
-		background: conic-gradient(
-			from 0deg,
-			transparent 0deg,
-			transparent 238deg,
-			color-mix(in oklab, var(--primary) 24%, transparent) 274deg,
-			color-mix(in oklab, white 72%, var(--primary)) 306deg,
-			color-mix(in oklab, var(--primary) 18%, transparent) 336deg,
-			transparent 360deg
-		);
-		mask:
-			linear-gradient(#000 0 0) content-box,
-			linear-gradient(#000 0 0);
-		mask-composite: exclude;
-		-webkit-mask:
-			linear-gradient(#000 0 0) content-box,
-			linear-gradient(#000 0 0);
-		-webkit-mask-composite: xor;
-		animation: desktop-control-toolbar-border-sweep 1.6s linear infinite;
+		contain: paint;
+		box-shadow:
+			0 18px 45px rgba(0, 0, 0, 0.45),
+			0 0 0 1px color-mix(in oklab, var(--primary) 18%, transparent),
+			0 0 18px color-mix(in oklab, var(--primary) 14%, transparent);
 	}
 
 	.desktop-control-mobile-prompt-slot {
@@ -237,12 +213,6 @@
 	}
 }
 
-@keyframes desktop-control-toolbar-border-sweep {
-	to {
-		transform: rotate(360deg);
-	}
-}
-
 @keyframes desktop-click-ripple {
 	0% {
 		opacity: 0;
@@ -259,8 +229,7 @@
 
 @media (prefers-reduced-motion: reduce) {
 	.cloud-rise,
-	.cloud-glow-breathe,
-	.desktop-control-toolbar-working::after {
+	.cloud-glow-breathe {
 		animation-duration: 1ms !important;
 		animation-iteration-count: 1 !important;
 		animation-delay: 0ms !important;

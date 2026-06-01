@@ -230,6 +230,16 @@ export interface AgentRuntimeProps {
   sidebarSessions?: readonly AgentSessionView[]
   /** Switch to a different session from the sidebar header dropdown. */
   onSelectSidebarSession?: (agentSessionId: string) => void
+  /** Clear the sidebar chat transcript from the Computer Use header. */
+  onClearSidebarChat?: () => void | Promise<unknown>
+  /** Disable the Computer Use sidebar clear-chat action. */
+  sidebarChatClearDisabled?: boolean
+  /** Accessible label for the Computer Use sidebar clear-chat action. */
+  sidebarChatClearLabel?: string
+  /** Tooltip for the Computer Use sidebar clear-chat action. */
+  sidebarChatClearTitle?: string
+  /** True while the Computer Use sidebar clear-chat action is pending. */
+  sidebarChatClearPending?: boolean
   /** Close the sidebar from the agent header (X button). */
   onCloseSidebar?: () => void
   /**
@@ -240,6 +250,8 @@ export interface AgentRuntimeProps {
    * be excluded by the caller.
    */
   historicalConversationTurns?: readonly ConversationTurn[]
+  /** True while the persisted transcript for this session is loading. */
+  historicalConversationTurnsLoading?: boolean
   /**
    * One-shot runtime agent to apply to the composer when this pane mounts or
    * when the value changes to a new non-null id. Used by "Create agent" entry
@@ -276,6 +288,23 @@ export interface AgentPaneCloseState {
   hasRunningRun: boolean
   hasUnsavedComposerText: boolean
   sessionTitle: string
+}
+
+function ConversationLoadingState({ context }: { context: 'computer-use' | 'default' }) {
+  return (
+    <div
+      aria-label={context === 'computer-use' ? 'Loading Computer Use chat' : 'Loading chat'}
+      className="flex flex-col items-center gap-3 text-center"
+      role="status"
+    >
+      <span className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-border/70 bg-secondary/30 text-primary">
+        <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+      </span>
+      <p className="text-[13px] font-medium text-muted-foreground">
+        {context === 'computer-use' ? 'Loading Computer Use chat...' : 'Loading chat...'}
+      </p>
+    </div>
+  )
 }
 
 export interface AgentComposerInsert {
@@ -1213,12 +1242,20 @@ function appendPendingPromptTurn(
   ]
 }
 
+function getConversationTurnRunIdFromId(id: string): string | null {
+  const toolMatch = /^tool:([^:]+):/.exec(id)
+  if (toolMatch) {
+    return toolMatch[1] ?? null
+  }
+  const match = /^(?:transcript|history):(.+):[^:]+$/.exec(id)
+  return match?.[1] ?? null
+}
+
 function getConversationTurnRunId(turn: ConversationTurn): string | null {
   const id = turn.kind === 'routing_suggestion'
     ? turn.id.replace(/^routing_suggestion:/, '')
     : turn.id
-  const match = /^(?:transcript|history):(.+):[^:]+$/.exec(id)
-  return match?.[1] ?? null
+  return getConversationTurnRunIdFromId(id)
 }
 
 function normalizeConversationTurnText(text: string): string {
@@ -1272,12 +1309,48 @@ function conversationMessageCovers(
   )
 }
 
+function conversationTurnActionKeys(turn: ConversationTurn): string[] {
+  if (turn.kind === 'action') {
+    const runId = getConversationTurnRunId(turn)
+    return runId ? [`action:${runId}:${turn.toolCallId}`] : []
+  }
+
+  if (turn.kind === 'action_group') {
+    return turn.actions
+      .map((action) => {
+        const runId = getConversationTurnRunIdFromId(action.id)
+        return runId ? `action:${runId}:${action.toolCallId}` : null
+      })
+      .filter((key): key is string => Boolean(key))
+  }
+
+  return []
+}
+
+function conversationActionCovers(
+  coveringTurn: ConversationTurn,
+  candidateTurn: ConversationTurn,
+): boolean {
+  const candidateKeys = conversationTurnActionKeys(candidateTurn)
+  if (candidateKeys.length === 0) {
+    return false
+  }
+
+  const coveringKeys = new Set(conversationTurnActionKeys(coveringTurn))
+  if (coveringKeys.size === 0) {
+    return false
+  }
+
+  return candidateKeys.every((key) => coveringKeys.has(key))
+}
+
 function isConversationTurnCoveredByTurns(
   candidateTurn: ConversationTurn,
   coveringTurns: readonly ConversationTurn[],
 ): boolean {
   return coveringTurns.some((coveringTurn) =>
-    conversationMessageCovers(coveringTurn, candidateTurn),
+    conversationMessageCovers(coveringTurn, candidateTurn) ||
+    conversationActionCovers(coveringTurn, candidateTurn),
   )
 }
 
@@ -1819,8 +1892,14 @@ export const AgentRuntime = memo(function AgentRuntime({
   inSidebar = false,
   sidebarSessions,
   onSelectSidebarSession,
+  onClearSidebarChat,
+  sidebarChatClearDisabled = false,
+  sidebarChatClearLabel = 'Clear Computer Use chat',
+  sidebarChatClearTitle,
+  sidebarChatClearPending = false,
   onCloseSidebar,
   historicalConversationTurns,
+  historicalConversationTurnsLoading = false,
   pendingInitialRuntimeAgentId = null,
   pendingInitialAgentDefinitionId = null,
   onPendingInitialRuntimeAgentIdConsumed,
@@ -2631,11 +2710,25 @@ export const AgentRuntime = memo(function AgentRuntime({
     selectedProviderReadyForSession ||
       runtimeSession?.isAuthenticated,
   )
+  const showConversationLoadingState = Boolean(
+    !showAgentSetupEmptyState &&
+      !agentRuntimeBlocked &&
+      isProviderLoggedIn &&
+      !hasSessionActivity &&
+      historicalConversationTurnsLoading,
+  )
   const showEmptySessionState = Boolean(
-    !showAgentSetupEmptyState && !agentRuntimeBlocked && isProviderLoggedIn && !hasSessionActivity,
+    !showAgentSetupEmptyState &&
+      !showConversationLoadingState &&
+      !agentRuntimeBlocked &&
+      isProviderLoggedIn &&
+      !hasSessionActivity,
   )
   const hasConversationViewportContent = Boolean(
-    !showAgentSetupEmptyState && !showEmptySessionState && hasSessionActivity,
+    !showAgentSetupEmptyState &&
+      !showConversationLoadingState &&
+      !showEmptySessionState &&
+      hasSessionActivity,
   )
   const projectLabel =
     agent.project.repository?.displayName ?? agent.project.name ?? 'this project'
@@ -3063,9 +3156,14 @@ export const AgentRuntime = memo(function AgentRuntime({
             {isComputerUseSidebar ? (
               <ComputerUseSidebarHeader
                 label={sessionLabel}
+                clearDisabled={sidebarChatClearDisabled}
+                clearLabel={sidebarChatClearLabel}
+                clearPending={sidebarChatClearPending}
+                clearTitle={sidebarChatClearTitle}
+                onClear={onClearSidebarChat}
                 closeLabel="Close Computer Use"
                 onClose={onCloseSidebar}
-                className="pointer-events-auto translate-y-1"
+                className="pointer-events-auto"
               />
             ) : (
               <div
@@ -3247,16 +3345,16 @@ export const AgentRuntime = memo(function AgentRuntime({
             onWheel={handleConversationWheel}
             className={cn(
               'select-text',
-              showAgentSetupEmptyState || showEmptySessionState
+              showAgentSetupEmptyState || showConversationLoadingState || showEmptySessionState
                 ? 'flex h-full items-center justify-center overflow-y-auto scrollbar-thin'
                 : 'flex h-full overflow-y-auto scrollbar-thin',
               isDense
-                ? showAgentSetupEmptyState || showEmptySessionState
+                ? showAgentSetupEmptyState || showConversationLoadingState || showEmptySessionState
                   ? 'px-2 py-2'
                   : isComputerUseSidebar
                     ? 'px-2 pt-12'
                     : 'px-2 pt-12'
-                : showAgentSetupEmptyState || showEmptySessionState
+                : showAgentSetupEmptyState || showConversationLoadingState || showEmptySessionState
                   ? 'px-6 py-5'
                   : isComputerUseSidebar
                     ? 'px-4 pt-14'
@@ -3265,6 +3363,10 @@ export const AgentRuntime = memo(function AgentRuntime({
           >
             {showAgentSetupEmptyState ? (
               <SetupEmptyState onOpenSettings={onOpenSettings} />
+            ) : showConversationLoadingState ? (
+              <ConversationLoadingState
+                context={isComputerUseSession ? 'computer-use' : 'default'}
+              />
             ) : showEmptySessionState ? (
               <EmptySessionState
                 context={

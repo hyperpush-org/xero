@@ -11,8 +11,9 @@ use crate::{
     },
     global_db::open_global_database,
     provider_credentials::{
-        delete_provider_credential as sql_delete, load_all_provider_credentials,
-        load_provider_credential, load_provider_credentials_view_or_default, readiness_proof,
+        delete_provider_credential as sql_delete, is_web_search_credential_provider_id,
+        load_all_provider_credentials, load_provider_credential,
+        load_provider_credentials_view_or_default, readiness_proof,
         upsert_provider_credential as sql_upsert, ProviderCredentialKind,
         ProviderCredentialReadinessProof, ProviderCredentialRecord, ProviderCredentialsView,
     },
@@ -40,7 +41,11 @@ pub fn list_provider_credentials<R: Runtime>(
     let connection = open_global_database(&state.global_db_path(&app)?)?;
     let records = load_all_provider_credentials(&connection)?;
     Ok(ProviderCredentialsSnapshotDto {
-        credentials: records.iter().map(provider_credential_dto).collect(),
+        credentials: records
+            .iter()
+            .filter(|record| !is_web_search_credential_provider_id(&record.provider_id))
+            .map(provider_credential_dto)
+            .collect(),
     })
 }
 
@@ -145,7 +150,11 @@ pub fn upsert_provider_credential<R: Runtime>(
     sql_upsert(&connection, &record)?;
     let records = load_all_provider_credentials(&connection)?;
     Ok(ProviderCredentialsSnapshotDto {
-        credentials: records.iter().map(provider_credential_dto).collect(),
+        credentials: records
+            .iter()
+            .filter(|record| !is_web_search_credential_provider_id(&record.provider_id))
+            .map(provider_credential_dto)
+            .collect(),
     })
 }
 
@@ -164,7 +173,11 @@ pub fn delete_provider_credential<R: Runtime>(
     sql_delete(&connection, provider_id)?;
     let records = load_all_provider_credentials(&connection)?;
     Ok(ProviderCredentialsSnapshotDto {
-        credentials: records.iter().map(provider_credential_dto).collect(),
+        credentials: records
+            .iter()
+            .filter(|record| !is_web_search_credential_provider_id(&record.provider_id))
+            .map(provider_credential_dto)
+            .collect(),
     })
 }
 

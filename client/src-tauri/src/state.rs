@@ -166,6 +166,10 @@ impl DesktopState {
             .unwrap_or_else(AutonomousWebConfig::for_platform)
     }
 
+    pub fn autonomous_web_config_override(&self) -> Option<AutonomousWebConfig> {
+        self.autonomous_web_config_override.clone()
+    }
+
     pub fn owned_agent_provider_config_override(&self) -> Option<AgentProviderConfig> {
         self.owned_agent_provider_config_override.clone()
     }

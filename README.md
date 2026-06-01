@@ -453,16 +453,12 @@ XERO_SKIP_DICTATION_SHIM=1
 These are optional and only needed for specific runtime integrations:
 
 ```bash
-# Custom web-search provider used by autonomous web tools
-XERO_AUTONOMOUS_WEB_SEARCH_URL=https://...
-XERO_AUTONOMOUS_WEB_SEARCH_BEARER_TOKEN=...
-
 # Solana workbench resource overrides
 XERO_SOLANA_RESOURCE_ROOT=/path/to/resources
 XERO_SOLANA_TOOLCHAIN_ROOT=/path/to/toolchain
 ```
 
-Current autonomous web-search status, gaps, and the settings-backed implementation plan are documented in `docs/web-search-functionality-audit.md`.
+Autonomous web search is configured in the desktop app under Settings -> Web Search. Xero stores non-secret provider settings in OS app-data and stores API keys through the same provider credential table used for LLM providers. The custom endpoint contract is `GET <endpoint>?q=<query>&limit=<count>` with a JSON response shaped as `{ "results": [{ "title": string, "url": string, "snippet"?: string }] }`.
 
 ---
 

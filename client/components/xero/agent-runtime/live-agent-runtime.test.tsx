@@ -2,7 +2,10 @@ import { renderHook, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { AgentRuntimeDesktopAdapter } from '@/components/xero/agent-runtime'
-import { useHistoricalConversationTurns } from '@/components/xero/agent-runtime/live-agent-runtime'
+import {
+  useHistoricalConversationTurns,
+  useHistoricalConversationTurnsState,
+} from '@/components/xero/agent-runtime/live-agent-runtime'
 import type { AgentPaneView } from '@/src/features/xero/use-xero-desktop-state'
 import type { SessionTranscriptDto } from '@/src/lib/xero-model'
 
@@ -18,18 +21,23 @@ function makeAgentPane({
   runtimeRunIsTerminal = false,
   runtimeRunActionStatus = 'idle',
   runtimeStreamStatus = 'idle',
+  sessionUpdatedAt = '2026-05-08T09:30:00Z',
   hasQueuedPrompt = false,
 }: {
   activeRunId: string | null
   runtimeRunIsTerminal?: boolean
   runtimeRunActionStatus?: AgentPaneView['runtimeRunActionStatus']
   runtimeStreamStatus?: AgentPaneView['runtimeStreamStatus']
+  sessionUpdatedAt?: string
   hasQueuedPrompt?: boolean
 }): AgentPaneView {
   return {
     project: {
       id: PROJECT_ID,
       selectedAgentSessionId: SESSION_ID,
+      selectedAgentSession: {
+        updatedAt: sessionUpdatedAt,
+      },
     } as AgentPaneView['project'],
     runtimeRun: activeRunId
       ? ({
@@ -166,6 +174,14 @@ describe('useHistoricalConversationTurns', () => {
     expect(result.current).toBeNull()
   })
 
+  it('reports loading while no transcript fetch has settled', () => {
+    const { adapter } = makeAdapter(makeTranscriptWithHandoff())
+    const { result } = renderHook(() =>
+      useHistoricalConversationTurnsState(makeAgentPane({ activeRunId: 'run-B' }), adapter),
+    )
+    expect(result.current).toEqual({ loading: true, turns: null })
+  })
+
   it('fetches the session transcript and projects the source run plus a handoff_notice when the active run is the handoff target', async () => {
     const transcript = makeTranscriptWithHandoff()
     const { adapter, getSessionTranscript } = makeAdapter(transcript)
@@ -238,6 +254,32 @@ describe('useHistoricalConversationTurns', () => {
     })
 
     rerender({ activeRunId: 'run-B' })
+
+    await waitFor(() => {
+      expect(getSessionTranscript).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('refetches when the selected session revision changes', async () => {
+    const transcript = makeTranscriptWithHandoff()
+    const { adapter, getSessionTranscript } = makeAdapter(transcript)
+    const { rerender } = renderHook(
+      ({ sessionUpdatedAt }: { sessionUpdatedAt: string }) =>
+        useHistoricalConversationTurns(
+          makeAgentPane({
+            activeRunId: null,
+            sessionUpdatedAt,
+          }),
+          adapter,
+        ),
+      { initialProps: { sessionUpdatedAt: '2026-05-08T09:30:00Z' } },
+    )
+
+    await waitFor(() => {
+      expect(getSessionTranscript).toHaveBeenCalledTimes(1)
+    })
+
+    rerender({ sessionUpdatedAt: '2026-05-08T09:35:00Z' })
 
     await waitFor(() => {
       expect(getSessionTranscript).toHaveBeenCalledTimes(2)
@@ -323,5 +365,15 @@ describe('useHistoricalConversationTurns', () => {
       ),
     )
     expect(result.current).toBeNull()
+  })
+
+  it('does not report loading when the desktop adapter does not expose getSessionTranscript', () => {
+    const { result } = renderHook(() =>
+      useHistoricalConversationTurnsState(
+        makeAgentPane({ activeRunId: 'run-B' }),
+        {} as AgentRuntimeDesktopAdapter,
+      ),
+    )
+    expect(result.current).toEqual({ loading: false, turns: null })
   })
 })

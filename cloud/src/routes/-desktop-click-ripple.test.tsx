@@ -95,6 +95,51 @@ describe("ComputerUseDesktopViewport click feedback", () => {
 		);
 	});
 
+	it("keeps the desktop media layer width-contained while the agent is working", () => {
+		const channel = {
+			on: vi.fn(() => "frame-ref"),
+			off: vi.fn(),
+			push: vi.fn(),
+		} as unknown as Channel;
+
+		render(
+			<ComputerUseDesktopViewport
+				channel={channel}
+				computerId="desktop-1"
+				deviceId="web-1"
+				iceServers={[]}
+				isAgentWorking
+				isOnline
+				onPromptSubmit={vi.fn()}
+				previewUrl="https://example.com/desktop-preview.png"
+				presentation={{
+					isMobile: false,
+					override: "desktop",
+					rotateDesktop: false,
+				}}
+				sessionId="session-1"
+				streamRunId="run-1"
+				streamToken="stream-token-1"
+			/>,
+		);
+
+		const desktop = screen.getByLabelText("Desktop");
+		const image = within(desktop).getByRole("img", { name: "Desktop" });
+		const mediaLayer = image.parentElement;
+		const toolbar = within(desktop).getByRole("toolbar", {
+			name: "Desktop stream controls",
+		});
+
+		expect(desktop.className).toContain("min-w-0");
+		expect(mediaLayer?.className).toContain("desktop-control-media-layer");
+		expect(mediaLayer?.className).toContain("w-full");
+		expect(mediaLayer?.className).toContain("min-w-0");
+		expect(mediaLayer?.className).toContain("overflow-hidden");
+		expect(mediaLayer?.className).toContain("[contain:layout_paint]");
+		expect(image.className).toContain("max-w-full");
+		expect(toolbar.getAttribute("aria-busy")).toBe("true");
+	});
+
 	it("tells the user to stop the other cloud connection before starting here", async () => {
 		const push = vi.fn((_event: string, frame: Record<string, unknown>) => {
 			const response = {

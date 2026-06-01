@@ -14,8 +14,8 @@ use crate::{
 };
 
 use super::{
-    load_all_provider_credentials, ProviderCredentialKind, ProviderCredentialReadinessProof,
-    ProviderCredentialRecord,
+    is_web_search_credential_provider_id, load_all_provider_credentials, ProviderCredentialKind,
+    ProviderCredentialReadinessProof, ProviderCredentialRecord,
 };
 
 pub const OPENAI_CODEX_DEFAULT_PROFILE_ID: &str = "openai_codex-default";
@@ -109,6 +109,10 @@ pub fn load_provider_credentials_view_or_default(
 
 impl ProviderCredentialsView {
     pub fn from_records(records: Vec<ProviderCredentialRecord>) -> Self {
+        let records = records
+            .into_iter()
+            .filter(|record| !is_web_search_credential_provider_id(&record.provider_id))
+            .collect::<Vec<_>>();
         let mut profiles = Vec::new();
         let mut api_keys = Vec::new();
 

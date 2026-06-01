@@ -215,8 +215,13 @@ fn tool_runtime_for_provider<R: Runtime>(
         &provider_id,
         &model_id,
     )?;
-    Ok(AutonomousToolRuntime::for_project(app, state, project_id)?
-        .with_tool_application_policy(policy))
+    Ok(AutonomousToolRuntime::for_project_with_provider_config(
+        app,
+        state,
+        project_id,
+        Some(provider_config),
+    )?
+    .with_tool_application_policy(policy))
 }
 
 fn provider_profile_id_for_controls(

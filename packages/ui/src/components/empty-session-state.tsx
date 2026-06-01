@@ -215,7 +215,12 @@ export function EmptySessionState({
 					</p>
 				) : null}
 
-				<h2 className="mt-3 text-2xl font-semibold tracking-tight text-foreground sm:text-[26px]">
+				<h2
+					className={cn(
+						"mt-3 font-semibold tracking-tight text-foreground",
+						isComputerUse ? "text-[22px] sm:text-2xl" : "text-2xl sm:text-[26px]",
+					)}
+				>
 					{title ? (
 						title
 					) : (

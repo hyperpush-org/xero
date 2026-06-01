@@ -4587,6 +4587,7 @@ describe('AgentRuntime current UI', () => {
     })
 
     it('uses the shared Computer Use sidebar header in sidebar mode', () => {
+      const onClearSidebarChat = vi.fn()
       const onCloseSidebar = vi.fn()
 
       render(
@@ -4597,6 +4598,7 @@ describe('AgentRuntime current UI', () => {
           })}
           density="comfortable"
           inSidebar
+          onClearSidebarChat={onClearSidebarChat}
           onCloseSidebar={onCloseSidebar}
           paneCount={1}
           paneNumber={1}
@@ -4604,11 +4606,19 @@ describe('AgentRuntime current UI', () => {
       )
 
       const closeButton = screen.getByRole('button', { name: 'Close Computer Use' })
-      const header = closeButton.parentElement
-      expect(header?.className).toContain('h-10')
-      expect(header?.className).toContain('translate-y-1')
+      const actions = closeButton.parentElement
+      const header = actions?.parentElement
+      expect(header?.className).toContain('min-h-12')
+      expect(header?.className).toContain('py-2')
+      expect(header?.className).not.toContain('translate-y-1')
       expect(header?.textContent).toContain('Computer Use')
       expect(screen.queryByRole('button', { name: 'Close agent dock' })).not.toBeInTheDocument()
+
+      const clearButton = screen.getByRole('button', { name: 'Clear Computer Use chat' })
+      expect(clearButton.parentElement).toBe(actions)
+      expect(clearButton.querySelector('svg')?.getAttribute('class')).toContain('h-3.5')
+      fireEvent.click(clearButton)
+      expect(onClearSidebarChat).toHaveBeenCalledTimes(1)
 
       fireEvent.click(closeButton)
       expect(onCloseSidebar).toHaveBeenCalledTimes(1)
@@ -4649,6 +4659,35 @@ describe('AgentRuntime current UI', () => {
         expect(viewport.className).toContain('pt-14')
         expect(viewport.className).not.toContain('pt-20')
         expect(screen.getByText('take a screenshot')).toBeVisible()
+      } finally {
+        restoreResizeObserver()
+      }
+    })
+
+    it('shows a loading state while Computer Use persisted history is loading', () => {
+      const restoreResizeObserver = installResizeObserverMock(560)
+      try {
+        render(
+          <AgentRuntime
+            agent={makeAgent({
+              project: makeComputerUseProject(),
+              runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+              runtimeStreamStatus: 'idle',
+            })}
+            density="comfortable"
+            historicalConversationTurnsLoading
+            inSidebar
+            paneCount={1}
+            paneNumber={1}
+          />,
+        )
+
+        expect(
+          screen.getByRole('status', { name: 'Loading Computer Use chat' }),
+        ).toBeVisible()
+        expect(
+          screen.queryByText('Give a concrete instruction and Xero will use the available computer and project tools.'),
+        ).not.toBeInTheDocument()
       } finally {
         restoreResizeObserver()
       }
@@ -4739,13 +4778,77 @@ describe('AgentRuntime current UI', () => {
 
         expect(screen.getByRole('button', { name: 'Close image preview' })).toBeVisible()
         expect(screen.getByRole('button', { name: 'Zoom in' })).toBeVisible()
-        expect(screen.getByRole('link', { name: 'Download macOS screenshot' })).toHaveAttribute(
+        const downloadLink = screen.getByRole('link', { name: 'Download macOS screenshot' })
+        expect(downloadLink).toHaveAttribute(
           'href',
           'project-asset://preview/macos-screenshot',
         )
+        expect(downloadLink).toHaveAttribute('target', '_blank')
+        expect(downloadLink.getAttribute('rel')).toContain('noopener')
+
+        const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+        try {
+          fireEvent.click(downloadLink)
+          expect(openSpy).toHaveBeenCalledWith(
+            'project-asset://preview/macos-screenshot',
+            '_blank',
+            'noopener,noreferrer',
+          )
+        } finally {
+          openSpy.mockRestore()
+        }
       } finally {
         restoreResizeObserver()
       }
+    })
+
+    it('dedupes historical Computer Use output items against the live stream', () => {
+      render(
+        <AgentRuntime
+          agent={makeAgent({
+            project: makeComputerUseProject(),
+            runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+            runtimeRun: makeRuntimeRun({ runId: 'run-1' }),
+            runtimeStreamStatus: 'complete',
+            runtimeStreamStatusLabel: 'Complete',
+            runtimeStreamItems: [
+              makeToolItem({
+                id: 'tool:run-1:2',
+                runId: 'run-1',
+                sequence: 2,
+                toolCallId: 'call-macos-screenshot',
+                toolName: 'macos_automation',
+                toolState: 'succeeded',
+                detail: 'Captured macOS screenshot.',
+                toolResultPreview: 'Captured macOS screenshot.',
+              }),
+            ],
+          })}
+          density="comfortable"
+          inSidebar
+          historicalConversationTurns={[
+            {
+              id: 'tool:run-1:call-macos-screenshot:2',
+              kind: 'action',
+              sequence: 2,
+              toolCallId: 'call-macos-screenshot',
+              toolName: 'macos_automation',
+              title: 'macos automation',
+              detail: 'Captured macOS screenshot.',
+              detailRows: [],
+              state: 'succeeded',
+            },
+          ]}
+          paneCount={1}
+          paneNumber={1}
+        />,
+      )
+
+      const conversation = screen.getByRole('list', { name: 'Agent conversation turns' })
+      const items = within(conversation).getAllByRole('listitem')
+      expect(
+        items.filter((item) => item.textContent?.includes('Captured macOS screenshot.') ?? false),
+      ).toHaveLength(1)
     })
 
     it('switches sidebar panes to condensed below the sidebar compact breakpoint', async () => {

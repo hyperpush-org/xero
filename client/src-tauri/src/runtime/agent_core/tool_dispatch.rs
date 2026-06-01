@@ -1512,7 +1512,7 @@ fn persist_tool_batch_report(
                     )?);
                 }
                 ToolDispatchOutcome::Failed(failed) => {
-                    let error = persist_tool_dispatch_failure(
+                    let (error, result) = persist_tool_dispatch_failure(
                         repo_root,
                         project_id,
                         run_id,
@@ -1522,6 +1522,7 @@ fn persist_tool_batch_report(
                         timeout_error.as_ref(),
                         budget,
                     )?;
+                    results.push(result);
                     if failure.is_none() {
                         failure = Some(error);
                     }
@@ -1677,7 +1678,7 @@ fn persist_tool_dispatch_failure(
     group_elapsed_ms: u128,
     timeout_error: Option<&ToolExecutionError>,
     budget: &ToolBudget,
-) -> CommandResult<CommandError> {
+) -> CommandResult<(CommandError, AgentToolResult)> {
     let command_error = tool_execution_error_ref_to_command_error(&failure.error);
     let dispatch = dispatch_failure_metadata_json(
         &failure,
@@ -1696,9 +1697,34 @@ fn persist_tool_dispatch_failure(
             input: json!({}),
         },
         &command_error,
-        Some(dispatch),
+        Some(dispatch.clone()),
     )?;
-    Ok(command_error)
+    let result = failed_agent_tool_result_from_dispatch_failure(failure, dispatch);
+    Ok((command_error, result))
+}
+
+fn failed_agent_tool_result_from_dispatch_failure(
+    failure: ToolDispatchFailure,
+    dispatch: JsonValue,
+) -> AgentToolResult {
+    AgentToolResult {
+        tool_call_id: failure.tool_call_id,
+        tool_name: failure.tool_name,
+        ok: false,
+        summary: failure.error.message.clone(),
+        output: json!({
+            "error": {
+                "category": failure.error.category,
+                "code": failure.error.code,
+                "message": failure.error.message,
+                "modelMessage": failure.error.model_message,
+                "retryable": failure.error.retryable,
+            },
+            "dispatch": dispatch,
+        }),
+        persistence: None,
+        parent_assistant_message_id: None,
+    }
 }
 
 fn dispatch_success_metadata_json(
@@ -2159,6 +2185,38 @@ mod tests {
         assert_eq!(windows_host_admin_workspace_root(r"D:\Tools"), r"D:\");
         assert_eq!(windows_host_admin_workspace_root("e:/Work"), r"E:\");
         assert_eq!(windows_host_admin_workspace_root("relative"), r"C:\");
+    }
+
+    #[test]
+    fn failed_dispatch_failure_result_is_model_visible() {
+        let result = failed_agent_tool_result_from_dispatch_failure(
+            ToolDispatchFailure {
+                tool_call_id: "call-browser-observe".into(),
+                tool_name: AUTONOMOUS_TOOL_BROWSER_OBSERVE.into(),
+                error: ToolExecutionError::unavailable(
+                    "browser_not_open",
+                    "The in-app browser is not currently open.",
+                ),
+                doom_loop_signal: None,
+                rollback_payload: None,
+                rollback_error: None,
+                pre_hook_payload: json!({}),
+                post_hook_payload: json!({}),
+                elapsed_ms: 17,
+                sandbox_metadata: None,
+            },
+            json!({ "groupMode": "parallel_read_only" }),
+        );
+
+        assert_eq!(result.tool_call_id, "call-browser-observe");
+        assert_eq!(result.tool_name, AUTONOMOUS_TOOL_BROWSER_OBSERVE);
+        assert!(!result.ok);
+        assert_eq!(result.summary, "The in-app browser is not currently open.");
+        assert_eq!(result.output["error"]["code"], json!("browser_not_open"));
+        assert_eq!(
+            result.output["dispatch"]["groupMode"],
+            json!("parallel_read_only")
+        );
     }
 
     #[test]

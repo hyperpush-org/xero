@@ -646,7 +646,7 @@ export function Composer({
 	return (
 		<div
 			className={cn(
-				"group/composer relative flex w-full flex-col overflow-hidden bg-card/90 supports-[backdrop-filter]:bg-card/75",
+				"group/composer relative flex w-full max-w-full min-w-0 flex-col overflow-hidden bg-card/90 supports-[backdrop-filter]:bg-card/75",
 				dense
 					? "border-t border-border/60 transition-colors focus-within:border-primary/40"
 					: "agent-composer-glow rounded-xl border border-border/60 shadow-[0_8px_24px_-12px_rgba(15,23,42,0.12),0_1px_3px_-1px_rgba(15,23,42,0.06)] ring-1 ring-inset ring-foreground/[0.03] backdrop-blur hover:border-border focus-within:border-primary/40 focus-within:ring-primary/20 dark:shadow-[0_20px_60px_-20px_rgba(0,0,0,0.6),0_2px_8px_-2px_rgba(0,0,0,0.3)]",
@@ -673,11 +673,11 @@ export function Composer({
 			/>
 			<div
 				className={cn(
-					"flex items-center gap-1 border-t border-border/40",
+					"flex max-w-full min-w-0 items-center gap-1 overflow-hidden border-t border-border/40",
 					dense ? "px-2 py-1" : "px-2.5 py-1.5",
 				)}
 			>
-				<div className="flex min-w-0 flex-1 items-center gap-1">
+				<div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
 					{supportsAttachments ? (
 						<ComposerAttachButton
 							density={actionDensity}

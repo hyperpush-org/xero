@@ -7,6 +7,7 @@ pub mod agent_session;
 pub mod agent_session_title;
 pub mod agent_task;
 pub mod agent_tooling_settings;
+pub mod autonomous_web_search;
 pub mod backend_jobs;
 pub mod browser;
 pub mod cancel_autonomous_run;
@@ -122,6 +123,17 @@ pub use agent_tooling_settings::{
     AgentToolingSettingsDto, UpsertAgentToolingModelOverrideRequestDto,
     UpsertAgentToolingSettingsRequestDto,
 };
+pub use autonomous_web_search::{
+    autonomous_web_search_check_provider, autonomous_web_search_delete_provider,
+    autonomous_web_search_set_active_provider, autonomous_web_search_settings,
+    autonomous_web_search_update_settings, autonomous_web_search_upsert_provider,
+    AutonomousWebProviderManagedStatusDto, AutonomousWebSearchProviderCheckDto,
+    AutonomousWebSearchProviderKindMetadataDto, AutonomousWebSearchProviderProfileDto,
+    AutonomousWebSearchProviderReadinessDto, AutonomousWebSearchSettingsDto,
+    CheckAutonomousWebSearchProviderRequestDto, DeleteAutonomousWebSearchProviderRequestDto,
+    SetActiveAutonomousWebSearchProviderRequestDto, UpsertAutonomousWebSearchProviderRequestDto,
+    UpsertAutonomousWebSearchSettingsRequestDto,
+};
 pub use browser::{
     browser_back, browser_click, browser_control_settings, browser_control_update_settings,
     browser_cookies_get, browser_cookies_set, browser_current_url, browser_eval,
@@ -195,7 +207,10 @@ pub use git_operations::{
     git_commit, git_discard_changes, git_fetch, git_pull, git_push, git_revert_patch,
     git_stage_paths, git_unstage_paths,
 };
-pub use global_computer_use::{ensure_global_computer_use_session, GlobalComputerUseSessionDto};
+pub use global_computer_use::{
+    ensure_global_computer_use_session, reset_global_computer_use_session,
+    GlobalComputerUseSessionDto,
+};
 pub use import_mcp_servers::import_mcp_servers;
 pub use import_repository::import_repository;
 pub use list_mcp_servers::{list_mcp_servers, refresh_mcp_server_statuses};

@@ -2148,15 +2148,21 @@ fn browser_control_prompt_section(
     }
 
     let body = if runtime_agent_id == RuntimeAgentIdDto::ComputerUse {
-        match preference {
-            BrowserControlPreferenceDto::Default => {
-                "Browser tools are available for browser-specific tasks. Choose in-app browser tools or native desktop/browser automation from the user's request, current state, and tool availability."
-            }
-            BrowserControlPreferenceDto::InAppBrowser => {
-                "For browser-specific tasks, prefer in-app browser tools when they fit. Use native desktop/browser automation when the user's request or current visible state calls for it."
-            }
-            BrowserControlPreferenceDto::NativeBrowser => {
-                "For browser-specific tasks, prefer native desktop/browser automation when it fits. Use in-app browser tools when the user's request or current state calls for them."
+        if !has_in_app {
+            "Native desktop automation is available. Use it for browser-specific tasks only when the user asks for a browser or the current visible desktop state calls for browser automation."
+        } else if !has_native {
+            "In-app browser tools are available for browser-specific tasks. Use them only when the user asks for a browser or page context."
+        } else {
+            match preference {
+                BrowserControlPreferenceDto::Default => {
+                    "Browser tools are available for browser-specific tasks. Choose in-app browser tools or native desktop/browser automation from the user's request, current state, and tool availability."
+                }
+                BrowserControlPreferenceDto::InAppBrowser => {
+                    "For browser-specific tasks, prefer in-app browser tools when they fit. Use native desktop/browser automation when the user's request or current visible state calls for it."
+                }
+                BrowserControlPreferenceDto::NativeBrowser => {
+                    "For browser-specific tasks, prefer native desktop/browser automation when it fits. Use in-app browser tools when the user's request or current state calls for them."
+                }
             }
         }
     } else {
@@ -2808,15 +2814,13 @@ fn add_computer_use_startup_surface(plan: &mut ToolExposurePlan) {
             AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
             AUTONOMOUS_TOOL_DESKTOP_CONTROL,
             AUTONOMOUS_TOOL_DESKTOP_STREAM,
-            AUTONOMOUS_TOOL_BROWSER_OBSERVE,
-            AUTONOMOUS_TOOL_BROWSER_CONTROL,
             AUTONOMOUS_TOOL_EMULATOR,
             AUTONOMOUS_TOOL_MACOS_AUTOMATION,
             AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
         ],
         "agent_profile",
         "computer_use_runtime_surface",
-        "Computer Use starts with general computer interaction and automation surfaces.",
+        "Computer Use starts with native desktop, emulator, macOS automation, and diagnostics surfaces.",
     );
 }
 
@@ -4729,7 +4733,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_WEB_SEARCH,
-            "Search the web through the configured backend.",
+            "Search the web through the configured backend. Use this for source discovery; when docs, examples, implementation guidance, current/latest facts, or evidence matter, follow up with web_fetch on the top official or primary result URLs before answering.",
             object_schema(
                 &["query"],
                 &[
@@ -4747,7 +4751,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_WEB_FETCH,
-            "Fetch a text or HTML URL.",
+            "Fetch a text or HTML URL. Use this after web_search to inspect the actual contents of selected official or primary result pages before relying on them.",
             object_schema(
                 &["url"],
                 &[
@@ -8960,8 +8964,6 @@ mod tests {
             AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
             AUTONOMOUS_TOOL_DESKTOP_CONTROL,
             AUTONOMOUS_TOOL_DESKTOP_STREAM,
-            AUTONOMOUS_TOOL_BROWSER_OBSERVE,
-            AUTONOMOUS_TOOL_BROWSER_CONTROL,
             AUTONOMOUS_TOOL_EMULATOR,
             AUTONOMOUS_TOOL_MACOS_AUTOMATION,
             AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
@@ -8981,6 +8983,8 @@ mod tests {
             AUTONOMOUS_TOOL_WRITE,
             AUTONOMOUS_TOOL_EDIT,
             AUTONOMOUS_TOOL_PATCH,
+            AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+            AUTONOMOUS_TOOL_BROWSER_CONTROL,
             AUTONOMOUS_TOOL_AGENT_DEFINITION,
             AUTONOMOUS_TOOL_WORKFLOW_DEFINITION,
         ] {
@@ -9012,7 +9016,7 @@ mod tests {
         ));
         assert!(prompt.contains("file changes, commands"));
         assert!(prompt.contains("Use the smallest appropriate tool or tool group"));
-        assert!(prompt.contains("Browser tools are available for browser-specific tasks."));
+        assert!(!prompt.contains("Browser tools are available for browser-specific tasks."));
         for forbidden in [
             concat!("Do not read ", "repository files"),
             concat!(
@@ -9033,6 +9037,51 @@ mod tests {
                 "Computer Use prompt should not contain old narrow policy: {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn computer_use_browser_prompt_activates_in_app_browser_tools() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let controls_input = RuntimeRunControlInputDto {
+            runtime_agent_id: RuntimeAgentIdDto::ComputerUse,
+            agent_definition_id: None,
+            provider_profile_id: None,
+            model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            thinking_effort: None,
+            approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            plan_mode_required: false,
+            auto_compact_enabled: true,
+        };
+        let controls = runtime_controls_from_request(Some(&controls_input));
+        let registry = ToolRegistry::for_prompt(
+            root.path(),
+            "Open localhost in the in-app browser and take a page screenshot.",
+            &controls,
+        );
+        let names = registry.descriptor_names();
+
+        assert!(names.contains(AUTONOMOUS_TOOL_BROWSER_OBSERVE));
+        assert!(names.contains(AUTONOMOUS_TOOL_BROWSER_CONTROL));
+        assert!(exposure_has_reason(
+            &registry,
+            AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+            "browser_observation_intent"
+        ));
+
+        let compilation = PromptCompiler::new(
+            root.path(),
+            None,
+            None,
+            RuntimeAgentIdDto::ComputerUse,
+            BrowserControlPreferenceDto::Default,
+            registry.descriptors(),
+        )
+        .compile()
+        .expect("compile Computer Use browser prompt");
+
+        assert!(compilation
+            .prompt
+            .contains("Browser tools are available for browser-specific tasks."));
     }
 
     #[test]

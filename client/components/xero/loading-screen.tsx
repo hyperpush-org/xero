@@ -3,21 +3,23 @@ import { AppLogo } from '@xero/ui/components/app-logo'
 
 interface LoadingScreenProps {
   className?: string
+  state?: 'open' | 'closed'
 }
 
-export function LoadingScreen({ className }: LoadingScreenProps) {
+export function LoadingScreen({ className, state = 'open' }: LoadingScreenProps) {
   return (
     <div
       role="status"
       aria-live="polite"
       aria-busy="true"
       aria-label="Loading"
+      data-state={state}
       className={cn(
-        'flex flex-1 items-center justify-center bg-background',
+        'xero-loading-screen flex flex-1 items-center justify-center bg-background',
         className,
       )}
     >
-      <div className="relative flex h-20 w-20 items-center justify-center">
+      <div className="xero-loading-symbol relative flex h-20 w-20 items-center justify-center">
         <span
           aria-hidden
           className="absolute inset-0 rounded-full xero-loading-ring"

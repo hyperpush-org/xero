@@ -481,7 +481,12 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
                 return Ok(());
             }
         };
-    let tool_runtime = match AutonomousToolRuntime::for_project(app, state, &task.project_id) {
+    let tool_runtime = match AutonomousToolRuntime::for_project_with_provider_config(
+        app,
+        state,
+        &task.project_id,
+        Some(&provider_config),
+    ) {
         Ok(runtime) => runtime.with_tool_application_policy(tool_application_policy),
         Err(error) => {
             let _ = emit_owned_runtime_failure(

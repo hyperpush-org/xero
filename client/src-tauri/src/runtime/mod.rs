@@ -222,10 +222,12 @@ pub use autonomous_tool_runtime::{
 };
 pub use autonomous_web_runtime::{
     AutonomousWebConfig, AutonomousWebFetchContentKind, AutonomousWebFetchOutput,
-    AutonomousWebFetchRequest, AutonomousWebRuntime, AutonomousWebRuntimeLimits,
-    AutonomousWebSearchOutput, AutonomousWebSearchProviderConfig, AutonomousWebSearchRequest,
-    AutonomousWebTransport, AutonomousWebTransportError, AutonomousWebTransportRequest,
-    AutonomousWebTransportResponse, AUTONOMOUS_TOOL_WEB_FETCH, AUTONOMOUS_TOOL_WEB_SEARCH,
+    AutonomousWebFetchRequest, AutonomousWebHttpMethod, AutonomousWebManagedSearchConfig,
+    AutonomousWebManagedSearchKind, AutonomousWebRuntime, AutonomousWebRuntimeLimits,
+    AutonomousWebSearchMode, AutonomousWebSearchOutput, AutonomousWebSearchProviderConfig,
+    AutonomousWebSearchProviderKind, AutonomousWebSearchRequest, AutonomousWebTransport,
+    AutonomousWebTransportError, AutonomousWebTransportRequest, AutonomousWebTransportResponse,
+    AUTONOMOUS_TOOL_WEB_FETCH, AUTONOMOUS_TOOL_WEB_SEARCH,
 };
 pub use diagnostics::{
     ambient_auth_failure_diagnostic, invalid_base_url_diagnostic, provider_capability_diagnostics,

@@ -698,8 +698,18 @@ describe.sequential("cloud sessions shell", () => {
 			name: "Computer Use",
 		})[0];
 		expect(agentSidebarTitle.parentElement?.parentElement?.className).toContain(
-			"h-10",
+			"min-h-12",
 		);
+		const sidebarClearButton = within(agentSidebar).getByRole("button", {
+			name: "Clear Computer Use chat",
+		});
+		expect(sidebarClearButton.hasAttribute("disabled")).toBe(true);
+		expect(
+			sidebarClearButton.querySelector("svg")?.getAttribute("class"),
+		).toContain("h-3.5");
+		expect(
+			within(agentSidebar).getByRole("button", { name: "Close Computer Use" }),
+		).toBeTruthy();
 		const resizeHandle = within(agentSidebar).getByRole("separator", {
 			name: "Resize Computer Use sidebar",
 		});
@@ -722,6 +732,10 @@ describe.sequential("cloud sessions shell", () => {
 
 	it("clears Computer Use chat without navigating to a visible replacement session", async () => {
 		setupComputerUseSession();
+		streamMock.channel = {
+			on: vi.fn(() => "frame-ref"),
+			off: vi.fn(),
+		};
 		useSessionStore
 			.getState()
 			.replaceWithSnapshot(`desktop-1:${REMOTE_COMPUTER_USE_SESSION_ID}`, {
@@ -748,17 +762,19 @@ describe.sequential("cloud sessions shell", () => {
 		const router = renderCloudRoute(
 			`/sessions/desktop-1/${REMOTE_COMPUTER_USE_SESSION_ID}`,
 		);
-		const clearButton = await screen.findByRole("button", {
+		fireEvent.click(
+			await screen.findByRole("button", { name: "Open desktop controls" }),
+		);
+		const controls = await screen.findByRole("region", {
+			name: "Desktop controls",
+		});
+		const agentSidebar = within(controls).getByLabelText("Computer Use agent");
+		const clearButton = within(agentSidebar).getByRole("button", {
 			name: "Clear Computer Use chat",
 		});
-		expect(clearButton.className).toContain("text-[12px]");
-		expect(clearButton.className).toContain("gap-2");
-		expect(clearButton.className).toContain("hover:bg-transparent");
 		expect(clearButton.querySelector("svg")?.getAttribute("class")).toContain(
 			"h-3.5",
 		);
-		const separator = screen.getByText("|");
-		expect(separator.getAttribute("aria-hidden")).toBe("true");
 
 		fireEvent.click(clearButton);
 

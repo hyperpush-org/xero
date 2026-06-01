@@ -918,6 +918,10 @@ function SessionView() {
 						<ComputerUseDesktopDialog
 							open={desktopControlsOpen}
 							onOpenChange={setDesktopControlsOpen}
+							canClearChat={canClearComputerUseChat}
+							clearChatPending={clearChatPending}
+							clearChatTitle={clearComputerUseChatTitle}
+							onClearChat={handleClearComputerUseChat}
 							disabled={hostConnectionBlocked}
 							disabledReason={hostConnectionBlockedMessage}
 							agentSidebar={renderConversationPane(
@@ -1578,18 +1582,26 @@ interface ComputerUseDesktopViewportProps {
 interface ComputerUseDesktopControlsProps
 	extends ComputerUseDesktopViewportProps {
 	agentSidebar: ReactNode;
+	canClearChat: boolean;
+	clearChatPending: boolean;
+	clearChatTitle?: string;
 	disabled?: boolean;
 	disabledReason?: string;
 	onAgentSidebarDensityChange: (density: ComputerUseSidebarDensity) => void;
+	onClearChat: () => void;
 	onOpenChange: (open: boolean) => void;
 	open: boolean;
 }
 
 function ComputerUseDesktopDialog({
 	agentSidebar,
+	canClearChat,
+	clearChatPending,
+	clearChatTitle,
 	disabled = false,
 	disabledReason,
 	onAgentSidebarDensityChange,
+	onClearChat,
 	onOpenChange,
 	open,
 	...props
@@ -1634,7 +1646,11 @@ function ComputerUseDesktopDialog({
 					open={open}
 					onOpenChange={onOpenChange}
 					agentSidebar={agentSidebar}
+					canClearChat={canClearChat}
+					clearChatPending={clearChatPending}
+					clearChatTitle={clearChatTitle}
 					onAgentSidebarDensityChange={onAgentSidebarDensityChange}
+					onClearChat={onClearChat}
 					presentation={presentation}
 					viewportProps={props}
 				/>
@@ -1665,14 +1681,22 @@ function ComputerUseDesktopDialog({
 
 function ComputerUseDesktopFullscreen({
 	agentSidebar,
+	canClearChat,
+	clearChatPending,
+	clearChatTitle,
 	onAgentSidebarDensityChange,
+	onClearChat,
 	onOpenChange,
 	open,
 	presentation,
 	viewportProps,
 }: {
 	agentSidebar: ReactNode;
+	canClearChat: boolean;
+	clearChatPending: boolean;
+	clearChatTitle?: string;
 	onAgentSidebarDensityChange: (density: ComputerUseSidebarDensity) => void;
+	onClearChat: () => void;
 	onOpenChange: (open: boolean) => void;
 	open: boolean;
 	presentation: DesktopControlPresentation;
@@ -1710,7 +1734,14 @@ function ComputerUseDesktopFullscreen({
 				resizable
 				widthStorageKey="xero.cloud.computerUseSidebar.width.v1"
 			>
-				<ComputerUseSidebarHeader />
+				<ComputerUseSidebarHeader
+					clearDisabled={!canClearChat}
+					clearPending={clearChatPending}
+					clearTitle={clearChatTitle}
+					onClear={onClearChat}
+					closeLabel="Close Computer Use"
+					onClose={() => onOpenChange(false)}
+				/>
 				<ComputerUseSidebarContent>{agentSidebar}</ComputerUseSidebarContent>
 			</ComputerUseSidebar>
 		</section>,
@@ -4420,10 +4451,10 @@ export function ComputerUseDesktopViewport({
 				}),
 	};
 	const desktopMediaClassName = cn(
-		"object-contain",
+		"block min-h-0 min-w-0 object-contain",
 		shouldRotateDesktopContent
 			? "absolute left-1/2 top-1/2 max-w-none -translate-x-1/2 -translate-y-1/2 rotate-90"
-			: "h-full w-full",
+			: "h-full w-full max-h-full max-w-full",
 	);
 	const desktopMediaStyle: CSSProperties | undefined =
 		shouldRotateDesktopContent
@@ -4480,7 +4511,7 @@ export function ComputerUseDesktopViewport({
 					</DialogDescription>
 				</div>
 			) : null}
-			<div className="h-full min-h-0">
+			<div className="h-full w-full min-h-0 min-w-0 overflow-hidden">
 				<section
 					ref={desktopSurfaceRef}
 					aria-label="Desktop"
@@ -4492,7 +4523,7 @@ export function ComputerUseDesktopViewport({
 					onLostPointerCapture={handleLostPointerCapture}
 					onWheel={handleWheel}
 					className={cn(
-						"relative flex h-full min-h-0 overflow-hidden bg-zinc-950 outline-none",
+						"relative flex h-full w-full min-h-0 min-w-0 overflow-hidden bg-zinc-950 outline-none",
 						presentation.isMobile && "touch-none select-none",
 						keyboardCaptured && "ring-2 ring-primary/40 ring-inset",
 					)}
@@ -4515,7 +4546,7 @@ export function ComputerUseDesktopViewport({
 						className="pointer-events-none absolute left-0 top-0 z-0 h-px w-px resize-none border-0 bg-transparent p-0 opacity-0 outline-none"
 					/>
 					<div
-						className="relative flex min-h-0 flex-1 items-center justify-center bg-zinc-950 text-zinc-100"
+						className="desktop-control-media-layer relative z-0 flex h-full w-full min-h-0 min-w-0 flex-1 basis-full items-center justify-center overflow-hidden bg-zinc-950 text-zinc-100 [contain:layout_paint]"
 						style={desktopMediaLayerStyle}
 					>
 						{hasLiveVideo ? (

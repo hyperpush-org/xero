@@ -18,6 +18,22 @@ pub use view::{
 
 use serde::{Deserialize, Serialize};
 
+pub const WEB_SEARCH_CREDENTIAL_PROVIDER_ID_PREFIX: &str = "web_search:";
+
+pub fn web_search_credential_provider_id(profile_id: &str) -> String {
+    format!(
+        "{}{}",
+        WEB_SEARCH_CREDENTIAL_PROVIDER_ID_PREFIX,
+        profile_id.trim()
+    )
+}
+
+pub fn is_web_search_credential_provider_id(provider_id: &str) -> bool {
+    provider_id
+        .trim()
+        .starts_with(WEB_SEARCH_CREDENTIAL_PROVIDER_ID_PREFIX)
+}
+
 /// How a credential row authenticates with the upstream provider. Mirrors the
 /// `provider_credentials.kind` column's CHECK constraint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -84,20 +84,20 @@ export function useAgentViewWithLiveRuntimeStream(
 /**
  * Fetches the persisted session transcript for the given pane and projects it
  * into the historical `ConversationTurn[]` that the conversation pane renders
- * ahead of the live runtime stream. Returns `null` while the request is
- * in-flight on first load (so the UI falls back to the live stream alone).
+ * ahead of the live runtime stream.
  *
  * Refetches whenever the (project, session, run) triple changes — the
  * runId-flip case is the same-type handoff path where the source run becomes
  * historical and we want it to re-appear in the conversation under a new
  * `handoff_notice` row.
  */
-export function useHistoricalConversationTurns(
+export function useHistoricalConversationTurnsState(
   agent: AgentPaneView | null,
   desktopAdapter: AgentRuntimeDesktopAdapter | undefined,
-): ConversationTurn[] | null {
+): { loading: boolean; turns: ConversationTurn[] | null } {
   const projectId = agent?.project.id ?? null
   const agentSessionId = agent?.project.selectedAgentSessionId ?? null
+  const sessionRevision = agent?.project.selectedAgentSession?.updatedAt ?? null
   const runtimeRun = agent?.runtimeRun ?? null
   const activeRunId = runtimeRun && !runtimeRun.isTerminal ? runtimeRun.runId : null
   const getSessionTranscript = desktopAdapter?.getSessionTranscript
@@ -122,11 +122,19 @@ export function useHistoricalConversationTurns(
     ? `${projectId}::${agentSessionId}`
     : null
   const fetchKey = sessionKey
-    ? `${sessionKey}::${activeRunId ?? ''}`
+    ? `${sessionKey}::${activeRunId ?? ''}::${sessionRevision ?? ''}`
     : null
+  const canFetchTranscript = Boolean(
+    sessionKey &&
+      fetchKey &&
+      projectId &&
+      agentSessionId &&
+      getSessionTranscript &&
+      !shouldDeferTranscriptFetch,
+  )
 
   useEffect(() => {
-    if (!sessionKey || !fetchKey || !projectId || !agentSessionId || !getSessionTranscript || shouldDeferTranscriptFetch) {
+    if (!canFetchTranscript || !sessionKey || !fetchKey || !projectId || !agentSessionId || !getSessionTranscript) {
       return
     }
 
@@ -154,9 +162,11 @@ export function useHistoricalConversationTurns(
   }, [
     activeRunId,
     agentSessionId,
+    canFetchTranscript,
     fetchKey,
     getSessionTranscript,
     projectId,
+    sessionRevision,
     sessionKey,
     shouldDeferTranscriptFetch,
   ])
@@ -172,9 +182,16 @@ export function useHistoricalConversationTurns(
     turnsByKey.sessionKey !== sessionKey ||
     turnsByKey.fetchKey !== fetchKey
   ) {
-    return null
+    return { loading: canFetchTranscript, turns: null }
   }
-  return turnsByKey.turns
+  return { loading: false, turns: turnsByKey.turns }
+}
+
+export function useHistoricalConversationTurns(
+  agent: AgentPaneView | null,
+  desktopAdapter: AgentRuntimeDesktopAdapter | undefined,
+): ConversationTurn[] | null {
+  return useHistoricalConversationTurnsState(agent, desktopAdapter).turns
 }
 
 interface LiveAgentRuntimeViewProps extends Omit<AgentRuntimeProps, 'agent'> {
@@ -188,7 +205,7 @@ export const LiveAgentRuntimeView = memo(function LiveAgentRuntimeView({
   ...props
 }: LiveAgentRuntimeViewProps) {
   const liveAgent = useAgentViewWithLiveRuntimeStream(agent, highChurnStore)
-  const historicalConversationTurns = useHistoricalConversationTurns(liveAgent, props.desktopAdapter)
+  const historicalConversationState = useHistoricalConversationTurnsState(liveAgent, props.desktopAdapter)
   if (!liveAgent) {
     return null
   }
@@ -198,7 +215,8 @@ export const LiveAgentRuntimeView = memo(function LiveAgentRuntimeView({
       <LazyAgentRuntime
         {...props}
         agent={liveAgent}
-        historicalConversationTurns={historicalConversationTurns ?? undefined}
+        historicalConversationTurns={historicalConversationState.turns ?? undefined}
+        historicalConversationTurnsLoading={historicalConversationState.loading}
       />
     </Suspense>
   )

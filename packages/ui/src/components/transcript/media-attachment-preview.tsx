@@ -6,7 +6,7 @@ import {
   Plus,
   X,
 } from 'lucide-react'
-import { useCallback, useState } from 'react'
+import { type MouseEvent, useCallback, useState } from 'react'
 
 import { cn } from '../../lib/utils'
 import { BaseDialog } from '../base-dialog'
@@ -23,6 +23,11 @@ const IMAGE_LIGHTBOX_DEFAULT_SCALE = 0.72
 const IMAGE_LIGHTBOX_MIN_SCALE = 0.42
 const IMAGE_LIGHTBOX_MAX_SCALE = 1
 const IMAGE_LIGHTBOX_SCALE_STEP = 0.14
+const DIRECT_DOWNLOAD_PROTOCOL_PATTERN = /^(?:https?:|blob:|data:)/i
+
+function shouldIsolateAttachmentNavigation(src: string): boolean {
+  return !DIRECT_DOWNLOAD_PROTOCOL_PATTERN.test(src)
+}
 
 export function ToolMediaAttachments({
   attachments,
@@ -136,6 +141,18 @@ export function ImageAttachmentPreview({
     )
   }, [])
 
+  const handleDownloadClick = useCallback(
+    (event: MouseEvent<HTMLAnchorElement>) => {
+      event.stopPropagation()
+      if (!src || !shouldIsolateAttachmentNavigation(src)) return
+
+      // Custom app asset schemes can replace the Tauri webview if followed normally.
+      event.preventDefault()
+      window.open(src, '_blank', 'noopener,noreferrer')
+    },
+    [src],
+  )
+
   if (attachment.kind !== 'image' || !src) {
     return <AttachmentPreviewChip attachment={attachment} />
   }
@@ -209,6 +226,9 @@ export function ImageAttachmentPreview({
             <a
               href={src}
               download={attachment.originalName || title}
+              target="_blank"
+              rel="noreferrer noopener"
+              onClick={handleDownloadClick}
               className={cn(
                 'inline-flex h-12 w-12 items-center justify-center rounded-full',
                 'bg-white/10 text-white shadow-[0_18px_48px_rgba(0,0,0,0.45)] ring-1 ring-white/10 backdrop-blur-md',

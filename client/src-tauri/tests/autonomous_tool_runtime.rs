@@ -3626,7 +3626,7 @@ fn tool_runtime_executes_web_search_and_fetch_with_backend_owned_config() {
         search_provider: Some(AutonomousWebSearchProviderConfig::new(format!(
             "{search_base_url}/search"
         ))),
-        limits: Default::default(),
+        ..Default::default()
     });
     let app = build_mock_app(state);
     let (project_id, _repo_root) = seed_project(&root, &app);

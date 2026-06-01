@@ -468,6 +468,20 @@ import {
   type UpsertSoulSettingsRequestDto,
 } from '@/src/lib/xero-model/soul'
 import {
+  autonomousWebSearchSettingsSchema,
+  checkAutonomousWebSearchProviderRequestSchema,
+  deleteAutonomousWebSearchProviderRequestSchema,
+  setActiveAutonomousWebSearchProviderRequestSchema,
+  upsertAutonomousWebSearchProviderRequestSchema,
+  upsertAutonomousWebSearchSettingsRequestSchema,
+  type AutonomousWebSearchSettingsDto,
+  type CheckAutonomousWebSearchProviderRequestDto,
+  type DeleteAutonomousWebSearchProviderRequestDto,
+  type SetActiveAutonomousWebSearchProviderRequestDto,
+  type UpsertAutonomousWebSearchProviderRequestDto,
+  type UpsertAutonomousWebSearchSettingsRequestDto,
+} from '@/src/lib/xero-model/autonomous-web-search'
+import {
   compactSessionHistoryRequestSchema,
   compactSessionHistoryResponseSchema,
   agentSessionBranchResponseSchema,
@@ -667,6 +681,7 @@ const COMMANDS = {
   deleteProjectContextRecord: 'delete_project_context_record',
   supersedeProjectContextRecord: 'supersede_project_context_record',
   ensureGlobalComputerUseSession: 'ensure_global_computer_use_session',
+  resetGlobalComputerUseSession: 'reset_global_computer_use_session',
   createAgentSession: 'create_agent_session',
   listAgentDefinitions: 'list_agent_definitions',
   archiveAgentDefinition: 'archive_agent_definition',
@@ -792,6 +807,12 @@ const COMMANDS = {
   soulUpdateSettings: 'soul_update_settings',
   agentToolingSettings: 'agent_tooling_settings',
   agentToolingUpdateSettings: 'agent_tooling_update_settings',
+  autonomousWebSearchSettings: 'autonomous_web_search_settings',
+  autonomousWebSearchUpdateSettings: 'autonomous_web_search_update_settings',
+  autonomousWebSearchUpsertProvider: 'autonomous_web_search_upsert_provider',
+  autonomousWebSearchDeleteProvider: 'autonomous_web_search_delete_provider',
+  autonomousWebSearchSetActiveProvider: 'autonomous_web_search_set_active_provider',
+  autonomousWebSearchCheckProvider: 'autonomous_web_search_check_provider',
   browserShow: 'browser_show',
   browserResize: 'browser_resize',
   browserHide: 'browser_hide',
@@ -1185,6 +1206,7 @@ export interface XeroDesktopAdapter {
     request: SupersedeProjectContextRecordRequestDto,
   ): Promise<SupersedeProjectContextRecordResponseDto>
   ensureGlobalComputerUseSession?(): Promise<GlobalComputerUseSessionDto>
+  resetGlobalComputerUseSession?(): Promise<GlobalComputerUseSessionDto>
   createAgentSession(request: CreateAgentSessionRequestDto): Promise<AgentSessionDto>
   listAgentDefinitions(
     request: ListAgentDefinitionsRequestDto,
@@ -1469,6 +1491,22 @@ export interface XeroDesktopAdapter {
   agentToolingUpdateSettings?(
     request: UpsertAgentToolingSettingsRequestDto,
   ): Promise<AgentToolingSettingsDto>
+  autonomousWebSearchSettings?(): Promise<AutonomousWebSearchSettingsDto>
+  autonomousWebSearchUpdateSettings?(
+    request: UpsertAutonomousWebSearchSettingsRequestDto,
+  ): Promise<AutonomousWebSearchSettingsDto>
+  autonomousWebSearchUpsertProvider?(
+    request: UpsertAutonomousWebSearchProviderRequestDto,
+  ): Promise<AutonomousWebSearchSettingsDto>
+  autonomousWebSearchDeleteProvider?(
+    request: DeleteAutonomousWebSearchProviderRequestDto,
+  ): Promise<AutonomousWebSearchSettingsDto>
+  autonomousWebSearchSetActiveProvider?(
+    request: SetActiveAutonomousWebSearchProviderRequestDto,
+  ): Promise<AutonomousWebSearchSettingsDto>
+  autonomousWebSearchCheckProvider?(
+    request: CheckAutonomousWebSearchProviderRequestDto,
+  ): Promise<AutonomousWebSearchSettingsDto>
   browserEval(js: string, options?: { timeoutMs?: number }): Promise<unknown>
   browserCurrentUrl(): Promise<string | null>
   browserScreenshot(): Promise<string>
@@ -2686,6 +2724,14 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     )
   },
 
+  resetGlobalComputerUseSession() {
+    return invokeTyped(
+      COMMANDS.resetGlobalComputerUseSession,
+      globalComputerUseSessionSchema,
+      {},
+    )
+  },
+
   createAgentSession(request) {
     const parsed = createAgentSessionRequestSchema.parse(request)
     return invokeTyped(COMMANDS.createAgentSession, agentSessionSchema, {
@@ -3749,6 +3795,45 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
   agentToolingUpdateSettings(request) {
     const parsedRequest = upsertAgentToolingSettingsRequestSchema.parse(request)
     return invokeTyped(COMMANDS.agentToolingUpdateSettings, agentToolingSettingsSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  autonomousWebSearchSettings() {
+    return invokeTyped(COMMANDS.autonomousWebSearchSettings, autonomousWebSearchSettingsSchema)
+  },
+
+  autonomousWebSearchUpdateSettings(request) {
+    const parsedRequest = upsertAutonomousWebSearchSettingsRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.autonomousWebSearchUpdateSettings, autonomousWebSearchSettingsSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  autonomousWebSearchUpsertProvider(request) {
+    const parsedRequest = upsertAutonomousWebSearchProviderRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.autonomousWebSearchUpsertProvider, autonomousWebSearchSettingsSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  autonomousWebSearchDeleteProvider(request) {
+    const parsedRequest = deleteAutonomousWebSearchProviderRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.autonomousWebSearchDeleteProvider, autonomousWebSearchSettingsSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  autonomousWebSearchSetActiveProvider(request) {
+    const parsedRequest = setActiveAutonomousWebSearchProviderRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.autonomousWebSearchSetActiveProvider, autonomousWebSearchSettingsSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  autonomousWebSearchCheckProvider(request) {
+    const parsedRequest = checkAutonomousWebSearchProviderRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.autonomousWebSearchCheckProvider, autonomousWebSearchSettingsSchema, {
       request: parsedRequest,
     })
   },

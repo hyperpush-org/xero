@@ -575,6 +575,21 @@
     will-change: opacity;
   }
 
+  .xero-loading-screen {
+    transform: translateZ(0);
+    will-change: opacity;
+  }
+
+  .xero-loading-screen[data-state='closed'] {
+    animation: xero-loading-screen-exit 160ms var(--motion-ease-in) both;
+    pointer-events: none;
+  }
+
+  .xero-loading-screen[data-state='closed'] .xero-loading-symbol {
+    animation: xero-loading-symbol-exit 160ms var(--motion-ease-in) both;
+    will-change: opacity, transform;
+  }
+
   .xero-update-progress[data-indeterminate='true'] [data-slot='progress-indicator'] {
     animation: xero-update-progress-indeterminate 1200ms ease-in-out infinite;
     transform: translateX(-90%) scaleX(0.45) !important;
@@ -602,6 +617,26 @@
     }
     50% {
       opacity: 1;
+    }
+  }
+
+  @keyframes xero-loading-screen-exit {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0;
+    }
+  }
+
+  @keyframes xero-loading-symbol-exit {
+    from {
+      opacity: 1;
+      transform: scale(1);
+    }
+    to {
+      opacity: 0;
+      transform: scale(0.92);
     }
   }
 

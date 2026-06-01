@@ -5,6 +5,7 @@ use tauri::{AppHandle, Runtime, State};
 use crate::{
     auth::now_timestamp,
     commands::{
+        autonomous_web_search::load_autonomous_web_search_settings,
         dictation::{load_dictation_settings, probe_dictation_status},
         provider_credentials::load_provider_credentials_view,
         CommandError, CommandResult, DictationEnginePreferenceDto, DictationModernAssetStatusDto,
@@ -48,6 +49,7 @@ pub fn run_doctor_report<R: Runtime>(
     collect_environment_profile_checks(&app, state.inner(), &mut checks.settings_dependency_checks);
     collect_dictation_checks(&app, state.inner(), &mut checks.dictation_checks);
     collect_provider_checks(&app, state.inner(), mode, &mut checks);
+    collect_web_search_checks(&app, state.inner(), &mut checks.settings_dependency_checks);
     collect_mcp_checks(&app, state.inner(), &mut checks.mcp_dependency_checks);
     collect_project_runtime_checks(
         &app,
@@ -806,6 +808,101 @@ fn collect_provider_checks<R: Runtime>(
                 ),
             ),
         );
+    }
+}
+
+fn collect_web_search_checks<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    checks: &mut Vec<XeroDiagnosticCheck>,
+) {
+    let settings = match load_autonomous_web_search_settings(app, state) {
+        Ok(settings) => settings,
+        Err(error) => {
+            push_check(
+                checks,
+                command_error_check(
+                    XeroDiagnosticSubject::SettingsDependency,
+                    "web_search_settings_unavailable",
+                    "Xero could not load Web Search settings while generating diagnostics.",
+                    error,
+                    "Open Web Search settings, resave the preferences, then run diagnostics again.",
+                ),
+            );
+            return;
+        }
+    };
+
+    if settings.mode == crate::runtime::AutonomousWebSearchMode::Disabled {
+        push_check(
+            checks,
+            XeroDiagnosticCheck::skipped(
+                XeroDiagnosticSubject::SettingsDependency,
+                "web_search_disabled",
+                "Web Search is disabled in Settings.",
+                Some("Choose Auto or a configured provider mode in Web Search settings.".into()),
+            ),
+        );
+        return;
+    }
+
+    let active_provider = settings
+        .active_provider_id
+        .as_deref()
+        .and_then(|active_id| {
+            settings
+                .providers
+                .iter()
+                .find(|provider| provider.profile_id == active_id)
+        });
+    match active_provider {
+        Some(provider) if provider.readiness.ready => push_check(
+            checks,
+            XeroDiagnosticCheck::passed(
+                XeroDiagnosticSubject::SettingsDependency,
+                "web_search_configured_provider_ready",
+                format!(
+                    "Web Search mode is {:?}; configured provider `{}` is ready.",
+                    settings.mode, provider.display_name
+                ),
+            ),
+        ),
+        Some(provider) => push_check(
+            checks,
+            XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+                subject: XeroDiagnosticSubject::SettingsDependency,
+                status: XeroDiagnosticStatus::Warning,
+                severity: XeroDiagnosticSeverity::Warning,
+                retryable: false,
+                code: "web_search_configured_provider_not_ready".into(),
+                message: format!(
+                    "Web Search mode is {:?}; configured provider `{}` is not ready: {}",
+                    settings.mode, provider.display_name, provider.readiness.message
+                ),
+                affected_profile_id: Some(provider.profile_id.clone()),
+                affected_provider_id: Some(provider.kind.as_str().into()),
+                endpoint: None,
+                remediation: Some("Open Web Search settings and repair or replace the active provider.".into()),
+            }),
+        ),
+        None => push_check(
+            checks,
+            XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+                subject: XeroDiagnosticSubject::SettingsDependency,
+                status: XeroDiagnosticStatus::Warning,
+                severity: XeroDiagnosticSeverity::Warning,
+                retryable: false,
+                code: "web_search_no_configured_provider".into(),
+                message: format!(
+                    "Web Search mode is {:?}; no configured fallback provider is active. Provider-managed search may still be used when the selected model supports it.",
+                    settings.mode
+                ),
+                affected_profile_id: None,
+                affected_provider_id: None,
+                endpoint: None,
+                remediation: Some("Add and select a fallback provider in Web Search settings.".into()),
+            }),
+        ),
     }
 }
 

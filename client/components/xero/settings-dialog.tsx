@@ -13,6 +13,7 @@ import type {
   SkillRegistryMutationStatus,
 } from "@/src/features/xero/use-xero-desktop-state"
 import type { AgentToolingSettingsAdapter } from "@/components/xero/settings-dialog/agent-tooling-section"
+import type { WebSearchSettingsAdapter } from "@/components/xero/settings-dialog/web-search-section"
 import type {
   DangerSettingsAdapter,
   DangerZoneProject,
@@ -63,7 +64,7 @@ import type {
   GitHubAuthStatus,
   GitHubSessionView,
 } from "@/src/lib/github-auth"
-import { Activity, ArrowLeft, Bot, Brain, Cloud, Code2, Database, Globe, HardDrive, Heart, Keyboard, KeyRound, Mic, Monitor, Palette, PlaySquare, Plug, PlugZap, Power, UserRound, WandSparkles, Wrench } from "lucide-react"
+import { Activity, ArrowLeft, Bot, Brain, Cloud, Code2, Database, Globe, HardDrive, Heart, Keyboard, KeyRound, Mic, Monitor, Palette, PlaySquare, Plug, PlugZap, Power, Search, UserRound, WandSparkles, Wrench } from "lucide-react"
 import { BaseDialog } from "@xero/ui/components/base-dialog"
 import {
   DialogDescription,
@@ -82,6 +83,7 @@ export type SettingsSection =
   | "skills"
   | "agents"
   | "agentTooling"
+  | "webSearch"
   | "memory"
   | "plugins"
   | "browser"
@@ -104,6 +106,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   "mcp",
   "agents",
   "agentTooling",
+  "webSearch",
   "memory",
   "skills",
   "plugins",
@@ -133,6 +136,10 @@ const loadAgentsSection = () =>
 const loadAgentToolingSection = () =>
   import("@/components/xero/settings-dialog/agent-tooling-section").then((module) => ({
     default: module.AgentToolingSection,
+  }))
+const loadWebSearchSection = () =>
+  import("@/components/xero/settings-dialog/web-search-section").then((module) => ({
+    default: module.WebSearchSection,
   }))
 const loadBrowserSection = () =>
   import("@/components/xero/settings-dialog/browser-section").then((module) => ({
@@ -207,6 +214,7 @@ const LazyAccountSection = lazy(loadAccountSection)
 const LazyCloudAccountSection = lazy(loadCloudAccountSection)
 const LazyAgentsSection = lazy(loadAgentsSection)
 const LazyAgentToolingSection = lazy(loadAgentToolingSection)
+const LazyWebSearchSection = lazy(loadWebSearchSection)
 const LazyBrowserSection = lazy(loadBrowserSection)
 const LazyDesktopControlSection = lazy(loadDesktopControlSection)
 const LazyPowerSection = lazy(loadPowerSection)
@@ -235,6 +243,7 @@ const SETTINGS_SECTION_LOADERS: Record<SettingsSection, () => Promise<unknown>> 
   mcp: loadMcpSection,
   agents: loadAgentsSection,
   agentTooling: loadAgentToolingSection,
+  webSearch: loadWebSearchSection,
   memory: loadMemoryReviewSection,
   skills: loadSkillsSection,
   plugins: loadPluginsSection,
@@ -299,6 +308,7 @@ const WORKSPACE_GROUP: NavGroup = {
     { id: "mcp", label: "MCP", icon: PlugZap },
     { id: "agents", label: "Agents", icon: Bot },
     { id: "agentTooling", label: "Agent Tooling", icon: Wrench },
+    { id: "webSearch", label: "Web Search", icon: Search },
     { id: "memory", label: "Memory", icon: Brain },
     { id: "skills", label: "Skills", icon: WandSparkles },
     { id: "plugins", label: "Plugins", icon: Plug },
@@ -372,6 +382,7 @@ export interface SettingsDialogProps {
   desktopControlAdapter?: DesktopControlSettingsAdapter
   soulAdapter?: SoulSettingsAdapter
   agentToolingAdapter?: AgentToolingSettingsAdapter
+  webSearchAdapter?: WebSearchSettingsAdapter
   powerAdapter?: PowerSettingsAdapter
   toolCallGroupingPreference?: ToolCallGroupingPreference
   onToolCallGroupingPreferenceChange?: (preference: ToolCallGroupingPreference) => Promise<void> | void
@@ -475,7 +486,7 @@ export interface SettingsDialogProps {
 export function SettingsDialog({
   open,
   onOpenChange,
-  initialSection = "providers",
+  initialSection = "account",
   agent,
   providerCredentials,
   providerCredentialsLoadStatus,
@@ -502,6 +513,7 @@ export function SettingsDialog({
   desktopControlAdapter,
   soulAdapter,
   agentToolingAdapter,
+  webSearchAdapter,
   powerAdapter,
   toolCallGroupingPreference,
   onToolCallGroupingPreferenceChange,
@@ -768,6 +780,10 @@ export function SettingsDialog({
       )
     }
 
+    if (renderedSection === "webSearch") {
+      return <LazyWebSearchSection adapter={webSearchAdapter} />
+    }
+
     if (renderedSection === "memory") {
       const sessionId = agent?.project.selectedAgentSessionId
       return (
@@ -894,13 +910,13 @@ export function SettingsDialog({
       onOpenChange={onOpenChange}
       variant="custom"
       title="Settings"
-      contentClassName="left-0 top-0 flex h-screen w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 p-0 shadow-none sm:max-w-none"
+      contentClassName="left-0 top-0 flex h-screen w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 p-0 shadow-none data-[state=closed]:opacity-100 sm:max-w-none"
       showCloseButton={false}
       header={
         <>
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <DialogDescription className="sr-only">
-          Configure providers, skills, agent tooling, and development options.
+          Configure account, providers, skills, agent tooling, and development options.
         </DialogDescription>
         </>
       }

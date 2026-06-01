@@ -530,6 +530,19 @@ export function ProviderCredentialsList({
       runtimeSession.providerId === providerId
     const rowDeviceLogin = providerId === "xai" ? deviceLogin : null
     const status = credential ? getStatus(credential) : null
+    const showApiKeyField = hasConfigEditor && preset.authMode === "api_key"
+    const showBaseUrlField =
+      hasConfigEditor && (preset.baseUrlMode !== "none" || preset.authMode === "local")
+    const showApiVersionField = hasConfigEditor && preset.apiVersionMode !== "none"
+    const showRegionField = hasConfigEditor && preset.regionMode === "required"
+    const showProjectIdField = hasConfigEditor && preset.projectIdMode === "required"
+    const editorFieldCount = [
+      showApiKeyField,
+      showBaseUrlField,
+      showApiVersionField,
+      showRegionField,
+      showProjectIdField,
+    ].filter(Boolean).length
 
     return (
       <div
@@ -699,128 +712,137 @@ export function ProviderCredentialsList({
               </div>
             ) : null}
 
-            {hasConfigEditor && preset.authMode === "api_key" ? (
-              <FieldRow>
-                <Label htmlFor={`${providerId}-api-key`} className="text-[11.5px] text-muted-foreground">
-                  API key
-                  {credential?.hasApiKey ? (
-                    <span className="ml-2 text-[11px] text-muted-foreground/70">
-                      (saved — leave empty to keep current)
-                    </span>
-                  ) : null}
-                </Label>
-                <Input
-                  id={`${providerId}-api-key`}
-                  type="password"
-                  autoComplete="off"
-                  value={draft.apiKey}
-                  onChange={(e) => updateDraft(providerId, { apiKey: e.target.value })}
-                  placeholder={credential?.hasApiKey ? "••••••••" : "Paste your API key"}
-                  className="h-9"
-                />
-              </FieldRow>
-            ) : null}
-
-            {hasConfigEditor && (preset.baseUrlMode !== "none" || preset.authMode === "local") ? (
-              <FieldRow>
-                <Label htmlFor={`${providerId}-base-url`} className="text-[11.5px] text-muted-foreground">
-                  Base URL
-                  {preset.baseUrlMode === "required" || preset.authMode === "local" ? (
-                    <span className="ml-1 text-destructive">*</span>
-                  ) : null}
-                </Label>
-                <Input
-                  id={`${providerId}-base-url`}
-                  value={draft.baseUrl}
-                  onChange={(e) => updateDraft(providerId, { baseUrl: e.target.value })}
-                  placeholder={preset.connectionHint}
-                  className="h-9"
-                />
-              </FieldRow>
-            ) : null}
-
-            {hasConfigEditor && preset.apiVersionMode !== "none" ? (
-              <FieldRow>
-                <Label htmlFor={`${providerId}-api-version`} className="text-[11.5px] text-muted-foreground">
-                  API version
-                  {preset.apiVersionMode === "required" ? (
-                    <span className="ml-1 text-destructive">*</span>
-                  ) : null}
-                </Label>
-                <Input
-                  id={`${providerId}-api-version`}
-                  value={draft.apiVersion}
-                  onChange={(e) => updateDraft(providerId, { apiVersion: e.target.value })}
-                  className="h-9"
-                />
-              </FieldRow>
-            ) : null}
-
-            {hasConfigEditor && preset.regionMode === "required" ? (
-              <FieldRow>
-                <Label htmlFor={`${providerId}-region`} className="text-[11.5px] text-muted-foreground">
-                  Region <span className="text-destructive">*</span>
-                </Label>
-                <Input
-                  id={`${providerId}-region`}
-                  value={draft.region}
-                  onChange={(e) => updateDraft(providerId, { region: e.target.value })}
-                  className="h-9"
-                />
-              </FieldRow>
-            ) : null}
-
-            {hasConfigEditor && preset.projectIdMode === "required" ? (
-              <FieldRow>
-                <Label htmlFor={`${providerId}-project-id`} className="text-[11.5px] text-muted-foreground">
-                  Project ID <span className="text-destructive">*</span>
-                </Label>
-                <Input
-                  id={`${providerId}-project-id`}
-                  value={draft.projectId}
-                  onChange={(e) => updateDraft(providerId, { projectId: e.target.value })}
-                  className="h-9"
-                />
-              </FieldRow>
-            ) : null}
-
-            {localSaveError || localSaveErrorFromAdapter ? (
-              <Alert variant="destructive" className="border-destructive/40">
-                <AlertCircle className="h-4 w-4" />
-                <AlertDescription>
-                  {localSaveError ?? localSaveErrorFromAdapter}
-                </AlertDescription>
-              </Alert>
-            ) : null}
-
             {hasConfigEditor ? (
-              <div className="flex items-center justify-between gap-2 pt-1">
-                {credential ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => handleDelete(providerId)}
-                    disabled={isSaving || !onDeleteProviderCredential}
-                    className="h-8 text-[12px] text-destructive hover:bg-destructive/10 hover:text-destructive"
+              <div className="flex flex-col gap-3">
+                <div className="flex flex-col gap-3 md:flex-row md:items-end">
+                  <div
+                    className={cn(
+                      "grid min-w-0 flex-1 gap-3",
+                      editorFieldCount > 1 && "sm:grid-cols-2",
+                    )}
                   >
-                    Remove
-                  </Button>
-                ) : (
-                  <span />
-                )}
-                <Button
-                  size="sm"
-                  className="h-8 gap-1.5 text-[12px]"
-                  onClick={() => handleSave(preset)}
-                  disabled={isSaving || !onUpsertProviderCredential}
-                >
-                  {isSaving ? (
-                    <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Check className="h-3.5 w-3.5" />
-                  )}
-                  Save
-                </Button>
+                    {showApiKeyField ? (
+                      <FieldRow>
+                        <Label htmlFor={`${providerId}-api-key`} className="text-[11.5px] text-muted-foreground">
+                          API key
+                          {credential?.hasApiKey ? (
+                            <span className="ml-2 text-[11px] text-muted-foreground/70">
+                              (saved — leave empty to keep current)
+                            </span>
+                          ) : null}
+                        </Label>
+                        <Input
+                          id={`${providerId}-api-key`}
+                          type="password"
+                          autoComplete="off"
+                          value={draft.apiKey}
+                          onChange={(e) => updateDraft(providerId, { apiKey: e.target.value })}
+                          placeholder={credential?.hasApiKey ? "••••••••" : "Paste your API key"}
+                          className="h-9"
+                        />
+                      </FieldRow>
+                    ) : null}
+
+                    {showBaseUrlField ? (
+                      <FieldRow>
+                        <Label htmlFor={`${providerId}-base-url`} className="text-[11.5px] text-muted-foreground">
+                          Base URL
+                          {preset.baseUrlMode === "required" || preset.authMode === "local" ? (
+                            <span className="ml-1 text-destructive">*</span>
+                          ) : null}
+                        </Label>
+                        <Input
+                          id={`${providerId}-base-url`}
+                          value={draft.baseUrl}
+                          onChange={(e) => updateDraft(providerId, { baseUrl: e.target.value })}
+                          placeholder={preset.connectionHint}
+                          className="h-9"
+                        />
+                      </FieldRow>
+                    ) : null}
+
+                    {showApiVersionField ? (
+                      <FieldRow>
+                        <Label htmlFor={`${providerId}-api-version`} className="text-[11.5px] text-muted-foreground">
+                          API version
+                          {preset.apiVersionMode === "required" ? (
+                            <span className="ml-1 text-destructive">*</span>
+                          ) : null}
+                        </Label>
+                        <Input
+                          id={`${providerId}-api-version`}
+                          value={draft.apiVersion}
+                          onChange={(e) => updateDraft(providerId, { apiVersion: e.target.value })}
+                          className="h-9"
+                        />
+                      </FieldRow>
+                    ) : null}
+
+                    {showRegionField ? (
+                      <FieldRow>
+                        <Label htmlFor={`${providerId}-region`} className="text-[11.5px] text-muted-foreground">
+                          Region <span className="text-destructive">*</span>
+                        </Label>
+                        <Input
+                          id={`${providerId}-region`}
+                          value={draft.region}
+                          onChange={(e) => updateDraft(providerId, { region: e.target.value })}
+                          className="h-9"
+                        />
+                      </FieldRow>
+                    ) : null}
+
+                    {showProjectIdField ? (
+                      <FieldRow>
+                        <Label htmlFor={`${providerId}-project-id`} className="text-[11.5px] text-muted-foreground">
+                          Project ID <span className="text-destructive">*</span>
+                        </Label>
+                        <Input
+                          id={`${providerId}-project-id`}
+                          value={draft.projectId}
+                          onChange={(e) => updateDraft(providerId, { projectId: e.target.value })}
+                          className="h-9"
+                        />
+                      </FieldRow>
+                    ) : null}
+                  </div>
+
+                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 md:self-end">
+                    {credential ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDelete(providerId)}
+                        disabled={isSaving || !onDeleteProviderCredential}
+                        className="h-8 text-[12px] text-destructive hover:bg-destructive/10 hover:text-destructive"
+                      >
+                        Remove
+                      </Button>
+                    ) : null}
+                    <Button
+                      size="sm"
+                      className="h-8 gap-1.5 text-[12px]"
+                      onClick={() => handleSave(preset)}
+                      disabled={isSaving || !onUpsertProviderCredential}
+                    >
+                      {isSaving ? (
+                        <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Check className="h-3.5 w-3.5" />
+                      )}
+                      Save
+                    </Button>
+                  </div>
+                </div>
+
+                {localSaveError || localSaveErrorFromAdapter ? (
+                  <Alert variant="destructive" className="border-destructive/40">
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertDescription>
+                      {localSaveError ?? localSaveErrorFromAdapter}
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
               </div>
             ) : null}
           </div>

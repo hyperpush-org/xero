@@ -58,7 +58,7 @@ use crate::{
     },
     db::project_store,
     runtime::redaction::find_prohibited_persistence_content,
-    runtime::AgentRunCancellationToken,
+    runtime::{AgentProviderConfig, AgentRunCancellationToken},
     state::DesktopState,
 };
 
@@ -509,13 +509,13 @@ const TOOL_ACCESS_GROUP_DEFINITIONS: &[ToolAccessGroupDefinition] = &[
     },
     ToolAccessGroupDefinition {
         name: "web_search_only",
-        description: "Search the web without exposing page fetch or browser-control schemas.",
+        description: "Search the web for source discovery without exposing page fetch or browser-control schemas.",
         tools: TOOL_ACCESS_WEB_SEARCH_ONLY_TOOLS,
         risk_class: "network",
     },
     ToolAccessGroupDefinition {
         name: "web_fetch",
-        description: "Fetch HTTP/HTTPS text content without exposing browser-control schemas.",
+        description: "Fetch selected HTTP/HTTPS pages after search to inspect source content without exposing browser-control schemas.",
         tools: TOOL_ACCESS_WEB_FETCH_TOOLS,
         risk_class: "network",
     },
@@ -2920,19 +2920,25 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_WEB_SEARCH,
             "web",
-            "Search the web through the configured backend.",
+            "Search the web through the configured backend for source discovery. Fetch top official/primary results before relying on their contents.",
             &["web", "search", "internet", "docs", "latest"],
             &["query", "resultCount", "timeoutMs"],
-            &["Search current official documentation."],
+            &[
+                "Search current official documentation.",
+                "Find candidate sources, then fetch the primary pages.",
+            ],
             "network",
         ),
         catalog_entry(
             AUTONOMOUS_TOOL_WEB_FETCH,
             "web",
-            "Fetch HTTP or HTTPS text content.",
+            "Fetch HTTP or HTTPS text content from a selected result URL.",
             &["web", "fetch", "http", "docs", "page"],
             &["url", "maxChars", "timeoutMs"],
-            &["Fetch a documentation page after search."],
+            &[
+                "Fetch a documentation page after search.",
+                "Inspect an official or primary source before answering.",
+            ],
             "network",
         ),
         catalog_entry(
@@ -3192,8 +3198,6 @@ fn computer_use_default_tool_names() -> BTreeSet<&'static str> {
         AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
         AUTONOMOUS_TOOL_DESKTOP_CONTROL,
         AUTONOMOUS_TOOL_DESKTOP_STREAM,
-        AUTONOMOUS_TOOL_BROWSER_OBSERVE,
-        AUTONOMOUS_TOOL_BROWSER_CONTROL,
         AUTONOMOUS_TOOL_EMULATOR,
         AUTONOMOUS_TOOL_MACOS_AUTOMATION,
         AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
@@ -4416,6 +4420,15 @@ impl AutonomousToolRuntime {
         state: &DesktopState,
         project_id: &str,
     ) -> CommandResult<Self> {
+        Self::for_project_with_provider_config(app, state, project_id, None)
+    }
+
+    pub fn for_project_with_provider_config<R: Runtime>(
+        app: &AppHandle<R>,
+        state: &DesktopState,
+        project_id: &str,
+        provider_config: Option<&AgentProviderConfig>,
+    ) -> CommandResult<Self> {
         let browser_executor = browser::tauri_browser_executor(app.clone(), state.clone());
         let repo_root =
             crate::commands::runtime_support::resolve_project_root(app, state, project_id)?;
@@ -4456,7 +4469,11 @@ impl AutonomousToolRuntime {
         let runtime = Self::with_limits_and_web_config(
             repo_root,
             AutonomousToolRuntimeLimits::default(),
-            state.autonomous_web_config(),
+            crate::commands::autonomous_web_search::resolve_autonomous_web_config(
+                app,
+                state,
+                provider_config,
+            )?,
         )?
         .with_browser_control_preference(browser_control_preference)
         .with_soul_settings(soul_settings)
