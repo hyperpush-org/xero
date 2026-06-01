@@ -150,7 +150,11 @@ import { getCloudProviderDefaultProfileId } from '@/src/lib/xero-model/provider-
 import { SHORTCUT_DEFINITIONS, type ShortcutId } from '@/src/features/shortcuts/shortcuts-definitions'
 import { useShortcutListener } from '@/src/features/shortcuts/use-shortcut-listener'
 import { startLayoutShiftGuard } from '@/lib/layout-shift-guard'
-import { useSidebarOpenMotion, useSidebarWidthMotion } from '@/lib/sidebar-motion'
+import {
+  SIDEBAR_WIDTH_DURATION_MS,
+  useSidebarOpenMotion,
+  useSidebarWidthMotion,
+} from '@/lib/sidebar-motion'
 import { cn } from '@/lib/utils'
 import { FloatingRightSidebarFrame } from '@/components/xero/floating-right-sidebar-frame'
 import type { BrowserAgentContextRequest } from '@/components/xero/browser-tool-injection'
@@ -392,7 +396,7 @@ function preloadSurfaceChunk(target: SurfacePreloadTarget): void {
     return
   }
   if (target === 'agent-dock') {
-    void loadAgentDockSidebar()
+    void Promise.all([loadAgentDockSidebar(), loadAgentRuntime()])
   }
 }
 
@@ -1098,14 +1102,18 @@ interface LazyPrerenderedSurfaceProps {
   children: ReactNode
   open: boolean
   prewarm?: boolean
+  stickyPrewarm?: boolean
 }
 
 function LazyPrerenderedSurface({
   children,
   open,
   prewarm = false,
+  stickyPrewarm = false,
 }: LazyPrerenderedSurfaceProps) {
-  const shouldMount = useActivatedSurface(open, prewarm)
+  const activatedMount = useActivatedSurface(open, prewarm)
+  const stickyMount = useStickyPrewarmedSurface(open, prewarm)
+  const shouldMount = stickyPrewarm ? stickyMount : activatedMount
   const renderedChildren = useFrozenSurfaceChildren(children, {
     active: open,
     prewarm,
@@ -1765,6 +1773,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const [computerUseClearChatPending, setComputerUseClearChatPending] = useState(false)
   const computerUseRuntimeActionRefreshKeysRef = useRef<Record<string, Set<string>>>({})
   const computerUseRuntimeMetadataRefreshTimeoutRef = useRef<number | null>(null)
+  const computerUseProjectLoadPromiseRef = useRef<Promise<ComputerUseLoadResult> | null>(null)
+  const pendingAgentDockOpenTimeoutRef = useRef<number | null>(null)
+  const pendingComputerUseOpenTimeoutRef = useRef<number | null>(null)
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [startTargetsDialogOpen, setStartTargetsDialogOpen] = useState(false)
   const [pendingInitialRuntimeAgent, setPendingInitialRuntimeAgent] =
@@ -2032,7 +2043,35 @@ export function XeroApp({ adapter }: XeroAppProps) {
     [resolvedAdapter],
   )
 
+  const clearPendingAgentDockOpen = useCallback(() => {
+    let clearedComputerUseOpen = false
+    if (pendingAgentDockOpenTimeoutRef.current === null) {
+      if (pendingComputerUseOpenTimeoutRef.current !== null) {
+        window.clearTimeout(pendingComputerUseOpenTimeoutRef.current)
+        pendingComputerUseOpenTimeoutRef.current = null
+        clearedComputerUseOpen = true
+      }
+      if (clearedComputerUseOpen) {
+        setIsCreatingAgentSession(false)
+      }
+      return
+    }
+    window.clearTimeout(pendingAgentDockOpenTimeoutRef.current)
+    pendingAgentDockOpenTimeoutRef.current = null
+    if (pendingComputerUseOpenTimeoutRef.current !== null) {
+      window.clearTimeout(pendingComputerUseOpenTimeoutRef.current)
+      pendingComputerUseOpenTimeoutRef.current = null
+      clearedComputerUseOpen = true
+    }
+    if (clearedComputerUseOpen) {
+      setIsCreatingAgentSession(false)
+    }
+  }, [])
+
+  useEffect(() => clearPendingAgentDockOpen, [clearPendingAgentDockOpen])
+
   const toggleBrowser = useCallback(() => {
+    clearPendingAgentDockOpen()
     if (browserOpen) {
       setBrowserOpen(false)
       return
@@ -2045,9 +2084,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setComputerUseOpen(false)
     setTerminalOpen(false)
     setBrowserOpen(true)
-  }, [browserOpen])
+  }, [browserOpen, clearPendingAgentDockOpen])
 
   const revealBrowserSidebar = useCallback(() => {
+    clearPendingAgentDockOpen()
     setIosOpen(false)
     setSolanaOpen(false)
     setVcsOpen(false)
@@ -2057,7 +2097,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setComputerUseOpen(false)
     setTerminalOpen(false)
     setBrowserOpen(true)
-  }, [])
+  }, [clearPendingAgentDockOpen])
 
   const handleOpenUrlInBrowser = useCallback(
     (url: string) => {
@@ -2081,6 +2121,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
   }, [])
 
   const toggleIos = useCallback(() => {
+    clearPendingAgentDockOpen()
     if (iosOpen) {
       setIosOpen(false)
       return
@@ -2093,9 +2134,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setComputerUseOpen(false)
     setTerminalOpen(false)
     setIosOpen(true)
-  }, [iosOpen])
+  }, [clearPendingAgentDockOpen, iosOpen])
 
   const toggleSolana = useCallback(() => {
+    clearPendingAgentDockOpen()
     if (solanaOpen) {
       setSolanaOpen(false)
       return
@@ -2108,9 +2150,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setComputerUseOpen(false)
     setTerminalOpen(false)
     setSolanaOpen(true)
-  }, [solanaOpen])
+  }, [clearPendingAgentDockOpen, solanaOpen])
 
   const toggleVcs = useCallback(() => {
+    clearPendingAgentDockOpen()
     if (vcsOpen) {
       setVcsOpen(false)
       return
@@ -2123,9 +2166,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setComputerUseOpen(false)
     setTerminalOpen(false)
     setVcsOpen(true)
-  }, [vcsOpen])
+  }, [clearPendingAgentDockOpen, vcsOpen])
 
   const toggleWorkflows = useCallback(() => {
+    clearPendingAgentDockOpen()
     if (workflowsOpen) {
       setWorkflowsOpen(false)
       return
@@ -2138,9 +2182,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setComputerUseOpen(false)
     setTerminalOpen(false)
     setWorkflowsOpen(true)
-  }, [workflowsOpen])
+  }, [clearPendingAgentDockOpen, workflowsOpen])
 
   const toggleAgentDock = useCallback(() => {
+    clearPendingAgentDockOpen()
     if (agentDockOpen) {
       setAgentDockOpen(false)
       return
@@ -2159,9 +2204,26 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setWorkflowsOpen(false)
     setUsageOpen(false)
     setTerminalOpen(false)
+
+    if (computerUseOpen) {
+      setComputerUseOpen(false)
+      setAgentDockOpen(false)
+      pendingAgentDockOpenTimeoutRef.current = window.setTimeout(() => {
+        pendingAgentDockOpenTimeoutRef.current = null
+        setAgentDockOpen(true)
+      }, SIDEBAR_WIDTH_DURATION_MS)
+      return
+    }
+
     setComputerUseOpen(false)
     setAgentDockOpen(true)
-  }, [activeProject?.selectedAgentSessionId, activeView, agentDockOpen])
+  }, [
+    activeProject?.selectedAgentSessionId,
+    activeView,
+    agentDockOpen,
+    clearPendingAgentDockOpen,
+    computerUseOpen,
+  ])
 
   const loadComputerUseProject = useCallback(async (): Promise<ComputerUseLoadResult> => {
     await resolvedAdapter.ensureGlobalComputerUseSession?.()
@@ -2199,6 +2261,41 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setComputerUseRuntimeRun(runtimeRun)
     return { project, runtimeSession, runtimeRun }
   }, [resolvedAdapter])
+
+  const preloadComputerUseProject = useCallback((): Promise<ComputerUseLoadResult> => {
+    if (computerUseProject) {
+      return Promise.resolve({
+        project: computerUseProject,
+        runtimeSession: computerUseRuntimeSession,
+        runtimeRun: computerUseRuntimeRun,
+      })
+    }
+
+    if (computerUseProjectLoadPromiseRef.current) {
+      return computerUseProjectLoadPromiseRef.current
+    }
+
+    const loadPromise = loadComputerUseProject()
+    computerUseProjectLoadPromiseRef.current = loadPromise
+    loadPromise.then(
+      () => {
+        if (computerUseProjectLoadPromiseRef.current === loadPromise) {
+          computerUseProjectLoadPromiseRef.current = null
+        }
+      },
+      () => {
+        if (computerUseProjectLoadPromiseRef.current === loadPromise) {
+          computerUseProjectLoadPromiseRef.current = null
+        }
+      },
+    )
+    return loadPromise
+  }, [
+    computerUseProject,
+    computerUseRuntimeRun,
+    computerUseRuntimeSession,
+    loadComputerUseProject,
+  ])
 
   const refreshComputerUseRuntimeMetadata = useCallback(async () => {
     const [runtimeSession, runtimeRun] = await Promise.all([
@@ -2400,6 +2497,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
   }, [])
 
   const toggleComputerUse = useCallback(() => {
+    clearPendingAgentDockOpen()
     if (computerUseOpen) {
       closeComputerUse()
       return
@@ -2419,17 +2517,36 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setTerminalOpen(false)
     setAgentDockOpen(false)
     setIsCreatingAgentSession(true)
-    void (async () => {
-      await loadComputerUseProject()
-      setComputerUseOpen(true)
-    })()
-      .catch(() => undefined)
-      .finally(() => {
-        setIsCreatingAgentSession(false)
-      })
-  }, [closeComputerUse, computerUseOpen, loadComputerUseProject])
+    const openComputerUse = () => {
+      void (async () => {
+        await preloadComputerUseProject()
+        setComputerUseOpen(true)
+      })()
+        .catch(() => undefined)
+        .finally(() => {
+          setIsCreatingAgentSession(false)
+        })
+    }
+
+    if (agentDockOpen) {
+      pendingComputerUseOpenTimeoutRef.current = window.setTimeout(() => {
+        pendingComputerUseOpenTimeoutRef.current = null
+        openComputerUse()
+      }, SIDEBAR_WIDTH_DURATION_MS)
+      return
+    }
+
+    openComputerUse()
+  }, [
+    agentDockOpen,
+    clearPendingAgentDockOpen,
+    closeComputerUse,
+    computerUseOpen,
+    preloadComputerUseProject,
+  ])
 
   const toggleTerminal = useCallback(() => {
+    clearPendingAgentDockOpen()
     if (terminalOpen) {
       setTerminalOpen(false)
       return
@@ -2443,7 +2560,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setAgentDockOpen(false)
     setComputerUseOpen(false)
     setTerminalOpen(true)
-  }, [terminalOpen])
+  }, [clearPendingAgentDockOpen, terminalOpen])
   useEffect(() => {
     if (activeView === 'agent' && agentDockOpen) {
       setAgentDockOpen(false)
@@ -4863,6 +4980,20 @@ export function XeroApp({ adapter }: XeroAppProps) {
   )
 
   useEffect(() => {
+    if (
+      import.meta.env.MODE === 'test' ||
+      showAppBootLoading ||
+      !startupSurfacePrewarm.ready
+    ) {
+      return
+    }
+
+    return scheduleIdlePreload(() => {
+      void preloadComputerUseProject().catch(() => undefined)
+    }, 900)
+  }, [preloadComputerUseProject, showAppBootLoading, startupSurfacePrewarm.ready])
+
+  useEffect(() => {
     if (environmentDiscoveryCheckedRef.current) {
       return
     }
@@ -5181,6 +5312,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
           <LazyPrerenderedSurface
             open={agentDockSurfaceOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
+            stickyPrewarm
           >
             <Suspense
               fallback={
@@ -5193,6 +5325,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
             >
               <LazyAgentDockSidebar
                 open={agentDockSurfaceOpen}
+                prewarm={startupSurfacePrewarm.shouldMount}
                 agent={agentDockSurfaceAgent}
                 highChurnStore={highChurnStore}
                 sessions={agentDockSurfaceSessions}

@@ -70,6 +70,7 @@ function writePersistedWidth(width: number): void {
 
 export interface AgentDockSidebarProps {
   open: boolean
+  prewarm?: boolean
   agent: AgentPaneView | null
   highChurnStore: XeroHighChurnStore
   sessions: readonly AgentSessionView[]
@@ -120,6 +121,7 @@ export interface AgentDockSidebarProps {
 
 export function AgentDockSidebar({
   open,
+  prewarm = false,
   agent,
   highChurnStore,
   sessions,
@@ -145,6 +147,7 @@ export function AgentDockSidebar({
     () => sessions.filter((session) => session.isActive),
     [sessions],
   )
+  const shouldRenderRuntime = Boolean(agent && (open || prewarm))
 
   const handleResizeStart = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return
@@ -237,7 +240,7 @@ export function AgentDockSidebar({
         }}
       >
         <div className="flex min-h-0 flex-1 flex-col">
-          {open && agent ? (
+          {shouldRenderRuntime ? (
             <LiveAgentRuntimeView
               {...runtimeProps}
               active={open}

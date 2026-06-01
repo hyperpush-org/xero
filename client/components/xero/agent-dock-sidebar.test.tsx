@@ -7,6 +7,7 @@ import { createXeroHighChurnStore } from '@/src/features/xero/use-xero-desktop-s
 import type { AgentSessionView } from '@/src/lib/xero-model'
 
 interface CapturedRuntimeProps {
+  active?: boolean
   density?: 'comfortable' | 'compact'
   inSidebar?: boolean
   sidebarSessions?: readonly AgentSessionView[]
@@ -25,6 +26,7 @@ interface CapturedRuntimeProps {
 vi.mock('@/components/xero/agent-runtime/live-agent-runtime', () => ({
   LiveAgentRuntimeView: ({
     agent,
+    active,
     density,
     inSidebar,
     sidebarSessions,
@@ -42,6 +44,7 @@ vi.mock('@/components/xero/agent-runtime/live-agent-runtime', () => ({
     if (!agent) return null
     return (
       <div data-testid="live-agent-runtime">
+        <div data-testid="live-agent-runtime-active">{active ? 'true' : 'false'}</div>
         <div data-testid="live-agent-runtime-density">{density}</div>
         <div data-testid="live-agent-runtime-in-sidebar">{inSidebar ? 'true' : 'false'}</div>
         <div data-testid="live-agent-runtime-session-count">{sidebarSessions?.length ?? 0}</div>
@@ -174,8 +177,17 @@ describe('AgentDockSidebar', () => {
   it('renders the live agent runtime in sidebar mode when open with an agent', () => {
     renderDock()
     expect(screen.getByTestId('live-agent-runtime')).toBeInTheDocument()
+    expect(screen.getByTestId('live-agent-runtime-active')).toHaveTextContent('true')
     expect(screen.getByTestId('live-agent-runtime-in-sidebar')).toHaveTextContent('true')
     expect(screen.getByTestId('live-agent-runtime-session-count')).toHaveTextContent('2')
+  })
+
+  it('prerenders the agent runtime while closed during surface prewarm', () => {
+    renderDock({ open: false, prewarm: true })
+
+    expect(screen.getByTestId('live-agent-runtime')).toBeInTheDocument()
+    expect(screen.getByTestId('live-agent-runtime-active')).toHaveTextContent('false')
+    expect(screen.queryByText('No active session')).not.toBeInTheDocument()
   })
 
   it('keeps the runtime comfortable until the sidebar is below the compact breakpoint', () => {

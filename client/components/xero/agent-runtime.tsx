@@ -2744,7 +2744,6 @@ export const AgentRuntime = memo(function AgentRuntime({
     renderableRuntimeRun?.runId ?? runtimeStream?.runId ?? 'no-run',
   ].join(':')
   const conversationRunScrollKeyRef = useRef<string | null>(null)
-  const shouldAutoFollowNewRun = Boolean(renderableRuntimeRun?.isActive)
   const latestVisibleTurn = visibleTurnsWithPendingPrompt.at(-1)
   const conversationScrollKey = [
     latestVisibleTurn?.id ?? 'none',
@@ -2766,15 +2765,13 @@ export const AgentRuntime = memo(function AgentRuntime({
     }
 
     conversationRunScrollKeyRef.current = conversationRunScrollKey
-    shouldAutoFollowRef.current = shouldAutoFollowNewRun
+    shouldAutoFollowRef.current = true
     setShowJumpToLatest(false)
-    if (!shouldAutoFollowNewRun) {
-      const viewport = scrollViewportRef.current
-      if (viewport) {
-        viewport.scrollTop = 0
-      }
+    const viewport = scrollViewportRef.current
+    if (viewport) {
+      viewport.scrollTop = viewport.scrollHeight
     }
-  }, [conversationRunScrollKey, shouldAutoFollowNewRun])
+  }, [conversationRunScrollKey])
   const scrollToLatest = useCallback((behavior: ScrollBehavior = 'auto', options: { defer?: boolean } = {}) => {
     const run = () => {
       bottomSentinelRef.current?.scrollIntoView({
@@ -3332,7 +3329,7 @@ export const AgentRuntime = memo(function AgentRuntime({
             aria-hidden="true"
             className={cn(
               'bg-gradient-to-b',
-              isDense ? 'h-2' : 'h-7',
+              isDense || isComputerUseSidebar ? 'h-2' : 'h-7',
               inSidebar ? 'from-sidebar to-sidebar/0' : 'from-background to-background/0',
             )}
           />

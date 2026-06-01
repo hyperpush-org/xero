@@ -144,6 +144,30 @@ describe("useConversationAutoFollow", () => {
 
 		expect(viewport.scrollTop).toBe(1_500);
 	});
+
+	it("starts at the latest turn when a loaded transcript becomes visible", () => {
+		const { rerender } = render(
+			<AutoFollowHarness
+				enabled={false}
+				turns={[assistantTurn("Restored reply")]}
+			/>,
+		);
+		const viewport = screen.getByTestId("viewport");
+		mockScrollMetrics(viewport, {
+			scrollTop: 0,
+			scrollHeight: 1_400,
+			clientHeight: 500,
+		});
+
+		rerender(
+			<AutoFollowHarness
+				enabled={true}
+				turns={[assistantTurn("Restored reply")]}
+			/>,
+		);
+
+		expect(viewport.scrollTop).toBe(1_400);
+	});
 });
 
 function AutoFollowHarness({

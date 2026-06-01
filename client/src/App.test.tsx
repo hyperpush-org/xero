@@ -3181,6 +3181,60 @@ describe('XeroApp current UI', () => {
     expect(screen.getAllByText('mesh-lang')[0]).toBeVisible()
   })
 
+  it('animates the sidebar closed before switching from Computer Use to the agent dock', async () => {
+    const { adapter } = createAdapter({
+      projects: [makeProjectSummary('project-1', 'mesh-lang')],
+      snapshot: makeSnapshot('project-1', 'mesh-lang'),
+      status: makeStatus('project-1', 'mesh-lang'),
+    })
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Computer Use' }))
+
+    const dock = await screen.findByLabelText('Agent dock')
+    await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'false'))
+    expect(within(dock).getByRole('button', { name: 'Close Computer Use' })).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open agent dock' }))
+
+    await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'true'))
+    await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'false'))
+    expect(within(dock).getByRole('button', { name: 'Close agent dock' })).toBeVisible()
+    expect(within(dock).queryByRole('button', { name: 'Clear Computer Use chat' })).not.toBeInTheDocument()
+  })
+
+  it('animates the sidebar closed before switching from the agent dock to Computer Use', async () => {
+    const { adapter } = createAdapter({
+      projects: [makeProjectSummary('project-1', 'mesh-lang')],
+      snapshot: makeSnapshot('project-1', 'mesh-lang'),
+      status: makeStatus('project-1', 'mesh-lang'),
+    })
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open agent dock' }))
+
+    const dock = await screen.findByLabelText('Agent dock')
+    await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'false'))
+    expect(within(dock).getByRole('button', { name: 'Close agent dock' })).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Computer Use' }))
+
+    await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'true'))
+    await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'false'))
+    expect(within(dock).getByRole('button', { name: 'Close Computer Use' })).toBeVisible()
+    expect(within(dock).getByRole('button', { name: 'Clear Computer Use chat' })).toBeVisible()
+  })
+
   it('clears the Computer Use sidebar chat from the header', async () => {
     const { adapter } = createAdapter({
       projects: [makeProjectSummary('project-1', 'mesh-lang')],

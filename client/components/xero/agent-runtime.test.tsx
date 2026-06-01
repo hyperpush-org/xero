@@ -2226,36 +2226,57 @@ describe('AgentRuntime current UI', () => {
     expect(screen.queryByRole('button', { name: 'Jump to latest' })).not.toBeInTheDocument()
   })
 
-  it('does not auto-follow to the tail when mounting a restored terminal conversation', () => {
+  it('auto-follows to the tail when mounting a restored terminal conversation', () => {
     const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
     scrollIntoView.mockClear()
+    const originalRequestAnimationFrame = Object.getOwnPropertyDescriptor(window, 'requestAnimationFrame')
+    Object.defineProperty(window, 'requestAnimationFrame', {
+      configurable: true,
+      writable: true,
+      value: (callback: FrameRequestCallback) => {
+        callback(0)
+        return 1
+      },
+    })
 
-    render(
-      <AgentRuntime
-        agent={makeAgent({
-          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
-          runtimeRun: makeRuntimeRun({
-            status: 'stopped',
-            statusLabel: 'Stopped',
-            isActive: false,
-            isTerminal: true,
-            stoppedAt: '2026-04-29T00:49:00Z',
-          }),
-          runtimeStreamStatus: 'complete',
-          runtimeStreamStatusLabel: 'Complete',
-          runtimeStreamItems: [
-            makeTranscriptItem({ sequence: 1, role: 'user', text: 'What is this project about?' }),
-            makeTranscriptItem({ sequence: 2, text: 'This project is Xero.' }),
-          ],
-        })}
-      />,
-    )
+    try {
+      render(
+        <AgentRuntime
+          agent={makeAgent({
+            runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+            runtimeRun: makeRuntimeRun({
+              status: 'stopped',
+              statusLabel: 'Stopped',
+              isActive: false,
+              isTerminal: true,
+              stoppedAt: '2026-04-29T00:49:00Z',
+            }),
+            runtimeStreamStatus: 'complete',
+            runtimeStreamStatusLabel: 'Complete',
+            runtimeStreamItems: [
+              makeTranscriptItem({ sequence: 1, role: 'user', text: 'What is this project about?' }),
+              makeTranscriptItem({ sequence: 2, text: 'This project is Xero.' }),
+            ],
+          })}
+        />,
+      )
 
-    expect(screen.getByText('This project is Xero.')).toBeVisible()
-    expect(scrollIntoView).not.toHaveBeenCalled()
+      expect(screen.getByText('This project is Xero.')).toBeVisible()
+      expect(scrollIntoView).toHaveBeenCalledWith({
+        block: 'end',
+        inline: 'nearest',
+        behavior: 'auto',
+      })
+    } finally {
+      if (originalRequestAnimationFrame) {
+        Object.defineProperty(window, 'requestAnimationFrame', originalRequestAnimationFrame)
+      } else {
+        Reflect.deleteProperty(window, 'requestAnimationFrame')
+      }
+    }
   })
 
-  it('resets restored conversation scroll when switching projects', () => {
+  it('scrolls restored conversations to latest when switching projects', () => {
     const { rerender } = render(
       <AgentRuntime
         agent={makeAgent({
@@ -2338,7 +2359,8 @@ describe('AgentRuntime current UI', () => {
 
     expect(screen.getByText('Fresh project overview.')).toBeVisible()
     expect(screen.queryByText('This project is Xero.')).not.toBeInTheDocument()
-    expect(viewport.scrollTop).toBe(0)
+    expect(viewport.scrollTop).toBe(1_200)
+    expect(screen.queryByRole('button', { name: 'Jump to latest' })).not.toBeInTheDocument()
   })
 
   it('pauses auto-follow immediately when the user wheels upward during streaming', () => {
@@ -4613,6 +4635,9 @@ describe('AgentRuntime current UI', () => {
       expect(header?.className).not.toContain('translate-y-1')
       expect(header?.textContent).toContain('Computer Use')
       expect(screen.queryByRole('button', { name: 'Close agent dock' })).not.toBeInTheDocument()
+      const fade = header?.parentElement?.lastElementChild
+      expect(fade?.className).toContain('h-2')
+      expect(fade?.className).not.toContain('h-7')
 
       const clearButton = screen.getByRole('button', { name: 'Clear Computer Use chat' })
       expect(clearButton.parentElement).toBe(actions)
