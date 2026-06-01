@@ -19,7 +19,7 @@ use serde_json::json;
 
 use crate::commands::{CommandError, CommandResult};
 
-use super::SOLANA_STATE_ROOT_ENV;
+use super::{SOLANA_APP_DATA_DIRECTORY_NAME, SOLANA_STATE_ROOT_ENV};
 
 const SNAPSHOT_VERSION: u32 = 1;
 const MANIFEST_FILE: &str = "snapshot.json";
@@ -389,7 +389,10 @@ fn default_root() -> CommandResult<PathBuf> {
             "Could not resolve the OS data directory.",
         )
     })?;
-    Ok(data_dir.join("xero").join("solana").join("snapshots"))
+    Ok(data_dir
+        .join(SOLANA_APP_DATA_DIRECTORY_NAME)
+        .join("solana")
+        .join("snapshots"))
 }
 
 fn now_ms() -> u64 {

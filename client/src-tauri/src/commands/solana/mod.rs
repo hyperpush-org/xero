@@ -47,6 +47,7 @@ use crate::{
 
 pub const SOLANA_PROGRAM_ARCHIVE_ROOT_ENV: &str = "XERO_SOLANA_PROGRAM_ARCHIVE_ROOT";
 pub const SOLANA_STATE_ROOT_ENV: &str = "XERO_SOLANA_STATE_ROOT";
+pub const SOLANA_APP_DATA_DIRECTORY_NAME: &str = "com.hyperpush.xero";
 
 pub use audit::{
     coverage::{
@@ -274,7 +275,7 @@ fn default_solana_state_root() -> PathBuf {
         return PathBuf::from(root);
     }
     dirs::data_dir()
-        .map(|dir| dir.join("xero").join("solana"))
+        .map(|dir| dir.join(SOLANA_APP_DATA_DIRECTORY_NAME).join("solana"))
         .unwrap_or_else(|| std::env::temp_dir().join("xero-solana"))
 }
 

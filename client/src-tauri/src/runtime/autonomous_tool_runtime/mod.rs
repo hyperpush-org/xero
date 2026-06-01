@@ -9403,6 +9403,99 @@ mod tests {
     }
 
     #[test]
+    fn solana_catalog_pack_policy_and_request_names_cover_issue_15_inventory() {
+        let expected_tools = [
+            AUTONOMOUS_TOOL_SOLANA_CLUSTER,
+            AUTONOMOUS_TOOL_SOLANA_LOGS,
+            AUTONOMOUS_TOOL_SOLANA_TX,
+            AUTONOMOUS_TOOL_SOLANA_SIMULATE,
+            AUTONOMOUS_TOOL_SOLANA_EXPLAIN,
+            AUTONOMOUS_TOOL_SOLANA_ALT,
+            AUTONOMOUS_TOOL_SOLANA_IDL,
+            AUTONOMOUS_TOOL_SOLANA_CODAMA,
+            AUTONOMOUS_TOOL_SOLANA_PDA,
+            AUTONOMOUS_TOOL_SOLANA_PROGRAM,
+            AUTONOMOUS_TOOL_SOLANA_DEPLOY,
+            AUTONOMOUS_TOOL_SOLANA_UPGRADE_CHECK,
+            AUTONOMOUS_TOOL_SOLANA_SQUADS,
+            AUTONOMOUS_TOOL_SOLANA_VERIFIED_BUILD,
+            AUTONOMOUS_TOOL_SOLANA_AUDIT_STATIC,
+            AUTONOMOUS_TOOL_SOLANA_AUDIT_EXTERNAL,
+            AUTONOMOUS_TOOL_SOLANA_AUDIT_FUZZ,
+            AUTONOMOUS_TOOL_SOLANA_AUDIT_COVERAGE,
+            AUTONOMOUS_TOOL_SOLANA_REPLAY,
+            AUTONOMOUS_TOOL_SOLANA_INDEXER,
+            AUTONOMOUS_TOOL_SOLANA_SECRETS,
+            AUTONOMOUS_TOOL_SOLANA_CLUSTER_DRIFT,
+            AUTONOMOUS_TOOL_SOLANA_COST,
+            AUTONOMOUS_TOOL_SOLANA_DOCS,
+        ];
+        let expected = expected_tools.into_iter().collect::<BTreeSet<_>>();
+
+        let catalog_tools = deferred_tool_catalog(true)
+            .into_iter()
+            .filter(|entry| entry.group == "solana")
+            .map(|entry| entry.tool_name)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(catalog_tools, expected);
+
+        let pack_tools = domain_tool_pack_tools("solana")
+            .expect("solana domain tool pack")
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let expected_owned = expected.iter().map(|tool| tool.to_string()).collect();
+        assert_eq!(pack_tools, expected_owned);
+
+        let policy = AutonomousAgentToolPolicy::from_definition_snapshot(&json!({
+            "toolPolicy": {
+                "allowedToolPacks": ["solana"],
+                "externalServiceAllowed": true,
+                "commandAllowed": true,
+                "destructiveWriteAllowed": true
+            }
+        }))
+        .expect("solana pack policy");
+        for tool in expected {
+            assert!(
+                domain_tool_pack_ids_for_tool(tool).contains(&"solana".to_string()),
+                "{tool} should be discoverable through the solana domain pack"
+            );
+            assert!(
+                tool_allowed_for_runtime_agent_with_policy(
+                    RuntimeAgentIdDto::Engineer,
+                    tool,
+                    Some(&policy),
+                ),
+                "{tool} should be callable when the solana pack is explicitly allowed"
+            );
+        }
+
+        let request_pairs = [
+            (
+                AutonomousToolRequest::SolanaCluster(AutonomousSolanaClusterRequest {
+                    action: AutonomousSolanaClusterAction::List,
+                }),
+                AUTONOMOUS_TOOL_SOLANA_CLUSTER,
+            ),
+            (
+                AutonomousToolRequest::SolanaLogs(AutonomousSolanaLogsRequest {
+                    action: AutonomousSolanaLogsAction::Active,
+                }),
+                AUTONOMOUS_TOOL_SOLANA_LOGS,
+            ),
+            (
+                AutonomousToolRequest::SolanaDocs(AutonomousSolanaDocsRequest {
+                    action: AutonomousSolanaDocsAction::Catalog,
+                }),
+                AUTONOMOUS_TOOL_SOLANA_DOCS,
+            ),
+        ];
+        for (request, tool_name) in request_pairs {
+            assert_eq!(request.tool_name(), tool_name);
+        }
+    }
+
+    #[test]
     fn computer_use_policy_allows_general_purpose_tools_except_agent_builder_surfaces() {
         let policy = AutonomousAgentToolPolicy::from_policy_label("computer_use");
 

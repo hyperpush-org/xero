@@ -132,6 +132,9 @@ Detected/used CLIs include:
 
 If tools are missing, workbench surfaces degraded/missing-toolchain states rather than crashing.
 
+For the current Solana workbench and autonomous tool coverage map, see
+`docs/solana-workbench-tool-coverage-audit.md`.
+
 ### 4) Server features
 
 - Postgres is provided by `server/docker-compose.yml` in local development.
