@@ -1046,10 +1046,10 @@ export function TerminalSidebar({
                     ? "text-foreground after:absolute after:inset-x-0 after:-bottom-px after:z-10 after:h-[2px] after:bg-primary"
                     : "text-muted-foreground hover:text-foreground",
                 )}
+                onClick={() => setActiveTabId(tab.id)}
               >
                 <button
                   className="flex min-w-0 flex-1 items-center truncate text-left font-mono"
-                  onClick={() => setActiveTabId(tab.id)}
                   title={tab.label}
                   type="button"
                 >
@@ -1058,7 +1058,10 @@ export function TerminalSidebar({
                 <button
                   aria-label="Close terminal"
                   className="flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:bg-secondary/60 hover:text-foreground group-hover:opacity-100"
-                  onClick={() => void handleCloseTab(tab.id)}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    void handleCloseTab(tab.id)
+                  }}
                   type="button"
                 >
                   <X className="h-3 w-3" />

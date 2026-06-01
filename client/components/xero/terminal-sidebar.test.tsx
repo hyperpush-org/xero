@@ -382,4 +382,36 @@ describe("TerminalSidebar persistence", () => {
 
     expect(webTab.closest("div")).toHaveClass("text-foreground")
   })
+
+  it("switches tabs when clicking the visual tab outside the label text", async () => {
+    setupAdapter({
+      states: new Map([
+        [
+          "project-a",
+          persistedState(
+            [
+              basePersistedTab,
+              {
+                ...basePersistedTab,
+                clientId: "client-api",
+                label: "api",
+              },
+            ],
+            "client-web",
+          ),
+        ],
+      ]),
+    })
+
+    render(<TerminalSidebar open projectId="project-a" />)
+
+    const apiLabelButton = await screen.findByRole("button", { name: "api" })
+    const apiTab = apiLabelButton.closest("div")
+    expect(apiTab).not.toBeNull()
+    expect(apiTab).not.toHaveClass("text-foreground")
+
+    fireEvent.click(apiTab!)
+
+    await waitFor(() => expect(apiTab).toHaveClass("text-foreground"))
+  })
 })
