@@ -381,6 +381,8 @@ The agent TUI parity matrix lives in `docs/agent-tui-parity.md`. Desktop-only br
 
 Owned-agent file mutations use stale-file protection: agents must observe existing files and pass current SHA-256 guards before writing, while command mutations invalidate prior observations. See `docs/agent-stale-file-protection.md` for the mutation-path inventory and retry contract.
 
+Context pressure, compaction, and same-type handoff behavior are audited in `docs/context-exhaustion-compaction-handoff.md`, including the proposed continuity model-routing rollout.
+
 Scoped verification for harness work:
 
 ```bash
