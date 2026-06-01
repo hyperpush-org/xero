@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension, Row};
@@ -13,8 +16,8 @@ use crate::{
 };
 
 use super::{
-    find_prohibited_runtime_persistence_content, insert_project_record, load_agent_run,
-    open_runtime_database, validate_non_empty_text, NewProjectRecordRecord,
+    coordination_paths_overlap, find_prohibited_runtime_persistence_content, insert_project_record,
+    load_agent_run, open_runtime_database, validate_non_empty_text, NewProjectRecordRecord,
     ProjectRecordImportance, ProjectRecordKind, ProjectRecordRedactionState,
     ProjectRecordVisibility,
 };
@@ -210,27 +213,36 @@ pub struct AgentMailboxInboxCheckRecord {
     pub project_id: String,
     pub agent_session_id: String,
     pub run_id: String,
+    pub scope_paths: Vec<String>,
     pub checked_at: String,
     pub latest_relevant_item_rowid: i64,
     pub relevant_item_count: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentMailboxInboxFilter {
+    pub paths: Vec<String>,
+    pub since_last_check: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentMailboxMutationGateStatus {
     pub active_sibling_count: usize,
+    pub scope_paths: Vec<String>,
     pub checked_at: Option<String>,
     pub latest_relevant_item_rowid: i64,
     pub checked_relevant_item_rowid: Option<i64>,
     pub relevant_item_count: usize,
+    pub relevant_counts_by_priority: BTreeMap<String, usize>,
+    pub relevant_counts_by_item_type: BTreeMap<String, usize>,
+    pub has_valid_mailbox_evidence: bool,
+    pub evidence_stale: bool,
 }
 
 impl AgentMailboxMutationGateStatus {
     pub fn requires_mailbox_check(&self) -> bool {
-        self.active_sibling_count > 0
-            && self
-                .checked_relevant_item_rowid
-                .is_none_or(|checked_rowid| checked_rowid < self.latest_relevant_item_rowid)
+        self.active_sibling_count > 0 && !self.has_valid_mailbox_evidence
     }
 }
 
@@ -385,14 +397,46 @@ pub fn list_agent_mailbox_inbox(
     now: &str,
     limit: usize,
 ) -> CommandResult<Vec<AgentMailboxDeliveryRecord>> {
+    list_agent_mailbox_inbox_filtered(
+        repo_root,
+        project_id,
+        run_id,
+        now,
+        &AgentMailboxInboxFilter::default(),
+        limit,
+    )
+}
+
+pub fn list_agent_mailbox_inbox_filtered(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    now: &str,
+    filter: &AgentMailboxInboxFilter,
+    limit: usize,
+) -> CommandResult<Vec<AgentMailboxDeliveryRecord>> {
     validate_non_empty_text(project_id, "projectId", "agent_mailbox_request_invalid")?;
     validate_non_empty_text(run_id, "runId", "agent_mailbox_request_invalid")?;
     cleanup_expired_agent_mailbox(repo_root, project_id, now)?;
     let limit = limit.clamp(1, MAX_MAILBOX_CONTEXT_ITEMS);
+    let scope_paths = normalize_mailbox_paths(&filter.paths)?;
     let database_path = database_path_for_repo(repo_root);
     let connection = open_runtime_database(repo_root, &database_path)?;
     let Some(actor) = mailbox_actor_for_run(&connection, repo_root, project_id, run_id)? else {
         return Ok(Vec::new());
+    };
+    let since_rowid = if filter.since_last_check {
+        read_freshest_mailbox_inbox_check_for_scope(
+            &connection,
+            &database_path,
+            project_id,
+            run_id,
+            &scope_paths,
+        )?
+        .map(|check| check.latest_relevant_item_rowid)
+        .unwrap_or(0)
+    } else {
+        0
     };
     let mut statement = connection
         .prepare(
@@ -434,6 +478,7 @@ pub fn list_agent_mailbox_inbox(
               AND agent_mailbox_items.status = 'open'
               AND agent_mailbox_items.sender_run_id <> ?3
               AND acknowledgements.run_id IS NULL
+              AND agent_mailbox_items.rowid > ?6
               AND (agent_mailbox_items.target_run_id IS NULL OR agent_mailbox_items.target_run_id = ?3)
               AND (agent_mailbox_items.target_agent_session_id IS NULL OR agent_mailbox_items.target_agent_session_id = ?4)
               AND (agent_mailbox_items.target_role IS NULL OR agent_mailbox_items.target_role = ?5)
@@ -442,11 +487,10 @@ pub fn list_agent_mailbox_inbox(
                     WHEN 'urgent' THEN 0
                     WHEN 'high' THEN 1
                     WHEN 'normal' THEN 2
-                    ELSE 3
+                ELSE 3
                 END,
                 agent_mailbox_items.created_at DESC,
                 agent_mailbox_items.item_id ASC
-            LIMIT ?6
             "#,
         )
         .map_err(|error| {
@@ -460,16 +504,21 @@ pub fn list_agent_mailbox_inbox(
                 run_id,
                 actor.agent_session_id,
                 actor.role.as_deref(),
-                limit as i64,
+                since_rowid,
             ],
             read_delivery_row,
         )
         .map_err(|error| {
             map_mailbox_query_error(&database_path, "agent_mailbox_inbox_query_failed", error)
         })?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+    let deliveries = rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
         map_mailbox_query_error(&database_path, "agent_mailbox_inbox_decode_failed", error)
-    })
+    })?;
+    Ok(deliveries
+        .into_iter()
+        .filter(|delivery| mailbox_item_matches_scope(&delivery.item, &scope_paths))
+        .take(limit)
+        .collect())
 }
 
 pub fn acknowledge_agent_mailbox_item(
@@ -716,11 +765,14 @@ pub fn record_agent_mailbox_inbox_check(
     project_id: &str,
     run_id: &str,
     checked_at: &str,
+    paths: &[String],
 ) -> CommandResult<AgentMailboxInboxCheckRecord> {
     validate_non_empty_text(project_id, "projectId", "agent_mailbox_check_invalid")?;
     validate_non_empty_text(run_id, "runId", "agent_mailbox_check_invalid")?;
     validate_non_empty_text(checked_at, "checkedAt", "agent_mailbox_check_invalid")?;
     cleanup_expired_agent_mailbox(repo_root, project_id, checked_at)?;
+    let scope_paths = normalize_mailbox_paths(paths)?;
+    let scope_paths_json = json_string_array(&scope_paths, "scopePaths")?;
     let database_path = database_path_for_repo(repo_root);
     let connection = open_runtime_database(repo_root, &database_path)?;
     let actor = require_mailbox_actor_for_run(&connection, repo_root, project_id, run_id)?;
@@ -731,6 +783,7 @@ pub fn record_agent_mailbox_inbox_check(
         project_id,
         run_id,
         checked_at,
+        &scope_paths,
     )?;
     connection
         .execute(
@@ -739,12 +792,13 @@ pub fn record_agent_mailbox_inbox_check(
                 project_id,
                 agent_session_id,
                 run_id,
+                scope_paths_json,
                 checked_at,
                 latest_relevant_item_rowid,
                 relevant_item_count
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            ON CONFLICT(project_id, run_id) DO UPDATE SET
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ON CONFLICT(project_id, run_id, scope_paths_json) DO UPDATE SET
                 agent_session_id = excluded.agent_session_id,
                 checked_at = excluded.checked_at,
                 latest_relevant_item_rowid = excluded.latest_relevant_item_rowid,
@@ -754,6 +808,7 @@ pub fn record_agent_mailbox_inbox_check(
                 project_id,
                 actor.agent_session_id,
                 run_id,
+                scope_paths_json,
                 checked_at,
                 high_watermark.latest_relevant_item_rowid,
                 high_watermark.relevant_item_count as i64,
@@ -766,6 +821,7 @@ pub fn record_agent_mailbox_inbox_check(
         project_id: project_id.to_owned(),
         agent_session_id: actor.agent_session_id,
         run_id: run_id.to_owned(),
+        scope_paths,
         checked_at: checked_at.to_owned(),
         latest_relevant_item_rowid: high_watermark.latest_relevant_item_rowid,
         relevant_item_count: high_watermark.relevant_item_count,
@@ -777,10 +833,12 @@ pub fn agent_mailbox_mutation_gate_status(
     project_id: &str,
     run_id: &str,
     now: &str,
+    paths: &[String],
 ) -> CommandResult<AgentMailboxMutationGateStatus> {
     validate_non_empty_text(project_id, "projectId", "agent_mailbox_gate_invalid")?;
     validate_non_empty_text(run_id, "runId", "agent_mailbox_gate_invalid")?;
     validate_non_empty_text(now, "now", "agent_mailbox_gate_invalid")?;
+    let scope_paths = normalize_mailbox_paths(paths)?;
     let active_sibling_count = super::list_active_agent_coordination_presence(
         repo_root,
         project_id,
@@ -792,10 +850,15 @@ pub fn agent_mailbox_mutation_gate_status(
     if active_sibling_count == 0 {
         return Ok(AgentMailboxMutationGateStatus {
             active_sibling_count,
+            scope_paths,
             checked_at: None,
             latest_relevant_item_rowid: 0,
             checked_relevant_item_rowid: None,
             relevant_item_count: 0,
+            relevant_counts_by_priority: BTreeMap::new(),
+            relevant_counts_by_item_type: BTreeMap::new(),
+            has_valid_mailbox_evidence: true,
+            evidence_stale: false,
         });
     }
 
@@ -803,21 +866,58 @@ pub fn agent_mailbox_mutation_gate_status(
     let database_path = database_path_for_repo(repo_root);
     let connection = open_runtime_database(repo_root, &database_path)?;
     let actor = require_mailbox_actor_for_run(&connection, repo_root, project_id, run_id)?;
-    let high_watermark = relevant_mailbox_high_watermark(
+    let summary = relevant_mailbox_summary(
         &connection,
         &database_path,
         &actor,
         project_id,
         run_id,
         now,
+        &scope_paths,
     )?;
-    let check = read_agent_mailbox_inbox_check(&connection, &database_path, project_id, run_id)?;
+    let checks = read_agent_mailbox_inbox_checks(&connection, &database_path, project_id, run_id)?;
+    let evidence = mailbox_evidence_for_scope(
+        &connection,
+        &database_path,
+        &actor,
+        project_id,
+        run_id,
+        now,
+        &scope_paths,
+        &checks,
+    )?;
+    let checked_at = evidence
+        .matching_checks
+        .iter()
+        .filter_map(|check| {
+            OffsetDateTime::parse(&check.checked_at, &Rfc3339)
+                .ok()
+                .map(|parsed| (parsed, check.checked_at.clone()))
+        })
+        .max_by_key(|(parsed, _)| *parsed)
+        .map(|(_, checked_at)| checked_at)
+        .or_else(|| {
+            evidence
+                .matching_checks
+                .first()
+                .map(|check| check.checked_at.clone())
+        });
+    let checked_relevant_item_rowid = evidence
+        .matching_checks
+        .iter()
+        .map(|check| check.latest_relevant_item_rowid)
+        .min();
     Ok(AgentMailboxMutationGateStatus {
         active_sibling_count,
-        checked_at: check.as_ref().map(|record| record.checked_at.clone()),
-        latest_relevant_item_rowid: high_watermark.latest_relevant_item_rowid,
-        checked_relevant_item_rowid: check.map(|record| record.latest_relevant_item_rowid),
-        relevant_item_count: high_watermark.relevant_item_count,
+        scope_paths,
+        checked_at,
+        latest_relevant_item_rowid: summary.high_watermark.latest_relevant_item_rowid,
+        checked_relevant_item_rowid,
+        relevant_item_count: summary.high_watermark.relevant_item_count,
+        relevant_counts_by_priority: summary.counts_by_priority,
+        relevant_counts_by_item_type: summary.counts_by_item_type,
+        has_valid_mailbox_evidence: evidence.valid,
+        evidence_stale: !evidence.valid && !evidence.matching_checks.is_empty(),
     })
 }
 
@@ -1066,6 +1166,21 @@ struct RelevantMailboxHighWatermark {
     relevant_item_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RelevantMailboxSummary {
+    high_watermark: RelevantMailboxHighWatermark,
+    counts_by_priority: BTreeMap<String, usize>,
+    counts_by_item_type: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RelevantMailboxCandidate {
+    rowid: i64,
+    item_type: AgentMailboxItemType,
+    priority: AgentMailboxPriority,
+    related_paths: Vec<String>,
+}
+
 fn relevant_mailbox_high_watermark(
     connection: &Connection,
     database_path: &Path,
@@ -1073,13 +1188,74 @@ fn relevant_mailbox_high_watermark(
     project_id: &str,
     run_id: &str,
     now: &str,
+    paths: &[String],
 ) -> CommandResult<RelevantMailboxHighWatermark> {
-    connection
-        .query_row(
+    relevant_mailbox_summary(
+        connection,
+        database_path,
+        actor,
+        project_id,
+        run_id,
+        now,
+        paths,
+    )
+    .map(|summary| summary.high_watermark)
+}
+
+fn relevant_mailbox_summary(
+    connection: &Connection,
+    database_path: &Path,
+    actor: &AgentMailboxActor,
+    project_id: &str,
+    run_id: &str,
+    now: &str,
+    paths: &[String],
+) -> CommandResult<RelevantMailboxSummary> {
+    let candidates =
+        relevant_mailbox_candidates(connection, database_path, actor, project_id, run_id, now)?;
+    let mut latest_relevant_item_rowid = 0;
+    let mut relevant_item_count = 0;
+    let mut counts_by_priority = BTreeMap::new();
+    let mut counts_by_item_type = BTreeMap::new();
+    for candidate in candidates
+        .into_iter()
+        .filter(|candidate| mailbox_candidate_matches_scope(candidate, paths))
+    {
+        latest_relevant_item_rowid = latest_relevant_item_rowid.max(candidate.rowid);
+        relevant_item_count += 1;
+        *counts_by_priority
+            .entry(candidate.priority.as_str().to_owned())
+            .or_insert(0) += 1;
+        *counts_by_item_type
+            .entry(candidate.item_type.as_str().to_owned())
+            .or_insert(0) += 1;
+    }
+    Ok(RelevantMailboxSummary {
+        high_watermark: RelevantMailboxHighWatermark {
+            latest_relevant_item_rowid,
+            relevant_item_count,
+        },
+        counts_by_priority,
+        counts_by_item_type,
+    })
+}
+
+fn relevant_mailbox_candidates(
+    connection: &Connection,
+    database_path: &Path,
+    actor: &AgentMailboxActor,
+    project_id: &str,
+    run_id: &str,
+    now: &str,
+) -> CommandResult<Vec<RelevantMailboxCandidate>> {
+    let mut statement = connection
+        .prepare(
             r#"
             SELECT
-                COALESCE(MAX(rowid), 0),
-                COUNT(*)
+                rowid,
+                item_type,
+                priority,
+                related_paths_json
             FROM agent_mailbox_items
             WHERE project_id = ?1
               AND expires_at > ?2
@@ -1089,6 +1265,16 @@ fn relevant_mailbox_high_watermark(
               AND (target_agent_session_id IS NULL OR target_agent_session_id = ?4)
               AND (target_role IS NULL OR target_role = ?5)
             "#,
+        )
+        .map_err(|error| {
+            map_mailbox_query_error(
+                database_path,
+                "agent_mailbox_high_watermark_prepare_failed",
+                error,
+            )
+        })?;
+    let rows = statement
+        .query_map(
             params![
                 project_id,
                 now,
@@ -1097,59 +1283,229 @@ fn relevant_mailbox_high_watermark(
                 actor.role.as_deref(),
             ],
             |row| {
-                let count: i64 = row.get(1)?;
-                Ok(RelevantMailboxHighWatermark {
-                    latest_relevant_item_rowid: row.get(0)?,
-                    relevant_item_count: count.max(0) as usize,
+                let item_type: String = row.get(1)?;
+                let priority: String = row.get(2)?;
+                let related_paths_json: String = row.get(3)?;
+                let related_paths = serde_json::from_str(&related_paths_json).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        3,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?;
+                Ok(RelevantMailboxCandidate {
+                    rowid: row.get(0)?,
+                    item_type: parse_mailbox_item_type(&item_type),
+                    priority: parse_mailbox_priority(&priority),
+                    related_paths,
                 })
             },
         )
         .map_err(|error| {
             map_mailbox_query_error(
-                &database_path,
-                "agent_mailbox_high_watermark_read_failed",
+                database_path,
+                "agent_mailbox_high_watermark_query_failed",
                 error,
             )
+        })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+        map_mailbox_query_error(
+            database_path,
+            "agent_mailbox_high_watermark_decode_failed",
+            error,
+        )
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MailboxEvidenceForScope {
+    valid: bool,
+    matching_checks: Vec<AgentMailboxInboxCheckRecord>,
+}
+
+fn mailbox_evidence_for_scope(
+    connection: &Connection,
+    database_path: &Path,
+    actor: &AgentMailboxActor,
+    project_id: &str,
+    run_id: &str,
+    now: &str,
+    paths: &[String],
+    checks: &[AgentMailboxInboxCheckRecord],
+) -> CommandResult<MailboxEvidenceForScope> {
+    if paths.is_empty() {
+        let unfiltered = checks
+            .iter()
+            .filter(|check| check.scope_paths.is_empty())
+            .max_by_key(|check| check.latest_relevant_item_rowid);
+        let matching_checks = unfiltered.into_iter().cloned().collect::<Vec<_>>();
+        let Some(check) = unfiltered else {
+            return Ok(MailboxEvidenceForScope {
+                valid: false,
+                matching_checks,
+            });
+        };
+        let high_watermark = relevant_mailbox_high_watermark(
+            connection,
+            database_path,
+            actor,
+            project_id,
+            run_id,
+            now,
+            &[],
+        )?;
+        return Ok(MailboxEvidenceForScope {
+            valid: check.latest_relevant_item_rowid >= high_watermark.latest_relevant_item_rowid,
+            matching_checks,
+        });
+    }
+
+    let mut matching_checks = Vec::new();
+    for path in paths {
+        let mut best_check: Option<&AgentMailboxInboxCheckRecord> = None;
+        for check in checks
+            .iter()
+            .filter(|check| mailbox_check_covers_path(check, path))
+        {
+            if best_check.is_none_or(|best| {
+                check.latest_relevant_item_rowid > best.latest_relevant_item_rowid
+            }) {
+                best_check = Some(check);
+            }
+        }
+        let Some(check) = best_check else {
+            return Ok(MailboxEvidenceForScope {
+                valid: false,
+                matching_checks,
+            });
+        };
+        matching_checks.push(check.clone());
+        let path_scope = [path.clone()];
+        let high_watermark = relevant_mailbox_high_watermark(
+            connection,
+            database_path,
+            actor,
+            project_id,
+            run_id,
+            now,
+            &path_scope,
+        )?;
+        if check.latest_relevant_item_rowid < high_watermark.latest_relevant_item_rowid {
+            return Ok(MailboxEvidenceForScope {
+                valid: false,
+                matching_checks,
+            });
+        }
+    }
+
+    Ok(MailboxEvidenceForScope {
+        valid: true,
+        matching_checks,
+    })
+}
+
+fn mailbox_check_covers_path(check: &AgentMailboxInboxCheckRecord, path: &str) -> bool {
+    check.scope_paths.is_empty()
+        || check
+            .scope_paths
+            .iter()
+            .any(|scope_path| coordination_paths_overlap(scope_path, path))
+}
+
+fn mailbox_item_matches_scope(item: &AgentMailboxItemRecord, scope_paths: &[String]) -> bool {
+    scope_paths.is_empty()
+        || item.related_paths.iter().any(|related_path| {
+            scope_paths
+                .iter()
+                .any(|scope_path| coordination_paths_overlap(scope_path, related_path))
         })
 }
 
-fn read_agent_mailbox_inbox_check(
+fn mailbox_candidate_matches_scope(
+    candidate: &RelevantMailboxCandidate,
+    scope_paths: &[String],
+) -> bool {
+    scope_paths.is_empty()
+        || candidate.related_paths.iter().any(|related_path| {
+            scope_paths
+                .iter()
+                .any(|scope_path| coordination_paths_overlap(scope_path, related_path))
+        })
+}
+
+fn read_agent_mailbox_inbox_checks(
     connection: &Connection,
     database_path: &Path,
     project_id: &str,
     run_id: &str,
-) -> CommandResult<Option<AgentMailboxInboxCheckRecord>> {
-    connection
-        .query_row(
+) -> CommandResult<Vec<AgentMailboxInboxCheckRecord>> {
+    let mut statement = connection
+        .prepare(
             r#"
             SELECT
                 project_id,
                 agent_session_id,
                 run_id,
+                scope_paths_json,
                 checked_at,
                 latest_relevant_item_rowid,
                 relevant_item_count
             FROM agent_mailbox_inbox_checks
             WHERE project_id = ?1
               AND run_id = ?2
+            ORDER BY checked_at DESC
             "#,
-            params![project_id, run_id],
-            |row| {
-                let relevant_item_count: i64 = row.get(5)?;
-                Ok(AgentMailboxInboxCheckRecord {
-                    project_id: row.get(0)?,
-                    agent_session_id: row.get(1)?,
-                    run_id: row.get(2)?,
-                    checked_at: row.get(3)?,
-                    latest_relevant_item_rowid: row.get(4)?,
-                    relevant_item_count: relevant_item_count.max(0) as usize,
-                })
-            },
         )
-        .optional()
         .map_err(|error| {
-            map_mailbox_query_error(&database_path, "agent_mailbox_check_read_failed", error)
+            map_mailbox_query_error(database_path, "agent_mailbox_check_prepare_failed", error)
+        })?;
+    let rows = statement
+        .query_map(params![project_id, run_id], read_inbox_check_row)
+        .map_err(|error| {
+            map_mailbox_query_error(database_path, "agent_mailbox_check_query_failed", error)
+        })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+        map_mailbox_query_error(database_path, "agent_mailbox_check_decode_failed", error)
+    })
+}
+
+fn read_freshest_mailbox_inbox_check_for_scope(
+    connection: &Connection,
+    database_path: &Path,
+    project_id: &str,
+    run_id: &str,
+    scope_paths: &[String],
+) -> CommandResult<Option<AgentMailboxInboxCheckRecord>> {
+    let checks = read_agent_mailbox_inbox_checks(connection, database_path, project_id, run_id)?;
+    Ok(checks
+        .into_iter()
+        .filter(|check| {
+            if scope_paths.is_empty() {
+                check.scope_paths.is_empty()
+            } else {
+                scope_paths
+                    .iter()
+                    .all(|path| mailbox_check_covers_path(check, path))
+            }
         })
+        .max_by_key(|check| check.latest_relevant_item_rowid))
+}
+
+fn read_inbox_check_row(row: &Row<'_>) -> rusqlite::Result<AgentMailboxInboxCheckRecord> {
+    let scope_paths_json: String = row.get(3)?;
+    let scope_paths = serde_json::from_str(&scope_paths_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(error))
+    })?;
+    let relevant_item_count: i64 = row.get(6)?;
+    Ok(AgentMailboxInboxCheckRecord {
+        project_id: row.get(0)?,
+        agent_session_id: row.get(1)?,
+        run_id: row.get(2)?,
+        scope_paths,
+        checked_at: row.get(4)?,
+        latest_relevant_item_rowid: row.get(5)?,
+        relevant_item_count: relevant_item_count.max(0) as usize,
+    })
 }
 
 fn read_agent_mailbox_item(
@@ -1444,7 +1800,8 @@ mod tests {
             migrations::migrations,
             project_store::{
                 create_agent_session, insert_agent_run, list_project_records, project_record_lance,
-                AgentSessionCreateRecord, AgentSessionRecord, NewAgentRunRecord,
+                upsert_agent_coordination_presence, AgentSessionCreateRecord, AgentSessionRecord,
+                NewAgentRunRecord, UpsertAgentCoordinationPresenceRecord,
             },
         },
     };
@@ -1516,6 +1873,54 @@ mod tests {
         )
         .expect("insert agent run");
         session
+    }
+
+    fn mark_run_active(repo_root: &Path, project_id: &str, run_id: &str, at: &str) {
+        upsert_agent_coordination_presence(
+            repo_root,
+            &UpsertAgentCoordinationPresenceRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                pane_id: None,
+                status: "running".into(),
+                current_phase: "implementation".into(),
+                activity_summary: "Active test sibling".into(),
+                last_event_id: None,
+                last_event_kind: None,
+                updated_at: at.into(),
+                lease_seconds: Some(600),
+            },
+        )
+        .expect("mark run active");
+    }
+
+    fn publish_path_item(
+        repo_root: &Path,
+        project_id: &str,
+        sender_run_id: &str,
+        title: &str,
+        related_path: &str,
+        created_at: &str,
+    ) -> AgentMailboxItemRecord {
+        publish_agent_mailbox_item(
+            repo_root,
+            &NewAgentMailboxItemRecord {
+                project_id: project_id.into(),
+                sender_run_id: sender_run_id.into(),
+                item_type: AgentMailboxItemType::HeadsUp,
+                parent_item_id: None,
+                target_agent_session_id: None,
+                target_run_id: None,
+                target_role: None,
+                title: title.into(),
+                body: format!("Temporary coordination item for {related_path}."),
+                related_paths: vec![related_path.into()],
+                priority: AgentMailboxPriority::Normal,
+                created_at: created_at.into(),
+                ttl_seconds: Some(600),
+            },
+        )
+        .expect("publish path mailbox item")
     }
 
     #[test]
@@ -1685,6 +2090,356 @@ mod tests {
         )
         .expect("expired target inbox")
         .is_empty());
+    }
+
+    #[test]
+    fn path_scoped_inbox_returns_only_overlapping_items() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("repo dir");
+        let project_id = "project-mailbox-path-read";
+        create_project_database(&repo_root, project_id);
+        seed_agent_run(&repo_root, project_id, "run-sender", "Sender");
+        seed_agent_run(&repo_root, project_id, "run-reader", "Reader");
+        let src_item = publish_path_item(
+            &repo_root,
+            project_id,
+            "run-sender",
+            "Source heads up",
+            "src/lib.rs",
+            "2026-05-03T00:00:00Z",
+        );
+        publish_path_item(
+            &repo_root,
+            project_id,
+            "run-sender",
+            "Docs heads up",
+            "docs/readme.md",
+            "2026-05-03T00:00:01Z",
+        );
+
+        let inbox = list_agent_mailbox_inbox_filtered(
+            &repo_root,
+            project_id,
+            "run-reader",
+            "2026-05-03T00:01:00Z",
+            &AgentMailboxInboxFilter {
+                paths: vec!["src".into()],
+                since_last_check: false,
+            },
+            10,
+        )
+        .expect("path scoped inbox");
+
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].item.item_id, src_item.item_id);
+    }
+
+    #[test]
+    fn unfiltered_inbox_check_satisfies_later_mutation_for_any_path() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("repo dir");
+        let project_id = "project-mailbox-unfiltered-evidence";
+        create_project_database(&repo_root, project_id);
+        seed_agent_run(&repo_root, project_id, "run-sender", "Sender");
+        seed_agent_run(&repo_root, project_id, "run-reader", "Reader");
+        mark_run_active(&repo_root, project_id, "run-sender", "2026-05-03T00:00:00Z");
+        publish_path_item(
+            &repo_root,
+            project_id,
+            "run-sender",
+            "Any path heads up",
+            "src/lib.rs",
+            "2026-05-03T00:00:00Z",
+        );
+
+        record_agent_mailbox_inbox_check(
+            &repo_root,
+            project_id,
+            "run-reader",
+            "2026-05-03T00:01:00Z",
+            &[],
+        )
+        .expect("record unfiltered check");
+        let status = agent_mailbox_mutation_gate_status(
+            &repo_root,
+            project_id,
+            "run-reader",
+            "2026-05-03T00:02:00Z",
+            &["docs/readme.md".into()],
+        )
+        .expect("mutation status");
+
+        assert!(!status.requires_mailbox_check());
+    }
+
+    #[test]
+    fn path_scoped_inbox_check_satisfies_overlapping_file_only() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("repo dir");
+        let project_id = "project-mailbox-scoped-evidence";
+        create_project_database(&repo_root, project_id);
+        seed_agent_run(&repo_root, project_id, "run-sender", "Sender");
+        seed_agent_run(&repo_root, project_id, "run-reader", "Reader");
+        mark_run_active(&repo_root, project_id, "run-sender", "2026-05-03T00:00:00Z");
+        publish_path_item(
+            &repo_root,
+            project_id,
+            "run-sender",
+            "Source heads up",
+            "src/lib.rs",
+            "2026-05-03T00:00:00Z",
+        );
+        record_agent_mailbox_inbox_check(
+            &repo_root,
+            project_id,
+            "run-reader",
+            "2026-05-03T00:01:00Z",
+            &["src".into()],
+        )
+        .expect("record scoped check");
+
+        let overlapping = agent_mailbox_mutation_gate_status(
+            &repo_root,
+            project_id,
+            "run-reader",
+            "2026-05-03T00:02:00Z",
+            &["src/lib.rs".into()],
+        )
+        .expect("overlapping status");
+        let unrelated = agent_mailbox_mutation_gate_status(
+            &repo_root,
+            project_id,
+            "run-reader",
+            "2026-05-03T00:02:00Z",
+            &["docs/readme.md".into()],
+        )
+        .expect("unrelated status");
+
+        assert!(!overlapping.requires_mailbox_check());
+        assert!(unrelated.requires_mailbox_check());
+    }
+
+    #[test]
+    fn later_overlapping_mailbox_item_stales_scoped_evidence() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("repo dir");
+        let project_id = "project-mailbox-overlap-stale";
+        create_project_database(&repo_root, project_id);
+        seed_agent_run(&repo_root, project_id, "run-sender", "Sender");
+        seed_agent_run(&repo_root, project_id, "run-reader", "Reader");
+        mark_run_active(&repo_root, project_id, "run-sender", "2026-05-03T00:00:00Z");
+        publish_path_item(
+            &repo_root,
+            project_id,
+            "run-sender",
+            "Initial source heads up",
+            "src/lib.rs",
+            "2026-05-03T00:00:00Z",
+        );
+        record_agent_mailbox_inbox_check(
+            &repo_root,
+            project_id,
+            "run-reader",
+            "2026-05-03T00:01:00Z",
+            &["src/lib.rs".into()],
+        )
+        .expect("record scoped check");
+        publish_path_item(
+            &repo_root,
+            project_id,
+            "run-sender",
+            "Later source heads up",
+            "src/lib.rs",
+            "2026-05-03T00:02:00Z",
+        );
+
+        let status = agent_mailbox_mutation_gate_status(
+            &repo_root,
+            project_id,
+            "run-reader",
+            "2026-05-03T00:03:00Z",
+            &["src/lib.rs".into()],
+        )
+        .expect("stale status");
+
+        assert!(status.requires_mailbox_check());
+    }
+
+    #[test]
+    fn later_unrelated_mailbox_item_does_not_stale_scoped_evidence() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("repo dir");
+        let project_id = "project-mailbox-unrelated-fresh";
+        create_project_database(&repo_root, project_id);
+        seed_agent_run(&repo_root, project_id, "run-sender", "Sender");
+        seed_agent_run(&repo_root, project_id, "run-reader", "Reader");
+        mark_run_active(&repo_root, project_id, "run-sender", "2026-05-03T00:00:00Z");
+        publish_path_item(
+            &repo_root,
+            project_id,
+            "run-sender",
+            "Initial source heads up",
+            "src/lib.rs",
+            "2026-05-03T00:00:00Z",
+        );
+        record_agent_mailbox_inbox_check(
+            &repo_root,
+            project_id,
+            "run-reader",
+            "2026-05-03T00:01:00Z",
+            &["src/lib.rs".into()],
+        )
+        .expect("record scoped check");
+        publish_path_item(
+            &repo_root,
+            project_id,
+            "run-sender",
+            "Later docs heads up",
+            "docs/readme.md",
+            "2026-05-03T00:02:00Z",
+        );
+
+        let status = agent_mailbox_mutation_gate_status(
+            &repo_root,
+            project_id,
+            "run-reader",
+            "2026-05-03T00:03:00Z",
+            &["src/lib.rs".into()],
+        )
+        .expect("fresh scoped status");
+
+        assert!(!status.requires_mailbox_check());
+    }
+
+    #[test]
+    fn directory_prefix_overlap_counts_for_scoped_evidence() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("repo dir");
+        let project_id = "project-mailbox-directory-overlap";
+        create_project_database(&repo_root, project_id);
+        seed_agent_run(&repo_root, project_id, "run-sender", "Sender");
+        seed_agent_run(&repo_root, project_id, "run-reader", "Reader");
+        mark_run_active(&repo_root, project_id, "run-sender", "2026-05-03T00:00:00Z");
+        publish_path_item(
+            &repo_root,
+            project_id,
+            "run-sender",
+            "Nested source heads up",
+            "src/parser/mod.rs",
+            "2026-05-03T00:00:00Z",
+        );
+
+        record_agent_mailbox_inbox_check(
+            &repo_root,
+            project_id,
+            "run-reader",
+            "2026-05-03T00:01:00Z",
+            &["src".into()],
+        )
+        .expect("record directory check");
+        let status = agent_mailbox_mutation_gate_status(
+            &repo_root,
+            project_id,
+            "run-reader",
+            "2026-05-03T00:02:00Z",
+            &["src/parser/mod.rs".into()],
+        )
+        .expect("directory overlap status");
+
+        assert!(!status.requires_mailbox_check());
+    }
+
+    #[test]
+    fn since_last_check_returns_only_newer_scoped_items() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("repo dir");
+        let project_id = "project-mailbox-since-last-check";
+        create_project_database(&repo_root, project_id);
+        seed_agent_run(&repo_root, project_id, "run-sender", "Sender");
+        seed_agent_run(&repo_root, project_id, "run-reader", "Reader");
+        publish_path_item(
+            &repo_root,
+            project_id,
+            "run-sender",
+            "Initial source heads up",
+            "src/lib.rs",
+            "2026-05-03T00:00:00Z",
+        );
+        record_agent_mailbox_inbox_check(
+            &repo_root,
+            project_id,
+            "run-reader",
+            "2026-05-03T00:01:00Z",
+            &["src/lib.rs".into()],
+        )
+        .expect("record scoped check");
+        let later = publish_path_item(
+            &repo_root,
+            project_id,
+            "run-sender",
+            "Later source heads up",
+            "src/lib.rs",
+            "2026-05-03T00:02:00Z",
+        );
+
+        let inbox = list_agent_mailbox_inbox_filtered(
+            &repo_root,
+            project_id,
+            "run-reader",
+            "2026-05-03T00:03:00Z",
+            &AgentMailboxInboxFilter {
+                paths: vec!["src/lib.rs".into()],
+                since_last_check: true,
+            },
+            10,
+        )
+        .expect("since last scoped inbox");
+
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].item.item_id, later.item_id);
+    }
+
+    #[test]
+    fn inbox_status_returns_metadata_counts_without_mailbox_bodies() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("repo dir");
+        let project_id = "project-mailbox-status-metadata";
+        create_project_database(&repo_root, project_id);
+        seed_agent_run(&repo_root, project_id, "run-sender", "Sender");
+        seed_agent_run(&repo_root, project_id, "run-reader", "Reader");
+        mark_run_active(&repo_root, project_id, "run-sender", "2026-05-03T00:00:00Z");
+        publish_path_item(
+            &repo_root,
+            project_id,
+            "run-sender",
+            "Status source heads up",
+            "src/lib.rs",
+            "2026-05-03T00:00:00Z",
+        );
+
+        let status = agent_mailbox_mutation_gate_status(
+            &repo_root,
+            project_id,
+            "run-reader",
+            "2026-05-03T00:01:00Z",
+            &["src/lib.rs".into()],
+        )
+        .expect("status metadata");
+
+        assert_eq!(status.relevant_item_count, 1);
+        assert_eq!(
+            status.relevant_counts_by_item_type.get("heads_up"),
+            Some(&1)
+        );
+        assert_eq!(status.relevant_counts_by_priority.get("normal"), Some(&1));
     }
 
     #[test]

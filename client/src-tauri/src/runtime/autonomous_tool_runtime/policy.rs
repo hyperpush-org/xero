@@ -8,14 +8,14 @@ use super::{
     tool_allowed_for_runtime_agent_with_policy, AutonomousBrowserAction,
     AutonomousCommandPolicyOutcome, AutonomousCommandPolicyProfile, AutonomousCommandPolicyTrace,
     AutonomousCommandRequest, AutonomousDesktopControlAction, AutonomousDesktopObserveAction,
-    AutonomousMacosAutomationAction, AutonomousMcpAction, AutonomousProcessActionRiskLevel,
-    AutonomousProcessManagerAction, AutonomousProcessManagerPolicyTrace,
-    AutonomousProcessOwnershipScope, AutonomousProjectContextAction, AutonomousSafetyApprovalGrant,
-    AutonomousSafetyPolicyAction, AutonomousSafetyPolicyDecision,
-    AutonomousSystemDiagnosticsAction, AutonomousSystemDiagnosticsPolicyTrace,
-    AutonomousToolRequest, AutonomousToolRuntime, AutonomousWorkflowDefinitionAction,
-    AUTONOMOUS_TOOL_COMMAND_PROBE, AUTONOMOUS_TOOL_COMMAND_VERIFY, AUTONOMOUS_TOOL_HOST_COMMAND,
-    DEFAULT_COMMAND_TIMEOUT_MS,
+    AutonomousFsTransactionAction, AutonomousMacosAutomationAction, AutonomousMcpAction,
+    AutonomousProcessActionRiskLevel, AutonomousProcessManagerAction,
+    AutonomousProcessManagerPolicyTrace, AutonomousProcessOwnershipScope,
+    AutonomousProjectContextAction, AutonomousSafetyApprovalGrant, AutonomousSafetyPolicyAction,
+    AutonomousSafetyPolicyDecision, AutonomousSystemDiagnosticsAction,
+    AutonomousSystemDiagnosticsPolicyTrace, AutonomousToolRequest, AutonomousToolRuntime,
+    AutonomousWorkflowDefinitionAction, AUTONOMOUS_TOOL_COMMAND_PROBE,
+    AUTONOMOUS_TOOL_COMMAND_VERIFY, AUTONOMOUS_TOOL_HOST_COMMAND, DEFAULT_COMMAND_TIMEOUT_MS,
 };
 use crate::runtime::redaction::{
     find_prohibited_persistence_content, is_sensitive_argument_name, render_command_for_persistence,
@@ -132,7 +132,10 @@ impl AutonomousToolRuntime {
         }
 
         if request_requires_mailbox_check(self, tool_name, request)? {
-            if let Some((code, explanation)) = mailbox_check_policy_denial(self)? {
+            let mailbox_scope_paths = mailbox_gate_scope_paths(request);
+            if let Some((code, explanation)) =
+                mailbox_check_policy_denial(self, &mailbox_scope_paths)?
+            {
                 return Ok(safety_decision(
                     AutonomousSafetyPolicyAction::Deny,
                     code,
@@ -170,7 +173,10 @@ impl AutonomousToolRuntime {
         request: &AutonomousToolRequest,
     ) -> CommandResult<()> {
         if request_requires_mailbox_check(self, tool_name, request)? {
-            if let Some((code, explanation)) = mailbox_check_policy_denial(self)? {
+            let mailbox_scope_paths = mailbox_gate_scope_paths(request);
+            if let Some((code, explanation)) =
+                mailbox_check_policy_denial(self, &mailbox_scope_paths)?
+            {
                 return Err(CommandError::new(
                     code,
                     CommandErrorClass::PolicyDenied,
@@ -794,8 +800,71 @@ fn repository_write_request(request: &AutonomousToolRequest) -> bool {
     )
 }
 
+fn mailbox_gate_scope_paths(request: &AutonomousToolRequest) -> Vec<String> {
+    let mut paths = Vec::new();
+    match request {
+        AutonomousToolRequest::Edit(request) => paths.push(request.path.clone()),
+        AutonomousToolRequest::Write(request) => paths.push(request.path.clone()),
+        AutonomousToolRequest::Patch(request) => {
+            if let Some(path) = request.path.clone() {
+                paths.push(path);
+            }
+            paths.extend(
+                request
+                    .operations
+                    .iter()
+                    .map(|operation| operation.path.clone()),
+            );
+        }
+        AutonomousToolRequest::Copy(request) => paths.push(request.to.clone()),
+        AutonomousToolRequest::FsTransaction(request) => {
+            for operation in &request.operations {
+                if let Some(path) = operation.path.clone() {
+                    paths.push(path);
+                }
+                if let Some(to) = operation.to.clone() {
+                    paths.push(to);
+                }
+                if let Some(to_path) = operation.to_path.clone() {
+                    paths.push(to_path);
+                }
+                if matches!(
+                    operation.action,
+                    AutonomousFsTransactionAction::Rename
+                        | AutonomousFsTransactionAction::DeleteFile
+                        | AutonomousFsTransactionAction::DeleteDirectory
+                ) {
+                    if let Some(from) = operation.from.clone() {
+                        paths.push(from);
+                    }
+                    if let Some(from_path) = operation.from_path.clone() {
+                        paths.push(from_path);
+                    }
+                }
+            }
+        }
+        AutonomousToolRequest::JsonEdit(request)
+        | AutonomousToolRequest::TomlEdit(request)
+        | AutonomousToolRequest::YamlEdit(request) => paths.push(request.path.clone()),
+        AutonomousToolRequest::Delete(request) => paths.push(request.path.clone()),
+        AutonomousToolRequest::Rename(request) => {
+            paths.push(request.from_path.clone());
+            paths.push(request.to_path.clone());
+        }
+        AutonomousToolRequest::Mkdir(request) => paths.push(request.path.clone()),
+        AutonomousToolRequest::NotebookEdit(request) => paths.push(request.path.clone()),
+        _ => {}
+    }
+    paths
+        .into_iter()
+        .map(|path| path.trim().to_owned())
+        .filter(|path| !path.is_empty())
+        .collect()
+}
+
 fn mailbox_check_policy_denial(
     runtime: &AutonomousToolRuntime,
+    paths: &[String],
 ) -> CommandResult<Option<(&'static str, String)>> {
     let Some(run_context) = runtime.agent_run_context() else {
         return Ok(None);
@@ -806,6 +875,7 @@ fn mailbox_check_policy_denial(
         &run_context.project_id,
         &run_context.run_id,
         &now,
+        paths,
     )?;
     if !status.requires_mailbox_check() {
         return Ok(None);
@@ -817,13 +887,30 @@ fn mailbox_check_policy_denial(
         ),
         None => "this run has not checked its mailbox for the current coordination state".into(),
     };
+    let retry_guidance = mailbox_check_retry_guidance(paths);
     Ok(Some((
         "policy_requires_mailbox_check_before_mutation",
         format!(
-            "Xero denied this project-changing mutation because {freshness} while {} same-project sibling run(s) are active. Call `agent_coordination` with action `read_inbox`, review the temporary mailbox, then retry the mutation.",
+            "Xero denied this project-changing mutation because {freshness} while {} same-project sibling run(s) are active. {retry_guidance}",
             status.active_sibling_count
         ),
     )))
+}
+
+fn mailbox_check_retry_guidance(paths: &[String]) -> String {
+    if paths.is_empty() {
+        "Call `agent_coordination` with action `check_inbox_status` if you want metadata first, or action `read_inbox` unfiltered, review the temporary mailbox, then retry the mutation."
+            .to_owned()
+    } else {
+        format!(
+            "Call `agent_coordination` with action `check_inbox_status` and `paths`, or action `read_inbox` with `paths: [{}]`, review the scoped temporary mailbox, then retry the mutation.",
+            paths
+                .iter()
+                .map(|path| format!("\"{path}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
 }
 
 fn browser_action_is_observe(action: &AutonomousBrowserAction) -> bool {
@@ -2012,6 +2099,15 @@ mod tests {
     use crate::runtime::AutonomousToolOutput;
     use serde_json::json;
     use tempfile::tempdir;
+
+    #[test]
+    fn mailbox_retry_guidance_recommends_path_scoped_read_when_paths_are_known() {
+        let guidance = mailbox_check_retry_guidance(&["src/lib.rs".into()]);
+
+        assert!(guidance.contains("check_inbox_status"));
+        assert!(guidance.contains("read_inbox"));
+        assert!(guidance.contains(r#""src/lib.rs""#));
+    }
 
     #[test]
     fn package_manager_run_allows_introspected_verification_script() {

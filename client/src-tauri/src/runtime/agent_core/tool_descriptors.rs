@@ -4596,7 +4596,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_AGENT_COORDINATION,
-            "Read and manage Xero's temporary active-agent coordination bus and swarm mailbox. Use it to inspect active sibling runs, check advisory file-reservation conflicts, claim/release reservations, publish/read/ack/reply/resolve temporary mailbox items, promote an item to a durable-context review candidate, and explain recent same-project activity. Acknowledging code-history notices refreshes this run's observed code workspace epoch; re-read affected files first, then claim reservations again to renew stale leases. This is TTL-scoped app-data runtime state, not durable project memory.",
+            "Read and manage Xero's temporary active-agent coordination bus and swarm mailbox. Use it to inspect active sibling runs, check advisory file-reservation conflicts, claim/release reservations, publish/read/ack/reply/resolve temporary mailbox items, promote an item to a durable-context review candidate, and explain recent same-project activity. Before a coherent batch of file edits with active sibling runs, prefer one `check_inbox_status` or path-scoped `read_inbox` using the intended write paths; do not re-read between every file write unless policy reports stale evidence. Prefer `patch` or `fs_transaction` for coherent multi-file changes when appropriate. Acknowledging code-history notices refreshes this run's observed code workspace epoch; re-read affected files first, then claim reservations again to renew stale leases. This is TTL-scoped app-data runtime state, not durable project memory.",
             object_schema(
                 &["action"],
                 &[
@@ -4613,6 +4613,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                                 "explain_activity",
                                 "publish_message",
                                 "read_inbox",
+                                "check_inbox_status",
                                 "acknowledge",
                                 "reply",
                                 "mark_resolved",
@@ -4623,14 +4624,14 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     (
                         "path",
                         string_schema(
-                            "Single repo-relative file or directory path for conflict checks, claims, or releases.",
+                            "Single repo-relative file or directory path for conflict checks, claims, releases, publishing related mailbox paths, or path-scoped inbox reads.",
                         ),
                     ),
                     (
                         "paths",
                         json!({
                             "type": "array",
-                            "description": "Repo-relative files or directories for conflict checks, claims, or releases.",
+                            "description": "Repo-relative files or directories for conflict checks, claims, releases, related mailbox paths, or path-scoped inbox reads. For read_inbox, only open unacknowledged items whose related paths overlap this set are returned.",
                             "items": { "type": "string" }
                         }),
                     ),
@@ -4726,6 +4727,12 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                         ),
                     ),
                     ("limit", integer_schema("Maximum rows to return.")),
+                    (
+                        "sinceLastCheck",
+                        boolean_schema(
+                            "For read_inbox, return only scoped mailbox items newer than the freshest matching recorded inbox check.",
+                        ),
+                    ),
                 ],
             ),
         ),

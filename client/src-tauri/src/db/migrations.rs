@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use rusqlite_migration::{Migrations, M};
 
-pub const PROJECT_DATABASE_SCHEMA_VERSION: i64 = 37;
+pub const PROJECT_DATABASE_SCHEMA_VERSION: i64 = 38;
 
 pub fn migrations() -> &'static Migrations<'static> {
     static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
@@ -44,6 +44,7 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(MIGRATION_028_COMPUTER_USE_MODE_SQL),
             M::up(MIGRATION_029_AGENT_RESERVATION_OBSERVED_HASH_SQL),
             M::up(MIGRATION_030_AGENT_MAILBOX_INBOX_CHECKS_SQL),
+            M::up(MIGRATION_031_AGENT_MAILBOX_SCOPED_INBOX_CHECKS_SQL),
         ])
     });
 
@@ -51,6 +52,55 @@ pub fn migrations() -> &'static Migrations<'static> {
 }
 
 const NOOP_SCHEMA_VERSION_MARKER_SQL: &str = "";
+
+const MIGRATION_031_AGENT_MAILBOX_SCOPED_INBOX_CHECKS_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS agent_mailbox_inbox_checks_v2 (
+        project_id TEXT NOT NULL,
+        agent_session_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        scope_paths_json TEXT NOT NULL DEFAULT '[]',
+        checked_at TEXT NOT NULL,
+        latest_relevant_item_rowid INTEGER NOT NULL DEFAULT 0 CHECK (latest_relevant_item_rowid >= 0),
+        relevant_item_count INTEGER NOT NULL DEFAULT 0 CHECK (relevant_item_count >= 0),
+        PRIMARY KEY (project_id, run_id, scope_paths_json),
+        CHECK (agent_session_id <> ''),
+        CHECK (run_id <> ''),
+        CHECK (scope_paths_json <> '' AND json_valid(scope_paths_json)),
+        CHECK (checked_at <> ''),
+        FOREIGN KEY (project_id, agent_session_id)
+            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+    );
+
+    INSERT OR REPLACE INTO agent_mailbox_inbox_checks_v2 (
+        project_id,
+        agent_session_id,
+        run_id,
+        scope_paths_json,
+        checked_at,
+        latest_relevant_item_rowid,
+        relevant_item_count
+    )
+    SELECT
+        project_id,
+        agent_session_id,
+        run_id,
+        '[]',
+        checked_at,
+        latest_relevant_item_rowid,
+        relevant_item_count
+    FROM agent_mailbox_inbox_checks;
+
+    DROP TABLE agent_mailbox_inbox_checks;
+
+    ALTER TABLE agent_mailbox_inbox_checks_v2 RENAME TO agent_mailbox_inbox_checks;
+
+    CREATE INDEX IF NOT EXISTS idx_agent_mailbox_inbox_checks_project_checked
+        ON agent_mailbox_inbox_checks(project_id, checked_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_mailbox_inbox_checks_scope
+        ON agent_mailbox_inbox_checks(project_id, run_id, scope_paths_json);
+"#;
 
 const MIGRATION_030_AGENT_MAILBOX_INBOX_CHECKS_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS agent_mailbox_inbox_checks (

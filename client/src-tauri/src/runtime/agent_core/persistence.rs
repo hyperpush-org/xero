@@ -5882,6 +5882,7 @@ Repository map captured.
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: None,
+                    inbox_status: None,
                     code_workspace_epoch: Some(1),
                     refreshed_paths: vec!["src/stale.rs".into()],
                     promoted_record_id: None,

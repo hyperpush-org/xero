@@ -157,6 +157,7 @@ fn coordination_request(
         ttl_seconds: None,
         summary: None,
         limit: None,
+        since_last_check: false,
     }
 }
 
@@ -314,6 +315,64 @@ fn mailbox_gate_allows_concurrent_mutation_after_inbox_check() {
     let decision = evaluate_write_policy(&runtime, &request);
 
     assert_eq!(decision.action, AutonomousSafetyPolicyAction::Allow);
+}
+
+#[test]
+fn check_inbox_status_returns_metadata_without_mailbox_bodies() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (project_id, repo_root) = seed_project(&root);
+    seed_run(
+        &repo_root,
+        &project_id,
+        project_store::DEFAULT_AGENT_SESSION_ID,
+        "run-one",
+    );
+    let second_session = create_session(&repo_root, &project_id, "Parallel");
+    seed_run(&repo_root, &project_id, &second_session, "run-two");
+    activate_run(&repo_root, &project_id, "run-one", "Primary run is active.");
+    activate_run(&repo_root, &project_id, "run-two", "Sibling run is active.");
+    project_store::publish_agent_mailbox_item(
+        &repo_root,
+        &project_store::NewAgentMailboxItemRecord {
+            project_id: project_id.clone(),
+            sender_run_id: "run-two".into(),
+            item_type: project_store::AgentMailboxItemType::HeadsUp,
+            parent_item_id: None,
+            target_agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+            target_run_id: Some("run-one".into()),
+            target_role: None,
+            title: "Status-only heads up".into(),
+            body: "This body must not be returned by check_inbox_status.".into(),
+            related_paths: vec!["src/status.rs".into()],
+            priority: project_store::AgentMailboxPriority::Normal,
+            created_at: now_timestamp(),
+            ttl_seconds: Some(3_600),
+        },
+    )
+    .expect("publish mailbox item");
+    let runtime = engineer_runtime(
+        &repo_root,
+        &project_id,
+        project_store::DEFAULT_AGENT_SESSION_ID,
+        "run-one",
+    );
+    let mut request = coordination_request(AutonomousAgentCoordinationAction::CheckInboxStatus);
+    request.paths = vec!["src/status.rs".into()];
+
+    let result = runtime
+        .agent_coordination(request)
+        .expect("check inbox status");
+    let AutonomousToolOutput::AgentCoordination(output) = result.output else {
+        panic!("expected agent coordination output");
+    };
+    let status = output.inbox_status.expect("inbox status");
+
+    assert!(output.mailbox.is_empty());
+    assert_eq!(status.relevant_item_count, 1);
+    assert_eq!(
+        status.relevant_counts_by_item_type.get("heads_up"),
+        Some(&1)
+    );
 }
 
 #[test]

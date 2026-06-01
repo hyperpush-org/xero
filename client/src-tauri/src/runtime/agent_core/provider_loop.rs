@@ -4127,6 +4127,7 @@ fn compact_agent_coordination_output(output: &JsonValue) -> JsonValue {
             "action",
             "message",
             "mailboxItem",
+            "inboxStatus",
             "codeWorkspaceEpoch",
             "refreshedPaths",
             "promotedRecordId",
