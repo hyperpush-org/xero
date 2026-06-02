@@ -1,8 +1,10 @@
 pub mod actions;
+pub mod automation;
 pub(crate) mod bridge;
 pub mod cookie_import;
 mod diagnostics;
 mod events;
+pub mod native_cdp;
 mod screenshot;
 mod script;
 pub mod settings;
@@ -36,6 +38,11 @@ use {
 };
 
 pub use actions::{StorageArea, TypingMode};
+pub use automation::{
+    validate_browser_artifact_manifest, write_browser_artifact, BrowserActionCacheEntry,
+    BrowserAnnotation, BrowserAutomationState, BrowserRecording, BrowserRefStore,
+    BrowserTimelineEvent,
+};
 pub use diagnostics::{
     BrowserConsoleDiagnosticEntry, BrowserDiagnosticReadOptions, BrowserDiagnostics,
     BrowserNetworkDiagnosticEntry,
@@ -48,6 +55,7 @@ pub use events::{
     BROWSER_RESIZE_DRAG_EVENT, BROWSER_TAB_UPDATED_EVENT, BROWSER_TOOL_CLOSED_EVENT,
     BROWSER_TOOL_CONTEXT_EVENT, BROWSER_URL_CHANGED_EVENT,
 };
+pub use native_cdp::{NativeCdpActionResult, NativeCdpBrowserService};
 pub use screenshot::capture_webview as screenshot_webview;
 pub(crate) use settings::load_browser_control_settings;
 pub use settings::{
@@ -114,6 +122,8 @@ pub struct BrowserState {
     waiters: Arc<BridgeWaiters>,
     tabs: Arc<BrowserTabs>,
     diagnostics: Arc<BrowserDiagnostics>,
+    automation: Arc<BrowserAutomationState>,
+    native_cdp: Arc<NativeCdpBrowserService>,
 }
 
 impl Default for BrowserState {
@@ -125,6 +135,8 @@ impl Default for BrowserState {
             waiters: Arc::new(BridgeWaiters::new()),
             tabs: Arc::new(BrowserTabs::new()),
             diagnostics: Arc::new(BrowserDiagnostics::default()),
+            automation: Arc::new(BrowserAutomationState::default()),
+            native_cdp: Arc::new(NativeCdpBrowserService::default()),
         }
     }
 }
@@ -257,6 +269,14 @@ impl BrowserState {
 
     pub fn diagnostics(&self) -> Arc<BrowserDiagnostics> {
         Arc::clone(&self.diagnostics)
+    }
+
+    pub fn automation(&self) -> Arc<BrowserAutomationState> {
+        Arc::clone(&self.automation)
+    }
+
+    pub fn native_cdp(&self) -> Arc<NativeCdpBrowserService> {
+        Arc::clone(&self.native_cdp)
     }
 }
 

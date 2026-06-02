@@ -345,6 +345,7 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
             }
         }
         AutonomousToolRequest::Browser(request) => {
+            let requires_approval = browser_action_requires_approval(&request.action);
             if browser_action_is_observe(&request.action) {
                 SafetyPolicyMetadata {
                     risk_class: "browser_observe",
@@ -352,20 +353,28 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
                     credential_sensitivity: "possible",
                     os_target: Some("browser"),
                     prior_observation_required: false,
-                    requires_approval: false,
+                    requires_approval,
                     require_approval_code: "policy_requires_approval_browser_observe",
-                    require_approval_reason: "Browser observation does not require operator approval.",
+                    require_approval_reason: if requires_approval {
+                        "This browser observation reads or persists sensitive browser evidence and requires operator approval."
+                    } else {
+                        "Browser observation does not require operator approval."
+                    },
                 }
             } else {
                 SafetyPolicyMetadata {
-                    risk_class: "browser_control",
+                    risk_class: browser_action_risk_class(&request.action),
                     network_intent: "browser",
                     credential_sensitivity: "possible",
                     os_target: Some("browser"),
                     prior_observation_required: false,
-                    requires_approval: false,
+                    requires_approval,
                     require_approval_code: "policy_requires_approval_browser_control",
-                    require_approval_reason: "Browser control requires operator approval.",
+                    require_approval_reason: if requires_approval {
+                        "This browser action transfers files, changes credential/browser state, intercepts network traffic, emits durable evidence, or exposes an external bridge and requires operator approval."
+                    } else {
+                        "Non-sensitive browser control does not require operator approval."
+                    },
                 }
             }
         }
@@ -914,12 +923,26 @@ fn mailbox_check_retry_guidance(paths: &[String]) -> String {
 }
 
 fn browser_action_is_observe(action: &AutonomousBrowserAction) -> bool {
+    if let AutonomousBrowserAction::InAppCdpFacade { method, .. } = action {
+        return in_app_cdp_facade_method_is_observe(method);
+    }
+    if let AutonomousBrowserAction::ActionCache { command, .. } = action {
+        return matches!(command.as_str(), "stats" | "list" | "get");
+    }
     matches!(
         action,
-        AutonomousBrowserAction::ReadText { .. }
+        AutonomousBrowserAction::Health
+            | AutonomousBrowserAction::Capabilities { .. }
+            | AutonomousBrowserAction::PageList { .. }
+            | AutonomousBrowserAction::ReadText { .. }
+            | AutonomousBrowserAction::Source { .. }
             | AutonomousBrowserAction::Query { .. }
+            | AutonomousBrowserAction::Snapshot { .. }
+            | AutonomousBrowserAction::GetRef { .. }
             | AutonomousBrowserAction::WaitForSelector { .. }
             | AutonomousBrowserAction::WaitForLoad { .. }
+            | AutonomousBrowserAction::WaitFor { .. }
+            | AutonomousBrowserAction::Assert { .. }
             | AutonomousBrowserAction::CurrentUrl
             | AutonomousBrowserAction::HistoryState
             | AutonomousBrowserAction::Screenshot
@@ -929,8 +952,131 @@ fn browser_action_is_observe(action: &AutonomousBrowserAction) -> bool {
             | AutonomousBrowserAction::NetworkSummary { .. }
             | AutonomousBrowserAction::AccessibilityTree { .. }
             | AutonomousBrowserAction::StateSnapshot { .. }
+            | AutonomousBrowserAction::FindBest { .. }
+            | AutonomousBrowserAction::ActionCache { .. }
+            | AutonomousBrowserAction::AnalyzeForm { .. }
+            | AutonomousBrowserAction::FrameList { .. }
+            | AutonomousBrowserAction::DialogList { .. }
+            | AutonomousBrowserAction::DownloadList { .. }
+            | AutonomousBrowserAction::TraceStatus { .. }
+            | AutonomousBrowserAction::VisualBaselineList { .. }
+            | AutonomousBrowserAction::EmulationState { .. }
+            | AutonomousBrowserAction::Extract { .. }
+            | AutonomousBrowserAction::FrameState { .. }
+            | AutonomousBrowserAction::VaultList { .. }
+            | AutonomousBrowserAction::AuthProfileList { .. }
+            | AutonomousBrowserAction::ViewerState { .. }
+            | AutonomousBrowserAction::BrowserResource { .. }
+            | AutonomousBrowserAction::BrowserPrompt { .. }
+            | AutonomousBrowserAction::ValidateBundle { .. }
+            | AutonomousBrowserAction::Timeline { .. }
+            | AutonomousBrowserAction::PromptInjectionScan { .. }
             | AutonomousBrowserAction::HarnessExtensionContract
             | AutonomousBrowserAction::TabList
+    )
+}
+
+fn browser_action_requires_approval(action: &AutonomousBrowserAction) -> bool {
+    if let AutonomousBrowserAction::InAppCdpFacade { method, .. } = action {
+        return !in_app_cdp_facade_method_is_observe(method);
+    }
+    if let AutonomousBrowserAction::ActionCache { command, .. } = action {
+        return !matches!(command.as_str(), "stats" | "list" | "get");
+    }
+    matches!(
+        action,
+        AutonomousBrowserAction::Launch { .. }
+            | AutonomousBrowserAction::Attach { .. }
+            | AutonomousBrowserAction::UploadFile { .. }
+            | AutonomousBrowserAction::Paste { .. }
+            | AutonomousBrowserAction::DownloadSave { .. }
+            | AutonomousBrowserAction::TraceStart { .. }
+            | AutonomousBrowserAction::TraceStop { .. }
+            | AutonomousBrowserAction::TraceExport { .. }
+            | AutonomousBrowserAction::VisualBaselineSave { .. }
+            | AutonomousBrowserAction::VisualDiff { .. }
+            | AutonomousBrowserAction::HarExport { .. }
+            | AutonomousBrowserAction::PdfExport { .. }
+            | AutonomousBrowserAction::DebugBundle { .. }
+            | AutonomousBrowserAction::ExportBundle { .. }
+    ) || matches!(
+        action,
+        AutonomousBrowserAction::Recording { command, .. } if command == "export"
+    ) || matches!(
+        action,
+        AutonomousBrowserAction::NetworkControl { .. }
+            | AutonomousBrowserAction::StateRestore { .. }
+            | AutonomousBrowserAction::VaultSave { .. }
+            | AutonomousBrowserAction::VaultLogin { .. }
+            | AutonomousBrowserAction::VaultDelete { .. }
+            | AutonomousBrowserAction::AuthProfileSave { .. }
+            | AutonomousBrowserAction::AuthProfileRestore { .. }
+            | AutonomousBrowserAction::AuthProfileDelete { .. }
+            | AutonomousBrowserAction::McpBridge { .. }
+            | AutonomousBrowserAction::GenerateTest { .. }
+    )
+}
+
+fn browser_action_risk_class(action: &AutonomousBrowserAction) -> &'static str {
+    match action {
+        AutonomousBrowserAction::InAppCdpFacade { method, .. } => {
+            if in_app_cdp_facade_method_is_observe(method) {
+                "browser_observe"
+            } else {
+                "browser_in_app_facade_control"
+            }
+        }
+        AutonomousBrowserAction::ActionCache { command, .. } => {
+            if matches!(command.as_str(), "stats" | "list" | "get") {
+                "browser_observe"
+            } else {
+                "browser_action_cache_mutation"
+            }
+        }
+        AutonomousBrowserAction::Attach {
+            allow_remote_endpoint: Some(true),
+            ..
+        } => "browser_remote_cdp_control_channel",
+        AutonomousBrowserAction::Launch { .. } | AutonomousBrowserAction::Attach { .. } => {
+            "browser_cdp_control_channel"
+        }
+        AutonomousBrowserAction::UploadFile { .. }
+        | AutonomousBrowserAction::DownloadSave { .. } => "browser_file_transfer",
+        AutonomousBrowserAction::VaultSave { .. }
+        | AutonomousBrowserAction::VaultLogin { .. }
+        | AutonomousBrowserAction::VaultDelete { .. }
+        | AutonomousBrowserAction::AuthProfileSave { .. }
+        | AutonomousBrowserAction::AuthProfileRestore { .. }
+        | AutonomousBrowserAction::AuthProfileDelete { .. }
+        | AutonomousBrowserAction::StateRestore { .. } => "browser_credential_state",
+        AutonomousBrowserAction::NetworkControl { .. } => "browser_network_interception",
+        AutonomousBrowserAction::TraceStart { .. }
+        | AutonomousBrowserAction::TraceStop { .. }
+        | AutonomousBrowserAction::TraceExport { .. }
+        | AutonomousBrowserAction::VisualBaselineSave { .. }
+        | AutonomousBrowserAction::VisualDiff { .. }
+        | AutonomousBrowserAction::HarExport { .. }
+        | AutonomousBrowserAction::PdfExport { .. }
+        | AutonomousBrowserAction::DebugBundle { .. }
+        | AutonomousBrowserAction::ExportBundle { .. }
+        | AutonomousBrowserAction::GenerateTest { .. } => "browser_evidence_persistence",
+        AutonomousBrowserAction::McpBridge { .. } => "browser_external_bridge",
+        _ => "browser_control",
+    }
+}
+
+fn in_app_cdp_facade_method_is_observe(method: &str) -> bool {
+    matches!(
+        method,
+        "Page.lifecycle"
+            | "DOM.snapshot"
+            | "DOM.resolveRef"
+            | "Log.entryAdded"
+            | "Network.requestWillBeSent"
+            | "Network.responseReceived"
+            | "Network.summary"
+            | "Accessibility.snapshot"
+            | "Storage.get"
     )
 }
 
@@ -2107,6 +2253,101 @@ mod tests {
         assert!(guidance.contains("check_inbox_status"));
         assert!(guidance.contains("read_inbox"));
         assert!(guidance.contains(r#""src/lib.rs""#));
+    }
+
+    #[test]
+    fn native_browser_gap_actions_have_observe_control_and_approval_policy() {
+        let observe_actions = [
+            AutonomousBrowserAction::DialogList { session_id: None },
+            AutonomousBrowserAction::DownloadList { session_id: None },
+            AutonomousBrowserAction::TraceStatus { session_id: None },
+            AutonomousBrowserAction::VisualBaselineList { session_id: None },
+            AutonomousBrowserAction::EmulationState { session_id: None },
+            AutonomousBrowserAction::Extract {
+                session_id: None,
+                mode: "page_summary".into(),
+                selector: None,
+                selector_map: None,
+                limit: None,
+            },
+            AutonomousBrowserAction::BrowserResource {
+                session_id: None,
+                resource: "current_state".into(),
+            },
+        ];
+        for action in observe_actions {
+            assert!(
+                browser_action_is_observe(&action),
+                "{action:?} should be observe"
+            );
+            assert!(!browser_action_requires_approval(&action));
+        }
+
+        for (action, risk_class) in [
+            (
+                AutonomousBrowserAction::Launch {
+                    session_id: None,
+                    label: None,
+                    url: None,
+                    browser_path: None,
+                    headless: None,
+                    sensitive_mode: None,
+                },
+                "browser_cdp_control_channel",
+            ),
+            (
+                AutonomousBrowserAction::Attach {
+                    endpoint: "http://127.0.0.1:9222".into(),
+                    session_id: None,
+                    label: None,
+                    sensitive_mode: None,
+                    allow_remote_endpoint: None,
+                },
+                "browser_cdp_control_channel",
+            ),
+            (
+                AutonomousBrowserAction::UploadFile {
+                    selector: Some("input[type=file]".into()),
+                    ref_id: None,
+                    paths: vec!["/tmp/file.txt".into()],
+                    timeout_ms: None,
+                },
+                "browser_file_transfer",
+            ),
+            (
+                AutonomousBrowserAction::DownloadSave {
+                    session_id: None,
+                    guid: "download-1".into(),
+                    destination: "/tmp/download.txt".into(),
+                },
+                "browser_file_transfer",
+            ),
+            (
+                AutonomousBrowserAction::AuthProfileRestore {
+                    session_id: None,
+                    name: "fixture".into(),
+                    navigate: Some(true),
+                },
+                "browser_credential_state",
+            ),
+            (
+                AutonomousBrowserAction::TraceExport { session_id: None },
+                "browser_evidence_persistence",
+            ),
+            (
+                AutonomousBrowserAction::McpBridge {
+                    command: "status".into(),
+                },
+                "browser_external_bridge",
+            ),
+        ] {
+            assert!(
+                !browser_action_is_observe(&action),
+                "{action:?} should be control"
+            );
+            assert!(browser_action_requires_approval(&action));
+            assert_eq!(browser_action_risk_class(&action), risk_class);
+        }
     }
 
     #[test]

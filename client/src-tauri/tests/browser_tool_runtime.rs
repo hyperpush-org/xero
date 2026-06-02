@@ -1,14 +1,17 @@
 //! Tests for the browser arm of the autonomous tool runtime. These exercise the
 //! executor contract without spinning up a real Tauri runtime.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use tempfile::TempDir;
 use xero_desktop_lib::commands::CommandError;
 use xero_desktop_lib::runtime::autonomous_tool_runtime::{
     AutonomousBrowserAction, AutonomousBrowserOutput, AutonomousBrowserRequest,
-    AutonomousToolOutput, AutonomousToolRequest, AutonomousToolRuntime, BrowserExecutor,
-    UnavailableBrowserExecutor,
+    AutonomousToolOutput, AutonomousToolRequest, AutonomousToolRuntime, BrowserExecutionContext,
+    BrowserExecutor, UnavailableBrowserExecutor,
 };
 
 #[derive(Debug)]
@@ -28,8 +31,13 @@ impl BrowserExecutor for RecordingExecutor {
     fn execute(
         &self,
         action: AutonomousBrowserAction,
+        _context: BrowserExecutionContext,
     ) -> Result<AutonomousBrowserOutput, CommandError> {
         let name = match &action {
+            AutonomousBrowserAction::Launch { .. } => "launch",
+            AutonomousBrowserAction::Attach { .. } => "attach",
+            AutonomousBrowserAction::Close { .. } => "close",
+            AutonomousBrowserAction::PageList { .. } => "page_list",
             AutonomousBrowserAction::Open { .. } => "open",
             AutonomousBrowserAction::TabOpen { .. } => "tab_open",
             AutonomousBrowserAction::Navigate { .. } => "navigate",
@@ -223,6 +231,138 @@ fn browser_action_serializes_with_action_tag() {
 
     let click_roundtrip: AutonomousBrowserRequest = serde_json::from_value(click_json).unwrap();
     assert_eq!(click_roundtrip, click);
+
+    let launch = AutonomousBrowserRequest {
+        action: AutonomousBrowserAction::Launch {
+            session_id: Some("default".to_string()),
+            label: Some("Default native".to_string()),
+            url: Some("https://example.com/".to_string()),
+            browser_path: None,
+            headless: Some(false),
+            sensitive_mode: Some(true),
+        },
+    };
+    let launch_json = serde_json::to_value(&launch).unwrap();
+    assert_eq!(launch_json["action"], "launch");
+    assert_eq!(launch_json["sessionId"], "default");
+    assert_eq!(launch_json["sensitiveMode"], true);
+    let launch_roundtrip: AutonomousBrowserRequest = serde_json::from_value(launch_json).unwrap();
+    assert_eq!(launch_roundtrip, launch);
+
+    let attach = AutonomousBrowserRequest {
+        action: AutonomousBrowserAction::Attach {
+            endpoint: "http://127.0.0.1:9222".to_string(),
+            session_id: Some("attached".to_string()),
+            label: None,
+            sensitive_mode: None,
+            allow_remote_endpoint: None,
+        },
+    };
+    let attach_json = serde_json::to_value(&attach).unwrap();
+    assert_eq!(attach_json["action"], "attach");
+    assert_eq!(attach_json["endpoint"], "http://127.0.0.1:9222");
+    let attach_roundtrip: AutonomousBrowserRequest = serde_json::from_value(attach_json).unwrap();
+    assert_eq!(attach_roundtrip, attach);
+
+    let native_actions = [
+        AutonomousBrowserRequest {
+            action: AutonomousBrowserAction::SelectOption {
+                selector: Some("select[name=plan]".to_string()),
+                ref_id: None,
+                value: Some("pro".to_string()),
+                label: None,
+                index: None,
+                timeout_ms: Some(1_000),
+            },
+        },
+        AutonomousBrowserRequest {
+            action: AutonomousBrowserAction::Drag {
+                selector: Some("#source".to_string()),
+                ref_id: None,
+                target_selector: Some("#target".to_string()),
+                target_ref_id: None,
+                from_x: Some(10),
+                from_y: Some(20),
+                to_x: Some(30),
+                to_y: Some(40),
+                timeout_ms: None,
+            },
+        },
+        AutonomousBrowserRequest {
+            action: AutonomousBrowserAction::UploadFile {
+                selector: Some("input[type=file]".to_string()),
+                ref_id: None,
+                paths: vec![PathBuf::from("/tmp/report.txt")],
+                timeout_ms: None,
+            },
+        },
+        AutonomousBrowserRequest {
+            action: AutonomousBrowserAction::TraceStart {
+                session_id: Some("native".to_string()),
+                categories: Some(vec!["devtools.timeline".to_string()]),
+            },
+        },
+        AutonomousBrowserRequest {
+            action: AutonomousBrowserAction::VisualDiff {
+                session_id: Some("native".to_string()),
+                name: "home".to_string(),
+                threshold_percent: Some(0.25),
+                selector: Some("main".to_string()),
+                ref_id: None,
+                full_page: Some(true),
+            },
+        },
+        AutonomousBrowserRequest {
+            action: AutonomousBrowserAction::EmulateDevice {
+                session_id: Some("native".to_string()),
+                preset: Some("iphone_14".to_string()),
+                width: None,
+                height: None,
+                device_scale_factor: Some(3.0),
+                mobile: Some(true),
+                touch: Some(true),
+                user_agent: None,
+                timezone: Some("America/Los_Angeles".to_string()),
+                locale: Some("en-US".to_string()),
+                color_scheme: Some("dark".to_string()),
+                reduced_motion: Some("reduce".to_string()),
+            },
+        },
+        AutonomousBrowserRequest {
+            action: AutonomousBrowserAction::Extract {
+                session_id: Some("native".to_string()),
+                mode: "selector_map".to_string(),
+                selector: None,
+                selector_map: Some(std::collections::BTreeMap::from([(
+                    "cta".to_string(),
+                    "button.primary".to_string(),
+                )])),
+                limit: Some(10),
+            },
+        },
+        AutonomousBrowserRequest {
+            action: AutonomousBrowserAction::BrowserPrompt {
+                prompt: "full_page_audit".to_string(),
+                arguments: Some(std::collections::BTreeMap::from([(
+                    "scope".to_string(),
+                    "checkout".to_string(),
+                )])),
+            },
+        },
+        AutonomousBrowserRequest {
+            action: AutonomousBrowserAction::GenerateTest {
+                recording_id: Some("rec-1".to_string()),
+                batch_json: None,
+                name: Some("checkout-smoke".to_string()),
+            },
+        },
+    ];
+
+    for request in native_actions {
+        let json = serde_json::to_value(&request).unwrap();
+        let roundtrip: AutonomousBrowserRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(roundtrip, request);
+    }
 }
 
 #[test]

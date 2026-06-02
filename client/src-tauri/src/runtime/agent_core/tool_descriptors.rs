@@ -2247,13 +2247,13 @@ fn browser_control_prompt_section(
     } else {
         match preference {
             BrowserControlPreferenceDto::Default => {
-                "Browser control preference: default. When browser control is needed, use in-app `browser_control` for opening, navigation, DOM click/type/key/scroll actions, cookies/storage writes, tab control, and state restore; use `browser_observe` for screenshots, page text, cookies/storage reads, console and network diagnostics, accessibility snapshots, and state reads. Use native desktop/browser automation only as a fallback when the in-app browser is unavailable, cannot reach the required user-owned browser state, or the user explicitly asks for device-browser control."
+                "Browser control preference: default. Prefer `browser_observe` snapshot/refs, waits, assertions, page text/source, screenshots, cookies/storage reads, console/network diagnostics, accessibility, forms, frames, timeline, resources/prompts, extraction, and safety scans before acting. Use `browser_control` for opening, navigation, native input actions, dialogs/downloads, emulation, page/frame selection, selector/ref actions, semantic actions, batches, state/auth profile restore, annotations, recordings, replay generation, and evidence export. Use desktop automation only for native browser chrome, OS dialogs, or surfaces outside page-level browser control."
             }
             BrowserControlPreferenceDto::InAppBrowser => {
-                "Browser control preference: in-app browser. Prefer in-app `browser_control` and `browser_observe` for browser tasks. Use native desktop/browser automation only if the user explicitly asks for it or the in-app browser cannot satisfy the task."
+                "Browser control preference: in-app browser. Prefer in-app `browser_observe` snapshots/refs and `browser_control` ref/semantic/batch actions for browser tasks. Use native desktop/browser automation only if the user explicitly asks for it or the in-app browser cannot satisfy the task."
             }
             BrowserControlPreferenceDto::NativeBrowser => {
-                "Browser control preference: native browser. Prefer native desktop/browser automation for browser control. Use in-app `browser_control` and `browser_observe` only when the user explicitly asks for them or native browser control is unavailable."
+                "Browser control preference: native browser. Prefer native CDP browser actions for page-level browser control, evidence, emulation, extraction, dialogs/downloads, and auth profile work. Use desktop automation only for browser chrome, OS dialogs, or user-owned profile surfaces outside CDP reach."
             }
         }
     };
@@ -4938,12 +4938,12 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_BROWSER_OBSERVE,
-            "Observe the in-app browser with page text, URL, screenshots, console logs, network summaries, accessibility tree snapshots, tabs, and safe state reads.",
+            "Observe the Browser Automation Service with capabilities, page text/source, snapshots/versioned refs, waits/assertions, screenshots, console logs, network summaries, accessibility trees, forms, frames, dialogs/downloads, emulation state, extraction, internal resources/prompts, timeline, prompt-injection scans, tabs, and safe state reads.",
             browser_observe_schema(),
         ),
         descriptor(
             AUTONOMOUS_TOOL_BROWSER_CONTROL,
-            "Control the in-app browser with navigation, DOM click/type/key/scroll actions, cookies/storage writes, tab focus/close, and browser state restore.",
+            "Control the Browser Automation Service with navigation, native input actions, dialogs/downloads, device emulation, page/frame management, selector/ref actions, semantic actions, form fill, batch execution, auth profiles, evidence export, annotations, recordings, replay generation, and tab control.",
             browser_control_schema(),
         ),
         descriptor(
@@ -4999,6 +4999,13 @@ fn integer_schema(description: &str) -> JsonValue {
     json!({
         "type": "integer",
         "minimum": 0,
+        "description": description,
+    })
+}
+
+fn number_schema(description: &str) -> JsonValue {
+    json!({
+        "type": "number",
         "description": description,
     })
 }
@@ -5647,10 +5654,18 @@ fn mcp_call_tool_schema() -> JsonValue {
 
 fn browser_observe_schema() -> JsonValue {
     browser_schema_for_actions(&[
+        "health",
+        "capabilities",
+        "page_list",
         "read_text",
+        "source",
         "query",
+        "snapshot",
+        "get_ref",
         "wait_for_selector",
         "wait_for_load",
+        "wait_for",
+        "assert",
         "current_url",
         "history_state",
         "screenshot",
@@ -5660,6 +5675,24 @@ fn browser_observe_schema() -> JsonValue {
         "network_summary",
         "accessibility_tree",
         "state_snapshot",
+        "find_best",
+        "analyze_form",
+        "frame_list",
+        "dialog_list",
+        "download_list",
+        "trace_status",
+        "visual_baseline_list",
+        "emulation_state",
+        "extract",
+        "frame_state",
+        "vault_list",
+        "auth_profile_list",
+        "viewer_state",
+        "browser_resource",
+        "browser_prompt",
+        "validate_bundle",
+        "timeline",
+        "prompt_injection_scan",
         "harness_extension_contract",
         "tab_list",
     ])
@@ -5667,6 +5700,9 @@ fn browser_observe_schema() -> JsonValue {
 
 fn browser_control_schema() -> JsonValue {
     browser_schema_for_actions(&[
+        "launch",
+        "attach",
+        "close",
         "open",
         "tab_open",
         "navigate",
@@ -5677,11 +5713,66 @@ fn browser_control_schema() -> JsonValue {
         "click",
         "type",
         "scroll",
+        "hover",
         "press_key",
+        "click_ref",
+        "fill_ref",
+        "hover_ref",
+        "select_option",
+        "set_checked",
+        "drag",
+        "upload_file",
+        "focus",
+        "paste",
+        "set_viewport",
+        "zoom_region",
+        "batch",
+        "act",
+        "fill_form",
+        "dialog_accept",
+        "dialog_dismiss",
+        "dialog_respond",
+        "download_save",
+        "download_clear",
+        "trace_start",
+        "trace_stop",
+        "trace_export",
+        "visual_baseline_save",
+        "visual_diff",
+        "visual_baseline_delete",
+        "emulate_device",
+        "clear_emulation",
+        "switch_page",
+        "close_page",
+        "select_frame",
         "cookies_set",
         "storage_write",
         "storage_clear",
         "state_restore",
+        "vault_save",
+        "vault_login",
+        "vault_delete",
+        "auth_profile_save",
+        "auth_profile_restore",
+        "auth_profile_delete",
+        "viewer_goal",
+        "takeover",
+        "release_control",
+        "pause",
+        "resume",
+        "step",
+        "abort",
+        "sensitive_on",
+        "sensitive_off",
+        "debug_bundle",
+        "export_bundle",
+        "annotation",
+        "recording",
+        "mcp_bridge",
+        "generate_test",
+        "har_export",
+        "pdf_export",
+        "network_control",
         "tab_close",
         "tab_focus",
     ])
@@ -5694,18 +5785,189 @@ fn browser_schema_for_actions(actions: &[&str]) -> JsonValue {
             ("action", enum_schema("Browser action to execute.", actions)),
             ("url", string_schema("URL for open, tab_open, or navigate.")),
             (
+                "endpoint",
+                string_schema("Explicit native CDP endpoint for attach, for example http://127.0.0.1:9222."),
+            ),
+            (
+                "sessionId",
+                string_schema("Native CDP session id for launch, attach, close, page_list, or artifact actions."),
+            ),
+            (
+                "label",
+                string_schema("Human-readable native CDP session label."),
+            ),
+            (
+                "browserPath",
+                string_schema("Optional Chromium-family browser binary path for launch."),
+            ),
+            (
+                "headless",
+                boolean_schema("Launch native CDP browser in headless mode."),
+            ),
+            (
                 "selector",
                 string_schema("CSS selector for DOM-targeted actions."),
             ),
+            (
+                "refId",
+                string_schema("Versioned browser ref such as @v1:e1."),
+            ),
             ("text", string_schema("Text for the type action.")),
+            (
+                "role",
+                string_schema("Optional ARIA role hint for semantic actions."),
+            ),
+            (
+                "intent",
+                string_schema("Semantic browser intent for find_best or act."),
+            ),
             (
                 "append",
                 boolean_schema("Append instead of replacing typed text."),
             ),
+            (
+                "engine",
+                enum_schema(
+                    "Browser engine to inspect.",
+                    &["in_app", "native_cdp", "desktop_fallback"],
+                ),
+            ),
+            (
+                "mode",
+                enum_schema(
+                    "Snapshot mode.",
+                    &[
+                        "interactive",
+                        "form",
+                        "dialog",
+                        "navigation",
+                        "errors",
+                        "headings",
+                        "summary",
+                        "page_summary",
+                        "links",
+                        "tables",
+                        "forms",
+                        "metadata",
+                        "json_ld",
+                        "json-ld",
+                        "selector_map",
+                        "visible_text_blocks",
+                    ],
+                ),
+            ),
+            (
+                "visibleOnly",
+                boolean_schema("Limit snapshot or scan to visible elements."),
+            ),
             ("x", integer_schema("Horizontal scroll offset.")),
             ("y", integer_schema("Vertical scroll offset.")),
+            ("width", integer_schema("Viewport, screenshot, or region width.")),
+            ("height", integer_schema("Viewport, screenshot, or region height.")),
+            ("scale", number_schema("Optional screenshot clip scale.")),
+            ("deviceScaleFactor", number_schema("Device scale factor for viewport or emulation.")),
+            ("mobile", boolean_schema("Emulate a mobile viewport.")),
+            ("touch", boolean_schema("Enable touch emulation.")),
+            ("userAgent", string_schema("User agent override for emulation.")),
+            ("timezone", string_schema("Timezone id for emulation, for example America/Los_Angeles.")),
+            ("locale", string_schema("Locale override for emulation, for example en-US.")),
+            ("colorScheme", enum_schema("Preferred color scheme override.", &["light", "dark", "no-preference"])),
+            ("reducedMotion", enum_schema("Reduced motion override.", &["reduce", "no-preference"])),
+            ("targetSelector", string_schema("CSS selector for the drag target.")),
+            ("targetRefId", string_schema("Versioned browser ref for the drag target.")),
+            ("fromX", integer_schema("Drag start x coordinate.")),
+            ("fromY", integer_schema("Drag start y coordinate.")),
+            ("toX", integer_schema("Drag destination x coordinate.")),
+            ("toY", integer_schema("Drag destination y coordinate.")),
+            ("index", integer_schema("Zero-based option, page, or frame index.")),
+            ("checked", boolean_schema("Desired checked state.")),
+            ("paths", string_array_schema("Local file paths for upload_file.", 16, 4096)),
+            ("destination", string_schema("Explicit local destination path for download_save.")),
+            ("guid", string_schema("Native browser download GUID.")),
+            ("name", string_schema("Profile, vault, visual baseline, recording, or artifact name.")),
+            ("preset", string_schema("Named device preset such as iphone_14, pixel_7, ipad, or desktop_1080p.")),
+            ("categories", string_array_schema("CDP trace categories for trace_start.", 64, 256)),
+            ("fullPage", boolean_schema("Capture a full-page screenshot for visual baseline or diff.")),
+            (
+                "selectorMap",
+                json!({
+                    "type": "object",
+                    "description": "Named CSS selectors for extract selector_map mode.",
+                    "additionalProperties": { "type": "string" }
+                }),
+            ),
+            ("resource", string_schema("Internal browser resource id.")),
+            ("prompt", string_schema("Internal browser prompt id.")),
+            (
+                "arguments",
+                json!({
+                    "type": "object",
+                    "description": "String arguments for a browser prompt template.",
+                    "additionalProperties": { "type": "string" }
+                }),
+            ),
+            ("targetId", string_schema("Native CDP page target id.")),
+            ("frameId", string_schema("Native CDP frame id.")),
+            ("urlContains", string_schema("URL substring filter.")),
+            ("titleContains", string_schema("Title substring filter.")),
+            ("thresholdPercent", number_schema("Visual diff threshold percent.")),
+            ("promptText", string_schema("Dialog prompt response text.")),
+            ("owner", string_schema("Viewer control owner label.")),
+            ("goal", string_schema("Viewer goal banner text.")),
+            ("origin", string_schema("Credential or auth origin metadata.")),
+            ("username", string_schema("Credential username metadata; no password material.")),
+            ("batchJson", string_schema("Serialized browser batch result/input for generate_test.")),
+            ("recordingId", string_schema("Recording id for generate_test.")),
             ("key", string_schema("Keyboard key to press.")),
             ("limit", integer_schema("Maximum number of query results.")),
+            (
+                "condition",
+                enum_schema(
+                    "wait_for condition.",
+                    &[
+                        "load",
+                        "network_idle",
+                        "selector_visible",
+                        "selector_hidden",
+                        "text_visible",
+                        "text_hidden",
+                        "url_contains",
+                        "title_contains",
+                        "element_count",
+                        "element_count_at_least",
+                        "region_stable",
+                    ],
+                ),
+            ),
+            (
+                "assertion",
+                enum_schema(
+                    "assert check.",
+                    &[
+                        "url",
+                        "url_contains",
+                        "title",
+                        "title_contains",
+                        "text",
+                        "selector",
+                        "selector_visible",
+                        "value",
+                        "checked",
+                        "element_count",
+                        "console_errors",
+                        "failed_requests",
+                        "console_count",
+                        "network_count",
+                    ],
+                ),
+            ),
+            ("expected", string_schema("Expected assertion value.")),
+            ("urlContains", string_schema("URL substring for wait_for.")),
+            (
+                "titleContains",
+                string_schema("Title substring for wait_for."),
+            ),
+            ("count", integer_schema("Expected element count.")),
             (
                 "visible",
                 boolean_schema("Whether wait_for_selector requires visibility."),
@@ -5737,10 +5999,64 @@ fn browser_schema_for_actions(actions: &[&str]) -> JsonValue {
                 string_schema("Snapshot JSON returned by state_snapshot for state_restore."),
             ),
             (
+                "bundleJson",
+                string_schema("Browser artifact bundle JSON for export_bundle or validate_bundle."),
+            ),
+            (
+                "steps",
+                json!({
+                    "type": "array",
+                    "description": "Ordered browser batch steps; each item contains an action and its action fields.",
+                    "items": { "type": "object" }
+                }),
+            ),
+            (
+                "stopOnFailure",
+                boolean_schema("Stop a batch when the first step fails."),
+            ),
+            (
+                "summaryOnly",
+                boolean_schema("Return compact per-step batch summaries."),
+            ),
+            (
+                "fields",
+                json!({
+                    "type": "object",
+                    "description": "Form fields keyed by label/name/id for fill_form.",
+                    "additionalProperties": { "type": "string" }
+                }),
+            ),
+            ("submit", boolean_schema("Submit a form after fill_form.")),
+            (
+                "includeScreenshot",
+                boolean_schema("Include a viewport screenshot in debug_bundle."),
+            ),
+            (
+                "includeHidden",
+                boolean_schema("Include hidden text/attributes in prompt_injection_scan."),
+            ),
+            (
                 "navigate",
                 boolean_schema("Navigate to the snapshot URL during state_restore."),
             ),
             ("tabId", string_schema("Browser tab id.")),
+            (
+                "command",
+                string_schema("Annotation, recording, or native network-control command."),
+            ),
+            ("id", string_schema("Annotation or recording id.")),
+            ("kind", string_schema("Annotation kind.")),
+            ("note", string_schema("Annotation note.")),
+            ("status", integer_schema("HTTP status for native network mock.")),
+            ("body", string_schema("Response body for native network mock.")),
+            (
+                "contentType",
+                string_schema("Content-Type header for native network mock."),
+            ),
+            (
+                "sensitiveMode",
+                boolean_schema("Suppress unsafe persistence for recording metadata."),
+            ),
             (
                 "timeoutMs",
                 integer_schema("Optional timeout in milliseconds."),
@@ -7714,6 +8030,92 @@ mod tests {
                     descriptor.name
                 );
             }
+        }
+    }
+
+    #[test]
+    fn browser_schemas_expose_native_gap_actions_and_fields() {
+        fn action_enum(schema: &JsonValue) -> Vec<&str> {
+            schema["properties"]["action"]["enum"]
+                .as_array()
+                .expect("action enum")
+                .iter()
+                .map(|value| value.as_str().expect("action string"))
+                .collect()
+        }
+
+        let observe_schema = browser_observe_schema();
+        let observe_actions = action_enum(&observe_schema);
+        for action in [
+            "dialog_list",
+            "download_list",
+            "trace_status",
+            "visual_baseline_list",
+            "emulation_state",
+            "extract",
+            "frame_state",
+            "browser_resource",
+            "browser_prompt",
+        ] {
+            assert!(
+                observe_actions.contains(&action),
+                "missing observe action {action}"
+            );
+        }
+
+        let control_schema = browser_control_schema();
+        let control_actions = action_enum(&control_schema);
+        for action in [
+            "select_option",
+            "set_checked",
+            "drag",
+            "upload_file",
+            "set_viewport",
+            "trace_start",
+            "visual_diff",
+            "emulate_device",
+            "auth_profile_restore",
+            "mcp_bridge",
+            "generate_test",
+        ] {
+            assert!(
+                control_actions.contains(&action),
+                "missing control action {action}"
+            );
+        }
+
+        let properties = control_schema["properties"]
+            .as_object()
+            .expect("browser control properties");
+        for field in [
+            "targetSelector",
+            "targetRefId",
+            "fromX",
+            "toY",
+            "deviceScaleFactor",
+            "touch",
+            "userAgent",
+            "colorScheme",
+            "selectorMap",
+            "categories",
+            "fullPage",
+            "arguments",
+            "recordingId",
+        ] {
+            assert!(
+                properties.contains_key(field),
+                "missing browser field {field}"
+            );
+        }
+
+        let modes = properties["mode"]["enum"]
+            .as_array()
+            .expect("mode enum")
+            .iter()
+            .map(|value| value.as_str().expect("mode string"))
+            .collect::<Vec<_>>();
+        for mode in ["page_summary", "tables", "json_ld", "selector_map"] {
+            assert!(modes.contains(&mode), "missing extract mode {mode}");
         }
     }
 

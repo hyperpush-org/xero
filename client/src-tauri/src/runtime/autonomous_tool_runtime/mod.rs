@@ -75,8 +75,8 @@ pub use agent_definition::{
     AUTONOMOUS_TOOL_AGENT_DEFINITION,
 };
 pub use browser::{
-    AutonomousBrowserAction, AutonomousBrowserOutput, AutonomousBrowserRequest, BrowserExecutor,
-    UnavailableBrowserExecutor, AUTONOMOUS_TOOL_BROWSER,
+    AutonomousBrowserAction, AutonomousBrowserOutput, AutonomousBrowserRequest,
+    BrowserExecutionContext, BrowserExecutor, UnavailableBrowserExecutor, AUTONOMOUS_TOOL_BROWSER,
 };
 pub(crate) use desktop_control::desktop_action_approval_id;
 pub use desktop_control::{
@@ -602,13 +602,13 @@ const TOOL_ACCESS_GROUP_DEFINITIONS: &[ToolAccessGroupDefinition] = &[
     },
     ToolAccessGroupDefinition {
         name: "browser_observe",
-        description: "Observe the in-app browser with page text, URL, screenshots, console, network, accessibility, and state reads.",
+        description: "Observe the Browser Automation Service with health/capabilities, page text/source, snapshots/versioned refs, waits/assertions, screenshots, console, network, accessibility, forms, frames, timeline, safety scans, and safe state reads.",
         tools: TOOL_ACCESS_BROWSER_OBSERVE_TOOLS,
         risk_class: "browser_observe",
     },
     ToolAccessGroupDefinition {
         name: "browser_control",
-        description: "Control the in-app browser with navigation, clicks, typing, storage, cookies, and tab actions.",
+        description: "Control the Browser Automation Service with navigation, selector/ref actions, semantic actions, form fill, batch execution, cookie/storage writes, evidence export, annotations, recordings, and tab actions.",
         tools: TOOL_ACCESS_BROWSER_CONTROL_TOOLS,
         risk_class: "browser_control",
     },
@@ -3046,12 +3046,15 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_BROWSER_OBSERVE,
             "browser_observe",
-            "Observe the in-app browser with page text, URL, screenshots, console, network, accessibility, tabs, and safe state reads.",
+            "Observe the Browser Automation Service with capabilities, page text/source, snapshots/versioned refs, waits/assertions, screenshots, console, network, accessibility, forms, frames, timeline, and safe state reads.",
             &[
                 "browser",
                 "frontend",
                 "ui",
                 "dom",
+                "snapshot",
+                "refs",
+                "assert",
                 "screenshot",
                 "accessibility",
                 "console",
@@ -3063,22 +3066,25 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
                 "action",
                 "url",
                 "selector",
+                "refId",
                 "text",
+                "condition",
+                "assertion",
                 "timeoutMs",
                 "tabId",
                 "area",
                 "key",
             ],
             &[
-                "Observe current URL and page text.",
-                "Capture an accessibility tree.",
+                "Capture a snapshot and use refs for later actions.",
+                "Assert page state and collect diagnostics.",
             ],
             "browser_observe",
         ),
         catalog_entry(
             AUTONOMOUS_TOOL_BROWSER_CONTROL,
             "browser_control",
-            "Control the in-app browser with navigation, clicks, typing, key presses, scroll, cookie/storage writes, tab focus/close, and state restore.",
+            "Control the Browser Automation Service with navigation, selector/ref actions, semantic actions, form fill, batch execution, cookie/storage writes, evidence export, annotations, recordings, and tab actions.",
             &[
                 "browser",
                 "frontend",
@@ -3086,6 +3092,10 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
                 "dom",
                 "click",
                 "type",
+                "ref",
+                "batch",
+                "form",
+                "evidence",
                 "navigation",
                 "storage",
                 "cookies",
@@ -3094,13 +3104,17 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
                 "action",
                 "url",
                 "selector",
+                "refId",
                 "text",
+                "intent",
+                "steps",
+                "fields",
                 "timeoutMs",
                 "tabId",
                 "area",
                 "key",
             ],
-            &["Click and type into a local app after activation."],
+            &["Run a ref-based browser batch after a snapshot."],
             "browser_control",
         ),
         catalog_entry(
@@ -5390,15 +5404,31 @@ impl AutonomousToolRuntime {
             )
         })?;
         let action_summary = format!("Browser action {:?}", request.action);
-        let output = executor.execute(request.action)?;
-        let summary = if let Some(url) = &output.url {
-            format!("Executed browser action `{}` on `{}`.", output.action, url)
-        } else {
-            format!(
-                "Executed browser action `{}` ({action_summary}).",
-                output.action
-            )
-        };
+        let output = executor.execute(
+            request.action,
+            BrowserExecutionContext {
+                preference: self.browser_control_preference,
+                repo_root: self.repo_root.clone(),
+            },
+        )?;
+        let output_envelope = serde_json::from_str::<JsonValue>(&output.value_json).ok();
+        let summary = output_envelope
+            .as_ref()
+            .and_then(|value| value.get("summary"))
+            .and_then(JsonValue::as_str)
+            .map(str::to_owned)
+            .or_else(|| {
+                output
+                    .url
+                    .as_ref()
+                    .map(|url| format!("Executed browser action `{}` on `{}`.", output.action, url))
+            })
+            .unwrap_or_else(|| {
+                format!(
+                    "Executed browser action `{}` ({action_summary}).",
+                    output.action
+                )
+            });
         Ok(AutonomousToolResult {
             tool_name: AUTONOMOUS_TOOL_BROWSER.into(),
             summary,
@@ -5843,7 +5873,7 @@ impl AutonomousToolRuntime {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "tool", content = "input")]
 pub enum AutonomousToolRequest {
     Read(AutonomousReadRequest),
@@ -6195,8 +6225,25 @@ fn project_context_tool_name(action: AutonomousProjectContextAction) -> &'static
 }
 
 fn browser_tool_name(action: &AutonomousBrowserAction) -> &'static str {
+    if let AutonomousBrowserAction::InAppCdpFacade { method, .. } = action {
+        return if in_app_cdp_facade_method_is_observe_tool(method) {
+            AUTONOMOUS_TOOL_BROWSER_OBSERVE
+        } else {
+            AUTONOMOUS_TOOL_BROWSER_CONTROL
+        };
+    }
+    if let AutonomousBrowserAction::ActionCache { command, .. } = action {
+        return if matches!(command.as_str(), "stats" | "list" | "get") {
+            AUTONOMOUS_TOOL_BROWSER_OBSERVE
+        } else {
+            AUTONOMOUS_TOOL_BROWSER_CONTROL
+        };
+    }
     match action {
-        AutonomousBrowserAction::Open { .. }
+        AutonomousBrowserAction::Launch { .. }
+        | AutonomousBrowserAction::Attach { .. }
+        | AutonomousBrowserAction::Close { .. }
+        | AutonomousBrowserAction::Open { .. }
         | AutonomousBrowserAction::TabOpen { .. }
         | AutonomousBrowserAction::Navigate { .. }
         | AutonomousBrowserAction::Back
@@ -6206,17 +6253,80 @@ fn browser_tool_name(action: &AutonomousBrowserAction) -> &'static str {
         | AutonomousBrowserAction::Click { .. }
         | AutonomousBrowserAction::Type { .. }
         | AutonomousBrowserAction::Scroll { .. }
+        | AutonomousBrowserAction::Hover { .. }
         | AutonomousBrowserAction::PressKey { .. }
+        | AutonomousBrowserAction::ClickRef { .. }
+        | AutonomousBrowserAction::FillRef { .. }
+        | AutonomousBrowserAction::HoverRef { .. }
+        | AutonomousBrowserAction::SelectOption { .. }
+        | AutonomousBrowserAction::SetChecked { .. }
+        | AutonomousBrowserAction::Drag { .. }
+        | AutonomousBrowserAction::UploadFile { .. }
+        | AutonomousBrowserAction::Focus { .. }
+        | AutonomousBrowserAction::Paste { .. }
+        | AutonomousBrowserAction::SetViewport { .. }
+        | AutonomousBrowserAction::ZoomRegion { .. }
+        | AutonomousBrowserAction::Batch { .. }
+        | AutonomousBrowserAction::Act { .. }
+        | AutonomousBrowserAction::FillForm { .. }
+        | AutonomousBrowserAction::DebugBundle { .. }
+        | AutonomousBrowserAction::ExportBundle { .. }
+        | AutonomousBrowserAction::Annotation { .. }
+        | AutonomousBrowserAction::Recording { .. }
+        | AutonomousBrowserAction::DialogAccept { .. }
+        | AutonomousBrowserAction::DialogDismiss { .. }
+        | AutonomousBrowserAction::DialogRespond { .. }
+        | AutonomousBrowserAction::DownloadSave { .. }
+        | AutonomousBrowserAction::DownloadClear { .. }
+        | AutonomousBrowserAction::TraceStart { .. }
+        | AutonomousBrowserAction::TraceStop { .. }
+        | AutonomousBrowserAction::TraceExport { .. }
+        | AutonomousBrowserAction::VisualBaselineSave { .. }
+        | AutonomousBrowserAction::VisualDiff { .. }
+        | AutonomousBrowserAction::VisualBaselineDelete { .. }
+        | AutonomousBrowserAction::EmulateDevice { .. }
+        | AutonomousBrowserAction::ClearEmulation { .. }
+        | AutonomousBrowserAction::SwitchPage { .. }
+        | AutonomousBrowserAction::ClosePage { .. }
+        | AutonomousBrowserAction::SelectFrame { .. }
+        | AutonomousBrowserAction::HarExport { .. }
+        | AutonomousBrowserAction::PdfExport { .. }
+        | AutonomousBrowserAction::NetworkControl { .. }
+        | AutonomousBrowserAction::VaultSave { .. }
+        | AutonomousBrowserAction::VaultLogin { .. }
+        | AutonomousBrowserAction::VaultDelete { .. }
+        | AutonomousBrowserAction::AuthProfileSave { .. }
+        | AutonomousBrowserAction::AuthProfileRestore { .. }
+        | AutonomousBrowserAction::AuthProfileDelete { .. }
+        | AutonomousBrowserAction::ViewerGoal { .. }
+        | AutonomousBrowserAction::Takeover { .. }
+        | AutonomousBrowserAction::ReleaseControl { .. }
+        | AutonomousBrowserAction::Pause { .. }
+        | AutonomousBrowserAction::Resume { .. }
+        | AutonomousBrowserAction::Step { .. }
+        | AutonomousBrowserAction::Abort { .. }
+        | AutonomousBrowserAction::SensitiveOn { .. }
+        | AutonomousBrowserAction::SensitiveOff { .. }
+        | AutonomousBrowserAction::McpBridge { .. }
+        | AutonomousBrowserAction::GenerateTest { .. }
         | AutonomousBrowserAction::CookiesSet { .. }
         | AutonomousBrowserAction::StorageWrite { .. }
         | AutonomousBrowserAction::StorageClear { .. }
         | AutonomousBrowserAction::StateRestore { .. }
         | AutonomousBrowserAction::TabClose { .. }
         | AutonomousBrowserAction::TabFocus { .. } => AUTONOMOUS_TOOL_BROWSER_CONTROL,
-        AutonomousBrowserAction::ReadText { .. }
+        AutonomousBrowserAction::Health
+        | AutonomousBrowserAction::Capabilities { .. }
+        | AutonomousBrowserAction::PageList { .. }
+        | AutonomousBrowserAction::ReadText { .. }
+        | AutonomousBrowserAction::Source { .. }
         | AutonomousBrowserAction::Query { .. }
+        | AutonomousBrowserAction::Snapshot { .. }
+        | AutonomousBrowserAction::GetRef { .. }
         | AutonomousBrowserAction::WaitForSelector { .. }
         | AutonomousBrowserAction::WaitForLoad { .. }
+        | AutonomousBrowserAction::WaitFor { .. }
+        | AutonomousBrowserAction::Assert { .. }
         | AutonomousBrowserAction::CurrentUrl
         | AutonomousBrowserAction::HistoryState
         | AutonomousBrowserAction::Screenshot
@@ -6226,9 +6336,44 @@ fn browser_tool_name(action: &AutonomousBrowserAction) -> &'static str {
         | AutonomousBrowserAction::NetworkSummary { .. }
         | AutonomousBrowserAction::AccessibilityTree { .. }
         | AutonomousBrowserAction::StateSnapshot { .. }
+        | AutonomousBrowserAction::FindBest { .. }
+        | AutonomousBrowserAction::AnalyzeForm { .. }
+        | AutonomousBrowserAction::FrameList { .. }
+        | AutonomousBrowserAction::DialogList { .. }
+        | AutonomousBrowserAction::DownloadList { .. }
+        | AutonomousBrowserAction::TraceStatus { .. }
+        | AutonomousBrowserAction::VisualBaselineList { .. }
+        | AutonomousBrowserAction::EmulationState { .. }
+        | AutonomousBrowserAction::Extract { .. }
+        | AutonomousBrowserAction::FrameState { .. }
+        | AutonomousBrowserAction::VaultList { .. }
+        | AutonomousBrowserAction::AuthProfileList { .. }
+        | AutonomousBrowserAction::ViewerState { .. }
+        | AutonomousBrowserAction::BrowserResource { .. }
+        | AutonomousBrowserAction::BrowserPrompt { .. }
+        | AutonomousBrowserAction::ValidateBundle { .. }
+        | AutonomousBrowserAction::Timeline { .. }
+        | AutonomousBrowserAction::PromptInjectionScan { .. }
         | AutonomousBrowserAction::HarnessExtensionContract
         | AutonomousBrowserAction::TabList => AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+        AutonomousBrowserAction::InAppCdpFacade { .. }
+        | AutonomousBrowserAction::ActionCache { .. } => unreachable!("handled above"),
     }
+}
+
+fn in_app_cdp_facade_method_is_observe_tool(method: &str) -> bool {
+    matches!(
+        method,
+        "Page.lifecycle"
+            | "DOM.snapshot"
+            | "DOM.resolveRef"
+            | "Log.entryAdded"
+            | "Network.requestWillBeSent"
+            | "Network.responseReceived"
+            | "Network.summary"
+            | "Accessibility.snapshot"
+            | "Storage.get"
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -9580,6 +9725,99 @@ mod tests {
         },
         RuntimeAgentIdDto,
     };
+
+    #[test]
+    fn browser_gap_actions_route_to_observe_or_control_tool_names() {
+        for action in [
+            AutonomousBrowserAction::DialogList { session_id: None },
+            AutonomousBrowserAction::DownloadList { session_id: None },
+            AutonomousBrowserAction::TraceStatus { session_id: None },
+            AutonomousBrowserAction::Extract {
+                session_id: None,
+                mode: "links".into(),
+                selector: None,
+                selector_map: None,
+                limit: None,
+            },
+            AutonomousBrowserAction::ViewerState { session_id: None },
+            AutonomousBrowserAction::BrowserPrompt {
+                prompt: "full_page_audit".into(),
+                arguments: None,
+            },
+            AutonomousBrowserAction::ActionCache {
+                command: "stats".into(),
+                scope: None,
+                url_signature: None,
+                intent: None,
+                key: None,
+                selector_candidates: None,
+                confidence: None,
+            },
+            AutonomousBrowserAction::InAppCdpFacade {
+                method: "DOM.snapshot".into(),
+                params: None,
+                timeout_ms: None,
+            },
+        ] {
+            let request = AutonomousToolRequest::Browser(AutonomousBrowserRequest { action });
+            assert_eq!(request.tool_name(), AUTONOMOUS_TOOL_BROWSER_OBSERVE);
+        }
+
+        for action in [
+            AutonomousBrowserAction::SelectOption {
+                selector: Some("select".into()),
+                ref_id: None,
+                value: None,
+                label: Some("One".into()),
+                index: None,
+                timeout_ms: None,
+            },
+            AutonomousBrowserAction::DialogAccept {
+                session_id: None,
+                prompt_text: None,
+            },
+            AutonomousBrowserAction::DownloadSave {
+                session_id: None,
+                guid: "download-1".into(),
+                destination: "/tmp/download.txt".into(),
+            },
+            AutonomousBrowserAction::VisualDiff {
+                session_id: None,
+                name: "baseline".into(),
+                threshold_percent: None,
+                selector: None,
+                ref_id: None,
+                full_page: None,
+            },
+            AutonomousBrowserAction::AuthProfileRestore {
+                session_id: None,
+                name: "profile".into(),
+                navigate: None,
+            },
+            AutonomousBrowserAction::GenerateTest {
+                recording_id: None,
+                batch_json: Some("{}".into()),
+                name: None,
+            },
+            AutonomousBrowserAction::ActionCache {
+                command: "put".into(),
+                scope: None,
+                url_signature: Some("https://example.com/#Example".into()),
+                intent: Some("click cta".into()),
+                key: None,
+                selector_candidates: Some(vec!["#cta".into()]),
+                confidence: Some(90),
+            },
+            AutonomousBrowserAction::InAppCdpFacade {
+                method: "Input.click".into(),
+                params: None,
+                timeout_ms: None,
+            },
+        ] {
+            let request = AutonomousToolRequest::Browser(AutonomousBrowserRequest { action });
+            assert_eq!(request.tool_name(), AUTONOMOUS_TOOL_BROWSER_CONTROL);
+        }
+    }
 
     #[test]
     fn crawl_runtime_agent_uses_exact_repository_recon_tool_allowlist() {
