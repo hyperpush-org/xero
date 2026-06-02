@@ -57,12 +57,12 @@ This closes the high-risk discovery and policy-regression gap. It does not yet p
 - Deploy gates and secret scans have Rust tests for committed mainnet keypair hazards.
 - The current UI text keeps per-run gating language out of Solana-specific user-facing labels; the workbench does not introduce legacy workflow terminology for per-run stages.
 
-## Remaining Gaps
+## Issue 45 Coverage Additions
 
-- Add autonomous runtime fixture tests that execute each of the 24 Solana tools with representative valid input and assert useful output shape.
-- Add negative runtime tests for invalid/disallowed Solana tool calls, especially mutation-adjacent deploy, send, verified build, and publish paths.
-- Expand focused component tests for the non-smoke panels so each panel-level action invokes the expected hook handler with sanitized arguments.
-- Add redaction assertions for exported diagnostics and agent-visible tool results where keypair paths, RPC tokens, and wallet material could appear.
+- Autonomous runtime fixture tests execute each of the 24 Solana tools with representative safe input and assert the stable Solana output envelope.
+- Negative autonomous runtime tests cover mutation-adjacent send, IDL publish, deploy, rollback, and verified-build calls with policy-aware, non-leaky errors.
+- Focused panel component tests cover persona creation, scenario launch, transaction simulation/priority-fee parsing, and safety scans through user-facing controls.
+- Agent-visible Solana tool results now redact keypair paths, RPC tokens, wallet/provider credential fields, screenshot-like payloads, exported diagnostic raw payloads, and telemetry-like payloads before returning to the runtime caller.
 
 ## Verification Commands
 
@@ -70,5 +70,7 @@ Use scoped commands. Do not run broad repo-wide Rust tests for this audit unless
 
 ```bash
 cargo test --manifest-path client/src-tauri/Cargo.toml --lib runtime::autonomous_tool_runtime::tests::solana_catalog_pack_policy_and_request_names_cover_issue_15_inventory
+cargo test --manifest-path client/src-tauri/Cargo.toml --lib solana_runtime
+pnpm --dir ./client vitest run components/xero/solana-panel-actions.test.tsx components/xero/solana-workbench-sidebar.test.tsx
 cargo test --manifest-path client/src-tauri/Cargo.toml --lib commands::solana::tests::app_data_state_roots_solana_stores_together
 ```

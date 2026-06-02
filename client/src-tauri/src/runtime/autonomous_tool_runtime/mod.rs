@@ -5254,7 +5254,7 @@ impl AutonomousToolRuntime {
                 "Solana actions require the desktop runtime; no SolanaState is wired.",
             )
         })?;
-        let output = run(executor.as_ref())?;
+        let output = Self::redact_solana_output_for_agent(run(executor.as_ref())?);
         let summary = format!(
             "Executed Solana action `{}` with `{tool_name}`.",
             output.action
@@ -5265,6 +5265,119 @@ impl AutonomousToolRuntime {
             command_result: None,
             output: AutonomousToolOutput::Solana(output),
         })
+    }
+
+    fn redact_solana_output_for_agent(
+        mut output: AutonomousSolanaOutput,
+    ) -> AutonomousSolanaOutput {
+        match serde_json::from_str::<JsonValue>(&output.value_json) {
+            Ok(value) => {
+                let redacted = Self::redact_solana_json_for_agent(value, None);
+                output.value_json =
+                    serde_json::to_string(&redacted).unwrap_or_else(|_| "null".into());
+            }
+            Err(_) if find_prohibited_persistence_content(&output.value_json).is_some() => {
+                output.value_json = "\"[REDACTED]\"".into();
+            }
+            Err(_) => {}
+        }
+        output
+    }
+
+    fn redact_solana_json_for_agent(value: JsonValue, key: Option<&str>) -> JsonValue {
+        match value {
+            JsonValue::String(text) => {
+                JsonValue::String(Self::redact_solana_text_for_agent(key, text))
+            }
+            JsonValue::Array(items) => JsonValue::Array(
+                items
+                    .into_iter()
+                    .map(|item| Self::redact_solana_json_for_agent(item, key))
+                    .collect(),
+            ),
+            JsonValue::Object(fields) => JsonValue::Object(
+                fields
+                    .into_iter()
+                    .map(|(field_key, field_value)| {
+                        let value = if Self::is_sensitive_solana_result_key(&field_key) {
+                            JsonValue::String("[REDACTED]".into())
+                        } else {
+                            Self::redact_solana_json_for_agent(field_value, Some(&field_key))
+                        };
+                        (field_key, value)
+                    })
+                    .collect(),
+            ),
+            other => other,
+        }
+    }
+
+    fn redact_solana_text_for_agent(key: Option<&str>, text: String) -> String {
+        if key.is_some_and(Self::is_solana_url_result_key) {
+            return crate::commands::solana::provider_profiles::redact_url(&text);
+        }
+
+        if key.is_some_and(Self::is_solana_free_text_result_key)
+            && find_prohibited_persistence_content(&text).is_some()
+        {
+            "[REDACTED]".into()
+        } else {
+            text
+        }
+    }
+
+    fn is_sensitive_solana_result_key(key: &str) -> bool {
+        let normalized = Self::normalize_solana_result_key(key);
+        normalized.contains("keypair")
+            || normalized.contains("privatekey")
+            || normalized.contains("seedphrase")
+            || normalized.contains("walletmaterial")
+            || normalized.contains("authorization")
+            || normalized.contains("credential")
+            || normalized.contains("apikey")
+            || normalized.contains("secret")
+            || normalized.contains("token")
+            || normalized.contains("screenshot")
+            || normalized.contains("imagebase64")
+            || normalized.contains("pngbase64")
+            || normalized.contains("rawpayload")
+            || normalized.contains("toolpayload")
+            || normalized.contains("telemetrypayload")
+            || normalized.contains("diagnosticbundle")
+    }
+
+    fn is_solana_url_result_key(key: &str) -> bool {
+        matches!(
+            Self::normalize_solana_result_key(key).as_str(),
+            "rpcurl" | "websocketurl" | "endpointurl" | "providerurl" | "url"
+        )
+    }
+
+    fn is_solana_free_text_result_key(key: &str) -> bool {
+        matches!(
+            Self::normalize_solana_result_key(key).as_str(),
+            "message"
+                | "messages"
+                | "error"
+                | "errors"
+                | "diagnostic"
+                | "diagnostics"
+                | "exporteddiagnostics"
+                | "evidence"
+                | "summary"
+                | "details"
+                | "stdout"
+                | "stderr"
+                | "log"
+                | "logs"
+        )
+    }
+
+    fn normalize_solana_result_key(key: &str) -> String {
+        key.chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .flat_map(|ch| ch.to_lowercase())
+            .collect()
     }
 
     pub fn browser(
@@ -9460,7 +9573,13 @@ pub struct AutonomousSkillToolOutput {
 mod tests {
     use super::*;
 
-    use crate::commands::RuntimeAgentIdDto;
+    use crate::commands::{
+        solana::{
+            AnalyzerKind, ClusterKind, CodamaTarget, Commitment, DeployAuthority, ExplainRequest,
+            IdlPublishMode, SeedPart, SendRequest, SimulateRequest, TxSpec,
+        },
+        RuntimeAgentIdDto,
+    };
 
     #[test]
     fn crawl_runtime_agent_uses_exact_repository_recon_tool_allowlist() {
@@ -9659,6 +9778,671 @@ mod tests {
 
         assert_eq!(search.schema_fields, &["query", "resultCount", "timeoutMs"]);
         assert_eq!(fetch.schema_fields, &["url", "maxChars", "timeoutMs"]);
+    }
+
+    #[derive(Debug, Default)]
+    struct FixtureSolanaExecutor {
+        deny_mutations: bool,
+        leak_sensitive_output: bool,
+    }
+
+    fn fixture_solana_output(
+        action: &str,
+        value: JsonValue,
+    ) -> CommandResult<AutonomousSolanaOutput> {
+        Ok(AutonomousSolanaOutput {
+            action: action.into(),
+            value_json: serde_json::to_string(&value).expect("fixture json"),
+        })
+    }
+
+    fn fixture_policy_denied(message: &str) -> CommandResult<AutonomousSolanaOutput> {
+        Err(CommandError::policy_denied(message))
+    }
+
+    impl FixtureSolanaExecutor {
+        fn output(&self, action: &str) -> CommandResult<AutonomousSolanaOutput> {
+            let value = if self.leak_sensitive_output {
+                json!({
+                    "ok": true,
+                    "action": action,
+                    "keypairPath": "/Users/alice/.config/solana/id.json",
+                    "rpcUrl": "https://rpc.helius.example/?api-key=live-secret-token",
+                    "providerCredentials": {
+                        "apiKey": "live-secret-token",
+                        "authorization": "Bearer live-secret-token"
+                    },
+                    "walletMaterial": "-----BEGIN PRIVATE KEY----- live-secret",
+                    "screenshotBase64": "iVBORw0KGgoAAAANSUhEUgAA",
+                    "exportedDiagnostics": [
+                        {
+                            "message": "failed with private_key=live-secret",
+                            "rawPayload": "tool_payload with api_key=live-secret"
+                        }
+                    ],
+                    "telemetryPayload": "rpc token live-secret"
+                })
+            } else {
+                json!({
+                    "ok": true,
+                    "action": action,
+                    "shape": {
+                        "cluster": "devnet",
+                        "items": []
+                    }
+                })
+            };
+            fixture_solana_output(action, value)
+        }
+    }
+
+    impl SolanaExecutor for FixtureSolanaExecutor {
+        fn cluster(
+            &self,
+            _request: AutonomousSolanaClusterRequest,
+        ) -> CommandResult<AutonomousSolanaOutput> {
+            self.output("cluster_status")
+        }
+
+        fn logs(
+            &self,
+            _request: AutonomousSolanaLogsRequest,
+        ) -> CommandResult<AutonomousSolanaOutput> {
+            self.output("logs_recent")
+        }
+
+        fn tx(&self, request: AutonomousSolanaTxRequest) -> CommandResult<AutonomousSolanaOutput> {
+            if self.deny_mutations
+                && matches!(request.action, AutonomousSolanaTxAction::Send { .. })
+            {
+                return fixture_policy_denied(
+                    "Solana send is mutation-adjacent and requires explicit approval; signed transaction bytes are not echoed.",
+                );
+            }
+            self.output("tx_build")
+        }
+
+        fn simulate(
+            &self,
+            _request: AutonomousSolanaSimulateRequest,
+        ) -> CommandResult<AutonomousSolanaOutput> {
+            self.output("simulate")
+        }
+
+        fn explain(
+            &self,
+            _request: AutonomousSolanaExplainRequest,
+        ) -> CommandResult<AutonomousSolanaOutput> {
+            self.output("explain")
+        }
+
+        fn alt(
+            &self,
+            _request: AutonomousSolanaAltRequest,
+        ) -> CommandResult<AutonomousSolanaOutput> {
+            self.output("alt_resolve")
+        }
+
+        fn idl(
+            &self,
+            request: AutonomousSolanaIdlRequest,
+        ) -> CommandResult<AutonomousSolanaOutput> {
+            if self.deny_mutations
+                && matches!(request.action, AutonomousSolanaIdlAction::Publish { .. })
+            {
+                return fixture_policy_denied(
+                    "Solana IDL publish is mutation-adjacent and requires explicit approval; authority material is not echoed.",
+                );
+            }
+            self.output("idl_get")
+        }
+
+        fn codama(
+            &self,
+            _request: AutonomousSolanaCodamaRequest,
+        ) -> CommandResult<AutonomousSolanaOutput> {
+            self.output("codama_generate")
+        }
+
+        fn pda(
+            &self,
+            _request: AutonomousSolanaPdaRequest,
+        ) -> CommandResult<AutonomousSolanaOutput> {
+            self.output("pda_derive")
+        }
+
+        fn program(
+            &self,
+            request: AutonomousSolanaProgramRequest,
+        ) -> CommandResult<AutonomousSolanaOutput> {
+            if self.deny_mutations
+                && matches!(
+                    request.action,
+                    AutonomousSolanaProgramAction::Rollback { .. }
+                )
+            {
+                return fixture_policy_denied(
+                    "Solana rollback is mutation-adjacent and requires explicit approval; authority material is not echoed.",
+                );
+            }
+            self.output("program_build")
+        }
+
+        fn deploy(
+            &self,
+            _request: AutonomousSolanaDeployRequest,
+        ) -> CommandResult<AutonomousSolanaOutput> {
+            if self.deny_mutations {
+                return fixture_policy_denied(
+                    "Solana deploy is mutation-adjacent and requires explicit approval; keypair paths are not echoed.",
+                );
+            }
+            self.output("deploy")
+        }
+
+        fn upgrade_check(
+            &self,
+            _request: AutonomousSolanaUpgradeCheckRequest,
+        ) -> CommandResult<AutonomousSolanaOutput> {
+            self.output("upgrade_check")
+        }
+
+        fn squads(
+            &self,
+            _request: AutonomousSolanaSquadsRequest,
+        ) -> CommandResult<AutonomousSolanaOutput> {
+            self.output("squads_proposal")
+        }
+
+        fn verified_build(
+            &self,
+            _request: AutonomousSolanaVerifiedBuildRequest,
+        ) -> CommandResult<AutonomousSolanaOutput> {
+            if self.deny_mutations {
+                return fixture_policy_denied(
+                    "Solana verified-build submission is mutation-adjacent and requires explicit approval; provider credentials are not echoed.",
+                );
+            }
+            self.output("verified_build")
+        }
+
+        fn audit(
+            &self,
+            request: AutonomousSolanaAuditRequest,
+        ) -> CommandResult<AutonomousSolanaOutput> {
+            let action = match request.action {
+                AutonomousSolanaAuditAction::Static { .. } => "audit_static",
+                AutonomousSolanaAuditAction::External { .. } => "audit_external",
+                AutonomousSolanaAuditAction::Fuzz { .. }
+                | AutonomousSolanaAuditAction::FuzzScaffold { .. } => "audit_fuzz",
+                AutonomousSolanaAuditAction::Coverage { .. } => "audit_coverage",
+            };
+            self.output(action)
+        }
+
+        fn indexer(
+            &self,
+            _request: AutonomousSolanaIndexerRequest,
+        ) -> CommandResult<AutonomousSolanaOutput> {
+            self.output("indexer_run")
+        }
+
+        fn replay(
+            &self,
+            _request: AutonomousSolanaReplayRequest,
+        ) -> CommandResult<AutonomousSolanaOutput> {
+            self.output("replay_list")
+        }
+
+        fn secrets(
+            &self,
+            _request: AutonomousSolanaSecretsRequest,
+        ) -> CommandResult<AutonomousSolanaOutput> {
+            self.output("secrets_patterns")
+        }
+
+        fn drift(
+            &self,
+            _request: AutonomousSolanaDriftRequest,
+        ) -> CommandResult<AutonomousSolanaOutput> {
+            self.output("drift_tracked")
+        }
+
+        fn cost(
+            &self,
+            _request: AutonomousSolanaCostRequest,
+        ) -> CommandResult<AutonomousSolanaOutput> {
+            self.output("cost_snapshot")
+        }
+
+        fn docs(
+            &self,
+            _request: AutonomousSolanaDocsRequest,
+        ) -> CommandResult<AutonomousSolanaOutput> {
+            self.output("docs_catalog")
+        }
+    }
+
+    fn valid_pubkey(byte: u8) -> String {
+        bs58::encode([byte; 32]).into_string()
+    }
+
+    fn representative_solana_runtime_requests(
+    ) -> Vec<(&'static str, &'static str, AutonomousToolRequest)> {
+        let program_id = valid_pubkey(7);
+        let authority = DeployAuthority::DirectKeypair {
+            keypair_path: "/tmp/xero-fixtures/devnet-authority.json".into(),
+        };
+        vec![
+            (
+                AUTONOMOUS_TOOL_SOLANA_CLUSTER,
+                "cluster_status",
+                AutonomousToolRequest::SolanaCluster(AutonomousSolanaClusterRequest {
+                    action: AutonomousSolanaClusterAction::Status,
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_LOGS,
+                "logs_recent",
+                AutonomousToolRequest::SolanaLogs(AutonomousSolanaLogsRequest {
+                    action: AutonomousSolanaLogsAction::Recent {
+                        cluster: ClusterKind::Devnet,
+                        program_ids: vec![program_id.clone()],
+                        last_n: Some(5),
+                        rpc_url: Some("https://api.devnet.solana.com".into()),
+                        cached_only: true,
+                    },
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_TX,
+                "tx_build",
+                AutonomousToolRequest::SolanaTx(AutonomousSolanaTxRequest {
+                    action: AutonomousSolanaTxAction::Build {
+                        spec: TxSpec {
+                            cluster: ClusterKind::Devnet,
+                            fee_payer_persona: "devnet-fee-payer".into(),
+                            signer_personas: vec![],
+                            program_ids: vec![program_id.clone()],
+                            addresses: vec![program_id.clone()],
+                            alt_candidates: vec![],
+                            rpc_url: Some("https://api.devnet.solana.com".into()),
+                        },
+                    },
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_SIMULATE,
+                "simulate",
+                AutonomousToolRequest::SolanaSimulate(AutonomousSolanaSimulateRequest {
+                    request: SimulateRequest {
+                        cluster: ClusterKind::Devnet,
+                        transaction_base64: "AQ==".into(),
+                        rpc_url: Some("https://api.devnet.solana.com".into()),
+                        skip_replace_blockhash: false,
+                        idl_errors: None,
+                    },
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_EXPLAIN,
+                "explain",
+                AutonomousToolRequest::SolanaExplain(AutonomousSolanaExplainRequest {
+                    request: ExplainRequest {
+                        cluster: ClusterKind::Devnet,
+                        signature: "5EYjH9xGvQG6b6yVgS5tW9nV4T8a9cY7vZcMqqbC1Zmx".into(),
+                        rpc_url: Some("https://api.devnet.solana.com".into()),
+                        idl_errors: None,
+                        commitment: Commitment::Finalized,
+                    },
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_ALT,
+                "alt_resolve",
+                AutonomousToolRequest::SolanaAlt(AutonomousSolanaAltRequest {
+                    action: AutonomousSolanaAltAction::Resolve {
+                        addresses: vec![program_id.clone()],
+                        candidates: vec![],
+                    },
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_IDL,
+                "idl_get",
+                AutonomousToolRequest::SolanaIdl(AutonomousSolanaIdlRequest {
+                    action: AutonomousSolanaIdlAction::Get {
+                        program_id: program_id.clone(),
+                        cluster: Some(ClusterKind::Devnet),
+                    },
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_CODAMA,
+                "codama_generate",
+                AutonomousToolRequest::SolanaCodama(AutonomousSolanaCodamaRequest {
+                    idl_path: "/tmp/xero-fixtures/anchor-idl.json".into(),
+                    targets: vec![CodamaTarget::Ts],
+                    output_dir: "/tmp/xero-fixtures/codama".into(),
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_PDA,
+                "pda_derive",
+                AutonomousToolRequest::SolanaPda(AutonomousSolanaPdaRequest {
+                    action: AutonomousSolanaPdaAction::Derive {
+                        program_id: program_id.clone(),
+                        seeds: vec![SeedPart::Utf8("vault".into())],
+                        bump: None,
+                    },
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_PROGRAM,
+                "program_build",
+                AutonomousToolRequest::SolanaProgram(AutonomousSolanaProgramRequest {
+                    action: AutonomousSolanaProgramAction::Build {
+                        manifest_path: "/tmp/xero-fixtures/Cargo.toml".into(),
+                        profile: None,
+                        kind: None,
+                        program: Some("fixture_program".into()),
+                    },
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_DEPLOY,
+                "deploy",
+                AutonomousToolRequest::SolanaDeploy(AutonomousSolanaDeployRequest {
+                    program_id: program_id.clone(),
+                    cluster: ClusterKind::Devnet,
+                    so_path: "/tmp/xero-fixtures/fixture_program.so".into(),
+                    authority: authority.clone(),
+                    idl_path: None,
+                    is_first_deploy: false,
+                    post: None,
+                    rpc_url: Some("https://api.devnet.solana.com".into()),
+                    project_root: None,
+                    block_on_any_secret: false,
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_UPGRADE_CHECK,
+                "upgrade_check",
+                AutonomousToolRequest::SolanaUpgradeCheck(AutonomousSolanaUpgradeCheckRequest {
+                    program_id: program_id.clone(),
+                    cluster: ClusterKind::Devnet,
+                    local_so_path: "/tmp/xero-fixtures/fixture_program.so".into(),
+                    expected_authority: valid_pubkey(8),
+                    local_idl_path: None,
+                    max_program_size_bytes: Some(4096),
+                    local_so_size_bytes: Some(1024),
+                    rpc_url: Some("https://api.devnet.solana.com".into()),
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_SQUADS,
+                "squads_proposal",
+                AutonomousToolRequest::SolanaSquads(AutonomousSolanaSquadsRequest {
+                    program_id: program_id.clone(),
+                    cluster: ClusterKind::Devnet,
+                    multisig_pda: valid_pubkey(9),
+                    buffer: valid_pubkey(10),
+                    spill: valid_pubkey(11),
+                    creator: valid_pubkey(12),
+                    vault_index: Some(0),
+                    memo: Some("fixture proposal".into()),
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_VERIFIED_BUILD,
+                "verified_build",
+                AutonomousToolRequest::SolanaVerifiedBuild(AutonomousSolanaVerifiedBuildRequest {
+                    program_id: program_id.clone(),
+                    cluster: ClusterKind::Devnet,
+                    manifest_path: "/tmp/xero-fixtures/Cargo.toml".into(),
+                    github_url: "https://github.com/hyperpush-org/xero".into(),
+                    commit_hash: Some("0123456789abcdef".into()),
+                    library_name: None,
+                    skip_remote_submit: true,
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_AUDIT_STATIC,
+                "audit_static",
+                AutonomousToolRequest::SolanaAuditStatic(AutonomousSolanaAuditRequest {
+                    action: AutonomousSolanaAuditAction::Static {
+                        project_root: "/tmp/xero-fixtures".into(),
+                        rule_ids: vec![],
+                        skip_paths: vec![],
+                    },
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_AUDIT_EXTERNAL,
+                "audit_external",
+                AutonomousToolRequest::SolanaAuditExternal(AutonomousSolanaAuditRequest {
+                    action: AutonomousSolanaAuditAction::External {
+                        project_root: "/tmp/xero-fixtures".into(),
+                        analyzer: AnalyzerKind::Auto,
+                        timeout_s: Some(5),
+                    },
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_AUDIT_FUZZ,
+                "audit_fuzz",
+                AutonomousToolRequest::SolanaAuditFuzz(AutonomousSolanaAuditRequest {
+                    action: AutonomousSolanaAuditAction::Fuzz {
+                        project_root: "/tmp/xero-fixtures".into(),
+                        target: "fixture_target".into(),
+                        duration_s: Some(1),
+                        corpus: None,
+                        baseline_coverage_lines: None,
+                    },
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_AUDIT_COVERAGE,
+                "audit_coverage",
+                AutonomousToolRequest::SolanaAuditCoverage(AutonomousSolanaAuditRequest {
+                    action: AutonomousSolanaAuditAction::Coverage {
+                        project_root: "/tmp/xero-fixtures".into(),
+                        package: None,
+                        test_filter: Some("fixture".into()),
+                        lcov_path: None,
+                        instruction_names: vec!["initialize".into()],
+                        timeout_s: Some(5),
+                    },
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_REPLAY,
+                "replay_list",
+                AutonomousToolRequest::SolanaReplay(AutonomousSolanaReplayRequest {
+                    action: AutonomousSolanaReplayAction::List,
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_INDEXER,
+                "indexer_run",
+                AutonomousToolRequest::SolanaIndexer(AutonomousSolanaIndexerRequest {
+                    action: AutonomousSolanaIndexerAction::Run {
+                        cluster: ClusterKind::Devnet,
+                        program_ids: vec![program_id.clone()],
+                        last_n: Some(5),
+                        rpc_url: Some("https://api.devnet.solana.com".into()),
+                    },
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_SECRETS,
+                "secrets_patterns",
+                AutonomousToolRequest::SolanaSecrets(AutonomousSolanaSecretsRequest {
+                    action: AutonomousSolanaSecretsAction::Patterns,
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_CLUSTER_DRIFT,
+                "drift_tracked",
+                AutonomousToolRequest::SolanaClusterDrift(AutonomousSolanaDriftRequest {
+                    action: AutonomousSolanaDriftAction::Tracked,
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_COST,
+                "cost_snapshot",
+                AutonomousToolRequest::SolanaCost(AutonomousSolanaCostRequest {
+                    action: AutonomousSolanaCostAction::Snapshot { request: None },
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_DOCS,
+                "docs_catalog",
+                AutonomousToolRequest::SolanaDocs(AutonomousSolanaDocsRequest {
+                    action: AutonomousSolanaDocsAction::Catalog,
+                }),
+            ),
+        ]
+    }
+
+    #[test]
+    fn solana_runtime_executes_representative_fixture_call_for_every_tool() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let runtime = AutonomousToolRuntime::new(tempdir.path())
+            .expect("runtime")
+            .with_solana_executor(Arc::new(FixtureSolanaExecutor::default()));
+
+        let requests = representative_solana_runtime_requests();
+        assert_eq!(requests.len(), 24);
+
+        for (tool_name, expected_action, request) in requests {
+            let result = runtime.execute(request).expect(tool_name);
+            assert_eq!(result.tool_name, tool_name);
+            assert!(result.summary.contains(expected_action));
+            let AutonomousToolOutput::Solana(output) = result.output else {
+                panic!("{tool_name} should return Solana output");
+            };
+            assert_eq!(output.action, expected_action);
+            let value: JsonValue = serde_json::from_str(&output.value_json).expect("value json");
+            assert_eq!(value.get("ok").and_then(JsonValue::as_bool), Some(true));
+            assert!(
+                value.get("shape").is_some(),
+                "{tool_name} should preserve stable shape"
+            );
+        }
+    }
+
+    #[test]
+    fn solana_runtime_blocks_mutation_adjacent_calls_without_leaking_payloads() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let runtime = AutonomousToolRuntime::new(tempdir.path())
+            .expect("runtime")
+            .with_solana_executor(Arc::new(FixtureSolanaExecutor {
+                deny_mutations: true,
+                leak_sensitive_output: false,
+            }));
+        let program_id = valid_pubkey(3);
+        let authority = DeployAuthority::DirectKeypair {
+            keypair_path: "/Users/alice/.config/solana/id.json".into(),
+        };
+
+        let denied = [
+            AutonomousToolRequest::SolanaTx(AutonomousSolanaTxRequest {
+                action: AutonomousSolanaTxAction::Send {
+                    request: SendRequest {
+                        cluster: ClusterKind::Devnet,
+                        signed_transaction_base64: "signed-transaction-secret-material".into(),
+                        strategy: Default::default(),
+                        rpc_url: Some("https://rpc.example/?api-key=live-secret-token".into()),
+                        idl_errors: None,
+                    },
+                },
+            }),
+            AutonomousToolRequest::SolanaIdl(AutonomousSolanaIdlRequest {
+                action: AutonomousSolanaIdlAction::Publish {
+                    program_id: program_id.clone(),
+                    cluster: ClusterKind::Devnet,
+                    idl_path: "/tmp/idl.json".into(),
+                    authority_keypair_path: "/Users/alice/.config/solana/id.json".into(),
+                    rpc_url: "https://rpc.example/?api-key=live-secret-token".into(),
+                    mode: IdlPublishMode::Upgrade,
+                },
+            }),
+            AutonomousToolRequest::SolanaDeploy(AutonomousSolanaDeployRequest {
+                program_id: program_id.clone(),
+                cluster: ClusterKind::Devnet,
+                so_path: "/tmp/program.so".into(),
+                authority: authority.clone(),
+                idl_path: None,
+                is_first_deploy: false,
+                post: None,
+                rpc_url: Some("https://rpc.example/?api-key=live-secret-token".into()),
+                project_root: None,
+                block_on_any_secret: false,
+            }),
+            AutonomousToolRequest::SolanaProgram(AutonomousSolanaProgramRequest {
+                action: AutonomousSolanaProgramAction::Rollback {
+                    program_id: program_id.clone(),
+                    cluster: ClusterKind::Devnet,
+                    previous_sha256: "a".repeat(64),
+                    authority,
+                    program_archive_root: None,
+                    post: None,
+                    rpc_url: Some("https://rpc.example/?api-key=live-secret-token".into()),
+                },
+            }),
+            AutonomousToolRequest::SolanaVerifiedBuild(AutonomousSolanaVerifiedBuildRequest {
+                program_id,
+                cluster: ClusterKind::Devnet,
+                manifest_path: "/tmp/Cargo.toml".into(),
+                github_url: "https://github.com/hyperpush-org/xero".into(),
+                commit_hash: None,
+                library_name: None,
+                skip_remote_submit: false,
+            }),
+        ];
+
+        for request in denied {
+            let err = runtime
+                .execute(request)
+                .expect_err("mutation call should be denied");
+            assert_eq!(err.class, CommandErrorClass::PolicyDenied);
+            assert!(err.message.contains("requires explicit approval"));
+            let message = err.message.to_ascii_lowercase();
+            assert!(!message.contains("signed-transaction-secret-material"));
+            assert!(!message.contains("live-secret-token"));
+            assert!(!message.contains("/users/alice/.config/solana/id.json"));
+        }
+    }
+
+    #[test]
+    fn solana_runtime_redacts_sensitive_agent_visible_results() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let runtime = AutonomousToolRuntime::new(tempdir.path())
+            .expect("runtime")
+            .with_solana_executor(Arc::new(FixtureSolanaExecutor {
+                deny_mutations: false,
+                leak_sensitive_output: true,
+            }));
+
+        let result = runtime
+            .execute(AutonomousToolRequest::SolanaDocs(
+                AutonomousSolanaDocsRequest {
+                    action: AutonomousSolanaDocsAction::Catalog,
+                },
+            ))
+            .expect("solana docs");
+        let AutonomousToolOutput::Solana(output) = result.output else {
+            panic!("expected solana output");
+        };
+        let rendered = output.value_json;
+        assert!(rendered.contains("[REDACTED]"));
+        assert!(rendered.contains("api-key=redacted"));
+        assert!(!rendered.contains("live-secret-token"));
+        assert!(!rendered.contains("/Users/alice/.config/solana/id.json"));
+        assert!(!rendered.contains("PRIVATE KEY"));
+        assert!(!rendered.contains("iVBORw0KGgo"));
+        assert!(!rendered.contains("tool_payload"));
     }
 
     #[test]
