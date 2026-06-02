@@ -1999,7 +1999,7 @@ fn extract_session_memory_candidates_with_provider(
 
     let mut created = Vec::new();
     let mut diagnostics = Vec::new();
-    let mut skipped_duplicate_count = 0_usize;
+    let mut reinforced_duplicate_count = 0_usize;
     let mut rejected_count = 0_usize;
     let now = now_timestamp();
 
@@ -2017,17 +2017,23 @@ fn extract_session_memory_candidates_with_provider(
         ) {
             Ok(record) => {
                 let text_hash = project_store::agent_memory_text_hash(&record.text);
-                if project_store::find_active_agent_memory_by_hash(
+                if let Some(existing) = project_store::find_active_agent_memory_by_hash(
                     repo_root,
                     project_id,
                     &record.scope,
                     record.agent_session_id.as_deref(),
                     &record.kind,
                     &text_hash,
-                )?
-                .is_some()
-                {
-                    skipped_duplicate_count = skipped_duplicate_count.saturating_add(1);
+                )? {
+                    project_store::reinforce_agent_memory(
+                        repo_root,
+                        project_id,
+                        &existing.memory_id,
+                        record.source_run_id.as_deref(),
+                        &record.source_item_ids,
+                        now.as_str(),
+                    )?;
+                    reinforced_duplicate_count = reinforced_duplicate_count.saturating_add(1);
                     continue;
                 }
                 let persisted = project_store::insert_agent_memory(repo_root, &record)?;
@@ -2066,7 +2072,7 @@ fn extract_session_memory_candidates_with_provider(
         agent_session_id: agent_session_id.into(),
         memories,
         created_count: created.len(),
-        skipped_duplicate_count,
+        reinforced_duplicate_count,
         rejected_count,
         diagnostics,
     })

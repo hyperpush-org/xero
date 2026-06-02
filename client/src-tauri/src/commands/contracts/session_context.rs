@@ -804,6 +804,10 @@ pub struct SessionMemoryRecordDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_run_id: Option<String>,
     pub source_item_ids: Vec<String>,
+    pub reinforcement_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_reinforced_at: Option<String>,
+    pub reinforcement_sources: JsonValue,
     pub created_at: String,
     pub updated_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -899,7 +903,7 @@ pub struct ExtractSessionMemoryCandidatesResponseDto {
     pub agent_session_id: String,
     pub memories: Vec<SessionMemoryRecordDto>,
     pub created_count: usize,
-    pub skipped_duplicate_count: usize,
+    pub reinforced_duplicate_count: usize,
     pub rejected_count: usize,
     pub diagnostics: Vec<SessionMemoryDiagnosticDto>,
 }
@@ -1082,6 +1086,9 @@ pub fn session_memory_record_dto(record: &AgentMemoryRecord) -> SessionMemoryRec
         confidence: record.confidence,
         source_run_id: record.source_run_id.clone(),
         source_item_ids: record.source_item_ids.clone(),
+        reinforcement_count: record.reinforcement_count,
+        last_reinforced_at: record.last_reinforced_at.clone(),
+        reinforcement_sources: session_memory_reinforcement_sources_json(record),
         created_at: record.created_at.clone(),
         updated_at: record.updated_at.clone(),
         diagnostic,
@@ -1100,6 +1107,11 @@ pub fn session_memory_record_dto(record: &AgentMemoryRecord) -> SessionMemoryRec
         retrieval_impact: session_memory_retrieval_impact_json(record),
         conflict: session_memory_conflict_json(record),
     }
+}
+
+fn session_memory_reinforcement_sources_json(record: &AgentMemoryRecord) -> JsonValue {
+    serde_json::from_str(&record.reinforcement_sources_json)
+        .unwrap_or_else(|_| JsonValue::Array(Vec::new()))
 }
 
 pub fn session_memory_promotion_status(record: &AgentMemoryRecord) -> String {
@@ -1141,6 +1153,9 @@ fn session_memory_provenance_json(record: &AgentMemoryRecord) -> JsonValue {
     json!({
         "sourceRunId": record.source_run_id,
         "sourceItemIds": record.source_item_ids,
+        "reinforcementCount": record.reinforcement_count,
+        "lastReinforcedAt": record.last_reinforced_at,
+        "reinforcementSources": session_memory_reinforcement_sources_json(record),
         "sourcePaths": source_paths,
         "sourceFingerprintCount": source_fingerprint_count,
         "promotionGate": promotion_gate,

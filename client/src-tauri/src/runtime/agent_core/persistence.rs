@@ -1885,7 +1885,7 @@ pub(crate) fn capture_memory_candidates_for_run(
     let mut promoted_count = 0_usize;
     let mut rejected_count = 0_usize;
     let mut kept_candidate_count = 0_usize;
-    let mut skipped_duplicate_count = 0_usize;
+    let mut reinforced_duplicate_count = 0_usize;
     let mut diagnostics = Vec::new();
     let now = now_timestamp();
     for candidate in outcome
@@ -1903,17 +1903,23 @@ pub(crate) fn capture_memory_candidates_for_run(
         ) {
             Ok(prepared) => {
                 let text_hash = project_store::agent_memory_text_hash(&prepared.record.text);
-                if project_store::find_active_agent_memory_by_hash(
+                if let Some(existing) = project_store::find_active_agent_memory_by_hash(
                     repo_root,
                     &snapshot.run.project_id,
                     &prepared.record.scope,
                     prepared.record.agent_session_id.as_deref(),
                     &prepared.record.kind,
                     &text_hash,
-                )?
-                .is_some()
-                {
-                    skipped_duplicate_count = skipped_duplicate_count.saturating_add(1);
+                )? {
+                    project_store::reinforce_agent_memory(
+                        repo_root,
+                        &snapshot.run.project_id,
+                        &existing.memory_id,
+                        prepared.record.source_run_id.as_deref(),
+                        &prepared.record.source_item_ids,
+                        now.as_str(),
+                    )?;
+                    reinforced_duplicate_count = reinforced_duplicate_count.saturating_add(1);
                     continue;
                 }
                 let inserted = project_store::insert_agent_memory(repo_root, &prepared.record)?;
@@ -1979,7 +1985,7 @@ pub(crate) fn capture_memory_candidates_for_run(
             "promotedCount": promoted_count,
             "rejectedCount": rejected_count,
             "keptCandidateCount": kept_candidate_count,
-            "skippedDuplicateCount": skipped_duplicate_count,
+            "reinforcedDuplicateCount": reinforced_duplicate_count,
             "preInsertRejectedCount": diagnostics.len(),
             "promotionGate": AUTOMATED_MEMORY_PROMOTION_GATE,
             "promotionGateVersion": AUTOMATED_MEMORY_PROMOTION_GATE_VERSION,
@@ -1991,7 +1997,7 @@ pub(crate) fn capture_memory_candidates_for_run(
             snapshot,
             trigger,
             candidate_count,
-            skipped_duplicate_count,
+            reinforced_duplicate_count,
             &diagnostics,
         )?;
     }
@@ -2903,7 +2909,7 @@ fn record_memory_extraction_diagnostics(
     snapshot: &AgentRunSnapshotRecord,
     trigger: &str,
     created_count: usize,
-    skipped_duplicate_count: usize,
+    reinforced_duplicate_count: usize,
     diagnostics: &[project_store::AgentRunDiagnosticRecord],
 ) -> CommandResult<()> {
     if diagnostics.is_empty() {
@@ -2930,7 +2936,7 @@ fn record_memory_extraction_diagnostics(
                 "schema": "xero.memory_extraction.diagnostics.v1",
                 "trigger": trigger,
                 "createdCount": created_count,
-                "skippedDuplicateCount": skipped_duplicate_count,
+                "reinforcedDuplicateCount": reinforced_duplicate_count,
                 "rejectedCount": diagnostics.len(),
                 "diagnostics": diagnostics.iter().map(|diagnostic| json!({
                     "code": diagnostic.code,

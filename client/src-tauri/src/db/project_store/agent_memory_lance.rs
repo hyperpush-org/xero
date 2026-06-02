@@ -16,11 +16,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use arrow_array::builder::{
-    BooleanBuilder, FixedSizeListBuilder, Float32Builder, Int32Builder, StringBuilder, UInt8Builder,
+    BooleanBuilder, FixedSizeListBuilder, Float32Builder, Int32Builder, StringBuilder,
+    UInt32Builder, UInt8Builder,
 };
 use arrow_array::{
     Array, ArrayRef, BooleanArray, FixedSizeListArray, Int32Array, RecordBatch,
-    RecordBatchIterator, StringArray, UInt8Array,
+    RecordBatchIterator, StringArray, UInt32Array, UInt8Array,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use futures::TryStreamExt;
@@ -54,6 +55,7 @@ const AGENT_MEMORY_EMBEDDING_INDEX: &str = "agent_memories_embedding_cosine_idx"
 
 /// Subdirectory under each per-project app-data dir that hosts Lance datasets.
 pub const PROJECT_LANCE_SUBDIR: &str = "lance";
+const MAX_REINFORCEMENT_SOURCES: usize = 25;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct AgentMemoryListFilterOwned {
@@ -94,6 +96,9 @@ pub fn schema() -> SchemaRef {
         Field::new("confidence", DataType::UInt8, true),
         Field::new("source_run_id", DataType::Utf8, true),
         Field::new("source_item_ids_json", DataType::Utf8, false),
+        Field::new("reinforcement_count", DataType::UInt32, false),
+        Field::new("last_reinforced_at", DataType::Utf8, true),
+        Field::new("reinforcement_sources_json", DataType::Utf8, false),
         Field::new("diagnostic_json", DataType::Utf8, true),
         Field::new("freshness_state", DataType::Utf8, false),
         Field::new("freshness_checked_at", DataType::Utf8, true),
@@ -134,6 +139,9 @@ pub struct AgentMemoryRow {
     pub confidence: Option<u8>,
     pub source_run_id: Option<String>,
     pub source_item_ids: Vec<String>,
+    pub reinforcement_count: u32,
+    pub last_reinforced_at: Option<String>,
+    pub reinforcement_sources_json: String,
     pub diagnostic: Option<AgentRunDiagnosticRecord>,
     pub freshness_state: String,
     pub freshness_checked_at: Option<String>,
@@ -167,6 +175,9 @@ impl AgentMemoryRow {
             confidence: self.confidence,
             source_run_id: self.source_run_id,
             source_item_ids: self.source_item_ids,
+            reinforcement_count: self.reinforcement_count,
+            last_reinforced_at: self.last_reinforced_at,
+            reinforcement_sources_json: self.reinforcement_sources_json,
             diagnostic: self.diagnostic,
             freshness_state: self.freshness_state,
             freshness_checked_at: self.freshness_checked_at,
@@ -386,6 +397,9 @@ fn build_batch(rows: &[AgentMemoryRow]) -> Result<RecordBatch, CommandError> {
     let mut confidence = UInt8Builder::new();
     let mut source_run_id = StringBuilder::new();
     let mut source_item_ids_json = StringBuilder::new();
+    let mut reinforcement_count = UInt32Builder::new();
+    let mut last_reinforced_at = StringBuilder::new();
+    let mut reinforcement_sources_json = StringBuilder::new();
     let mut diagnostic_json = StringBuilder::new();
     let mut freshness_state = StringBuilder::new();
     let mut freshness_checked_at = StringBuilder::new();
@@ -433,6 +447,9 @@ fn build_batch(rows: &[AgentMemoryRow]) -> Result<RecordBatch, CommandError> {
             )
         })?;
         source_item_ids_json.append_value(&items_json);
+        reinforcement_count.append_value(row.reinforcement_count.max(1));
+        append_optional(&mut last_reinforced_at, row.last_reinforced_at.as_deref());
+        reinforcement_sources_json.append_value(&row.reinforcement_sources_json);
         match &row.diagnostic {
             Some(diagnostic) => {
                 let json = serde_json::to_string(&serde_json::json!({
@@ -492,6 +509,9 @@ fn build_batch(rows: &[AgentMemoryRow]) -> Result<RecordBatch, CommandError> {
         Arc::new(confidence.finish()),
         Arc::new(source_run_id.finish()),
         Arc::new(source_item_ids_json.finish()),
+        Arc::new(reinforcement_count.finish()),
+        Arc::new(last_reinforced_at.finish()),
+        Arc::new(reinforcement_sources_json.finish()),
         Arc::new(diagnostic_json.finish()),
         Arc::new(freshness_state.finish()),
         Arc::new(freshness_checked_at.finish()),
@@ -578,6 +598,9 @@ fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<AgentMemoryRow>, CommandErro
     let confidence_arr = column_u8(batch, "confidence")?;
     let source_run_id_arr = column_str(batch, "source_run_id")?;
     let source_item_ids_json_arr = column_str(batch, "source_item_ids_json")?;
+    let reinforcement_count_arr = column_u32(batch, "reinforcement_count")?;
+    let last_reinforced_at_arr = column_str(batch, "last_reinforced_at")?;
+    let reinforcement_sources_json_arr = column_str(batch, "reinforcement_sources_json")?;
     let diagnostic_json_arr = column_str(batch, "diagnostic_json")?;
     let freshness_state_arr = column_str(batch, "freshness_state")?;
     let freshness_checked_at_arr = column_str(batch, "freshness_checked_at")?;
@@ -628,6 +651,14 @@ fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<AgentMemoryRow>, CommandErro
             },
             source_run_id: optional_str(source_run_id_arr, index),
             source_item_ids,
+            reinforcement_count: reinforcement_count_arr.value(index).max(1),
+            last_reinforced_at: optional_str(last_reinforced_at_arr, index),
+            reinforcement_sources_json: require_str(
+                reinforcement_sources_json_arr,
+                index,
+                "reinforcement_sources_json",
+            )?
+            .to_string(),
             diagnostic,
             freshness_state: require_str(freshness_state_arr, index, "freshness_state")?
                 .to_string(),
@@ -676,6 +707,13 @@ fn column_u8<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a UInt8Array, C
     batch
         .column_by_name(name)
         .and_then(|array| array.as_any().downcast_ref::<UInt8Array>())
+        .ok_or_else(|| missing_column(name))
+}
+
+fn column_u32<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a UInt32Array, CommandError> {
+    batch
+        .column_by_name(name)
+        .and_then(|array| array.as_any().downcast_ref::<UInt32Array>())
         .ok_or_else(|| missing_column(name))
 }
 
@@ -899,8 +937,22 @@ impl ProjectMemoryStore {
         let project_id = self.project_id.clone();
         let result = runtime().block_on(async move {
             let rows = scan_all(&dataset).await?;
-            if let Some(existing) = rows.iter().find(|existing| same_dedup_key(existing, &row)) {
+            if let Some(existing) = rows
+                .iter()
+                .find(|existing| existing.memory_id == row.memory_id)
+            {
                 return Ok::<AgentMemoryRow, CommandError>(existing.clone());
+            }
+            if let Some(existing) = rows.iter().find(|existing| same_dedup_key(existing, &row)) {
+                let mut reinforced = existing.clone();
+                reinforce_row(
+                    &mut reinforced,
+                    row.source_run_id.as_deref(),
+                    &row.source_item_ids,
+                    &row.created_at,
+                );
+                replace_row(&dataset, existing, reinforced.clone()).await?;
+                return Ok::<AgentMemoryRow, CommandError>(reinforced);
             }
             let connection = ensure_connection(&dataset).await?;
             let table = open_or_create_table(&connection, &dataset).await?;
@@ -1054,6 +1106,30 @@ impl ProjectMemoryStore {
                 .next()
                 .map(|row| stamp_project(row, &project_id))
                 .map(AgentMemoryRow::into_record))
+        })
+    }
+
+    pub fn reinforce(
+        &self,
+        memory_id: &str,
+        source_run_id: Option<&str>,
+        source_item_ids: &[String],
+        now: &str,
+    ) -> Result<AgentMemoryRecord, CommandError> {
+        let dataset = self.dataset_dir.clone();
+        let project_id = self.project_id.clone();
+        let memory_id = memory_id.to_string();
+        let source_run_id = source_run_id.map(str::to_owned);
+        let source_item_ids = source_item_ids.to_vec();
+        let now = now.to_string();
+        runtime().block_on(async move {
+            let previous = fetch_row(&dataset, &memory_id)
+                .await?
+                .ok_or_else(|| missing_memory_error(&project_id, &memory_id))?;
+            let mut row = previous.clone();
+            reinforce_row(&mut row, source_run_id.as_deref(), &source_item_ids, &now);
+            replace_row(&dataset, &previous, row.clone()).await?;
+            Ok(stamp_project(row, &project_id).into_record())
         })
     }
 
@@ -1279,15 +1355,10 @@ async fn maintain_embedding_index(
 }
 
 fn same_dedup_key(left: &AgentMemoryRow, right: &AgentMemoryRow) -> bool {
-    if left.memory_id == right.memory_id {
-        return true;
-    }
     left.scope == right.scope
         && left.kind == right.kind
         && left.agent_session_id == right.agent_session_id
         && left.text_hash == right.text_hash
-        && left.source_run_id == right.source_run_id
-        && left.source_item_ids == right.source_item_ids
         && !matches!(left.review_state, AgentMemoryReviewState::Rejected)
 }
 
@@ -1504,6 +1575,47 @@ fn quote_string_literal(value: &str) -> String {
     out
 }
 
+fn reinforce_row(
+    row: &mut AgentMemoryRow,
+    source_run_id: Option<&str>,
+    source_item_ids: &[String],
+    observed_at: &str,
+) {
+    row.reinforcement_count = row.reinforcement_count.max(1).saturating_add(1);
+    row.last_reinforced_at = Some(observed_at.to_string());
+    row.reinforcement_sources_json = append_reinforcement_source(
+        &row.reinforcement_sources_json,
+        source_run_id,
+        source_item_ids,
+        observed_at,
+    );
+    row.updated_at = observed_at.to_string();
+}
+
+fn append_reinforcement_source(
+    sources_json: &str,
+    source_run_id: Option<&str>,
+    source_item_ids: &[String],
+    observed_at: &str,
+) -> String {
+    let mut sources =
+        serde_json::from_str::<Vec<serde_json::Value>>(sources_json).unwrap_or_else(|_| Vec::new());
+    sources.push(serde_json::json!({
+        "observedAt": observed_at,
+        "sourceRunId": source_run_id,
+        "sourceItemIds": source_item_ids,
+    }));
+    if sources.len() > MAX_REINFORCEMENT_SOURCES {
+        sources = sources
+            .into_iter()
+            .rev()
+            .take(MAX_REINFORCEMENT_SOURCES)
+            .collect::<Vec<_>>();
+        sources.reverse();
+    }
+    serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into())
+}
+
 fn missing_memory_error(project_id: &str, memory_id: &str) -> CommandError {
     CommandError::user_fixable(
         "agent_memory_not_found",
@@ -1533,6 +1645,14 @@ mod tests {
             confidence: Some(50),
             source_run_id: Some("run-1".into()),
             source_item_ids: vec!["message:1".into()],
+            reinforcement_count: 1,
+            last_reinforced_at: None,
+            reinforcement_sources_json: serde_json::json!([{
+                "observedAt": "2026-04-26T00:00:00Z",
+                "sourceRunId": "run-1",
+                "sourceItemIds": ["message:1"]
+            }])
+            .to_string(),
             diagnostic: None,
             freshness_state: "source_unknown".into(),
             freshness_checked_at: None,

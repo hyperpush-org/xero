@@ -498,6 +498,14 @@ fn session_context_redaction_hardens_tokens_paths_endpoints_and_memory_integrity
             confidence: Some(90),
             source_run_id: Some(RUN_ID.into()),
             source_item_ids: vec!["message:1".into()],
+            reinforcement_count: 1,
+            last_reinforced_at: None,
+            reinforcement_sources_json: json!([{
+                "observedAt": "2026-04-26T10:04:00Z",
+                "sourceRunId": RUN_ID,
+                "sourceItemIds": ["message:1"]
+            }])
+            .to_string(),
             diagnostic: None,
             freshness_state: xero_desktop_lib::db::project_store::FreshnessState::SourceUnknown
                 .as_str()
@@ -858,6 +866,13 @@ fn memory(
         confidence: Some(90),
         source_run_id: Some(RUN_ID.into()),
         source_item_ids: vec!["message:1".into()],
+        reinforcement_count: 1,
+        last_reinforced_at: None,
+        reinforcement_sources: json!([{
+            "observedAt": created_at,
+            "sourceRunId": RUN_ID,
+            "sourceItemIds": ["message:1"]
+        }]),
         created_at: created_at.into(),
         updated_at: created_at.into(),
         diagnostic: None,

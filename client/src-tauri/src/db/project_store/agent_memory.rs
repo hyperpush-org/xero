@@ -63,6 +63,9 @@ pub struct AgentMemoryRecord {
     pub confidence: Option<u8>,
     pub source_run_id: Option<String>,
     pub source_item_ids: Vec<String>,
+    pub reinforcement_count: u32,
+    pub last_reinforced_at: Option<String>,
+    pub reinforcement_sources_json: String,
     pub diagnostic: Option<AgentRunDiagnosticRecord>,
     pub freshness_state: String,
     pub freshness_checked_at: Option<String>,
@@ -134,6 +137,37 @@ pub fn agent_memory_text_hash(text: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+fn initial_reinforcement_sources_json(
+    source_run_id: Option<&str>,
+    source_item_ids: &[String],
+    observed_at: &str,
+) -> String {
+    capped_reinforcement_sources_json(Vec::new(), source_run_id, source_item_ids, observed_at)
+}
+
+fn capped_reinforcement_sources_json(
+    mut sources: Vec<serde_json::Value>,
+    source_run_id: Option<&str>,
+    source_item_ids: &[String],
+    observed_at: &str,
+) -> String {
+    sources.push(serde_json::json!({
+        "observedAt": observed_at,
+        "sourceRunId": source_run_id,
+        "sourceItemIds": source_item_ids,
+    }));
+    const MAX_REINFORCEMENT_SOURCES: usize = 25;
+    if sources.len() > MAX_REINFORCEMENT_SOURCES {
+        sources = sources
+            .into_iter()
+            .rev()
+            .take(MAX_REINFORCEMENT_SOURCES)
+            .collect::<Vec<_>>();
+        sources.reverse();
+    }
+    serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into())
+}
+
 pub fn insert_agent_memory(
     repo_root: &Path,
     record: &NewAgentMemoryRecord,
@@ -162,6 +196,13 @@ pub fn insert_agent_memory(
         confidence: record.confidence,
         source_run_id: record.source_run_id.clone(),
         source_item_ids: record.source_item_ids.clone(),
+        reinforcement_count: 1,
+        last_reinforced_at: None,
+        reinforcement_sources_json: initial_reinforcement_sources_json(
+            record.source_run_id.as_deref(),
+            &record.source_item_ids,
+            &record.created_at,
+        ),
         diagnostic: record.diagnostic.clone(),
         freshness_state: freshness.freshness_state.as_str().into(),
         freshness_checked_at: freshness.freshness_checked_at,
@@ -666,6 +707,27 @@ pub fn find_active_agent_memory_by_hash(
     store.find_active_by_hash(scope, agent_session_id, kind, text_hash)
 }
 
+pub fn reinforce_agent_memory(
+    repo_root: &Path,
+    project_id: &str,
+    memory_id: &str,
+    source_run_id: Option<&str>,
+    source_item_ids: &[String],
+    now: &str,
+) -> Result<AgentMemoryRecord, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(memory_id, "memoryId")?;
+    validate_non_empty_text(now, "reinforcedAt")?;
+    if let Some(source_run_id) = source_run_id {
+        validate_non_empty_text(source_run_id, "sourceRunId")?;
+    }
+    for source_item_id in source_item_ids {
+        validate_non_empty_text(source_item_id, "sourceItemIds")?;
+    }
+    let store = open_store_with_project_check(repo_root, project_id)?;
+    store.reinforce(memory_id, source_run_id, source_item_ids, now)
+}
+
 pub fn update_agent_memory(
     repo_root: &Path,
     update: &AgentMemoryUpdateRecord,
@@ -854,6 +916,13 @@ fn memory_review_queue_item(memory: &AgentMemoryRecord) -> serde_json::Value {
                 "message": diagnostic.message,
             }))
         },
+        "reinforcement": {
+            "count": memory.reinforcement_count,
+            "lastReinforcedAt": memory.last_reinforced_at,
+            "sources": memory_reinforcement_sources_json(memory),
+            "latestSourceRunId": latest_reinforcement_source_run_id(memory),
+            "latestSourceItemIds": latest_reinforcement_source_item_ids(memory),
+        },
         "freshness": {
             "state": memory.freshness_state,
             "checkedAt": memory.freshness_checked_at,
@@ -882,6 +951,29 @@ fn memory_review_queue_item(memory: &AgentMemoryRecord) -> serde_json::Value {
         "createdAt": memory.created_at,
         "updatedAt": memory.updated_at,
     })
+}
+
+fn memory_reinforcement_sources_json(memory: &AgentMemoryRecord) -> serde_json::Value {
+    serde_json::from_str(&memory.reinforcement_sources_json)
+        .unwrap_or_else(|_| serde_json::Value::Array(Vec::new()))
+}
+
+fn latest_reinforcement_source_run_id(memory: &AgentMemoryRecord) -> serde_json::Value {
+    memory_reinforcement_sources_json(memory)
+        .as_array()
+        .and_then(|sources| sources.last())
+        .and_then(|source| source.get("sourceRunId"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
+}
+
+fn latest_reinforcement_source_item_ids(memory: &AgentMemoryRecord) -> serde_json::Value {
+    memory_reinforcement_sources_json(memory)
+        .as_array()
+        .and_then(|sources| sources.last())
+        .and_then(|source| source.get("sourceItemIds"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]))
 }
 
 fn memory_review_optional_redacted_text(value: Option<&str>) -> (serde_json::Value, bool) {
@@ -1357,6 +1449,14 @@ mod tests {
             confidence: Some(90),
             source_run_id: Some("run-retrieval-contract".into()),
             source_item_ids: vec!["agent_messages:1".into()],
+            reinforcement_count: 1,
+            last_reinforced_at: None,
+            reinforcement_sources_json: serde_json::json!([{
+                "observedAt": "2026-05-09T00:00:00Z",
+                "sourceRunId": "run-retrieval-contract",
+                "sourceItemIds": ["agent_messages:1"]
+            }])
+            .to_string(),
             diagnostic: Some(AgentRunDiagnosticRecord {
                 code: "memory_promotion_gate_promoted".into(),
                 message: "{}".into(),
@@ -1435,6 +1535,80 @@ mod tests {
             .iter()
             .any(|memory| memory.memory_id == "memory-delete-review"));
         assert!(get_agent_memory(&repo_root, project_id, "memory-delete-review").is_err());
+    }
+
+    #[test]
+    fn s51_duplicate_memory_insert_reinforces_existing_memory() {
+        agent_memory_lance::reset_connection_cache_for_tests();
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("repo dir");
+        let project_id = "project-memory-reinforcement";
+        create_project_database(&repo_root, project_id);
+        let text = "The workspace stores durable memory under OS app data.";
+
+        let first = insert_agent_memory(
+            &repo_root,
+            &NewAgentMemoryRecord {
+                memory_id: "memory-reinforced-original".into(),
+                project_id: project_id.into(),
+                agent_session_id: None,
+                scope: AgentMemoryScope::Project,
+                kind: AgentMemoryKind::ProjectFact,
+                text: text.into(),
+                review_state: AgentMemoryReviewState::Approved,
+                enabled: true,
+                confidence: Some(90),
+                source_run_id: Some("run-memory-reinforcement-1".into()),
+                source_item_ids: vec!["message:1".into()],
+                diagnostic: None,
+                created_at: "2026-05-09T00:00:00Z".into(),
+            },
+        )
+        .expect("insert first memory");
+        let duplicate = insert_agent_memory(
+            &repo_root,
+            &NewAgentMemoryRecord {
+                memory_id: "memory-reinforced-duplicate".into(),
+                project_id: project_id.into(),
+                agent_session_id: None,
+                scope: AgentMemoryScope::Project,
+                kind: AgentMemoryKind::ProjectFact,
+                text: text.into(),
+                review_state: AgentMemoryReviewState::Approved,
+                enabled: true,
+                confidence: Some(92),
+                source_run_id: Some("run-memory-reinforcement-2".into()),
+                source_item_ids: vec!["message:2".into()],
+                diagnostic: None,
+                created_at: "2026-05-09T00:01:00Z".into(),
+            },
+        )
+        .expect("insert duplicate memory");
+
+        assert_eq!(duplicate.memory_id, first.memory_id);
+        assert_eq!(duplicate.reinforcement_count, 2);
+        assert_eq!(
+            duplicate.last_reinforced_at.as_deref(),
+            Some("2026-05-09T00:01:00Z")
+        );
+        let sources =
+            serde_json::from_str::<Vec<serde_json::Value>>(&duplicate.reinforcement_sources_json)
+                .expect("reinforcement sources json");
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[1]["sourceRunId"], "run-memory-reinforcement-2");
+        assert_eq!(sources[1]["sourceItemIds"][0], "message:2");
+        let memories = list_agent_memories(
+            &repo_root,
+            project_id,
+            AgentMemoryListFilter {
+                agent_session_id: None,
+                include_disabled: true,
+                include_rejected: true,
+            },
+        )
+        .expect("list memories");
+        assert_eq!(memories.len(), 1);
     }
 
     #[test]
@@ -1544,6 +1718,11 @@ mod tests {
         assert_eq!(
             approved["availableActions"]["canDisable"],
             serde_json::json!(true)
+        );
+        assert_eq!(approved["reinforcement"]["count"], serde_json::json!(1));
+        assert_eq!(
+            approved["reinforcement"]["sources"][0]["observedAt"],
+            serde_json::json!("2026-05-09T00:01:00Z")
         );
         let candidate = items
             .iter()
@@ -1920,6 +2099,14 @@ mod tests {
             confidence: Some(88),
             source_run_id: None,
             source_item_ids: Vec::new(),
+            reinforcement_count: 1,
+            last_reinforced_at: None,
+            reinforcement_sources_json: serde_json::json!([{
+                "observedAt": "2026-05-03T00:12:00Z",
+                "sourceRunId": null,
+                "sourceItemIds": []
+            }])
+            .to_string(),
             diagnostic: None,
             freshness_state: FreshnessState::Current.as_str().into(),
             freshness_checked_at: Some("2026-05-03T00:12:00Z".into()),

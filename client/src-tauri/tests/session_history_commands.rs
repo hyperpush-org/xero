@@ -1243,8 +1243,12 @@ fn memory_extraction_review_and_context_injection_are_review_gated() {
     )
     .expect("duplicate memory extraction");
     assert_eq!(duplicate.created_count, 0);
-    assert_eq!(duplicate.skipped_duplicate_count, 4);
+    assert_eq!(duplicate.reinforced_duplicate_count, 4);
     assert_eq!(duplicate.rejected_count, 2);
+    assert!(duplicate
+        .memories
+        .iter()
+        .any(|memory| memory.reinforcement_count > 1));
 
     let project_fact = extracted
         .memories

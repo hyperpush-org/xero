@@ -1321,6 +1321,7 @@ fn memory_candidate(
         return Ok(None);
     }
     let freshness_adjustment = freshness_score_adjustment(&row.freshness_state);
+    let reinforcement_adjustment = memory_reinforcement_score_adjustment(row.reinforcement_count);
     let related_paths = source_fingerprint_paths(&row.source_fingerprints_json)?;
     let trust_signal = retrieval_trust_signal(
         &row.freshness_state,
@@ -1334,7 +1335,9 @@ fn memory_candidate(
             .confidence
             .map(|value| f64::from(value) / 500.0)
             .unwrap_or(0.0);
-    let score = (score + freshness_adjustment + trust_signal.ranking_adjustment).max(0.0);
+    let score =
+        (score + freshness_adjustment + trust_signal.ranking_adjustment + reinforcement_adjustment)
+            .max(0.0);
     let (snippet, redaction_state) = retrieval_snippet(&row.text);
     let scope = memory_scope_sql_value(&row.scope);
     let kind = memory_kind_sql_value(&row.kind);
@@ -1374,6 +1377,10 @@ fn memory_candidate(
         "contradictionPenalty": trust_signal.contradiction_penalty,
         "sourceRunId": row.source_run_id,
         "sourceItemIds": row.source_item_ids,
+        "reinforcementCount": row.reinforcement_count,
+        "lastReinforcedAt": row.last_reinforced_at,
+        "reinforcementSources": memory_reinforcement_sources_json(&row),
+        "reinforcementAdjustment": reinforcement_adjustment,
         "relatedPaths": related_paths,
     });
     Ok(Some(SearchCandidate {
@@ -1394,6 +1401,8 @@ fn memory_candidate(
             "sourceItemIds": trust["sourceItemIds"].clone(),
             "relatedPaths": trust["relatedPaths"].clone(),
             "confidence": trust["confidence"].clone(),
+            "reinforcementCount": trust["reinforcementCount"].clone(),
+            "lastReinforcedAt": trust["lastReinforcedAt"].clone(),
             "trustScore": trust["trustScore"].clone(),
             "trustStatus": trust["trustStatus"].clone(),
             "contradictionState": trust["contradictionState"].clone(),
@@ -1415,6 +1424,7 @@ fn memory_candidate(
                 "vectorScore": vector_score,
                 "freshnessAdjustment": freshness_adjustment,
                 "trustAdjustment": trust_signal.ranking_adjustment,
+                "reinforcementAdjustment": reinforcement_adjustment,
             },
             "freshness": freshness,
             "trust": trust,
@@ -1424,6 +1434,8 @@ fn memory_candidate(
                 "memoryKind": kind,
                 "relatedPaths": trust["relatedPaths"].clone(),
                 "sourceItemIds": trust["sourceItemIds"].clone(),
+                "reinforcementCount": trust["reinforcementCount"].clone(),
+                "lastReinforcedAt": trust["lastReinforcedAt"].clone(),
             }
         }),
     }))
@@ -2403,6 +2415,16 @@ fn freshness_score_adjustment(freshness_state: &str) -> f64 {
     }
 }
 
+fn memory_reinforcement_score_adjustment(reinforcement_count: u32) -> f64 {
+    let duplicate_observations = reinforcement_count.saturating_sub(1).min(5);
+    f64::from(duplicate_observations) * 0.03
+}
+
+fn memory_reinforcement_sources_json(row: &AgentMemoryRow) -> JsonValue {
+    serde_json::from_str(&row.reinforcement_sources_json)
+        .unwrap_or_else(|_| JsonValue::Array(Vec::new()))
+}
+
 fn retrieval_source_kind_label(source_kind: &AgentRetrievalResultSourceKind) -> &'static str {
     match source_kind {
         AgentRetrievalResultSourceKind::ProjectRecord => "project_record",
@@ -3268,6 +3290,17 @@ mod tests {
         assert!(current.score > stale.score);
         assert!(stale.score > superseded.score);
         assert!(current.ranking_adjustment > stale.ranking_adjustment);
+    }
+
+    #[test]
+    fn s51_memory_reinforcement_boost_is_capped() {
+        assert_eq!(memory_reinforcement_score_adjustment(1), 0.0);
+        assert!(memory_reinforcement_score_adjustment(3) > 0.0);
+        assert_eq!(
+            memory_reinforcement_score_adjustment(6),
+            memory_reinforcement_score_adjustment(99)
+        );
+        assert!(memory_reinforcement_score_adjustment(99) <= 0.15);
     }
 
     #[test]

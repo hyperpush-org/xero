@@ -686,6 +686,14 @@ export const sessionMemoryKindSchema = z.enum([
   'troubleshooting',
 ])
 export const sessionMemoryReviewStateSchema = z.enum(['candidate', 'approved', 'rejected'])
+export const agentMemoryFreshnessStateSchema = z.enum([
+  'current',
+  'source_unknown',
+  'stale',
+  'source_missing',
+  'superseded',
+  'blocked',
+])
 export const sessionMemoryRecordSchema = z
   .object({
     contractVersion: z.literal(XERO_SESSION_CONTEXT_CONTRACT_VERSION),
@@ -700,6 +708,17 @@ export const sessionMemoryRecordSchema = z
     confidence: z.number().int().min(0).max(100).nullable().optional(),
     sourceRunId: nonEmptyOptionalTextSchema,
     sourceItemIds: z.array(z.string().trim().min(1)),
+    reinforcementCount: z.number().int().positive(),
+    lastReinforcedAt: isoTimestampSchema.nullable().optional(),
+    reinforcementSources: z.array(
+      z
+        .object({
+          observedAt: isoTimestampSchema,
+          sourceRunId: nonEmptyOptionalTextSchema,
+          sourceItemIds: z.array(z.string().trim().min(1)),
+        })
+        .strict(),
+    ),
     createdAt: isoTimestampSchema,
     updatedAt: isoTimestampSchema,
     diagnostic: z
@@ -712,6 +731,28 @@ export const sessionMemoryRecordSchema = z
       .nullable()
       .optional(),
     redaction: sessionContextRedactionSchema,
+    freshnessState: agentMemoryFreshnessStateSchema,
+    freshnessCheckedAt: isoTimestampSchema.nullable().optional(),
+    staleReason: nonEmptyOptionalTextSchema,
+    supersedesId: nonEmptyOptionalTextSchema,
+    supersededById: nonEmptyOptionalTextSchema,
+    invalidatedAt: isoTimestampSchema.nullable().optional(),
+    factKey: nonEmptyOptionalTextSchema,
+    retrievable: z.boolean(),
+    retrievabilityReason: z.enum([
+      'pending_or_rejected_review',
+      'disabled',
+      'superseded',
+      'invalidated',
+      'stale',
+      'source_missing',
+      'blocked',
+      'retrievable',
+    ]),
+    promotionStatus: z.string().trim().min(1),
+    provenance: z.record(z.string(), z.unknown()),
+    retrievalImpact: z.record(z.string(), z.unknown()),
+    conflict: z.record(z.string(), z.unknown()),
   })
   .strict()
   .superRefine((memory, ctx) => {
@@ -734,6 +775,13 @@ export const sessionMemoryRecordSchema = z
         code: z.ZodIssueCode.custom,
         path: ['enabled'],
         message: 'Only approved memory can be enabled.',
+      })
+    }
+    if (memory.retrievable !== (memory.retrievabilityReason === 'retrievable')) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['retrievabilityReason'],
+        message: 'Memory retrievability must match its reason.',
       })
     }
   })
@@ -801,15 +849,6 @@ export const sessionMemoryDiagnosticSchema = z
   })
   .strict()
 
-export const agentMemoryFreshnessStateSchema = z.enum([
-  'current',
-  'source_unknown',
-  'stale',
-  'source_missing',
-  'superseded',
-  'blocked',
-])
-
 export const agentMemoryReviewQueueItemSchema = z
   .object({
     memoryId: z.string().trim().min(1),
@@ -832,6 +871,23 @@ export const agentMemoryReviewQueueItemSchema = z
           .strict()
           .nullable()
           .optional(),
+      })
+      .strict(),
+    reinforcement: z
+      .object({
+        count: z.number().int().positive(),
+        lastReinforcedAt: isoTimestampSchema.nullable().optional(),
+        sources: z.array(
+          z
+            .object({
+              observedAt: isoTimestampSchema,
+              sourceRunId: nonEmptyOptionalTextSchema,
+              sourceItemIds: z.array(z.string().trim().min(1)),
+            })
+            .strict(),
+        ),
+        latestSourceRunId: nonEmptyOptionalTextSchema,
+        latestSourceItemIds: z.array(z.string().trim().min(1)),
       })
       .strict(),
     freshness: z
@@ -1055,7 +1111,7 @@ export const extractSessionMemoryCandidatesResponseSchema = z
     agentSessionId: z.string().trim().min(1),
     memories: z.array(sessionMemoryRecordSchema),
     createdCount: z.number().int().nonnegative(),
-    skippedDuplicateCount: z.number().int().nonnegative(),
+    reinforcedDuplicateCount: z.number().int().nonnegative(),
     rejectedCount: z.number().int().nonnegative(),
     diagnostics: z.array(sessionMemoryDiagnosticSchema),
   })

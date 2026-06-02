@@ -346,10 +346,50 @@ describe('session context contract', () => {
       confidence: 95,
       sourceRunId: runId,
       sourceItemIds: ['message:1'],
+      reinforcementCount: 2,
+      lastReinforcedAt: createdAt,
+      reinforcementSources: [
+        {
+          observedAt: createdAt,
+          sourceRunId: runId,
+          sourceItemIds: ['message:1'],
+        },
+      ],
       createdAt,
       updatedAt: createdAt,
       diagnostic: null,
       redaction: redacted.redaction,
+      freshnessState: 'source_unknown',
+      freshnessCheckedAt: null,
+      staleReason: null,
+      supersedesId: null,
+      supersededById: null,
+      invalidatedAt: null,
+      factKey: null,
+      retrievable: true,
+      retrievabilityReason: 'retrievable',
+      promotionStatus: 'approved_enabled',
+      provenance: {
+        sourceRunId: runId,
+        sourceItemIds: ['message:1'],
+        reinforcementCount: 2,
+        lastReinforcedAt: createdAt,
+        reinforcementSources: [
+          {
+            observedAt: createdAt,
+            sourceRunId: runId,
+            sourceItemIds: ['message:1'],
+          },
+        ],
+      },
+      retrievalImpact: {
+        eligibleByDefault: true,
+        eligibilityReason: 'retrievable',
+        searchModes: ['approved_memory'],
+      },
+      conflict: {
+        freshnessState: 'source_unknown',
+      },
     })
     const diagnostic = sessionMemoryDiagnosticSchema.parse({
       code: 'memory_source_deleted',
@@ -369,10 +409,50 @@ describe('session context contract', () => {
       confidence: 72,
       sourceRunId: runId,
       sourceItemIds: ['message:1'],
+      reinforcementCount: 1,
+      lastReinforcedAt: null,
+      reinforcementSources: [
+        {
+          observedAt: createdAt,
+          sourceRunId: runId,
+          sourceItemIds: ['message:1'],
+        },
+      ],
       createdAt,
       updatedAt: createdAt,
       diagnostic,
       redaction: createPublicSessionContextRedaction(),
+      freshnessState: 'source_unknown',
+      freshnessCheckedAt: null,
+      staleReason: null,
+      supersedesId: null,
+      supersededById: null,
+      invalidatedAt: null,
+      factKey: null,
+      retrievable: false,
+      retrievabilityReason: 'pending_or_rejected_review',
+      promotionStatus: 'candidate',
+      provenance: {
+        sourceRunId: runId,
+        sourceItemIds: ['message:1'],
+        reinforcementCount: 1,
+        lastReinforcedAt: null,
+        reinforcementSources: [
+          {
+            observedAt: createdAt,
+            sourceRunId: runId,
+            sourceItemIds: ['message:1'],
+          },
+        ],
+      },
+      retrievalImpact: {
+        eligibleByDefault: false,
+        eligibilityReason: 'pending_or_rejected_review',
+        searchModes: ['diagnostic_historical'],
+      },
+      conflict: {
+        freshnessState: 'source_unknown',
+      },
     })
 
     const serialized = JSON.stringify(memory)
@@ -446,6 +526,13 @@ describe('session context contract', () => {
             sourceRunId: memory.sourceRunId,
             sourceItemIds: memory.sourceItemIds,
             diagnostic: null,
+          },
+          reinforcement: {
+            count: memory.reinforcementCount,
+            lastReinforcedAt: memory.lastReinforcedAt,
+            sources: memory.reinforcementSources,
+            latestSourceRunId: runId,
+            latestSourceItemIds: ['message:1'],
           },
           freshness: {
             state: 'source_unknown',
@@ -581,10 +668,10 @@ describe('session context contract', () => {
         agentSessionId,
         memories: [memory, candidate],
         createdCount: 2,
-        skippedDuplicateCount: 1,
+        reinforcedDuplicateCount: 1,
         rejectedCount: 1,
         diagnostics: [diagnostic],
-      }).skippedDuplicateCount,
+      }).reinforcedDuplicateCount,
     ).toBe(1)
     expect(() =>
       extractSessionMemoryCandidatesResponseSchema.parse({
@@ -597,7 +684,7 @@ describe('session context contract', () => {
           },
         ],
         createdCount: 1,
-        skippedDuplicateCount: 0,
+        reinforcedDuplicateCount: 0,
         rejectedCount: 0,
         diagnostics: [],
       }),
