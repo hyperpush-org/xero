@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use rusqlite_migration::{Migrations, M};
 
-pub const PROJECT_DATABASE_SCHEMA_VERSION: i64 = 39;
+pub const PROJECT_DATABASE_SCHEMA_VERSION: i64 = 40;
 
 pub fn migrations() -> &'static Migrations<'static> {
     static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
@@ -46,6 +46,7 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(MIGRATION_030_AGENT_MAILBOX_INBOX_CHECKS_SQL),
             M::up(MIGRATION_031_AGENT_MAILBOX_SCOPED_INBOX_CHECKS_SQL),
             M::up(MIGRATION_032_AGENT_USAGE_BILLABLE_INPUT_SQL),
+            M::up(MIGRATION_033_AGENT_RUN_WAKEUPS_SQL),
         ])
     });
 
@@ -53,6 +54,51 @@ pub fn migrations() -> &'static Migrations<'static> {
 }
 
 const NOOP_SCHEMA_VERSION_MARKER_SQL: &str = "";
+
+const MIGRATION_033_AGENT_RUN_WAKEUPS_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS agent_run_wakeups (
+        project_id TEXT NOT NULL,
+        agent_session_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        wake_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        due_at TEXT NOT NULL,
+        deadline_at TEXT,
+        poll_interval_ms INTEGER CHECK (poll_interval_ms IS NULL OR poll_interval_ms > 0),
+        payload_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+        last_error_code TEXT,
+        last_error_message TEXT,
+        fired_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, run_id, wake_id),
+        CHECK (project_id <> ''),
+        CHECK (agent_session_id <> ''),
+        CHECK (run_id <> ''),
+        CHECK (wake_id <> ''),
+        CHECK (kind IN ('sleep', 'process_exit', 'process_ready', 'process_output')),
+        CHECK (due_at <> ''),
+        CHECK (deadline_at IS NULL OR deadline_at <> ''),
+        CHECK (payload_json <> '' AND json_valid(payload_json)),
+        CHECK (status IN ('pending', 'fired', 'cancelled', 'expired', 'failed')),
+        CHECK (
+            (last_error_code IS NULL AND last_error_message IS NULL)
+            OR (last_error_code IS NOT NULL AND last_error_message IS NOT NULL)
+        ),
+        CHECK (fired_at IS NULL OR fired_at <> ''),
+        CHECK (created_at <> ''),
+        CHECK (updated_at <> ''),
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_run_wakeups_pending_due
+        ON agent_run_wakeups(project_id, status, due_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_run_wakeups_run_status
+        ON agent_run_wakeups(project_id, run_id, status, updated_at DESC);
+"#;
 
 const MIGRATION_032_AGENT_USAGE_BILLABLE_INPUT_SQL: &str = r#"
     ALTER TABLE agent_usage

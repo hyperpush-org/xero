@@ -817,20 +817,39 @@ pub fn prepare_owned_agent_continuation_for_drive(
         &before,
     )?;
 
-    let continuation_attachment_inputs = message_attachments_to_inputs(&request.attachments);
-    append_user_message_with_attachments(
-        &request.repo_root,
-        &request.project_id,
-        &request.run_id,
-        request.prompt.clone(),
-        continuation_attachment_inputs,
-    )?;
+    let continuation_role = if request.internal_resume.is_some() {
+        if !request.attachments.is_empty() {
+            return Err(CommandError::invalid_request("attachments"));
+        }
+        append_message(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+            AgentMessageRole::Developer,
+            request.prompt.clone(),
+        )?;
+        "developer"
+    } else {
+        let continuation_attachment_inputs = message_attachments_to_inputs(&request.attachments);
+        append_user_message_with_attachments(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+            request.prompt.clone(),
+            continuation_attachment_inputs,
+        )?;
+        "user"
+    };
     append_event(
         &request.repo_root,
         &request.project_id,
         &request.run_id,
         AgentRunEventKind::MessageDelta,
-        json!({ "role": "user", "text": request.prompt }),
+        json!({
+            "role": continuation_role,
+            "text": request.prompt,
+            "internalResume": request.internal_resume.as_ref(),
+        }),
     )?;
     let resumed_at = now_timestamp();
     let snapshot = project_store::update_agent_run_status(
@@ -2385,6 +2404,7 @@ fn request_for_handoff_target(
         provider_preflight: request.provider_preflight.clone(),
         answer_pending_actions: false,
         auto_compact: None,
+        internal_resume: None,
     }
 }
 
@@ -3179,6 +3199,36 @@ fn finish_owned_agent_drive_error(
     let current_snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
     let stop_reason = stop_reason_for_error(&error);
     if error_should_pause(&current_snapshot, &error) {
+        let scheduled_wait = error.code == AGENT_RUN_SCHEDULED_WAIT_CODE;
+        let pause_state = if scheduled_wait {
+            AgentRunState::ScheduledWait
+        } else {
+            AgentRunState::ApprovalWait
+        };
+        let pending_wakeups = if scheduled_wait {
+            project_store::list_pending_agent_run_wakeups_for_run(repo_root, project_id, run_id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|wakeup| {
+                    json!({
+                        "wakeId": wakeup.wake_id,
+                        "kind": project_store::agent_run_wakeup_kind_sql_value(wakeup.kind),
+                        "dueAt": wakeup.due_at,
+                        "deadlineAt": wakeup.deadline_at,
+                    })
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        if scheduled_wait {
+            record_scheduled_wait_checkpoints(
+                repo_root,
+                &current_snapshot,
+                &pending_wakeups,
+                &error.message,
+            )?;
+        }
         let diagnostic = project_store::AgentRunDiagnosticRecord {
             code: error.code.clone(),
             message: error.message.clone(),
@@ -3189,10 +3239,18 @@ fn finish_owned_agent_drive_error(
             run_id,
             AgentStateTransition {
                 from: None,
-                to: AgentRunState::ApprovalWait,
-                reason: "Owned-agent run paused at a harness boundary.",
+                to: pause_state,
+                reason: if scheduled_wait {
+                    "Owned-agent run paused for a scheduled wakeup."
+                } else {
+                    "Owned-agent run paused at a harness boundary."
+                },
                 stop_reason: Some(stop_reason),
-                extra: None,
+                extra: scheduled_wait.then(|| {
+                    json!({
+                        "scheduledWakeups": pending_wakeups.clone(),
+                    })
+                }),
             },
         )?;
         append_event(
@@ -3204,8 +3262,9 @@ fn finish_owned_agent_drive_error(
                 "code": error.code,
                 "message": error.message,
                 "retryable": error.retryable,
-                "state": AgentRunState::ApprovalWait.as_str(),
+                "state": pause_state.as_str(),
                 "stopReason": stop_reason.as_str(),
+                "scheduledWakeups": pending_wakeups,
             }),
         )?;
         let snapshot = project_store::update_agent_run_status(
@@ -3284,6 +3343,102 @@ fn capture_pause_artifacts_best_effort(
             "memory_candidate_capture",
             &error,
         );
+    }
+}
+
+fn record_scheduled_wait_checkpoints(
+    repo_root: &Path,
+    snapshot: &AgentRunSnapshotRecord,
+    pending_wakeups: &[JsonValue],
+    reason: &str,
+) -> CommandResult<()> {
+    let summary = scheduled_wait_checkpoint_summary(pending_wakeups);
+    let payload = json!({
+        "schema": "xero.agent_run_scheduled_wait_checkpoint.v1",
+        "state": AgentRunState::ScheduledWait.as_str(),
+        "stopReason": AgentRunStopReason::ScheduledWait.as_str(),
+        "reason": reason,
+        "scheduledWakeups": pending_wakeups,
+    });
+    let payload_json = serde_json::to_string(&payload).map_err(|error| {
+        CommandError::system_fault(
+            "agent_run_scheduled_wait_checkpoint_serialize_failed",
+            format!("Xero could not serialize scheduled-wait checkpoint payload: {error}"),
+        )
+    })?;
+    let now = now_timestamp();
+    project_store::append_agent_checkpoint(
+        repo_root,
+        &NewAgentCheckpointRecord {
+            project_id: snapshot.run.project_id.clone(),
+            run_id: snapshot.run.run_id.clone(),
+            checkpoint_kind: "scheduled_wait".into(),
+            summary: summary.clone(),
+            payload_json: Some(payload_json),
+            created_at: now.clone(),
+        },
+    )?;
+    record_runtime_run_scheduled_wait_checkpoint(repo_root, snapshot, &summary, &now)?;
+    Ok(())
+}
+
+fn record_runtime_run_scheduled_wait_checkpoint(
+    repo_root: &Path,
+    snapshot: &AgentRunSnapshotRecord,
+    summary: &str,
+    now: &str,
+) -> CommandResult<()> {
+    let Some(runtime_snapshot) = project_store::load_runtime_run(
+        repo_root,
+        &snapshot.run.project_id,
+        &snapshot.run.agent_session_id,
+    )?
+    else {
+        return Ok(());
+    };
+    if runtime_snapshot.run.run_id != snapshot.run.run_id {
+        return Ok(());
+    }
+
+    let mut run = runtime_snapshot.run.clone();
+    run.last_heartbeat_at = Some(now.into());
+    run.updated_at = now.into();
+    project_store::upsert_runtime_run(
+        repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run,
+            checkpoint: Some(project_store::RuntimeRunCheckpointRecord {
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                sequence: runtime_snapshot.last_checkpoint_sequence.saturating_add(1),
+                kind: project_store::RuntimeRunCheckpointKind::State,
+                summary: summary.into(),
+                created_at: now.into(),
+            }),
+            control_state: Some(runtime_snapshot.controls.clone()),
+        },
+    )?;
+    Ok(())
+}
+
+fn scheduled_wait_checkpoint_summary(pending_wakeups: &[JsonValue]) -> String {
+    let Some(first) = pending_wakeups.first() else {
+        return "Agent waiting for a scheduled wakeup.".into();
+    };
+    let wake_id = first
+        .get("wakeId")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("pending");
+    let due_at = first
+        .get("dueAt")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match due_at {
+        Some(due_at) => format!("Agent waiting for scheduled wakeup `{wake_id}` due at {due_at}."),
+        None => format!("Agent waiting for scheduled wakeup `{wake_id}`."),
     }
 }
 
@@ -3616,6 +3771,7 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
             provider_preflight: None,
             answer_pending_actions: false,
             auto_compact: None,
+            internal_resume: None,
         };
         let prepared = prepare_owned_agent_continuation_for_drive(&request)?;
         let mut updated_task = task.clone();

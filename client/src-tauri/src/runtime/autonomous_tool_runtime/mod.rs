@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, Runtime};
+use time::{format_description::well_known::Rfc3339, Duration as TimeDuration, OffsetDateTime};
 use xero_agent_core::{
     domain_tool_pack_health_report, domain_tool_pack_ids_for_tool, domain_tool_pack_manifests,
     domain_tool_pack_tools, DomainToolPackHealthInput, DomainToolPackHealthReport,
@@ -180,6 +181,7 @@ pub const AUTONOMOUS_TOOL_COMMAND_RUN: &str = "command_run";
 pub const AUTONOMOUS_TOOL_COMMAND_SESSION: &str = "command_session";
 pub const AUTONOMOUS_TOOL_HOST_COMMAND: &str = "host_command";
 pub const AUTONOMOUS_TOOL_PROCESS_MANAGER: &str = "process_manager";
+pub const AUTONOMOUS_TOOL_RUNTIME_WAIT: &str = "runtime_wait";
 pub const AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS: &str = "system_diagnostics";
 pub const AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE: &str = "system_diagnostics_observe";
 pub const AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED: &str = "system_diagnostics_privileged";
@@ -317,6 +319,12 @@ const DEFAULT_SUBAGENT_MAX_CONCURRENT_CHILD_RUNS: usize = 3;
 const DEFAULT_SUBAGENT_MAX_DELEGATED_TOOL_CALLS: usize = 40;
 const DEFAULT_SUBAGENT_MAX_DELEGATED_TOKENS: u64 = 160_000;
 const DEFAULT_SUBAGENT_MAX_DELEGATED_COST_MICROS: u64 = 250_000;
+const MIN_RUNTIME_WAIT_DELAY_MS: u64 = 1_000;
+const DEFAULT_RUNTIME_WAIT_POLL_INTERVAL_MS: u64 = 10_000;
+const MAX_RUNTIME_WAIT_DELAY_MS: u64 = 30 * 60 * 1_000;
+const MAX_RUNTIME_WAIT_DEADLINE_MS: u64 = 6 * 60 * 60 * 1_000;
+const MAX_RUNTIME_WAIT_REASON_BYTES: usize = 400;
+const MAX_RUNTIME_WAIT_RESUME_CONTEXT_BYTES: usize = 8 * 1024;
 
 const TOOL_ACCESS_CORE_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_READ,
@@ -359,6 +367,7 @@ const TOOL_ACCESS_COMMAND_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_COMMAND_SESSION,
 ];
 const TOOL_ACCESS_PROCESS_MANAGER_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_PROCESS_MANAGER];
+const TOOL_ACCESS_RUNTIME_WAIT_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_RUNTIME_WAIT];
 const TOOL_ACCESS_SYSTEM_DIAGNOSTICS_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
     AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED,
@@ -563,6 +572,12 @@ const TOOL_ACCESS_GROUP_DEFINITIONS: &[ToolAccessGroupDefinition] = &[
         description: "Xero-owned process lifecycle, output, and external process observation/control surfaces.",
         tools: TOOL_ACCESS_PROCESS_MANAGER_TOOLS,
         risk_class: "process_control",
+    },
+    ToolAccessGroupDefinition {
+        name: "runtime_wait",
+        description: "Pause an owned-agent run for a bounded timer or durable process-poll wakeup.",
+        tools: TOOL_ACCESS_RUNTIME_WAIT_TOOLS,
+        risk_class: "runtime_state",
     },
     ToolAccessGroupDefinition {
         name: "system_diagnostics",
@@ -1894,6 +1909,7 @@ pub fn tool_effect_class(tool_name: &str) -> AutonomousToolEffectClass {
         AUTONOMOUS_TOOL_TOOL_ACCESS
         | AUTONOMOUS_TOOL_TODO
         | AUTONOMOUS_TOOL_REQUEST_SENSITIVE_INPUT
+        | AUTONOMOUS_TOOL_RUNTIME_WAIT
         | AUTONOMOUS_TOOL_AGENT_COORDINATION
         | AUTONOMOUS_TOOL_AGENT_DEFINITION
         | AUTONOMOUS_TOOL_WORKFLOW_DEFINITION
@@ -2815,6 +2831,27 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
                 "Inspect system ports.",
             ],
             "process_control",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_RUNTIME_WAIT,
+            "runtime_wait",
+            "Pause an owned-agent run for a bounded timer or durable process-poll wakeup that automatically resumes later.",
+            &["wait", "timer", "poll", "resume", "scheduler", "process"],
+            &[
+                "kind",
+                "delayMs",
+                "processId",
+                "pollIntervalMs",
+                "deadlineMs",
+                "outputPattern",
+                "reason",
+                "resumeContext",
+            ],
+            &[
+                "Wait 10 seconds before checking again.",
+                "Poll an async process until it exits or the deadline is reached.",
+            ],
+            "runtime_state",
         ),
         catalog_entry(
             AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
@@ -5014,6 +5051,7 @@ impl AutonomousToolRuntime {
             }
             AutonomousToolRequest::HostCommand(request) => self.host_command(request),
             AutonomousToolRequest::ProcessManager(request) => self.process_manager(request),
+            AutonomousToolRequest::RuntimeWait(request) => self.runtime_wait(request),
             AutonomousToolRequest::SystemDiagnostics(request) => self.system_diagnostics(request),
             AutonomousToolRequest::MacosAutomation(request) => self.macos_automation(request),
             AutonomousToolRequest::DesktopObserve(request) => self.desktop_observe(request),
@@ -5205,6 +5243,97 @@ impl AutonomousToolRuntime {
                     .collect(),
                 redacted: !approved,
                 summary,
+            }),
+        })
+    }
+
+    fn runtime_wait(
+        &self,
+        request: AutonomousRuntimeWaitRequest,
+    ) -> CommandResult<AutonomousToolResult> {
+        self.check_cancelled()?;
+        validate_runtime_wait_request(&request)?;
+        let context = self.agent_run_context.as_ref().ok_or_else(|| {
+            CommandError::system_fault(
+                "runtime_wait_missing_run_context",
+                "Xero cannot schedule a wait without an active owned-agent run context.",
+            )
+        })?;
+        let now = OffsetDateTime::now_utc();
+        let created_at = format_runtime_wait_timestamp(now)?;
+        let delay_ms = runtime_wait_initial_delay_ms(&request);
+        let due_at = format_runtime_wait_timestamp(add_runtime_wait_ms(now, delay_ms)?)?;
+        let deadline_at = request
+            .deadline_ms
+            .map(|deadline_ms| add_runtime_wait_ms(now, deadline_ms))
+            .transpose()?
+            .map(format_runtime_wait_timestamp)
+            .transpose()?;
+        let reason = request.reason.trim().to_string();
+        let process_id = request
+            .process_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let output_pattern = request
+            .output_pattern
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let payload = json!({
+            "schema": "xero.agent_run_wakeup.payload.v1",
+            "kind": request.kind,
+            "reason": reason,
+            "resumeContext": request.resume_context,
+            "processId": process_id,
+            "outputPattern": output_pattern,
+            "pollIntervalMs": request.poll_interval_ms,
+            "delayMs": request.delay_ms,
+            "deadlineMs": request.deadline_ms,
+            "scheduledAt": created_at,
+        });
+        let payload_json = serde_json::to_string(&payload).map_err(|error| {
+            CommandError::system_fault(
+                "runtime_wait_payload_serialize_failed",
+                format!("Xero could not serialize scheduled wakeup payload: {error}"),
+            )
+        })?;
+        let wake_id = runtime_wait_wake_id(context, &payload_json, &due_at, &created_at)?;
+        let record = project_store::insert_agent_run_wakeup(
+            &self.repo_root,
+            &project_store::NewAgentRunWakeupRecord {
+                project_id: context.project_id.clone(),
+                agent_session_id: context.agent_session_id.clone(),
+                run_id: context.run_id.clone(),
+                wake_id: wake_id.clone(),
+                kind: request.kind.as_wakeup_kind(),
+                due_at: due_at.clone(),
+                deadline_at: deadline_at.clone(),
+                poll_interval_ms: request.poll_interval_ms,
+                payload_json,
+                created_at: created_at.clone(),
+            },
+        )?;
+        crate::runtime::notify_agent_run_wakeup_inserted(&self.repo_root, &record, self.clone());
+
+        let message = format!("Scheduled owned-agent wakeup `{wake_id}` for {due_at}: {reason}");
+        Ok(AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_RUNTIME_WAIT.into(),
+            summary: message.clone(),
+            command_result: None,
+            output: AutonomousToolOutput::RuntimeWait(AutonomousRuntimeWaitOutput {
+                wake_id,
+                kind: request.kind,
+                status: "scheduled".into(),
+                due_at,
+                deadline_at,
+                poll_interval_ms: request.poll_interval_ms,
+                process_id,
+                reason,
+                resume_context: request.resume_context,
+                message,
             }),
         })
     }
@@ -5910,6 +6039,7 @@ pub enum AutonomousToolRequest {
     CommandSessionStop(AutonomousCommandSessionStopRequest),
     HostCommand(AutonomousHostCommandRequest),
     ProcessManager(AutonomousProcessManagerRequest),
+    RuntimeWait(AutonomousRuntimeWaitRequest),
     SystemDiagnostics(AutonomousSystemDiagnosticsRequest),
     MacosAutomation(AutonomousMacosAutomationRequest),
     DesktopObserve(AutonomousDesktopObserveRequest),
@@ -6116,6 +6246,187 @@ fn sensitive_input_value_to_string(value: &JsonValue) -> String {
         .unwrap_or_else(|| value.to_string())
 }
 
+fn validate_runtime_wait_request(request: &AutonomousRuntimeWaitRequest) -> CommandResult<()> {
+    validate_runtime_wait_duration(
+        runtime_wait_initial_delay_ms(request),
+        "delayMs",
+        MAX_RUNTIME_WAIT_DELAY_MS,
+    )?;
+    let reason = request.reason.trim();
+    if reason.len() < 8 || reason.len() > MAX_RUNTIME_WAIT_REASON_BYTES {
+        return Err(CommandError::user_fixable(
+            "runtime_wait_reason_invalid",
+            format!(
+                "`reason` must be between 8 and {MAX_RUNTIME_WAIT_REASON_BYTES} UTF-8 bytes after trimming."
+            ),
+        ));
+    }
+    if find_prohibited_persistence_content(reason).is_some() {
+        return Err(CommandError::user_fixable(
+            "runtime_wait_reason_secret_like",
+            "`reason` must not contain secret-like content because scheduled waits are durably persisted.",
+        ));
+    }
+
+    let resume_context_json = serde_json::to_string(&request.resume_context).map_err(|error| {
+        CommandError::user_fixable(
+            "runtime_wait_resume_context_invalid",
+            format!("Xero could not serialize resumeContext: {error}"),
+        )
+    })?;
+    if !request.resume_context.is_object() {
+        return Err(CommandError::user_fixable(
+            "runtime_wait_resume_context_invalid",
+            "`resumeContext` must be a JSON object.",
+        ));
+    }
+    if resume_context_json.len() > MAX_RUNTIME_WAIT_RESUME_CONTEXT_BYTES {
+        return Err(CommandError::user_fixable(
+            "runtime_wait_resume_context_too_large",
+            format!(
+                "`resumeContext` must be at most {MAX_RUNTIME_WAIT_RESUME_CONTEXT_BYTES} UTF-8 bytes."
+            ),
+        ));
+    }
+    if find_prohibited_persistence_content(&resume_context_json).is_some() {
+        return Err(CommandError::user_fixable(
+            "runtime_wait_resume_context_secret_like",
+            "`resumeContext` must not contain secret-like content because scheduled waits are durably persisted.",
+        ));
+    }
+
+    match request.kind {
+        AutonomousRuntimeWaitKind::Sleep => {
+            if request.delay_ms.is_none() {
+                return Err(CommandError::user_fixable(
+                    "runtime_wait_delay_required",
+                    "`delayMs` is required for sleep wakeups.",
+                ));
+            }
+        }
+        AutonomousRuntimeWaitKind::ProcessExit
+        | AutonomousRuntimeWaitKind::ProcessReady
+        | AutonomousRuntimeWaitKind::ProcessOutput => {
+            let process_id = request
+                .process_id
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default();
+            if process_id.is_empty() {
+                return Err(CommandError::user_fixable(
+                    "runtime_wait_process_id_required",
+                    "`processId` is required for process wakeups.",
+                ));
+            }
+            if request.deadline_ms.is_none() {
+                return Err(CommandError::user_fixable(
+                    "runtime_wait_deadline_required",
+                    "`deadlineMs` is required for process wakeups so polling is bounded.",
+                ));
+            }
+        }
+    }
+
+    if let Some(delay_ms) = request.delay_ms {
+        validate_runtime_wait_duration(delay_ms, "delayMs", MAX_RUNTIME_WAIT_DELAY_MS)?;
+    }
+    if let Some(poll_interval_ms) = request.poll_interval_ms {
+        validate_runtime_wait_duration(
+            poll_interval_ms,
+            "pollIntervalMs",
+            MAX_RUNTIME_WAIT_DELAY_MS,
+        )?;
+    }
+    if let Some(deadline_ms) = request.deadline_ms {
+        validate_runtime_wait_duration(deadline_ms, "deadlineMs", MAX_RUNTIME_WAIT_DEADLINE_MS)?;
+    }
+    if request.kind == AutonomousRuntimeWaitKind::ProcessOutput {
+        let pattern = request
+            .output_pattern
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default();
+        if pattern.is_empty() || pattern.len() > 500 {
+            return Err(CommandError::user_fixable(
+                "runtime_wait_output_pattern_invalid",
+                "`outputPattern` must be 1 to 500 UTF-8 bytes for process_output wakeups.",
+            ));
+        }
+        regex::Regex::new(pattern).map_err(|error| {
+            CommandError::user_fixable(
+                "runtime_wait_output_pattern_invalid",
+                format!("`outputPattern` must be a valid regex: {error}"),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn validate_runtime_wait_duration(
+    value: u64,
+    field: &'static str,
+    max_value: u64,
+) -> CommandResult<()> {
+    if !(MIN_RUNTIME_WAIT_DELAY_MS..=max_value).contains(&value) {
+        return Err(CommandError::user_fixable(
+            "runtime_wait_duration_out_of_range",
+            format!(
+                "`{field}` must be between {MIN_RUNTIME_WAIT_DELAY_MS} and {max_value} milliseconds."
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn runtime_wait_initial_delay_ms(request: &AutonomousRuntimeWaitRequest) -> u64 {
+    request
+        .delay_ms
+        .or(request.poll_interval_ms)
+        .unwrap_or(DEFAULT_RUNTIME_WAIT_POLL_INTERVAL_MS)
+}
+
+fn add_runtime_wait_ms(
+    timestamp: OffsetDateTime,
+    duration_ms: u64,
+) -> CommandResult<OffsetDateTime> {
+    let duration_ms =
+        i64::try_from(duration_ms).map_err(|_| CommandError::invalid_request("durationMs"))?;
+    timestamp
+        .checked_add(TimeDuration::milliseconds(duration_ms))
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "runtime_wait_timestamp_out_of_range",
+                "Scheduled wakeup timestamp is outside the supported range.",
+            )
+        })
+}
+
+fn format_runtime_wait_timestamp(timestamp: OffsetDateTime) -> CommandResult<String> {
+    timestamp.format(&Rfc3339).map_err(|error| {
+        CommandError::system_fault(
+            "runtime_wait_timestamp_format_failed",
+            format!("Xero could not format scheduled wakeup timestamp: {error}"),
+        )
+    })
+}
+
+fn runtime_wait_wake_id(
+    context: &AutonomousAgentRunContext,
+    payload_json: &str,
+    due_at: &str,
+    created_at: &str,
+) -> CommandResult<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(context.project_id.as_bytes());
+    hasher.update(context.agent_session_id.as_bytes());
+    hasher.update(context.run_id.as_bytes());
+    hasher.update(payload_json.as_bytes());
+    hasher.update(due_at.as_bytes());
+    hasher.update(created_at.as_bytes());
+    let digest = format!("{:x}", hasher.finalize());
+    Ok(format!("wake-{}", &digest[..16]))
+}
+
 impl AutonomousToolRequest {
     pub fn tool_name(&self) -> &'static str {
         match self {
@@ -6152,6 +6463,7 @@ impl AutonomousToolRequest {
             Self::CommandSessionStop(_) => AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
             Self::HostCommand(_) => AUTONOMOUS_TOOL_HOST_COMMAND,
             Self::ProcessManager(_) => AUTONOMOUS_TOOL_PROCESS_MANAGER,
+            Self::RuntimeWait(_) => AUTONOMOUS_TOOL_RUNTIME_WAIT,
             Self::SystemDiagnostics(_) => AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS,
             Self::MacosAutomation(_) => AUTONOMOUS_TOOL_MACOS_AUTOMATION,
             Self::DesktopObserve(_) => AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
@@ -7012,6 +7324,67 @@ pub struct AutonomousProcessManagerRequest {
     pub wait_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signal: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousRuntimeWaitKind {
+    Sleep,
+    ProcessExit,
+    ProcessReady,
+    ProcessOutput,
+}
+
+impl AutonomousRuntimeWaitKind {
+    const fn as_wakeup_kind(self) -> project_store::AgentRunWakeupKind {
+        match self {
+            Self::Sleep => project_store::AgentRunWakeupKind::Sleep,
+            Self::ProcessExit => project_store::AgentRunWakeupKind::ProcessExit,
+            Self::ProcessReady => project_store::AgentRunWakeupKind::ProcessReady,
+            Self::ProcessOutput => project_store::AgentRunWakeupKind::ProcessOutput,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousRuntimeWaitRequest {
+    pub kind: AutonomousRuntimeWaitKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll_interval_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_pattern: Option<String>,
+    pub reason: String,
+    #[serde(default = "default_runtime_wait_resume_context")]
+    pub resume_context: JsonValue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousRuntimeWaitOutput {
+    pub wake_id: String,
+    pub kind: AutonomousRuntimeWaitKind,
+    pub status: String,
+    pub due_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll_interval_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_id: Option<String>,
+    pub reason: String,
+    pub resume_context: JsonValue,
+    pub message: String,
+}
+
+fn default_runtime_wait_resume_context() -> JsonValue {
+    JsonValue::Object(Default::default())
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -7902,6 +8275,7 @@ pub enum AutonomousToolOutput {
     Command(AutonomousCommandOutput),
     CommandSession(AutonomousCommandSessionOutput),
     ProcessManager(AutonomousProcessManagerOutput),
+    RuntimeWait(AutonomousRuntimeWaitOutput),
     SystemDiagnostics(AutonomousSystemDiagnosticsOutput),
     MacosAutomation(AutonomousMacosAutomationOutput),
     DesktopObserve(AutonomousDesktopToolOutput),
@@ -9817,6 +10191,60 @@ mod tests {
             let request = AutonomousToolRequest::Browser(AutonomousBrowserRequest { action });
             assert_eq!(request.tool_name(), AUTONOMOUS_TOOL_BROWSER_CONTROL);
         }
+    }
+
+    #[test]
+    fn runtime_wait_validation_enforces_bounded_safe_waits() {
+        validate_runtime_wait_request(&AutonomousRuntimeWaitRequest {
+            kind: AutonomousRuntimeWaitKind::Sleep,
+            delay_ms: Some(MIN_RUNTIME_WAIT_DELAY_MS),
+            process_id: None,
+            poll_interval_ms: None,
+            deadline_ms: None,
+            output_pattern: None,
+            reason: "Pause briefly before checking again.".into(),
+            resume_context: json!({ "nextStep": "inspect status" }),
+        })
+        .expect("bounded sleep wait is valid");
+
+        let missing_deadline = validate_runtime_wait_request(&AutonomousRuntimeWaitRequest {
+            kind: AutonomousRuntimeWaitKind::ProcessExit,
+            delay_ms: None,
+            process_id: Some("proc-1".into()),
+            poll_interval_ms: Some(DEFAULT_RUNTIME_WAIT_POLL_INTERVAL_MS),
+            deadline_ms: None,
+            output_pattern: None,
+            reason: "Resume when the process exits.".into(),
+            resume_context: json!({}),
+        })
+        .expect_err("process waits require a deadline");
+        assert_eq!(missing_deadline.code, "runtime_wait_deadline_required");
+
+        let invalid_regex = validate_runtime_wait_request(&AutonomousRuntimeWaitRequest {
+            kind: AutonomousRuntimeWaitKind::ProcessOutput,
+            delay_ms: None,
+            process_id: Some("proc-1".into()),
+            poll_interval_ms: Some(DEFAULT_RUNTIME_WAIT_POLL_INTERVAL_MS),
+            deadline_ms: Some(DEFAULT_RUNTIME_WAIT_POLL_INTERVAL_MS * 3),
+            output_pattern: Some("[".into()),
+            reason: "Resume when build output is visible.".into(),
+            resume_context: json!({}),
+        })
+        .expect_err("process output waits require a valid regex");
+        assert_eq!(invalid_regex.code, "runtime_wait_output_pattern_invalid");
+
+        let secret_reason = validate_runtime_wait_request(&AutonomousRuntimeWaitRequest {
+            kind: AutonomousRuntimeWaitKind::Sleep,
+            delay_ms: Some(MIN_RUNTIME_WAIT_DELAY_MS),
+            process_id: None,
+            poll_interval_ms: None,
+            deadline_ms: None,
+            output_pattern: None,
+            reason: "api_key=sk-test-secret".into(),
+            resume_context: json!({}),
+        })
+        .expect_err("reasons must not persist secret-like text");
+        assert_eq!(secret_reason.code, "runtime_wait_reason_secret_like");
     }
 
     #[test]

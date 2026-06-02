@@ -315,6 +315,7 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
                 provider_preflight: Some(provider_preflight.clone()),
                 answer_pending_actions,
                 auto_compact,
+                internal_resume: None,
             };
             let prepared =
                 agent_core.continue_run(continuation, DesktopRunDriveMode::CreateOnly)?;

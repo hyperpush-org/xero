@@ -1,6 +1,7 @@
 use super::*;
 
 pub(crate) const PLAN_REVIEW_ACTION_ID: &str = "plan-mode-before-execution";
+pub(crate) const AGENT_RUN_SCHEDULED_WAIT_CODE: &str = "agent_run_scheduled_wait";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -9,6 +10,7 @@ pub(crate) enum AgentRunState {
     ContextGather,
     Plan,
     ApprovalWait,
+    ScheduledWait,
     Execute,
     Verify,
     Summarize,
@@ -23,6 +25,7 @@ impl AgentRunState {
             Self::ContextGather => "context_gather",
             Self::Plan => "plan",
             Self::ApprovalWait => "approval_wait",
+            Self::ScheduledWait => "scheduled_wait",
             Self::Execute => "execute",
             Self::Verify => "verify",
             Self::Summarize => "summarize",
@@ -38,6 +41,7 @@ pub(crate) enum AgentRunStopReason {
     Complete,
     Blocked,
     WaitingForApproval,
+    ScheduledWait,
     ContextOverBudget,
     ProviderFailure,
     Cancelled,
@@ -50,6 +54,7 @@ impl AgentRunStopReason {
             Self::Complete => "complete",
             Self::Blocked => "blocked",
             Self::WaitingForApproval => "waiting_for_approval",
+            Self::ScheduledWait => "scheduled_wait",
             Self::ContextOverBudget => "context_over_budget",
             Self::ProviderFailure => "provider_failure",
             Self::Cancelled => "cancelled",
@@ -603,6 +608,9 @@ pub(crate) fn stop_reason_for_error(error: &CommandError) -> AgentRunStopReason 
     if error.code == "agent_context_budget_exceeded" {
         return AgentRunStopReason::ContextOverBudget;
     }
+    if error.code == AGENT_RUN_SCHEDULED_WAIT_CODE {
+        return AgentRunStopReason::ScheduledWait;
+    }
     if error.code == "agent_tool_boundary_violation" {
         return AgentRunStopReason::Blocked;
     }
@@ -624,7 +632,10 @@ pub(crate) fn error_should_pause(snapshot: &AgentRunSnapshotRecord, error: &Comm
             .iter()
             .any(|action| action.status == "pending");
     }
-    matches!(error.code.as_str(), "agent_verification_required")
+    matches!(
+        error.code.as_str(),
+        "agent_verification_required" | AGENT_RUN_SCHEDULED_WAIT_CODE
+    )
 }
 
 fn snapshot_has_plan_artifact(snapshot: &AgentRunSnapshotRecord) -> bool {

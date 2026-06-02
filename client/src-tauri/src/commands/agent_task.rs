@@ -139,6 +139,7 @@ pub fn send_agent_message<R: Runtime + 'static>(
         provider_preflight: Some(provider_preflight),
         answer_pending_actions: false,
         auto_compact: auto_compact_preference(request.auto_compact)?,
+        internal_resume: None,
     };
     let runtime = DesktopAgentCoreRuntime::new(state.inner().agent_run_supervisor().clone());
     let prepared = runtime.continue_run(continuation, DesktopRunDriveMode::Background)?;
@@ -195,6 +196,7 @@ pub fn resume_agent_run<R: Runtime + 'static>(
         provider_preflight: None,
         answer_pending_actions: true,
         auto_compact: auto_compact_preference(request.auto_compact)?,
+        internal_resume: None,
     };
     let runtime = DesktopAgentCoreRuntime::new(state.inner().agent_run_supervisor().clone());
     let prepared = runtime.continue_run(continuation, DesktopRunDriveMode::Background)?;

@@ -588,6 +588,17 @@ pub(crate) fn drive_provider_loop(
                     tool_calls: tool_calls.clone(),
                 });
 
+                if tool_calls.len() > 1
+                    && tool_calls
+                        .iter()
+                        .any(|tool_call| tool_call.tool_name == AUTONOMOUS_TOOL_RUNTIME_WAIT)
+                {
+                    return Err(CommandError::user_fixable(
+                        "runtime_wait_must_be_standalone",
+                        "The runtime_wait tool must be called by itself after any immediate tool work is complete.",
+                    ));
+                }
+
                 cancellation.check_cancelled()?;
                 let batch = dispatch_tool_batch(
                     &tool_registry,
@@ -610,8 +621,12 @@ pub(crate) fn drive_provider_loop(
                     )?;
                 }
                 let parent_assistant_message_id = provider_assistant_message_id(run_id, turn_index);
+                let mut scheduled_wait: Option<AutonomousRuntimeWaitOutput> = None;
                 for mut result in batch.results {
                     cancellation.check_cancelled()?;
+                    if result.tool_name == AUTONOMOUS_TOOL_RUNTIME_WAIT {
+                        scheduled_wait = runtime_wait_output_from_tool_result(&result.output);
+                    }
                     result.parent_assistant_message_id = Some(parent_assistant_message_id.clone());
                     let provider_content = serialize_model_visible_tool_result(&result)?;
                     let transcript_content = serialize_transcript_tool_result(&result)?;
@@ -654,6 +669,15 @@ pub(crate) fn drive_provider_loop(
                 if let Some(error) = batch.failure {
                     return Err(error);
                 }
+                if let Some(wait) = scheduled_wait {
+                    return Err(CommandError::retryable(
+                        AGENT_RUN_SCHEDULED_WAIT_CODE,
+                        format!(
+                            "Owned-agent run scheduled wakeup `{}` for {}: {}",
+                            wait.wake_id, wait.due_at, wait.reason
+                        ),
+                    ));
+                }
             }
         }
     }
@@ -664,6 +688,14 @@ pub(crate) fn drive_provider_loop(
             "Xero stopped the owned-agent model loop after {MAX_PROVIDER_TURNS} provider turns to prevent an infinite tool loop."
         ),
     ))
+}
+
+fn runtime_wait_output_from_tool_result(output: &JsonValue) -> Option<AutonomousRuntimeWaitOutput> {
+    let result = serde_json::from_value::<AutonomousToolResult>(output.clone()).ok()?;
+    match result.output {
+        AutonomousToolOutput::RuntimeWait(output) => Some(output),
+        _ => None,
+    }
 }
 
 fn fail_closed_if_context_over_budget(

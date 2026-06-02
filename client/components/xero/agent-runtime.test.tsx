@@ -291,12 +291,14 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
       summary: 'Owned agent runtime started.',
       createdAt: '2026-04-15T20:00:01Z',
     },
+    waitingSummary: null,
     checkpointCount: 1,
     hasCheckpoints: true,
     isActive: true,
     isTerminal: false,
     isStale: false,
     isFailed: false,
+    isWaiting: false,
     ...overrides,
   }
 

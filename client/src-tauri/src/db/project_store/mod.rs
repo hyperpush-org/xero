@@ -11,6 +11,7 @@ mod agent_memory;
 pub(crate) mod agent_memory_lance;
 mod agent_retrieval;
 mod agent_session;
+mod agent_wakeups;
 mod autonomous;
 mod code_history;
 mod code_rollback;
@@ -47,6 +48,7 @@ pub(crate) use agent_session::{
     delete_agent_session_without_replacement, ensure_agent_session_active,
     touch_agent_session_runtime_run,
 };
+pub use agent_wakeups::*;
 pub use autonomous::*;
 pub use code_history::*;
 pub use code_rollback::*;

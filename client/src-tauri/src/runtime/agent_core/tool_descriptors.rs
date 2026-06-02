@@ -2444,6 +2444,32 @@ pub(crate) fn plan_tool_exposure_for_prompt(
     if contains_any(
         &lowered,
         &[
+            "wait ",
+            "timer",
+            "sleep",
+            "after delay",
+            "check again",
+            "poll",
+            "periodically",
+            "later",
+            "deadline",
+            "when it finishes",
+            "when it exits",
+            "when ready",
+        ],
+    ) {
+        add_tool_group_with_reason(
+            &mut plan,
+            "runtime_wait",
+            "planner_classification",
+            "scheduled_wait_intent",
+            "Task text asks the owned agent to wait, poll later, or resume after a bounded delay.",
+        );
+    }
+
+    if contains_any(
+        &lowered,
+        &[
             "system diagnostics",
             "diagnostics bundle",
             "open files",
@@ -3645,7 +3671,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                         "groups",
                         json!({
                             "type": "array",
-                            "description": "Optional tool groups to request. Prefer fine-grained groups when possible. Known groups include core, mutation, command_readonly, command_mutating, command_session, command, process_manager, system_diagnostics_observe, system_diagnostics_privileged, system_diagnostics, macos, web_search_only, web_fetch, browser_observe, browser_control, web, emulator, solana, agent_ops, agent_builder, project_context_write, mcp_list, mcp_invoke, mcp, intelligence, notebook, powershell, environment, and skills.",
+                            "description": "Optional tool groups to request. Prefer fine-grained groups when possible. Known groups include core, mutation, command_readonly, command_mutating, command_session, command, process_manager, runtime_wait, system_diagnostics_observe, system_diagnostics_privileged, system_diagnostics, macos, web_search_only, web_fetch, browser_observe, browser_control, web, emulator, solana, agent_ops, agent_builder, project_context_write, mcp_list, mcp_invoke, mcp, intelligence, notebook, powershell, environment, and skills.",
                             "minItems": 0,
                             "maxItems": 32,
                             "items": { "type": "string", "maxLength": 128 }
@@ -4253,6 +4279,11 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
             AUTONOMOUS_TOOL_PROCESS_MANAGER,
             "Manage Xero-owned long-running, interactive, grouped, restartable, and async-job processes, plus phase 5 system process visibility and approval-gated external signaling.",
             process_manager_schema(),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_RUNTIME_WAIT,
+            "Pause this owned-agent run for a bounded timer or durable process-poll wakeup. The run resumes automatically with runtime-provided context.",
+            runtime_wait_schema(),
         ),
         descriptor(
             AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
@@ -6326,6 +6357,68 @@ fn process_manager_schema() -> JsonValue {
             ),
             ("waitUrl", string_schema("HTTP URL readiness probe.")),
             ("signal", string_schema("Signal name for signal actions.")),
+        ],
+    )
+}
+
+fn runtime_wait_schema() -> JsonValue {
+    object_schema(
+        &["kind", "reason"],
+        &[
+            (
+                "kind",
+                enum_schema(
+                    "Wakeup kind. Use sleep for a timer, process_exit to resume when an owned process exits, process_ready for readiness, or process_output for matching output.",
+                    &["sleep", "process_exit", "process_ready", "process_output"],
+                ),
+            ),
+            (
+                "delayMs",
+                bounded_integer_schema(
+                    "Delay before the first wake or poll in milliseconds. Must be bounded.",
+                    1_000,
+                    Some(1_800_000),
+                ),
+            ),
+            (
+                "processId",
+                string_schema("Xero-owned process id for process-poll wakeups."),
+            ),
+            (
+                "pollIntervalMs",
+                bounded_integer_schema(
+                    "Polling interval for process wakeups in milliseconds.",
+                    1_000,
+                    Some(1_800_000),
+                ),
+            ),
+            (
+                "deadlineMs",
+                bounded_integer_schema(
+                    "Maximum time from now before the wakeup expires and resumes with a timeout diagnostic.",
+                    1_000,
+                    Some(21_600_000),
+                ),
+            ),
+            (
+                "outputPattern",
+                string_schema("Regex to match against recent output for process_output wakeups."),
+            ),
+            (
+                "reason",
+                bounded_string_schema(
+                    "Short model-visible reason for pausing. Do not include secrets.",
+                    400,
+                ),
+            ),
+            (
+                "resumeContext",
+                json!({
+                    "type": "object",
+                    "description": "Small structured context to echo back when the scheduler resumes the run.",
+                    "additionalProperties": true
+                }),
+            ),
         ],
     )
 }

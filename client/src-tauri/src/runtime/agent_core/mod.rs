@@ -27,6 +27,7 @@ mod synthetic_dispatch;
 mod tool_descriptors;
 mod tool_dispatch;
 mod types;
+mod wakeup_scheduler;
 
 pub use evals::{
     run_agent_definition_quality_eval_suite, run_agent_harness_eval_suite,
@@ -72,6 +73,10 @@ pub use supervisor::{
     AGENT_RUN_CANCELLED_CODE,
 };
 pub use types::*;
+pub use wakeup_scheduler::{
+    notify_agent_run_wakeup_inserted, set_agent_run_wakeup_inserted_handler,
+    AgentRunWakeupScheduler,
+};
 
 pub use consumed_artifacts::{consumed_artifacts_for, ConsumedArtifactEntry};
 pub use db_touchpoints::{
@@ -160,9 +165,9 @@ use crate::{
         AutonomousCommandOutputChunk, AutonomousDesktopToolOutput, AutonomousDesktopToolStatus,
         AutonomousDynamicToolRoute, AutonomousMacosAutomationAction,
         AutonomousMacosAutomationOutput, AutonomousMcpAction, AutonomousMcpRequest,
-        AutonomousProcessManagerAction, AutonomousSubagentExecutor, AutonomousSubagentTask,
-        AutonomousSystemDiagnosticsOutput, AutonomousTodoStatus, AutonomousToolOutput,
-        AutonomousToolRequest, AutonomousToolResult, AutonomousToolRuntime,
+        AutonomousProcessManagerAction, AutonomousRuntimeWaitOutput, AutonomousSubagentExecutor,
+        AutonomousSubagentTask, AutonomousSystemDiagnosticsOutput, AutonomousTodoStatus,
+        AutonomousToolOutput, AutonomousToolRequest, AutonomousToolResult, AutonomousToolRuntime,
         XeroAttachedSkillDiagnostic, XeroAttachedSkillRef, XeroAttachedSkillResolutionReport,
         XeroAttachedSkillResolutionRequest, XeroAttachedSkillResolutionSnapshot,
         XeroAttachedSkillResolutionStatus, XeroSkillToolContextPayload,
@@ -176,11 +181,12 @@ use crate::{
         AUTONOMOUS_TOOL_MCP, AUTONOMOUS_TOOL_MKDIR, AUTONOMOUS_TOOL_NOTEBOOK_EDIT,
         AUTONOMOUS_TOOL_PATCH, AUTONOMOUS_TOOL_POWERSHELL, AUTONOMOUS_TOOL_PROCESS_MANAGER,
         AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_READ_MANY, AUTONOMOUS_TOOL_RENAME,
-        AUTONOMOUS_TOOL_SEARCH, AUTONOMOUS_TOOL_SKILL, AUTONOMOUS_TOOL_STAT,
-        AUTONOMOUS_TOOL_SUBAGENT, AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS, AUTONOMOUS_TOOL_TODO,
-        AUTONOMOUS_TOOL_TOML_EDIT, AUTONOMOUS_TOOL_TOOL_ACCESS, AUTONOMOUS_TOOL_TOOL_SEARCH,
-        AUTONOMOUS_TOOL_WEB_FETCH, AUTONOMOUS_TOOL_WEB_SEARCH, AUTONOMOUS_TOOL_WORKFLOW_DEFINITION,
-        AUTONOMOUS_TOOL_WRITE, AUTONOMOUS_TOOL_YAML_EDIT, OPENAI_CODEX_PROVIDER_ID,
+        AUTONOMOUS_TOOL_RUNTIME_WAIT, AUTONOMOUS_TOOL_SEARCH, AUTONOMOUS_TOOL_SKILL,
+        AUTONOMOUS_TOOL_STAT, AUTONOMOUS_TOOL_SUBAGENT, AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS,
+        AUTONOMOUS_TOOL_TODO, AUTONOMOUS_TOOL_TOML_EDIT, AUTONOMOUS_TOOL_TOOL_ACCESS,
+        AUTONOMOUS_TOOL_TOOL_SEARCH, AUTONOMOUS_TOOL_WEB_FETCH, AUTONOMOUS_TOOL_WEB_SEARCH,
+        AUTONOMOUS_TOOL_WORKFLOW_DEFINITION, AUTONOMOUS_TOOL_WRITE, AUTONOMOUS_TOOL_YAML_EDIT,
+        OPENAI_CODEX_PROVIDER_ID,
     },
 };
 

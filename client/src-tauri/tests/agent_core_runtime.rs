@@ -2916,6 +2916,7 @@ fn owned_agent_queues_user_messages_until_environment_ready() {
         provider_preflight: None,
         answer_pending_actions: false,
         auto_compact: None,
+        internal_resume: None,
     })
     .expect("queue continuation while environment is not ready");
 
@@ -3044,6 +3045,7 @@ fn owned_agent_continuation_blocks_context_handoff_without_mutating_messages() {
         provider_preflight: None,
         answer_pending_actions: false,
         auto_compact: None,
+        internal_resume: None,
     })
     .expect_err("blocked context handoff should reject before prompt mutation");
 
@@ -3128,6 +3130,7 @@ fn owned_agent_continuation_replays_compacted_history_with_raw_tail() {
         provider_preflight: None,
         answer_pending_actions: false,
         auto_compact: None,
+        internal_resume: None,
     })
     .expect("continue compacted owned-agent run");
 
@@ -3205,6 +3208,7 @@ fn provider_history_replay_preserves_tool_call_ids() {
         provider_preflight: None,
         answer_pending_actions: false,
         auto_compact: None,
+        internal_resume: None,
     })
     .expect("continuation should rebuild valid tool-call history");
 
@@ -3287,6 +3291,7 @@ fn owned_agent_compacted_replay_rejects_changed_covered_source() {
         provider_preflight: None,
         answer_pending_actions: false,
         auto_compact: None,
+        internal_resume: None,
     })
     .expect_err("covered transcript mutation should reject compacted replay");
 
@@ -3367,6 +3372,7 @@ fn owned_agent_auto_compacts_before_continuation_when_threshold_is_reached() {
             threshold_percent: Some(1),
             raw_tail_message_count: Some(2),
         }),
+        internal_resume: None,
     })
     .expect("auto-compact continuation should succeed");
 
@@ -3501,6 +3507,7 @@ fn owned_agent_auto_compact_provider_failure_does_not_mutate_history() {
             threshold_percent: Some(1),
             raw_tail_message_count: Some(2),
         }),
+        internal_resume: None,
     })
     .expect_err("provider compaction failure should reject before mutation");
 
@@ -4191,6 +4198,7 @@ fn owned_agent_resume_replays_answered_file_safety_tool_call() {
         provider_preflight: None,
         answer_pending_actions: true,
         auto_compact: None,
+        internal_resume: None,
     })
     .expect("approved safety action should replay original tool call");
 
@@ -4288,6 +4296,7 @@ fn owned_agent_refuses_stale_file_writes_after_observation_changes() {
         provider_preflight: None,
         answer_pending_actions: false,
         auto_compact: None,
+        internal_resume: None,
     })
     .expect("owned agent run should persist stale-write safety decision");
 
@@ -4367,6 +4376,7 @@ fn owned_agent_resume_marks_interrupted_tool_calls_before_continuation() {
         provider_preflight: None,
         answer_pending_actions: false,
         auto_compact: None,
+        internal_resume: None,
     })
     .expect("resume interrupted owned agent run");
 
@@ -4514,6 +4524,7 @@ fn owned_agent_resume_replays_answered_command_approval_tool_call() {
         provider_preflight: None,
         answer_pending_actions: true,
         auto_compact: None,
+        internal_resume: None,
     })
     .expect("approved command action should replay original tool call");
 

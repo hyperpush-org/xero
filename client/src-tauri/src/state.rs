@@ -10,7 +10,9 @@ use crate::{
     commands::{backend_jobs::BackendJobRegistry, CommandError},
     global_db::global_database_path,
     provider_models::ProviderModelCatalogRefreshRegistry,
-    runtime::{AgentProviderConfig, AgentRunSupervisor, AutonomousWebConfig},
+    runtime::{
+        AgentProviderConfig, AgentRunSupervisor, AgentRunWakeupScheduler, AutonomousWebConfig,
+    },
 };
 
 pub const AUTONOMOUS_SKILL_CACHE_DIRECTORY_NAME: &str = "autonomous-skills";
@@ -42,6 +44,7 @@ pub struct DesktopState {
     import_failpoints: ImportFailpoints,
     runtime_stream_failpoints: RuntimeStreamFailpoints,
     agent_run_supervisor: AgentRunSupervisor,
+    agent_run_wakeup_scheduler: AgentRunWakeupScheduler,
     backend_jobs: BackendJobRegistry,
     provider_model_catalog_refresh_registry: ProviderModelCatalogRefreshRegistry,
     active_auth_flows: ActiveAuthFlowRegistry,
@@ -120,6 +123,10 @@ impl DesktopState {
 
     pub fn agent_run_supervisor(&self) -> &AgentRunSupervisor {
         &self.agent_run_supervisor
+    }
+
+    pub fn agent_run_wakeup_scheduler(&self) -> &AgentRunWakeupScheduler {
+        &self.agent_run_wakeup_scheduler
     }
 
     pub fn backend_jobs(&self) -> &BackendJobRegistry {

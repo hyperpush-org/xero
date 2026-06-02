@@ -27,6 +27,15 @@ pub struct ContinueOwnedAgentRunRequest {
     pub provider_preflight: Option<xero_agent_core::ProviderPreflightSnapshot>,
     pub answer_pending_actions: bool,
     pub auto_compact: Option<AgentAutoCompactPreference>,
+    pub internal_resume: Option<AgentRunInternalResume>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentRunInternalResume {
+    pub wake_id: String,
+    pub reason: String,
+    pub payload: JsonValue,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

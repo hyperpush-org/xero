@@ -1631,6 +1631,7 @@ fn phase4_handoff_orchestrator_hands_off_long_runs_to_same_type_targets() {
             provider_preflight: None,
             answer_pending_actions: false,
             auto_compact: None,
+            internal_resume: None,
         };
         let target =
             continue_owned_agent_run(continuation.clone()).expect("handoff target continues");
@@ -1823,6 +1824,7 @@ fn phase8_handoff_recovers_from_pending_lineage_after_simulated_crash() {
         provider_preflight: None,
         answer_pending_actions: false,
         auto_compact: None,
+        internal_resume: None,
     };
     let target = continue_owned_agent_run(continuation.clone()).expect("first handoff");
 

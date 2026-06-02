@@ -101,6 +101,26 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             }
 
             {
+                use tauri::Manager;
+                let app_handle = app.handle().clone();
+                let desktop_state = app_handle.state::<state::DesktopState>();
+                let scheduler = desktop_state.agent_run_wakeup_scheduler().clone();
+                runtime::set_agent_run_wakeup_inserted_handler(move |repo_root, record, tool_runtime| {
+                    if let Err(error) = scheduler.schedule_record(
+                        app_handle.clone(),
+                        repo_root,
+                        record,
+                        Some(tool_runtime),
+                    ) {
+                        eprintln!(
+                            "[agent-wakeup] inserted wakeup scheduling skipped: {} - {}",
+                            error.code, error.message
+                        );
+                    }
+                });
+            }
+
+            {
                 let app_handle = app.handle().clone();
                 if let Err(error) =
                     commands::adrenaline_mode::apply_persisted_settings_on_startup(&app_handle)
@@ -127,6 +147,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
                 use tauri::Manager;
                 let app_handle = app.handle().clone();
                 let desktop_state = app_handle.state::<state::DesktopState>();
+                let wakeup_scheduler = desktop_state.agent_run_wakeup_scheduler().clone();
                 if let Ok(registry_path) = desktop_state.global_db_path(&app_handle) {
                     if let Ok(reg) = registry::read_registry(&registry_path) {
                         for record in reg.projects {
@@ -134,6 +155,16 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
                             if !root.is_dir() {
                                 continue;
                             }
+                            if let Err(error) = wakeup_scheduler.schedule_pending_for_project(
+                                app_handle.clone(),
+                                root.to_path_buf(),
+                            ) {
+                                eprintln!(
+                                    "[agent-wakeup] pending wakeup recovery skipped for {}: {} - {}",
+                                    record.root_path, error.code, error.message
+                                );
+                            }
+
                             let updated = runtime::pricing::backfill_agent_usage_costs(root);
                             if updated > 0 {
                                 eprintln!(

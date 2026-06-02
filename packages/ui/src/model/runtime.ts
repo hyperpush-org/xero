@@ -1150,12 +1150,14 @@ export interface RuntimeRunView {
   updatedAt: string
   checkpoints: RuntimeRunCheckpointView[]
   latestCheckpoint: RuntimeRunCheckpointView | null
+  waitingSummary: string | null
   checkpointCount: number
   hasCheckpoints: boolean
   isActive: boolean
   isTerminal: boolean
   isStale: boolean
   isFailed: boolean
+  isWaiting: boolean
 }
 
 export interface AgentSessionView {
@@ -1302,8 +1304,8 @@ export function getRuntimeRunThinkingEffortLabel(effort: RuntimeRunThinkingEffor
   }
 }
 
-function getRuntimeRunLabel(runtimeKind: string, status: RuntimeRunStatusDto): string {
-  return `${humanizeRuntimeKind(runtimeKind)} · ${getRuntimeRunStatusLabel(status)}`
+function getRuntimeRunLabel(runtimeKind: string, status: RuntimeRunStatusDto, statusLabel = getRuntimeRunStatusLabel(status)): string {
+  return `${humanizeRuntimeKind(runtimeKind)} · ${statusLabel}`
 }
 
 function getAgentSessionStatusLabel(status: AgentSessionStatusDto): string {
@@ -1483,6 +1485,14 @@ export function mapRuntimeRun(runtimeRun: RuntimeRunDto): RuntimeRunView {
     .map(mapRuntimeRunCheckpoint)
     .sort((left, right) => left.sequence - right.sequence)
   const latestCheckpoint = checkpoints[checkpoints.length - 1] ?? null
+  const latestCheckpointSummary = latestCheckpoint?.summary ?? ''
+  const waitingSummary =
+    runtimeRun.status === 'running' &&
+    (latestCheckpointSummary.startsWith('Agent waiting for scheduled wakeup') ||
+      latestCheckpointSummary === 'Agent waiting for a scheduled wakeup.')
+      ? latestCheckpointSummary
+      : null
+  const statusLabel = waitingSummary ? 'Agent waiting' : getRuntimeRunStatusLabel(runtimeRun.status)
 
   return {
     projectId: runtimeRun.projectId,
@@ -1490,11 +1500,11 @@ export function mapRuntimeRun(runtimeRun: RuntimeRunDto): RuntimeRunView {
     runId: normalizeText(runtimeRun.runId, 'run-unavailable'),
     runtimeKind,
     providerId,
-    runtimeLabel: getRuntimeRunLabel(runtimeKind, runtimeRun.status),
+    runtimeLabel: getRuntimeRunLabel(runtimeKind, runtimeRun.status, statusLabel),
     supervisorKind,
     supervisorLabel: humanizeRuntimeKind(supervisorKind),
     status: runtimeRun.status,
-    statusLabel: getRuntimeRunStatusLabel(runtimeRun.status),
+    statusLabel,
     transport: {
       kind: normalizeText(runtimeRun.transport.kind, 'internal'),
       endpoint: normalizeText(runtimeRun.transport.endpoint, 'Unavailable'),
@@ -1512,12 +1522,14 @@ export function mapRuntimeRun(runtimeRun: RuntimeRunDto): RuntimeRunView {
     updatedAt: runtimeRun.updatedAt,
     checkpoints,
     latestCheckpoint,
+    waitingSummary,
     checkpointCount: checkpoints.length,
     hasCheckpoints: checkpoints.length > 0,
     isActive: runtimeRun.status === 'starting' || runtimeRun.status === 'running',
     isTerminal: runtimeRun.status === 'stopped' || runtimeRun.status === 'failed',
     isStale: runtimeRun.status === 'stale',
     isFailed: runtimeRun.status === 'failed',
+    isWaiting: waitingSummary !== null,
   }
 }
 
