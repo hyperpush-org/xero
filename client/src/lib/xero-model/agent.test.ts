@@ -335,7 +335,7 @@ describe('owned agent run schemas', () => {
 
     expect(view.statusLabel).toBe('Waiting')
     expect(view.isWaiting).toBe(true)
-    expect(view.isActive).toBe(false)
+    expect(view.isActive).toBe(true)
     expect(view.isTerminal).toBe(false)
     expect(view.waitingUntil).toBe('2026-04-24T12:00:15Z')
     expect(view.scheduledWakeups[0]).toMatchObject({

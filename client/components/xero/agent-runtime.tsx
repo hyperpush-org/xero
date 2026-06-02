@@ -79,6 +79,7 @@ import {
 } from './agent-runtime/agent-context-meter'
 import {
   buildComposerAgentSelectionKey,
+  getComposerControlInput,
   getComposerApprovalOptions,
   getComposerModelGroups,
   getComposerModelOption,
@@ -91,6 +92,7 @@ import {
 } from '@xero/ui/components/transcript/action-prompt-card'
 import {
   RoutingSuggestionDispatchProvider,
+  type RoutingSuggestionDecision,
   type RoutingSuggestionDispatchValue,
 } from '@xero/ui/components/transcript/routing-suggestion-card'
 import { ComposerDock, type ComposerPendingAttachment } from './agent-runtime/composer-dock'
@@ -871,6 +873,53 @@ function maybeAttachRoutingSuggestion(
   }
 
   context.turns.push(next)
+}
+
+function buildRoutingDeclineContinuationPrompt(
+  decision: Extract<RoutingSuggestionDecision, { kind: 'decline' }>,
+): string {
+  const targetLabel = getRoutingDecisionTargetLabel(decision)
+  const summary = decision.summary?.trim()
+  const reason = decision.reason?.trim()
+  const contextLines = [
+    summary ? `Carry over: ${summary}` : null,
+    reason ? `Routing reason: ${reason}` : null,
+  ].filter((line): line is string => Boolean(line))
+
+  return [
+    `The user chose to stay with the current Agent instead of switching to ${targetLabel}.`,
+    'Continue the original request now. Do not stop at another routing recommendation for this same request.',
+    ...contextLines,
+  ].join('\n\n')
+}
+
+function getRoutingDecisionTargetLabel(
+  decision: Pick<
+    RoutingSuggestionDecision,
+    'targetAgentId' | 'targetAgentDefinitionId' | 'targetLabel'
+  >,
+): string {
+  return (
+    decision.targetLabel?.trim() ||
+    (decision.targetAgentDefinitionId ? 'the suggested custom agent' : getRuntimeAgentLabel(decision.targetAgentId))
+  )
+}
+
+function buildRoutingAcceptContinuationPrompt(
+  decision: Extract<RoutingSuggestionDecision, { kind: 'accept' }>,
+): string {
+  const targetLabel = getRoutingDecisionTargetLabel(decision)
+  const contextLines = [
+    `Target agent: ${targetLabel}`,
+    decision.summary?.trim() ? `Carry over: ${decision.summary.trim()}` : null,
+    decision.reason?.trim() ? `Routing reason: ${decision.reason.trim()}` : null,
+  ].filter((line): line is string => Boolean(line))
+
+  return [
+    `The user accepted the routing suggestion to switch to ${targetLabel}.`,
+    'Continue the original request now in this same session.',
+    ...contextLines,
+  ].join('\n\n')
 }
 
 /**
@@ -2549,36 +2598,73 @@ export const AgentRuntime = memo(function AgentRuntime({
   const routingSuggestionDispatchValue = useMemo<RoutingSuggestionDispatchValue>(() => {
     return {
       resolveRoutingSuggestion: (turnId, decision) => {
-        setResolvedRoutingTurns((previous) => ({
-          ...previous,
-          [turnId]: {
-            acceptedTarget: decision.kind === 'accept' ? decision.targetAgentId : null,
-            acceptedTargetAgentDefinitionId:
-              decision.kind === 'accept' ? decision.targetAgentDefinitionId ?? null : null,
-            acceptedTargetLabel: decision.kind === 'accept' ? decision.targetLabel ?? null : null,
-          },
-        }))
-        if (decision.kind === 'accept') {
-          // Update the composer agent so the user's next message in this
-          // session goes to the chosen specialist. The controller no-ops if
-          // the picker is locked during an active run; the next run starts
-          // under the new agent.
-          if (decision.targetAgentDefinitionId) {
-            controller.handleComposerAgentSelectionChange(
-              buildComposerAgentSelectionKey(
-                decision.targetAgentId,
-                decision.targetAgentDefinitionId,
-              ),
-            )
-          } else {
-            controller.handleComposerRuntimeAgentChange(decision.targetAgentId)
-          }
+        if (decision.kind === 'decline') {
+          void controller
+            .handleSubmitExplicitPrompt(buildRoutingDeclineContinuationPrompt(decision))
+            .then((submitted) => {
+              if (!submitted) return
+              setResolvedRoutingTurns((previous) => ({
+                ...previous,
+                [turnId]: {
+                  acceptedTarget: null,
+                  acceptedTargetAgentDefinitionId: null,
+                  acceptedTargetLabel: null,
+                },
+              }))
+            })
+          return
         }
+
+        const targetControls = getComposerControlInput({
+          runtimeAgentId: decision.targetAgentId,
+          agentDefinitionId: decision.targetAgentDefinitionId ?? null,
+          models: availableModels,
+          selectionKey: controller.composerModelId,
+          thinkingEffort: controller.composerThinkingEffort,
+          approvalMode: controller.composerApprovalMode,
+          autoCompactEnabled: controller.autoCompactEnabled,
+        })
+        if (!targetControls) return
+
+        void controller
+          .handleSubmitExplicitPrompt(buildRoutingAcceptContinuationPrompt(decision), {
+            controls: targetControls,
+          })
+          .then((submitted) => {
+            if (!submitted) return
+            setResolvedRoutingTurns((previous) => ({
+              ...previous,
+              [turnId]: {
+                acceptedTarget: decision.targetAgentId,
+                acceptedTargetAgentDefinitionId: decision.targetAgentDefinitionId ?? null,
+                acceptedTargetLabel: decision.targetLabel ?? null,
+              },
+            }))
+            if (!renderableRuntimeRun || renderableRuntimeRun.isTerminal) {
+              if (decision.targetAgentDefinitionId) {
+                controller.handleComposerAgentSelectionChange(
+                  buildComposerAgentSelectionKey(
+                    decision.targetAgentId,
+                    decision.targetAgentDefinitionId,
+                  ),
+                )
+              } else {
+                controller.handleComposerRuntimeAgentChange(decision.targetAgentId)
+              }
+            }
+          })
       },
     }
   }, [
+    availableModels,
+    controller.autoCompactEnabled,
+    controller.composerApprovalMode,
+    controller.composerModelId,
+    controller.composerThinkingEffort,
+    controller.handleSubmitExplicitPrompt,
     controller.handleComposerAgentSelectionChange,
     controller.handleComposerRuntimeAgentChange,
+    renderableRuntimeRun,
   ])
   function applyRoutingResolutions(turns: ConversationTurn[]): ConversationTurn[] {
     if (Object.keys(resolvedRoutingTurns).length === 0) return turns

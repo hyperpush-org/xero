@@ -49,6 +49,7 @@ const RUNTIME_STREAM_IPC_MAX_BYTES: usize = 96 * 1024;
 const RUNTIME_STREAM_IPC_PATCH_PREVIEW_CHARS: usize = 4_000;
 const RUNTIME_STREAM_IPC_TIGHT_PREVIEW_CHARS: usize = 1_000;
 const RUNTIME_STREAM_IPC_TEXT_CHARS: usize = 2_000;
+const SCHEDULED_WAIT_STATE: &str = "scheduled_wait";
 
 #[derive(Debug, Clone)]
 struct RuntimeStreamProjectionContext {
@@ -761,14 +762,6 @@ fn replay_owned_agent_events(
         Err(error) if error.code == "agent_run_not_found" => return Ok((0, false)),
         Err(error) => return Err(error),
     };
-    let terminal = matches!(
-        run.status,
-        AgentRunStatus::Paused
-            | AgentRunStatus::Cancelled
-            | AgentRunStatus::HandedOff
-            | AgentRunStatus::Completed
-            | AgentRunStatus::Failed
-    );
     let incremental_replay_limit = replay_limit
         .map(usize::from)
         .unwrap_or(INCREMENTAL_RUNTIME_STREAM_REPLAY_LIMIT);
@@ -782,6 +775,13 @@ fn replay_owned_agent_events(
         after_sequence,
         replay_limit,
         incremental_replay_limit,
+    )?;
+    let terminal = owned_agent_run_status_ends_runtime_stream(
+        repo_root,
+        project_id,
+        run_id,
+        &run.status,
+        &events,
     )?;
     let replayed_count = events.len();
     let replay_projection = project_owned_agent_replay_events(
@@ -928,12 +928,7 @@ fn stream_live_owned_agent_events(
         if event.project_id != project_id || event.run_id != run_id || event.id <= last_event_id {
             continue;
         }
-        let terminal = matches!(
-            event.event_kind,
-            AgentRunEventKind::RunPaused
-                | AgentRunEventKind::RunCompleted
-                | AgentRunEventKind::RunFailed
-        );
+        let terminal = owned_agent_event_ends_live_stream(&event);
         last_event_id = event.id;
         if let Some(item) = owned_agent_event_runtime_item_with_media(
             &repo_root,
@@ -954,6 +949,70 @@ fn stream_live_owned_agent_events(
             break;
         }
     }
+}
+
+fn owned_agent_run_status_ends_runtime_stream(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    status: &AgentRunStatus,
+    replayed_events: &[AgentEventRecord],
+) -> CommandResult<bool> {
+    match status {
+        AgentRunStatus::Paused => Ok(!owned_agent_latest_pause_is_scheduled_wait(
+            repo_root,
+            project_id,
+            run_id,
+            replayed_events,
+        )?),
+        AgentRunStatus::Cancelled
+        | AgentRunStatus::HandedOff
+        | AgentRunStatus::Completed
+        | AgentRunStatus::Failed => Ok(true),
+        AgentRunStatus::Starting | AgentRunStatus::Running | AgentRunStatus::Cancelling => {
+            Ok(false)
+        }
+    }
+}
+
+fn owned_agent_latest_pause_is_scheduled_wait(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    replayed_events: &[AgentEventRecord],
+) -> CommandResult<bool> {
+    if let Some(scheduled_wait) = latest_run_pause_is_scheduled_wait(replayed_events) {
+        return Ok(scheduled_wait);
+    }
+
+    let latest_events = project_store::read_latest_agent_events(repo_root, project_id, run_id, 20)?;
+    Ok(latest_run_pause_is_scheduled_wait(&latest_events).unwrap_or(false))
+}
+
+fn latest_run_pause_is_scheduled_wait(events: &[AgentEventRecord]) -> Option<bool> {
+    events
+        .iter()
+        .rev()
+        .find(|event| event.event_kind == AgentRunEventKind::RunPaused)
+        .map(owned_agent_event_payload_is_scheduled_wait)
+}
+
+fn owned_agent_event_ends_live_stream(event: &AgentEventRecord) -> bool {
+    match event.event_kind {
+        AgentRunEventKind::RunCompleted | AgentRunEventKind::RunFailed => true,
+        AgentRunEventKind::RunPaused => !owned_agent_event_payload_is_scheduled_wait(event),
+        _ => false,
+    }
+}
+
+fn owned_agent_event_payload_is_scheduled_wait(event: &AgentEventRecord) -> bool {
+    payload_json_is_scheduled_wait(&event.payload_json)
+}
+
+fn payload_json_is_scheduled_wait(payload_json: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(payload_json)
+        .map(|payload| payload_is_scheduled_wait(&payload))
+        .unwrap_or(false)
 }
 
 fn send_runtime_stream_replay_payloads(
@@ -1658,11 +1717,23 @@ fn owned_agent_event_runtime_item(
         }
         AgentRunEventKind::RunPaused => {
             item.kind = RuntimeStreamItemKind::Activity;
-            item.code =
-                payload_string(&payload, "code").or_else(|| Some("owned_agent_paused".into()));
-            item.title = Some("Run paused".into());
-            item.detail = payload_string(&payload, "message")
-                .or_else(|| Some("Owned agent run paused.".into()));
+            if payload_is_scheduled_wait(&payload) {
+                item.code = payload_string(&payload, "code")
+                    .or_else(|| Some("owned_agent_scheduled_wait".into()));
+                item.title = Some("Agent waiting".into());
+                item.detail = payload_string(&payload, "message")
+                    .or_else(|| {
+                        scheduled_wait_due_at(&payload)
+                            .map(|due_at| format!("Waiting until {due_at} before continuing."))
+                    })
+                    .or_else(|| Some("Waiting for a scheduled wakeup before continuing.".into()));
+            } else {
+                item.code =
+                    payload_string(&payload, "code").or_else(|| Some("owned_agent_paused".into()));
+                item.title = Some("Run paused".into());
+                item.detail = payload_string(&payload, "message")
+                    .or_else(|| Some("Owned agent run paused.".into()));
+            }
             item.text = item.detail.clone();
         }
         AgentRunEventKind::RunCompleted => {
@@ -2441,6 +2512,19 @@ fn payload_string(payload: &serde_json::Value, key: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn payload_is_scheduled_wait(payload: &serde_json::Value) -> bool {
+    payload_string(payload, "state").as_deref() == Some(SCHEDULED_WAIT_STATE)
+        || payload_string(payload, "stopReason").as_deref() == Some(SCHEDULED_WAIT_STATE)
+}
+
+fn scheduled_wait_due_at(payload: &serde_json::Value) -> Option<String> {
+    payload
+        .get("scheduledWakeups")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|wakeups| wakeups.first())
+        .and_then(|wakeup| payload_string(wakeup, "dueAt"))
+}
+
 fn code_change_group_id_from_payload(payload: &serde_json::Value) -> Option<String> {
     payload_string(payload, "codeChangeGroupId")
 }
@@ -2689,6 +2773,52 @@ mod tests {
                 RuntimeStreamItemKind::Failure,
             ],
         }
+    }
+
+    #[test]
+    fn scheduled_wait_pause_keeps_owned_runtime_stream_live() {
+        let scheduled_wait = event(
+            AgentRunEventKind::RunPaused,
+            r#"{"state":"scheduled_wait","stopReason":"scheduled_wait","scheduledWakeups":[{"wakeId":"wake-1","dueAt":"2026-04-24T12:00:15Z"}]}"#,
+        );
+        let manual_pause = event(
+            AgentRunEventKind::RunPaused,
+            r#"{"state":"paused","stopReason":"waiting_for_approval"}"#,
+        );
+        let completed = event(
+            AgentRunEventKind::RunCompleted,
+            r#"{"summary":"Owned agent run completed."}"#,
+        );
+
+        assert!(!owned_agent_event_ends_live_stream(&scheduled_wait));
+        assert!(owned_agent_event_ends_live_stream(&manual_pause));
+        assert!(owned_agent_event_ends_live_stream(&completed));
+        assert!(!owned_agent_run_status_ends_runtime_stream(
+            std::path::Path::new("."),
+            "project-1",
+            "run-1",
+            &AgentRunStatus::Paused,
+            &[scheduled_wait.clone()],
+        )
+        .expect("scheduled wait status terminal check"));
+        assert!(owned_agent_run_status_ends_runtime_stream(
+            std::path::Path::new("."),
+            "project-1",
+            "run-1",
+            &AgentRunStatus::Paused,
+            &[manual_pause],
+        )
+        .expect("manual pause status terminal check"));
+
+        let item = owned_agent_event_runtime_item(scheduled_wait, "owned-agent:run-1", None)
+            .expect("scheduled-wait item");
+        assert_eq!(item.kind, RuntimeStreamItemKind::Activity);
+        assert_eq!(item.code.as_deref(), Some("owned_agent_scheduled_wait"));
+        assert_eq!(item.title.as_deref(), Some("Agent waiting"));
+        assert_eq!(
+            item.detail.as_deref(),
+            Some("Waiting until 2026-04-24T12:00:15Z before continuing.")
+        );
     }
 
     fn seed_replay_project(root: &tempfile::TempDir) -> std::path::PathBuf {

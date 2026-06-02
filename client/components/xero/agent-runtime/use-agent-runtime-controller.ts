@@ -979,6 +979,83 @@ export function useAgentRuntimeController({
     }
   }
 
+  async function handleSubmitExplicitPrompt(
+    prompt: string,
+    options: { controls?: RuntimeRunControlInputDto | null } = {},
+  ): Promise<boolean> {
+    const promptToSubmit = prompt.trim()
+    const controlsToSubmit = options.controls ?? null
+    if (
+      promptToSubmit.length === 0 ||
+      hasQueuedPrompt ||
+      runtimeRunActionStatus === 'running'
+    ) {
+      return false
+    }
+
+    setRuntimeRunActionMessage(null)
+
+    try {
+      if (!activeRuntimeRun) {
+        if (!onStartRuntimeRun || (!canStartRuntimeRun && !canStartRuntimeSession)) {
+          return false
+        }
+
+        if (!canStartRuntimeRun && canStartRuntimeSession) {
+          if (!onStartRuntimeSession) {
+            return false
+          }
+
+          setRuntimeSessionBindInFlight(true)
+          const boundRuntimeSession = await onStartRuntimeSession({
+            providerProfileId: selectedControlInput?.providerProfileId ?? null,
+          })
+          setRuntimeSessionBindInFlight(false)
+
+          if (!boundRuntimeSession?.isAuthenticated) {
+            const message = boundRuntimeSession?.isLoginInProgress
+              ? 'Finish provider sign-in, then send again.'
+              : boundRuntimeSession?.lastError?.message?.trim() ||
+                'Xero could not authenticate the configured provider. Check the provider setup and try again.'
+            setRuntimeRunActionMessage(message)
+            return false
+          }
+        }
+
+        if (!(await dictation.stopBeforeSubmit())) {
+          return false
+        }
+
+        await onStartRuntimeRun({
+          controls: controlsToSubmit ?? selectedControlInput,
+          prompt: promptToSubmit,
+        })
+        setQueuedDraftAcknowledgement(promptToSubmit)
+        return true
+      }
+
+      if (!onUpdateRuntimeRunControls) {
+        return false
+      }
+
+      if (!(await dictation.stopBeforeSubmit())) {
+        return false
+      }
+
+      await onUpdateRuntimeRunControls({
+        ...(controlsToSubmit ? { controls: controlsToSubmit } : {}),
+        prompt: promptToSubmit,
+      })
+      setQueuedDraftAcknowledgement(promptToSubmit)
+      return true
+    } catch (error) {
+      setQueuedDraftAcknowledgement(null)
+      setRuntimeSessionBindInFlight(false)
+      setRuntimeRunActionMessage(getErrorMessage(error, 'Xero could not continue with the current agent.'))
+      return false
+    }
+  }
+
   async function handleStopRuntimeRun() {
     if (!canStopRuntimeRun || !onStopRuntimeRun || !renderableRuntimeRun) {
       return
@@ -1282,6 +1359,7 @@ export function useAgentRuntimeController({
     handleDraftPromptChange,
     handleAppendDraftPrompt,
     handleAppendHiddenDraftPrompt,
+    handleSubmitExplicitPrompt,
     handleAutoCompactEnabledChange,
     handleSubmitDraftPrompt,
     handleComposerModelChange,

@@ -13,8 +13,18 @@ export type RoutingSuggestionDecision =
       targetAgentDefinitionId?: string | null
       targetAgentDefinitionVersion?: number | null
       targetLabel?: string | null
+      reason?: string | null
+      summary?: string | null
     }
-  | { kind: 'decline' }
+  | {
+      kind: 'decline'
+      targetAgentId: RuntimeAgentIdDto
+      targetAgentDefinitionId?: string | null
+      targetAgentDefinitionVersion?: number | null
+      targetLabel?: string | null
+      reason?: string | null
+      summary?: string | null
+    }
 
 export interface RoutingSuggestionDispatchValue {
   resolveRoutingSuggestion: (turnId: string, decision: RoutingSuggestionDecision) => void
@@ -102,11 +112,15 @@ export function RoutingSuggestionCard({
       targetAgentDefinitionId,
       targetAgentDefinitionVersion,
       targetLabel: displayTargetLabel,
+      reason,
+      summary,
     })
   }, [
     dispatch,
     displayTargetLabel,
     isResolved,
+    reason,
+    summary,
     targetAgentDefinitionId,
     targetAgentDefinitionVersion,
     targetAgentId,
@@ -115,8 +129,26 @@ export function RoutingSuggestionCard({
 
   const handleDecline = useCallback(() => {
     if (isResolved || !dispatch) return
-    dispatch.resolveRoutingSuggestion(turnId, { kind: 'decline' })
-  }, [dispatch, isResolved, turnId])
+    dispatch.resolveRoutingSuggestion(turnId, {
+      kind: 'decline',
+      targetAgentId,
+      targetAgentDefinitionId,
+      targetAgentDefinitionVersion,
+      targetLabel: displayTargetLabel,
+      reason,
+      summary,
+    })
+  }, [
+    dispatch,
+    displayTargetLabel,
+    isResolved,
+    reason,
+    summary,
+    targetAgentDefinitionId,
+    targetAgentDefinitionVersion,
+    targetAgentId,
+    turnId,
+  ])
 
   return (
     <div
@@ -159,7 +191,7 @@ export function RoutingSuggestionCard({
             <>
               <ArrowRightCircle className="h-3.5 w-3.5" aria-hidden />
               <span>
-                Switched to {resolvedTargetLabel ?? getRuntimeAgentLabel(acceptedTarget)} for your next message.
+                Switched to {resolvedTargetLabel ?? getRuntimeAgentLabel(acceptedTarget)} and continued.
               </span>
             </>
           ) : (

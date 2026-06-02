@@ -8,10 +8,11 @@ use tauri::{
 use crate::{
     commands::{
         agent_event_dto, agent_run_dto, agent_run_summary_dto, validate_non_empty, AgentRunDto,
-        AgentRunEventDto, AgentTraceExportDto, CancelAgentRunRequestDto, CommandError,
-        CommandResult, ExportAgentTraceRequestDto, GetAgentRunRequestDto, ListAgentRunsRequestDto,
-        ListAgentRunsResponseDto, ResumeAgentRunRequestDto, SendAgentMessageRequestDto,
-        StartAgentTaskRequestDto, SubscribeAgentStreamRequestDto, SubscribeAgentStreamResponseDto,
+        AgentRunEventDto, AgentRunEventKindDto, AgentRunStatusDto, AgentTraceExportDto,
+        CancelAgentRunRequestDto, CommandError, CommandResult, ExportAgentTraceRequestDto,
+        GetAgentRunRequestDto, ListAgentRunsRequestDto, ListAgentRunsResponseDto,
+        ResumeAgentRunRequestDto, SendAgentMessageRequestDto, StartAgentTaskRequestDto,
+        SubscribeAgentStreamRequestDto, SubscribeAgentStreamResponseDto,
     },
     db::project_store,
     registry::read_registry,
@@ -344,14 +345,7 @@ pub fn subscribe_agent_stream<R: Runtime>(
     )?);
     let replayed_event_count = dto.events.len();
     let last_event_id = dto.events.iter().map(|event| event.id).max().unwrap_or(0);
-    let terminal = matches!(
-        dto.status,
-        crate::commands::AgentRunStatusDto::Paused
-            | crate::commands::AgentRunStatusDto::Cancelled
-            | crate::commands::AgentRunStatusDto::HandedOff
-            | crate::commands::AgentRunStatusDto::Completed
-            | crate::commands::AgentRunStatusDto::Failed
-    );
+    let terminal = agent_run_status_ends_agent_stream(&dto.status, &dto.events);
     for event in dto.events {
         channel.send(event).map_err(|error| {
             CommandError::retryable(
@@ -487,12 +481,7 @@ fn stream_live_agent_events(
                 Err(_) => break,
             }
         }
-        let terminal = matches!(
-            event.event_kind,
-            project_store::AgentRunEventKind::RunPaused
-                | project_store::AgentRunEventKind::RunCompleted
-                | project_store::AgentRunEventKind::RunFailed
-        );
+        let terminal = agent_event_record_ends_agent_stream(&event);
         last_event_id = event.id;
         if channel.send(agent_event_dto(event)).is_err() {
             return;
@@ -541,12 +530,7 @@ fn stream_persisted_agent_events_after(
                 reached_before_event = true;
                 break;
             }
-            terminal = matches!(
-                event.event_kind,
-                project_store::AgentRunEventKind::RunPaused
-                    | project_store::AgentRunEventKind::RunCompleted
-                    | project_store::AgentRunEventKind::RunFailed
-            );
+            terminal = agent_event_record_ends_agent_stream(&event);
             last_id = event.id;
             delivered_any = true;
             channel.send(agent_event_dto(event)).map_err(|error| {
@@ -570,6 +554,61 @@ fn stream_persisted_agent_events_after(
     } else {
         Ok(StreamCatchupOutcome::NoEvents)
     }
+}
+
+fn agent_run_status_ends_agent_stream(
+    status: &AgentRunStatusDto,
+    events: &[AgentRunEventDto],
+) -> bool {
+    match status {
+        AgentRunStatusDto::Paused => {
+            !latest_run_pause_dto_is_scheduled_wait(events).unwrap_or(false)
+        }
+        AgentRunStatusDto::Cancelled
+        | AgentRunStatusDto::HandedOff
+        | AgentRunStatusDto::Completed
+        | AgentRunStatusDto::Failed => true,
+        AgentRunStatusDto::Starting
+        | AgentRunStatusDto::Running
+        | AgentRunStatusDto::Cancelling => false,
+    }
+}
+
+fn latest_run_pause_dto_is_scheduled_wait(events: &[AgentRunEventDto]) -> Option<bool> {
+    events
+        .iter()
+        .rev()
+        .find(|event| event.event_kind == AgentRunEventKindDto::RunPaused)
+        .map(|event| payload_is_scheduled_wait(&event.payload))
+}
+
+fn agent_event_record_ends_agent_stream(event: &project_store::AgentEventRecord) -> bool {
+    match event.event_kind {
+        project_store::AgentRunEventKind::RunCompleted
+        | project_store::AgentRunEventKind::RunFailed => true,
+        project_store::AgentRunEventKind::RunPaused => !agent_event_record_is_scheduled_wait(event),
+        _ => false,
+    }
+}
+
+fn agent_event_record_is_scheduled_wait(event: &project_store::AgentEventRecord) -> bool {
+    serde_json::from_str::<serde_json::Value>(&event.payload_json)
+        .map(|payload| payload_is_scheduled_wait(&payload))
+        .unwrap_or(false)
+}
+
+fn payload_is_scheduled_wait(payload: &serde_json::Value) -> bool {
+    payload_text(payload, "state").as_deref() == Some("scheduled_wait")
+        || payload_text(payload, "stopReason").as_deref() == Some("scheduled_wait")
+}
+
+fn payload_text(payload: &serde_json::Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 struct LocatedAgentRun {
@@ -634,6 +673,48 @@ mod tests {
 
     use super::*;
     use crate::db::project_store::{AgentRunEventKind, NewAgentEventRecord, NewAgentRunRecord};
+
+    fn event_record(
+        event_kind: AgentRunEventKind,
+        payload_json: &str,
+    ) -> project_store::AgentEventRecord {
+        project_store::AgentEventRecord {
+            id: 1,
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            event_kind,
+            payload_json: payload_json.into(),
+            created_at: "2026-04-24T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn scheduled_wait_pause_keeps_agent_stream_live() {
+        let scheduled_wait = event_record(
+            AgentRunEventKind::RunPaused,
+            r#"{"state":"scheduled_wait","stopReason":"scheduled_wait"}"#,
+        );
+        let manual_pause = event_record(
+            AgentRunEventKind::RunPaused,
+            r#"{"state":"paused","stopReason":"waiting_for_approval"}"#,
+        );
+        let completed = event_record(
+            AgentRunEventKind::RunCompleted,
+            r#"{"summary":"Owned agent run completed."}"#,
+        );
+
+        assert!(!agent_event_record_ends_agent_stream(&scheduled_wait));
+        assert!(agent_event_record_ends_agent_stream(&manual_pause));
+        assert!(agent_event_record_ends_agent_stream(&completed));
+        assert!(!agent_run_status_ends_agent_stream(
+            &AgentRunStatusDto::Paused,
+            &[agent_event_dto(scheduled_wait)]
+        ));
+        assert!(agent_run_status_ends_agent_stream(
+            &AgentRunStatusDto::Paused,
+            &[agent_event_dto(manual_pause)]
+        ));
+    }
 
     #[test]
     fn stream_persisted_agent_events_replays_more_than_one_batch() {

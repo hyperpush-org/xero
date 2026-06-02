@@ -634,7 +634,8 @@ export function mapAgentRun(run: AgentRunDto): AgentRunView {
     latestEvent,
     scheduledWakeups,
     waitingUntil: scheduledWakeups[0]?.dueAt ?? null,
-    isActive: run.status === 'starting' || run.status === 'running' || run.status === 'cancelling',
+    isActive:
+      isWaiting || run.status === 'starting' || run.status === 'running' || run.status === 'cancelling',
     isTerminal:
       run.status === 'cancelled' ||
       run.status === 'handed_off' ||
