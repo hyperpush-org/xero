@@ -2237,7 +2237,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
             "core",
-            "Search source-cited durable project records, approved memory, handoffs, decisions, constraints, questions, blockers, and current context manifests with freshness evidence.",
+            "Search source-cited durable project records, approved memory, handoffs, decisions, constraints, questions, and blockers with freshness evidence. Context package inspection is diagnostic-only and must not be used for ordinary project overview, coding, planning, or debugging.",
             &[
                 "context",
                 "memory",
@@ -4312,6 +4312,7 @@ pub struct AutonomousToolRuntime {
     pub(super) agent_workflow_policy: Option<AutonomousAgentWorkflowPolicy>,
     pub(super) agent_workflow_state: Arc<Mutex<AutonomousAgentWorkflowRuntimeState>>,
     pub(super) agent_run_context: Option<AutonomousAgentRunContext>,
+    pub(super) context_access_ledger: Arc<Mutex<ContextAccessLedger>>,
     pub(super) tool_application_policy: ResolvedAgentToolApplicationStyleDto,
     pub(super) browser_control_preference: BrowserControlPreferenceDto,
     pub(super) soul_settings: SoulSettingsDto,
@@ -4371,6 +4372,13 @@ pub struct AutonomousAgentRunContext {
     pub project_id: String,
     pub agent_session_id: String,
     pub run_id: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct ContextAccessLedger {
+    pub project_context_searches: BTreeMap<String, AutonomousProjectContextOutput>,
+    pub manifest_inspections: BTreeMap<String, AutonomousProjectContextOutput>,
+    pub workspace_index_statuses: BTreeMap<String, AutonomousWorkspaceIndexOutput>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4490,6 +4498,7 @@ impl AutonomousToolRuntime {
                 AutonomousAgentWorkflowRuntimeState::default(),
             )),
             agent_run_context: None,
+            context_access_ledger: Arc::new(Mutex::new(ContextAccessLedger::default())),
             tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
             browser_control_preference: BrowserControlPreferenceDto::Default,
             soul_settings: default_soul_settings(),
@@ -4702,11 +4711,19 @@ impl AutonomousToolRuntime {
         agent_session_id: impl Into<String>,
         run_id: impl Into<String>,
     ) -> Self {
-        self.agent_run_context = Some(AutonomousAgentRunContext {
+        let next_context = AutonomousAgentRunContext {
             project_id: project_id.into(),
             agent_session_id: agent_session_id.into(),
             run_id: run_id.into(),
-        });
+        };
+        let run_changed = match self.agent_run_context.as_ref() {
+            Some(current) => current != &next_context,
+            None => true,
+        };
+        if run_changed {
+            self.context_access_ledger = Arc::new(Mutex::new(ContextAccessLedger::default()));
+        }
+        self.agent_run_context = Some(next_context);
         self
     }
 

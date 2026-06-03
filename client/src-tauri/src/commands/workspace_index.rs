@@ -217,6 +217,25 @@ pub(crate) fn workspace_status_at_root(
     Ok(status)
 }
 
+pub(crate) fn workspace_status_cache_key_at_root(
+    repo_root: &Path,
+    project_id: &str,
+) -> CommandResult<String> {
+    let database_path = database_path_for_repo(repo_root);
+    let connection = open_project_database(repo_root, &database_path)?;
+    let metadata_status = read_status_row(&connection, repo_root, project_id, &database_path)?
+        .unwrap_or_else(|| empty_status(repo_root, project_id, &database_path));
+    let current_head_sha = repository_head_sha(repo_root);
+
+    Ok(format!(
+        "workspace-status:v{}:metadata-head={}:current-head={}:updated={}",
+        metadata_status.index_version,
+        metadata_status.head_sha.as_deref().unwrap_or("none"),
+        current_head_sha.as_deref().unwrap_or("none"),
+        metadata_status.updated_at.as_deref().unwrap_or("none")
+    ))
+}
+
 pub(crate) fn workspace_query_at_root(
     repo_root: &Path,
     request: WorkspaceQueryRequestDto,

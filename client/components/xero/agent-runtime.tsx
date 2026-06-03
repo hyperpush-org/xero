@@ -285,6 +285,7 @@ const EMPTY_ACTION_REQUIRED_ITEMS: NonNullable<AgentPaneView['actionRequiredItem
 const MAX_VISIBLE_RUNTIME_ACTION_TURNS = Number.POSITIVE_INFINITY
 const CONVERSATION_NEAR_BOTTOM_THRESHOLD_PX = 96
 const CONVERSATION_FOLLOW_UP_ANCHOR_TOP_OFFSET_PX = 28
+const CONVERSATION_LAYOUT_SETTLE_SYNC_DELAYS_MS = [80, 180, 320]
 const BACKGROUND_PANE_STREAM_ITEM_LIMIT = 160
 const BACKGROUND_PANE_VISIBLE_TURN_LIMIT = 48
 const FOREGROUND_WORK_DEFER_MS = 32
@@ -3306,6 +3307,8 @@ export const AgentRuntime = memo(function AgentRuntime({
   const bottomSentinelRef = useRef<HTMLDivElement | null>(null)
   const scrollToLatestFrameRef = useRef<number | null>(null)
   const scrollToFollowUpAnchorFrameRef = useRef<number | null>(null)
+  const conversationMeasurementFrameRef = useRef<number | null>(null)
+  const conversationMeasurementTimeoutRefs = useRef<number[]>([])
   const followUpAnchorPendingBehaviorRef = useRef<ScrollBehavior | null>(null)
   const followUpAnchorSpacerHeightRef = useRef(0)
   const shouldAutoFollowRef = useRef(true)
@@ -3456,8 +3459,20 @@ export const AgentRuntime = memo(function AgentRuntime({
       run()
     })
   }, [getFollowUpAnchorPlan])
+  const clearConversationMeasurementTimeouts = useCallback(() => {
+    if (typeof window === 'undefined') {
+      conversationMeasurementTimeoutRefs.current = []
+      return
+    }
+
+    for (const timeoutId of conversationMeasurementTimeoutRefs.current) {
+      window.clearTimeout(timeoutId)
+    }
+    conversationMeasurementTimeoutRefs.current = []
+  }, [])
   useEffect(() => {
     return () => {
+      clearConversationMeasurementTimeouts()
       if (
         scrollToLatestFrameRef.current !== null &&
         typeof window !== 'undefined' &&
@@ -3474,9 +3489,17 @@ export const AgentRuntime = memo(function AgentRuntime({
         window.cancelAnimationFrame(scrollToFollowUpAnchorFrameRef.current)
         scrollToFollowUpAnchorFrameRef.current = null
       }
+      if (
+        conversationMeasurementFrameRef.current !== null &&
+        typeof window !== 'undefined' &&
+        typeof window.cancelAnimationFrame === 'function'
+      ) {
+        window.cancelAnimationFrame(conversationMeasurementFrameRef.current)
+        conversationMeasurementFrameRef.current = null
+      }
     }
-  }, [])
-  const handleConversationScroll = useCallback(() => {
+  }, [clearConversationMeasurementTimeouts])
+  const syncConversationScrollState = useCallback(() => {
     const viewport = scrollViewportRef.current
     if (!viewport) {
       return
@@ -3499,6 +3522,96 @@ export const AgentRuntime = memo(function AgentRuntime({
     shouldAutoFollowRef.current = isNearBottom
     setShowJumpToLatest(hasConversationViewportContent && !isNearBottom)
   }, [clearFollowUpAnchor, followUpAnchorTurnId, hasConversationViewportContent])
+  const scheduleConversationScrollStateSync = useCallback(() => {
+    if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
+      syncConversationScrollState()
+      return
+    }
+
+    if (
+      conversationMeasurementFrameRef.current !== null &&
+      typeof window.cancelAnimationFrame === 'function'
+    ) {
+      window.cancelAnimationFrame(conversationMeasurementFrameRef.current)
+    }
+    conversationMeasurementFrameRef.current = window.requestAnimationFrame(() => {
+      conversationMeasurementFrameRef.current = null
+      syncConversationScrollState()
+    })
+  }, [syncConversationScrollState])
+  const scheduleConversationLayoutSettledSync = useCallback(() => {
+    scheduleConversationScrollStateSync()
+    clearConversationMeasurementTimeouts()
+
+    if (typeof window === 'undefined' || typeof window.setTimeout !== 'function') {
+      return
+    }
+
+    conversationMeasurementTimeoutRefs.current =
+      CONVERSATION_LAYOUT_SETTLE_SYNC_DELAYS_MS.map((delayMs) =>
+        window.setTimeout(() => {
+          scheduleConversationScrollStateSync()
+        }, delayMs),
+      )
+  }, [
+    clearConversationMeasurementTimeouts,
+    scheduleConversationScrollStateSync,
+  ])
+  const handleConversationScroll = useCallback(() => {
+    syncConversationScrollState()
+  }, [syncConversationScrollState])
+  useLayoutEffect(() => {
+    if (!hasConversationViewportContent) {
+      return
+    }
+
+    const viewport = scrollViewportRef.current
+    const content = bottomSentinelRef.current?.parentElement
+    if (!viewport || !content) {
+      return
+    }
+
+    const resizeObserver =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(() => {
+            scheduleConversationLayoutSettledSync()
+          })
+    resizeObserver?.observe(viewport)
+    resizeObserver?.observe(content)
+
+    const mutationObserver =
+      typeof MutationObserver === 'undefined'
+        ? null
+        : new MutationObserver(() => {
+            scheduleConversationLayoutSettledSync()
+          })
+    mutationObserver?.observe(content, {
+      attributes: true,
+      attributeFilter: ['aria-expanded', 'data-state', 'style'],
+      childList: true,
+      subtree: true,
+    })
+    scheduleConversationLayoutSettledSync()
+
+    return () => {
+      resizeObserver?.disconnect()
+      mutationObserver?.disconnect()
+      clearConversationMeasurementTimeouts()
+      if (
+        conversationMeasurementFrameRef.current !== null &&
+        typeof window !== 'undefined' &&
+        typeof window.cancelAnimationFrame === 'function'
+      ) {
+        window.cancelAnimationFrame(conversationMeasurementFrameRef.current)
+        conversationMeasurementFrameRef.current = null
+      }
+    }
+  }, [
+    clearConversationMeasurementTimeouts,
+    hasConversationViewportContent,
+    scheduleConversationLayoutSettledSync,
+  ])
   const pauseConversationAutoFollow = useCallback(() => {
     if (!hasConversationViewportContent) {
       return

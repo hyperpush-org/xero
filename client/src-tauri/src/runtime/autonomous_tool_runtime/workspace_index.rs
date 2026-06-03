@@ -7,6 +7,7 @@ use super::{
 use crate::commands::{
     workspace_index::{
         workspace_explain_at_root, workspace_query_at_root, workspace_status_at_root,
+        workspace_status_cache_key_at_root,
     },
     CommandResult, WorkspaceExplainRequestDto, WorkspaceIndexDiagnosticDto,
     WorkspaceIndexStatusDto, WorkspaceQueryModeDto, WorkspaceQueryRequestDto,
@@ -79,8 +80,37 @@ impl AutonomousToolRuntime {
         })?;
         match request.action {
             AutonomousWorkspaceIndexAction::Status => {
+                let ledger_key = format!(
+                    "{}:{}:{}",
+                    run_context.project_id,
+                    run_context.run_id,
+                    workspace_status_cache_key_at_root(self.repo_root(), &run_context.project_id)?
+                );
+                if let Some(cached) = self
+                    .context_access_ledger
+                    .lock()
+                    .map_err(workspace_index_ledger_error)?
+                    .workspace_index_statuses
+                    .get(&ledger_key)
+                    .cloned()
+                {
+                    let mut output = cached;
+                    if let Some(status) = output.status.as_ref() {
+                        output.message = format!(
+                            "Workspace index reused cached {:?} status for index version {} and HEAD {} with {} of {} files indexed.",
+                            status.state,
+                            status.index_version,
+                            status.head_sha.as_deref().unwrap_or("unknown"),
+                            status.indexed_files,
+                            status.total_files
+                        );
+                    } else {
+                        output.message = "Workspace index reused cached status.".into();
+                    }
+                    return Ok(output);
+                }
                 let status = workspace_status_at_root(self.repo_root(), &run_context.project_id)?;
-                Ok(AutonomousWorkspaceIndexOutput {
+                let output = AutonomousWorkspaceIndexOutput {
                     action: request.action,
                     message: format!(
                         "Workspace index is {:?} with {} of {} files indexed.",
@@ -90,7 +120,13 @@ impl AutonomousToolRuntime {
                     status: Some(status),
                     results: Vec::new(),
                     signals: Vec::new(),
-                })
+                };
+                self.context_access_ledger
+                    .lock()
+                    .map_err(workspace_index_ledger_error)?
+                    .workspace_index_statuses
+                    .insert(ledger_key, output.clone());
+                Ok(output)
             }
             AutonomousWorkspaceIndexAction::Query
             | AutonomousWorkspaceIndexAction::SymbolLookup
@@ -152,4 +188,13 @@ impl AutonomousToolRuntime {
             }
         }
     }
+}
+
+fn workspace_index_ledger_error<T>(
+    _error: std::sync::PoisonError<T>,
+) -> crate::commands::CommandError {
+    crate::commands::CommandError::system_fault(
+        "context_access_ledger_unavailable",
+        "Xero could not read the run-scoped context access ledger.",
+    )
 }

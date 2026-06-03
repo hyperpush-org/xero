@@ -91,6 +91,116 @@ function installResizeObserverMock(width: number): () => void {
   }
 }
 
+function installManualResizeObserverMock(): {
+  restore: () => void
+  trigger: () => void
+} {
+  const previousWindowResizeObserver = window.ResizeObserver
+  const previousGlobalResizeObserver = globalThis.ResizeObserver
+  const instances: Array<{ trigger: () => void }> = []
+
+  class MockResizeObserver implements ResizeObserver {
+    constructor(private readonly callback: ResizeObserverCallback) {
+      instances.push(this)
+    }
+
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+
+    trigger(): void {
+      this.callback([], this)
+    }
+  }
+
+  Object.defineProperty(window, 'ResizeObserver', {
+    configurable: true,
+    writable: true,
+    value: MockResizeObserver,
+  })
+  Object.defineProperty(globalThis, 'ResizeObserver', {
+    configurable: true,
+    writable: true,
+    value: MockResizeObserver,
+  })
+
+  return {
+    restore: () => {
+      Object.defineProperty(window, 'ResizeObserver', {
+        configurable: true,
+        writable: true,
+        value: previousWindowResizeObserver,
+      })
+      Object.defineProperty(globalThis, 'ResizeObserver', {
+        configurable: true,
+        writable: true,
+        value: previousGlobalResizeObserver,
+      })
+    },
+    trigger: () => {
+      for (const instance of instances) {
+        instance.trigger()
+      }
+    },
+  }
+}
+
+function installManualMutationObserverMock(): {
+  restore: () => void
+  trigger: () => void
+} {
+  const previousWindowMutationObserver = window.MutationObserver
+  const previousGlobalMutationObserver = globalThis.MutationObserver
+  const instances: Array<{ trigger: () => void }> = []
+
+  class MockMutationObserver implements MutationObserver {
+    constructor(private readonly callback: MutationCallback) {
+      instances.push(this)
+    }
+
+    observe(): void {}
+    disconnect(): void {}
+    takeRecords(): MutationRecord[] {
+      return []
+    }
+
+    trigger(): void {
+      this.callback([], this)
+    }
+  }
+
+  Object.defineProperty(window, 'MutationObserver', {
+    configurable: true,
+    writable: true,
+    value: MockMutationObserver,
+  })
+  Object.defineProperty(globalThis, 'MutationObserver', {
+    configurable: true,
+    writable: true,
+    value: MockMutationObserver,
+  })
+
+  return {
+    restore: () => {
+      Object.defineProperty(window, 'MutationObserver', {
+        configurable: true,
+        writable: true,
+        value: previousWindowMutationObserver,
+      })
+      Object.defineProperty(globalThis, 'MutationObserver', {
+        configurable: true,
+        writable: true,
+        value: previousGlobalMutationObserver,
+      })
+    },
+    trigger: () => {
+      for (const instance of instances) {
+        instance.trigger()
+      }
+    },
+  }
+}
+
 import {
   AgentRuntime,
   getFollowUpAnchorScrollPlan,
@@ -3019,6 +3129,189 @@ describe('AgentRuntime current UI', () => {
       behavior: 'smooth',
     })
     expect(screen.queryByRole('button', { name: 'Jump to latest' })).not.toBeInTheDocument()
+  })
+
+  it('hides the latest button when resized tool content no longer overflows', () => {
+    const resizeObserver = installManualResizeObserverMock()
+    const originalRequestAnimationFrame = Object.getOwnPropertyDescriptor(window, 'requestAnimationFrame')
+    const originalCancelAnimationFrame = Object.getOwnPropertyDescriptor(window, 'cancelAnimationFrame')
+    Object.defineProperty(window, 'requestAnimationFrame', {
+      configurable: true,
+      writable: true,
+      value: (callback: FrameRequestCallback) => {
+        callback(0)
+        return 1
+      },
+    })
+    Object.defineProperty(window, 'cancelAnimationFrame', {
+      configurable: true,
+      writable: true,
+      value: () => undefined,
+    })
+
+    try {
+      render(
+        <AgentRuntime
+          agent={makeAgent({
+            runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+            runtimeRun: makeRuntimeRun(),
+            runtimeStreamStatus: 'complete',
+            runtimeStreamStatusLabel: 'Complete',
+            runtimeStreamItems: [
+              makeTranscriptItem({ sequence: 2, role: 'user', text: 'Inspect several files.' }),
+              ...Array.from({ length: 6 }, (_, index) =>
+                makeToolItem({
+                  sequence: index + 3,
+                  toolCallId: `call-read-${index}`,
+                  toolName: 'read',
+                  toolState: 'succeeded',
+                  detail: `Read tool ${index}.`,
+                  toolSummary: {
+                    kind: 'file',
+                    path: `client/src/tool-${index}.ts`,
+                    scope: null,
+                    lineCount: 12,
+                    matchCount: null,
+                    truncated: false,
+                  },
+                  toolResultPreview: `tool ${index} output preview`,
+                }),
+              ),
+              makeTranscriptItem({ sequence: 20, role: 'assistant', text: 'Done.' }),
+            ],
+          })}
+        />,
+      )
+
+      const viewport = screen.getByLabelText('Agent conversation viewport')
+      setScrollMetrics(viewport, {
+        scrollTop: 0,
+        scrollHeight: 1_000,
+        clientHeight: 360,
+      })
+      fireEvent.scroll(viewport)
+
+      expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeVisible()
+
+      setScrollMetrics(viewport, {
+        scrollTop: 0,
+        scrollHeight: 320,
+        clientHeight: 360,
+      })
+      act(() => {
+        resizeObserver.trigger()
+      })
+
+      expect(screen.queryByRole('button', { name: 'Jump to latest' })).not.toBeInTheDocument()
+    } finally {
+      resizeObserver.restore()
+      if (originalRequestAnimationFrame) {
+        Object.defineProperty(window, 'requestAnimationFrame', originalRequestAnimationFrame)
+      } else {
+        Reflect.deleteProperty(window, 'requestAnimationFrame')
+      }
+      if (originalCancelAnimationFrame) {
+        Object.defineProperty(window, 'cancelAnimationFrame', originalCancelAnimationFrame)
+      } else {
+        Reflect.deleteProperty(window, 'cancelAnimationFrame')
+      }
+    }
+  })
+
+  it('hides the latest button after collapsed tool content finishes animating out', () => {
+    vi.useFakeTimers()
+    const mutationObserver = installManualMutationObserverMock()
+    const originalRequestAnimationFrame = Object.getOwnPropertyDescriptor(window, 'requestAnimationFrame')
+    const originalCancelAnimationFrame = Object.getOwnPropertyDescriptor(window, 'cancelAnimationFrame')
+    Object.defineProperty(window, 'requestAnimationFrame', {
+      configurable: true,
+      writable: true,
+      value: (callback: FrameRequestCallback) =>
+        window.setTimeout(() => callback(performance.now()), 0),
+    })
+    Object.defineProperty(window, 'cancelAnimationFrame', {
+      configurable: true,
+      writable: true,
+      value: (handle: number) => window.clearTimeout(handle),
+    })
+    let unmount: (() => void) | null = null
+
+    try {
+      const rendered = render(
+        <AgentRuntime
+          agent={makeAgent({
+            runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+            runtimeRun: makeRuntimeRun(),
+            runtimeStreamStatus: 'complete',
+            runtimeStreamStatusLabel: 'Complete',
+            runtimeStreamItems: [
+              makeTranscriptItem({ sequence: 2, role: 'user', text: 'Inspect several files.' }),
+              ...Array.from({ length: 6 }, (_, index) =>
+                makeToolItem({
+                  sequence: index + 3,
+                  toolCallId: `call-read-${index}`,
+                  toolName: 'read',
+                  toolState: 'succeeded',
+                  detail: `Read tool ${index}.`,
+                  toolSummary: {
+                    kind: 'file',
+                    path: `client/src/tool-${index}.ts`,
+                    scope: null,
+                    lineCount: 12,
+                    matchCount: null,
+                    truncated: false,
+                  },
+                  toolResultPreview: `tool ${index} output preview`,
+                }),
+              ),
+              makeTranscriptItem({ sequence: 20, role: 'assistant', text: 'Done.' }),
+            ],
+          })}
+        />,
+      )
+      unmount = rendered.unmount
+
+      const viewport = screen.getByLabelText('Agent conversation viewport')
+      setScrollMetrics(viewport, {
+        scrollTop: 0,
+        scrollHeight: 1_000,
+        clientHeight: 360,
+      })
+      fireEvent.scroll(viewport)
+
+      expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeVisible()
+
+      act(() => {
+        mutationObserver.trigger()
+        vi.advanceTimersByTime(1)
+      })
+      expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeVisible()
+
+      setScrollMetrics(viewport, {
+        scrollTop: 0,
+        scrollHeight: 320,
+        clientHeight: 360,
+      })
+      act(() => {
+        vi.advanceTimersByTime(360)
+      })
+
+      expect(screen.queryByRole('button', { name: 'Jump to latest' })).not.toBeInTheDocument()
+    } finally {
+      unmount?.()
+      mutationObserver.restore()
+      if (originalRequestAnimationFrame) {
+        Object.defineProperty(window, 'requestAnimationFrame', originalRequestAnimationFrame)
+      } else {
+        Reflect.deleteProperty(window, 'requestAnimationFrame')
+      }
+      if (originalCancelAnimationFrame) {
+        Object.defineProperty(window, 'cancelAnimationFrame', originalCancelAnimationFrame)
+      } else {
+        Reflect.deleteProperty(window, 'cancelAnimationFrame')
+      }
+      vi.useRealTimers()
+    }
   })
 
   it('auto-follows to the tail when mounting a restored terminal conversation', () => {

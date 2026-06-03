@@ -457,6 +457,13 @@ fn merge_timeline_tool_item(
     merged_item.sequence = existing_item.sequence;
     merged_item.created_at = existing_item.created_at.clone();
     merged_item.updated_sequence = Some(updated_sequence);
+    if merged_item.tool_name.as_deref() == Some("project_context") {
+        merged_item.detail = merge_project_context_tool_detail(
+            existing_item.detail.as_deref(),
+            merged_item.detail.as_deref(),
+        );
+        merged_item.text = merged_item.detail.clone();
+    }
 
     current_items
         .iter()
@@ -469,6 +476,29 @@ fn merge_timeline_tool_item(
             }
         })
         .collect()
+}
+
+fn merge_project_context_tool_detail(
+    started_detail: Option<&str>,
+    completed_detail: Option<&str>,
+) -> Option<String> {
+    let started = started_detail
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let completed = completed_detail
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match (started, completed) {
+        (Some(started), Some(completed)) if completed.contains(started) => {
+            Some(completed.to_owned())
+        }
+        (Some(started), Some(completed)) => {
+            Some(truncate_chars(&format!("{started} · {completed}"), 320))
+        }
+        (Some(started), None) => Some(started.to_owned()),
+        (None, Some(completed)) => Some(completed.to_owned()),
+        (None, None) => None,
+    }
 }
 
 fn reasoning_activity_text(item: &RuntimeStreamItemDto) -> &str {
@@ -1441,6 +1471,11 @@ fn owned_agent_event_runtime_item(
             item.text = item.detail.clone();
             if ok && !scheduled_runtime_wait {
                 if let Some(output) = payload.get("output") {
+                    if item.tool_name.as_deref() == Some("project_context") {
+                        item.detail =
+                            project_context_completed_tool_detail(output, item.detail.as_deref());
+                        item.text = item.detail.clone();
+                    }
                     let model_visible_result =
                         model_visible_tool_result_from_completed_payload(&payload);
                     let model_visible_output = model_visible_result
@@ -1619,33 +1654,25 @@ fn owned_agent_event_runtime_item(
             item.text = item.detail.clone();
         }
         AgentRunEventKind::ContextManifestRecorded => {
-            item.kind = RuntimeStreamItemKind::Tool;
+            item.kind = RuntimeStreamItemKind::Activity;
             item.code = Some("owned_agent_context_manifest_recorded".into());
-            item.tool_call_id = Some(format!(
-                "runtime-project-context:{event_id}:context-manifest"
-            ));
-            item.tool_name = Some("project_context".into());
-            item.tool_state = Some(RuntimeToolCallState::Succeeded);
+            item.title = Some("Runtime context manifest".into());
             item.detail = context_event_tool_detail(
                 &payload,
-                "context_manifest",
+                "runtime_context_manifest",
                 "Context manifest recorded.",
             );
-            item.tool_result_preview = context_event_tool_result_preview(&payload);
             item.text = item.detail.clone();
         }
         AgentRunEventKind::RetrievalPerformed => {
-            item.kind = RuntimeStreamItemKind::Tool;
+            item.kind = RuntimeStreamItemKind::Activity;
             item.code = Some("owned_agent_retrieval_performed".into());
-            item.tool_call_id = Some(format!("runtime-project-context:{event_id}:retrieval"));
-            item.tool_name = Some("project_context".into());
-            item.tool_state = Some(RuntimeToolCallState::Succeeded);
+            item.title = Some("Runtime durable context retrieval".into());
             item.detail = context_event_tool_detail(
                 &payload,
-                "retrieval",
+                "runtime_durable_context_retrieval",
                 "Durable context retrieval performed.",
             );
-            item.tool_result_preview = context_event_tool_result_preview(&payload);
             item.text = item.detail.clone();
         }
         AgentRunEventKind::MemoryCandidateCaptured => {
@@ -1837,6 +1864,15 @@ fn tool_started_detail(tool_name: Option<&str>, input: &serde_json::Value) -> Op
             push_value_part(&mut parts, "url", input, "url");
             push_value_part(&mut parts, "maxChars", input, "maxChars");
         }
+        "project_context" => {
+            push_value_part(&mut parts, "action", input, "action");
+            push_value_part(&mut parts, "query", input, "query");
+            push_value_part(&mut parts, "memoryId", input, "memoryId");
+            push_value_part(&mut parts, "memoryIds", input, "memoryIds");
+            push_value_part(&mut parts, "recordId", input, "recordId");
+            push_value_part(&mut parts, "recordIds", input, "recordIds");
+            push_value_part(&mut parts, "limit", input, "limit");
+        }
         _ => push_generic_input_parts(&mut parts, input),
     }
 
@@ -1854,6 +1890,8 @@ fn push_generic_input_parts(parts: &mut Vec<String>, input: &serde_json::Value) 
         ("toPath", "toPath"),
         ("pattern", "pattern"),
         ("query", "query"),
+        ("memoryId", "memoryId"),
+        ("recordId", "recordId"),
         ("url", "url"),
         ("scope", "scope"),
         ("cwd", "cwd"),
@@ -1944,6 +1982,42 @@ fn context_event_tool_result_preview(payload: &serde_json::Value) -> Option<Stri
     serde_json::to_string_pretty(payload)
         .ok()
         .and_then(truncate_result_preview)
+}
+
+fn project_context_completed_tool_detail(
+    output: &serde_json::Value,
+    fallback: Option<&str>,
+) -> Option<String> {
+    let output = normalized_tool_output(output);
+    if payload_string(output, "kind").as_deref() != Some("project_context") {
+        return fallback.map(ToOwned::to_owned);
+    }
+
+    let mut parts = Vec::new();
+    push_value_part(&mut parts, "action", output, "action");
+    push_value_part(&mut parts, "queryId", output, "queryId");
+    push_value_part(&mut parts, "resultCount", output, "resultCount");
+
+    if let Some(memory) = output.get("memory").filter(|value| value.is_object()) {
+        push_value_part(&mut parts, "memoryId", memory, "memoryId");
+        push_value_part(&mut parts, "memoryKind", memory, "memoryKind");
+    }
+    if let Some(record) = output.get("record").filter(|value| value.is_object()) {
+        push_value_part(&mut parts, "recordId", record, "recordId");
+        if let Some(content_json) = record.get("contentJson") {
+            push_value_part(&mut parts, "memoryId", content_json, "supersedesMemoryId");
+            push_value_part(&mut parts, "recordId", content_json, "supersedesRecordId");
+        }
+    }
+    if let Some(candidate) = output
+        .get("candidateRecord")
+        .filter(|value| value.is_object())
+    {
+        push_value_part(&mut parts, "candidateId", candidate, "recordId");
+    }
+
+    let detail = render_tool_detail_parts(parts);
+    merge_project_context_tool_detail(detail.as_deref(), fallback)
 }
 
 fn model_visible_tool_result_from_completed_payload(payload: &serde_json::Value) -> Option<String> {
@@ -3879,6 +3953,109 @@ mod tests {
     }
 
     #[test]
+    fn owned_agent_tool_completed_projection_keeps_memory_operations_tool_like() {
+        let memory_get = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ToolCompleted,
+                r#"{"toolCallId":"call-memory-get","toolName":"project_context","ok":true,"summary":"project_context read approved memory `memory-1`.","output":{"kind":"project_context","action":"get_memory","message":"project_context read approved memory `memory-1`.","queryId":"query-memory-1","resultCount":1,"memory":{"memoryId":"memory-1","scope":"project","memoryKind":"user_preference","text":"Prefer concise UI activity labels.","redactionState":"clean","trust":{},"citation":"agent_memories:memory-1","createdAt":"2026-05-01T00:00:00Z","updatedAt":"2026-05-01T00:00:00Z"}}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("memory get tool item");
+
+        assert_eq!(memory_get.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(memory_get.tool_name.as_deref(), Some("project_context"));
+        assert_eq!(memory_get.tool_state, Some(RuntimeToolCallState::Succeeded));
+        assert!(memory_get
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("action: get_memory")));
+        assert!(memory_get
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("memoryId: memory-1")));
+        let memory_preview = serde_json::from_str::<serde_json::Value>(
+            memory_get
+                .tool_result_preview
+                .as_deref()
+                .expect("memory get preview"),
+        )
+        .expect("decode memory get preview");
+        assert_eq!(
+            memory_preview["output"]["memory"]["memoryId"],
+            serde_json::json!("memory-1")
+        );
+
+        let memory_update = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ToolCompleted,
+                r#"{"toolCallId":"call-memory-update","toolName":"project_context","ok":true,"summary":"project_context updated durable context `record-1`.","output":{"kind":"project_context","action":"update_context","message":"project_context updated durable context `record-1`.","resultCount":1,"record":{"recordId":"record-1","sourceKind":"runtime","recordKind":"context_note","title":"Correction for memory `memory-1`","summary":"Supersedes approved memory `memory-1`.","text":"Prefer concise UI activity labels.","contentJson":{"supersedesMemoryId":"memory-1"},"importance":"normal","tags":[],"sourceItemIds":["agent_memories:memory-1"],"relatedPaths":[],"runtimeAgentId":"engineer","runId":"run-1","redactionState":"clean","visibility":"retrieval","trust":{},"citation":"project_context_records:record-1","createdAt":"2026-05-01T00:00:00Z","updatedAt":"2026-05-01T00:00:00Z"}}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("memory update tool item");
+
+        assert_eq!(memory_update.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(memory_update.tool_name.as_deref(), Some("project_context"));
+        assert!(memory_update
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("action: update_context")));
+        assert!(memory_update
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("memoryId: memory-1")));
+    }
+
+    #[test]
+    fn owned_agent_projection_preserves_started_memory_detail_after_completion() {
+        let mut projection = RuntimeStreamProjection::new(projection_context());
+        let started = owned_agent_event_runtime_item(
+            event_with_id(
+                1,
+                AgentRunEventKind::ToolStarted,
+                r#"{"toolCallId":"call-memory-refresh","toolName":"project_context","input":{"action":"refresh_freshness","memoryId":"memory-1"}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("memory refresh started item");
+        projection.apply_item(started);
+
+        let completed = owned_agent_event_runtime_item(
+            event_with_id(
+                2,
+                AgentRunEventKind::ToolCompleted,
+                r#"{"toolCallId":"call-memory-refresh","toolName":"project_context","ok":true,"summary":"project_context refreshed freshness for 1 durable context row(s).","output":{"kind":"project_context","action":"refresh_freshness","message":"project_context refreshed freshness for 1 durable context row(s).","resultCount":1}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("memory refresh completed item");
+        let patch = projection.apply_item(completed);
+        let tool = patch
+            .snapshot
+            .items
+            .iter()
+            .find(|item| item.tool_call_id.as_deref() == Some("call-memory-refresh"))
+            .expect("merged memory refresh tool item");
+
+        assert_eq!(tool.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(tool.sequence, 1);
+        assert_eq!(tool.updated_sequence, Some(2));
+        assert!(tool
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("action: refresh_freshness")));
+        assert!(tool
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("memoryId: memory-1")));
+    }
+
+    #[test]
     fn owned_agent_tool_completed_projection_previews_project_context_manifest_summary() {
         let context = owned_agent_event_runtime_item(
             event(
@@ -3939,7 +4116,7 @@ mod tests {
     }
 
     #[test]
-    fn owned_agent_manifest_retrieval_and_memory_events_project_as_tool_calls() {
+    fn owned_agent_context_setup_events_project_as_runtime_activity() {
         let retrieval = owned_agent_event_runtime_item(
             event(
                 AgentRunEventKind::RetrievalPerformed,
@@ -3948,26 +4125,27 @@ mod tests {
             "owned-agent:run-1",
             None,
         )
-        .expect("retrieval tool item");
+        .expect("retrieval activity item");
 
-        assert_eq!(retrieval.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(retrieval.kind, RuntimeStreamItemKind::Activity);
         assert_eq!(
             retrieval.code.as_deref(),
             Some("owned_agent_retrieval_performed")
         );
-        assert_eq!(retrieval.tool_name.as_deref(), Some("project_context"));
         assert_eq!(
-            retrieval.tool_call_id.as_deref(),
-            Some("runtime-project-context:42:retrieval")
+            retrieval.title.as_deref(),
+            Some("Runtime durable context retrieval")
         );
-        assert_eq!(retrieval.tool_state, Some(RuntimeToolCallState::Succeeded));
+        assert_eq!(retrieval.tool_name, None);
+        assert_eq!(retrieval.tool_call_id, None);
+        assert_eq!(retrieval.tool_state, None);
         assert_eq!(
             retrieval.detail.as_deref(),
             Some(
-                "action: retrieval, queryId: query-1, resultCount: 2 · Retrieved durable context from LanceDB."
+                "action: runtime_durable_context_retrieval, queryId: query-1, resultCount: 2 · Retrieved durable context from LanceDB."
             )
         );
-        assert!(retrieval.tool_result_preview.is_some());
+        assert!(retrieval.tool_result_preview.is_none());
 
         let manifest = owned_agent_event_runtime_item(
             event(
@@ -3977,23 +4155,21 @@ mod tests {
             "owned-agent:run-1",
             None,
         )
-        .expect("manifest tool item");
-        assert_eq!(manifest.kind, RuntimeStreamItemKind::Tool);
+        .expect("manifest activity item");
+        assert_eq!(manifest.kind, RuntimeStreamItemKind::Activity);
         assert_eq!(
             manifest.code.as_deref(),
             Some("owned_agent_context_manifest_recorded")
         );
-        assert_eq!(manifest.tool_name.as_deref(), Some("project_context"));
-        assert_eq!(
-            manifest.tool_call_id.as_deref(),
-            Some("runtime-project-context:42:context-manifest")
-        );
-        assert_eq!(manifest.tool_state, Some(RuntimeToolCallState::Succeeded));
-        assert!(manifest.tool_result_preview.is_some());
+        assert_eq!(manifest.title.as_deref(), Some("Runtime context manifest"));
+        assert_eq!(manifest.tool_name, None);
+        assert_eq!(manifest.tool_call_id, None);
+        assert_eq!(manifest.tool_state, None);
+        assert!(manifest.tool_result_preview.is_none());
         assert!(manifest
             .detail
             .as_deref()
-            .is_some_and(|detail| detail.contains("action: context_manifest")));
+            .is_some_and(|detail| detail.contains("action: runtime_context_manifest")));
 
         let memory = owned_agent_event_runtime_item(
             event(

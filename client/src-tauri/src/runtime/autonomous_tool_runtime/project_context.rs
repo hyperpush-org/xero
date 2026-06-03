@@ -361,6 +361,30 @@ impl AutonomousToolRuntime {
         let query_text =
             optional_trimmed(request.query.as_deref()).unwrap_or_else(|| default_query.to_string());
         let limit = normalize_limit(request.limit);
+        let filters = retrieval_filters_from_request(&request);
+        let ledger_key = project_context_search_ledger_key(
+            run_context,
+            request.action,
+            search_scope.clone(),
+            &query_text,
+            &filters,
+            limit,
+        );
+        if let Some(cached) = self
+            .context_access_ledger
+            .lock()
+            .map_err(context_access_ledger_error)?
+            .project_context_searches
+            .get(&ledger_key)
+            .cloned()
+        {
+            let mut output = cached;
+            output.message = format!(
+                "project_context reused cached {} source-cited result(s) for `{}`.",
+                output.result_count, query_text
+            );
+            return Ok(output);
+        }
         let run_snapshot = project_store::load_agent_run(
             &self.repo_root,
             &run_context.project_id,
@@ -378,7 +402,7 @@ impl AutonomousToolRuntime {
                 agent_definition_version: run_snapshot.run.agent_definition_version,
                 query_text: query_text.clone(),
                 search_scope,
-                filters: retrieval_filters_from_request(&request),
+                filters,
                 limit_count: limit,
                 allow_keyword_fallback: true,
                 created_at: now_timestamp(),
@@ -386,7 +410,7 @@ impl AutonomousToolRuntime {
         )?;
         let query_id = response.query.query_id.clone();
         let results = context_results_from_retrieval(&query_id, &response.results);
-        Ok(AutonomousProjectContextOutput {
+        let output = AutonomousProjectContextOutput {
             action: request.action,
             message: format!(
                 "project_context returned {} source-cited result(s) for `{}`.",
@@ -400,7 +424,13 @@ impl AutonomousToolRuntime {
             memory: None,
             manifest: None,
             candidate_record: None,
-        })
+        };
+        self.context_access_ledger
+            .lock()
+            .map_err(context_access_ledger_error)?
+            .project_context_searches
+            .insert(ledger_key, output.clone());
+        Ok(output)
     }
 
     fn get_project_record(
@@ -513,8 +543,9 @@ impl AutonomousToolRuntime {
         &self,
         request: AutonomousProjectContextRequest,
         run_context: &AutonomousAgentRunContext,
-        runtime_agent_id: RuntimeAgentIdDto,
+        _runtime_agent_id: RuntimeAgentIdDto,
     ) -> CommandResult<AutonomousProjectContextOutput> {
+        ensure_manifest_inspection_allowed(&request)?;
         let manifest = project_store::list_agent_context_manifests_for_run(
             &self.repo_root,
             &run_context.project_id,
@@ -531,42 +562,54 @@ impl AutonomousToolRuntime {
                 ),
             )
         })?;
+        let ledger_key = format!(
+            "{}:{}:{}",
+            run_context.project_id, run_context.run_id, manifest.manifest_id
+        );
+        if let Some(cached) = self
+            .context_access_ledger
+            .lock()
+            .map_err(context_access_ledger_error)?
+            .manifest_inspections
+            .get(&ledger_key)
+            .cloned()
+        {
+            let mut output = cached;
+            output.message = format!(
+                "project_context reused cached diagnostic context package inspection for manifest `{}`.",
+                manifest.manifest_id
+            );
+            output.manifest = output
+                .manifest
+                .take()
+                .map(|manifest| context_manifest_with_inspection_metadata(manifest, true));
+            return Ok(output);
+        }
         let redacted_manifest = redact_json_value(&manifest.manifest);
-        let compact_manifest = compact_context_manifest_for_tool(&manifest, &redacted_manifest);
-        let query_id = log_manual_retrieval(
-            &self.repo_root,
-            run_context,
-            runtime_agent_id,
-            format!("explain current context package {}", manifest.manifest_id),
-            project_store::AgentRetrievalSearchScope::ProjectRecords,
-            vec![ManualRetrievalSource {
-                source_kind: project_store::AgentRetrievalResultSourceKind::ContextManifest,
-                source_id: manifest.manifest_id.clone(),
-                snippet: format!(
-                    "Context manifest `{}` used policy `{}` and estimated {} token(s).",
-                    manifest.manifest_id, manifest.policy_reason_code, manifest.estimated_tokens
-                ),
-                redaction_state: manifest.redaction_state.clone(),
-                metadata: Some(json!({
-                    "manifestId": manifest.manifest_id,
-                    "contextHash": manifest.context_hash,
-                    "policyReasonCode": manifest.policy_reason_code,
-                    "pressure": context_pressure_label(&manifest.pressure),
-                    "citation": format!("agent_context_manifests:{}", manifest.id)
-                })),
-            }],
-        )?;
-        Ok(AutonomousProjectContextOutput {
+        let compact_manifest = context_manifest_with_inspection_metadata(
+            compact_context_manifest_for_tool(&manifest, &redacted_manifest),
+            false,
+        );
+        let output = AutonomousProjectContextOutput {
             action: request.action,
-            message: "project_context returned the latest source-cited context manifest.".into(),
-            query_id: Some(query_id),
+            message: format!(
+                "project_context inspected diagnostic context package manifest `{}`.",
+                manifest.manifest_id
+            ),
+            query_id: None,
             result_count: 1,
             results: Vec::new(),
             record: None,
             memory: None,
             manifest: Some(compact_manifest),
             candidate_record: None,
-        })
+        };
+        self.context_access_ledger
+            .lock()
+            .map_err(context_access_ledger_error)?
+            .manifest_inspections
+            .insert(ledger_key, output.clone());
+        Ok(output)
     }
 
     fn propose_record_candidate(
@@ -1079,6 +1122,121 @@ fn retrieval_filters_from_request(
             .map(|importance| importance.to_project_store()),
         include_historical: request.include_historical,
     }
+}
+
+fn context_access_ledger_error<T>(_error: std::sync::PoisonError<T>) -> CommandError {
+    CommandError::system_fault(
+        "context_access_ledger_unavailable",
+        "Xero could not read the run-scoped context access ledger.",
+    )
+}
+
+fn project_context_search_ledger_key(
+    run_context: &AutonomousAgentRunContext,
+    action: AutonomousProjectContextAction,
+    search_scope: project_store::AgentRetrievalSearchScope,
+    query_text: &str,
+    filters: &project_store::AgentContextRetrievalFilters,
+    limit: u32,
+) -> String {
+    serde_json::to_string(&json!({
+        "projectId": run_context.project_id,
+        "agentSessionId": run_context.agent_session_id,
+        "runId": run_context.run_id,
+        "action": action,
+        "query": normalized_context_ledger_text(query_text),
+        "searchScope": retrieval_search_scope_ledger_label(&search_scope),
+        "filters": retrieval_filters_ledger_json(filters),
+        "limit": limit,
+    }))
+    .unwrap_or_else(|_| {
+        format!(
+            "{}:{}:{:?}:{}:{}",
+            run_context.project_id,
+            run_context.run_id,
+            action,
+            normalized_context_ledger_text(query_text),
+            limit
+        )
+    })
+}
+
+fn retrieval_filters_ledger_json(
+    filters: &project_store::AgentContextRetrievalFilters,
+) -> JsonValue {
+    let mut record_kinds = filters
+        .record_kinds
+        .iter()
+        .map(project_record_kind_label)
+        .collect::<Vec<_>>();
+    record_kinds.sort_unstable();
+    record_kinds.dedup();
+    let mut memory_kinds = filters
+        .memory_kinds
+        .iter()
+        .map(agent_memory_kind_label)
+        .collect::<Vec<_>>();
+    memory_kinds.sort_unstable();
+    memory_kinds.dedup();
+
+    json!({
+        "recordKinds": record_kinds,
+        "memoryKinds": memory_kinds,
+        "tags": &filters.tags,
+        "relatedPaths": &filters.related_paths,
+        "runtimeAgentId": filters.runtime_agent_id.map(|id| id.as_str()),
+        "agentSessionId": filters.agent_session_id.as_deref(),
+        "createdAfter": filters.created_after.as_deref(),
+        "minImportance": filters.min_importance.as_ref().map(project_record_importance_label),
+        "includeHistorical": filters.include_historical,
+    })
+}
+
+fn normalized_context_ledger_text(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+fn retrieval_search_scope_ledger_label(
+    scope: &project_store::AgentRetrievalSearchScope,
+) -> &'static str {
+    match scope {
+        project_store::AgentRetrievalSearchScope::ProjectRecords => "project_records",
+        project_store::AgentRetrievalSearchScope::ApprovedMemory => "approved_memory",
+        project_store::AgentRetrievalSearchScope::HybridContext => "hybrid_context",
+        project_store::AgentRetrievalSearchScope::Handoffs => "handoffs",
+    }
+}
+
+fn ensure_manifest_inspection_allowed(
+    request: &AutonomousProjectContextRequest,
+) -> CommandResult<()> {
+    if request.include_historical {
+        return Ok(());
+    }
+
+    Err(CommandError::user_fixable(
+        "project_context_manifest_inspection_diagnostic_only",
+        "Context package inspection is diagnostic-only. Use repository tools and durable project-context search for normal work; set includeHistorical=true only for an explicit context-packaging audit, harness probe, or context debugging task.",
+    ))
+}
+
+fn context_manifest_with_inspection_metadata(mut manifest: JsonValue, cached: bool) -> JsonValue {
+    if let JsonValue::Object(object) = &mut manifest {
+        object.insert(
+            "inspection".into(),
+            json!({
+                "schema": "xero.context_package_inspection.v1",
+                "diagnosticOnly": true,
+                "cached": cached,
+                "retrievalLogged": false,
+            }),
+        );
+    }
+    manifest
 }
 
 fn is_false(value: &bool) -> bool {

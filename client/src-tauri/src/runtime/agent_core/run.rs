@@ -1936,6 +1936,15 @@ fn handoff_carried_durable_context(
     source_context_hash: &str,
     target_run_id: Option<&str>,
 ) -> CommandResult<HandoffCarriedDurableContext> {
+    if let Some(reused) = handoff_reused_durable_context_from_source_manifest(
+        repo_root,
+        source_snapshot,
+        source_context_hash,
+        target_run_id,
+    )? {
+        return Ok(reused);
+    }
+
     let response = match project_store::search_agent_context(
         repo_root,
         project_store::AgentContextRetrievalRequest {
@@ -2033,6 +2042,124 @@ fn handoff_carried_durable_context(
             "guidance": "Target run should call project_context_get for carried IDs before relying on exact details.",
             "diagnostic": response.diagnostic,
         }),
+    })
+}
+
+fn handoff_reused_durable_context_from_source_manifest(
+    repo_root: &Path,
+    source_snapshot: &AgentRunSnapshotRecord,
+    source_context_hash: &str,
+    target_run_id: Option<&str>,
+) -> CommandResult<Option<HandoffCarriedDurableContext>> {
+    let manifests = project_store::list_agent_context_manifests_for_run(
+        repo_root,
+        &source_snapshot.run.project_id,
+        &source_snapshot.run.run_id,
+    )?;
+    let Some(manifest) = manifests
+        .into_iter()
+        .rev()
+        .find(|manifest| !manifest.retrieval_query_ids.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    let mut result_logs = Vec::new();
+    for query_id in &manifest.retrieval_query_ids {
+        result_logs.extend(project_store::list_agent_retrieval_results(
+            repo_root,
+            &source_snapshot.run.project_id,
+            query_id,
+        )?);
+    }
+    if !manifest.retrieval_result_ids.is_empty() {
+        let allowed = manifest
+            .retrieval_result_ids
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        result_logs.retain(|result| allowed.contains(&result.result_id));
+    }
+
+    let mut approved_memories = Vec::new();
+    let mut relevant_project_records = Vec::new();
+    for result in &result_logs {
+        let carried = handoff_carried_result_log_json(result);
+        match result.source_kind {
+            project_store::AgentRetrievalResultSourceKind::ApprovedMemory => {
+                if approved_memories.len() < 3 {
+                    approved_memories.push(carried);
+                }
+            }
+            project_store::AgentRetrievalResultSourceKind::ProjectRecord
+            | project_store::AgentRetrievalResultSourceKind::Handoff => {
+                if relevant_project_records.len() < 5 {
+                    relevant_project_records.push(carried);
+                }
+            }
+            project_store::AgentRetrievalResultSourceKind::ContextManifest => {}
+        }
+    }
+
+    let result_count = manifest
+        .manifest
+        .get("retrieval")
+        .and_then(|retrieval| retrieval.get("resultCount"))
+        .and_then(JsonValue::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(result_logs.len());
+
+    Ok(Some(HandoffCarriedDurableContext {
+        approved_memories,
+        relevant_project_records,
+        retrieval: json!({
+            "schema": "xero.agent_handoff.durable_context_retrieval.v1",
+            "sourceContextHash": source_context_hash,
+            "targetRunId": target_run_id,
+            "queryIds": &manifest.retrieval_query_ids,
+            "resultIds": &manifest.retrieval_result_ids,
+            "resultCount": result_count,
+            "selectionPolicy": "reused_source_provider_turn_retrieval",
+            "status": "reused",
+            "diagnostic": {
+                "schema": "xero.agent_handoff.reused_source_retrieval.v1",
+                "sourceManifestId": &manifest.manifest_id,
+                "sourceManifestContextHash": &manifest.context_hash,
+                "sourceRunId": &source_snapshot.run.run_id,
+            },
+            "guidance": "Target run should call project_context_get for carried IDs before relying on exact details.",
+        }),
+    }))
+}
+
+fn handoff_carried_result_log_json(
+    result: &project_store::AgentRetrievalResultLogRecord,
+) -> JsonValue {
+    let metadata = result.metadata.as_ref().unwrap_or(&JsonValue::Null);
+    let citation = metadata.get("citation").unwrap_or(&JsonValue::Null);
+    let source_kind = match result.source_kind {
+        project_store::AgentRetrievalResultSourceKind::ProjectRecord => "project_record",
+        project_store::AgentRetrievalResultSourceKind::ApprovedMemory => "approved_memory",
+        project_store::AgentRetrievalResultSourceKind::Handoff => "handoff",
+        project_store::AgentRetrievalResultSourceKind::ContextManifest => "context_manifest",
+    };
+    json!({
+        "resultId": &result.result_id,
+        "sourceKind": source_kind,
+        "sourceId": &result.source_id,
+        "rank": result.rank,
+        "score": result.score,
+        "title": citation.get("title").cloned().unwrap_or(JsonValue::Null),
+        "snippet": &result.snippet,
+        "redactionState": match result.redaction_state {
+            project_store::AgentContextRedactionState::Clean => "clean",
+            project_store::AgentContextRedactionState::Redacted => "redacted",
+            project_store::AgentContextRedactionState::Blocked => "blocked",
+        },
+        "selectionReason": "reused source provider-turn durable context retrieval",
+        "freshness": metadata.get("freshness").cloned().unwrap_or(JsonValue::Null),
+        "trust": metadata.get("trust").cloned().unwrap_or(JsonValue::Null),
+        "citation": citation,
     })
 }
 
@@ -5063,6 +5190,161 @@ mod tests {
             .as_array()
             .expect("result ids")
             .is_empty());
+    }
+
+    #[test]
+    fn handoff_bundle_reuses_source_manifest_retrieval_ids() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("repo dir");
+        let project_id = "project-handoff-reuse";
+        create_project_database(&repo_root, project_id);
+        let mut snapshot = project_store::insert_agent_run(
+            &repo_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: None,
+                agent_definition_version: None,
+                project_id: project_id.into(),
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: "run-handoff-reuse-source".into(),
+                provider_id: "test-provider".into(),
+                model_id: "test-model".into(),
+                prompt: "Continue prior parser work.".into(),
+                system_prompt: "system".into(),
+                now: "2026-05-09T00:00:00Z".into(),
+            },
+        )
+        .expect("insert source run");
+        snapshot.run.status = AgentRunStatus::Running;
+        project_store::insert_agent_retrieval_query_log(
+            &repo_root,
+            &project_store::NewAgentRetrievalQueryLogRecord {
+                query_id: "source-retrieval-query".into(),
+                project_id: project_id.into(),
+                agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+                run_id: Some("run-handoff-reuse-source".into()),
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: "engineer".into(),
+                agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+                query_text: "prior parser work".into(),
+                search_scope: project_store::AgentRetrievalSearchScope::ProjectRecords,
+                filters: json!({}),
+                limit_count: 6,
+                status: project_store::AgentRetrievalQueryStatus::Succeeded,
+                diagnostic: None,
+                created_at: "2026-05-09T00:00:10Z".into(),
+                completed_at: Some("2026-05-09T00:00:11Z".into()),
+            },
+        )
+        .expect("insert source retrieval query");
+        project_store::insert_agent_retrieval_result_log(
+            &repo_root,
+            &project_store::NewAgentRetrievalResultLogRecord {
+                project_id: project_id.into(),
+                query_id: "source-retrieval-query".into(),
+                result_id: "source-retrieval-result-1".into(),
+                source_kind: project_store::AgentRetrievalResultSourceKind::ProjectRecord,
+                source_id: "record-reused-source".into(),
+                rank: 1,
+                score: Some(0.88),
+                snippet: "Reused source manifest retrieval result.".into(),
+                redaction_state: project_store::AgentContextRedactionState::Clean,
+                metadata: Some(json!({
+                    "citation": {
+                        "title": "Reused parser decision"
+                    },
+                    "freshness": {
+                        "state": "current"
+                    },
+                    "trust": {
+                        "sourceRunId": "run-handoff-reuse-source"
+                    }
+                })),
+                created_at: "2026-05-09T00:00:11Z".into(),
+            },
+        )
+        .expect("insert source retrieval result");
+        project_store::insert_agent_context_manifest(
+            &repo_root,
+            &project_store::NewAgentContextManifestRecord {
+                manifest_id: "source-context-manifest".into(),
+                project_id: project_id.into(),
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: Some("run-handoff-reuse-source".into()),
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: "engineer".into(),
+                agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+                provider_id: Some("test-provider".into()),
+                model_id: Some("test-model".into()),
+                request_kind: project_store::AgentContextManifestRequestKind::ProviderTurn,
+                policy_action: project_store::AgentContextPolicyAction::ContinueNow,
+                policy_reason_code: "test".into(),
+                budget_tokens: Some(1000),
+                estimated_tokens: 100,
+                pressure: project_store::AgentContextBudgetPressure::Low,
+                context_hash: "a".repeat(64),
+                included_contributors: Vec::new(),
+                excluded_contributors: Vec::new(),
+                retrieval_query_ids: vec!["source-retrieval-query".into()],
+                retrieval_result_ids: vec!["source-retrieval-result-1".into()],
+                compaction_id: None,
+                handoff_id: None,
+                redaction_state: project_store::AgentContextRedactionState::Clean,
+                manifest: json!({
+                    "kind": "provider_context_package",
+                    "schema": "xero.provider_context_package.v1",
+                    "retrieval": {
+                        "resultCount": 1
+                    }
+                }),
+                created_at: "2026-05-09T00:00:12Z".into(),
+            },
+        )
+        .expect("insert source manifest");
+        let queries_before = project_store::list_agent_retrieval_queries_for_run(
+            &repo_root,
+            project_id,
+            "run-handoff-reuse-source",
+        )
+        .expect("list retrieval queries before handoff");
+
+        let target = same_agent_handoff_target(&snapshot);
+        let bundle = build_handoff_bundle(
+            &repo_root,
+            &snapshot,
+            &target,
+            "Continue prior parser work in the target run.",
+            "handoff-reuse-context-hash",
+            None,
+            Some("run-handoff-reuse-target"),
+        )
+        .expect("build handoff bundle");
+
+        assert_eq!(
+            bundle["durableContextRetrieval"]["selectionPolicy"],
+            json!("reused_source_provider_turn_retrieval")
+        );
+        assert_eq!(
+            bundle["durableContextRetrieval"]["queryIds"],
+            json!(["source-retrieval-query"])
+        );
+        assert_eq!(
+            bundle["durableContextRetrieval"]["resultIds"],
+            json!(["source-retrieval-result-1"])
+        );
+        assert!(bundle["relevantProjectRecords"]
+            .as_array()
+            .expect("reused records")
+            .iter()
+            .any(|record| record["sourceId"] == json!("record-reused-source")));
+        let queries_after = project_store::list_agent_retrieval_queries_for_run(
+            &repo_root,
+            project_id,
+            "run-handoff-reuse-source",
+        )
+        .expect("list retrieval queries after handoff");
+        assert_eq!(queries_after.len(), queries_before.len());
     }
 
     #[test]

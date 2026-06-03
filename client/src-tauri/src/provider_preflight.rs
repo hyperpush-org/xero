@@ -1,4 +1,7 @@
-use std::{path::Path, time::Instant};
+use std::{
+    path::Path,
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
 
 use rusqlite::{params, OptionalExtension};
 use tauri::{AppHandle, Runtime};
@@ -13,8 +16,11 @@ use xero_agent_core::{
 
 use crate::{
     auth::{
-        load_latest_openai_codex_session, load_openai_codex_session_for_profile_link,
+        load_latest_openai_codex_session, load_latest_xai_session,
+        load_openai_codex_session_for_profile_link, load_xai_session,
+        load_xai_session_for_profile_link,
         openai_compatible::resolve_openai_compatible_endpoint_for_profile,
+        refresh_provider_auth_session, StoredXaiSession,
     },
     commands::{
         get_runtime_settings::runtime_settings_snapshot_for_provider_profile, CommandError,
@@ -29,10 +35,10 @@ use crate::{
         ProviderModelThinkingEffort,
     },
     runtime::{
-        ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID, CURSOR_PROVIDER_ID,
-        DEEPSEEK_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID, GITHUB_MODELS_PROVIDER_ID,
-        OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
-        OPENROUTER_PROVIDER_ID, VERTEX_PROVIDER_ID, XAI_PROVIDER_ID,
+        RuntimeProvider, ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID,
+        CURSOR_PROVIDER_ID, DEEPSEEK_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID,
+        GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID,
+        OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID, VERTEX_PROVIDER_ID, XAI_PROVIDER_ID,
     },
     state::DesktopState,
 };
@@ -40,6 +46,7 @@ use crate::{
 const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const XAI_BASE_URL: &str = "https://api.x.ai/v1";
 const PROVIDER_PREFLIGHT_LIVE_PROBE_TIMEOUT_MS: u64 = 5_000;
+const XAI_PREFLIGHT_REFRESH_SKEW_SECONDS: i64 = 60;
 
 pub(crate) fn run_selected_provider_preflight<R: Runtime>(
     app: &AppHandle<R>,
@@ -50,6 +57,7 @@ pub(crate) fn run_selected_provider_preflight<R: Runtime>(
     required_features: ProviderPreflightRequiredFeatures,
 ) -> CommandResult<ProviderPreflightSnapshot> {
     let started = Instant::now();
+    refresh_xai_session_before_preflight_if_needed(app, state, profile_id)?;
     let catalog = load_provider_model_catalog(app, state, profile_id, force_refresh)?;
     let provider_profiles =
         crate::commands::provider_credentials::load_provider_credentials_view(app, state)?;
@@ -176,6 +184,72 @@ pub(crate) fn latest_provider_preflight_snapshot<R: Runtime>(
         provider_id,
         model_id,
     )
+}
+
+fn refresh_xai_session_before_preflight_if_needed<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    profile_id: &str,
+) -> CommandResult<()> {
+    let provider_profiles =
+        crate::commands::provider_credentials::load_provider_credentials_view(app, state)?;
+    let Some(profile) = provider_profiles.profile(profile_id).or_else(|| {
+        provider_profiles
+            .profiles()
+            .iter()
+            .find(|profile| profile.provider_id == profile_id)
+    }) else {
+        return Ok(());
+    };
+    if profile.provider_id != XAI_PROVIDER_ID {
+        return Ok(());
+    }
+
+    let auth_store_path = state.global_db_path(app)?;
+    let session = match profile.credential_link.as_ref() {
+        Some(link @ ProviderCredentialLink::Xai { .. }) => {
+            load_xai_session_for_profile_link(&auth_store_path, link)
+                .map_err(crate::commands::runtime_support::command_error_from_auth)?
+        }
+        Some(ProviderCredentialLink::ApiKey { .. }) => return Ok(()),
+        _ => load_latest_xai_session(&auth_store_path)
+            .map_err(crate::commands::runtime_support::command_error_from_auth)?,
+    };
+    let Some(session) = session else {
+        return Ok(());
+    };
+    if !xai_session_needs_preflight_refresh(&session, current_unix_timestamp()) {
+        return Ok(());
+    }
+
+    let refreshed = refresh_provider_auth_session(
+        app,
+        state,
+        RuntimeProvider::Xai,
+        session.account_id.as_str(),
+    )
+    .map_err(crate::commands::runtime_support::command_error_from_auth)?;
+    load_xai_session(&auth_store_path, refreshed.account_id.as_str())
+        .map_err(crate::commands::runtime_support::command_error_from_auth)?
+        .ok_or_else(|| {
+            CommandError::retryable(
+                "xai_auth_refresh_missing",
+                "Xero refreshed xAI auth before provider preflight, but the refreshed session was not available in the app-local credential store.",
+            )
+        })?;
+
+    Ok(())
+}
+
+fn xai_session_needs_preflight_refresh(session: &StoredXaiSession, now: i64) -> bool {
+    session.expires_at <= now.saturating_add(XAI_PREFLIGHT_REFRESH_SKEW_SECONDS)
+}
+
+fn current_unix_timestamp() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn bind_provider_preflight_cache_for_profile(
@@ -1047,5 +1121,28 @@ mod tests {
         assert!(xero_agent_core::provider_preflight_blockers(&snapshot)
             .iter()
             .any(|check| check.code == "provider_preflight_credentials"));
+    }
+
+    #[test]
+    fn xai_preflight_refresh_uses_expiry_skew() {
+        let now = 1_000;
+        let session = |expires_at| StoredXaiSession {
+            provider_id: XAI_PROVIDER_ID.into(),
+            session_id: "session-123".into(),
+            account_id: "acct-123".into(),
+            access_token: "access-token".into(),
+            refresh_token: "refresh-token".into(),
+            expires_at,
+            updated_at: "2026-05-05T15:57:13Z".into(),
+        };
+
+        assert!(xai_session_needs_preflight_refresh(
+            &session(now + XAI_PREFLIGHT_REFRESH_SKEW_SECONDS),
+            now
+        ));
+        assert!(!xai_session_needs_preflight_refresh(
+            &session(now + XAI_PREFLIGHT_REFRESH_SKEW_SECONDS + 1),
+            now
+        ));
     }
 }

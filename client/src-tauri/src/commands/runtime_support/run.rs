@@ -435,7 +435,7 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
     ) {
         Ok(snapshot) => snapshot,
         Err(error) => {
-            let _ = emit_owned_runtime_failure(
+            record_owned_runtime_failure(
                 app,
                 &task.repo_root,
                 &runtime_snapshot,
@@ -459,7 +459,7 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
     let provider_config = match resolve_owned_agent_provider_config(app, state, controls.as_ref()) {
         Ok(config) => config,
         Err(error) => {
-            let _ = emit_owned_runtime_failure(
+            record_owned_runtime_failure(
                 app,
                 &task.repo_root,
                 &runtime_snapshot,
@@ -474,7 +474,7 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
         match resolve_agent_tool_application_style(app, state, &provider_id, &model_id) {
             Ok(policy) => policy,
             Err(error) => {
-                let _ = emit_owned_runtime_failure(
+                record_owned_runtime_failure(
                     app,
                     &task.repo_root,
                     &runtime_snapshot,
@@ -492,7 +492,7 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
     ) {
         Ok(runtime) => runtime.with_tool_application_policy(tool_application_policy),
         Err(error) => {
-            let _ = emit_owned_runtime_failure(
+            record_owned_runtime_failure(
                 app,
                 &task.repo_root,
                 &runtime_snapshot,
@@ -525,7 +525,7 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
     ) {
         Ok(lease) => lease,
         Err(error) => {
-            let _ = emit_owned_runtime_failure(
+            record_owned_runtime_failure(
                 app,
                 &task.repo_root,
                 &runtime_snapshot,
@@ -538,7 +538,7 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
 
     if let Err(error) = create_owned_agent_run(&owned_request) {
         drop(lease);
-        let _ = emit_owned_runtime_failure(
+        record_owned_runtime_failure(
             app,
             &task.repo_root,
             &runtime_snapshot,
@@ -642,6 +642,58 @@ fn emit_owned_runtime_failure<R: Runtime>(
         }),
         checkpoint_summary,
     )
+}
+
+fn record_owned_runtime_failure<R: Runtime>(
+    app: &AppHandle<R>,
+    repo_root: &Path,
+    snapshot: &RuntimeRunSnapshotRecord,
+    error: &CommandError,
+    checkpoint_summary: &str,
+) {
+    if let Err(failure) =
+        emit_owned_runtime_failure_from_latest(app, repo_root, snapshot, error, checkpoint_summary)
+    {
+        eprintln!(
+            "[runtime] failed to record owned runtime failure for run `{}` after `{}`: {}",
+            snapshot.run.run_id, error.code, failure.message
+        );
+    }
+}
+
+fn emit_owned_runtime_failure_from_latest<R: Runtime>(
+    app: &AppHandle<R>,
+    repo_root: &Path,
+    snapshot: &RuntimeRunSnapshotRecord,
+    error: &CommandError,
+    checkpoint_summary: &str,
+) -> CommandResult<RuntimeRunSnapshotRecord> {
+    let Some(latest) = latest_runtime_snapshot_for_failure(repo_root, snapshot)? else {
+        return Ok(snapshot.clone());
+    };
+    if owned_runtime_status_is_terminal(&latest.run.status) {
+        return Ok(latest);
+    }
+    emit_owned_runtime_failure(app, repo_root, &latest, error, checkpoint_summary)
+}
+
+fn latest_runtime_snapshot_for_failure(
+    repo_root: &Path,
+    snapshot: &RuntimeRunSnapshotRecord,
+) -> CommandResult<Option<RuntimeRunSnapshotRecord>> {
+    match load_persisted_runtime_run(
+        repo_root,
+        &snapshot.run.project_id,
+        &snapshot.run.agent_session_id,
+    )? {
+        Some(latest) if latest.run.run_id == snapshot.run.run_id => Ok(Some(latest)),
+        Some(_) => Ok(None),
+        None => Ok(Some(snapshot.clone())),
+    }
+}
+
+fn owned_runtime_status_is_terminal(status: &RuntimeRunStatus) -> bool {
+    matches!(status, RuntimeRunStatus::Stopped | RuntimeRunStatus::Failed)
 }
 
 pub(crate) fn fail_owned_runtime_run<R: Runtime>(
@@ -2150,6 +2202,19 @@ mod tests {
             &stored_codex_session(now + OPENAI_CODEX_REFRESH_SKEW_SECONDS + 1),
             now
         ));
+    }
+
+    #[test]
+    fn owned_runtime_failure_guard_treats_only_stopped_and_failed_as_terminal() {
+        assert!(!owned_runtime_status_is_terminal(
+            &RuntimeRunStatus::Starting
+        ));
+        assert!(!owned_runtime_status_is_terminal(
+            &RuntimeRunStatus::Running
+        ));
+        assert!(!owned_runtime_status_is_terminal(&RuntimeRunStatus::Stale));
+        assert!(owned_runtime_status_is_terminal(&RuntimeRunStatus::Stopped));
+        assert!(owned_runtime_status_is_terminal(&RuntimeRunStatus::Failed));
     }
 
     fn preflight_snapshot(source: ProviderPreflightSource) -> ProviderPreflightSnapshot {

@@ -15,6 +15,10 @@ use xero_desktop_lib::{
     db::{self, project_store},
     git::repository::CanonicalRepository,
     runtime::{
+        autonomous_tool_runtime::{
+            AutonomousWorkspaceIndexAction, AutonomousWorkspaceIndexOutput,
+            AutonomousWorkspaceIndexRequest,
+        },
         create_owned_agent_run, run_owned_agent_task, AgentProviderConfig,
         AutonomousProjectContextAction, AutonomousProjectContextRecordImportance,
         AutonomousProjectContextRecordKind, AutonomousProjectContextRequest, AutonomousToolOutput,
@@ -336,6 +340,19 @@ fn execute_project_context(
         .expect("execute project_context tool");
     match output.output {
         AutonomousToolOutput::ProjectContext(output) => output,
+        other => panic!("unexpected output: {other:?}"),
+    }
+}
+
+fn execute_workspace_index(
+    runtime: &AutonomousToolRuntime,
+    request: AutonomousWorkspaceIndexRequest,
+) -> AutonomousWorkspaceIndexOutput {
+    let output = runtime
+        .execute(AutonomousToolRequest::WorkspaceIndex(request))
+        .expect("execute workspace_index tool");
+    match output.output {
+        AutonomousToolOutput::WorkspaceIndex(output) => output,
         other => panic!("unexpected output: {other:?}"),
     }
 }
@@ -1237,6 +1254,86 @@ fn lancedb_freshness_phase1_project_context_search_result_can_be_followed_by_get
 }
 
 #[test]
+fn lancedb_freshness_phase1_project_context_search_reuses_duplicate_request_within_run() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (project_id, repo_root) = seed_project(&root);
+    seed_project_record(
+        &repo_root,
+        &project_id,
+        "fresh-dedup-record",
+        "freshcontract dedup search",
+        "freshcontract dedup search should only log once.",
+        Vec::new(),
+        "2026-05-03T12:18:30Z",
+    );
+    seed_agent_run_for_agent(
+        &repo_root,
+        &project_id,
+        "fresh-dedup-run",
+        RuntimeAgentIdDto::Engineer,
+    );
+    let runtime = AutonomousToolRuntime::new(&repo_root)
+        .expect("tool runtime")
+        .with_runtime_run_controls(control_state_for_agent(RuntimeAgentIdDto::Engineer))
+        .with_agent_run_context(
+            &project_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+            "fresh-dedup-run",
+        );
+
+    let mut request =
+        AutonomousProjectContextRequest::new(AutonomousProjectContextAction::SearchProjectRecords);
+    request.query = Some("freshcontract dedup search".into());
+    request.limit = Some(5);
+    let first = execute_project_context(&runtime, request.clone());
+    let first_query_id = first.query_id.clone().expect("first query id");
+    let second = execute_project_context(&runtime, request);
+
+    assert_eq!(second.query_id.as_deref(), Some(first_query_id.as_str()));
+    assert!(second.message.contains("reused cached"));
+    let queries = project_store::list_agent_retrieval_queries_for_run(
+        &repo_root,
+        &project_id,
+        "fresh-dedup-run",
+    )
+    .expect("list dedup retrieval queries");
+    assert_eq!(queries.len(), 1);
+    assert_eq!(queries[0].query_id, first_query_id);
+}
+
+#[test]
+fn lancedb_freshness_phase1_workspace_index_status_reuses_duplicate_request_within_run() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (project_id, repo_root) = seed_project(&root);
+    seed_agent_run_for_agent(
+        &repo_root,
+        &project_id,
+        "fresh-workspace-index-run",
+        RuntimeAgentIdDto::Engineer,
+    );
+    let runtime = AutonomousToolRuntime::new(&repo_root)
+        .expect("tool runtime")
+        .with_runtime_run_controls(control_state_for_agent(RuntimeAgentIdDto::Engineer))
+        .with_agent_run_context(
+            &project_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+            "fresh-workspace-index-run",
+        );
+
+    let request = AutonomousWorkspaceIndexRequest {
+        action: AutonomousWorkspaceIndexAction::Status,
+        query: None,
+        path: None,
+        limit: None,
+    };
+    let first = execute_workspace_index(&runtime, request.clone());
+    let second = execute_workspace_index(&runtime, request);
+
+    assert_eq!(first.status, second.status);
+    assert!(second.message.contains("reused cached"));
+}
+
+#[test]
 fn lancedb_freshness_phase1_context_manifests_record_tool_retrieval_and_freshness_diagnostics() {
     let root = tempfile::tempdir().expect("temp dir");
     let (project_id, repo_root) = seed_project(&root);
@@ -1706,15 +1803,36 @@ fn lancedb_freshness_phase1_context_manifest_explanation_is_compact_for_model_re
             project_store::DEFAULT_AGENT_SESSION_ID,
             "fresh-manifest-summary-run",
         );
-    let output = execute_project_context(
-        &runtime,
-        AutonomousProjectContextRequest::new(
-            AutonomousProjectContextAction::ExplainCurrentContextPackage,
-        ),
+    let unauthorized = runtime
+        .execute(AutonomousToolRequest::ProjectContext(
+            AutonomousProjectContextRequest::new(
+                AutonomousProjectContextAction::ExplainCurrentContextPackage,
+            ),
+        ))
+        .expect_err("manifest inspection requires diagnostic opt-in");
+    assert_eq!(
+        unauthorized.code,
+        "project_context_manifest_inspection_diagnostic_only"
     );
+
+    let retrieval_queries_before = project_store::list_agent_retrieval_queries_for_run(
+        &repo_root,
+        &project_id,
+        "fresh-manifest-summary-run",
+    )
+    .expect("list retrieval queries before manifest inspection");
+    let mut request = AutonomousProjectContextRequest::new(
+        AutonomousProjectContextAction::ExplainCurrentContextPackage,
+    );
+    request.include_historical = true;
+    let output = execute_project_context(&runtime, request.clone());
+    assert_eq!(output.query_id, None);
     let manifest = output.manifest.expect("compact manifest summary");
 
     assert_eq!(manifest["kind"], "provider_context_package_summary");
+    assert_eq!(manifest["inspection"]["diagnosticOnly"], true);
+    assert_eq!(manifest["inspection"]["retrievalLogged"], false);
+    assert_eq!(manifest["inspection"]["cached"], false);
     assert_eq!(manifest["omitted"]["fullManifestPersisted"], true);
     assert!(
         manifest["omitted"]["originalBytes"]
@@ -1740,6 +1858,34 @@ fn lancedb_freshness_phase1_context_manifest_explanation_is_compact_for_model_re
     let serialized = serde_json::to_string(&manifest).expect("manifest summary json");
     assert!(!serialized.contains("\"inputSchema\""));
     assert!(!serialized.contains("\"description\""));
+
+    let retrieval_queries_after = project_store::list_agent_retrieval_queries_for_run(
+        &repo_root,
+        &project_id,
+        "fresh-manifest-summary-run",
+    )
+    .expect("list retrieval queries after manifest inspection");
+    assert_eq!(
+        retrieval_queries_after.len(),
+        retrieval_queries_before.len()
+    );
+
+    let cached_output = execute_project_context(&runtime, request);
+    assert!(cached_output.message.contains("reused cached diagnostic"));
+    let cached_manifest = cached_output
+        .manifest
+        .expect("cached compact manifest summary");
+    assert_eq!(cached_manifest["inspection"]["cached"], true);
+    let retrieval_queries_after_cached = project_store::list_agent_retrieval_queries_for_run(
+        &repo_root,
+        &project_id,
+        "fresh-manifest-summary-run",
+    )
+    .expect("list retrieval queries after cached manifest inspection");
+    assert_eq!(
+        retrieval_queries_after_cached.len(),
+        retrieval_queries_before.len()
+    );
 }
 
 #[test]
