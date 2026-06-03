@@ -77,6 +77,8 @@
   --shell-background: #101010;
   --scrollbar-thumb: oklch(0.25 0 0);
   --scrollbar-thumb-hover: oklch(0.32 0 0);
+  --scrollbar-overlay-gutter: 12px;
+  --scrollbar-z-index: 2147483647;
 }
 
 .theme-midnight {
@@ -1200,19 +1202,31 @@
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
+  position: relative;
+  z-index: var(--scrollbar-z-index);
 }
 
 ::-webkit-scrollbar-track {
   background: transparent;
+  position: relative;
+  z-index: var(--scrollbar-z-index);
 }
 
 ::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
   border-radius: 4px;
+  position: relative;
+  z-index: var(--scrollbar-z-index);
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-hover);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+  position: relative;
+  z-index: var(--scrollbar-z-index);
 }
 
 .scrollbar-thin::-webkit-scrollbar {

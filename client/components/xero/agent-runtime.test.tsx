@@ -5735,6 +5735,22 @@ describe('AgentRuntime current UI', () => {
       expect(spawnBtn).toBeDisabled()
     })
 
+    it('keeps the floating agent header out of the scrollbar lane', () => {
+      render(
+        <AgentRuntime
+          agent={makeAgent({ runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }) })}
+          paneCount={1}
+          paneNumber={1}
+        />,
+      )
+
+      const viewport = screen.getByLabelText('Agent conversation viewport')
+      const headerOverlay = viewport.parentElement?.previousElementSibling
+
+      expect(headerOverlay?.className).toContain('right-[var(--scrollbar-overlay-gutter)]')
+      expect(headerOverlay?.className).not.toContain('inset-x-0')
+    })
+
     it('renders the dense inline composer variant when density is compact', () => {
       render(
         <AgentRuntime

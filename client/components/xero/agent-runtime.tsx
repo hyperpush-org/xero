@@ -4064,7 +4064,7 @@ export const AgentRuntime = memo(function AgentRuntime({
     >
       <div ref={paneRootRef} className="flex min-h-0 min-w-0 flex-1">
         <div className="relative flex min-w-0 flex-1 flex-col">
-          <div className="pointer-events-none absolute inset-x-0 top-0 z-20">
+          <div className="pointer-events-none absolute left-0 right-[var(--scrollbar-overlay-gutter)] top-0 z-20">
             {isComputerUseSidebar ? (
               <ComputerUseSidebarHeader
                 label={sessionLabel}

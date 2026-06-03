@@ -23,4 +23,14 @@ describe('client stylesheet', () => {
     expect(styles).toContain('xero-loading-screen-exit 160ms')
     expect(styles).toContain('@keyframes xero-loading-symbol-exit')
   })
+
+  it('keeps shared scrollbars above elevated app chrome', () => {
+    const styles = readFileSync(sharedStylesPath, 'utf8')
+
+    expect(styles).toContain('--scrollbar-overlay-gutter: 12px;')
+    expect(styles).toContain('--scrollbar-z-index: 2147483647;')
+    expect(styles).toMatch(/::-webkit-scrollbar\s*\{[^}]*z-index:\s*var\(--scrollbar-z-index\)/)
+    expect(styles).toMatch(/::-webkit-scrollbar-thumb\s*\{[^}]*z-index:\s*var\(--scrollbar-z-index\)/)
+    expect(styles).toMatch(/::-webkit-scrollbar-corner\s*\{[^}]*z-index:\s*var\(--scrollbar-z-index\)/)
+  })
 })

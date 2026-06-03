@@ -256,6 +256,22 @@ describe("TerminalSidebar persistence", () => {
     expect(write.value.tabs[0]).not.toHaveProperty("terminalId")
   })
 
+  it("lifts xterm custom scrollbars above elevated chrome", async () => {
+    render(<TerminalSidebar open projectId="project-a" />)
+
+    await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1))
+
+    const terminalViewportStyle = document.querySelector(
+      ".xero-terminal-viewport style",
+    )
+    const css = terminalViewportStyle?.textContent ?? ""
+
+    expect(css).toContain(
+      ".xero-terminal-viewport .xterm .xterm-scrollable-element > .scrollbar",
+    )
+    expect(css).toContain("z-index: var(--scrollbar-z-index) !important;")
+  })
+
   it("switches projects by hiding and closing the old project's PTY, then restoring the next project", async () => {
     setupAdapter({
       states: new Map([

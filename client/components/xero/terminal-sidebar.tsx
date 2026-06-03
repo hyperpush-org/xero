@@ -1482,11 +1482,13 @@ export function TerminalSidebar({
           <style>{`
             .xero-terminal-viewport .xterm .xterm-scrollable-element > .scrollbar {
               width: 8px !important;
+              z-index: var(--scrollbar-z-index) !important;
               background: transparent !important;
             }
             .xero-terminal-viewport .xterm .xterm-scrollable-element > .scrollbar > .slider {
               left: 1px !important;
               width: 6px !important;
+              z-index: var(--scrollbar-z-index) !important;
               border-radius: 999px !important;
               background: var(--scrollbar-thumb) !important;
             }
