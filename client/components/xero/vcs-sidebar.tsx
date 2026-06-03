@@ -1,6 +1,7 @@
 "use client"
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type MutableRefObject } from "react"
+import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -64,6 +65,7 @@ export const DIFF_LINE_HIGHLIGHT_BYTE_LIMIT = 8 * 1024
 export const DIFF_TOKENIZATION_BATCH_SIZE = 24
 const DIFF_PARSE_CACHE_MAX_ENTRIES = 80
 export const DIFF_PARSE_CACHE_MAX_BYTES = 4 * 1024 * 1024
+const ACTION_SUCCESS_DISMISS_MS = 4000
 
 type ChangeKind = RepositoryStatusEntryView["staged"]
 type RepositoryDiffFileDto = RepositoryDiffResponseDto["files"][number]
@@ -256,6 +258,7 @@ export const VcsSidebar = memo(function VcsSidebar(props: VcsSidebarProps) {
       onOverlayClick={handleClose}
       open={open}
       width={renderedWidth}
+      isResizing={isResizing}
     >
       {shouldRenderDiffPane ? (
         <div
@@ -322,6 +325,13 @@ function VcsSidebarBody({
   const [actionMessage, setActionMessage] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const onLoadDiffRef = useRef(onLoadDiff)
+  const shouldReduceMotion = useReducedMotion()
+  const actionBannerTransition = shouldReduceMotion
+    ? { duration: 0 }
+    : { duration: 0.18, ease: [0.22, 1, 0.36, 1] as const }
+  const diffPaneTransition = shouldReduceMotion
+    ? { duration: 0 }
+    : { duration: 0.16, ease: [0.22, 1, 0.36, 1] as const }
 
   const statusEntriesSignature = useMemo(() => getStatusEntriesSignature(status), [status])
   const repositoryRevision = status?.diffRevision ?? createRepositoryStatusDiffRevision(status)
@@ -345,6 +355,14 @@ function VcsSidebarBody({
   useEffect(() => {
     onLoadDiffRef.current = onLoadDiff
   }, [onLoadDiff])
+
+  useEffect(() => {
+    if (!actionMessage || actionError) return
+    const timeout = window.setTimeout(() => {
+      setActionMessage(null)
+    }, ACTION_SUCCESS_DISMISS_MS)
+    return () => window.clearTimeout(timeout)
+  }, [actionError, actionMessage])
 
   const { stagedFiles, unstagedFiles } = useMemo(() => {
     const staged: FileEntry[] = []
@@ -565,6 +583,11 @@ function VcsSidebarBody({
   const generateCommitMessageLabel = commitMessageModel?.label
     ? `Generate commit message with ${commitMessageModel.label}`
     : "Generate commit message"
+  const actionBanner = actionError
+    ? { kind: "error" as const, text: actionError }
+    : actionMessage
+      ? { kind: "success" as const, text: actionMessage }
+      : null
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col">
@@ -599,15 +622,29 @@ function VcsSidebarBody({
       </div>
 
       {/* Action banner */}
-      {actionError ? (
-        <div className="shrink-0 border-b border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[11px] text-destructive">
-          {actionError}
-        </div>
-      ) : actionMessage ? (
-        <div className="shrink-0 border-b border-success/20 bg-success/10 px-3 py-1.5 text-[11px] text-success">
-          {actionMessage}
-        </div>
-      ) : null}
+      <AnimatePresence initial={false}>
+        {actionBanner ? (
+          <motion.div
+            key={`${actionBanner.kind}-${actionBanner.text}`}
+            className="shrink-0 overflow-hidden"
+            initial={{ height: 0, opacity: 0, y: -4 }}
+            animate={{ height: "auto", opacity: 1, y: 0 }}
+            exit={{ height: 0, opacity: 0, y: -4 }}
+            transition={actionBannerTransition}
+          >
+            <div
+              className={cn(
+                "border-b px-3 py-1.5 text-[11px]",
+                actionBanner.kind === "error"
+                  ? "border-destructive/30 bg-destructive/10 text-destructive"
+                  : "border-success/20 bg-success/10 text-success",
+              )}
+            >
+              {actionBanner.text}
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
 
       {/* Two-column body */}
       <div className="flex min-h-0 flex-1">
@@ -724,29 +761,38 @@ function VcsSidebarBody({
           </div>
         </div>
 
-        {shouldRenderDiffPane ? (
-          <div className="flex min-w-0 flex-1 flex-col bg-background/40">
-            <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-border/70 bg-sidebar px-3">
-              <span className="truncate text-[12px] font-medium text-foreground/85">
-                {selectedPath ?? "Select a file"}
-              </span>
-              {diffLoading ? (
-                <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-              ) : null}
-            </div>
-            <div className="min-h-0 flex-1">
-              {diffError ? (
-                <div className="px-4 py-4 text-[12px] text-destructive">{diffError}</div>
-              ) : diffFile || diffPatch ? (
-                <DiffView file={diffFile} patch={diffPatch} path={selectedPath ?? ""} />
-              ) : (
-                <div className="px-4 py-4 text-[12px] text-muted-foreground/70">
-                  {selectedPath ? "No diff available." : "Select a file to view its diff."}
-                </div>
-              )}
-            </div>
-          </div>
-        ) : null}
+        <AnimatePresence initial={false}>
+          {shouldRenderDiffPane ? (
+            <motion.div
+              key="diff-pane"
+              className="flex min-w-0 flex-1 flex-col bg-background/40"
+              initial={{ opacity: 0, x: 12 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 12 }}
+              transition={diffPaneTransition}
+            >
+              <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-border/70 bg-sidebar px-3">
+                <span className="truncate text-[12px] font-medium text-foreground/85">
+                  {selectedPath ?? "Select a file"}
+                </span>
+                {diffLoading ? (
+                  <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+                ) : null}
+              </div>
+              <div className="min-h-0 flex-1">
+                {diffError ? (
+                  <div className="px-4 py-4 text-[12px] text-destructive">{diffError}</div>
+                ) : diffFile || diffPatch ? (
+                  <DiffView file={diffFile} patch={diffPatch} path={selectedPath ?? ""} />
+                ) : (
+                  <div className="px-4 py-4 text-[12px] text-muted-foreground/70">
+                    {selectedPath ? "No diff available." : "Select a file to view its diff."}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
       </div>
     </div>
   )

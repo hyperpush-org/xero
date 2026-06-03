@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils"
 import {
   FLOATING_RIGHT_SIDEBAR_TRANSITION,
   SIDEBAR_INSTANT_TRANSITION,
+  useSidebarWidthMotion,
 } from "@/lib/sidebar-motion"
 
 interface FloatingRightSidebarFrameProps {
@@ -18,6 +19,7 @@ interface FloatingRightSidebarFrameProps {
   overlayClassName?: string
   panelClassName?: string
   panelStyle?: CSSProperties
+  isResizing?: boolean
   onOverlayClick?: () => void
 }
 
@@ -30,12 +32,19 @@ export function FloatingRightSidebarFrame({
   overlayClassName,
   panelClassName,
   panelStyle,
+  isResizing = false,
   onOverlayClick,
 }: FloatingRightSidebarFrameProps) {
   const shouldReduceMotion = useReducedMotion()
   const transition = shouldReduceMotion
     ? SIDEBAR_INSTANT_TRANSITION
     : FLOATING_RIGHT_SIDEBAR_TRANSITION
+  const numericWidth = typeof width === "number" ? width : 0
+  const widthMotion = useSidebarWidthMotion(numericWidth, {
+    animate: typeof width === "number",
+    isResizing,
+  })
+  const widthStyle = typeof width === "number" ? widthMotion.style : { width }
 
   return (
     <AnimatePresence>
@@ -56,6 +65,7 @@ export function FloatingRightSidebarFrame({
             aria-label={label}
             className={cn(
               "gpu-layer fixed inset-y-0 right-0 z-50 flex flex-col overflow-hidden border-l border-border/80 bg-sidebar shadow-2xl",
+              typeof width === "number" && widthMotion.islandClassName,
               panelClassName,
             )}
             data-slot="floating-right-sidebar-panel"
@@ -63,7 +73,7 @@ export function FloatingRightSidebarFrame({
             exit={{ x: "100%" }}
             initial={{ x: "100%" }}
             style={{
-              width,
+              ...widthStyle,
               contain: "layout paint style",
               ...panelStyle,
             }}

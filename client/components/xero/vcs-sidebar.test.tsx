@@ -188,6 +188,29 @@ describe('VcsSidebar', () => {
     expect(onLoadDiff).not.toHaveBeenCalled()
   })
 
+  it('uses a width transition when the diff pane collapses after changes clear', () => {
+    const dirtyStatus = makeStatus()
+    const cleanStatus = makeStatus({
+      stagedCount: 0,
+      unstagedCount: 0,
+      untrackedCount: 0,
+      statusCount: 0,
+      additions: 0,
+      deletions: 0,
+      hasChanges: false,
+      entries: [],
+    })
+
+    const { props, rerender } = renderVcsSidebar('', { status: dirtyStatus })
+    const panel = screen.getByLabelText('Source control panel')
+    expect(panel.style.transition).toContain('width')
+
+    rerender(<VcsSidebar {...props} status={cleanStatus} />)
+
+    expect(panel).toHaveStyle({ width: '300px' })
+    expect(panel.style.transition).toContain('width')
+  })
+
   it('opens the floating panel with the shared right-sidebar animation frame', () => {
     const { props, rerender } = renderVcsSidebar('', { open: false })
     expect(screen.queryByLabelText('Source control panel')).not.toBeInTheDocument()
