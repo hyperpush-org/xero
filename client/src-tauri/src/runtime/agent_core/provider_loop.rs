@@ -691,11 +691,28 @@ pub(crate) fn drive_provider_loop(
 }
 
 fn runtime_wait_output_from_tool_result(output: &JsonValue) -> Option<AutonomousRuntimeWaitOutput> {
-    let result = serde_json::from_value::<AutonomousToolResult>(output.clone()).ok()?;
-    match result.output {
-        AutonomousToolOutput::RuntimeWait(output) => Some(output),
-        _ => None,
+    if let Some(output) = output
+        .get("output")
+        .and_then(runtime_wait_output_from_value)
+    {
+        return Some(output);
     }
+    if let Ok(result) = serde_json::from_value::<AutonomousToolResult>(output.clone()) {
+        if let AutonomousToolOutput::RuntimeWait(output) = result.output {
+            return Some(output);
+        }
+    }
+    runtime_wait_output_from_value(output)
+}
+
+fn runtime_wait_output_from_value(output: &JsonValue) -> Option<AutonomousRuntimeWaitOutput> {
+    let mut candidate = output.clone();
+    if let Some(object) = candidate.as_object_mut() {
+        object.remove("modelInstruction");
+        object.remove("waitState");
+        object.remove("xeroCompact");
+    }
+    serde_json::from_value(candidate).ok()
 }
 
 fn fail_closed_if_context_over_budget(
@@ -1000,6 +1017,11 @@ fn registered_model_visible_projection(
     if tool_name.starts_with(AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX) {
         return Some(ModelVisibleProjection::CompactJson {
             format: "mcp_untrusted_summary_json",
+        });
+    }
+    if tool_name == AUTONOMOUS_TOOL_RUNTIME_WAIT {
+        return Some(ModelVisibleProjection::CompactJson {
+            format: "runtime_wait_scheduled_wakeup_json",
         });
     }
 
@@ -2200,6 +2222,9 @@ fn compact_tool_result_output(tool_name: &str, output: &JsonValue) -> JsonValue 
     let Some(actual_output) = nested.or_else(|| output.get("kind").map(|_| output)) else {
         return compact_json_for_model(output, 0);
     };
+    if tool_name == AUTONOMOUS_TOOL_RUNTIME_WAIT {
+        return compact_runtime_wait_output(actual_output);
+    }
     let kind = actual_output
         .get("kind")
         .and_then(JsonValue::as_str)
@@ -2265,13 +2290,45 @@ fn compact_tool_result_output(tool_name: &str, output: &JsonValue) -> JsonValue 
     }
 }
 
+fn compact_runtime_wait_output(output: &JsonValue) -> JsonValue {
+    compact_fields(
+        output,
+        &[
+            "kind",
+            "status",
+            "wakeId",
+            "dueAt",
+            "deadlineAt",
+            "pollIntervalMs",
+            "processId",
+            "reason",
+            "message",
+        ],
+    )
+    .with_field("waitState", json!("scheduled_not_elapsed"))
+    .with_field(
+        "modelInstruction",
+        json!(
+            "This tool result only means the wait was scheduled and the run is pausing. Do not claim the wait elapsed until a later Xero scheduled wakeup fired resume prompt is present."
+        ),
+    )
+}
+
 trait JsonObjectExt {
     fn with_array(self, key: &str, value: Option<JsonValue>) -> JsonValue;
+    fn with_field(self, key: &str, value: JsonValue) -> JsonValue;
 }
 
 impl JsonObjectExt for JsonValue {
     fn with_array(mut self, key: &str, value: Option<JsonValue>) -> JsonValue {
         if let (Some(fields), Some(value)) = (self.as_object_mut(), value) {
+            fields.insert(key.into(), value);
+        }
+        self
+    }
+
+    fn with_field(mut self, key: &str, value: JsonValue) -> JsonValue {
+        if let Some(fields) = self.as_object_mut() {
             fields.insert(key.into(), value);
         }
         self
@@ -5902,6 +5959,7 @@ mod tests {
     };
 
     use crate::db::{configure_connection, database_path_for_repo, migrations::migrations};
+    use crate::runtime::autonomous_tool_runtime::AutonomousRuntimeWaitKind;
     use crate::runtime::DEEPSEEK_PROVIDER_ID;
 
     struct ScriptedProvider {
@@ -6174,6 +6232,106 @@ mod tests {
         assert!(serialized.contains("xeroCompact: schema=xero.model_visible_tool_result.v1"));
         assert!(!serialized.contains("\\n  \\\"name\\\""));
         assert!(serde_json::from_str::<JsonValue>(&serialized).is_err());
+    }
+
+    #[test]
+    fn model_visible_runtime_wait_result_marks_wait_as_scheduled_not_elapsed() {
+        let result = AgentToolResult {
+            tool_call_id: "call-wait".into(),
+            tool_name: AUTONOMOUS_TOOL_RUNTIME_WAIT.into(),
+            ok: true,
+            summary: "Scheduled owned-agent wakeup `wake-1` for 2026-06-02T20:09:43Z.".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_RUNTIME_WAIT,
+                "summary": "Scheduled owned-agent wakeup `wake-1` for 2026-06-02T20:09:43Z.",
+                "commandResult": null,
+                "output": {
+                    "kind": "sleep",
+                    "wakeId": "wake-1",
+                    "status": "scheduled",
+                    "dueAt": "2026-06-02T20:09:43Z",
+                    "deadlineAt": null,
+                    "pollIntervalMs": null,
+                    "processId": null,
+                    "reason": "Wait 10 seconds before inspecting the project",
+                    "resumeContext": {},
+                    "message": "Scheduled owned-agent wakeup `wake-1` for 2026-06-02T20:09:43Z."
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: Some("assistant-1".into()),
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize runtime_wait result");
+        let visible = serde_json::from_str::<JsonValue>(&serialized)
+            .expect("decode runtime_wait model-visible result");
+
+        assert_eq!(visible["output"]["status"], json!("scheduled"));
+        assert_eq!(
+            visible["output"]["waitState"],
+            json!("scheduled_not_elapsed")
+        );
+        assert_eq!(
+            visible["output"]["xeroCompact"]["format"],
+            json!("runtime_wait_scheduled_wakeup_json")
+        );
+        assert!(visible["output"]["modelInstruction"]
+            .as_str()
+            .expect("model instruction")
+            .contains("Do not claim the wait elapsed"));
+    }
+
+    #[test]
+    fn runtime_wait_detector_accepts_persisted_tool_result_shape() {
+        let output = json!({
+            "toolName": AUTONOMOUS_TOOL_RUNTIME_WAIT,
+            "summary": "Scheduled owned-agent wakeup `wake-1` for 2026-06-02T20:33:28Z.",
+            "commandResult": null,
+            "output": {
+                "dueAt": "2026-06-02T20:33:28Z",
+                "kind": "sleep",
+                "message": "Scheduled owned-agent wakeup `wake-1` for 2026-06-02T20:33:28Z.",
+                "reason": "User requested 10-second wait before inspecting the project",
+                "resumeContext": {
+                    "next_action": "inspect_project"
+                },
+                "status": "scheduled",
+                "wakeId": "wake-1"
+            }
+        });
+
+        let wait =
+            runtime_wait_output_from_tool_result(&output).expect("detect persisted runtime wait");
+
+        assert_eq!(wait.wake_id, "wake-1");
+        assert_eq!(wait.kind, AutonomousRuntimeWaitKind::Sleep);
+        assert_eq!(wait.status, "scheduled");
+        assert_eq!(wait.due_at, "2026-06-02T20:33:28Z");
+    }
+
+    #[test]
+    fn runtime_wait_detector_accepts_model_visible_wait_output_shape() {
+        let output = json!({
+            "dueAt": "2026-06-02T20:33:28Z",
+            "kind": "sleep",
+            "message": "Scheduled owned-agent wakeup `wake-1` for 2026-06-02T20:33:28Z.",
+            "modelInstruction": "This tool result only means the wait was scheduled.",
+            "reason": "User requested 10-second wait before inspecting the project",
+            "resumeContext": {},
+            "status": "scheduled",
+            "waitState": "scheduled_not_elapsed",
+            "wakeId": "wake-1",
+            "xeroCompact": {
+                "format": "runtime_wait_scheduled_wakeup_json"
+            }
+        });
+
+        let wait = runtime_wait_output_from_tool_result(&output)
+            .expect("detect model-visible runtime wait");
+
+        assert_eq!(wait.wake_id, "wake-1");
+        assert_eq!(wait.kind, AutonomousRuntimeWaitKind::Sleep);
     }
 
     #[test]

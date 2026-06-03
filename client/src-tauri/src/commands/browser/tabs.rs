@@ -94,6 +94,21 @@ impl BrowserTabs {
         guard.active.clone()
     }
 
+    pub fn active_url(&self) -> Option<String> {
+        let guard = self.inner.lock().ok()?;
+        let active = guard.active.as_ref()?;
+        guard.tabs.get(active).and_then(|tab| tab.url.clone())
+    }
+
+    pub fn url_by_label(&self, label: &str) -> Option<String> {
+        let guard = self.inner.lock().ok()?;
+        guard
+            .tabs
+            .values()
+            .find(|tab| tab.label == label)
+            .and_then(|tab| tab.url.clone())
+    }
+
     pub fn tab_label(&self, id: &str) -> CommandResult<String> {
         let guard = self.lock()?;
         guard

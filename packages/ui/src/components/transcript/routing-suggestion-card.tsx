@@ -15,6 +15,7 @@ export type RoutingSuggestionDecision =
       targetLabel?: string | null
       reason?: string | null
       summary?: string | null
+      resolutionMode?: 'manual' | 'automatic'
     }
   | {
       kind: 'decline'
@@ -24,10 +25,15 @@ export type RoutingSuggestionDecision =
       targetLabel?: string | null
       reason?: string | null
       summary?: string | null
+      resolutionMode?: 'manual' | 'automatic'
     }
 
 export interface RoutingSuggestionDispatchValue {
   resolveRoutingSuggestion: (turnId: string, decision: RoutingSuggestionDecision) => void
+  getRoutingSuggestionActionAvailability?: (turnId: string) => {
+    disabled: boolean
+    reason?: string | null
+  }
 }
 
 const RoutingSuggestionDispatchContext = createContext<RoutingSuggestionDispatchValue | null>(null)
@@ -76,6 +82,7 @@ export interface RoutingSuggestionCardProps {
   acceptedTarget: RuntimeAgentIdDto | null
   acceptedTargetAgentDefinitionId: string | null
   acceptedTargetLabel: string | null
+  resolutionMode?: 'manual' | 'automatic' | null
 }
 
 export function RoutingSuggestionCard({
@@ -91,8 +98,13 @@ export function RoutingSuggestionCard({
   acceptedTarget,
   acceptedTargetAgentDefinitionId,
   acceptedTargetLabel,
+  resolutionMode = null,
 }: RoutingSuggestionCardProps) {
   const dispatch = useRoutingSuggestionDispatch()
+  const actionAvailability =
+    dispatch?.getRoutingSuggestionActionAvailability?.(turnId) ?? null
+  const actionsDisabled = Boolean(!dispatch || actionAvailability?.disabled)
+  const disabledReason = actionAvailability?.reason?.trim() || undefined
   const TargetIcon = useMemo(() => iconForTarget(targetAgentId), [targetAgentId])
   const displayTargetLabel =
     targetLabel?.trim() ||
@@ -105,7 +117,7 @@ export function RoutingSuggestionCard({
     (acceptedTarget ? getRuntimeAgentLabel(acceptedTarget) : null)
 
   const handleAccept = useCallback(() => {
-    if (isResolved || !dispatch) return
+    if (isResolved || !dispatch || actionsDisabled) return
     dispatch.resolveRoutingSuggestion(turnId, {
       kind: 'accept',
       targetAgentId,
@@ -117,6 +129,7 @@ export function RoutingSuggestionCard({
     })
   }, [
     dispatch,
+    actionsDisabled,
     displayTargetLabel,
     isResolved,
     reason,
@@ -128,7 +141,7 @@ export function RoutingSuggestionCard({
   ])
 
   const handleDecline = useCallback(() => {
-    if (isResolved || !dispatch) return
+    if (isResolved || !dispatch || actionsDisabled) return
     dispatch.resolveRoutingSuggestion(turnId, {
       kind: 'decline',
       targetAgentId,
@@ -140,6 +153,7 @@ export function RoutingSuggestionCard({
     })
   }, [
     dispatch,
+    actionsDisabled,
     displayTargetLabel,
     isResolved,
     reason,
@@ -153,73 +167,70 @@ export function RoutingSuggestionCard({
   return (
     <div
       className={cn(
-        'rounded-md border border-l-2 border-l-primary/70 border-border/50 bg-card/40 px-3 py-2.5',
-        'flex flex-col gap-2.5',
+        'rounded-md border border-border/55 bg-card/45 px-2.5 py-2 shadow-sm shadow-black/5',
+        'transition-colors hover:border-border/75 hover:bg-card/55',
       )}
       data-routing-turn-id={turnId}
       data-resolved={isResolved ? 'true' : 'false'}
     >
-      <div className="flex items-start gap-2">
-        <Compass
-          aria-hidden="true"
-          className={cn(
-            'mt-0.5 h-3.5 w-3.5 shrink-0',
-            isResolved ? 'text-muted-foreground/60' : 'text-primary/80',
-          )}
-        />
-        <div className="min-w-0 flex-1">
-          <div className="text-[12px] font-medium text-foreground">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span
+            className={cn(
+              'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border',
+              isResolved
+                ? 'border-border/60 bg-muted/35 text-muted-foreground'
+                : 'border-primary/25 bg-primary/10 text-primary',
+            )}
+          >
+            <Compass aria-hidden="true" className="h-3.5 w-3.5" />
+          </span>
+          <div className="min-w-0 text-[12.5px] font-medium leading-snug text-foreground">
             This task may be better suited for {targetDescription}
           </div>
-          {reason ? (
-            <div className="mt-1 text-[12px] leading-snug text-muted-foreground">
-              {reason}
-            </div>
-          ) : null}
-          {summary ? (
-            <div className="mt-1.5 rounded border border-border/40 bg-muted/30 px-2 py-1 text-[11.5px] leading-snug text-muted-foreground">
-              <span className="font-medium text-foreground/80">Carry over: </span>
-              {summary}
-            </div>
-          ) : null}
         </div>
-      </div>
 
-      {isResolved ? (
-        <div className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
-          {acceptedTarget ? (
-            <>
-              <ArrowRightCircle className="h-3.5 w-3.5" aria-hidden />
-              <span>
-                Switched to {resolvedTargetLabel ?? getRuntimeAgentLabel(acceptedTarget)} and continued.
-              </span>
-            </>
-          ) : (
-            <span>Continued with Agent.</span>
-          )}
-        </div>
-      ) : (
-        <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            size="sm"
-            onClick={handleAccept}
-            className="h-7 gap-1.5 text-[12px]"
-          >
-            <TargetIcon className="h-3.5 w-3.5" aria-hidden />
-            Switch to {displayTargetLabel}
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={handleDecline}
-            className="h-7 text-[12px]"
-          >
-            Continue with Agent
-          </Button>
-        </div>
-      )}
+        {isResolved ? (
+          <div className="flex shrink-0 items-center gap-1.5 rounded-md border border-border/45 bg-muted/25 px-2 py-1 text-[11.5px] text-muted-foreground">
+            {acceptedTarget ? (
+              <>
+                <ArrowRightCircle className="h-3.5 w-3.5" aria-hidden />
+                <span>
+                  {resolutionMode === 'automatic' ? 'Auto-switched' : 'Switched'} to{' '}
+                  {resolvedTargetLabel ?? getRuntimeAgentLabel(acceptedTarget)} and continued.
+                </span>
+              </>
+            ) : (
+              <span>Continued with Agent.</span>
+            )}
+          </div>
+        ) : (
+          <div className="flex shrink-0 items-center gap-1.5 sm:justify-end">
+            <Button
+              type="button"
+              size="sm"
+              onClick={handleAccept}
+              disabled={actionsDisabled}
+              title={disabledReason}
+              className="h-7 gap-1.5 px-2.5 text-[12px]"
+            >
+              <TargetIcon className="h-3.5 w-3.5" aria-hidden />
+              Switch to {displayTargetLabel}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={handleDecline}
+              disabled={actionsDisabled}
+              title={disabledReason}
+              className="h-7 px-2.5 text-[12px]"
+            >
+              Continue with Agent
+            </Button>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

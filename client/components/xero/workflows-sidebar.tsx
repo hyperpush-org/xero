@@ -828,15 +828,15 @@ function WorkflowsList({
   }
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-thin">
-      {definitions.length === 0 && !hasQuery ? (
-        <WorkflowTemplates
-          selectedTemplateId={selectedWorkflowTemplateId}
-          onSelectWorkflowTemplate={onSelectWorkflowTemplate}
-          onCreateWorkflowFromTemplate={onCreateWorkflowFromTemplate}
-        />
-      ) : (
-        <ul className="flex flex-col py-1">
-          {definitions.map((definition) => {
+      <ul className="flex flex-col py-1">
+        {definitions.length === 0 && !hasQuery ? (
+          <WorkflowTemplateRows
+            selectedTemplateId={selectedWorkflowTemplateId}
+            onSelectWorkflowTemplate={onSelectWorkflowTemplate}
+            onCreateWorkflowFromTemplate={onCreateWorkflowFromTemplate}
+          />
+        ) : (
+          definitions.map((definition) => {
             const latestRun = runs.find((run) => run.workflowId === definition.id) ?? null
             return (
               <li key={definition.id}>
@@ -849,17 +849,17 @@ function WorkflowsList({
                 />
               </li>
             )
-          })}
-        </ul>
-      )}
-      {definitions.length > 0 ? (
-        <WorkflowTemplates
-          compact
-          selectedTemplateId={selectedWorkflowTemplateId}
-          onSelectWorkflowTemplate={onSelectWorkflowTemplate}
-          onCreateWorkflowFromTemplate={onCreateWorkflowFromTemplate}
-        />
-      ) : null}
+          })
+        )}
+        {definitions.length > 0 ? (
+          <WorkflowTemplateRows
+            compact
+            selectedTemplateId={selectedWorkflowTemplateId}
+            onSelectWorkflowTemplate={onSelectWorkflowTemplate}
+            onCreateWorkflowFromTemplate={onCreateWorkflowFromTemplate}
+          />
+        ) : null}
+      </ul>
       {runs.length > 0 ? (
         <WorkflowRunsTimeline
           runs={runs}
@@ -948,7 +948,7 @@ function LibraryEntityRow({
   )
 }
 
-function WorkflowTemplates({
+function WorkflowTemplateRows({
   compact = false,
   selectedTemplateId = null,
   onSelectWorkflowTemplate,
@@ -960,17 +960,10 @@ function WorkflowTemplates({
   onCreateWorkflowFromTemplate?: (templateId: WorkflowTemplateIdDto) => void
 }) {
   return (
-    <section className={cn("border-b border-border/60", compact ? "py-1" : "py-2")}>
-      <div className="flex items-center gap-2 px-3 py-2">
-        <WorkflowIcon className="h-3.5 w-3.5 text-muted-foreground/70" aria-hidden="true" />
-        <h3 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-          Templates
-        </h3>
-      </div>
-      <div className="flex flex-col">
-        {WORKFLOW_TEMPLATE_LIBRARY.map((template) => (
+    <>
+      {WORKFLOW_TEMPLATE_LIBRARY.map((template) => (
+        <li key={template.id}>
           <LibraryEntityRow
-            key={template.id}
             name={template.name}
             description={compact ? undefined : template.description}
             icon={Sparkles}
@@ -1004,9 +997,9 @@ function WorkflowTemplates({
               />
             }
           />
-        ))}
-      </div>
-    </section>
+        </li>
+      ))}
+    </>
   )
 }
 

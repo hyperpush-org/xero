@@ -4746,7 +4746,7 @@ describe('useXeroDesktopState', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry state' }))
 
     await waitFor(() => expect(setup.subscribeRuntimeStream).toHaveBeenCalledTimes(2))
-    await waitFor(() => expect(screen.getByTestId('stream-status')).toHaveTextContent('subscribing'))
+    await waitFor(() => expect(screen.getByTestId('stream-status')).toHaveTextContent('live'))
 
     act(() => {
       setup.emitRuntimeStreamError(

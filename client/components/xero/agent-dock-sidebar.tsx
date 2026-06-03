@@ -83,6 +83,7 @@ export interface AgentDockSidebarProps {
   accountAvatarUrl?: string | null
   accountLogin?: string | null
   toolCallGroupingPreference?: AgentRuntimeProps["toolCallGroupingPreference"]
+  agentRoutingAutoSwitchEnabled?: AgentRuntimeProps["agentRoutingAutoSwitchEnabled"]
   customAgentDefinitions?: readonly AgentDefinitionSummaryDto[]
   onOpenAgentManagement?: () => void
   onCreateAgentByHand?: AgentRuntimeProps["onCreateAgentByHand"]

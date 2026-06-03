@@ -60,7 +60,11 @@ import {
   type BrowserAgentContextRequest,
   type BrowserToolTheme,
 } from "./browser-tool-injection"
-import { BrowserSidebar, createBrowserEventCoalescer } from "./browser-sidebar"
+import {
+  BrowserSidebar,
+  collectBrowserOverlayOcclusionRects,
+  createBrowserEventCoalescer,
+} from "./browser-sidebar"
 
 // jsdom in this project ships a localStorage object whose methods aren't
 // functions; install a minimal in-memory shim so the component's first-run
@@ -96,6 +100,38 @@ function installLocalStorage() {
 
 let cookieStorage: Storage | null = null
 
+function rect({
+  bottom,
+  height,
+  left,
+  right,
+  top,
+  width,
+  x = left,
+  y = top,
+}: {
+  bottom: number
+  height: number
+  left: number
+  right: number
+  top: number
+  width: number
+  x?: number
+  y?: number
+}): DOMRect {
+  return {
+    bottom,
+    height,
+    left,
+    right,
+    top,
+    width,
+    x,
+    y,
+    toJSON: () => ({}),
+  } as DOMRect
+}
+
 beforeEach(() => {
   cookieStorage = installLocalStorage()
 })
@@ -109,6 +145,114 @@ afterEach(() => {
 })
 
 describe("BrowserSidebar", () => {
+  it("collects dropdown intersections as browser webview occlusion rects", () => {
+    const viewport = document.createElement("div")
+    const dropdown = document.createElement("div")
+    const hiddenDropdown = document.createElement("div")
+
+    dropdown.dataset.slot = "dropdown-menu-content"
+    hiddenDropdown.dataset.slot = "dropdown-menu-content"
+    hiddenDropdown.style.display = "none"
+
+    viewport.getBoundingClientRect = vi.fn(() =>
+      rect({
+        bottom: 400,
+        height: 300,
+        left: 100,
+        right: 500,
+        top: 100,
+        width: 400,
+      }),
+    )
+    dropdown.getBoundingClientRect = vi.fn(() =>
+      rect({
+        bottom: 160,
+        height: 70,
+        left: 80,
+        right: 180,
+        top: 90,
+        width: 100,
+      }),
+    )
+    hiddenDropdown.getBoundingClientRect = vi.fn(() =>
+      rect({
+        bottom: 260,
+        height: 70,
+        left: 120,
+        right: 220,
+        top: 190,
+        width: 100,
+      }),
+    )
+
+    document.body.append(viewport, dropdown, hiddenDropdown)
+
+    expect(collectBrowserOverlayOcclusionRects(viewport, 6)).toEqual([
+      { x: 0, y: 0, width: 82, height: 68 },
+    ])
+  })
+
+  it("sends overlay occlusion rects to the native browser webview", async () => {
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "xero-browser-tab-1",
+        title: "Example",
+        url: "https://example.com/",
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+    registerInvoke("browser_set_occlusion_regions", async () => null)
+
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function () {
+      if ((this as HTMLElement).dataset.slot === "dropdown-menu-content") {
+        return rect({
+          bottom: 260,
+          height: 100,
+          left: 900,
+          right: 1160,
+          top: 160,
+          width: 260,
+        })
+      }
+
+      return rect({
+        bottom: 800,
+        height: 600,
+        left: 1000,
+        right: 1600,
+        top: 200,
+        width: 600,
+      })
+    })
+
+    render(<BrowserSidebar open />)
+
+    const input = (await screen.findByLabelText("Address")) as HTMLInputElement
+    await waitFor(() => expect(input.value).toBe("https://example.com/"))
+
+    const dropdown = document.createElement("div")
+    dropdown.dataset.slot = "dropdown-menu-content"
+
+    await act(async () => {
+      document.body.appendChild(dropdown)
+      await new Promise((resolve) => window.requestAnimationFrame(resolve))
+    })
+
+    await waitFor(() => {
+      const occlusionCall = invokeCalls
+        .filter((call) => call.command === "browser_set_occlusion_regions")
+        .at(-1)
+      expect(occlusionCall?.args).toEqual({
+        tabId: "tab-1",
+        rects: [{ x: 0, y: 0, width: 162, height: 68 }],
+      })
+    })
+  })
+
   it("coalesces repeated browser events by tab before applying them", () => {
     let flush: () => void = () => undefined
     const urlUpdates: string[] = []
@@ -226,6 +370,66 @@ describe("BrowserSidebar", () => {
     })
   })
 
+  it("submits localhost URLs as IPv4 loopback for the embedded WebView", async () => {
+    registerInvoke("browser_tab_list", async () => [])
+    const shownUrls: string[] = []
+    registerInvoke("browser_show", async (args) => {
+      shownUrls.push(String((args as { url?: string })?.url ?? ""))
+      return {
+        id: "tab-1",
+        label: "xero-browser-tab-1",
+        title: null,
+        url: String((args as { url?: string })?.url ?? ""),
+        loading: true,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      }
+    })
+
+    render(<BrowserSidebar open />)
+
+    const input = await screen.findByLabelText("Address")
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: "http://localhost:4200/" } })
+    const form = input.closest("form")!
+    fireEvent.submit(form)
+
+    await waitFor(() => {
+      expect(shownUrls).toEqual(["http://127.0.0.1:4200/"])
+    })
+  })
+
+  it("treats bare localhost ports as URLs instead of search queries", async () => {
+    registerInvoke("browser_tab_list", async () => [])
+    const shownUrls: string[] = []
+    registerInvoke("browser_show", async (args) => {
+      shownUrls.push(String((args as { url?: string })?.url ?? ""))
+      return {
+        id: "tab-1",
+        label: "xero-browser-tab-1",
+        title: null,
+        url: String((args as { url?: string })?.url ?? ""),
+        loading: true,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      }
+    })
+
+    render(<BrowserSidebar open />)
+
+    const input = await screen.findByLabelText("Address")
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: "localhost:4200" } })
+    const form = input.closest("form")!
+    fireEvent.submit(form)
+
+    await waitFor(() => {
+      expect(shownUrls).toEqual(["http://127.0.0.1:4200/"])
+    })
+  })
+
   it("opens a detected project app from the browser header", async () => {
     registerInvoke("browser_tab_list", async () => [])
     const shownUrls: string[] = []
@@ -248,9 +452,9 @@ describe("BrowserSidebar", () => {
         open
         projectBrowserTargets={[
           {
-            id: "browser-app:http://localhost:5173/",
+            id: "browser-app:http://127.0.0.1:5173/",
             label: "web · localhost:5173",
-            url: "http://localhost:5173/",
+            url: "http://127.0.0.1:5173/",
             source: "web",
             detectedAt: 1,
           },
@@ -261,7 +465,7 @@ describe("BrowserSidebar", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Open project app in browser" }))
 
     await waitFor(() => {
-      expect(shownUrls).toEqual(["http://localhost:5173/"])
+      expect(shownUrls).toEqual(["http://127.0.0.1:5173/"])
     })
   })
 
@@ -292,7 +496,7 @@ describe("BrowserSidebar", () => {
     )
 
     await waitFor(() => {
-      expect(shownUrls).toEqual(["http://localhost:5173/"])
+      expect(shownUrls).toEqual(["http://127.0.0.1:5173/"])
       expect(onConsumed).toHaveBeenCalledWith("open-1")
     })
   })
@@ -334,7 +538,7 @@ describe("BrowserSidebar", () => {
     expect(shownUrls).toEqual([])
 
     await waitFor(() => {
-      expect(shownUrls).toEqual(["http://localhost:5173/"])
+      expect(shownUrls).toEqual(["http://127.0.0.1:5173/"])
       expect(onConsumed).toHaveBeenCalledWith("open-while-closed")
     })
   })

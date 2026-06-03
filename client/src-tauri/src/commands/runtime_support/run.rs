@@ -1396,7 +1396,7 @@ fn persist_owned_runtime_run(
     )
 }
 
-fn runtime_control_input_from_active(
+pub(crate) fn runtime_control_input_from_active(
     active: &RuntimeRunActiveControlSnapshotRecord,
 ) -> RuntimeRunControlInputDto {
     RuntimeRunControlInputDto {

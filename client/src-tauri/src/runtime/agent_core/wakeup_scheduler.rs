@@ -13,7 +13,7 @@ use super::*;
 use crate::{
     commands::runtime_support::{
         agent_provider_config_identity, ensure_owned_runtime_provider_turn_capabilities,
-        resolve_owned_agent_provider_config,
+        resolve_owned_agent_provider_config, runtime_control_input_from_active,
     },
     runtime::{
         AutonomousProcessManagerOutput, AutonomousProcessManagerRequest, AutonomousProcessMetadata,
@@ -204,8 +204,14 @@ fn drive_scheduled_wakeup<R: Runtime + 'static>(
                 continue;
             }
             WakeupEvaluation::Resume(resume) => {
-                if resume_scheduled_wakeup(&app, &repo_root, &record, resume, &mut tool_runtime)? {
-                    return Ok(());
+                match resume_scheduled_wakeup(&app, &repo_root, &record, resume, &mut tool_runtime)
+                {
+                    Ok(true) => return Ok(()),
+                    Ok(false) => {}
+                    Err(error) => {
+                        persist_scheduled_wakeup_resume_failure(&repo_root, &record, &error);
+                        return Err(error);
+                    }
                 }
                 sleep_for_ms(1_000);
                 continue;
@@ -429,38 +435,50 @@ fn resume_scheduled_wakeup<R: Runtime + 'static>(
     if runtime.is_active(&record.run_id)? {
         return Ok(false);
     }
-    match resume.status {
-        project_store::AgentRunWakeupStatus::Fired => {
-            if !project_store::mark_agent_run_wakeup_fired(
-                repo_root,
-                &record.project_id,
-                &record.run_id,
-                &record.wake_id,
-                &now_timestamp(),
-            )? {
-                return Ok(true);
-            }
-        }
-        status => {
-            project_store::mark_agent_run_wakeup_status(
-                repo_root,
-                &record.project_id,
-                &record.run_id,
-                &record.wake_id,
-                status,
-                resume.diagnostic.clone(),
-                &now_timestamp(),
-            )?;
-        }
+
+    let agent_run = project_store::load_agent_run(repo_root, &record.project_id, &record.run_id)?;
+    let runtime_run = project_store::load_runtime_run(
+        repo_root,
+        &record.project_id,
+        &agent_run.run.agent_session_id,
+    )?
+    .ok_or_else(|| {
+        CommandError::system_fault(
+            "agent_run_wakeup_runtime_run_missing",
+            format!(
+                "Xero could not resume scheduled wakeup `{}` because the durable runtime run for session `{}` is missing.",
+                record.wake_id, agent_run.run.agent_session_id
+            ),
+        )
+    })?;
+    if runtime_run.run.run_id != record.run_id {
+        return Err(CommandError::system_fault(
+            "agent_run_wakeup_runtime_run_mismatch",
+            format!(
+                "Xero could not resume scheduled wakeup `{}` because the durable runtime run `{}` does not match paused agent run `{}`.",
+                record.wake_id, runtime_run.run.run_id, record.run_id
+            ),
+        ));
     }
 
-    let provider_config = resolve_owned_agent_provider_config(app, state.inner(), None)?;
+    let controls = runtime_control_input_from_active(&runtime_run.controls.active);
+    let provider_config = resolve_owned_agent_provider_config(app, state.inner(), Some(&controls))?;
     let (provider_id, model_id) = agent_provider_config_identity(&provider_config);
+    let requested_profile_id = controls
+        .provider_profile_id
+        .as_deref()
+        .unwrap_or(provider_id.as_str());
+    let requested_profile_id = requested_profile_id.trim();
+    let requested_profile_id = if requested_profile_id.is_empty() {
+        provider_id.as_str()
+    } else {
+        requested_profile_id
+    };
     let provider_preflight = ensure_owned_runtime_provider_turn_capabilities(
         app,
         state.inner(),
         state.owned_agent_provider_config_override().is_none(),
-        &provider_id,
+        requested_profile_id,
         &provider_id,
         &model_id,
         &[],
@@ -471,6 +489,8 @@ fn resume_scheduled_wakeup<R: Runtime + 'static>(
             scheduled_wakeup_tool_runtime(app, state.inner(), &record.project_id, &provider_config)?
         }
     };
+    let resume_status = resume.status;
+    let resume_diagnostic = resume.diagnostic.clone();
     let resume_payload = json!({
         "schema": "xero.agent_run_wakeup.resume.v1",
         "wakeId": record.wake_id,
@@ -479,7 +499,7 @@ fn resume_scheduled_wakeup<R: Runtime + 'static>(
         "reason": record.payload().ok().and_then(|payload| payload.get("reason").cloned()),
         "dueAt": record.due_at,
         "deadlineAt": record.deadline_at,
-        "diagnostic": resume.diagnostic,
+        "diagnostic": resume_diagnostic.clone(),
         "observation": resume.observation,
     });
     let prompt = render_scheduled_wakeup_prompt(&resume_payload)?;
@@ -502,7 +522,114 @@ fn resume_scheduled_wakeup<R: Runtime + 'static>(
         }),
     };
     runtime.continue_run(continuation, DesktopRunDriveMode::Background)?;
+    if let Err(error) =
+        mark_scheduled_wakeup_resumed(repo_root, record, resume_status, resume_diagnostic)
+    {
+        eprintln!(
+            "[agent-wakeup] could not mark scheduled wakeup `{}` as resumed: {}",
+            record.wake_id, error.message
+        );
+    }
     Ok(true)
+}
+
+fn mark_scheduled_wakeup_resumed(
+    repo_root: &Path,
+    record: &project_store::AgentRunWakeupRecord,
+    status: project_store::AgentRunWakeupStatus,
+    diagnostic: Option<project_store::AgentRunDiagnosticRecord>,
+) -> CommandResult<()> {
+    match status {
+        project_store::AgentRunWakeupStatus::Fired => {
+            project_store::mark_agent_run_wakeup_fired(
+                repo_root,
+                &record.project_id,
+                &record.run_id,
+                &record.wake_id,
+                &now_timestamp(),
+            )?;
+        }
+        status => {
+            project_store::mark_agent_run_wakeup_status(
+                repo_root,
+                &record.project_id,
+                &record.run_id,
+                &record.wake_id,
+                status,
+                diagnostic,
+                &now_timestamp(),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn persist_scheduled_wakeup_resume_failure(
+    repo_root: &Path,
+    record: &project_store::AgentRunWakeupRecord,
+    error: &CommandError,
+) {
+    let diagnostic = project_store::AgentRunDiagnosticRecord {
+        code: "agent_run_wakeup_resume_failed".into(),
+        message: format!(
+            "Scheduled wakeup `{}` reached its wake condition, but Xero could not resume the run: {}",
+            record.wake_id, error.message
+        ),
+    };
+    let now = now_timestamp();
+    let _ = project_store::mark_agent_run_wakeup_status(
+        repo_root,
+        &record.project_id,
+        &record.run_id,
+        &record.wake_id,
+        project_store::AgentRunWakeupStatus::Failed,
+        Some(diagnostic.clone()),
+        &now,
+    );
+    let stop_reason = stop_reason_for_error(error);
+    let _ = record_state_transition(
+        repo_root,
+        &record.project_id,
+        &record.run_id,
+        AgentStateTransition {
+            from: Some(AgentRunState::ScheduledWait),
+            to: AgentRunState::Blocked,
+            reason: "Scheduled wakeup could not resume the owned-agent run.",
+            stop_reason: Some(stop_reason),
+            extra: Some(json!({
+                "wakeId": record.wake_id,
+                "code": error.code,
+                "message": error.message,
+                "retryable": error.retryable,
+            })),
+        },
+    );
+    let _ = append_event(
+        repo_root,
+        &record.project_id,
+        &record.run_id,
+        AgentRunEventKind::RunFailed,
+        json!({
+            "code": diagnostic.code,
+            "message": diagnostic.message,
+            "retryable": error.retryable,
+            "state": AgentRunState::Blocked.as_str(),
+            "stopReason": stop_reason.as_str(),
+            "wakeId": record.wake_id,
+            "resumeError": {
+                "code": error.code,
+                "message": error.message,
+            },
+        }),
+    );
+    let _ = project_store::update_agent_run_status(
+        repo_root,
+        &record.project_id,
+        &record.run_id,
+        AgentRunStatus::Failed,
+        Some(diagnostic),
+        &now,
+    );
 }
 
 fn scheduled_wakeup_tool_runtime<R: Runtime>(
@@ -535,7 +662,7 @@ fn render_scheduled_wakeup_prompt(payload: &JsonValue) -> CommandResult<String> 
         )
     })?;
     Ok(format!(
-        "Xero scheduled wakeup fired. This is runtime/developer context, not a new user request. Continue the prior task using this wakeup observation, respect all existing user instructions and tool policy, and do not claim the user sent this message.\n\n```json\n{serialized}\n```"
+        "Internal Xero scheduled wakeup: the previous runtime_wait has now elapsed or reached its wake condition. This is runtime/developer context, not a new user request. Continue the prior task using this wakeup observation, respect all existing user instructions and tool policy, and do not quote, summarize, or expose this wakeup payload to the user.\n\n```json\n{serialized}\n```"
     ))
 }
 

@@ -152,6 +152,33 @@ describe("Composer", () => {
 		expect(onThinkingChange).toHaveBeenCalledWith("high");
 	});
 
+	it("keeps the inline model and thinking selector bounded", () => {
+		renderComposer({
+			modelGroups: [
+				{
+					id: "models",
+					options: [{ id: "grok", label: "Grok 4.3" }],
+				},
+			],
+			selectedModelId: "grok",
+			thinkingOptions: [{ id: "medium", label: "Medium" }],
+			selectedThinkingId: "medium",
+			onThinkingChange: vi.fn(),
+		});
+
+		const selector = screen.getByRole("combobox", {
+			name: "Model and thinking selector",
+		});
+		const labelWrapper = selector.children.item(1);
+
+		expect(selector).toHaveClass("max-w-72");
+		expect(selector).not.toHaveClass("flex-1");
+		expect(selector).toHaveTextContent("Grok 4.3");
+		expect(selector).toHaveTextContent("Medium");
+		expect(labelWrapper).toHaveClass("flex-1");
+		expect(labelWrapper).not.toHaveClass("line-clamp-1");
+	});
+
 	it("toggles visible dictation from the composer shortcut and renders the voice meter", async () => {
 		const toggle = vi.fn(async () => undefined);
 		renderComposer({

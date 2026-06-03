@@ -762,7 +762,7 @@ pub trait BrowserExecutor: Send + Sync + std::fmt::Debug {
     ) -> CommandResult<AutonomousBrowserOutput>;
 }
 
-pub fn execute_action_with_app<R: Runtime>(
+pub fn execute_action_with_app<R: Runtime + 'static>(
     app: &AppHandle<R>,
     state: &DesktopState,
     action: AutonomousBrowserAction,
@@ -2157,10 +2157,7 @@ fn execute_native_cdp_action(
             ..
         } => {
             let selector = native_verified_selector_from_selector_or_ref(
-                native_cdp,
-                selector,
-                ref_id,
-                automation,
+                native_cdp, selector, ref_id, automation,
             )?;
             native_cdp.scroll(None, selector.as_deref(), x, y)
         }
@@ -2171,10 +2168,7 @@ fn execute_native_cdp_action(
             ..
         } => {
             let selector = native_verified_selector_from_selector_or_ref(
-                native_cdp,
-                selector,
-                ref_id,
-                automation,
+                native_cdp, selector, ref_id, automation,
             )?;
             native_cdp.press_key(None, selector.as_deref(), &key)
         }
@@ -2197,7 +2191,10 @@ fn execute_native_cdp_action(
             let snapshot = automation.store_snapshot_for_engine(raw.data, mode, "native_cdp")?;
             let ref_count = snapshot["refs"].as_array().map(Vec::len).unwrap_or(0);
             Ok(NativeCdpActionResult::success(
-                format!("Captured native CDP browser snapshot v{} with {ref_count} refs.", snapshot["version"]),
+                format!(
+                    "Captured native CDP browser snapshot v{} with {ref_count} refs.",
+                    snapshot["version"]
+                ),
                 snapshot,
                 raw.current_url,
             ))
@@ -2313,13 +2310,12 @@ fn execute_native_cdp_action(
             let selector = native_verified_selector_from_selector_or_ref(
                 native_cdp, selector, ref_id, automation,
             )?;
-            let target_selector =
-                native_verified_selector_from_selector_or_ref(
-                    native_cdp,
-                    target_selector,
-                    target_ref_id,
-                    automation,
-                )?;
+            let target_selector = native_verified_selector_from_selector_or_ref(
+                native_cdp,
+                target_selector,
+                target_ref_id,
+                automation,
+            )?;
             native_cdp.drag(
                 None,
                 selector.as_deref(),
@@ -2378,15 +2374,7 @@ fn execute_native_cdp_action(
             scale,
         } => {
             let selector = optional_selector_from_selector_or_ref(selector, ref_id, automation)?;
-            native_cdp.zoom_region(
-                session_id,
-                selector.as_deref(),
-                x,
-                y,
-                width,
-                height,
-                scale,
-            )
+            native_cdp.zoom_region(session_id, selector.as_deref(), x, y, width, height, scale)
         }
         AutonomousBrowserAction::WaitForSelector {
             selector,
@@ -2497,10 +2485,7 @@ fn execute_native_cdp_action(
                 .cloned()
                 .unwrap_or(JsonValue::Null);
             if let Some(key) = key {
-                storage = storage
-                    .get(&key)
-                    .cloned()
-                    .unwrap_or(JsonValue::Null);
+                storage = storage.get(&key).cloned().unwrap_or(JsonValue::Null);
             }
             Ok(NativeCdpActionResult::success(
                 "Read native CDP browser storage.",
@@ -2548,18 +2533,20 @@ fn execute_native_cdp_action(
             native_cdp.state_restore(None, snapshot, navigate.unwrap_or(false))
         }
         AutonomousBrowserAction::FindBest {
-            intent,
-            text,
-            role,
-            ..
+            intent, text, role, ..
         } => {
             let cache_key = "native_cdp_default";
             let cached_selectors = automation
                 .get_cached_action(cache_key, &intent)?
                 .map(|entry| entry.selector_candidates)
                 .unwrap_or_default();
-            let result =
-                native_cdp.find_best(None, &intent, text.as_deref(), role.as_deref(), &cached_selectors)?;
+            let result = native_cdp.find_best(
+                None,
+                &intent,
+                text.as_deref(),
+                role.as_deref(),
+                &cached_selectors,
+            )?;
             if let Some(node) = result.data.get("node") {
                 let selectors = selector_candidates_for_node(node);
                 if !selectors.is_empty() {
@@ -2569,7 +2556,8 @@ fn execute_native_cdp_action(
                         .and_then(JsonValue::as_u64)
                         .unwrap_or(1)
                         .min(100) as u8;
-                    let _ = automation.put_cached_action(cache_key, &intent, selectors, confidence)?;
+                    let _ =
+                        automation.put_cached_action(cache_key, &intent, selectors, confidence)?;
                 }
             }
             Ok(result)
@@ -2597,10 +2585,7 @@ fn execute_native_cdp_action(
             None,
         )),
         AutonomousBrowserAction::Act {
-            intent,
-            text,
-            role,
-            ..
+            intent, text, role, ..
         } => execute_native_semantic_act(native_cdp, automation, &intent, text, role),
         AutonomousBrowserAction::AnalyzeForm {
             selector, ref_id, ..
@@ -2631,7 +2616,9 @@ fn execute_native_cdp_action(
             session_id,
             prompt_text,
         } => native_cdp.dialog_handle(session_id, true, Some(prompt_text)),
-        AutonomousBrowserAction::DownloadList { session_id } => native_cdp.download_list(session_id),
+        AutonomousBrowserAction::DownloadList { session_id } => {
+            native_cdp.download_list(session_id)
+        }
         AutonomousBrowserAction::DownloadSave {
             session_id,
             guid,
@@ -2749,11 +2736,11 @@ fn execute_native_cdp_action(
         } => native_cdp.select_frame(session_id, frame_id, name, url_contains, index),
         AutonomousBrowserAction::FrameState { session_id } => native_cdp.frame_state(session_id),
         AutonomousBrowserAction::DebugBundle {
-            include_screenshot,
-            ..
+            include_screenshot, ..
         } => native_cdp.debug_bundle(None, include_screenshot.unwrap_or(true)),
         AutonomousBrowserAction::ExportBundle { bundle_json } => {
-            let tuple = browser_export_bundle_action(automation, context, bundle_json, "native_cdp")?;
+            let tuple =
+                browser_export_bundle_action(automation, context, bundle_json, "native_cdp")?;
             Ok(native_result_from_tuple(tuple, None))
         }
         AutonomousBrowserAction::ValidateBundle { bundle_json } => {
@@ -2801,7 +2788,8 @@ fn execute_native_cdp_action(
             id,
             sensitive_mode,
         } => {
-            let tuple = browser_recording_action(automation, context, &command, id, sensitive_mode)?;
+            let tuple =
+                browser_recording_action(automation, context, &command, id, sensitive_mode)?;
             Ok(native_result_from_tuple(tuple, None))
         }
         AutonomousBrowserAction::HarExport { session_id } => native_cdp.export_har(session_id),
@@ -2909,7 +2897,8 @@ fn execute_native_cdp_action(
             batch_json,
             name,
         } => {
-            let tuple = browser_generate_test_action(automation, context, recording_id, batch_json, name)?;
+            let tuple =
+                browser_generate_test_action(automation, context, recording_id, batch_json, name)?;
             Ok(native_result_from_tuple(tuple, None))
         }
         AutonomousBrowserAction::HarnessExtensionContract => Ok(NativeCdpActionResult::success(

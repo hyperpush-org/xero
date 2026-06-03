@@ -1596,7 +1596,7 @@ describe('useXeroDesktopState runtime-run hydration', () => {
     expect(screen.getByTestId('autonomous-run-recovery')).toHaveTextContent('terminal')
   })
 
-  it('keeps recovered run state visible while the live runtime stream is still reconnecting', async () => {
+  it('keeps recovered run state visible once the live runtime stream reconnects', async () => {
     const setup = createMockAdapter({
       runtimeSessions: {
         'project-1': makeRuntimeSession('project-1', {
@@ -1616,10 +1616,10 @@ describe('useXeroDesktopState runtime-run hydration', () => {
     render(<Harness adapter={setup.adapter} />)
 
     await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
-    await waitFor(() => expect(screen.getByTestId('stream-status')).toHaveTextContent('subscribing'))
+    await waitFor(() => expect(screen.getByTestId('stream-status')).toHaveTextContent('live'))
     expect(screen.getByTestId('runtime-run-checkpoint-count')).toHaveTextContent('2')
     expect(screen.getByTestId('messages-reason')).toHaveTextContent(
-      'Xero is reconnecting the live runtime stream for this selected project.',
+      'Live runtime activity is streaming for this project (0 items captured).',
     )
   })
 
@@ -1853,7 +1853,7 @@ describe('useXeroDesktopState runtime-run hydration', () => {
     render(<Harness adapter={setup.adapter} />)
 
     await waitFor(() => expect(screen.getByTestId('stream-run-id')).toHaveTextContent('run-project-1'))
-    expect(screen.getByTestId('stream-status')).toHaveTextContent('subscribing')
+    expect(screen.getByTestId('stream-status')).toHaveTextContent('live')
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry state' }))
 
@@ -1953,7 +1953,7 @@ describe('useXeroDesktopState runtime-run hydration', () => {
     render(<Harness adapter={setup.adapter} />)
 
     await waitFor(() => expect(screen.getByTestId('stream-run-id')).toHaveTextContent('run-project-1'))
-    await waitFor(() => expect(screen.getByTestId('stream-status')).toHaveTextContent('subscribing'))
+    await waitFor(() => expect(screen.getByTestId('stream-status')).toHaveTextContent('live'))
 
     await act(async () => {
       setup.emitRuntimeStream(0, {
@@ -2002,7 +2002,7 @@ describe('useXeroDesktopState runtime-run hydration', () => {
       })
     })
 
-    await waitFor(() => expect(screen.getByTestId('stream-status')).toHaveTextContent('live'))
+    await waitFor(() => expect(screen.getByTestId('stream-skill-count')).toHaveTextContent('1'))
     expect(screen.getByTestId('stream-item-count')).toHaveTextContent('1')
     expect(screen.getByTestId('stream-skill-count')).toHaveTextContent('1')
     expect(screen.getByTestId('stream-skill-first-id')).toHaveTextContent('find-skills')
@@ -2141,7 +2141,7 @@ describe('useXeroDesktopState runtime-run hydration', () => {
       })
     })
 
-    await waitFor(() => expect(screen.getByTestId('stream-status')).toHaveTextContent('live'))
+    await waitFor(() => expect(screen.getByTestId('stream-tool-count')).toHaveTextContent('1'))
     expect(screen.getByTestId('stream-tool-count')).toHaveTextContent('1')
     expect(screen.getByTestId('stream-tool-first-id')).toHaveTextContent('mcp-invoke-1')
     expect(screen.getByTestId('stream-tool-first-state')).toHaveTextContent('failed')
@@ -2218,7 +2218,7 @@ describe('useXeroDesktopState runtime-run hydration', () => {
       })
     })
 
-    await waitFor(() => expect(screen.getByTestId('stream-status')).toHaveTextContent('live'))
+    await waitFor(() => expect(screen.getByTestId('stream-tool-count')).toHaveTextContent('1'))
     expect(screen.getByTestId('stream-tool-count')).toHaveTextContent('1')
     expect(screen.getByTestId('stream-tool-first-id')).toHaveTextContent('browser-click-1')
     expect(screen.getByTestId('stream-tool-first-state')).toHaveTextContent('succeeded')

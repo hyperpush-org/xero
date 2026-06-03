@@ -204,6 +204,7 @@ export type ConversationTurn =
       acceptedTarget: RuntimeAgentIdDto | null
       acceptedTargetAgentDefinitionId: string | null
       acceptedTargetLabel: string | null
+      routingResolutionMode?: 'manual' | 'automatic' | null
     }
   | {
       id: string
@@ -794,27 +795,25 @@ function AnimatedTranscriptListItem({
   children,
   className,
   style,
+  turn,
 }: {
   children: React.ReactNode
   className?: string
   style?: React.CSSProperties
+  turn?: ConversationTurn
 }) {
-  const shouldReduceMotion = useReducedMotion()
   const transition = useTranscriptMotionTransition()
 
   return (
     <motion.li
-      layout="position"
-      initial={
-        shouldReduceMotion ? false : { opacity: 0, y: 6, scale: 0.985 }
-      }
+      initial={false}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={
-        shouldReduceMotion ? { opacity: 0 } : { opacity: 0, y: -4, scale: 0.99 }
-      }
       transition={transition}
       className={className}
       style={style}
+      data-conversation-turn-id={turn?.id}
+      data-conversation-turn-kind={turn?.kind}
+      data-conversation-turn-role={turn?.kind === 'message' ? turn.role : undefined}
     >
       {children}
     </motion.li>
@@ -828,23 +827,14 @@ function AnimatedTranscriptPanel({
   children: React.ReactNode
   className?: string
 }) {
-  const shouldReduceMotion = useReducedMotion()
   const transition = useTranscriptMotionTransition()
 
   return (
     <motion.div
       layout
-      initial={
-        shouldReduceMotion
-          ? false
-          : { opacity: 0, height: 0, y: -4, scale: 0.995 }
-      }
+      initial={false}
       animate={{ opacity: 1, height: 'auto', y: 0, scale: 1 }}
-      exit={
-        shouldReduceMotion
-          ? { opacity: 0, height: 0 }
-          : { opacity: 0, height: 0, y: -3, scale: 0.995 }
-      }
+      exit={{ opacity: 0, height: 0, y: -3, scale: 0.995 }}
       transition={transition}
       className={cn('overflow-hidden', className)}
     >
@@ -867,7 +857,10 @@ function ConversationTurnItem({
   onOpenHandoffSummary,
 }: ConversationTurnItemProps) {
   return (
-    <AnimatedTranscriptListItem>
+    <AnimatedTranscriptListItem
+      turn={turn}
+      className={turn.kind === 'routing_suggestion' ? '-mt-5 mb-1' : undefined}
+    >
       <ConversationTurnRow
         turn={turn}
         accountAvatarUrl={accountAvatarUrl}
@@ -1059,6 +1052,7 @@ function ConversationTurnRow({
         acceptedTarget={turn.acceptedTarget}
         acceptedTargetAgentDefinitionId={turn.acceptedTargetAgentDefinitionId}
         acceptedTargetLabel={turn.acceptedTargetLabel}
+        resolutionMode={turn.routingResolutionMode}
       />
     )
   }
@@ -2361,6 +2355,51 @@ function ActionGroupCard({
 }: ActionGroupCardProps) {
   const [open, setOpen] = useState(false)
   const hasDetail = detail.trim().length > 0
+  const singleAction = actions.length === 1 ? actions[0] : null
+  const singleActionHasDetails = Boolean(
+    singleAction &&
+      (singleAction.detailRows.length > 0 ||
+        Boolean(singleAction.mediaAttachments?.length)),
+  )
+  const hasExpandableContent = !singleAction || singleActionHasDetails
+  const detailsLabel =
+    actions.length === 1 ? 'compact tool details' : 'grouped tool details'
+  const rowClassName = cn(
+    'flex w-full items-center gap-2 rounded-md py-0.5 text-left transition-colors',
+    hasExpandableContent &&
+      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+  )
+  const rowContent = (
+    <>
+      <ToolStatusIcon state={state} className="shrink-0" />
+      <span
+        className="min-w-0 shrink truncate text-[13px] font-medium tracking-[-0.005em] text-foreground"
+        title={title}
+      >
+        {title}
+      </span>
+      {hasDetail ? (
+        <span
+          className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground/75"
+          title={detail}
+        >
+          {detail}
+        </span>
+      ) : (
+        <span aria-hidden="true" className="flex-1" />
+      )}
+      {hasExpandableContent ? (
+        <ChevronDown
+          aria-hidden="true"
+          className={cn(
+            'h-3.5 w-3.5 shrink-0 text-muted-foreground/45 transition-all duration-200 ease-out',
+            'group-hover/tool:text-muted-foreground/80',
+            open ? 'rotate-180 text-muted-foreground/80' : 'rotate-0',
+          )}
+        />
+      ) : null}
+    </>
+  )
 
   return (
     <Collapsible
@@ -2372,62 +2411,48 @@ function ActionGroupCard({
         connectsTop={connectsTop}
         connectsBottom={connectsBottom}
       />
-      {open ? (
+      {open && hasExpandableContent ? (
         <span
           aria-hidden="true"
           className="pointer-events-none absolute left-[8px] top-[10px] bottom-0 w-px bg-border/60"
         />
       ) : null}
-      <CollapsibleTrigger asChild>
-        <button
-          type="button"
-          aria-label={`${open ? 'Hide' : 'Show'} grouped tool details for ${title}`}
-          className={cn(
-            'flex w-full items-center gap-2 rounded-md py-0.5 text-left transition-colors',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
-          )}
-        >
-          <ToolStatusIcon state={state} className="shrink-0" />
-          <span
-            className="min-w-0 shrink truncate text-[13px] font-medium tracking-[-0.005em] text-foreground"
-            title={title}
+      {hasExpandableContent ? (
+        <CollapsibleTrigger asChild>
+          <button
+            type="button"
+            aria-label={`${open ? 'Hide' : 'Show'} ${detailsLabel} for ${title}`}
+            className={rowClassName}
           >
-            {title}
-          </span>
-          {hasDetail ? (
-            <span
-              className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground/75"
-              title={detail}
-            >
-              {detail}
-            </span>
-          ) : (
-            <span aria-hidden="true" className="flex-1" />
-          )}
-          <ChevronDown
-            aria-hidden="true"
-            className={cn(
-              'h-3.5 w-3.5 shrink-0 text-muted-foreground/45 transition-all duration-200 ease-out',
-              'group-hover/tool:text-muted-foreground/80',
-              open ? 'rotate-180 text-muted-foreground/80' : 'rotate-0',
-            )}
-          />
-        </button>
-      </CollapsibleTrigger>
+            {rowContent}
+          </button>
+        </CollapsibleTrigger>
+      ) : (
+        <div className={rowClassName}>{rowContent}</div>
+      )}
       <AnimatePresence initial={false}>
-        {open ? (
+        {open && hasExpandableContent ? (
           <AnimatedTranscriptPanel>
-            <ol className="ml-[12px] mt-0.5 flex flex-col gap-0.5 pl-3">
-              <AnimatePresence initial={false}>
-                {actions.map((action, index) => (
-                  <ActionGroupItem
-                    key={action.id}
-                    action={action}
-                    index={index}
-                  />
-                ))}
-              </AnimatePresence>
-            </ol>
+            {singleAction ? (
+              <div className="ml-[22px] pl-3 pr-1 pb-1.5 pt-1">
+                <ToolDetailRows
+                  rows={singleAction.detailRows}
+                  mediaAttachments={singleAction.mediaAttachments}
+                />
+              </div>
+            ) : (
+              <ol className="ml-[12px] mt-0.5 flex flex-col gap-0.5 pl-3">
+                <AnimatePresence initial={false}>
+                  {actions.map((action, index) => (
+                    <ActionGroupItem
+                      key={action.id}
+                      action={action}
+                      index={index}
+                    />
+                  ))}
+                </AnimatePresence>
+              </ol>
+            )}
           </AnimatedTranscriptPanel>
         ) : null}
       </AnimatePresence>
@@ -3485,7 +3510,12 @@ function DenseMessageItem({
     normalized.length > 240 || /\r?\n/.test(normalized) || hasAttachments
 
   return (
-    <li className="px-1">
+    <li
+      className="px-1"
+      data-conversation-turn-id={id}
+      data-conversation-turn-kind="message"
+      data-conversation-turn-role={role}
+    >
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
@@ -3699,62 +3729,86 @@ function DenseActionGroupItem({
   actions,
 }: DenseActionGroupItemProps) {
   const [open, setOpen] = useState(false)
-  const hasChildren = actions.length > 0
+  const singleAction = actions.length === 1 ? actions[0] : null
+  const singleActionHasDetails = Boolean(
+    singleAction &&
+      (singleAction.detailRows.length > 0 ||
+        singleAction.detail.trim().length > 0 ||
+        Boolean(singleAction.mediaAttachments?.length)),
+  )
+  const hasExpandableContent = actions.length > 1 || singleActionHasDetails
+  const detailsLabel =
+    actions.length === 1 ? 'compact tool details' : 'grouped tool details'
+  const rowClassName = cn(
+    'flex w-full items-start gap-2 text-left',
+    hasExpandableContent
+      ? 'cursor-pointer hover:text-foreground'
+      : 'cursor-default',
+    'focus-visible:outline-none focus-visible:text-foreground',
+  )
+  const rowContent = (
+    <>
+      <ToolStatusIcon state={state} className="mt-[1px]" />
+      <span
+        className="min-w-0 flex-1 truncate text-foreground/85"
+        title={`${title}${detail ? ` — ${detail}` : ''}`}
+      >
+        {truncateForLine(title)}
+      </span>
+      {hasExpandableContent ? (
+        <ChevronDown
+          aria-hidden="true"
+          className={cn(
+            'mt-[3px] h-3 w-3 shrink-0 text-muted-foreground/50 transition-transform duration-150',
+            open ? 'rotate-180' : 'rotate-0',
+          )}
+        />
+      ) : null}
+    </>
+  )
 
   return (
     <AnimatedTranscriptListItem className="px-1">
-      <button
-        type="button"
-        onClick={() => setOpen((prev) => !prev)}
-        aria-expanded={hasChildren ? open : undefined}
-        aria-label={
-          hasChildren
-            ? `${open ? 'Hide' : 'Show'} grouped tool details for ${title}`
-            : undefined
-        }
-        disabled={!hasChildren}
-        className={cn(
-          'flex w-full items-start gap-2 text-left',
-          hasChildren
-            ? 'cursor-pointer hover:text-foreground'
-            : 'cursor-default',
-          'focus-visible:outline-none focus-visible:text-foreground',
-        )}
-      >
-        <ToolStatusIcon state={state} className="mt-[1px]" />
-        <span
-          className="min-w-0 flex-1 truncate text-foreground/85"
-          title={`${title}${detail ? ` — ${detail}` : ''}`}
+      {hasExpandableContent ? (
+        <button
+          type="button"
+          onClick={() => setOpen((prev) => !prev)}
+          aria-expanded={open}
+          aria-label={`${open ? 'Hide' : 'Show'} ${detailsLabel} for ${title}`}
+          className={rowClassName}
         >
-          {truncateForLine(title)}
-        </span>
-        {hasChildren ? (
-          <ChevronDown
-            aria-hidden="true"
-            className={cn(
-              'mt-[3px] h-3 w-3 shrink-0 text-muted-foreground/50 transition-transform duration-150',
-              open ? 'rotate-180' : 'rotate-0',
-            )}
-          />
-        ) : null}
-      </button>
+          {rowContent}
+        </button>
+      ) : (
+        <div className={rowClassName}>{rowContent}</div>
+      )}
       <AnimatePresence initial={false}>
-        {open && hasChildren ? (
+        {open && hasExpandableContent ? (
           <AnimatedTranscriptPanel>
-            <ol className="ml-3 mt-1.5 flex flex-col gap-1.5 border-l border-border/30 pl-2.5">
-              <AnimatePresence initial={false}>
-                {actions.map((action) => (
-                  <DenseActionItem
-                    key={action.id}
-                    title={action.title}
-                    detail={action.detail}
-                    detailRows={action.detailRows}
-                    mediaAttachments={action.mediaAttachments}
-                    state={action.state}
-                  />
-                ))}
-              </AnimatePresence>
-            </ol>
+            {singleAction ? (
+              <div className="ml-3 mt-1.5 border-l border-border/30 pl-2.5">
+                <DenseToolDetails
+                  detail={singleAction.detail}
+                  detailRows={singleAction.detailRows}
+                  mediaAttachments={singleAction.mediaAttachments}
+                />
+              </div>
+            ) : (
+              <ol className="ml-3 mt-1.5 flex flex-col gap-1.5 border-l border-border/30 pl-2.5">
+                <AnimatePresence initial={false}>
+                  {actions.map((action) => (
+                    <DenseActionItem
+                      key={action.id}
+                      title={action.title}
+                      detail={action.detail}
+                      detailRows={action.detailRows}
+                      mediaAttachments={action.mediaAttachments}
+                      state={action.state}
+                    />
+                  ))}
+                </AnimatePresence>
+              </ol>
+            )}
           </AnimatedTranscriptPanel>
         ) : null}
       </AnimatePresence>

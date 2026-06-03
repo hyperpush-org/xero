@@ -193,8 +193,6 @@ interface InternalTerminalSpawnOptions extends TerminalSpawnOptions {
   clientId?: string
   labelLocked?: boolean
   restoredCommand?: PersistedTerminalCommand | null
-  restoredCwd?: string | null
-  restoredInputBuffer?: string | null
 }
 
 interface TerminalSidebarProps {
@@ -385,39 +383,6 @@ function normalizePersistedInputBuffer(value: string | null | undefined): string
   if (!value) return null
   if (value.includes("\r") || value.includes("\n")) return null
   return value.slice(0, MAX_PERSISTED_INPUT_BUFFER_LENGTH)
-}
-
-function trimRestoredTranscriptInput(transcript: string, inputBuffer: string | null | undefined): string {
-  const normalizedInput = normalizePersistedInputBuffer(inputBuffer)
-  if (normalizedInput) {
-    const tailStart = Math.max(0, transcript.length - MAX_PERSISTED_INPUT_BUFFER_LENGTH * 2)
-    const tail = transcript.slice(tailStart)
-    const inputIndex = tail.lastIndexOf(normalizedInput)
-    if (inputIndex !== -1) return transcript.slice(0, tailStart + inputIndex)
-  }
-  return trimRestoredTranscriptPromptTail(transcript)
-}
-
-function trimRestoredTranscriptPromptTail(transcript: string): string {
-  const lineStart = Math.max(
-    transcript.lastIndexOf("\n"),
-    transcript.lastIndexOf("\r"),
-  ) + 1
-  const line = transcript.slice(lineStart)
-  if (line.length === 0 || line.length > 2048) return transcript
-  const promptMarkers = [" % ", " $ ", " # ", " > "]
-  let promptEnd = -1
-  for (const marker of promptMarkers) {
-    const markerIndex = line.lastIndexOf(marker)
-    if (markerIndex !== -1) {
-      promptEnd = Math.max(promptEnd, markerIndex + marker.length)
-    }
-  }
-  if (promptEnd === -1 && /^[%#$>] .+/.test(line)) {
-    promptEnd = 2
-  }
-  if (promptEnd === -1 || promptEnd >= line.length) return transcript
-  return transcript.slice(0, lineStart + promptEnd)
 }
 
 function terminalCommandSourceLabel(source: TerminalSpawnSource | undefined): string | null {
@@ -998,30 +963,14 @@ export function TerminalSidebar({
       const rows = 32
       try {
         const clientId = options?.clientId ?? createTerminalClientId()
-        const isRestoredTab = Boolean(options?.clientId)
-        const restoredTranscript =
-          isRestoredTab && defaultAdapter.terminalReadTranscript
-            ? await defaultAdapter.terminalReadTranscript({
-                projectId: targetProjectId,
-                clientTerminalId: clientId,
-              })
-                .then((response) =>
-                  trimRestoredTranscriptInput(response.content, options?.restoredInputBuffer),
-                )
-                .catch(() => "")
-            : ""
         const response = await defaultAdapter.terminalOpen?.({
           projectId: targetProjectId,
           clientTerminalId: clientId,
           cols,
           rows,
-          suppressTranscriptUntilInput: isRestoredTab,
+          suppressTranscriptUntilInput: false,
         })
         if (!response) return null
-        if (isRestoredTab) {
-          suppressingLiveOutputIdsRef.current.add(response.terminalId)
-          pendingWriteBuffersRef.current.delete(response.terminalId)
-        }
         const { terminal, fit } = createXTerm(xtermThemeRef.current, handleTerminalLink)
         terminal.attachCustomKeyEventHandler((event) => {
           const visibleSuggestion = suggestionStateRef.current
@@ -1101,10 +1050,6 @@ export function TerminalSidebar({
         terminal.onTitleChange((title) => {
           updateTabLabel(response.terminalId, title)
         })
-        if (restoredTranscript.length > 0) {
-          const buffered = pendingWriteBuffersRef.current.get(response.terminalId) ?? ""
-          pendingWriteBuffersRef.current.set(response.terminalId, restoredTranscript + buffered)
-        }
         const initialLabel =
           sanitizeTerminalTabLabel(options?.label ?? "") ??
           sanitizeTerminalTabLabel(response.shell.split(/[\\/]/).pop() ?? response.shell) ??
@@ -1116,7 +1061,7 @@ export function TerminalSidebar({
           label: initialLabel,
           labelLocked: options?.labelLocked ?? !!options?.label,
           browserSupported: options?.browserSupported ?? null,
-          cwd: options?.restoredCwd ?? response.cwd ?? null,
+          cwd: response.cwd ?? null,
           shell: response.shell,
           command: options?.restoredCommand ?? buildPersistedTerminalCommand(command, options),
           running: true,
@@ -1220,8 +1165,6 @@ export function TerminalSidebar({
             labelLocked: persistedTab.labelLocked,
             browserSupported: persistedTab.browserSupported ?? undefined,
             restoredCommand: persistedTab.command,
-            restoredCwd: persistedTab.cwd,
-            restoredInputBuffer: persistedTab.inputBuffer,
           })
           if (terminalId) restoredIds.set(persistedTab.clientId, terminalId)
         }

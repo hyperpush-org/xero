@@ -1319,9 +1319,64 @@ fn openai_codex_response_tool(tool: &AgentToolDescriptor) -> JsonValue {
         "type": "function",
         "name": tool.name,
         "description": tool.description,
-        "parameters": tool.input_schema,
+        "parameters": openai_codex_sanitize_tool_schema(tool.input_schema.clone()),
         "strict": JsonValue::Null,
     })
+}
+
+fn openai_codex_sanitize_tool_schema(value: JsonValue) -> JsonValue {
+    let JsonValue::Object(mut root) = value else {
+        return json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {},
+        });
+    };
+
+    root.insert("type".into(), json!("object"));
+    root.remove("enum");
+    root.remove("not");
+
+    let mut merged_disjunction = false;
+    for key in ["oneOf", "anyOf", "allOf"] {
+        let Some(JsonValue::Array(branches)) = root.remove(key) else {
+            continue;
+        };
+        merged_disjunction = true;
+        for branch in branches {
+            merge_openai_codex_tool_schema_branch(&mut root, branch);
+        }
+    }
+    if merged_disjunction {
+        root.remove("required");
+    }
+
+    JsonValue::Object(root)
+}
+
+fn merge_openai_codex_tool_schema_branch(root: &mut JsonMap<String, JsonValue>, branch: JsonValue) {
+    let JsonValue::Object(branch) = branch else {
+        return;
+    };
+
+    if let Some(JsonValue::Object(branch_properties)) = branch.get("properties") {
+        let root_properties = root
+            .entry("properties")
+            .or_insert_with(|| JsonValue::Object(JsonMap::new()));
+        if let JsonValue::Object(root_properties) = root_properties {
+            for (key, value) in branch_properties {
+                root_properties
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
+            }
+        }
+    }
+
+    if !root.contains_key("additionalProperties") {
+        if let Some(additional_properties) = branch.get("additionalProperties") {
+            root.insert("additionalProperties".into(), additional_properties.clone());
+        }
+    }
 }
 
 fn openai_codex_request_headers(
@@ -3406,7 +3461,13 @@ mod tests {
 
         assert_eq!(body["tools"][0]["name"], AUTONOMOUS_TOOL_PATCH);
         assert_eq!(body["tools"][0]["parameters"]["type"], "object");
-        assert!(body["tools"][0]["parameters"]["oneOf"].is_array());
+        assert!(body["tools"][0]["parameters"].get("oneOf").is_none());
+        assert!(body["tools"][0]["parameters"].get("anyOf").is_none());
+        assert!(body["tools"][0]["parameters"].get("allOf").is_none());
+        assert!(body["tools"][0]["parameters"].get("enum").is_none());
+        assert!(body["tools"][0]["parameters"].get("not").is_none());
+        assert!(body["tools"][0]["parameters"]["properties"]["path"].is_object());
+        assert!(body["tools"][0]["parameters"]["properties"]["operations"].is_object());
     }
 
     #[test]

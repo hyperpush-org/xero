@@ -1,6 +1,8 @@
 import type { RuntimeAgentIdDto } from '@/src/lib/xero-model'
 
-const ROUTING_MARKER_REGEX = /<xero-routing-suggestion\s+([^/>]*?)\/>/i
+const ROUTING_MARKER_PATTERN = String.raw`<xero-routing-suggestion\b([\s\S]*?)(?:\/>|>\s*<\/xero-routing-suggestion\s*>|>)`
+const ROUTING_MARKER_REGEX = new RegExp(ROUTING_MARKER_PATTERN, 'i')
+const ROUTING_MARKER_GLOBAL_REGEX = new RegExp(ROUTING_MARKER_PATTERN, 'gi')
 const ELIGIBLE_BUILT_IN_TARGETS = new Set<RuntimeAgentIdDto>([
   'ask',
   'plan',
@@ -22,10 +24,10 @@ export interface ParsedRoutingMarker {
 
 function parseMarkerAttributes(attrs: string): Record<string, string> {
   const parsed: Record<string, string> = {}
-  const attrRegex = /([a-zA-Z][\w:-]*)\s*=\s*"([^"]*)"/g
+  const attrRegex = /([a-zA-Z][\w:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|“([^”]*)”|‘([^’]*)’|([^\s/>]+))/g
   let match: RegExpExecArray | null = null
   while ((match = attrRegex.exec(attrs)) !== null) {
-    parsed[match[1]] = match[2]
+    parsed[match[1]] = (match[2] ?? match[3] ?? match[4] ?? match[5] ?? match[6] ?? '').trim()
   }
   return parsed
 }
@@ -90,4 +92,8 @@ export function parseRoutingMarker(text: string): ParsedRoutingMarker | null {
     summary,
     rawMarker: match[0],
   }
+}
+
+export function stripRoutingMarkers(text: string): string {
+  return text.replace(ROUTING_MARKER_GLOBAL_REGEX, '').replace(/\n{3,}/g, '\n\n').trim()
 }

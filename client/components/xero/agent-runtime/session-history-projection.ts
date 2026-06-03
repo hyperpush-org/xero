@@ -9,7 +9,10 @@ import {
   promoteActionMediaIntoFollowingAssistantMessages,
   runtimeMediaAttachmentsToConversation,
 } from '@xero/ui/components/transcript/runtime-media'
-import { parseRoutingMarker } from './routing-suggestion-marker'
+import {
+  parseRoutingMarker,
+  stripRoutingMarkers,
+} from './routing-suggestion-marker'
 
 const HANDED_OFF_RUN_STATUS = 'handed_off'
 const MAX_HISTORICAL_CONVERSATION_TURNS = 80
@@ -222,11 +225,11 @@ function extractRoutingSuggestion(
 ): Extract<ConversationTurn, { kind: 'routing_suggestion' }> | null {
   if (messageTurn.role !== 'assistant') return null
   const parsed = parseRoutingMarker(messageTurn.text)
+  const cleanText = stripRoutingMarkers(messageTurn.text)
+  if (cleanText !== messageTurn.text) {
+    messageTurn.text = cleanText
+  }
   if (!parsed) return null
-  messageTurn.text = messageTurn.text
-    .replace(parsed.rawMarker, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
   return {
     id: `routing_suggestion:${messageTurn.id}`,
     kind: 'routing_suggestion',
@@ -242,5 +245,6 @@ function extractRoutingSuggestion(
     acceptedTarget: null,
     acceptedTargetAgentDefinitionId: null,
     acceptedTargetLabel: null,
+    routingResolutionMode: null,
   }
 }

@@ -93,8 +93,10 @@ function installResizeObserverMock(width: number): () => void {
 
 import {
   AgentRuntime,
+  getFollowUpAnchorScrollPlan,
   type AgentRuntimeDesktopAdapter,
   isRuntimeConversationNearBottom,
+  shouldReleaseFollowUpAnchorForTurns,
 } from '@/components/xero/agent-runtime'
 import type { SpeechDictationAdapter } from '@/components/xero/agent-runtime/use-speech-dictation'
 import type { AgentPaneView } from '@/src/features/xero/use-xero-desktop-state'
@@ -1397,6 +1399,76 @@ describe('AgentRuntime current UI', () => {
     )
   })
 
+  it('computes only the bottom room needed to anchor a follow-up prompt', () => {
+    const initial = getFollowUpAnchorScrollPlan({
+      anchorTop: 1_240,
+      viewportHeight: 420,
+      scrollHeight: 1_280,
+      currentSpacerHeight: 0,
+      topOffset: 28,
+    })
+
+    expect(initial).toEqual({
+      scrollTop: 1_212,
+      spacerHeight: 352,
+    })
+
+    const partiallyFilled = getFollowUpAnchorScrollPlan({
+      anchorTop: 1_240,
+      viewportHeight: 420,
+      scrollHeight: 1_280 + initial.spacerHeight + 260,
+      currentSpacerHeight: initial.spacerHeight,
+      topOffset: 28,
+    })
+    expect(partiallyFilled.spacerHeight).toBe(92)
+
+    const filled = getFollowUpAnchorScrollPlan({
+      anchorTop: 1_240,
+      viewportHeight: 420,
+      scrollHeight: 1_280 + initial.spacerHeight + 500,
+      currentSpacerHeight: initial.spacerHeight,
+      topOffset: 28,
+    })
+    expect(filled.spacerHeight).toBe(0)
+  })
+
+  it('releases a follow-up anchor once agent output appears after the prompt', () => {
+    expect(
+      shouldReleaseFollowUpAnchorForTurns({
+        anchorTurnId: 'pending-prompt:1',
+        turns: [
+          { id: 'old-user', kind: 'message', role: 'user', sequence: 1, text: 'Start', attachments: [] },
+          { id: 'old-agent', kind: 'message', role: 'assistant', sequence: 2, text: 'Done', attachments: [] },
+          { id: 'pending-prompt:1', kind: 'message', role: 'user', sequence: 3, text: 'Follow up', attachments: [] },
+        ],
+      }),
+    ).toBe(false)
+
+    expect(
+      shouldReleaseFollowUpAnchorForTurns({
+        anchorTurnId: 'pending-prompt:1',
+        turns: [
+          { id: 'old-user', kind: 'message', role: 'user', sequence: 1, text: 'Start', attachments: [] },
+          { id: 'old-agent', kind: 'message', role: 'assistant', sequence: 2, text: 'Done', attachments: [] },
+          { id: 'pending-prompt:1', kind: 'message', role: 'user', sequence: 3, text: 'Follow up', attachments: [] },
+          { id: 'thinking:1', kind: 'thinking', sequence: 4, text: 'Reading context.' },
+        ],
+      }),
+    ).toBe(true)
+
+    expect(
+      shouldReleaseFollowUpAnchorForTurns({
+        anchorTurnId: 'pending-prompt:1',
+        queuedAnchorText: 'Follow up',
+        turns: [
+          { id: 'old-agent', kind: 'message', role: 'assistant', sequence: 1, text: 'Done', attachments: [] },
+          { id: 'transcript:run-2:1', kind: 'message', role: 'user', sequence: 2, text: 'Follow up', attachments: [] },
+          { id: 'transcript:run-2:2', kind: 'message', role: 'assistant', sequence: 3, text: 'Answer', attachments: [] },
+        ],
+      }),
+    ).toBe(true)
+  })
+
   it('calls the whole-change undo command from the changed file entry menu', async () => {
     const applySelectiveUndo = vi.fn(async () => makeCodeUndoResponse())
     const dictation = createDictationAdapter()
@@ -1899,45 +1971,91 @@ describe('AgentRuntime current UI', () => {
     expect(screen.queryByRole('button', { name: 'Copy visible conversation' })).not.toBeInTheDocument()
   })
 
+  it('heals routing markers emitted inside reasoning activity', () => {
+    renderRuntimeStreamItems([
+      makeTranscriptItem({ sequence: 2, role: 'user', text: 'What is this project about?' }),
+      makeReasoningItem({
+        sequence: 3,
+        text: [
+          'The question is: "What is this project about?"',
+          '<xero-routing-suggestion target="ask" reason="Question-only project overview request" summary="User wants a high-level description of what the repository/project is about."/>',
+          'This request is a pure documentation-style question with no implementation, debugging, or planning scope.',
+        ].join('\n\n'),
+      }),
+    ])
+
+    expect(screen.queryByText(/xero-routing-suggestion/)).not.toBeInTheDocument()
+    expect(screen.getByText(/The question is:/)).toBeVisible()
+    expect(screen.getByText(/This request is a pure documentation-style question/)).toBeVisible()
+    expect(screen.getByText('This task may be better suited for the Ask agent')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Switch to Ask' })).toBeVisible()
+  })
+
+  it('heals malformed routing markers emitted in assistant text', () => {
+    renderRuntimeStreamItems([
+      makeTranscriptItem({ sequence: 2, role: 'user', text: 'What is this project about?' }),
+      makeTranscriptItem({
+        sequence: 3,
+        role: 'assistant',
+        text: [
+          '<xero-routing-suggestion target=\'ask\' reason=\'Question-only project overview request\' summary=\'User wants a high-level description.\'>',
+          'Switching to Ask will give a more direct answer.',
+        ].join('\n\n'),
+      }),
+    ])
+
+    expect(screen.queryByText(/xero-routing-suggestion/)).not.toBeInTheDocument()
+    expect(screen.getByText('Switching to Ask will give a more direct answer.')).toBeVisible()
+    expect(screen.getByText('This task may be better suited for the Ask agent')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Switch to Ask' })).toBeVisible()
+  })
+
   it('continues the current agent when a completed-run routing suggestion is declined', async () => {
     const onStartRuntimeRun = vi.fn<NonNullable<ComponentProps<typeof AgentRuntime>['onStartRuntimeRun']>>(
       async () => makeRuntimeRun({ runId: 'run-2' }),
     )
     const routingSummary =
       "Provide a high-level description of the Xero project's purpose, structure, and key components."
+    const runtimeStreamItems = [
+      makeTranscriptItem({
+        sequence: 2,
+        role: 'user',
+        text: 'Wait 10 seconds then look at this project and tell me what its about',
+      }),
+      makeTranscriptItem({
+        sequence: 3,
+        role: 'assistant',
+        text: [
+          'The request is an explanatory overview, so Ask would handle it better.',
+          `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
+        ].join('\n\n'),
+      }),
+    ]
+    const baseAgent = makeAgent({
+      runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+      runtimeRun: makeRuntimeRun({
+        status: 'stopped',
+        statusLabel: 'Stopped',
+        isActive: false,
+        isTerminal: true,
+        stoppedAt: '2026-06-02T19:00:00Z',
+      }),
+      runtimeStreamStatus: 'complete',
+      runtimeStreamStatusLabel: 'Complete',
+      runtimeStreamItems,
+    })
 
-    render(
+    const { rerender } = render(
       <AgentRuntime
-        agent={makeAgent({
-          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
-          runtimeRun: makeRuntimeRun({
-            status: 'stopped',
-            statusLabel: 'Stopped',
-            isActive: false,
-            isTerminal: true,
-            stoppedAt: '2026-06-02T19:00:00Z',
-          }),
-          runtimeStreamStatus: 'complete',
-          runtimeStreamStatusLabel: 'Complete',
-          runtimeStreamItems: [
-            makeTranscriptItem({
-              sequence: 2,
-              role: 'user',
-              text: 'Wait 10 seconds then look at this project and tell me what its about',
-            }),
-            makeTranscriptItem({
-              sequence: 3,
-              role: 'assistant',
-              text: [
-                'The request is an explanatory overview, so Ask would handle it better.',
-                `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
-              ].join('\n\n'),
-            }),
-          ],
-        })}
+        agent={baseAgent}
         onStartRuntimeRun={onStartRuntimeRun}
       />,
     )
+
+    expect(
+      screen.queryByText('Request is for an explanatory overview of the project with no code changes or debugging needed'),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText(routingSummary)).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Continue with Agent' }))
 
@@ -1948,6 +2066,35 @@ describe('AgentRuntime current UI', () => {
     expect(request?.prompt).toContain('Do not stop at another routing recommendation')
     expect(request?.prompt).toContain(routingSummary)
     await waitFor(() => expect(screen.getByText('Continued with Agent.')).toBeVisible())
+    expect(screen.queryByText(/The user chose to stay with the current Agent/)).not.toBeInTheDocument()
+
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          ...baseAgent,
+          runtimeRun: makeRuntimeRun({ runId: 'run-2' }),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          selectedPrompt: {
+            text: request?.prompt ?? null,
+            queuedAt: '2026-06-02T19:00:01Z',
+            hasQueuedPrompt: true,
+          },
+          runtimeStreamItems: [
+            ...runtimeStreamItems,
+            makeTranscriptItem({
+              runId: 'run-2',
+              sequence: 1,
+              role: 'user',
+              text: request?.prompt ?? '',
+            }),
+          ],
+        })}
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    expect(screen.queryByText(/The user chose to stay with the current Agent/)).not.toBeInTheDocument()
   })
 
   it('switches agents and continues in the same session when a completed-run routing suggestion is accepted', async () => {
@@ -1956,36 +2103,38 @@ describe('AgentRuntime current UI', () => {
     )
     const routingSummary =
       "Provide a high-level description of the Xero project's purpose, structure, and key components."
+    const runtimeStreamItems = [
+      makeTranscriptItem({
+        sequence: 2,
+        role: 'user',
+        text: 'Wait 10 seconds then look at this project and tell me what its about',
+      }),
+      makeTranscriptItem({
+        sequence: 3,
+        role: 'assistant',
+        text: [
+          'The request is an explanatory overview, so Ask would handle it better.',
+          `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
+        ].join('\n\n'),
+      }),
+    ]
+    const baseAgent = makeAgent({
+      runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+      runtimeRun: makeRuntimeRun({
+        status: 'stopped',
+        statusLabel: 'Stopped',
+        isActive: false,
+        isTerminal: true,
+        stoppedAt: '2026-06-02T19:00:00Z',
+      }),
+      runtimeStreamStatus: 'complete',
+      runtimeStreamStatusLabel: 'Complete',
+      runtimeStreamItems,
+    })
 
-    render(
+    const { rerender } = render(
       <AgentRuntime
-        agent={makeAgent({
-          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
-          runtimeRun: makeRuntimeRun({
-            status: 'stopped',
-            statusLabel: 'Stopped',
-            isActive: false,
-            isTerminal: true,
-            stoppedAt: '2026-06-02T19:00:00Z',
-          }),
-          runtimeStreamStatus: 'complete',
-          runtimeStreamStatusLabel: 'Complete',
-          runtimeStreamItems: [
-            makeTranscriptItem({
-              sequence: 2,
-              role: 'user',
-              text: 'Wait 10 seconds then look at this project and tell me what its about',
-            }),
-            makeTranscriptItem({
-              sequence: 3,
-              role: 'assistant',
-              text: [
-                'The request is an explanatory overview, so Ask would handle it better.',
-                `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
-              ].join('\n\n'),
-            }),
-          ],
-        })}
+        agent={baseAgent}
         onStartRuntimeRun={onStartRuntimeRun}
       />,
     )
@@ -1999,6 +2148,410 @@ describe('AgentRuntime current UI', () => {
     expect(request?.prompt).toContain('Continue the original request now in this same session.')
     expect(request?.prompt).toContain(routingSummary)
     await waitFor(() => expect(screen.getByText('Switched to Ask and continued.')).toBeVisible())
+    expect(screen.queryByText(/The user accepted the routing suggestion/)).not.toBeInTheDocument()
+
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          ...baseAgent,
+          runtimeRun: makeRuntimeRun({ runId: 'run-2' }),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          selectedPrompt: {
+            text: request?.prompt ?? null,
+            queuedAt: '2026-06-02T19:00:01Z',
+            hasQueuedPrompt: true,
+          },
+          runtimeStreamItems: [
+            ...runtimeStreamItems,
+            makeTranscriptItem({
+              runId: 'run-2',
+              sequence: 1,
+              role: 'user',
+              text: request?.prompt ?? '',
+            }),
+          ],
+        })}
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    expect(screen.queryByText(/The user accepted the routing suggestion/)).not.toBeInTheDocument()
+  })
+
+  it('queues a manual routing choice while the owned-agent run is still active', async () => {
+    const onStartRuntimeRun = vi.fn<NonNullable<ComponentProps<typeof AgentRuntime>['onStartRuntimeRun']>>(
+      async () => makeRuntimeRun({ runId: 'run-2' }),
+    )
+    const onUpdateRuntimeRunControls = vi.fn<
+      NonNullable<ComponentProps<typeof AgentRuntime>['onUpdateRuntimeRunControls']>
+    >(async () => makeRuntimeRun())
+    const routingSummary =
+      "Provide a high-level description of the Xero project's purpose, structure, and key components."
+    const runtimeStreamItems = [
+      makeTranscriptItem({
+        sequence: 2,
+        role: 'user',
+        text: 'Tell me about this project',
+      }),
+      makeTranscriptItem({
+        sequence: 3,
+        role: 'assistant',
+        text: [
+          'The request is an explanatory overview, so Ask would handle it better.',
+          `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
+        ].join('\n\n'),
+      }),
+    ]
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems,
+        })}
+        onStartRuntimeRun={onStartRuntimeRun}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+      />,
+    )
+
+    const switchButton = screen.getByRole('button', { name: 'Switch to Ask' })
+    const continueButton = screen.getByRole('button', { name: 'Continue with Agent' })
+    expect(switchButton).toBeEnabled()
+    expect(continueButton).toBeEnabled()
+
+    fireEvent.click(switchButton)
+
+    await waitFor(() => expect(onUpdateRuntimeRunControls).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByText('Switched to Ask and continued.')).toBeVisible())
+    expect(onStartRuntimeRun).not.toHaveBeenCalled()
+    const request = onUpdateRuntimeRunControls.mock.calls[0]?.[0]
+    expect(request?.controls).toEqual(expect.objectContaining({ runtimeAgentId: 'ask' }))
+    expect(request?.prompt).toContain('The user accepted the routing suggestion to switch to Ask')
+    expect(request?.prompt).toContain(routingSummary)
+    expect(screen.queryByText(/The user accepted the routing suggestion/)).not.toBeInTheDocument()
+  })
+
+  it('lets a routing choice replace a previously queued internal routing continuation', async () => {
+    const onStartRuntimeRun = vi.fn<NonNullable<ComponentProps<typeof AgentRuntime>['onStartRuntimeRun']>>(
+      async () => makeRuntimeRun({ runId: 'run-2' }),
+    )
+    const routingSummary =
+      "Provide a high-level description of the Xero project's purpose, structure, and key components."
+    const staleContinuationPrompt = [
+      'The user chose to stay with the current Agent instead of switching to Editor.',
+      'Continue the original request now. Do not stop at another routing recommendation for this same request.',
+      `Carry over: ${routingSummary}`,
+      'Routing reason: Request is for an explanatory overview of the project with no code changes or debugging needed',
+    ].join('\n\n')
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun({
+            status: 'stopped',
+            statusLabel: 'Stopped',
+            isActive: false,
+            isTerminal: true,
+            stoppedAt: '2026-06-02T19:00:00Z',
+          }),
+          runtimeStreamStatus: 'complete',
+          runtimeStreamStatusLabel: 'Complete',
+          selectedPrompt: {
+            text: staleContinuationPrompt,
+            queuedAt: '2026-06-02T19:00:01Z',
+            hasQueuedPrompt: true,
+          },
+          runtimeStreamItems: [
+            makeTranscriptItem({
+              sequence: 2,
+              role: 'user',
+              text: 'Tell me about this project',
+            }),
+            makeTranscriptItem({
+              sequence: 3,
+              role: 'assistant',
+              text: [
+                'The request is an explanatory overview, so Ask would handle it better.',
+                `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
+              ].join('\n\n'),
+            }),
+          ],
+        })}
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    const switchButton = screen.getByRole('button', { name: 'Switch to Ask' })
+    expect(switchButton).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Continue with Agent' })).toBeEnabled()
+
+    fireEvent.click(switchButton)
+
+    await waitFor(() => expect(onStartRuntimeRun).toHaveBeenCalledTimes(1))
+    const request = onStartRuntimeRun.mock.calls[0]?.[0]
+    expect(request?.controls).toEqual(expect.objectContaining({ runtimeAgentId: 'ask' }))
+    expect(request?.prompt).toContain('The user accepted the routing suggestion to switch to Ask')
+    expect(request?.prompt).toContain(routingSummary)
+    await waitFor(() => expect(screen.getByText('Switched to Ask and continued.')).toBeVisible())
+    expect(screen.queryByText(/The user chose to stay with the current Agent/)).not.toBeInTheDocument()
+  })
+
+  it('keeps a queued internal routing choice resolved after reload', () => {
+    const routingSummary =
+      "Provide a high-level description of the Xero project's purpose, structure, and key components."
+    const queuedContinuationPrompt = [
+      'The user chose to stay with the current Agent instead of switching to Ask.',
+      'Continue the original request now. Do not stop at another routing recommendation for this same request.',
+      `Carry over: ${routingSummary}`,
+      'Routing reason: Request is for an explanatory overview of the project with no code changes or debugging needed',
+    ].join('\n\n')
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun({
+            status: 'running',
+            statusLabel: 'Agent running',
+            isActive: true,
+            isTerminal: false,
+          }),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          selectedPrompt: {
+            text: queuedContinuationPrompt,
+            queuedAt: '2026-06-02T19:00:01Z',
+            hasQueuedPrompt: true,
+          },
+          runtimeStreamItems: [
+            makeTranscriptItem({
+              sequence: 2,
+              role: 'user',
+              text: 'Tell me about this project',
+            }),
+            makeTranscriptItem({
+              sequence: 3,
+              role: 'assistant',
+              text: [
+                'The request is an explanatory overview, so Ask would handle it better.',
+                `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
+              ].join('\n\n'),
+            }),
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Continued with Agent.')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Switch to Ask' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Continue with Agent' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/The user chose to stay with the current Agent/)).not.toBeInTheDocument()
+  })
+
+  it('does not automatically choose a routing suggestion while auto-switching is disabled', async () => {
+    const onStartRuntimeRun = vi.fn<NonNullable<ComponentProps<typeof AgentRuntime>['onStartRuntimeRun']>>(
+      async () => makeRuntimeRun({ runId: 'run-2' }),
+    )
+    const onUpdateRuntimeRunControls = vi.fn<
+      NonNullable<ComponentProps<typeof AgentRuntime>['onUpdateRuntimeRunControls']>
+    >(async () => makeRuntimeRun())
+    const routingSummary =
+      "Provide a high-level description of the Xero project's purpose, structure, and key components."
+
+    renderRuntimeStreamItems(
+      [
+        makeTranscriptItem({
+          sequence: 2,
+          role: 'user',
+          text: 'Tell me about this project',
+        }),
+        makeTranscriptItem({
+          sequence: 3,
+          role: 'assistant',
+          text: [
+            'The request is an explanatory overview, so Ask would handle it better.',
+            `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
+          ].join('\n\n'),
+        }),
+      ],
+      {
+        onStartRuntimeRun,
+        onUpdateRuntimeRunControls,
+      },
+    )
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(onUpdateRuntimeRunControls).not.toHaveBeenCalled()
+    expect(onStartRuntimeRun).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Switch to Ask' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Continue with Agent' })).toBeEnabled()
+  })
+
+  it('automatically switches agents and records the routing action when enabled', async () => {
+    const onStartRuntimeRun = vi.fn<NonNullable<ComponentProps<typeof AgentRuntime>['onStartRuntimeRun']>>(
+      async () => makeRuntimeRun({ runId: 'run-2' }),
+    )
+    const routingSummary =
+      "Provide a high-level description of the Xero project's purpose, structure, and key components."
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun({
+            status: 'stopped',
+            statusLabel: 'Stopped',
+            isActive: false,
+            isTerminal: true,
+            stoppedAt: '2026-06-02T19:00:00Z',
+          }),
+          runtimeStreamStatus: 'complete',
+          runtimeStreamStatusLabel: 'Complete',
+          runtimeStreamItems: [
+            makeTranscriptItem({
+              sequence: 2,
+              role: 'user',
+              text: 'Wait 10 seconds then look at this project and tell me what its about',
+            }),
+            makeTranscriptItem({
+              sequence: 3,
+              role: 'assistant',
+              text: [
+                'The request is an explanatory overview, so Ask would handle it better.',
+                `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
+              ].join('\n\n'),
+            }),
+          ],
+        })}
+        agentRoutingAutoSwitchEnabled
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    await waitFor(() => expect(onStartRuntimeRun).toHaveBeenCalledTimes(1))
+    const request = onStartRuntimeRun.mock.calls[0]?.[0]
+    expect(request?.controls).toEqual(expect.objectContaining({ runtimeAgentId: 'ask' }))
+    expect(request?.prompt).toContain('The user accepted the routing suggestion to switch to Ask')
+    expect(request?.prompt).toContain('Continue the original request now in this same session.')
+    expect(request?.prompt).toContain(routingSummary)
+    await waitFor(() => expect(screen.getByText('Auto-switched to Ask and continued.')).toBeVisible())
+  })
+
+  it('keeps a declined routing suggestion resolved after the session transcript reloads', () => {
+    const routingSummary =
+      "Provide a high-level description of the Xero project's purpose, structure, and key components."
+    const continuationPrompt = [
+      'The user chose to stay with the current Agent instead of switching to Ask.',
+      'Continue the original request now. Do not stop at another routing recommendation for this same request.',
+      `Carry over: ${routingSummary}`,
+      'Routing reason: Request is for an explanatory overview of the project with no code changes or debugging needed',
+    ].join('\n\n')
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun({ runId: 'run-2' }),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [
+            makeTranscriptItem({
+              sequence: 1,
+              role: 'user',
+              text: 'Tell me about this project',
+            }),
+            makeTranscriptItem({
+              sequence: 2,
+              role: 'assistant',
+              text: [
+                'The request is an explanatory overview, so Ask would handle it better.',
+                `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
+              ].join('\n\n'),
+            }),
+            makeTranscriptItem({
+              runId: 'run-2',
+              sequence: 1,
+              role: 'user',
+              text: continuationPrompt,
+            }),
+            makeTranscriptItem({
+              runId: 'run-2',
+              sequence: 2,
+              role: 'assistant',
+              text: 'The project is a desktop agent development platform.',
+            }),
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Continued with Agent.')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Switch to Ask' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Continue with Agent' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/The user chose to stay with the current Agent/)).not.toBeInTheDocument()
+  })
+
+  it('keeps an accepted routing suggestion resolved after the session transcript reloads', () => {
+    const routingSummary =
+      "Provide a high-level description of the Xero project's purpose, structure, and key components."
+    const continuationPrompt = [
+      'The user accepted the routing suggestion to switch to Ask.',
+      'Continue the original request now in this same session.',
+      'Target agent: Ask',
+      `Carry over: ${routingSummary}`,
+      'Routing reason: Request is for an explanatory overview of the project with no code changes or debugging needed',
+    ].join('\n\n')
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun({ runId: 'run-2' }),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [
+            makeTranscriptItem({
+              sequence: 1,
+              role: 'user',
+              text: 'Tell me about this project',
+            }),
+            makeTranscriptItem({
+              sequence: 2,
+              role: 'assistant',
+              text: [
+                'The request is an explanatory overview, so Ask would handle it better.',
+                `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
+              ].join('\n\n'),
+            }),
+            makeTranscriptItem({
+              runId: 'run-2',
+              sequence: 1,
+              role: 'user',
+              text: continuationPrompt,
+            }),
+            makeTranscriptItem({
+              runId: 'run-2',
+              sequence: 2,
+              role: 'assistant',
+              text: 'The project is a desktop agent development platform.',
+            }),
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Switched to Ask and continued.')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Switch to Ask' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Continue with Agent' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/The user accepted the routing suggestion/)).not.toBeInTheDocument()
   })
 
   it('shows an agent thinking row immediately while a submitted prompt is starting', () => {
@@ -2015,6 +2568,28 @@ describe('AgentRuntime current UI', () => {
 
     expect(screen.getByRole('status', { name: 'Agent is thinking' })).toBeVisible()
     expect(screen.queryByText(/What can we build together/i)).not.toBeInTheDocument()
+  })
+
+  it('does not show the agent thinking row when an active run has a stale stream', () => {
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'stale',
+          runtimeStreamStatusLabel: 'Stream stale',
+          runtimeStreamError: {
+            code: 'runtime_stream_subscribe_timeout',
+            message: 'Xero could not connect the live runtime stream in time. Retry the stream to reconnect.',
+            retryable: true,
+            observedAt: '2026-06-02T18:00:00Z',
+          },
+        })}
+      />,
+    )
+
+    expect(screen.queryByRole('status', { name: 'Agent is thinking' })).not.toBeInTheDocument()
+    expect(screen.getByText(/could not connect the live runtime stream/i)).toBeVisible()
   })
 
   it('renders a submitted prompt immediately while the runtime update is still in flight', async () => {
@@ -2270,6 +2845,122 @@ describe('AgentRuntime current UI', () => {
 
     expect(within(conversation).getAllByText(submittedPrompt)).toHaveLength(1)
     expect(within(conversation).getByText(submittedPrompt)).toBe(promptRow)
+  })
+
+  it('anchors a follow-up prompt at the top when it starts a fresh run', async () => {
+    const submittedPrompt = 'How do the pieces connect?'
+    const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
+    scrollIntoView.mockClear()
+    const originalRequestAnimationFrame = Object.getOwnPropertyDescriptor(window, 'requestAnimationFrame')
+    Object.defineProperty(window, 'requestAnimationFrame', {
+      configurable: true,
+      writable: true,
+      value: (callback: FrameRequestCallback) => {
+        callback(0)
+        return 1
+      },
+    })
+
+    const previousRun = makeRuntimeRun({
+      status: 'stopped',
+      statusLabel: 'Stopped',
+      isActive: false,
+      isTerminal: true,
+      stoppedAt: '2026-04-29T00:55:00Z',
+    })
+    const initialItems: NonNullable<AgentPaneView['runtimeStreamItems']> = [
+      makeTranscriptItem({ sequence: 1, role: 'user', text: 'Summarize the architecture.' }),
+      makeTranscriptItem({ sequence: 2, text: 'The client and cloud surfaces share project state.' }),
+    ]
+    const onStartRuntimeRun = vi.fn(async () => makeRuntimeRun({ runId: 'run-2' }))
+    const baseAgent = {
+      runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+      runtimeRun: previousRun,
+      runtimeStreamStatus: 'complete' as const,
+      runtimeStreamStatusLabel: 'Complete',
+      runtimeStreamItems: initialItems,
+    }
+
+    try {
+      const { rerender } = render(
+        <AgentRuntime
+          agent={makeAgent(baseAgent)}
+          onStartRuntimeRun={onStartRuntimeRun}
+        />,
+      )
+
+      const viewport = screen.getByLabelText('Agent conversation viewport')
+      setScrollMetrics(viewport, {
+        scrollTop: 760,
+        scrollHeight: 1_600,
+        clientHeight: 420,
+      })
+      scrollIntoView.mockClear()
+
+      fireEvent.change(screen.getByLabelText('Agent input'), {
+        target: { value: submittedPrompt },
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+      await waitFor(() =>
+        expect(onStartRuntimeRun).toHaveBeenCalledWith(expect.objectContaining({
+          controls: expect.any(Object),
+          prompt: submittedPrompt,
+        })),
+      )
+      const promptTurn = screen
+        .getByText(submittedPrompt)
+        .closest('[data-conversation-turn-id]')
+      expect(promptTurn).toHaveAttribute('data-conversation-turn-role', 'user')
+      expect(promptTurn?.getAttribute('data-conversation-turn-id')).toMatch(/^pending-prompt:/)
+      expect(scrollIntoView).not.toHaveBeenCalledWith(expect.objectContaining({ block: 'end' }))
+
+      scrollIntoView.mockClear()
+      rerender(
+        <AgentRuntime
+          agent={makeAgent({
+            ...baseAgent,
+            runtimeRun: makeRuntimeRun({ runId: 'run-2' }),
+            runtimeStreamStatus: 'live',
+            runtimeStreamStatusLabel: 'Live stream',
+            selectedPrompt: {
+              text: submittedPrompt,
+              queuedAt: '2026-04-29T00:56:00Z',
+              hasQueuedPrompt: true,
+            },
+            runtimeStreamItems: [
+              ...initialItems,
+              {
+                ...makeTranscriptItem({
+                  runId: 'run-2',
+                  sequence: 1,
+                  role: 'user',
+                  text: submittedPrompt,
+                }),
+                createdAt: '2026-04-29T00:56:01Z',
+              },
+              makeTranscriptItem({
+                runId: 'run-2',
+                sequence: 2,
+                text: 'They connect through the desktop runtime bridge.',
+              }),
+            ],
+          })}
+          onStartRuntimeRun={onStartRuntimeRun}
+        />,
+      )
+      await act(async () => {
+        await Promise.resolve()
+      })
+
+      expect(screen.getByText('They connect through the desktop runtime bridge.')).toBeVisible()
+    } finally {
+      if (originalRequestAnimationFrame) {
+        Object.defineProperty(window, 'requestAnimationFrame', originalRequestAnimationFrame)
+      } else {
+        Reflect.deleteProperty(window, 'requestAnimationFrame')
+      }
+    }
   })
 
   it('pauses auto-follow when the user scrolls away and resumes from the latest button', () => {
@@ -2685,6 +3376,69 @@ describe('AgentRuntime current UI', () => {
     expect(screen.getByText('Loaded project context 0.')).toBeVisible()
   })
 
+  it('keeps a grouped tool row mounted as more adjacent tools arrive', () => {
+    const firstItems = [
+      makeTranscriptItem({ sequence: 2, role: 'user', text: 'Inspect several files.' }),
+      makeToolItem({
+        sequence: 3,
+        toolCallId: 'call-read-0',
+        toolName: 'read',
+        toolState: 'succeeded',
+        detail: 'Read tool 0.',
+      }),
+      makeToolItem({
+        sequence: 4,
+        toolCallId: 'call-read-1',
+        toolName: 'read',
+        toolState: 'succeeded',
+        detail: 'Read tool 1.',
+      }),
+    ]
+    const nextItems = [
+      ...firstItems,
+      makeToolItem({
+        sequence: 5,
+        toolCallId: 'call-read-2',
+        toolName: 'read',
+        toolState: 'succeeded',
+        detail: 'Read tool 2.',
+      }),
+    ]
+
+    const { rerender } = render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: firstItems,
+        })}
+      />,
+    )
+    const groupedButton = screen.getByRole('button', {
+      name: /show grouped tool details for 2 tool calls/i,
+    })
+
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: nextItems,
+        })}
+      />,
+    )
+
+    expect(
+      screen.getByRole('button', {
+        name: /show grouped tool details for 3 tool calls/i,
+      }),
+    ).toBe(groupedButton)
+  })
+
   it('shows adjacent tool calls individually when grouping is disabled', () => {
     const toolBurst = Array.from({ length: 4 }, (_, index) =>
       makeToolItem({
@@ -2869,7 +3623,7 @@ describe('AgentRuntime current UI', () => {
     expect(screen.getByText('Read 80 line(s) from `client/components/xero/agent-runtime.tsx`.')).toBeVisible()
     expect(screen.queryByText('Tool activity recorded.')).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /show tool details for read agent-runtime\.tsx/i }))
+    fireEvent.click(screen.getByRole('button', { name: /show compact tool details for read agent-runtime\.tsx/i }))
 
     expect(screen.queryByText('Input')).not.toBeInTheDocument()
     expect(screen.queryByText('Result')).not.toBeInTheDocument()
@@ -2951,7 +3705,7 @@ describe('AgentRuntime current UI', () => {
       }),
     ])
 
-    fireEvent.click(screen.getByRole('button', { name: /show tool details/i }))
+    fireEvent.click(screen.getByRole('button', { name: /show compact tool details/i }))
 
     const output = screen.getByText((content) =>
       content.includes('first assertion passed') && content.includes('second assertion passed'),
@@ -3025,6 +3779,76 @@ describe('AgentRuntime current UI', () => {
 
     expect(screen.getByText('read package.json')).toBeVisible()
     expect(screen.getByText('find')).toBeVisible()
+  })
+
+  it('collapses completed tool calls even when earlier calls are still running', () => {
+    renderRuntimeStreamItems([
+      makeToolItem({
+        sequence: 2,
+        toolCallId: 'call-read-complete',
+        toolName: 'read',
+        toolState: 'succeeded',
+        detail: 'Read package.json.',
+        toolSummary: {
+          kind: 'file',
+          path: 'package.json',
+          scope: null,
+          lineCount: 12,
+          matchCount: null,
+          truncated: false,
+        },
+      }),
+      makeToolItem({
+        sequence: 3,
+        toolCallId: 'call-find-complete',
+        toolName: 'find',
+        toolState: 'succeeded',
+        detail: 'Found matching files.',
+      }),
+      makeToolItem({
+        sequence: 4,
+        toolCallId: 'call-read-running',
+        toolName: 'read',
+        toolState: 'running',
+        detail: 'path: client/components/xero/agent-runtime.tsx, startLine: 1, lineCount: 80',
+      }),
+      makeToolItem({
+        sequence: 5,
+        toolCallId: 'call-command-running',
+        toolName: 'command',
+        toolState: 'running',
+        detail: 'argv: pnpm test',
+      }),
+      makeToolItem({
+        sequence: 6,
+        toolCallId: 'call-read-later-complete',
+        toolName: 'read',
+        toolState: 'succeeded',
+        detail: 'Read final file.',
+        toolSummary: {
+          kind: 'file',
+          path: 'client/src/final.ts',
+          scope: null,
+          lineCount: 8,
+          matchCount: null,
+          truncated: false,
+        },
+        toolResultPreview: 'export const finalValue = true',
+      }),
+    ])
+
+    expect(screen.getByText('2 tool calls')).toBeVisible()
+    expect(screen.getByText('read agent-runtime.tsx')).toBeVisible()
+    expect(screen.getByText('run pnpm test')).toBeVisible()
+    expect(screen.queryByText('export const finalValue = true')).not.toBeInTheDocument()
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /show compact tool details for read final\.ts/i,
+      }),
+    )
+
+    expect(screen.getByText('export const finalValue = true')).toBeVisible()
   })
 
   it('renders long tool bursts without evicting the surrounding transcript turns', () => {

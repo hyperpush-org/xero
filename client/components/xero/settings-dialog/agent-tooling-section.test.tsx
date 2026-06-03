@@ -217,6 +217,31 @@ describe('AgentToolingSection', () => {
     expect(adapter.agentToolingUpdateSettings).not.toHaveBeenCalled()
   })
 
+  it('saves the automatic agent routing preference without touching model tooling settings', async () => {
+    const adapter = makeAdapter()
+    const onAgentRoutingAutoSwitchChange = vi.fn(async () => undefined)
+
+    render(
+      <AgentToolingSection
+        adapter={adapter}
+        agentRoutingAutoSwitchEnabled={false}
+        onAgentRoutingAutoSwitchChange={onAgentRoutingAutoSwitchChange}
+      />,
+    )
+
+    const autoSwitch = await screen.findByRole('switch', {
+      name: 'Auto-switch suggested agents',
+    })
+    expect(autoSwitch).not.toBeChecked()
+
+    fireEvent.click(autoSwitch)
+
+    await waitFor(() =>
+      expect(onAgentRoutingAutoSwitchChange).toHaveBeenCalledWith(true),
+    )
+    expect(adapter.agentToolingUpdateSettings).not.toHaveBeenCalled()
+  })
+
   it('renders saved per-model overrides and updates an override style through the adapter', async () => {
     const adapter = makeAdapter({
       settings: makeSettings({

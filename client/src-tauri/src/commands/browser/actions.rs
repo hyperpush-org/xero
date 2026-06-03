@@ -23,12 +23,21 @@ pub fn parse_url(input: &str) -> CommandResult<Url> {
     if trimmed.is_empty() {
         return Err(CommandError::invalid_request("url"));
     }
-    Url::parse(trimmed).map_err(|error| {
+    let parsed = Url::parse(trimmed).map_err(|error| {
         CommandError::user_fixable(
             "browser_invalid_url",
             format!("Xero could not parse the requested URL: {error}"),
         )
-    })
+    })?;
+    Ok(normalize_loopback_url(parsed))
+}
+
+fn normalize_loopback_url(mut url: Url) -> Url {
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    if matches!(host.as_str(), "localhost" | "0.0.0.0") {
+        let _ = url.set_host(Some("127.0.0.1"));
+    }
+    url
 }
 
 pub fn validate_selector(selector: &str) -> CommandResult<String> {
@@ -1752,6 +1761,18 @@ mod tests {
         let parsed = parse_url("https://example.com/path?q=1").unwrap();
         assert_eq!(parsed.scheme(), "https");
         assert_eq!(parsed.host_str(), Some("example.com"));
+    }
+
+    #[test]
+    fn parse_url_normalizes_ambiguous_loopback_hosts_to_ipv4() {
+        let localhost = parse_url("http://localhost:4200/path?q=1").unwrap();
+        assert_eq!(localhost.as_str(), "http://127.0.0.1:4200/path?q=1");
+
+        let any_addr = parse_url("http://0.0.0.0:4200/").unwrap();
+        assert_eq!(any_addr.as_str(), "http://127.0.0.1:4200/");
+
+        let ipv6_loopback = parse_url("http://[::1]:4200/").unwrap();
+        assert_eq!(ipv6_loopback.as_str(), "http://[::1]:4200/");
     }
 
     #[test]

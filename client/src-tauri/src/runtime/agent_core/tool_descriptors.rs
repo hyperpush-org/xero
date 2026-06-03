@@ -8108,6 +8108,28 @@ mod tests {
     }
 
     #[test]
+    fn explicit_wait_prompt_exposes_runtime_wait_without_tool_access() {
+        let mut controls = runtime_controls_from_request(None);
+        controls.active.runtime_agent_id = RuntimeAgentIdDto::Generalist;
+        let registry = ToolRegistry::for_prompt_with_options(
+            std::path::Path::new("."),
+            "Wait 10 seconds then look at this project and tell me what its about",
+            &controls,
+            ToolRegistryOptions {
+                runtime_agent_id: RuntimeAgentIdDto::Generalist,
+                ..ToolRegistryOptions::default()
+            },
+        );
+
+        assert!(registry.descriptor(AUTONOMOUS_TOOL_RUNTIME_WAIT).is_some());
+        assert!(exposure_has_reason(
+            &registry,
+            AUTONOMOUS_TOOL_RUNTIME_WAIT,
+            "scheduled_wait_intent"
+        ));
+    }
+
+    #[test]
     fn disjunctive_builtin_tool_schemas_still_declare_root_object_type() {
         for descriptor in builtin_tool_descriptors() {
             let has_disjunction = descriptor.input_schema.get("oneOf").is_some()

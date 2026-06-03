@@ -817,7 +817,7 @@ pub fn prepare_owned_agent_continuation_for_drive(
         &before,
     )?;
 
-    let continuation_role = if request.internal_resume.is_some() {
+    if request.internal_resume.is_some() {
         if !request.attachments.is_empty() {
             return Err(CommandError::invalid_request("attachments"));
         }
@@ -828,7 +828,6 @@ pub fn prepare_owned_agent_continuation_for_drive(
             AgentMessageRole::Developer,
             request.prompt.clone(),
         )?;
-        "developer"
     } else {
         let continuation_attachment_inputs = message_attachments_to_inputs(&request.attachments);
         append_user_message_with_attachments(
@@ -838,19 +837,14 @@ pub fn prepare_owned_agent_continuation_for_drive(
             request.prompt.clone(),
             continuation_attachment_inputs,
         )?;
-        "user"
-    };
-    append_event(
-        &request.repo_root,
-        &request.project_id,
-        &request.run_id,
-        AgentRunEventKind::MessageDelta,
-        json!({
-            "role": continuation_role,
-            "text": request.prompt,
-            "internalResume": request.internal_resume.as_ref(),
-        }),
-    )?;
+        append_event(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+            AgentRunEventKind::MessageDelta,
+            json!({ "role": "user", "text": request.prompt.clone() }),
+        )?;
+    }
     let resumed_at = now_timestamp();
     let snapshot = project_store::update_agent_run_status(
         &request.repo_root,
@@ -3372,7 +3366,7 @@ fn record_scheduled_wait_checkpoints(
         &NewAgentCheckpointRecord {
             project_id: snapshot.run.project_id.clone(),
             run_id: snapshot.run.run_id.clone(),
-            checkpoint_kind: "scheduled_wait".into(),
+            checkpoint_kind: "tool".into(),
             summary: summary.clone(),
             payload_json: Some(payload_json),
             created_at: now.clone(),
@@ -4340,6 +4334,60 @@ mod tests {
 
     fn save_custom_definition(repo_root: &Path, definition_id: &str, profile: &str) {
         save_custom_definition_with_attached(repo_root, definition_id, profile, json!([]));
+    }
+
+    #[test]
+    fn scheduled_wait_checkpoint_uses_allowed_agent_checkpoint_kind() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "scheduled-wait-checkpoint";
+        let run_id = "scheduled-wait-run";
+        create_project_database(&repo_root, project_id);
+        let snapshot = project_store::insert_agent_run(
+            &repo_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Generalist,
+                agent_definition_id: None,
+                agent_definition_version: None,
+                project_id: project_id.into(),
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: run_id.into(),
+                provider_id: "test-provider".into(),
+                model_id: "test-model".into(),
+                prompt: "Wait before inspecting.".into(),
+                system_prompt: "Test system prompt.".into(),
+                now: "2026-06-02T20:58:00Z".into(),
+            },
+        )
+        .expect("insert run");
+
+        record_scheduled_wait_checkpoints(
+            &repo_root,
+            &snapshot,
+            &[json!({
+                "wakeId": "wake-1",
+                "kind": "sleep",
+                "dueAt": "2026-06-02T20:58:10Z",
+            })],
+            "Owned-agent run scheduled wakeup `wake-1` for 2026-06-02T20:58:10Z.",
+        )
+        .expect("record scheduled wait checkpoint");
+
+        let snapshot =
+            project_store::load_agent_run(&repo_root, project_id, run_id).expect("load run");
+        let checkpoint = snapshot.checkpoints.last().expect("checkpoint");
+
+        assert_eq!(checkpoint.checkpoint_kind, "tool");
+        assert_eq!(
+            checkpoint.summary,
+            "Agent waiting for scheduled wakeup `wake-1` due at 2026-06-02T20:58:10Z."
+        );
+        let payload: JsonValue =
+            serde_json::from_str(checkpoint.payload_json.as_deref().expect("payload json"))
+                .expect("decode checkpoint payload");
+        assert_eq!(payload["state"], json!("scheduled_wait"));
+        assert_eq!(payload["stopReason"], json!("scheduled_wait"));
     }
 
     fn save_custom_definition_with_attached(

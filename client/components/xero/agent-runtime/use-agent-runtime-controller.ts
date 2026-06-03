@@ -37,6 +37,12 @@ export interface PendingOperatorIntent {
   kind: OperatorIntentKind
 }
 
+interface SubmitExplicitPromptOptions {
+  controls?: RuntimeRunControlInputDto | null
+  promptVisibility?: 'user' | 'internal'
+  replaceQueuedPrompt?: boolean
+}
+
 interface UseAgentRuntimeControllerOptions {
   projectId: string
   selectedModelSelectionKey: string | null
@@ -981,13 +987,15 @@ export function useAgentRuntimeController({
 
   async function handleSubmitExplicitPrompt(
     prompt: string,
-    options: { controls?: RuntimeRunControlInputDto | null } = {},
+    options: SubmitExplicitPromptOptions = {},
   ): Promise<boolean> {
     const promptToSubmit = prompt.trim()
     const controlsToSubmit = options.controls ?? null
+    const acknowledgeAsUserPrompt = options.promptVisibility !== 'internal'
+    const hasBlockingQueuedPrompt = hasQueuedPrompt && options.replaceQueuedPrompt !== true
     if (
       promptToSubmit.length === 0 ||
-      hasQueuedPrompt ||
+      hasBlockingQueuedPrompt ||
       runtimeRunActionStatus === 'running'
     ) {
       return false
@@ -1030,7 +1038,9 @@ export function useAgentRuntimeController({
           controls: controlsToSubmit ?? selectedControlInput,
           prompt: promptToSubmit,
         })
-        setQueuedDraftAcknowledgement(promptToSubmit)
+        if (acknowledgeAsUserPrompt) {
+          setQueuedDraftAcknowledgement(promptToSubmit)
+        }
         return true
       }
 
@@ -1046,7 +1056,9 @@ export function useAgentRuntimeController({
         ...(controlsToSubmit ? { controls: controlsToSubmit } : {}),
         prompt: promptToSubmit,
       })
-      setQueuedDraftAcknowledgement(promptToSubmit)
+      if (acknowledgeAsUserPrompt) {
+        setQueuedDraftAcknowledgement(promptToSubmit)
+      }
       return true
     } catch (error) {
       setQueuedDraftAcknowledgement(null)

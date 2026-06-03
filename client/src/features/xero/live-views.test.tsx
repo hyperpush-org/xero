@@ -278,12 +278,14 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
       summary: 'Recovered repository context before reconnecting the live feed.',
       createdAt: '2026-04-15T20:00:06Z',
     },
+    waitingSummary: null,
     checkpointCount: 2,
     hasCheckpoints: true,
     isActive: true,
     isTerminal: false,
     isStale: false,
     isFailed: false,
+    isWaiting: false,
     ...overrides,
   }
 }

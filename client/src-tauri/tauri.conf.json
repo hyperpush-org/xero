@@ -28,7 +28,7 @@
       }
     ],
     "security": {
-      "capabilities": ["default"],
+      "capabilities": ["default", "browser-webview"],
       "csp": {
         "default-src": ["'self'"],
         "script-src": ["'self'"],

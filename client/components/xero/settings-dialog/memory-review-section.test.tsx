@@ -35,6 +35,19 @@ function makeItem(
       sourceItemIds: ['message-3'],
       diagnostic: null,
     },
+    reinforcement: overrides.reinforcement ?? {
+      count: 1,
+      lastReinforcedAt: CREATED_AT,
+      sources: [
+        {
+          observedAt: CREATED_AT,
+          sourceRunId: 'run-12',
+          sourceItemIds: ['message-3'],
+        },
+      ],
+      latestSourceRunId: 'run-12',
+      latestSourceItemIds: ['message-3'],
+    },
     freshness: overrides.freshness ?? {
       state: 'current',
       checkedAt: CREATED_AT,

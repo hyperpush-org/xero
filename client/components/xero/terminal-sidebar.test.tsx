@@ -217,7 +217,7 @@ describe("TerminalSidebar persistence", () => {
     vi.useRealTimers()
   })
 
-  it("hydrates project tabs from app-data and replays saved transcript without replaying commands", async () => {
+  it("hydrates project tabs from app-data without repainting stale transcript output", async () => {
     setupAdapter({
       states: new Map([
         [
@@ -236,9 +236,10 @@ describe("TerminalSidebar persistence", () => {
       clientTerminalId: "client-web",
       cols: 120,
       rows: 32,
-      suppressTranscriptUntilInput: true,
+      suppressTranscriptUntilInput: false,
     })
-    expect(mocks.terminals[0].writes.join("")).toContain("old output")
+    expect(mocks.adapter.terminalReadTranscript).not.toHaveBeenCalled()
+    expect(mocks.terminals[0].writes.join("")).not.toContain("old output")
     expect(mocks.adapter.terminalWrite).not.toHaveBeenCalledWith(
       "pty-1",
       expect.stringContaining("pnpm dev"),
@@ -286,7 +287,7 @@ describe("TerminalSidebar persistence", () => {
       clientTerminalId: "client-api",
       cols: 120,
       rows: 32,
-      suppressTranscriptUntilInput: true,
+      suppressTranscriptUntilInput: false,
     })
   })
 
@@ -335,7 +336,7 @@ describe("TerminalSidebar persistence", () => {
     expect(mocks.adapter.terminalReadTranscript).not.toHaveBeenCalled()
   })
 
-  it("suppresses restored shell startup output until user input", async () => {
+  it("paints restored tab output from the fresh PTY immediately", async () => {
     setupAdapter({
       states: new Map([["project-a", persistedState([basePersistedTab])]]),
       transcripts: new Map([["client-web", "old prompt\r\nold output\r\n"]]),
@@ -345,9 +346,9 @@ describe("TerminalSidebar persistence", () => {
 
     await waitFor(() => expect(mocks.listeners.get("terminal:data")?.length).toBeGreaterThan(0))
     await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1))
-    emitTerminalData("pty-1", "duplicate startup\r\n")
-    expect(mocks.terminals[0].writes.join("")).toContain("old output")
-    expect(mocks.terminals[0].writes.join("")).not.toContain("duplicate startup")
+    emitTerminalData("pty-1", "fresh startup\r\n")
+    expect(mocks.terminals[0].writes.join("")).not.toContain("old output")
+    expect(mocks.terminals[0].writes.join("")).toContain("fresh startup")
 
     mocks.terminals[0].dataHandler?.("git status\r")
     expect(mocks.adapter.terminalWrite).toHaveBeenCalledWith("pty-1", "git status\r")
@@ -356,7 +357,7 @@ describe("TerminalSidebar persistence", () => {
     expect(mocks.terminals[0].writes.join("")).toContain("new command output")
   })
 
-  it("does not replay an unsent editable line from a restored transcript", async () => {
+  it("ignores persisted input buffers when opening a fresh PTY for a restored tab", async () => {
     setupAdapter({
       states: new Map([
         [
@@ -375,26 +376,8 @@ describe("TerminalSidebar persistence", () => {
     render(<TerminalSidebar open projectId="project-a" />)
 
     await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1))
-    expect(mocks.terminals[0].writes.join("")).toBe("sn0w@host project % ")
-  })
-
-  it("drops unsent prompt input even when the latest input buffer was not persisted", async () => {
-    setupAdapter({
-      states: new Map([["project-a", persistedState([basePersistedTab])]]),
-      transcripts: new Map([
-        [
-          "client-web",
-          "/Users/sn0w/.zshrc:4: no such file or directory: /Users/sn0w/.mesh/env\r\n%\r\nsn0w@host project % clearpnpm run build",
-        ],
-      ]),
-    })
-
-    render(<TerminalSidebar open projectId="project-a" />)
-
-    await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1))
-    expect(mocks.terminals[0].writes.join("")).toBe(
-      "/Users/sn0w/.zshrc:4: no such file or directory: /Users/sn0w/.mesh/env\r\n%\r\nsn0w@host project % ",
-    )
+    expect(mocks.adapter.terminalReadTranscript).not.toHaveBeenCalled()
+    expect(mocks.terminals[0].writes.join("")).toBe("")
   })
 
   it("persists the current unsubmitted input buffer with the tab descriptor", async () => {

@@ -6296,6 +6296,7 @@ dependencies = [
  "bitflags 2.11.1",
  "objc2",
  "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation",
 ]
 
@@ -11887,7 +11888,9 @@ dependencies = [
  "mime_guess",
  "objc2",
  "objc2-app-kit",
+ "objc2-core-graphics",
  "objc2-foundation",
+ "objc2-quartz-core",
  "objc2-web-kit",
  "openh264",
  "portable-pty",

@@ -13,9 +13,10 @@ pub(crate) use run::{
     emit_runtime_run_updated_if_changed, ensure_owned_runtime_provider_turn_capabilities,
     fail_owned_runtime_run, generate_runtime_run_id, launch_or_reconnect_runtime_run,
     load_persisted_runtime_run, load_runtime_run_status, resolve_owned_agent_provider_config,
-    resolve_owned_runtime_profile_selection, runtime_run_dto_from_snapshot,
-    runtime_run_status_from_persisted, staged_attachment_dto_to_message_attachment,
-    stop_owned_runtime_run, update_owned_runtime_run_controls,
+    resolve_owned_runtime_profile_selection, runtime_control_input_from_active,
+    runtime_run_dto_from_snapshot, runtime_run_status_from_persisted,
+    staged_attachment_dto_to_message_attachment, stop_owned_runtime_run,
+    update_owned_runtime_run_controls,
 };
 #[allow(unused_imports)]
 pub(crate) use session::runtime_session_from_record;

@@ -691,7 +691,9 @@ fn page_signature(url: &Option<String>, title: &Option<String>, ref_count: usize
 fn invalid_ref_error(value: &str) -> CommandError {
     CommandError::user_fixable(
         "browser_ref_invalid",
-        format!("Browser ref `{value}` must use the format @v<snapshot>:e<element>, for example @v1:e1."),
+        format!(
+            "Browser ref `{value}` must use the format @v<snapshot>:e<element>, for example @v1:e1."
+        ),
     )
 }
 

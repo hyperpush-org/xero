@@ -2181,13 +2181,12 @@ pub struct AgentUsageCostBackfillRow {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
+    pub estimated_cost_micros: u64,
 }
 
-/// List rows that need a cost recompute — rows priced at 0 but with non-zero
-/// token activity. Existed pre-Phase-3 (or were written by ollama / unknown
-/// models that legitimately price at 0; those will still resolve to 0 and
-/// won't trigger a write).
-pub fn list_unpriced_agent_usage_rows(
+/// List token-usage rows that can have `estimated_cost_micros` recomputed from
+/// the current pricing catalog.
+pub fn list_agent_usage_cost_rows(
     repo_root: &Path,
 ) -> Result<Vec<AgentUsageCostBackfillRow>, CommandError> {
     let connection = open_agent_database(repo_root)?;
@@ -2202,10 +2201,10 @@ pub fn list_unpriced_agent_usage_rows(
                 billable_input_tokens,
                 output_tokens,
                 cache_read_tokens,
-                cache_creation_tokens
+                cache_creation_tokens,
+                estimated_cost_micros
             FROM agent_usage
-            WHERE estimated_cost_micros = 0
-              AND total_tokens > 0
+            WHERE total_tokens > 0
             "#,
         )
         .map_err(|error| {
@@ -2222,6 +2221,7 @@ pub fn list_unpriced_agent_usage_rows(
                 output_tokens: read_nonnegative_u64(row, 5)?,
                 cache_read_tokens: read_nonnegative_u64(row, 6)?,
                 cache_creation_tokens: read_nonnegative_u64(row, 7)?,
+                estimated_cost_micros: read_nonnegative_u64(row, 8)?,
             })
         })
         .map_err(|error| {

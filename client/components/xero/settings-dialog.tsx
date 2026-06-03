@@ -404,6 +404,8 @@ export interface SettingsDialogProps {
   powerAdapter?: PowerSettingsAdapter
   toolCallGroupingPreference?: ToolCallGroupingPreference
   onToolCallGroupingPreferenceChange?: (preference: ToolCallGroupingPreference) => Promise<void> | void
+  agentRoutingAutoSwitchEnabled?: boolean
+  onAgentRoutingAutoSwitchChange?: (enabled: boolean) => Promise<void> | void
   memoryReviewAdapter?: MemoryReviewAdapter | null
   projectStateAdapter?: ProjectStateAdapter | null
   dangerAdapter?: DangerSettingsAdapter | null
@@ -535,6 +537,8 @@ export function SettingsDialog({
   powerAdapter,
   toolCallGroupingPreference,
   onToolCallGroupingPreferenceChange,
+  agentRoutingAutoSwitchEnabled,
+  onAgentRoutingAutoSwitchChange,
   memoryReviewAdapter = null,
   projectStateAdapter = null,
   dangerAdapter = null,
@@ -798,6 +802,8 @@ export function SettingsDialog({
           adapter={agentToolingAdapter}
           toolCallGroupingPreference={toolCallGroupingPreference}
           onToolCallGroupingPreferenceChange={onToolCallGroupingPreferenceChange}
+          agentRoutingAutoSwitchEnabled={agentRoutingAutoSwitchEnabled}
+          onAgentRoutingAutoSwitchChange={onAgentRoutingAutoSwitchChange}
         />
       )
     }

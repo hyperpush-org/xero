@@ -10,6 +10,7 @@ pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
       sequence: 0,
       navigationGeneration: 1,
       mutationGeneration: 0,
+      errors: [],
       inFlightFetch: 0,
       inFlightXhr: 0,
       lastNetworkStartedAt: 0,
@@ -26,11 +27,40 @@ pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
     return state;
   })();
 
+  const rememberError = (kind, value) => {
+    try {
+      const text = value && (value.stack || value.message)
+        ? String(value.stack || value.message)
+        : String(value == null ? '' : value);
+      bridgeState.errors.push({
+        kind: String(kind || 'error'),
+        message: text.slice(0, 2000),
+        at: Date.now(),
+      });
+      if (bridgeState.errors.length > 20) bridgeState.errors.shift();
+    } catch (_error) {
+      // swallow
+    }
+  };
+
+  window.addEventListener('error', (event) => {
+    rememberError('error', event.error || event.message);
+  });
+  window.addEventListener('unhandledrejection', (event) => {
+    rememberError('unhandledrejection', event.reason);
+  });
+
   const invoke = (name, args) => {
     try {
       const tauri = window.__TAURI_INTERNALS__;
       if (tauri && typeof tauri.invoke === 'function') {
-        return tauri.invoke(name, args);
+        const result = tauri.invoke(name, args);
+        if (result && typeof result.catch === 'function') {
+          result.catch(() => {
+            // bridge IPC is best-effort for arbitrary remote pages
+          });
+        }
+        return result;
       }
     } catch (_error) {
       // swallow — bridge is best-effort
@@ -196,6 +226,27 @@ pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
     }
   };
 
+  const requestUrlForNetworkInstrumentation = (input) => {
+    try {
+      if (typeof input === 'string') return input;
+      if (input && typeof input.url === 'string') return input.url;
+    } catch (_error) {
+      // swallow
+    }
+    return '';
+  };
+
+  const isTauriIpcFetch = (input) => {
+    try {
+      const raw = requestUrlForNetworkInstrumentation(input);
+      if (!raw) return false;
+      const url = new URL(raw, location.href);
+      return url.protocol === 'ipc:' || url.hostname === 'ipc.localhost';
+    } catch (_error) {
+      return false;
+    }
+  };
+
   const emitNetwork = (payload) => {
     try {
       emit('network', Object.assign({ capturedAt: Date.now() }, payload || {}));
@@ -207,15 +258,13 @@ pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
   if (typeof window.fetch === 'function' && !window.fetch.__xero_wrapped__) {
     const originalFetch = window.fetch;
     const wrappedFetch = async function () {
+      if (isTauriIpcFetch(arguments[0])) {
+        return originalFetch.apply(this, arguments);
+      }
       const started = Date.now();
       const input = arguments[0];
       const init = arguments[1] || {};
-      const url =
-        typeof input === 'string'
-          ? input
-          : input && input.url
-            ? input.url
-            : '';
+      const url = requestUrlForNetworkInstrumentation(input);
       const method =
         (init && init.method) ||
         (input && input.method) ||

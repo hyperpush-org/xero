@@ -20,6 +20,8 @@ export const MAX_RUNTIME_STREAM_ACTION_REQUIRED_OPTIONS = 20
 export const MAX_RUNTIME_STREAM_MEDIA_ATTACHMENTS = 24
 const OWNED_AGENT_REASONING_ACTIVITY_CODE = 'owned_agent_reasoning'
 const OWNED_AGENT_REASONING_BOUNDARY_CODE = 'owned_agent_reasoning_boundary'
+const OWNED_AGENT_SCHEDULED_WAIT_ACTIVITY_CODE = 'owned_agent_scheduled_wait'
+const RUNTIME_WAIT_TOOL_NAME = 'runtime_wait'
 
 export const runtimeToolCallStateSchema = z.enum(['pending', 'running', 'succeeded', 'failed'])
 export const runtimeSkillLifecycleStageSchema = z.enum(['discovery', 'install', 'invoke'])
@@ -808,6 +810,154 @@ function latestRuntimeTimelineItem(
   return latestItem
 }
 
+function isScheduledWaitActivityItem(
+  item: RuntimeStreamViewItem,
+): item is RuntimeStreamActivityItemView {
+  return item.kind === 'activity' && item.code === OWNED_AGENT_SCHEDULED_WAIT_ACTIVITY_CODE
+}
+
+function latestScheduledWaitActivity(
+  items: readonly RuntimeStreamViewItem[],
+): RuntimeStreamActivityItemView | null {
+  let latestItem: RuntimeStreamActivityItemView | null = null
+  for (const item of items) {
+    if (!isScheduledWaitActivityItem(item)) {
+      continue
+    }
+    if (!latestItem || runtimeTimelineUpdateSequence(item) > runtimeTimelineUpdateSequence(latestItem)) {
+      latestItem = item
+    }
+  }
+  return latestItem
+}
+
+function latestRuntimeWaitToolBeforeSequence(
+  tools: readonly RuntimeStreamToolItemView[],
+  sequence: number,
+): RuntimeStreamToolItemView | null {
+  let latestTool: RuntimeStreamToolItemView | null = null
+  for (const tool of tools) {
+    if (tool.toolName !== RUNTIME_WAIT_TOOL_NAME || tool.sequence > sequence) {
+      continue
+    }
+    if (!latestTool || runtimeTimelineUpdateSequence(tool) > runtimeTimelineUpdateSequence(latestTool)) {
+      latestTool = tool
+    }
+  }
+  return latestTool
+}
+
+function latestRunningRuntimeWaitTool(
+  tools: readonly RuntimeStreamToolItemView[],
+): RuntimeStreamToolItemView | null {
+  let latestTool: RuntimeStreamToolItemView | null = null
+  for (const tool of tools) {
+    if (tool.toolName !== RUNTIME_WAIT_TOOL_NAME || tool.toolState !== 'running') {
+      continue
+    }
+    if (!latestTool || runtimeTimelineUpdateSequence(tool) > runtimeTimelineUpdateSequence(latestTool)) {
+      latestTool = tool
+    }
+  }
+  return latestTool
+}
+
+function updateRuntimeToolState(
+  item: RuntimeStreamViewItem,
+  toolCallId: string,
+  toolState: RuntimeToolCallStateDto,
+): RuntimeStreamViewItem {
+  if (item.kind !== 'tool' || item.toolCallId !== toolCallId || item.toolState === toolState) {
+    return item
+  }
+  return {
+    ...item,
+    toolState,
+  }
+}
+
+function itemResumesScheduledWait(
+  item: RuntimeStreamViewItem,
+  scheduledWait: RuntimeStreamActivityItemView,
+): boolean {
+  if (runtimeTimelineUpdateSequence(item) <= runtimeTimelineUpdateSequence(scheduledWait)) {
+    return false
+  }
+  return item.kind === 'transcript' ||
+    item.kind === 'tool' ||
+    item.kind === 'complete' ||
+    item.kind === 'failure'
+}
+
+function itemResumesRuntimeWaitTool(
+  item: RuntimeStreamViewItem,
+  waitTool: RuntimeStreamToolItemView,
+): boolean {
+  if (runtimeTimelineUpdateSequence(item) <= runtimeTimelineUpdateSequence(waitTool)) {
+    return false
+  }
+  if (item.kind === 'tool') {
+    return item.toolCallId !== waitTool.toolCallId
+  }
+  return item.kind === 'transcript' || item.kind === 'complete' || item.kind === 'failure'
+}
+
+function applyRuntimeWaitScheduledState(stream: RuntimeStreamView): RuntimeStreamView {
+  const scheduledWait = latestScheduledWaitActivity(stream.items)
+  if (!scheduledWait) {
+    return stream
+  }
+
+  const targetState = stream.items.some((item) => itemResumesScheduledWait(item, scheduledWait))
+    ? 'succeeded'
+    : 'running'
+  const waitTool = latestRuntimeWaitToolBeforeSequence(stream.toolCalls, scheduledWait.sequence)
+  if (!waitTool || waitTool.toolState === targetState) {
+    return stream
+  }
+
+  return {
+    ...stream,
+    items: stream.items.map((item) =>
+      updateRuntimeToolState(item, waitTool.toolCallId, targetState),
+    ),
+    toolCalls: stream.toolCalls.map((tool) =>
+      tool.toolCallId === waitTool.toolCallId
+        ? {
+            ...tool,
+            toolState: targetState,
+          }
+        : tool,
+    ),
+  }
+}
+
+function applyRuntimeWaitRunningResumeState(stream: RuntimeStreamView): RuntimeStreamView {
+  const waitTool = latestRunningRuntimeWaitTool(stream.toolCalls)
+  if (!waitTool || !stream.items.some((item) => itemResumesRuntimeWaitTool(item, waitTool))) {
+    return stream
+  }
+
+  return {
+    ...stream,
+    items: stream.items.map((item) =>
+      updateRuntimeToolState(item, waitTool.toolCallId, 'succeeded'),
+    ),
+    toolCalls: stream.toolCalls.map((tool) =>
+      tool.toolCallId === waitTool.toolCallId
+        ? {
+            ...tool,
+            toolState: 'succeeded',
+          }
+        : tool,
+    ),
+  }
+}
+
+function applyRuntimeWaitState(stream: RuntimeStreamView): RuntimeStreamView {
+  return applyRuntimeWaitRunningResumeState(applyRuntimeWaitScheduledState(stream))
+}
+
 function normalizeRuntimeCodeHistoryMetadata(
   item: RuntimeStreamItemDto,
 ): Pick<
@@ -1577,7 +1727,7 @@ export function createRuntimeStreamViewFromSnapshot(
     'action_required',
   )
 
-  return {
+  return applyRuntimeWaitState({
     projectId: snapshot.projectId,
     agentSessionId: snapshot.agentSessionId,
     runtimeKind: normalizeText(snapshot.runtimeKind, 'openai_codex'),
@@ -1605,7 +1755,7 @@ export function createRuntimeStreamViewFromSnapshot(
       : null,
     lastItemAt: snapshot.lastItemAt ?? null,
     lastSequence: snapshot.lastSequence ?? null,
-  }
+  })
 }
 
 export function mergeRuntimeStreamEvent(
@@ -1697,7 +1847,7 @@ export function mergeRuntimeStreamEvent(
     nextStatus === base.status &&
     !reopenedTerminalStream
 
-  return {
+  return applyRuntimeWaitState({
     ...base,
     agentSessionId: event.agentSessionId,
     runtimeKind: normalizeText(event.runtimeKind, base.runtimeKind),
@@ -1738,7 +1888,7 @@ export function mergeRuntimeStreamEvent(
           : null,
     lastItemAt: nextItem.createdAt,
     lastSequence: nextItem.sequence,
-  }
+  })
 }
 
 export function applyRuntimeStreamIssue(

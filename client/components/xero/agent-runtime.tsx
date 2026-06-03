@@ -133,7 +133,10 @@ import {
 import { SetupEmptyState } from './agent-runtime/setup-empty-state'
 import { useAgentRuntimeController } from './agent-runtime/use-agent-runtime-controller'
 import type { SpeechDictationAdapter } from './agent-runtime/use-speech-dictation'
-import { parseRoutingMarker } from './agent-runtime/routing-suggestion-marker'
+import {
+  parseRoutingMarker,
+  stripRoutingMarkers,
+} from './agent-runtime/routing-suggestion-marker'
 
 export type AgentRuntimeDesktopAdapter = SpeechDictationAdapter &
   Partial<
@@ -271,15 +274,17 @@ export interface AgentRuntimeProps {
   onPendingComposerInsertConsumed?: (id: string) => void
   /** True while browser tooling is preparing context for this composer. */
   browserContextLoading?: boolean
-  /** Display preference for compacting adjacent completed tool calls. */
+  /** Display preference for compacting completed tool calls. */
   toolCallGroupingPreference?: ToolCallGroupingPreference
+  /** Automatically accept agent routing suggestions and continue in the suggested agent. */
+  agentRoutingAutoSwitchEnabled?: boolean
 }
 
 const EMPTY_RUNTIME_STREAM_ITEMS: RuntimeStreamViewItem[] = []
 const EMPTY_ACTION_REQUIRED_ITEMS: NonNullable<AgentPaneView['actionRequiredItems']> = []
 const MAX_VISIBLE_RUNTIME_ACTION_TURNS = Number.POSITIVE_INFINITY
-const COMPACT_TOOL_BURST_THRESHOLD = 2
 const CONVERSATION_NEAR_BOTTOM_THRESHOLD_PX = 96
+const CONVERSATION_FOLLOW_UP_ANCHOR_TOP_OFFSET_PX = 28
 const BACKGROUND_PANE_STREAM_ITEM_LIMIT = 160
 const BACKGROUND_PANE_VISIBLE_TURN_LIMIT = 48
 const FOREGROUND_WORK_DEFER_MS = 32
@@ -333,6 +338,132 @@ export function isRuntimeConversationNearBottom(
   }
 
   return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= thresholdPx
+}
+
+export function getFollowUpAnchorScrollPlan({
+  anchorTop,
+  viewportHeight,
+  scrollHeight,
+  currentSpacerHeight,
+  topOffset = CONVERSATION_FOLLOW_UP_ANCHOR_TOP_OFFSET_PX,
+}: {
+  anchorTop: number
+  viewportHeight: number
+  scrollHeight: number
+  currentSpacerHeight: number
+  topOffset?: number
+}): { scrollTop: number; spacerHeight: number } {
+  const safeAnchorTop = Number.isFinite(anchorTop) ? Math.max(0, anchorTop) : 0
+  const safeViewportHeight = Number.isFinite(viewportHeight) ? Math.max(0, viewportHeight) : 0
+  const safeScrollHeight = Number.isFinite(scrollHeight) ? Math.max(0, scrollHeight) : 0
+  const safeCurrentSpacerHeight = Number.isFinite(currentSpacerHeight)
+    ? Math.max(0, currentSpacerHeight)
+    : 0
+  const safeTopOffset = Number.isFinite(topOffset) ? Math.max(0, topOffset) : 0
+  const scrollTop = Math.max(0, safeAnchorTop - safeTopOffset)
+  const naturalScrollHeight = Math.max(0, safeScrollHeight - safeCurrentSpacerHeight)
+  const naturalMaxScrollTop = Math.max(0, naturalScrollHeight - safeViewportHeight)
+  const spacerHeight = Math.max(0, Math.ceil(scrollTop - naturalMaxScrollTop))
+
+  return {
+    scrollTop,
+    spacerHeight,
+  }
+}
+
+function findConversationTurnElement(viewport: HTMLElement, turnId: string): HTMLElement | null {
+  const turns = viewport.querySelectorAll<HTMLElement>('[data-conversation-turn-id]')
+  for (const turn of turns) {
+    if (turn.getAttribute('data-conversation-turn-id') === turnId) {
+      return turn
+    }
+  }
+
+  return null
+}
+
+function getElementTopInScrollViewport(viewport: HTMLElement, element: HTMLElement): number {
+  const viewportRect = viewport.getBoundingClientRect()
+  const elementRect = element.getBoundingClientRect()
+  const rectTop = elementRect.top - viewportRect.top + viewport.scrollTop
+  if (
+    Number.isFinite(rectTop) &&
+    (elementRect.top !== 0 || viewportRect.top !== 0 || viewport.scrollTop !== 0)
+  ) {
+    return Math.max(0, rectTop)
+  }
+
+  let offsetTop = 0
+  let current: HTMLElement | null = element
+  while (current && current !== viewport) {
+    offsetTop += current.offsetTop
+    current = current.offsetParent as HTMLElement | null
+  }
+
+  return Math.max(0, offsetTop || element.offsetTop)
+}
+
+function scrollViewportTo(viewport: HTMLElement, top: number, behavior: ScrollBehavior): void {
+  const nextTop = Math.max(0, top)
+  if (typeof viewport.scrollTo === 'function') {
+    try {
+      viewport.scrollTo({ top: nextTop, behavior })
+      return
+    } catch {
+      viewport.scrollTop = nextTop
+      return
+    }
+  }
+
+  viewport.scrollTop = nextTop
+}
+
+function findFollowUpAnchorTurnIndex(
+  turns: readonly ConversationTurn[],
+  anchorTurnId: string,
+  queuedAnchorText: string | null | undefined,
+): number {
+  const directIndex = turns.findIndex((turn) => turn.id === anchorTurnId)
+  if (directIndex >= 0) {
+    return directIndex
+  }
+
+  const fallbackText = queuedAnchorText?.trim()
+  if (!fallbackText) {
+    return -1
+  }
+
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index]
+    if (
+      turn.kind === 'message' &&
+      turn.role === 'user' &&
+      turn.text.trim() === fallbackText
+    ) {
+      return index
+    }
+  }
+
+  return -1
+}
+
+export function shouldReleaseFollowUpAnchorForTurns({
+  turns,
+  anchorTurnId,
+  queuedAnchorText,
+}: {
+  turns: readonly ConversationTurn[]
+  anchorTurnId: string
+  queuedAnchorText?: string | null
+}): boolean {
+  const anchorTurnIndex = findFollowUpAnchorTurnIndex(turns, anchorTurnId, queuedAnchorText)
+  if (anchorTurnIndex < 0) {
+    return false
+  }
+
+  return turns
+    .slice(anchorTurnIndex + 1)
+    .some((turn) => turn.kind !== 'message' || turn.role !== 'user')
 }
 
 function appendTranscriptDelta(current: string, delta: string): string {
@@ -729,13 +860,14 @@ function actionGroupTurnFromActions(
 ): ConversationTurn {
   const firstAction = actions[0]
   const lastAction = actions.at(-1) ?? firstAction
+  const isSingleAction = actions.length === 1
 
   return {
-    id: `tool-group:${firstAction.id}:${lastAction.id}`,
+    id: `tool-group:${firstAction.id}`,
     kind: 'action_group',
     sequence: lastAction.sequence,
-    title: `${actions.length} tool calls`,
-    detail: summarizeActionGroup(actions),
+    title: isSingleAction ? firstAction.title : `${actions.length} tool calls`,
+    detail: isSingleAction ? firstAction.detail : summarizeActionGroup(actions),
     state: actionGroupState(actions),
     actions: actions.map((action) => ({
       id: action.id,
@@ -754,33 +886,32 @@ function actionGroupTurnFromActions(
 
 function compactActionBursts(turns: ConversationTurn[]): ConversationTurn[] {
   const compactedTurns: ConversationTurn[] = []
-  let actionBuffer: Extract<ConversationTurn, { kind: 'action' }>[] = []
+  let terminalActionBuffer: Extract<ConversationTurn, { kind: 'action' }>[] = []
 
-  const flushActionBuffer = () => {
-    if (actionBuffer.length >= COMPACT_TOOL_BURST_THRESHOLD) {
-      compactedTurns.push(actionGroupTurnFromActions(actionBuffer))
-    } else {
-      compactedTurns.push(...actionBuffer)
+  const flushTerminalActionBuffer = () => {
+    if (terminalActionBuffer.length === 0) {
+      return
     }
-    actionBuffer = []
+    compactedTurns.push(actionGroupTurnFromActions(terminalActionBuffer))
+    terminalActionBuffer = []
   }
 
   for (const turn of turns) {
     if (turn.kind === 'action') {
       if (isCodeEditAction(turn) || !isTerminalActionState(turn.state)) {
-        flushActionBuffer()
+        flushTerminalActionBuffer()
         compactedTurns.push(turn)
         continue
       }
-      actionBuffer.push(turn)
+      terminalActionBuffer.push(turn)
       continue
     }
 
-    flushActionBuffer()
+    flushTerminalActionBuffer()
     compactedTurns.push(turn)
   }
 
-  flushActionBuffer()
+  flushTerminalActionBuffer()
   return compactedTurns
 }
 
@@ -810,6 +941,20 @@ interface PendingPromptTurn {
   queuedAt: string | null
 }
 
+type RoutingResolutionRecord = {
+  acceptedTarget: RuntimeAgentIdDto | null
+  acceptedTargetAgentDefinitionId: string | null
+  acceptedTargetLabel: string | null
+  routingResolutionMode: 'manual' | 'automatic' | null
+}
+
+type PendingRoutingContinuation = {
+  turnId: string
+  decision: RoutingSuggestionDecision
+  prompt: string
+  controls: RuntimeRunControlInputDto | null
+}
+
 const conversationProjectionCache = new WeakMap<
   readonly RuntimeStreamViewItem[],
   Partial<Record<ToolCallGroupingPreference, ConversationProjection>>
@@ -827,18 +972,13 @@ function createTurnRoutingContext(): TurnRoutingContext {
   }
 }
 
-function maybeAttachRoutingSuggestion(
+function upsertRoutingSuggestionTurn(
   context: TurnRoutingContext,
-  messageTurn: Extract<ConversationTurn, { kind: 'message' }>,
+  sourceTurnId: string,
+  sourceSequence: number,
+  parsed: NonNullable<ReturnType<typeof parseRoutingMarker>>,
 ): void {
-  if (messageTurn.role !== 'assistant') return
-  const parsed = parseRoutingMarker(messageTurn.text)
-  if (!parsed) return
-
-  // Strip the marker from the message body so the assistant text reads cleanly.
-  messageTurn.text = messageTurn.text.replace(parsed.rawMarker, '').replace(/\n{3,}/g, '\n\n').trim()
-
-  const routingTurnId = `routing_suggestion:${messageTurn.id}`
+  const routingTurnId = `routing_suggestion:${sourceTurnId}`
   const existingIndex = context.turns.findIndex(
     (turn) => turn.kind === 'routing_suggestion' && turn.id === routingTurnId,
   )
@@ -846,7 +986,7 @@ function maybeAttachRoutingSuggestion(
   const next: Extract<ConversationTurn, { kind: 'routing_suggestion' }> = {
     id: routingTurnId,
     kind: 'routing_suggestion',
-    sequence: messageTurn.sequence + 0.5,
+    sequence: sourceSequence + 0.5,
     targetKind: parsed.targetKind,
     targetAgentId: parsed.targetAgentId,
     targetAgentDefinitionId: parsed.targetAgentDefinitionId,
@@ -858,6 +998,7 @@ function maybeAttachRoutingSuggestion(
     acceptedTarget: null,
     acceptedTargetAgentDefinitionId: null,
     acceptedTargetLabel: null,
+    routingResolutionMode: null,
   }
 
   if (existingIndex >= 0) {
@@ -867,12 +1008,28 @@ function maybeAttachRoutingSuggestion(
       next.acceptedTarget = existing.acceptedTarget
       next.acceptedTargetAgentDefinitionId = existing.acceptedTargetAgentDefinitionId
       next.acceptedTargetLabel = existing.acceptedTargetLabel
+      next.routingResolutionMode = existing.routingResolutionMode
     }
     context.turns[existingIndex] = next
     return
   }
 
   context.turns.push(next)
+}
+
+function maybeAttachRoutingSuggestion(
+  context: TurnRoutingContext,
+  messageTurn: Extract<ConversationTurn, { kind: 'message' }>,
+): void {
+  if (messageTurn.role !== 'assistant') return
+  const parsed = parseRoutingMarker(messageTurn.text)
+  const cleanText = stripRoutingMarkers(messageTurn.text)
+  if (cleanText !== messageTurn.text) {
+    messageTurn.text = cleanText
+  }
+  if (!parsed) return
+
+  upsertRoutingSuggestionTurn(context, messageTurn.id, messageTurn.sequence, parsed)
 }
 
 function buildRoutingDeclineContinuationPrompt(
@@ -922,6 +1079,42 @@ function buildRoutingAcceptContinuationPrompt(
   ].join('\n\n')
 }
 
+function getRoutingResolutionForDecision(
+  decision: RoutingSuggestionDecision,
+): RoutingResolutionRecord {
+  if (decision.kind === 'decline') {
+    return {
+      acceptedTarget: null,
+      acceptedTargetAgentDefinitionId: null,
+      acceptedTargetLabel: null,
+      routingResolutionMode: decision.resolutionMode ?? 'manual',
+    }
+  }
+
+  return {
+    acceptedTarget: decision.targetAgentId,
+    acceptedTargetAgentDefinitionId: decision.targetAgentDefinitionId ?? null,
+    acceptedTargetLabel: decision.targetLabel ?? null,
+    routingResolutionMode: decision.resolutionMode ?? 'manual',
+  }
+}
+
+function buildRoutingAcceptDecisionFromTurn(
+  turn: Extract<ConversationTurn, { kind: 'routing_suggestion' }>,
+  resolutionMode: 'manual' | 'automatic' = 'manual',
+): Extract<RoutingSuggestionDecision, { kind: 'accept' }> {
+  return {
+    kind: 'accept',
+    targetAgentId: turn.targetAgentId,
+    targetAgentDefinitionId: turn.targetAgentDefinitionId,
+    targetAgentDefinitionVersion: turn.targetAgentDefinitionVersion,
+    targetLabel: turn.targetLabel,
+    reason: turn.reason,
+    summary: turn.summary,
+    resolutionMode,
+  }
+}
+
 /**
  * Append the projected turn for a single runtime stream item into `context`,
  * preserving the assistant-transcript merge and tool-call dedupe behaviour.
@@ -966,15 +1159,23 @@ function routeItemIntoTurns(item: RuntimeStreamViewItem, context: TurnRoutingCon
 
   if (isReasoningActivityItem(item)) {
     const text = getReasoningActivityText(item)
-    if (text.trim().length === 0) {
+    const parsed = parseRoutingMarker(text)
+    const cleanText = stripRoutingMarkers(text)
+    if (cleanText.trim().length === 0) {
+      if (parsed) {
+        upsertRoutingSuggestionTurn(context, item.id, item.sequence, parsed)
+      }
       return false
     }
     context.turns.push({
       id: item.id,
       kind: 'thinking',
       sequence: item.sequence,
-      text,
+      text: cleanText,
     })
+    if (parsed) {
+      upsertRoutingSuggestionTurn(context, item.id, item.sequence, parsed)
+    }
     return false
   }
 
@@ -1291,6 +1492,176 @@ function getConversationTurnRunId(turn: ConversationTurn): string | null {
 
 function normalizeConversationTurnText(text: string): string {
   return text.trim().replace(/\s+/g, ' ')
+}
+
+interface InternalRoutingContinuationDecision {
+  kind: 'accept' | 'decline'
+  targetLabel: string
+}
+
+const ROUTING_DECLINE_CONTINUATION_PREFIX =
+  'The user chose to stay with the current Agent instead of switching to '
+const ROUTING_DECLINE_CONTINUATION_BODY =
+  'Continue the original request now. Do not stop at another routing recommendation for this same request.'
+const ROUTING_ACCEPT_CONTINUATION_PREFIX =
+  'The user accepted the routing suggestion to switch to '
+const ROUTING_ACCEPT_CONTINUATION_BODY =
+  'Continue the original request now in this same session.'
+
+function parseRoutingContinuationTargetLabel(
+  normalizedText: string,
+  prefix: string,
+  continuationBody: string,
+): string | null {
+  if (!normalizedText.startsWith(prefix)) {
+    return null
+  }
+
+  const targetWithRest = normalizedText.slice(prefix.length)
+  const continuationStart = targetWithRest.indexOf(`. ${continuationBody}`)
+  if (continuationStart < 0) {
+    return null
+  }
+  const targetLabel = (
+    targetWithRest.slice(0, continuationStart)
+  ).trim()
+  return targetLabel.length > 0 ? targetLabel : null
+}
+
+function parseInternalRoutingContinuationPromptText(
+  text: string,
+): InternalRoutingContinuationDecision | null {
+  const normalized = normalizeConversationTurnText(text)
+  if (!normalized) return null
+
+  const declinedTargetLabel = parseRoutingContinuationTargetLabel(
+    normalized,
+    ROUTING_DECLINE_CONTINUATION_PREFIX,
+    ROUTING_DECLINE_CONTINUATION_BODY,
+  )
+  if (declinedTargetLabel) {
+    return {
+      kind: 'decline',
+      targetLabel: declinedTargetLabel,
+    }
+  }
+
+  const acceptedTargetLabel = parseRoutingContinuationTargetLabel(
+    normalized,
+    ROUTING_ACCEPT_CONTINUATION_PREFIX,
+    ROUTING_ACCEPT_CONTINUATION_BODY,
+  )
+  if (acceptedTargetLabel) {
+    return {
+      kind: 'accept',
+      targetLabel: acceptedTargetLabel,
+    }
+  }
+
+  return null
+}
+
+function isInternalRoutingContinuationPromptText(text: string): boolean {
+  return parseInternalRoutingContinuationPromptText(text) !== null
+}
+
+function isInternalRoutingContinuationTurn(turn: ConversationTurn): boolean {
+  return (
+    turn.kind === 'message' &&
+    turn.role === 'user' &&
+    isInternalRoutingContinuationPromptText(turn.text)
+  )
+}
+
+function filterInternalRoutingContinuationTurns(turns: ConversationTurn[]): ConversationTurn[] {
+  const filteredTurns = turns.filter((turn) => !isInternalRoutingContinuationTurn(turn))
+  return filteredTurns.length === turns.length ? turns : filteredTurns
+}
+
+function getRoutingTurnTargetLabel(
+  turn: Extract<ConversationTurn, { kind: 'routing_suggestion' }>,
+): string {
+  return (
+    turn.targetLabel?.trim() ||
+    (turn.targetAgentDefinitionId ? 'the suggested custom agent' : getRuntimeAgentLabel(turn.targetAgentId))
+  )
+}
+
+function routingContinuationMatchesTurn(
+  decision: InternalRoutingContinuationDecision,
+  turn: Extract<ConversationTurn, { kind: 'routing_suggestion' }>,
+): boolean {
+  return (
+    normalizeConversationTurnText(decision.targetLabel).toLocaleLowerCase() ===
+    normalizeConversationTurnText(getRoutingTurnTargetLabel(turn)).toLocaleLowerCase()
+  )
+}
+
+function resolveRoutingTurnFromContinuation(
+  turn: Extract<ConversationTurn, { kind: 'routing_suggestion' }>,
+  decision: InternalRoutingContinuationDecision,
+): Extract<ConversationTurn, { kind: 'routing_suggestion' }> {
+  if (decision.kind === 'decline') {
+    return {
+      ...turn,
+      isResolved: true,
+      acceptedTarget: null,
+      acceptedTargetAgentDefinitionId: null,
+      acceptedTargetLabel: null,
+      routingResolutionMode: 'manual',
+    }
+  }
+
+  return {
+    ...turn,
+    isResolved: true,
+    acceptedTarget: turn.targetAgentId,
+    acceptedTargetAgentDefinitionId: turn.targetAgentDefinitionId,
+    acceptedTargetLabel: turn.targetLabel ?? decision.targetLabel,
+    routingResolutionMode: 'manual',
+  }
+}
+
+function applyRoutingContinuationDecision(
+  turns: ConversationTurn[],
+  decision: InternalRoutingContinuationDecision,
+  beforeIndex: number,
+): ConversationTurn[] {
+  for (let candidateIndex = beforeIndex - 1; candidateIndex >= 0; candidateIndex -= 1) {
+    const candidate = turns[candidateIndex]
+    if (candidate.kind !== 'routing_suggestion') {
+      continue
+    }
+    if (!routingContinuationMatchesTurn(decision, candidate)) {
+      continue
+    }
+
+    const nextTurns = turns.slice()
+    nextTurns[candidateIndex] = resolveRoutingTurnFromContinuation(candidate, decision)
+    return nextTurns
+  }
+
+  return turns
+}
+
+function applyPersistedRoutingContinuationResolutions(turns: ConversationTurn[]): ConversationTurn[] {
+  let nextTurns = turns
+
+  for (let index = 0; index < turns.length; index += 1) {
+    const turn = turns[index]
+    if (turn.kind !== 'message' || turn.role !== 'user') {
+      continue
+    }
+
+    const decision = parseInternalRoutingContinuationPromptText(turn.text)
+    if (!decision) {
+      continue
+    }
+
+    nextTurns = applyRoutingContinuationDecision(nextTurns, decision, index)
+  }
+
+  return nextTurns
 }
 
 function conversationTurnTextKey(turn: ConversationTurn): string | null {
@@ -1938,6 +2309,7 @@ export const AgentRuntime = memo(function AgentRuntime({
   onPendingComposerInsertConsumed,
   browserContextLoading = false,
   toolCallGroupingPreference = 'grouped',
+  agentRoutingAutoSwitchEnabled = false,
 }: AgentRuntimeProps) {
   const paneRootRef = useRef<HTMLDivElement | null>(null)
   const compactPaneWidthPx = inSidebar
@@ -1994,7 +2366,11 @@ export const AgentRuntime = memo(function AgentRuntime({
   const [optimisticPromptTurn, setOptimisticPromptTurn] = useState<PendingPromptTurn | null>(null)
   const selectedQueuedPromptTurn = useMemo<PendingPromptTurn | null>(() => {
     const text = agent.selectedPrompt.text?.trim()
-    if (!agent.selectedPrompt.hasQueuedPrompt || !text) {
+    if (
+      !agent.selectedPrompt.hasQueuedPrompt ||
+      !text ||
+      isInternalRoutingContinuationPromptText(text)
+    ) {
       return null
     }
 
@@ -2100,8 +2476,7 @@ export const AgentRuntime = memo(function AgentRuntime({
       agent.selectedPrompt.hasQueuedPrompt ||
       (
         renderableRuntimeRun?.isActive &&
-        streamStatus !== 'complete' &&
-        streamStatus !== 'error' &&
+        hasLiveRuntimeStream &&
         !runtimeStream?.failure
       ),
   )
@@ -2116,15 +2491,38 @@ export const AgentRuntime = memo(function AgentRuntime({
       (renderableRuntimeRun?.isActive && runtimeStreamItems.length === 0),
   )
   const conversationContinuityKey = `${conversationSessionKey}:${toolCallGroupingPreference}`
-  const visibleTurnsWithPendingPrompt = useContinuousConversationTurns(
+  const continuousVisibleTurnsWithPendingPrompt = useContinuousConversationTurns(
     visibleTurnsWithStableSubmittedPromptIds,
     {
       sessionKey: conversationContinuityKey,
       preserveDuringTransition: preserveConversationDuringRuntimeTransition,
     },
   )
+  const visibleTurnsWithPersistedRoutingResolutions = useMemo(
+    () => {
+      const persistedTurns = applyPersistedRoutingContinuationResolutions(continuousVisibleTurnsWithPendingPrompt)
+      const selectedPromptText = agent.selectedPrompt.hasQueuedPrompt
+        ? agent.selectedPrompt.text
+        : null
+      const selectedPromptDecision = selectedPromptText
+        ? parseInternalRoutingContinuationPromptText(selectedPromptText)
+        : null
+
+      return selectedPromptDecision
+        ? applyRoutingContinuationDecision(persistedTurns, selectedPromptDecision, persistedTurns.length)
+        : persistedTurns
+    },
+    [
+      agent.selectedPrompt.hasQueuedPrompt,
+      agent.selectedPrompt.text,
+      continuousVisibleTurnsWithPendingPrompt,
+    ],
+  )
+  const visibleTurnsWithPendingPrompt = useMemo(
+    () => filterInternalRoutingContinuationTurns(visibleTurnsWithPersistedRoutingResolutions),
+    [visibleTurnsWithPersistedRoutingResolutions],
+  )
   const hasUserMessage =
-    conversationProjection.hasUserMessage ||
     visibleTurnsWithPendingPrompt.some((turn) => turn.kind === 'message' && turn.role === 'user')
   const selectedAgentSession = (agent.project.selectedAgentSession ?? null) as AgentSessionView | null
   const selectedAgentSessionId =
@@ -2585,33 +2983,100 @@ export const AgentRuntime = memo(function AgentRuntime({
     isComputerUseSession,
   ])
 
-  const [resolvedRoutingTurns, setResolvedRoutingTurns] = useState<
-    Record<
-      string,
-      {
-        acceptedTarget: RuntimeAgentIdDto | null
-        acceptedTargetAgentDefinitionId: string | null
-        acceptedTargetLabel: string | null
+  const [resolvedRoutingTurns, setResolvedRoutingTurns] = useState<Record<string, RoutingResolutionRecord>>({})
+  const autoResolvedRoutingTurnIdsRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    autoResolvedRoutingTurnIdsRef.current.clear()
+  }, [conversationSessionKey])
+  const hasInternalRoutingQueuedPrompt = Boolean(
+    agent.selectedPrompt.hasQueuedPrompt &&
+      agent.selectedPrompt.text &&
+      isInternalRoutingContinuationPromptText(agent.selectedPrompt.text),
+  )
+  const hasBlockingQueuedPrompt =
+    agent.selectedPrompt.hasQueuedPrompt && !hasInternalRoutingQueuedPrompt
+  const routingSuggestionActionUnavailableReason =
+    promptSubmissionPending || runtimeRunActionStatus === 'running' || controller.runtimeSessionBindInFlight
+      ? 'A continuation is already being queued.'
+      : hasBlockingQueuedPrompt
+        ? 'A continuation prompt is already queued.'
+        : !controller.promptInputAvailable
+          ? 'Start or reconnect the runtime before continuing.'
+          : null
+  const recordRoutingResolution = useCallback((turnId: string, decision: RoutingSuggestionDecision) => {
+    setResolvedRoutingTurns((previous) => ({
+      ...previous,
+      [turnId]: getRoutingResolutionForDecision(decision),
+    }))
+  }, [])
+  const applyAcceptedRoutingSelection = useCallback(
+    (decision: RoutingSuggestionDecision) => {
+      if (decision.kind !== 'accept') {
+        return
       }
-    >
-  >({})
+
+      if (decision.targetAgentDefinitionId) {
+        controller.handleComposerAgentSelectionChange(
+          buildComposerAgentSelectionKey(
+            decision.targetAgentId,
+            decision.targetAgentDefinitionId,
+          ),
+        )
+        return
+      }
+
+      controller.handleComposerRuntimeAgentChange(decision.targetAgentId)
+    },
+    [
+      controller.handleComposerAgentSelectionChange,
+      controller.handleComposerRuntimeAgentChange,
+    ],
+  )
+  const submitRoutingContinuation = useCallback(
+    async (continuation: PendingRoutingContinuation) => {
+      const submitted = await controller.handleSubmitExplicitPrompt(continuation.prompt, {
+        ...(continuation.controls ? { controls: continuation.controls } : {}),
+        promptVisibility: 'internal',
+        replaceQueuedPrompt: true,
+      })
+
+      if (!submitted) {
+        return false
+      }
+
+      recordRoutingResolution(continuation.turnId, continuation.decision)
+      if (!renderableRuntimeRun || renderableRuntimeRun.isTerminal) {
+        applyAcceptedRoutingSelection(continuation.decision)
+      }
+      return true
+    },
+    [
+      applyAcceptedRoutingSelection,
+      controller.handleSubmitExplicitPrompt,
+      recordRoutingResolution,
+      renderableRuntimeRun,
+    ],
+  )
   const routingSuggestionDispatchValue = useMemo<RoutingSuggestionDispatchValue>(() => {
     return {
+      getRoutingSuggestionActionAvailability: () => ({
+        disabled: routingSuggestionActionUnavailableReason !== null,
+        reason: routingSuggestionActionUnavailableReason,
+      }),
       resolveRoutingSuggestion: (turnId, decision) => {
+        if (routingSuggestionActionUnavailableReason !== null) {
+          return
+        }
+
         if (decision.kind === 'decline') {
-          void controller
-            .handleSubmitExplicitPrompt(buildRoutingDeclineContinuationPrompt(decision))
-            .then((submitted) => {
-              if (!submitted) return
-              setResolvedRoutingTurns((previous) => ({
-                ...previous,
-                [turnId]: {
-                  acceptedTarget: null,
-                  acceptedTargetAgentDefinitionId: null,
-                  acceptedTargetLabel: null,
-                },
-              }))
-            })
+          const continuation: PendingRoutingContinuation = {
+            turnId,
+            decision,
+            prompt: buildRoutingDeclineContinuationPrompt(decision),
+            controls: null,
+          }
+
+          void submitRoutingContinuation(continuation)
           return
         }
 
@@ -2626,33 +3091,14 @@ export const AgentRuntime = memo(function AgentRuntime({
         })
         if (!targetControls) return
 
-        void controller
-          .handleSubmitExplicitPrompt(buildRoutingAcceptContinuationPrompt(decision), {
-            controls: targetControls,
-          })
-          .then((submitted) => {
-            if (!submitted) return
-            setResolvedRoutingTurns((previous) => ({
-              ...previous,
-              [turnId]: {
-                acceptedTarget: decision.targetAgentId,
-                acceptedTargetAgentDefinitionId: decision.targetAgentDefinitionId ?? null,
-                acceptedTargetLabel: decision.targetLabel ?? null,
-              },
-            }))
-            if (!renderableRuntimeRun || renderableRuntimeRun.isTerminal) {
-              if (decision.targetAgentDefinitionId) {
-                controller.handleComposerAgentSelectionChange(
-                  buildComposerAgentSelectionKey(
-                    decision.targetAgentId,
-                    decision.targetAgentDefinitionId,
-                  ),
-                )
-              } else {
-                controller.handleComposerRuntimeAgentChange(decision.targetAgentId)
-              }
-            }
-          })
+        const continuation: PendingRoutingContinuation = {
+          turnId,
+          decision,
+          prompt: buildRoutingAcceptContinuationPrompt(decision),
+          controls: targetControls,
+        }
+
+        void submitRoutingContinuation(continuation)
       },
     }
   }, [
@@ -2661,10 +3107,34 @@ export const AgentRuntime = memo(function AgentRuntime({
     controller.composerApprovalMode,
     controller.composerModelId,
     controller.composerThinkingEffort,
-    controller.handleSubmitExplicitPrompt,
-    controller.handleComposerAgentSelectionChange,
-    controller.handleComposerRuntimeAgentChange,
-    renderableRuntimeRun,
+    recordRoutingResolution,
+    routingSuggestionActionUnavailableReason,
+    submitRoutingContinuation,
+  ])
+  useEffect(() => {
+    if (!agentRoutingAutoSwitchEnabled) return
+    if (routingSuggestionActionUnavailableReason !== null) return
+
+    const routingTurn = visibleTurnsWithPendingPrompt.find(
+      (turn): turn is Extract<ConversationTurn, { kind: 'routing_suggestion' }> =>
+        turn.kind === 'routing_suggestion' &&
+        !turn.isResolved &&
+        !resolvedRoutingTurns[turn.id] &&
+        !autoResolvedRoutingTurnIdsRef.current.has(turn.id),
+    )
+    if (!routingTurn) return
+
+    autoResolvedRoutingTurnIdsRef.current.add(routingTurn.id)
+    routingSuggestionDispatchValue.resolveRoutingSuggestion(
+      routingTurn.id,
+      buildRoutingAcceptDecisionFromTurn(routingTurn, 'automatic'),
+    )
+  }, [
+    agentRoutingAutoSwitchEnabled,
+    resolvedRoutingTurns,
+    routingSuggestionActionUnavailableReason,
+    routingSuggestionDispatchValue,
+    visibleTurnsWithPendingPrompt,
   ])
   function applyRoutingResolutions(turns: ConversationTurn[]): ConversationTurn[] {
     if (Object.keys(resolvedRoutingTurns).length === 0) return turns
@@ -2678,6 +3148,7 @@ export const AgentRuntime = memo(function AgentRuntime({
         acceptedTarget: resolution.acceptedTarget,
         acceptedTargetAgentDefinitionId: resolution.acceptedTargetAgentDefinitionId,
         acceptedTargetLabel: resolution.acceptedTargetLabel,
+        routingResolutionMode: resolution.routingResolutionMode,
       }
     })
   }
@@ -2834,14 +3305,36 @@ export const AgentRuntime = memo(function AgentRuntime({
   const scrollViewportRef = useRef<HTMLDivElement | null>(null)
   const bottomSentinelRef = useRef<HTMLDivElement | null>(null)
   const scrollToLatestFrameRef = useRef<number | null>(null)
+  const scrollToFollowUpAnchorFrameRef = useRef<number | null>(null)
+  const followUpAnchorPendingBehaviorRef = useRef<ScrollBehavior | null>(null)
+  const followUpAnchorSpacerHeightRef = useRef(0)
   const shouldAutoFollowRef = useRef(true)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
+  const [followUpAnchorTurnId, setFollowUpAnchorTurnId] = useState<string | null>(null)
+  const [followUpAnchorSpacerHeight, setFollowUpAnchorSpacerHeightState] = useState(0)
+  const setFollowUpAnchorSpacerHeight = useCallback((height: number) => {
+    const nextHeight = Math.max(0, Math.ceil(height))
+    followUpAnchorSpacerHeightRef.current = nextHeight
+    setFollowUpAnchorSpacerHeightState((currentHeight) =>
+      currentHeight === nextHeight ? currentHeight : nextHeight,
+    )
+  }, [])
+  const clearFollowUpAnchor = useCallback(() => {
+    followUpAnchorPendingBehaviorRef.current = null
+    setFollowUpAnchorTurnId(null)
+    setFollowUpAnchorSpacerHeight(0)
+  }, [setFollowUpAnchorSpacerHeight])
   const conversationRunScrollKey = [
     agent.project.id,
     selectedAgentSessionId ?? 'none',
     renderableRuntimeRun?.runId ?? runtimeStream?.runId ?? 'no-run',
   ].join(':')
+  const conversationSessionScrollKey = [
+    agent.project.id,
+    selectedAgentSessionId ?? 'none',
+  ].join(':')
   const conversationRunScrollKeyRef = useRef<string | null>(null)
+  const conversationSessionScrollKeyRef = useRef<string | null>(null)
   const latestVisibleTurn = visibleTurnsWithPendingPrompt.at(-1)
   const conversationScrollKey = [
     latestVisibleTurn?.id ?? 'none',
@@ -2858,18 +3351,37 @@ export const AgentRuntime = memo(function AgentRuntime({
     streamIssue?.code ?? 'no-issue',
   ].join(':')
   useLayoutEffect(() => {
-    if (conversationRunScrollKeyRef.current === conversationRunScrollKey) {
+    const sessionChanged = conversationSessionScrollKeyRef.current !== conversationSessionScrollKey
+    if (
+      conversationRunScrollKeyRef.current === conversationRunScrollKey &&
+      !sessionChanged
+    ) {
       return
     }
 
+    conversationSessionScrollKeyRef.current = conversationSessionScrollKey
     conversationRunScrollKeyRef.current = conversationRunScrollKey
+    if (sessionChanged) {
+      clearFollowUpAnchor()
+    }
+    if (!sessionChanged && followUpAnchorTurnId) {
+      shouldAutoFollowRef.current = false
+      setShowJumpToLatest(false)
+      return
+    }
+
     shouldAutoFollowRef.current = true
     setShowJumpToLatest(false)
     const viewport = scrollViewportRef.current
     if (viewport) {
       viewport.scrollTop = viewport.scrollHeight
     }
-  }, [conversationRunScrollKey])
+  }, [
+    clearFollowUpAnchor,
+    conversationRunScrollKey,
+    conversationSessionScrollKey,
+    followUpAnchorTurnId,
+  ])
   const scrollToLatest = useCallback((behavior: ScrollBehavior = 'auto', options: { defer?: boolean } = {}) => {
     const run = () => {
       bottomSentinelRef.current?.scrollIntoView({
@@ -2892,6 +3404,58 @@ export const AgentRuntime = memo(function AgentRuntime({
       run()
     })
   }, [])
+  const getFollowUpAnchorPlan = useCallback((
+    turnId: string,
+  ): { viewport: HTMLElement; scrollTop: number; spacerHeight: number } | null => {
+    const viewport = scrollViewportRef.current
+    if (!viewport) {
+      return null
+    }
+
+    const turn = findConversationTurnElement(viewport, turnId)
+    if (!turn) {
+      return null
+    }
+
+    const plan = getFollowUpAnchorScrollPlan({
+      anchorTop: getElementTopInScrollViewport(viewport, turn),
+      viewportHeight: viewport.clientHeight,
+      scrollHeight: viewport.scrollHeight,
+      currentSpacerHeight: followUpAnchorSpacerHeightRef.current,
+    })
+
+    return {
+      viewport,
+      ...plan,
+    }
+  }, [])
+  const scrollToFollowUpAnchor = useCallback((
+    turnId: string,
+    behavior: ScrollBehavior = 'auto',
+    options: { defer?: boolean } = {},
+  ) => {
+    const run = () => {
+      const plan = getFollowUpAnchorPlan(turnId)
+      if (!plan) return
+      scrollViewportTo(plan.viewport, plan.scrollTop, behavior)
+    }
+
+    if (!options.defer || typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
+      run()
+      return
+    }
+
+    if (
+      scrollToFollowUpAnchorFrameRef.current !== null &&
+      typeof window.cancelAnimationFrame === 'function'
+    ) {
+      window.cancelAnimationFrame(scrollToFollowUpAnchorFrameRef.current)
+    }
+    scrollToFollowUpAnchorFrameRef.current = window.requestAnimationFrame(() => {
+      scrollToFollowUpAnchorFrameRef.current = null
+      run()
+    })
+  }, [getFollowUpAnchorPlan])
   useEffect(() => {
     return () => {
       if (
@@ -2902,6 +3466,14 @@ export const AgentRuntime = memo(function AgentRuntime({
         window.cancelAnimationFrame(scrollToLatestFrameRef.current)
         scrollToLatestFrameRef.current = null
       }
+      if (
+        scrollToFollowUpAnchorFrameRef.current !== null &&
+        typeof window !== 'undefined' &&
+        typeof window.cancelAnimationFrame === 'function'
+      ) {
+        window.cancelAnimationFrame(scrollToFollowUpAnchorFrameRef.current)
+        scrollToFollowUpAnchorFrameRef.current = null
+      }
     }
   }, [])
   const handleConversationScroll = useCallback(() => {
@@ -2911,9 +3483,22 @@ export const AgentRuntime = memo(function AgentRuntime({
     }
 
     const isNearBottom = isRuntimeConversationNearBottom(viewport)
+    if (followUpAnchorTurnId) {
+      if (isNearBottom && followUpAnchorSpacerHeightRef.current === 0) {
+        clearFollowUpAnchor()
+        shouldAutoFollowRef.current = true
+        setShowJumpToLatest(false)
+        return
+      }
+
+      shouldAutoFollowRef.current = false
+      setShowJumpToLatest(hasConversationViewportContent && !isNearBottom)
+      return
+    }
+
     shouldAutoFollowRef.current = isNearBottom
     setShowJumpToLatest(hasConversationViewportContent && !isNearBottom)
-  }, [hasConversationViewportContent])
+  }, [clearFollowUpAnchor, followUpAnchorTurnId, hasConversationViewportContent])
   const pauseConversationAutoFollow = useCallback(() => {
     if (!hasConversationViewportContent) {
       return
@@ -3131,14 +3716,19 @@ export const AgentRuntime = memo(function AgentRuntime({
   const handleConversationWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
     const viewport = scrollViewportRef.current
     if (event.deltaY < 0 && viewport && viewport.scrollHeight > viewport.clientHeight) {
+      if (followUpAnchorTurnId) {
+        clearFollowUpAnchor()
+      }
       pauseConversationAutoFollow()
     }
-  }, [pauseConversationAutoFollow])
+  }, [clearFollowUpAnchor, followUpAnchorTurnId, pauseConversationAutoFollow])
   const handleJumpToLatest = useCallback(() => {
+    const hadFollowUpAnchor = followUpAnchorTurnId !== null
     shouldAutoFollowRef.current = true
     setShowJumpToLatest(false)
-    scrollToLatest('smooth')
-  }, [scrollToLatest])
+    clearFollowUpAnchor()
+    scrollToLatest('smooth', hadFollowUpAnchor ? { defer: true } : {})
+  }, [clearFollowUpAnchor, followUpAnchorTurnId, scrollToLatest])
   const handleSubmitDraftPrompt = useCallback(() => {
     if (promptSubmissionPending) {
       return
@@ -3152,14 +3742,28 @@ export const AgentRuntime = memo(function AgentRuntime({
           queuedAt: new Date().toISOString(),
         }
       : null
+    const shouldAnchorSubmittedPrompt = Boolean(
+      optimisticPrompt &&
+        hasConversationViewportContent &&
+        hasUserMessage,
+    )
+    const followUpAnchorId = optimisticPrompt ? getPendingPromptTurnId(optimisticPrompt) : null
 
     if (optimisticPrompt) {
       setOptimisticPromptTurn(optimisticPrompt)
     }
 
-    shouldAutoFollowRef.current = true
-    setShowJumpToLatest(false)
-    scrollToLatest('auto', { defer: true })
+    if (shouldAnchorSubmittedPrompt && followUpAnchorId) {
+      shouldAutoFollowRef.current = false
+      setShowJumpToLatest(false)
+      followUpAnchorPendingBehaviorRef.current = 'smooth'
+      setFollowUpAnchorTurnId(followUpAnchorId)
+    } else {
+      clearFollowUpAnchor()
+      shouldAutoFollowRef.current = true
+      setShowJumpToLatest(false)
+      scrollToLatest('auto', { defer: true })
+    }
     setPromptSubmissionPending(true)
     promptSubmissionCancelRef.current?.()
     let cancelled = false
@@ -3173,18 +3777,104 @@ export const AgentRuntime = memo(function AgentRuntime({
           setOptimisticPromptTurn((current) =>
             current?.id === optimisticPrompt.id ? null : current,
           )
+          if (followUpAnchorId) {
+            followUpAnchorPendingBehaviorRef.current = null
+            setFollowUpAnchorTurnId((current) =>
+              current === followUpAnchorId ? null : current,
+            )
+            setFollowUpAnchorSpacerHeight(0)
+          }
         }
       }
     }).finally(() => {
       if (!cancelled) {
         setPromptSubmissionPending(false)
-        scrollToLatest('auto', { defer: true })
+        if (shouldAnchorSubmittedPrompt && followUpAnchorId) {
+          followUpAnchorPendingBehaviorRef.current ??= 'smooth'
+        } else {
+          scrollToLatest('auto', { defer: true })
+        }
       }
       if (promptSubmissionCancelRef.current === cancelSubmission) {
         promptSubmissionCancelRef.current = null
       }
     })
-  }, [controller, promptSubmissionPending, scrollToLatest])
+  }, [
+    clearFollowUpAnchor,
+    controller,
+    hasConversationViewportContent,
+    hasUserMessage,
+    promptSubmissionPending,
+    scrollToLatest,
+    setFollowUpAnchorSpacerHeight,
+  ])
+
+  useLayoutEffect(() => {
+    if (!foregroundWorkReady || !followUpAnchorTurnId) {
+      return
+    }
+
+    const queuedAnchorText = agent.selectedPrompt.hasQueuedPrompt
+      ? agent.selectedPrompt.text?.trim()
+      : null
+    const anchorTurnIndex = findFollowUpAnchorTurnIndex(
+      visibleTurnsWithPendingPrompt,
+      followUpAnchorTurnId,
+      queuedAnchorText,
+    )
+    if (anchorTurnIndex < 0) {
+      if (!promptSubmissionPending && !agent.selectedPrompt.hasQueuedPrompt) {
+        clearFollowUpAnchor()
+      }
+      return
+    }
+
+    if (
+      shouldReleaseFollowUpAnchorForTurns({
+        turns: visibleTurnsWithPendingPrompt,
+        anchorTurnId: followUpAnchorTurnId,
+        queuedAnchorText,
+      })
+    ) {
+      clearFollowUpAnchor()
+      shouldAutoFollowRef.current = true
+      setShowJumpToLatest(false)
+      scrollToLatest('auto', { defer: true })
+      return
+    }
+
+    const plan = getFollowUpAnchorPlan(followUpAnchorTurnId)
+    if (!plan) {
+      return
+    }
+
+    shouldAutoFollowRef.current = false
+    if (plan.spacerHeight !== followUpAnchorSpacerHeight) {
+      setFollowUpAnchorSpacerHeight(plan.spacerHeight)
+      return
+    }
+
+    const behavior = followUpAnchorPendingBehaviorRef.current
+    if (!behavior) {
+      return
+    }
+
+    followUpAnchorPendingBehaviorRef.current = null
+    scrollToFollowUpAnchor(followUpAnchorTurnId, behavior, { defer: true })
+  }, [
+    agent.selectedPrompt.hasQueuedPrompt,
+    clearFollowUpAnchor,
+    conversationScrollKey,
+    followUpAnchorTurnId,
+    followUpAnchorSpacerHeight,
+    foregroundWorkReady,
+    getFollowUpAnchorPlan,
+    promptSubmissionPending,
+    scrollToLatest,
+    scrollToFollowUpAnchor,
+    setFollowUpAnchorSpacerHeight,
+    visibleTurnsWithPendingPrompt,
+  ])
 
   useEffect(() => {
     if (!foregroundWorkReady) {
@@ -3197,6 +3887,14 @@ export const AgentRuntime = memo(function AgentRuntime({
       return
     }
 
+    if (followUpAnchorTurnId) {
+      shouldAutoFollowRef.current = false
+      const viewport = scrollViewportRef.current
+      const isNearBottom = viewport ? isRuntimeConversationNearBottom(viewport) : false
+      setShowJumpToLatest(hasConversationViewportContent && !isNearBottom)
+      return
+    }
+
     if (shouldAutoFollowRef.current) {
       scrollToLatest('auto', { defer: true })
       setShowJumpToLatest(false)
@@ -3206,7 +3904,13 @@ export const AgentRuntime = memo(function AgentRuntime({
     const viewport = scrollViewportRef.current
     const isNearBottom = viewport ? isRuntimeConversationNearBottom(viewport) : false
     setShowJumpToLatest(hasConversationViewportContent && !isNearBottom)
-  }, [conversationScrollKey, foregroundWorkReady, hasConversationViewportContent, scrollToLatest])
+  }, [
+    conversationScrollKey,
+    followUpAnchorTurnId,
+    foregroundWorkReady,
+    hasConversationViewportContent,
+    scrollToLatest,
+  ])
 
   const isCompact = effectiveDensity === 'compact'
   const isDense = isCompact || paneCount >= 4 || useBackgroundPaneFastPath
@@ -3520,6 +4224,14 @@ export const AgentRuntime = memo(function AgentRuntime({
                     pendingApprovalCount={agent.pendingApprovalCount ?? 0}
                     onOpenAgentManagement={onOpenAgentManagement}
                     onCreateAgentByHand={onCreateAgentByHand}
+                  />
+                ) : null}
+                {followUpAnchorSpacerHeight > 0 ? (
+                  <div
+                    aria-hidden="true"
+                    data-conversation-follow-up-spacer="true"
+                    className="shrink-0"
+                    style={{ height: followUpAnchorSpacerHeight }}
                   />
                 ) : null}
                 <div ref={bottomSentinelRef} aria-hidden="true" className="h-1 shrink-0 scroll-mb-8" />

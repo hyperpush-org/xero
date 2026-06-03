@@ -406,7 +406,7 @@ function getToolTargetLabel(item: RuntimeStreamToolItemView): string | null {
     }
     case 'command':
     case 'command_session_start':
-      return firstDetailValue(detailValues, ['cmd', 'cwd'])
+      return firstDetailValue(detailValues, ['cmd', 'argv', 'cwd'])
     case 'command_session_read':
     case 'command_session_stop':
       return firstDetailValue(detailValues, ['sessionId'])

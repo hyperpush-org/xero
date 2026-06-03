@@ -108,6 +108,12 @@ import {
   writeStoredToolCallGroupingPreference,
   type ToolCallGroupingPreference,
 } from '@/src/features/xero/tool-call-grouping-preference'
+import {
+  persistAgentRoutingAutoSwitchPreference,
+  readAgentRoutingAutoSwitchPreference,
+  readStoredAgentRoutingAutoSwitchPreference,
+  writeStoredAgentRoutingAutoSwitchPreference,
+} from '@/src/features/xero/agent-routing-auto-switch-preference'
 import type {
   SessionTranscriptSearchResultSnippetDto,
 } from '@/src/lib/xero-model/session-context'
@@ -1657,6 +1663,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>('account')
   const [toolCallGroupingPreference, setToolCallGroupingPreference] =
     useState<ToolCallGroupingPreference>(() => readStoredToolCallGroupingPreference())
+  const [agentRoutingAutoSwitchEnabled, setAgentRoutingAutoSwitchEnabled] =
+    useState<boolean>(() => readStoredAgentRoutingAutoSwitchPreference())
   const [pendingAgentSessionId, setPendingAgentSessionId] = useState<string | null>(null)
   const [paneCloseStates, setPaneCloseStates] = useState<Record<string, AgentPaneCloseState>>({})
   const [pendingPaneCloseId, setPendingPaneCloseId] = useState<string | null>(null)
@@ -1900,6 +1908,20 @@ export function XeroApp({ adapter }: XeroAppProps) {
     }
   }, [resolvedAdapter])
 
+  useEffect(() => {
+    let cancelled = false
+    void readAgentRoutingAutoSwitchPreference(resolvedAdapter)
+      .then((enabled) => {
+        if (cancelled) return
+        setAgentRoutingAutoSwitchEnabled(enabled)
+      })
+      .catch(() => undefined)
+
+    return () => {
+      cancelled = true
+    }
+  }, [resolvedAdapter])
+
   const handleToolCallGroupingPreferenceChange = useCallback(
     async (preference: ToolCallGroupingPreference) => {
       const previousPreference = toolCallGroupingPreference
@@ -1913,6 +1935,21 @@ export function XeroApp({ adapter }: XeroAppProps) {
       }
     },
     [resolvedAdapter, toolCallGroupingPreference],
+  )
+
+  const handleAgentRoutingAutoSwitchChange = useCallback(
+    async (enabled: boolean) => {
+      const previousPreference = agentRoutingAutoSwitchEnabled
+      setAgentRoutingAutoSwitchEnabled(enabled)
+      try {
+        await persistAgentRoutingAutoSwitchPreference(resolvedAdapter, enabled)
+      } catch (error) {
+        setAgentRoutingAutoSwitchEnabled(previousPreference)
+        writeStoredAgentRoutingAutoSwitchPreference(previousPreference)
+        throw error
+      }
+    },
+    [agentRoutingAutoSwitchEnabled, resolvedAdapter],
   )
 
   useEffect(() => {
@@ -4858,6 +4895,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 accountAvatarUrl={githubSession?.user.avatarUrl ?? null}
                 accountLogin={githubSession?.user.login ?? null}
                 toolCallGroupingPreference={toolCallGroupingPreference}
+                agentRoutingAutoSwitchEnabled={agentRoutingAutoSwitchEnabled}
                 customAgentDefinitions={customAgentDefinitions}
                 agentDefaultModels={agentDefaultModels}
                 onOpenAgentManagement={handleOpenAgentManagement}
@@ -5352,6 +5390,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 accountAvatarUrl={githubSession?.user.avatarUrl ?? null}
                 accountLogin={githubSession?.user.login ?? null}
                 toolCallGroupingPreference={toolCallGroupingPreference}
+                agentRoutingAutoSwitchEnabled={agentRoutingAutoSwitchEnabled}
                 customAgentDefinitions={customAgentDefinitions}
                 agentDefaultModels={agentDefaultModels}
                 onOpenAgentManagement={handleOpenAgentManagement}
@@ -5494,6 +5533,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 powerAdapter={resolvedAdapter}
                 toolCallGroupingPreference={toolCallGroupingPreference}
                 onToolCallGroupingPreferenceChange={handleToolCallGroupingPreferenceChange}
+                agentRoutingAutoSwitchEnabled={agentRoutingAutoSwitchEnabled}
+                onAgentRoutingAutoSwitchChange={handleAgentRoutingAutoSwitchChange}
                 memoryReviewAdapter={memoryReviewAdapter}
                 projectStateAdapter={projectStateAdapter}
                 dangerAdapter={dangerAdapter}

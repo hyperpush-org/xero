@@ -49,6 +49,8 @@ const RUNTIME_STREAM_IPC_MAX_BYTES: usize = 96 * 1024;
 const RUNTIME_STREAM_IPC_PATCH_PREVIEW_CHARS: usize = 4_000;
 const RUNTIME_STREAM_IPC_TIGHT_PREVIEW_CHARS: usize = 1_000;
 const RUNTIME_STREAM_IPC_TEXT_CHARS: usize = 2_000;
+const RUNTIME_WAIT_SCHEDULED_CODE: &str = "owned_agent_runtime_wait_scheduled";
+const RUNTIME_WAIT_TOOL_NAME: &str = "runtime_wait";
 const SCHEDULED_WAIT_STATE: &str = "scheduled_wait";
 
 #[derive(Debug, Clone)]
@@ -1358,9 +1360,16 @@ fn owned_agent_event_runtime_item(
             item.text = item.detail.clone();
         }
         AgentRunEventKind::MessageDelta => {
-            item.kind = RuntimeStreamItemKind::Transcript;
-            item.text = payload_verbatim_string(&payload, "text");
-            item.transcript_role = payload_transcript_role(&payload);
+            if payload.get("internalResume").is_some() {
+                item.kind = RuntimeStreamItemKind::Activity;
+                item.code = Some("owned_agent_internal_resume".into());
+                item.title = Some("Internal resume".into());
+                item.detail = Some("Scheduled wakeup resumed the agent run.".into());
+            } else {
+                item.kind = RuntimeStreamItemKind::Transcript;
+                item.text = payload_verbatim_string(&payload, "text");
+                item.transcript_role = payload_transcript_role(&payload);
+            }
         }
         AgentRunEventKind::ReasoningSummary => {
             item.kind = RuntimeStreamItemKind::Activity;
@@ -1411,11 +1420,17 @@ fn owned_agent_event_runtime_item(
             item.tool_call_id = payload_string(&payload, "toolCallId");
             item.tool_name = payload_string(&payload, "toolName");
             let ok = payload_bool(&payload, "ok").unwrap_or(false);
-            item.tool_state = Some(if ok {
+            let scheduled_runtime_wait = ok && tool_completed_is_scheduled_runtime_wait(&payload);
+            item.tool_state = Some(if scheduled_runtime_wait {
+                RuntimeToolCallState::Running
+            } else if ok {
                 RuntimeToolCallState::Succeeded
             } else {
                 RuntimeToolCallState::Failed
             });
+            if scheduled_runtime_wait {
+                item.code = Some(RUNTIME_WAIT_SCHEDULED_CODE.into());
+            }
             item.detail = payload_string(&payload, "summary")
                 .or_else(|| payload_string(&payload, "message"))
                 .or_else(|| {
@@ -1424,7 +1439,7 @@ fn owned_agent_event_runtime_item(
                         .map(|name| format!("Completed `{name}`."))
                 });
             item.text = item.detail.clone();
-            if ok {
+            if ok && !scheduled_runtime_wait {
                 if let Some(output) = payload.get("output") {
                     let model_visible_result =
                         model_visible_tool_result_from_completed_payload(&payload);
@@ -1438,7 +1453,7 @@ fn owned_agent_event_runtime_item(
                         .or_else(|| tool_result_preview_from_output(output));
                 }
             }
-            item.code = payload_string(&payload, "code");
+            item.code = payload_string(&payload, "code").or(item.code);
             item.message = payload_string(&payload, "message");
         }
         AgentRunEventKind::FileChanged => {
@@ -1604,25 +1619,33 @@ fn owned_agent_event_runtime_item(
             item.text = item.detail.clone();
         }
         AgentRunEventKind::ContextManifestRecorded => {
-            item.kind = RuntimeStreamItemKind::Activity;
+            item.kind = RuntimeStreamItemKind::Tool;
             item.code = Some("owned_agent_context_manifest_recorded".into());
-            item.title = Some("Project context".into());
+            item.tool_call_id = Some(format!(
+                "runtime-project-context:{event_id}:context-manifest"
+            ));
+            item.tool_name = Some("project_context".into());
+            item.tool_state = Some(RuntimeToolCallState::Succeeded);
             item.detail = context_event_tool_detail(
                 &payload,
                 "context_manifest",
                 "Context manifest recorded.",
             );
+            item.tool_result_preview = context_event_tool_result_preview(&payload);
             item.text = item.detail.clone();
         }
         AgentRunEventKind::RetrievalPerformed => {
-            item.kind = RuntimeStreamItemKind::Activity;
+            item.kind = RuntimeStreamItemKind::Tool;
             item.code = Some("owned_agent_retrieval_performed".into());
-            item.title = Some("Project context".into());
+            item.tool_call_id = Some(format!("runtime-project-context:{event_id}:retrieval"));
+            item.tool_name = Some("project_context".into());
+            item.tool_state = Some(RuntimeToolCallState::Succeeded);
             item.detail = context_event_tool_detail(
                 &payload,
                 "retrieval",
                 "Durable context retrieval performed.",
             );
+            item.tool_result_preview = context_event_tool_result_preview(&payload);
             item.text = item.detail.clone();
         }
         AgentRunEventKind::MemoryCandidateCaptured => {
@@ -1743,13 +1766,22 @@ fn owned_agent_event_runtime_item(
             item.text = item.detail.clone();
         }
         AgentRunEventKind::RunFailed => {
-            item.kind = RuntimeStreamItemKind::Failure;
-            item.code =
-                payload_string(&payload, "code").or_else(|| Some("owned_agent_failed".into()));
-            item.message = payload_string(&payload, "message")
-                .or_else(|| Some("Owned agent run failed.".into()));
-            item.retryable = payload_bool(&payload, "retryable").or(Some(false));
-            item.text = item.message.clone();
+            let code = payload_string(&payload, "code");
+            if code.as_deref() == Some("agent_run_cancelled") {
+                item.kind = RuntimeStreamItemKind::Activity;
+                item.code = Some("owned_agent_cancelled".into());
+                item.title = Some("Run cancelled".into());
+                item.detail = payload_string(&payload, "message")
+                    .or_else(|| Some("Owned agent run was cancelled.".into()));
+                item.text = item.detail.clone();
+            } else {
+                item.kind = RuntimeStreamItemKind::Failure;
+                item.code = code.or_else(|| Some("owned_agent_failed".into()));
+                item.message = payload_string(&payload, "message")
+                    .or_else(|| Some("Owned agent run failed.".into()));
+                item.retryable = payload_bool(&payload, "retryable").or(Some(false));
+                item.text = item.message.clone();
+            }
         }
     }
 
@@ -2517,6 +2549,20 @@ fn payload_is_scheduled_wait(payload: &serde_json::Value) -> bool {
         || payload_string(payload, "stopReason").as_deref() == Some(SCHEDULED_WAIT_STATE)
 }
 
+fn tool_completed_is_scheduled_runtime_wait(payload: &serde_json::Value) -> bool {
+    payload_string(payload, "toolName").as_deref() == Some(RUNTIME_WAIT_TOOL_NAME)
+        && runtime_wait_output_is_scheduled(payload)
+}
+
+fn runtime_wait_output_is_scheduled(value: &serde_json::Value) -> bool {
+    payload_string(value, "status").as_deref() == Some("scheduled")
+        || payload_string(value, "waitState").as_deref() == Some("scheduled_not_elapsed")
+        || value
+            .get("output")
+            .map(runtime_wait_output_is_scheduled)
+            .unwrap_or(false)
+}
+
 fn scheduled_wait_due_at(payload: &serde_json::Value) -> Option<String> {
     payload
         .get("scheduledWakeups")
@@ -2819,6 +2865,23 @@ mod tests {
             item.detail.as_deref(),
             Some("Waiting until 2026-04-24T12:00:15Z before continuing.")
         );
+    }
+
+    #[test]
+    fn internal_resume_message_delta_replays_as_hidden_activity() {
+        let item = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::MessageDelta,
+                r#"{"role":"developer","text":"internal wakeup details","internalResume":{"wakeId":"wake-1","reason":"scheduled_wakeup","payload":{}}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("internal resume item");
+
+        assert_eq!(item.kind, RuntimeStreamItemKind::Activity);
+        assert_eq!(item.code.as_deref(), Some("owned_agent_internal_resume"));
+        assert_eq!(item.text, None);
     }
 
     fn seed_replay_project(root: &tempfile::TempDir) -> std::path::PathBuf {
@@ -3174,6 +3237,71 @@ mod tests {
             fallback_action.detail.as_deref(),
             Some("Owned agent requires operator input before continuing.")
         );
+    }
+
+    #[test]
+    fn cancelled_owned_agent_run_projects_as_activity_not_failure() {
+        let item = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::RunFailed,
+                r#"{"code":"agent_run_cancelled","message":"Owned agent run was cancelled.","state":"blocked","stopReason":"cancelled"}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("cancelled run item");
+
+        assert_eq!(item.kind, RuntimeStreamItemKind::Activity);
+        assert_eq!(item.code.as_deref(), Some("owned_agent_cancelled"));
+        assert_eq!(item.title.as_deref(), Some("Run cancelled"));
+        assert!(item.message.is_none());
+        assert!(item.retryable.is_none());
+
+        let mut projection = RuntimeStreamProjection::new(projection_context());
+        projection.apply_item(item);
+        assert_eq!(projection.status, RuntimeStreamViewStatusDto::Live);
+        assert!(projection.failure.is_none());
+        assert!(projection.last_issue.is_none());
+    }
+
+    #[test]
+    fn scheduled_runtime_wait_completion_projects_as_running_tool() {
+        let payload = serde_json::json!({
+            "toolCallId": "call-runtime-wait",
+            "toolName": "runtime_wait",
+            "ok": true,
+            "summary": "Scheduled owned-agent wakeup `wake-1` for 2026-06-02T22:08:27Z.",
+            "output": {
+                "ok": true,
+                "output": {
+                    "dueAt": "2026-06-02T22:08:27Z",
+                    "kind": "sleep",
+                    "status": "scheduled",
+                    "waitState": "scheduled_not_elapsed",
+                    "wakeId": "wake-1"
+                },
+                "toolCallId": "call-runtime-wait",
+                "toolName": "runtime_wait"
+            }
+        });
+
+        let tool = owned_agent_event_runtime_item(
+            event(AgentRunEventKind::ToolCompleted, &payload.to_string()),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("runtime wait tool item");
+
+        assert_eq!(tool.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(tool.tool_call_id.as_deref(), Some("call-runtime-wait"));
+        assert_eq!(tool.tool_name.as_deref(), Some("runtime_wait"));
+        assert_eq!(tool.tool_state, Some(RuntimeToolCallState::Running));
+        assert_eq!(
+            tool.code.as_deref(),
+            Some("owned_agent_runtime_wait_scheduled")
+        );
+        assert!(tool.tool_summary.is_none());
+        assert!(tool.tool_result_preview.is_none());
     }
 
     #[test]
@@ -3811,7 +3939,7 @@ mod tests {
     }
 
     #[test]
-    fn owned_agent_manifest_and_retrieval_events_project_as_runtime_diagnostics() {
+    fn owned_agent_manifest_retrieval_and_memory_events_project_as_tool_calls() {
         let retrieval = owned_agent_event_runtime_item(
             event(
                 AgentRunEventKind::RetrievalPerformed,
@@ -3820,24 +3948,26 @@ mod tests {
             "owned-agent:run-1",
             None,
         )
-        .expect("retrieval activity item");
+        .expect("retrieval tool item");
 
-        assert_eq!(retrieval.kind, RuntimeStreamItemKind::Activity);
+        assert_eq!(retrieval.kind, RuntimeStreamItemKind::Tool);
         assert_eq!(
             retrieval.code.as_deref(),
             Some("owned_agent_retrieval_performed")
         );
-        assert_eq!(retrieval.title.as_deref(), Some("Project context"));
+        assert_eq!(retrieval.tool_name.as_deref(), Some("project_context"));
+        assert_eq!(
+            retrieval.tool_call_id.as_deref(),
+            Some("runtime-project-context:42:retrieval")
+        );
+        assert_eq!(retrieval.tool_state, Some(RuntimeToolCallState::Succeeded));
         assert_eq!(
             retrieval.detail.as_deref(),
             Some(
                 "action: retrieval, queryId: query-1, resultCount: 2 · Retrieved durable context from LanceDB."
             )
         );
-        assert!(retrieval.tool_name.is_none());
-        assert!(retrieval.tool_call_id.is_none());
-        assert!(retrieval.tool_state.is_none());
-        assert!(retrieval.tool_result_preview.is_none());
+        assert!(retrieval.tool_result_preview.is_some());
 
         let manifest = owned_agent_event_runtime_item(
             event(
@@ -3847,15 +3977,19 @@ mod tests {
             "owned-agent:run-1",
             None,
         )
-        .expect("manifest activity item");
-        assert_eq!(manifest.kind, RuntimeStreamItemKind::Activity);
+        .expect("manifest tool item");
+        assert_eq!(manifest.kind, RuntimeStreamItemKind::Tool);
         assert_eq!(
             manifest.code.as_deref(),
             Some("owned_agent_context_manifest_recorded")
         );
-        assert_eq!(manifest.title.as_deref(), Some("Project context"));
-        assert!(manifest.tool_name.is_none());
-        assert!(manifest.tool_call_id.is_none());
+        assert_eq!(manifest.tool_name.as_deref(), Some("project_context"));
+        assert_eq!(
+            manifest.tool_call_id.as_deref(),
+            Some("runtime-project-context:42:context-manifest")
+        );
+        assert_eq!(manifest.tool_state, Some(RuntimeToolCallState::Succeeded));
+        assert!(manifest.tool_result_preview.is_some());
         assert!(manifest
             .detail
             .as_deref()

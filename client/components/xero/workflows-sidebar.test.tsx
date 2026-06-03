@@ -419,6 +419,25 @@ describe('WorkflowsSidebar', () => {
     )
   })
 
+  it('renders workflow templates without a section header or divider', () => {
+    render(
+      <WorkflowsSidebar
+        open
+        agents={REAL_AGENTS}
+        workflowDefinitions={[]}
+        onSelectWorkflowTemplate={vi.fn()}
+        onCreateWorkflowFromTemplate={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: /workflows/i }))
+
+    const templateButton = screen.getByLabelText('Inspect workflow template GSD Auto')
+    expect(screen.queryByRole('heading', { name: 'Templates' })).not.toBeInTheDocument()
+    expect(templateButton.closest('section')).toBeNull()
+    expect(templateButton.closest('ul')).toHaveClass('py-1')
+  })
+
   it('uses the same library row shell for agents, workflows, and workflow templates', () => {
     render(
       <WorkflowsSidebar

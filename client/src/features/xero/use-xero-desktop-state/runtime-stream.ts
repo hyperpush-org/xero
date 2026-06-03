@@ -25,6 +25,7 @@ import {
   type RuntimeStreamEventDto,
   type RuntimeStreamItemKindDto,
   type RuntimeStreamPatchDto,
+  type RuntimeStreamStatus,
   type RuntimeStreamView,
 } from '@/src/lib/xero-model/runtime-stream'
 
@@ -40,6 +41,7 @@ import type { RefreshSource } from './types'
 export const RUNTIME_STREAM_BATCH_WINDOW_MS = 6
 export const REPOSITORY_STATUS_BATCH_WINDOW_MS = 6
 export const RUNTIME_RUN_UPDATE_BATCH_WINDOW_MS = 24
+export const RUNTIME_STREAM_SUBSCRIBE_TIMEOUT_MS = 15_000
 const INCREMENTAL_RUNTIME_STREAM_REPLAY_LIMIT = 200
 
 export const ACTIVE_RUNTIME_STREAM_ITEM_KINDS: RuntimeStreamItemKindDto[] = [
@@ -122,6 +124,7 @@ interface AttachRuntimeStreamSubscriptionArgs {
   updateRuntimeStream: UpdateRuntimeStream
   scheduleRuntimeMetadataRefresh: (projectId: string, source: RuntimeMetadataRefreshSource) => void
   recordRuntimeSessionCompletion?: RuntimeStreamEventBufferArgs['onRuntimeSessionCompleted']
+  subscribeTimeoutMs?: number
 }
 
 type ScheduledFlushCancel = () => void
@@ -251,6 +254,18 @@ function scheduleRepositoryStatusFlush(callback: () => void): ScheduledFlushCanc
 function scheduleRuntimeRunUpdateFlush(callback: () => void): ScheduledFlushCancel {
   const timeoutId = setTimeout(callback, RUNTIME_RUN_UPDATE_BATCH_WINDOW_MS)
   return () => clearTimeout(timeoutId)
+}
+
+function getRuntimeStreamConnectedStatus(stream: RuntimeStreamView): RuntimeStreamStatus {
+  if (stream.completion) {
+    return 'complete'
+  }
+
+  if (stream.failure) {
+    return stream.failure.retryable ? 'stale' : 'error'
+  }
+
+  return 'live'
 }
 
 function isRuntimeStreamPatch(payload: RuntimeStreamChannelPayload): payload is RuntimeStreamPatchDto {
@@ -875,6 +890,7 @@ export function attachRuntimeStreamSubscription({
   updateRuntimeStream,
   scheduleRuntimeMetadataRefresh,
   recordRuntimeSessionCompletion,
+  subscribeTimeoutMs = RUNTIME_STREAM_SUBSCRIBE_TIMEOUT_MS,
 }: AttachRuntimeStreamSubscriptionArgs): () => void {
   if (!projectId || !agentSessionId) {
     return () => undefined
@@ -901,6 +917,17 @@ export function attachRuntimeStreamSubscription({
   let disposed = false
   let unsubscribe: () => void = () => {}
   let replayAfterSequence: number | null = null
+  let subscriptionSettled = false
+  let subscribeTimeoutId: ReturnType<typeof setTimeout> | null = null
+
+  const clearSubscribeTimeout = () => {
+    if (subscribeTimeoutId === null) {
+      return
+    }
+
+    clearTimeout(subscribeTimeoutId)
+    subscribeTimeoutId = null
+  }
 
   if (typeof adapter.subscribeRuntimeStream !== 'function') {
     updateRuntimeStream(projectId, agentSessionId, (currentStream) =>
@@ -966,6 +993,19 @@ export function attachRuntimeStreamSubscription({
     onRuntimeSessionCompleted: recordRuntimeSessionCompletion,
   })
 
+  subscribeTimeoutId = setTimeout(() => {
+    if (disposed || subscriptionSettled) {
+      return
+    }
+
+    streamEventBuffer.reportIssue({
+      code: 'runtime_stream_subscribe_timeout',
+      message: 'Xero could not connect the live runtime stream in time. Retry the stream to reconnect.',
+      retryable: true,
+    })
+    scheduleRuntimeMetadataRefresh(projectId, 'runtime_run:updated')
+  }, subscribeTimeoutMs)
+
   void adapter
     .subscribeRuntimeStream(
       projectId,
@@ -998,6 +1038,9 @@ export function attachRuntimeStreamSubscription({
       },
     )
     .then((subscription) => {
+      subscriptionSettled = true
+      clearSubscribeTimeout()
+
       if (disposed) {
         subscription.unsubscribe()
         return
@@ -1018,13 +1061,18 @@ export function attachRuntimeStreamSubscription({
             sessionId: subscription.response.sessionId,
             flowId: subscription.response.flowId ?? null,
             subscribedItemKinds: subscription.response.subscribedItemKinds,
+            status: getRuntimeStreamConnectedStatus(currentStream),
+            lastIssue: currentStream.failure ? currentStream.lastIssue : null,
           }
         }
 
-        return createRuntimeStreamFromSubscription(subscription.response, 'subscribing')
+        return createRuntimeStreamFromSubscription(subscription.response, 'live')
       })
     })
     .catch((error) => {
+      subscriptionSettled = true
+      clearSubscribeTimeout()
+
       if (disposed) {
         return
       }
@@ -1053,6 +1101,7 @@ export function attachRuntimeStreamSubscription({
 
   return () => {
     disposed = true
+    clearSubscribeTimeout()
     streamEventBuffer?.dispose()
     unsubscribe()
   }

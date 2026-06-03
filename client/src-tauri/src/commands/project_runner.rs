@@ -1062,6 +1062,10 @@ fn terminal_open_in_cwd(
     transcript_target: Option<TerminalTranscriptTarget>,
     transcript_enabled: bool,
 ) -> CommandResult<OpenTerminalResponseDto> {
+    if let Some(target) = transcript_target.as_ref() {
+        reset_terminal_transcript(target)?;
+    }
+
     let shell = detect_user_shell();
     let pty_system = NativePtySystem::default();
     let pair = pty_system
@@ -2362,6 +2366,29 @@ fn append_terminal_transcript(target: &TerminalTranscriptTarget, chunk: &str) ->
             format!("Xero could not append terminal transcript output: {error}"),
         )
     })
+}
+
+fn reset_terminal_transcript(target: &TerminalTranscriptTarget) -> CommandResult<()> {
+    if let Some(parent) = target.path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            CommandError::retryable(
+                "terminal_transcript_dir_failed",
+                format!("Xero could not create terminal transcript app-data storage: {error}"),
+            )
+        })?;
+    }
+    OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&target.path)
+        .map(|_| ())
+        .map_err(|error| {
+            CommandError::retryable(
+                "terminal_transcript_reset_failed",
+                format!("Xero could not reset terminal transcript app-data storage: {error}"),
+            )
+        })
 }
 
 fn hex_digest(bytes: &[u8]) -> String {

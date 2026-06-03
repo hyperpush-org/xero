@@ -333,6 +333,10 @@ export function Composer({
 	const inlineTriggerClassName = dense
 		? "h-6 px-1.5 gap-1.5 text-[11.5px]"
 		: undefined;
+	const modelInlineTriggerClassName = cn(
+		inlineTriggerClassName,
+		"max-w-72",
+	);
 
 	useIsomorphicLayoutEffect(() => {
 		const node = textareaRef.current;
@@ -496,12 +500,12 @@ export function Composer({
 			onThinkingChange={onThinkingChange}
 			thinkingDisabled={thinkingControlDisabled}
 			thinkingPlaceholder={thinkingPlaceholder}
-			triggerClassName={inlineTriggerClassName}
+			triggerClassName={modelInlineTriggerClassName}
 		/>
 	);
 
 	const inlinePills = (
-		<div className="flex min-w-0 items-center gap-0.5 overflow-x-auto pb-0.5">
+		<div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden pb-0.5">
 			{agentPill}
 			{modelPill}
 		</div>

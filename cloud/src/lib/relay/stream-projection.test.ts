@@ -192,19 +192,38 @@ describe("projectRemotePayloadToTurns", () => {
 				sequence: 1,
 				text: "What is this project about.",
 			},
+			expect.objectContaining({
+				kind: "action_group",
+				title: "2 tool calls",
+				state: "succeeded",
+				actions: [
+					expect.objectContaining({
+						toolCallId: "runtime-project-context:2:context_manifest_recorded",
+						toolName: "project_context",
+						title: "project context manifest",
+						state: "succeeded",
+					}),
+					expect.objectContaining({
+						toolCallId: "runtime-project-context:3:retrieval_performed",
+						toolName: "project_context",
+						title: "project context retrieval",
+						state: "succeeded",
+					}),
+				],
+			}),
 			{
 				id: "thinking:run-rich:4",
 				kind: "thinking",
 				sequence: 4,
 				text: "Inspecting project details",
 			},
-			{
+			expect.objectContaining({
 				id: "transcript:run-rich:5",
 				kind: "message",
 				role: "assistant",
 				sequence: 6,
 				text: "This project is Clippster.",
-			},
+			}),
 		]);
 	});
 
@@ -287,13 +306,32 @@ describe("projectRemotePayloadToTurns", () => {
 				sequence: 1,
 				text: "How do I write fizz buzz in Elixir?",
 			},
-			{
+			expect.objectContaining({
+				kind: "action_group",
+				title: "2 tool calls",
+				state: "succeeded",
+				actions: [
+					expect.objectContaining({
+						toolCallId: "runtime-project-context:2:context_manifest_recorded",
+						toolName: "project_context",
+						title: "project context manifest",
+						state: "succeeded",
+					}),
+					expect.objectContaining({
+						toolCallId: "runtime-project-context:3:retrieval_performed",
+						toolName: "project_context",
+						title: "project context retrieval",
+						state: "succeeded",
+					}),
+				],
+			}),
+			expect.objectContaining({
 				id: "transcript:run-terminal:30",
 				kind: "message",
 				role: "assistant",
 				sequence: 4,
 				text: finalAnswer,
-			},
+			}),
 		]);
 	});
 

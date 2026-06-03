@@ -140,12 +140,14 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
     updatedAt: '2026-04-15T20:00:00.000Z',
     checkpoints: [],
     latestCheckpoint: null,
+    waitingSummary: null,
     checkpointCount: 0,
     hasCheckpoints: false,
     isActive: true,
     isTerminal: false,
     isStale: false,
     isFailed: false,
+    isWaiting: false,
     ...overrides,
   }
 }

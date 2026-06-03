@@ -52,7 +52,10 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import type { BrowserLaunchTarget } from "./browser-launch-targets"
+import {
+  normalizeLoopbackBrowserUrl,
+  type BrowserLaunchTarget,
+} from "./browser-launch-targets"
 
 type ToolMode = "pen" | "inspect" | null
 
@@ -68,6 +71,23 @@ const COOKIE_IMPORT_PROMPTED_KEY = "xero.browser.cookieImportPrompted"
 const RESIZE_HANDLE_INSET = 6
 const TOOL_CAPTURE_SETTLE_MS = 50
 const SIDEBAR_GEOMETRY_SETTLE_MS = 190
+const OVERLAY_OCCLUSION_PADDING = 8
+const OVERLAY_OCCLUSION_SELECTOR = [
+  '[data-slot="alert-dialog-content"]',
+  '[data-slot="context-menu-content"]',
+  '[data-slot="context-menu-sub-content"]',
+  '[data-slot="dialog-content"]',
+  '[data-slot="drawer-content"]',
+  '[data-slot="dropdown-menu-content"]',
+  '[data-slot="dropdown-menu-sub-content"]',
+  '[data-slot="hover-card-content"]',
+  '[data-slot="menubar-content"]',
+  '[data-slot="menubar-sub-content"]',
+  '[data-slot="popover-content"]',
+  '[data-slot="select-content"]',
+  '[data-slot="sheet-content"]',
+  '[data-slot="tooltip-content"]',
+].join(",")
 
 interface BrowserSidebarProps {
   open: boolean
@@ -120,6 +140,8 @@ interface BrowserResizeDragRuntime {
   nativeActive: boolean
   finish: (() => void) | null
 }
+
+type BrowserOcclusionRect = ViewportRect
 
 type BrowserCoalescedEvent =
   | { key: string; payload: BrowserLoadStatePayload; type: "load" }
@@ -198,6 +220,65 @@ export function createBrowserEventCoalescer({
   }
 }
 
+function occlusionRectsKey(rects: readonly BrowserOcclusionRect[]): string {
+  return rects.map((rect) => `${rect.x},${rect.y},${rect.width},${rect.height}`).join(";")
+}
+
+function isVisibleOverlayElement(element: HTMLElement): boolean {
+  if (element.closest('[aria-hidden="true"]')) return false
+  const style = window.getComputedStyle(element)
+  return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0"
+}
+
+function intersectClientRects(
+  viewport: ViewportRect,
+  overlay: DOMRect,
+): BrowserOcclusionRect | null {
+  const left = Math.max(viewport.x, Math.floor(overlay.left - OVERLAY_OCCLUSION_PADDING))
+  const top = Math.max(viewport.y, Math.floor(overlay.top - OVERLAY_OCCLUSION_PADDING))
+  const right = Math.min(
+    viewport.x + viewport.width,
+    Math.ceil(overlay.right + OVERLAY_OCCLUSION_PADDING),
+  )
+  const bottom = Math.min(
+    viewport.y + viewport.height,
+    Math.ceil(overlay.bottom + OVERLAY_OCCLUSION_PADDING),
+  )
+
+  const width = right - left
+  const height = bottom - top
+  if (width <= 0 || height <= 0) return null
+
+  return {
+    x: left - viewport.x,
+    y: top - viewport.y,
+    width,
+    height,
+  }
+}
+
+export function collectBrowserOverlayOcclusionRects(
+  viewportNode: HTMLElement,
+  inset = 0,
+  root: ParentNode = document,
+): BrowserOcclusionRect[] {
+  const viewport = readBrowserViewportRect(viewportNode, inset)
+  const rects: BrowserOcclusionRect[] = []
+  const seen = new Set<string>()
+
+  root.querySelectorAll<HTMLElement>(OVERLAY_OCCLUSION_SELECTOR).forEach((element) => {
+    if (!isVisibleOverlayElement(element)) return
+    const rect = intersectClientRects(viewport, element.getBoundingClientRect())
+    if (!rect) return
+    const key = `${rect.x},${rect.y},${rect.width},${rect.height}`
+    if (seen.has(key)) return
+    seen.add(key)
+    rects.push(rect)
+  })
+
+  return rects
+}
+
 function viewportDefaultWidth() {
   if (typeof window === "undefined") return 640
   return Math.round(window.innerWidth * DEFAULT_RATIO)
@@ -211,7 +292,13 @@ function viewportMaxWidth() {
 function normalizeUrl(input: string): string | null {
   const trimmed = input.trim()
   if (!trimmed) return null
-  if (/^https?:\/\//i.test(trimmed)) return trimmed
+  if (/^https?:\/\//i.test(trimmed)) return normalizeLoopbackBrowserUrl(trimmed)
+  if (/^(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d{1,5})?(?:[/?#].*)?$/i.test(trimmed)) {
+    return normalizeLoopbackBrowserUrl(`http://${trimmed}`)
+  }
+  if (/^\[::1\](?::\d{1,5})?(?:[/?#].*)?$/i.test(trimmed)) {
+    return `http://${trimmed}`
+  }
   if (/^[\w.-]+\.[a-z]{2,}(\/.*)?$/i.test(trimmed)) return `https://${trimmed}`
   const query = encodeURIComponent(trimmed)
   return `https://www.google.com/search?q=${query}`
@@ -346,6 +433,8 @@ export function BrowserSidebar({
   const onAddAgentContextRef = useRef(onAddAgentContext)
   const onAddAgentContextLoadingChangeRef = useRef(onAddAgentContextLoadingChange)
   const consumedPendingOpenUrlIdsRef = useRef<Set<string>>(new Set())
+  const occlusionFrameRef = useRef<number | null>(null)
+  const lastOcclusionKeyRef = useRef("")
 
   openRef.current = open
   activeTabIdRef.current = activeTabId
@@ -366,6 +455,43 @@ export function BrowserSidebar({
     return () => window.clearTimeout(timeout)
   }, [motionOpen, open])
 
+  const cancelBrowserOverlayOcclusionSync = useCallback(() => {
+    if (occlusionFrameRef.current === null) return
+    window.cancelAnimationFrame(occlusionFrameRef.current)
+    occlusionFrameRef.current = null
+  }, [])
+
+  const syncBrowserOverlayOcclusions = useCallback((options?: { force?: boolean }) => {
+    if (occlusionFrameRef.current !== null) return
+
+    occlusionFrameRef.current = window.requestAnimationFrame(() => {
+      occlusionFrameRef.current = null
+
+      if (
+        !openRef.current ||
+        (!hasWebviewRef.current && tabsRef.current.length === 0) ||
+        !isTauri()
+      ) {
+        return
+      }
+
+      const node = viewportRef.current
+      if (!node) return
+
+      const rects = collectBrowserOverlayOcclusionRects(node, RESIZE_HANDLE_INSET)
+      const key = occlusionRectsKey(rects)
+      if (!options?.force && key === lastOcclusionKeyRef.current) return
+
+      lastOcclusionKeyRef.current = key
+      void invoke("browser_set_occlusion_regions", {
+        rects,
+        tabId: activeTabIdRef.current,
+      }).catch(() => {
+        /* swallow */
+      })
+    })
+  }, [])
+
   const resizeScheduler = useMemo(
     () =>
       createBrowserResizeScheduler({
@@ -380,9 +506,10 @@ export function BrowserSidebar({
           void invoke("browser_resize", { ...rect, tabId }).catch(() => {
             /* swallow */
           })
+          syncBrowserOverlayOcclusions({ force: true })
         },
       }),
-    [],
+    [syncBrowserOverlayOcclusions],
   )
 
   const syncBrowserViewportToWidth = useCallback(
@@ -409,8 +536,9 @@ export function BrowserSidebar({
       }).catch(() => {
         /* swallow */
       })
+      syncBrowserOverlayOcclusions({ force: true })
     },
-    [resizeScheduler],
+    [resizeScheduler, syncBrowserOverlayOcclusions],
   )
 
   const markBrowserViewportSyncedToWidth = useCallback(
@@ -643,6 +771,37 @@ export function BrowserSidebar({
   }, [activeTabId, open, resizeScheduler])
 
   useEffect(() => {
+    if (!open || !isTauri()) return
+    if (!hasWebviewRef.current && tabsRef.current.length === 0) return
+
+    syncBrowserOverlayOcclusions({ force: true })
+
+    const schedule = () => syncBrowserOverlayOcclusions()
+    const observer = new MutationObserver(schedule)
+    if (document.body) {
+      observer.observe(document.body, {
+        attributes: true,
+        attributeFilter: ["aria-hidden", "class", "data-state", "hidden", "style"],
+        childList: true,
+        subtree: true,
+      })
+    }
+
+    window.addEventListener("resize", schedule)
+    window.addEventListener("scroll", schedule, true)
+    document.addEventListener("animationend", schedule, true)
+    document.addEventListener("transitionend", schedule, true)
+
+    return () => {
+      observer.disconnect()
+      window.removeEventListener("resize", schedule)
+      window.removeEventListener("scroll", schedule, true)
+      document.removeEventListener("animationend", schedule, true)
+      document.removeEventListener("transitionend", schedule, true)
+    }
+  }, [activeTabId, open, syncBrowserOverlayOcclusions])
+
+  useEffect(() => {
     if (
       open ||
       !isTauri() ||
@@ -655,6 +814,7 @@ export function BrowserSidebar({
     void invoke("browser_hide").catch(() => {
       /* swallow */
     })
+    lastOcclusionKeyRef.current = ""
   }, [open, resizeScheduler])
 
   useEffect(() => {
@@ -669,7 +829,13 @@ export function BrowserSidebar({
     return () => window.removeEventListener("resize", handleResize)
   }, [resizeScheduler])
 
-  useEffect(() => () => resizeScheduler.cancel(), [resizeScheduler])
+  useEffect(
+    () => () => {
+      resizeScheduler.cancel()
+      cancelBrowserOverlayOcclusionSync()
+    },
+    [cancelBrowserOverlayOcclusionSync, resizeScheduler],
+  )
 
   // Wire backend events
   useEffect(() => {
@@ -939,9 +1105,10 @@ export function BrowserSidebar({
   const openUrl = useCallback(
     (target: string, options?: { tabId?: string; newTab?: boolean }) => {
       setNavError(null)
+      const navigationTarget = normalizeLoopbackBrowserUrl(target)
 
       if (!isTauri()) {
-        setAddress(target)
+        setAddress(navigationTarget)
         return
       }
 
@@ -950,7 +1117,7 @@ export function BrowserSidebar({
       const viewport = readBrowserViewportRect(node, RESIZE_HANDLE_INSET)
       const forceNew = options?.newTab === true
       const payload = {
-        url: target,
+        url: navigationTarget,
         ...viewport,
         tabId: forceNew ? null : options?.tabId ?? activeTabId ?? null,
         newTab: forceNew,
@@ -964,6 +1131,7 @@ export function BrowserSidebar({
             activeTabIdRef.current = meta.id
             setActiveTabId(meta.id)
           }
+          syncBrowserOverlayOcclusions({ force: true })
         })
         .catch((error: unknown) => {
           hasWebviewRef.current = false
@@ -975,7 +1143,7 @@ export function BrowserSidebar({
           setNavError(message || "Failed to open page")
         })
     },
-    [activeTabId, resizeScheduler],
+    [activeTabId, resizeScheduler, syncBrowserOverlayOcclusions],
   )
 
   const handleSubmit = useCallback(
@@ -1071,8 +1239,9 @@ export function BrowserSidebar({
     if (!open || !openGeometrySettled || !pendingOpenUrl) return
     if (consumedPendingOpenUrlIdsRef.current.has(pendingOpenUrl.id)) return
     consumedPendingOpenUrlIdsRef.current.add(pendingOpenUrl.id)
-    setAddress(pendingOpenUrl.url)
-    openUrl(pendingOpenUrl.url)
+    const url = normalizeLoopbackBrowserUrl(pendingOpenUrl.url)
+    setAddress(url)
+    openUrl(url)
     onPendingOpenUrlConsumed?.(pendingOpenUrl.id)
   }, [onPendingOpenUrlConsumed, open, openGeometrySettled, openUrl, pendingOpenUrl])
 

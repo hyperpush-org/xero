@@ -38,9 +38,25 @@ export function normalizeBrowserLaunchUrl(value: string): string | null {
   try {
     const url = new URL(value.trim())
     if (!isBrowserSupportedDevServerUrl(url.toString())) return null
-    return url.toString()
+    return normalizeLoopbackBrowserUrl(url.toString())
   } catch {
     return null
+  }
+}
+
+export function normalizeLoopbackBrowserUrl(value: string): string {
+  const trimmed = value.trim()
+  try {
+    const url = new URL(trimmed)
+    if (url.protocol !== "http:" && url.protocol !== "https:") return value
+    const host = url.hostname.toLowerCase()
+    if (host === "localhost" || host === "0.0.0.0") {
+      url.hostname = "127.0.0.1"
+      return url.toString()
+    }
+    return trimmed
+  } catch {
+    return value
   }
 }
 

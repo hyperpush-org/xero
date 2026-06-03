@@ -11,11 +11,14 @@ pub mod settings;
 pub mod tabs;
 
 use std::{
+    fs::OpenOptions,
+    io::Write,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
-    time::Duration,
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -31,9 +34,11 @@ use crate::commands::{CommandError, CommandResult};
 #[cfg(target_os = "macos")]
 use {
     block2::{Block, RcBlock},
-    objc2::rc::Retained,
+    objc2::{rc::Retained, ClassType},
     objc2_app_kit::{NSEvent, NSEventTrackingRunLoopMode, NSView, NSWindow},
+    objc2_core_graphics::CGMutablePath,
     objc2_foundation::{NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSTimer},
+    objc2_quartz_core::{kCAFillRuleEvenOdd, CAShapeLayer, CATransaction},
     std::ptr::NonNull,
 };
 
@@ -87,6 +92,106 @@ const BROWSER_RESIZE_NUDGE_SCRIPT: &str = r#"
   } catch (_) {}
 })();
 "#;
+#[cfg(debug_assertions)]
+const BROWSER_NATIVE_PROBE_SCRIPT: &str = r#"
+(() => {
+  const read = (fn) => {
+    try {
+      return fn();
+    } catch (error) {
+      return { error: error && (error.stack || error.message) ? String(error.stack || error.message) : String(error) };
+    }
+  };
+
+  return {
+    href: read(() => location.href),
+    readyState: read(() => document.readyState),
+    title: read(() => document.title),
+    hasBody: read(() => Boolean(document.body)),
+    bodyText: read(() => document.body ? document.body.innerText.slice(0, 500) : null),
+    bodyBg: read(() => document.body ? getComputedStyle(document.body).backgroundColor : null),
+    rootChildren: read(() => {
+      const root = document.getElementById('root');
+      return root ? root.childElementCount : null;
+    }),
+    rootText: read(() => {
+      const root = document.getElementById('root');
+      return root ? root.innerText.slice(0, 500) : null;
+    }),
+    htmlSample: read(() => document.documentElement ? document.documentElement.outerHTML.slice(0, 1000) : null),
+    tauriInternals: read(() => Boolean(window.__TAURI_INTERNALS__)),
+    xeroBridge: read(() => Boolean(window.__xeroBridge__)),
+    bridgeErrors: read(() => {
+      const state = window.__xeroBridgeState__;
+      return state && Array.isArray(state.errors) ? state.errors.slice(-8) : null;
+    }),
+    resources: read(() => performance.getEntriesByType('resource').slice(-12).map((entry) => ({
+      name: entry.name,
+      initiatorType: entry.initiatorType,
+      duration: Math.round(entry.duration),
+      transferSize: entry.transferSize || 0,
+    }))),
+  };
+})()
+"#;
+
+#[cfg(debug_assertions)]
+fn append_browser_probe_log(message: impl AsRef<str>) {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let path = std::env::temp_dir().join("xero-browser-webview-probe.log");
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "[{timestamp}] {}", message.as_ref());
+    }
+}
+
+#[cfg(debug_assertions)]
+fn schedule_browser_webview_probe<R: Runtime + 'static>(
+    app: &AppHandle<R>,
+    tab_id: &str,
+    label: &str,
+    target: &Url,
+    reason: &str,
+) {
+    append_browser_probe_log(format!(
+        "schedule reason={reason} tab={tab_id} label={label} target={target}"
+    ));
+
+    for delay_ms in [0_u64, 250, 1_000, 3_000, 6_000] {
+        let app = app.clone();
+        let tab_id = tab_id.to_string();
+        let label = label.to_string();
+        let target = target.to_string();
+        let reason = reason.to_string();
+        thread::spawn(move || {
+            if delay_ms > 0 {
+                thread::sleep(Duration::from_millis(delay_ms));
+            }
+
+            let Some(webview) = app.get_webview(&label) else {
+                append_browser_probe_log(format!(
+                    "probe reason={reason} delay={delay_ms}ms tab={tab_id} label={label} target={target} missing-webview"
+                ));
+                return;
+            };
+
+            let prefix = format!(
+                "probe reason={reason} delay={delay_ms}ms tab={tab_id} label={label} target={target}"
+            );
+            append_browser_probe_log(&prefix);
+            let callback_prefix = prefix.clone();
+            if let Err(error) =
+                webview.eval_with_callback(BROWSER_NATIVE_PROBE_SCRIPT, move |raw| {
+                    append_browser_probe_log(format!("{callback_prefix} eval={raw}"));
+                })
+            {
+                append_browser_probe_log(format!("{prefix} eval-error={error}"));
+            }
+        });
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BrowserViewport {
@@ -112,6 +217,44 @@ impl BrowserViewport {
             position: LogicalPosition::new(viewport.x, viewport.y).into(),
             size: LogicalSize::new(viewport.width, viewport.height).into(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserOcclusionRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl BrowserOcclusionRect {
+    fn sanitize(self, viewport: BrowserViewport) -> Option<Self> {
+        if !self.x.is_finite()
+            || !self.y.is_finite()
+            || !self.width.is_finite()
+            || !self.height.is_finite()
+            || self.width <= 0.0
+            || self.height <= 0.0
+        {
+            return None;
+        }
+
+        let left = self.x.max(0.0).min(viewport.width);
+        let top = self.y.max(0.0).min(viewport.height);
+        let right = (self.x + self.width).max(0.0).min(viewport.width);
+        let bottom = (self.y + self.height).max(0.0).min(viewport.height);
+        if right <= left || bottom <= top {
+            return None;
+        }
+
+        Some(Self {
+            x: left,
+            y: top,
+            width: right - left,
+            height: bottom - top,
+        })
     }
 }
 
@@ -383,7 +526,7 @@ pub struct BrowserInternalEventPayload {
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn browser_show<R: Runtime>(
+pub fn browser_show<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: State<'_, BrowserState>,
     url: String,
@@ -409,7 +552,7 @@ pub fn browser_show<R: Runtime>(
     )
 }
 
-pub fn provision_browser_tab<R: Runtime>(
+pub fn provision_browser_tab<R: Runtime + 'static>(
     app: &AppHandle<R>,
     state: &BrowserState,
     url: &str,
@@ -452,26 +595,27 @@ pub fn provision_browser_tab<R: Runtime>(
         }
     };
 
+    tabs.set_active(&tab_id)?;
+    tabs.record_page_state(&tab_id, Some(target.to_string()), None, Some(true));
+
     if let Err(error) = ensure_browser_webview(app, &tabs, &tab_id, &label, &target, viewport) {
         if inserted_tab {
             let _ = tabs.remove(&tab_id);
-            if let Some(previous) = previous_active.as_deref() {
-                let _ = tabs.set_active(previous);
-            }
-            hide_inactive_webviews(app, &tabs);
-            emit_tab_list(app, &tabs);
         }
+        if let Some(previous) = previous_active.as_deref() {
+            let _ = tabs.set_active(previous);
+        }
+        hide_inactive_webviews(app, &tabs);
+        emit_tab_list(app, &tabs);
         return Err(error);
     }
 
-    tabs.set_active(&tab_id)?;
-    tabs.record_page_state(&tab_id, Some(target.to_string()), None, Some(true));
     hide_inactive_webviews(app, &tabs);
     emit_tab_list(app, &tabs);
     Ok(current_tab_meta(&tabs, &tab_id))
 }
 
-fn ensure_browser_webview<R: Runtime>(
+fn ensure_browser_webview<R: Runtime + 'static>(
     app: &AppHandle<R>,
     tabs: &Arc<BrowserTabs>,
     tab_id: &str,
@@ -493,6 +637,8 @@ fn ensure_browser_webview<R: Runtime>(
                 format!("Xero could not navigate the browser webview: {error}"),
             )
         })?;
+        #[cfg(debug_assertions)]
+        schedule_browser_webview_probe(app, tab_id, label, target, "existing-navigate");
         return Ok(());
     }
 
@@ -511,9 +657,18 @@ fn ensure_browser_webview<R: Runtime>(
     let tabs_for_load = Arc::clone(tabs);
     let app_for_load = app.clone();
 
-    let builder = WebviewBuilder::new(label.to_string(), WebviewUrl::External(target.clone()))
+    let about_blank = Url::parse("about:blank").map_err(|error| {
+        CommandError::system_fault(
+            "browser_blank_url_failed",
+            format!("Xero could not prepare the browser webview: {error}"),
+        )
+    })?;
+
+    let builder = WebviewBuilder::new(label.to_string(), WebviewUrl::External(about_blank))
         .initialization_script(BROWSER_BRIDGE_INIT_SCRIPT)
         .on_navigation(move |url| {
+            #[cfg(debug_assertions)]
+            append_browser_probe_log(format!("on_navigation tab={tab_id_for_nav} url={url}"));
             tabs_for_nav.record_page_state(
                 &tab_id_for_nav,
                 Some(url.to_string()),
@@ -536,6 +691,13 @@ fn ensure_browser_webview<R: Runtime>(
         .on_page_load(move |_webview, payload| {
             let url = payload.url().to_string();
             let loading = matches!(payload.event(), PageLoadEvent::Started);
+            #[cfg(debug_assertions)]
+            {
+                let event_name = if loading { "started" } else { "finished" };
+                append_browser_probe_log(format!(
+                    "on_page_load tab={tab_id_for_load} event={event_name} url={url}"
+                ));
+            }
             tabs_for_load.record_page_state(
                 &tab_id_for_load,
                 Some(url.clone()),
@@ -552,6 +714,7 @@ fn ensure_browser_webview<R: Runtime>(
                     error: None,
                 },
             );
+            emit_tab_list(&app_for_load, &tabs_for_load);
         });
 
     window
@@ -566,6 +729,27 @@ fn ensure_browser_webview<R: Runtime>(
                 format!("Xero could not create the browser webview: {error}"),
             )
         })?;
+
+    let webview = app.get_webview(label).ok_or_else(|| {
+        CommandError::system_fault(
+            "browser_create_missing",
+            "Xero created the browser webview but could not attach to it.",
+        )
+    })?;
+    set_browser_webview_bounds(&webview, viewport).map_err(|error| {
+        CommandError::system_fault(
+            "browser_set_bounds_failed",
+            format!("Xero could not position the browser webview: {error}"),
+        )
+    })?;
+    webview.navigate(target.clone()).map_err(|error| {
+        CommandError::system_fault(
+            "browser_navigate_failed",
+            format!("Xero could not navigate the browser webview: {error}"),
+        )
+    })?;
+    #[cfg(debug_assertions)]
+    schedule_browser_webview_probe(app, tab_id, label, target, "created");
     Ok(())
 }
 
@@ -586,6 +770,32 @@ fn set_browser_webview_bounds<R: Runtime>(
     }
 
     let _ = webview.eval(BROWSER_RESIZE_NUDGE_SCRIPT);
+
+    Ok(())
+}
+
+fn set_browser_webview_occlusion_regions<R: Runtime>(
+    webview: &Webview<R>,
+    rects: &[BrowserOcclusionRect],
+) -> tauri::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let rects = rects.to_vec();
+        webview.with_webview(move |platform_webview| {
+            let raw_webview = platform_webview.inner();
+            if raw_webview.is_null() {
+                return;
+            }
+
+            let ns_view = unsafe { &*(raw_webview.cast::<NSView>()) };
+            apply_macos_browser_webview_occlusion_regions(ns_view, &rects);
+        })?;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = rects;
+    }
 
     Ok(())
 }
@@ -714,6 +924,79 @@ fn apply_macos_browser_webview_frame(ns_view: &NSView, viewport: BrowserViewport
 }
 
 #[cfg(target_os = "macos")]
+fn apply_macos_browser_webview_occlusion_regions(ns_view: &NSView, rects: &[BrowserOcclusionRect]) {
+    ns_view.setWantsLayer(true);
+    let Some(layer) = ns_view.layer() else {
+        return;
+    };
+
+    if rects.is_empty() {
+        unsafe { layer.setMask(None) };
+        return;
+    }
+
+    let bounds = ns_view.bounds();
+    let viewport = BrowserViewport {
+        x: 0.0,
+        y: 0.0,
+        width: bounds.size.width.max(1.0),
+        height: bounds.size.height.max(1.0),
+    }
+    .sanitize();
+
+    let sanitized: Vec<_> = rects
+        .iter()
+        .filter_map(|rect| rect.sanitize(viewport))
+        .collect();
+    if sanitized.is_empty() {
+        unsafe { layer.setMask(None) };
+        return;
+    }
+
+    let path = CGMutablePath::new();
+    let mask_frame = NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(viewport.width, viewport.height),
+    );
+
+    unsafe {
+        CGMutablePath::add_rect(Some(&path), std::ptr::null(), mask_frame);
+    }
+
+    for rect in sanitized {
+        let y = if ns_view.isFlipped() {
+            rect.y
+        } else {
+            viewport.height - rect.y - rect.height
+        };
+        let occlusion = NSRect::new(
+            NSPoint::new(rect.x, y),
+            NSSize::new(rect.width, rect.height),
+        );
+        unsafe {
+            CGMutablePath::add_rect(Some(&path), std::ptr::null(), occlusion);
+        }
+    }
+
+    CATransaction::begin();
+    CATransaction::setDisableActions(true);
+
+    let mask = CAShapeLayer::layer();
+    mask.as_super().setFrame(mask_frame);
+    mask.setFillRule(unsafe { kCAFillRuleEvenOdd });
+    mask.setPath(
+        CGMutablePath::new_copy(Some(&path))
+            .as_deref()
+            .map(|path| &**path),
+    );
+    unsafe {
+        layer.setMask(Some(mask.as_super()));
+    }
+
+    CATransaction::commit();
+}
+
+#[cfg(target_os = "macos")]
 fn macos_browser_webview_origin(parent_view: &NSView, viewport: BrowserViewport) -> NSPoint {
     let x = viewport.x.round();
     let y = viewport.y.round();
@@ -774,6 +1057,36 @@ pub fn browser_resize<R: Runtime>(
     state
         .resize_coalescer
         .schedule(app, BrowserResizeJob { labels, viewport })
+}
+
+#[tauri::command]
+pub fn browser_set_occlusion_regions<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, BrowserState>,
+    rects: Vec<BrowserOcclusionRect>,
+    tab_id: Option<String>,
+) -> CommandResult<()> {
+    let tabs = state.tabs();
+    let labels = resolve_resize_labels(&app, &tabs, tab_id.as_deref()).or_else(|error| {
+        if rects.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Err(error)
+        }
+    })?;
+
+    for label in labels {
+        if let Some(webview) = app.get_webview(&label) {
+            set_browser_webview_occlusion_regions(&webview, &rects).map_err(|error| {
+                CommandError::system_fault(
+                    "browser_set_occlusion_regions_failed",
+                    format!("Xero could not update the browser webview overlay mask: {error}"),
+                )
+            })?;
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -987,16 +1300,11 @@ pub fn browser_current_url<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, BrowserState>,
 ) -> CommandResult<Option<String>> {
-    let Some(webview) = state.tabs().optional_active_webview(&app) else {
+    let tabs = state.tabs();
+    let Some(_) = tabs.optional_active_webview(&app) else {
         return Ok(None);
     };
-    let url = webview.url().map_err(|error| {
-        CommandError::system_fault(
-            "browser_url_failed",
-            format!("Xero could not read the browser URL: {error}"),
-        )
-    })?;
-    Ok(Some(url.to_string()))
+    Ok(tabs.active_url())
 }
 
 #[tauri::command]
@@ -1016,7 +1324,7 @@ pub async fn browser_screenshot<R: Runtime + 'static>(
 }
 
 #[tauri::command]
-pub fn browser_navigate<R: Runtime>(
+pub fn browser_navigate<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: State<'_, BrowserState>,
     url: String,
@@ -1031,12 +1339,16 @@ pub fn browser_navigate<R: Runtime>(
             "The in-app browser is not currently open.",
         ));
     };
-    webview.navigate(target).map_err(|error| {
+    webview.navigate(target.clone()).map_err(|error| {
         CommandError::system_fault(
             "browser_navigate_failed",
             format!("Xero could not navigate the browser webview: {error}"),
         )
     })?;
+    #[cfg(debug_assertions)]
+    if let Some(tab_id) = tabs.find_by_label(&label) {
+        schedule_browser_webview_probe(&app, &tab_id, &label, &target, "command-navigate");
+    }
     Ok(())
 }
 
@@ -1057,7 +1369,7 @@ pub fn browser_forward<R: Runtime>(
 }
 
 #[tauri::command]
-pub fn browser_reload<R: Runtime>(
+pub fn browser_reload<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: State<'_, BrowserState>,
     tab_id: Option<String>,
@@ -1070,18 +1382,23 @@ pub fn browser_reload<R: Runtime>(
             "The in-app browser is not currently open.",
         ));
     };
-    let current = webview.url().map_err(|error| {
-        CommandError::system_fault(
-            "browser_url_failed",
-            format!("Xero could not read the browser URL: {error}"),
+    let current = tabs.url_by_label(&label).ok_or_else(|| {
+        CommandError::user_fixable(
+            "browser_url_unavailable",
+            "The in-app browser does not have a URL to reload yet.",
         )
     })?;
-    webview.navigate(current).map_err(|error| {
+    let current = actions::parse_url(&current)?;
+    webview.navigate(current.clone()).map_err(|error| {
         CommandError::system_fault(
             "browser_navigate_failed",
             format!("Xero could not reload the browser webview: {error}"),
         )
     })?;
+    #[cfg(debug_assertions)]
+    if let Some(tab_id) = tabs.find_by_label(&label) {
+        schedule_browser_webview_probe(&app, &tab_id, &label, &current, "command-reload");
+    }
     Ok(())
 }
 

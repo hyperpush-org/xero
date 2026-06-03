@@ -5487,7 +5487,9 @@ fn active_session_mut<'a>(
 fn missing_session_error(session_id: &str) -> CommandError {
     CommandError::user_fixable(
         "browser_native_session_missing",
-        format!("Native CDP session `{session_id}` does not exist. Launch or attach a native session first."),
+        format!(
+            "Native CDP session `{session_id}` does not exist. Launch or attach a native session first."
+        ),
     )
 }
 
