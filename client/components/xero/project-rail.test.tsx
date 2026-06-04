@@ -142,6 +142,63 @@ describe('ProjectRail', () => {
     expect(container.querySelectorAll('.xero-project-rail-activity-aura-field')).toHaveLength(1)
   })
 
+  it('shows completed unseen session counts on project cards', () => {
+    const secondProject = {
+      ...projects[0],
+      id: 'project-2',
+      name: 'nova-ui',
+    }
+    render(
+      <ProjectRail
+        activeProjectId="project-1"
+        completedSessionCountsByProject={new Map([['project-2', 2]])}
+        errorMessage={null}
+        isImporting={false}
+        isLoading={false}
+        onImportProject={() => undefined}
+        onRemoveProject={() => undefined}
+        onSelectProject={() => undefined}
+        pendingProjectRemovalId={null}
+        projectRemovalStatus="idle"
+        projects={[...projects, secondProject]}
+      />,
+    )
+
+    const idleProjectButton = screen.getByRole('button', { name: 'Open mesh-lang (active)' })
+    const completedProjectButton = screen.getByRole('button', { name: 'Open nova-ui' })
+
+    expect(idleProjectButton.querySelector('.xero-project-rail-completion-count-badge')).toBeNull()
+    expect(
+      completedProjectButton.querySelector('.xero-project-rail-completion-count-badge'),
+    ).toHaveTextContent('2')
+    expect(completedProjectButton).toHaveAccessibleDescription('2 completed unseen sessions')
+  })
+
+  it('caps large completed unseen session counts in the compact badge', () => {
+    render(
+      <ProjectRail
+        activeProjectId="project-1"
+        completedSessionCountsByProject={new Map([['project-1', 128]])}
+        errorMessage={null}
+        isImporting={false}
+        isLoading={false}
+        onImportProject={() => undefined}
+        onRemoveProject={() => undefined}
+        onSelectProject={() => undefined}
+        pendingProjectRemovalId={null}
+        projectRemovalStatus="idle"
+        projects={projects}
+      />,
+    )
+
+    const projectButton = screen.getByRole('button', { name: 'Open mesh-lang (active)' })
+
+    expect(projectButton.querySelector('.xero-project-rail-completion-count-badge')).toHaveTextContent(
+      '99+',
+    )
+    expect(projectButton).toHaveAccessibleDescription('128 completed unseen sessions')
+  })
+
   it('does not render project load errors as a destructive rail slot', () => {
     const { container } = render(
       <ProjectRail

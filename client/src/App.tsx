@@ -1663,6 +1663,16 @@ export function XeroApp({ adapter }: XeroAppProps) {
     unreadCompletedSessionNotifications,
   } = useXeroDesktopState({ adapter, subscribeRuntimeStreams: false })
 
+  const completedSessionCountsByProject = useMemo<ReadonlyMap<string, number>>(() => {
+    const counts = new Map<string, number>()
+
+    for (const notification of unreadCompletedSessionNotifications) {
+      counts.set(notification.projectId, (counts.get(notification.projectId) ?? 0) + 1)
+    }
+
+    return counts
+  }, [unreadCompletedSessionNotifications])
+
   const {
     session: githubSession,
     status: githubAuthStatus,
@@ -5241,6 +5251,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
             pendingProjectRemovalId={pendingProjectRemovalId}
             projectRemovalStatus={projectRemovalStatus}
             projects={projects}
+            completedSessionCountsByProject={completedSessionCountsByProject}
             runningProjectIds={runningAgentProjectIds}
             onSessionsHoverEnter={
               activeView === 'agent' && explorerCollapsed && Boolean(activeProject)

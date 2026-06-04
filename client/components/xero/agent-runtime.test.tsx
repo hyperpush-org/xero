@@ -3800,6 +3800,61 @@ describe('AgentRuntime current UI', () => {
     expect(screen.getByText('The build is failing because the generated type is stale.')).toBeVisible()
   })
 
+  it('inserts replayed thoughts and tools before an overlapping historical final response', () => {
+    const historicalConversationTurns: NonNullable<
+      ComponentProps<typeof AgentRuntime>['historicalConversationTurns']
+    > = [
+      {
+        id: 'transcript:run-1:2',
+        kind: 'message',
+        role: 'user',
+        sequence: 2,
+        text: 'What is this project about?',
+        attachments: [],
+      },
+      {
+        id: 'transcript:run-1:20',
+        kind: 'message',
+        role: 'assistant',
+        sequence: 20,
+        text: 'Xero is a desktop agent workbench.',
+        attachments: [],
+      },
+    ]
+
+    renderRuntimeStreamItems(
+      [
+        makeTranscriptItem({ sequence: 2, role: 'user', text: 'What is this project about?' }),
+        makeReasoningItem({ sequence: 3, text: 'I should inspect the repository first.' }),
+        makeToolItem({
+          sequence: 4,
+          toolCallId: 'call-read-readme',
+          toolName: 'read',
+          toolState: 'succeeded',
+          detail: 'Read README.md.',
+        }),
+        makeTranscriptItem({ sequence: 20, text: 'Xero is a desktop agent workbench.' }),
+      ],
+      {
+        historicalConversationTurns,
+        toolCallGroupingPreference: 'separate',
+      },
+    )
+
+    const conversationText =
+      screen.getByRole('list', { name: 'Agent conversation turns' }).textContent ?? ''
+    const promptIndex = conversationText.indexOf('What is this project about?')
+    const thoughtsIndex = conversationText.indexOf('I should inspect the repository first.')
+    const toolIndex = conversationText.indexOf('Read README.md.')
+    const finalIndex = conversationText.indexOf('Xero is a desktop agent workbench.')
+
+    expect(screen.getAllByText('Xero is a desktop agent workbench.')).toHaveLength(1)
+    expect(promptIndex).toBeGreaterThanOrEqual(0)
+    expect(thoughtsIndex).toBeGreaterThan(promptIndex)
+    expect(toolIndex).toBeGreaterThan(thoughtsIndex)
+    expect(finalIndex).toBeGreaterThan(toolIndex)
+  })
+
   it('does not combine separate reasoning summaries before a tool burst', () => {
     const toolBurst = Array.from({ length: 16 }, (_, index) =>
       makeToolItem({

@@ -3966,6 +3966,104 @@ describe('XeroApp current UI', () => {
     await waitFor(() => expect(projectButton).not.toHaveAttribute('data-agent-running'))
   })
 
+  it('clears the project rail animation when the runtime stream reports completion', async () => {
+    const { adapter, emitRuntimeStream, streamSubscriptions } = createAdapter({
+      runtimeRun: makeRuntimeRun('project-1', { runId: 'run-1' }),
+    })
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    const projectButton = screen.getByRole('button', { name: 'Open Xero (active)' })
+    await waitFor(() => expect(projectButton).toHaveAttribute('data-agent-running', 'true'))
+    await waitFor(() => expect(streamSubscriptions).toHaveLength(1))
+
+    act(() => {
+      emitRuntimeStream(0, makeRuntimeCompletionEvent('project-1'))
+    })
+
+    await waitFor(() => expect(projectButton).not.toHaveAttribute('data-agent-running'))
+    await waitFor(() =>
+      expect(projectButton.querySelector('.xero-project-rail-completion-count-badge')).toHaveTextContent('1'),
+    )
+  })
+
+  it('keeps the project rail animation until every session run in the project completes', async () => {
+    const { adapter, emitRuntimeRunUpdated, emitRuntimeStream, streamSubscriptions } = createAdapter({
+      runtimeRun: makeRuntimeRun('project-1', {
+        agentSessionId: 'agent-session-main',
+        runId: 'run-main',
+      }),
+    })
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    const projectButton = screen.getByRole('button', { name: 'Open Xero (active)' })
+    await waitFor(() => expect(projectButton).toHaveAttribute('data-agent-running', 'true'))
+
+    act(() => {
+      emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-secondary',
+        run: null,
+      })
+    })
+
+    act(() => {
+      emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-secondary',
+        run: makeRuntimeRun('project-1', {
+          agentSessionId: 'agent-session-secondary',
+          runId: 'run-secondary',
+        }),
+      })
+    })
+
+    await waitFor(() => expect(streamSubscriptions).toHaveLength(1))
+
+    act(() => {
+      emitRuntimeStream(
+        0,
+        makeRuntimeCompletionEvent('project-1', {
+          agentSessionId: 'agent-session-main',
+          runId: 'run-main',
+        }),
+      )
+    })
+
+    await waitFor(() => {
+      expect(projectButton.querySelector('.xero-project-rail-completion-count-badge')).toHaveTextContent('1')
+      expect(projectButton).toHaveAttribute('data-agent-running', 'true')
+    })
+
+    act(() => {
+      emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-secondary',
+        run: makeRuntimeRun('project-1', {
+          agentSessionId: 'agent-session-secondary',
+          runId: 'run-secondary',
+          status: 'stopped',
+          stoppedAt: '2026-04-15T20:06:00Z',
+          updatedAt: '2026-04-15T20:06:00Z',
+        }),
+      })
+    })
+
+    await waitFor(() => {
+      expect(projectButton.querySelector('.xero-project-rail-completion-count-badge')).toHaveTextContent('2')
+      expect(projectButton).not.toHaveAttribute('data-agent-running')
+    })
+  })
+
   it('clears the project rail animation when a background project run is no longer active', async () => {
     const { adapter, emitRuntimeRunUpdated } = createAdapter({
       projects: [makeProjectSummary('project-1', 'Xero'), makeProjectSummary('project-2', 'Nova')],
@@ -4002,6 +4100,53 @@ describe('XeroApp current UI', () => {
 
     await waitFor(() => expect(backgroundProjectButton).not.toHaveAttribute('data-agent-running'))
     expect(backgroundProjectButton.querySelector('.xero-project-rail-activity-aura-field')).toBeNull()
+  })
+
+  it('shows completed unseen session counts from notifications on project rail cards', async () => {
+    const { adapter, emitRuntimeRunUpdated } = createAdapter({
+      projects: [makeProjectSummary('project-1', 'Xero'), makeProjectSummary('project-2', 'Nova')],
+    })
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    const backgroundProjectButton = screen.getByRole('button', { name: 'Open Nova' })
+    expect(backgroundProjectButton.querySelector('.xero-project-rail-completion-count-badge')).toBeNull()
+
+    act(() => {
+      emitRuntimeRunUpdated({
+        projectId: 'project-2',
+        agentSessionId: 'agent-session-main',
+        run: makeRuntimeRun('project-2', { runId: 'run-project-2' }),
+      })
+    })
+
+    await waitFor(() =>
+      expect(backgroundProjectButton).toHaveAttribute('data-agent-running', 'true'),
+    )
+
+    act(() => {
+      emitRuntimeRunUpdated({
+        projectId: 'project-2',
+        agentSessionId: 'agent-session-main',
+        run: makeRuntimeRun('project-2', {
+          runId: 'run-project-2',
+          status: 'stopped',
+          stoppedAt: '2026-04-15T20:05:00Z',
+          updatedAt: '2026-04-15T20:05:00Z',
+        }),
+      })
+    })
+
+    await waitFor(() =>
+      expect(
+        backgroundProjectButton.querySelector('.xero-project-rail-completion-count-badge'),
+      ).toHaveTextContent('1'),
+    )
+    expect(backgroundProjectButton).toHaveAccessibleDescription('1 completed unseen session')
   })
 
   it('keeps the compact project rail on the workflow canvas view', async () => {

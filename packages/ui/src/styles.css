@@ -30,6 +30,8 @@
 
   --primary: #d4a574;
   --primary-foreground: #0a0e12;
+  --primary-badge: #b98755;
+  --primary-badge-foreground: #0a0e12;
 
   --secondary: #242423;
   --secondary-foreground: #f8f9fa;
@@ -93,6 +95,8 @@
 
   --primary: #4ea1ff;
   --primary-foreground: #0a1220;
+  --primary-badge: #2f80d8;
+  --primary-badge-foreground: #ffffff;
 
   --secondary: #2a2d2e;
   --secondary-foreground: #d4d4d4;
@@ -151,6 +155,8 @@
 
   --primary: #fafafa;
   --primary-foreground: #0a0a0a;
+  --primary-badge: #c7c7c7;
+  --primary-badge-foreground: #0a0a0a;
 
   --secondary: #1f1f1f;
   --secondary-foreground: #e6e6e6;
@@ -209,6 +215,8 @@
 
   --primary: #0969da;
   --primary-foreground: #ffffff;
+  --primary-badge: #0753ad;
+  --primary-badge-foreground: #ffffff;
 
   --secondary: #f3f4f6;
   --secondary-foreground: #1f2328;
@@ -267,6 +275,8 @@
 
   --primary: #7aa2f7;
   --primary-foreground: #1a1b26;
+  --primary-badge: #5f83d6;
+  --primary-badge-foreground: #ffffff;
 
   --secondary: #2f334d;
   --secondary-foreground: #c0caf5;
@@ -333,6 +343,8 @@
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-primary-badge: var(--primary-badge);
+  --color-primary-badge-foreground: var(--primary-badge-foreground);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
@@ -710,6 +722,29 @@
       );
     filter: blur(9px);
     opacity: 0.82;
+  }
+
+  .xero-project-rail-completion-count-badge {
+    position: absolute;
+    top: -4px;
+    right: -5px;
+    z-index: 20;
+    display: inline-flex;
+    min-width: 13px;
+    height: 13px;
+    align-items: center;
+    justify-content: center;
+    padding: 0 3px;
+    border-radius: 9999px;
+    background: var(--primary-badge);
+    color: var(--primary-badge-foreground);
+    box-shadow: 0 0 0 1px var(--sidebar);
+    font-size: 8px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
+    line-height: 1;
+    pointer-events: none;
   }
 
   .xero-browser-capture-occlusion {

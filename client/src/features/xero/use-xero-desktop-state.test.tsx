@@ -1154,8 +1154,10 @@ function createMockAdapter(options?: {
     const configuredDiff = options?.diffs?.[scope]
     return configuredDiff ?? makeDiff('project-1', scope, scope === 'unstaged' ? 'diff --git a/file b/file\n+change' : '')
   })
-  const getRuntimeRun = vi.fn(async (projectId: string, _agentSessionId?: string): Promise<RuntimeRunDto | null> =>
-    runtimeRuns[projectId] ?? null,
+  const getRuntimeRun = vi.fn(async (projectId: string, agentSessionId?: string): Promise<RuntimeRunDto | null> =>
+    runtimeRuns[`${projectId}::${agentSessionId ?? 'agent-session-main'}`] ??
+    runtimeRuns[projectId] ??
+    null,
   )
   const getAutonomousRun = vi.fn(async (projectId: string): Promise<AutonomousRunStateDto> =>
     autonomousStates[projectId] ?? { run: null },
@@ -2476,6 +2478,15 @@ function Harness({ adapter }: { adapter: XeroDesktopAdapter }) {
       <div data-testid="skill-pending-source-id">{state.pendingSkillSourceId ?? 'none'}</div>
       <div data-testid="refresh-source">{state.refreshSource ?? 'none'}</div>
       <div data-testid="project-count">{String(state.projects.length)}</div>
+      <div data-testid="running-project-ids">
+        {Array.from(state.runningAgentProjectIds).sort().join(',') || 'none'}
+      </div>
+      <div data-testid="unread-completed-session-count">{String(state.unreadCompletedSessionCount)}</div>
+      <div data-testid="unread-completed-session-ids">
+        {state.unreadCompletedSessionNotifications
+          .map((notification) => `${notification.projectId}:${notification.agentSessionId}:${notification.runId}`)
+          .join(',') || 'none'}
+      </div>
       <div data-testid="workflow-has-phases">{String(state.workflowView?.hasPhases ?? false)}</div>
       <div data-testid="workflow-overall-percent">{String(state.workflowView?.overallPercent ?? 0)}</div>
       <div data-testid="workflow-active-phase">{state.workflowView?.activePhase?.name ?? 'none'}</div>
@@ -3055,6 +3066,165 @@ describe('useXeroDesktopState', () => {
         value: 'project-2',
       }),
     )
+  })
+
+  it('loads completed unseen session notifications from app UI state on startup', async () => {
+    const setup = createMockAdapter({
+      runtimeRuns: {
+        'project-1': null,
+      },
+    })
+    const readAppUiState = vi.fn(async (request: { key: string }) => ({
+      schema: 'xero.app_ui_state.v1' as const,
+      key: request.key,
+      value:
+        request.key === 'agent.completedSessionNotifications.v1'
+          ? {
+              'project-1': {
+                'agent-session-main': {
+                  runId: 'run-persisted',
+                  completedAt: '2026-04-15T20:05:00Z',
+                },
+              },
+            }
+          : null,
+      storageScope: 'os_app_data' as const,
+      uiDeferred: true,
+    }))
+    setup.adapter.readAppUiState = readAppUiState
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+    await waitFor(() => expect(screen.getByTestId('unread-completed-session-count')).toHaveTextContent('1'))
+    expect(screen.getByTestId('unread-completed-session-ids')).toHaveTextContent(
+      'project-1:agent-session-main:run-persisted',
+    )
+    expect(readAppUiState).toHaveBeenCalledWith({
+      key: 'agent.completedSessionNotifications.v1',
+    })
+  })
+
+  it('persists completed unseen session notifications to app UI state', async () => {
+    const setup = createMockAdapter()
+    setup.adapter.readAppUiState = vi.fn(async (request: { key: string }) => ({
+      schema: 'xero.app_ui_state.v1' as const,
+      key: request.key,
+      value: null,
+      storageScope: 'os_app_data' as const,
+      uiDeferred: true,
+    }))
+    const writeAppUiState = vi.fn(async (request: { key: string; value?: unknown | null }) => ({
+      schema: 'xero.app_ui_state.v1' as const,
+      key: request.key,
+      value: request.value ?? null,
+      storageScope: 'os_app_data' as const,
+      uiDeferred: true,
+    }))
+    setup.adapter.writeAppUiState = writeAppUiState
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(setup.streamSubscriptions).toHaveLength(1))
+
+    act(() => {
+      setup.emitRuntimeStream(
+        0,
+        makeStreamEvent('project-1', {
+          kind: 'complete',
+          text: null,
+          transcriptRole: null,
+          toolCallId: null,
+          toolName: null,
+          toolState: null,
+          toolSummary: null,
+          toolResultPreview: null,
+          skillId: null,
+          skillStage: null,
+          skillResult: null,
+          skillSource: null,
+          skillCacheStatus: null,
+          skillDiagnostic: null,
+          actionId: null,
+          boundaryId: null,
+          actionType: null,
+          title: null,
+          detail: 'Done.',
+          code: null,
+          message: null,
+          retryable: null,
+          createdAt: '2026-04-15T20:05:00Z',
+        }),
+      )
+    })
+
+    await waitFor(() =>
+      expect(writeAppUiState).toHaveBeenCalledWith({
+        key: 'agent.completedSessionNotifications.v1',
+        value: {
+          'project-1': {
+            'agent-session-main': {
+              runId: 'run-project-1',
+              completedAt: '2026-04-15T20:05:00Z',
+            },
+          },
+        },
+      }),
+    )
+  })
+
+  it('hydrates background project rail running state from persisted active session runs', async () => {
+    const setup = createMockAdapter({
+      listProjects: {
+        projects: [makeProjectSummary('project-1', 'Xero'), makeProjectSummary('project-2', 'orchestra')],
+      },
+      runtimeRuns: {
+        'project-1': null,
+        'project-2': makeRuntimeRun('project-2'),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+    await waitFor(() => expect(screen.getByTestId('running-project-ids')).toHaveTextContent('project-2'))
+    expect(setup.getProjectSnapshot).toHaveBeenCalledWith('project-2')
+    expect(setup.getRuntimeRun).toHaveBeenCalledWith('project-2', 'agent-session-main')
+  })
+
+  it('does not restore the rail running border for persisted completed unseen runs', async () => {
+    const setup = createMockAdapter({
+      listProjects: {
+        projects: [makeProjectSummary('project-1', 'Xero'), makeProjectSummary('project-2', 'orchestra')],
+      },
+      runtimeRuns: {
+        'project-1': null,
+        'project-2': makeRuntimeRun('project-2'),
+      },
+    })
+    setup.adapter.readAppUiState = vi.fn(async (request: { key: string }) => ({
+      schema: 'xero.app_ui_state.v1' as const,
+      key: request.key,
+      value:
+        request.key === 'agent.completedSessionNotifications.v1'
+          ? {
+              'project-2': {
+                'agent-session-main': {
+                  runId: 'run-project-2',
+                  completedAt: '2026-04-15T20:05:00Z',
+                },
+              },
+            }
+          : null,
+      storageScope: 'os_app_data' as const,
+      uiDeferred: true,
+    }))
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('unread-completed-session-count')).toHaveTextContent('1'))
+    await waitFor(() => expect(setup.getRuntimeRun).toHaveBeenCalledWith('project-2', 'agent-session-main'))
+    expect(screen.getByTestId('running-project-ids')).toHaveTextContent('none')
   })
 
   it('keeps agent projections stable across unrelated local rerenders', async () => {

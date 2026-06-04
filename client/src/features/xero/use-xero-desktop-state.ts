@@ -169,6 +169,8 @@ const AGENT_WORKSPACE_LAYOUT_UI_STATE_KEY = 'agent-workspace.layout.v1'
 const AGENT_WORKSPACE_LAYOUT_PERSIST_DEBOUNCE_MS = 250
 const AGENT_WORKSPACE_MAX_PANES = 6
 const SPAWNED_AGENT_WORKSPACE_DEFAULT_RUNTIME_AGENT_ID: RuntimeAgentIdDto = 'engineer'
+const COMPLETED_AGENT_SESSION_NOTIFICATIONS_APP_STATE_KEY =
+  'agent.completedSessionNotifications.v1'
 
 interface RuntimeSubscriptionTarget {
   key: string
@@ -289,6 +291,161 @@ function createCompletedAgentSessionRunKey(
   completion: Pick<RuntimeSessionCompletionNotification, 'projectId' | 'agentSessionId' | 'runId'>,
 ): string {
   return [completion.projectId, completion.agentSessionId, completion.runId].join('\u0000')
+}
+
+function normalizeRecordText(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function sanitizeCompletedAgentSessionNotificationRecords(
+  value: unknown,
+): CompletedAgentSessionNotificationRecords {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
+
+  const records: CompletedAgentSessionNotificationRecords = {}
+  for (const [rawProjectId, rawProjectRecords] of Object.entries(value)) {
+    const projectId = normalizeRecordText(rawProjectId)
+    if (
+      !projectId ||
+      !rawProjectRecords ||
+      typeof rawProjectRecords !== 'object' ||
+      Array.isArray(rawProjectRecords)
+    ) {
+      continue
+    }
+
+    for (const [rawAgentSessionId, rawRecord] of Object.entries(rawProjectRecords)) {
+      const agentSessionId = normalizeRecordText(rawAgentSessionId)
+      if (
+        !agentSessionId ||
+        !rawRecord ||
+        typeof rawRecord !== 'object' ||
+        Array.isArray(rawRecord)
+      ) {
+        continue
+      }
+
+      const record = rawRecord as Record<string, unknown>
+      const runId = normalizeRecordText(record.runId)
+      const completedAt = normalizeRecordText(record.completedAt)
+      if (!runId || !completedAt) {
+        continue
+      }
+
+      records[projectId] ??= {}
+      records[projectId][agentSessionId] = { runId, completedAt }
+    }
+  }
+
+  return records
+}
+
+function mergeCompletedAgentSessionNotificationRecords(
+  left: CompletedAgentSessionNotificationRecords,
+  right: CompletedAgentSessionNotificationRecords,
+): CompletedAgentSessionNotificationRecords {
+  const merged: CompletedAgentSessionNotificationRecords = {}
+  for (const records of [left, right]) {
+    for (const [projectId, projectRecords] of Object.entries(records)) {
+      for (const [agentSessionId, record] of Object.entries(projectRecords)) {
+        merged[projectId] ??= {}
+        merged[projectId][agentSessionId] = record
+      }
+    }
+  }
+  return merged
+}
+
+function hasCompletedAgentSessionNotificationRecords(
+  records: CompletedAgentSessionNotificationRecords,
+): boolean {
+  return Object.values(records).some((projectRecords) => Object.keys(projectRecords).length > 0)
+}
+
+function stableCompletedAgentSessionNotificationRecords(
+  records: CompletedAgentSessionNotificationRecords,
+): CompletedAgentSessionNotificationRecords {
+  return Object.fromEntries(
+    Object.entries(records)
+      .sort(([leftProjectId], [rightProjectId]) => leftProjectId.localeCompare(rightProjectId))
+      .map(([projectId, projectRecords]) => [
+        projectId,
+        Object.fromEntries(
+          Object.entries(projectRecords).sort(([leftSessionId], [rightSessionId]) =>
+            leftSessionId.localeCompare(rightSessionId),
+          ),
+        ),
+      ]),
+  )
+}
+
+function createCompletedAgentSessionNotificationsFingerprint(
+  records: CompletedAgentSessionNotificationRecords,
+): string {
+  return JSON.stringify(stableCompletedAgentSessionNotificationRecords(records))
+}
+
+function addCompletedRuntimeRunKeysFromNotifications(
+  completedRuntimeRunKeys: Set<string>,
+  records: CompletedAgentSessionNotificationRecords,
+): boolean {
+  let changed = false
+  for (const [projectId, projectRecords] of Object.entries(records)) {
+    for (const [agentSessionId, record] of Object.entries(projectRecords)) {
+      const key = createCompletedAgentSessionRunKey({
+        projectId,
+        agentSessionId,
+        runId: record.runId,
+      })
+      if (completedRuntimeRunKeys.has(key)) {
+        continue
+      }
+
+      completedRuntimeRunKeys.add(key)
+      changed = true
+    }
+  }
+  return changed
+}
+
+async function readCompletedAgentSessionNotifications(
+  adapter: XeroDesktopAdapter,
+): Promise<CompletedAgentSessionNotificationRecords> {
+  if (!adapter.readAppUiState) {
+    return {}
+  }
+
+  try {
+    const response = await adapter.readAppUiState({
+      key: COMPLETED_AGENT_SESSION_NOTIFICATIONS_APP_STATE_KEY,
+    })
+    return sanitizeCompletedAgentSessionNotificationRecords(response.value)
+  } catch {
+    return {}
+  }
+}
+
+async function persistCompletedAgentSessionNotifications(
+  adapter: XeroDesktopAdapter,
+  records: CompletedAgentSessionNotificationRecords,
+): Promise<void> {
+  if (!adapter.writeAppUiState) {
+    return
+  }
+
+  await adapter.writeAppUiState({
+    key: COMPLETED_AGENT_SESSION_NOTIFICATIONS_APP_STATE_KEY,
+    value: hasCompletedAgentSessionNotificationRecords(records)
+      ? stableCompletedAgentSessionNotificationRecords(records)
+      : null,
+  })
 }
 
 function countAllUnreadCompletedAgentSessions(
@@ -1084,7 +1241,13 @@ export function useXeroDesktopState(
   const [completedAgentSessionNotifications, setCompletedAgentSessionNotifications] =
     useState<CompletedAgentSessionNotificationRecords>({})
   const completedAgentSessionNotificationsRef = useRef<CompletedAgentSessionNotificationRecords>({})
+  const completedAgentSessionNotificationsHydratedRef = useRef(!adapter.readAppUiState)
+  const completedAgentSessionNotificationsPersistedFingerprintRef = useRef(
+    createCompletedAgentSessionNotificationsFingerprint({}),
+  )
   const seenCompletedAgentSessionRunKeysRef = useRef<Set<string>>(new Set())
+  const completedRuntimeRunKeysRef = useRef<Set<string>>(new Set())
+  const [completedRuntimeRunRevision, setCompletedRuntimeRunRevision] = useState(0)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [refreshSource, setRefreshSource] = useState<RefreshSource>(null)
   const [runtimeStreamRetryToken, setRuntimeStreamRetryToken] = useState(0)
@@ -1110,9 +1273,12 @@ export function useXeroDesktopState(
   const runtimeRunsRef = useRef<Record<string, RuntimeRunView>>({})
   const autonomousRunsRef = useRef<Record<string, NonNullable<ProjectDetailView['autonomousRun']>>>({})
   const runtimeRunsBySessionRef = useRef<Record<string, RuntimeRunView | null>>({})
+  const railRuntimeRunsBySessionRef = useRef<Record<string, RuntimeRunView | null>>({})
   const autonomousRunsBySessionRef = useRef<Record<string, ProjectDetailView['autonomousRun']>>({})
   const runtimeStreamsBySessionRef = useRef<Record<string, RuntimeStreamView>>({})
   const agentSessionRuntimePrefetchInFlightRef = useRef<Partial<Record<string, Promise<void>>>>({})
+  const railRuntimeHydratedProjectIdsRef = useRef<Set<string>>(new Set())
+  const railRuntimeHydrationInFlightRef = useRef<Partial<Record<string, Promise<void>>>>({})
   const agentWorkspaceLayoutsRef = useRef<Record<string, AgentWorkspaceLayoutState>>(agentWorkspaceLayouts)
   const projectUiStateLayoutHydratedRef = useRef<Set<string>>(new Set())
   const pendingSpawnPaneIdsRef = useRef<Set<string>>(new Set())
@@ -1219,6 +1385,77 @@ export function useXeroDesktopState(
       ),
     )
   }, [activeProject])
+
+  useEffect(() => {
+    let cancelled = false
+
+    if (!adapter.readAppUiState) {
+      completedAgentSessionNotificationsHydratedRef.current = true
+      return
+    }
+
+    void readCompletedAgentSessionNotifications(adapter)
+      .then((persistedRecords) => {
+        if (cancelled) {
+          return
+        }
+
+        completedAgentSessionNotificationsPersistedFingerprintRef.current =
+          createCompletedAgentSessionNotificationsFingerprint(persistedRecords)
+        if (addCompletedRuntimeRunKeysFromNotifications(completedRuntimeRunKeysRef.current, persistedRecords)) {
+          setCompletedRuntimeRunRevision((revision) => revision + 1)
+        }
+
+        completedAgentSessionNotificationsHydratedRef.current = true
+        setCompletedAgentSessionNotifications((currentRecords) => {
+          const nextRecords = mergeCompletedAgentSessionNotificationRecords(
+            persistedRecords,
+            currentRecords,
+          )
+          if (
+            createCompletedAgentSessionNotificationsFingerprint(nextRecords) ===
+            createCompletedAgentSessionNotificationsFingerprint(currentRecords)
+          ) {
+            return currentRecords
+          }
+          return nextRecords
+        })
+      })
+      .catch(() => {
+        if (cancelled) {
+          return
+        }
+
+        completedAgentSessionNotificationsPersistedFingerprintRef.current =
+          createCompletedAgentSessionNotificationsFingerprint(
+            completedAgentSessionNotificationsRef.current,
+          )
+        completedAgentSessionNotificationsHydratedRef.current = true
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [adapter])
+
+  useEffect(() => {
+    if (!adapter.writeAppUiState || !completedAgentSessionNotificationsHydratedRef.current) {
+      return
+    }
+
+    const fingerprint = createCompletedAgentSessionNotificationsFingerprint(
+      completedAgentSessionNotifications,
+    )
+    if (fingerprint === completedAgentSessionNotificationsPersistedFingerprintRef.current) {
+      return
+    }
+
+    void persistCompletedAgentSessionNotifications(adapter, completedAgentSessionNotifications)
+      .then(() => {
+        completedAgentSessionNotificationsPersistedFingerprintRef.current = fingerprint
+      })
+      .catch(() => {})
+  }, [adapter, completedAgentSessionNotifications])
 
   useEffect(() => {
     agentWorkspaceLayoutsRef.current = agentWorkspaceLayouts
@@ -1557,6 +1794,11 @@ export function useXeroDesktopState(
   const recordRuntimeSessionCompletion = useCallback(
     (completion: RuntimeSessionCompletionNotification) => {
       const completionKey = createCompletedAgentSessionRunKey(completion)
+      if (!completedRuntimeRunKeysRef.current.has(completionKey)) {
+        completedRuntimeRunKeysRef.current.add(completionKey)
+        setCompletedRuntimeRunRevision((revision) => revision + 1)
+      }
+
       if (seenCompletedAgentSessionRunKeysRef.current.has(completionKey)) {
         return
       }
@@ -1761,8 +2003,21 @@ export function useXeroDesktopState(
         const previousCachedRun = hasPreviousCachedRun
           ? runtimeRunsBySessionRef.current[cacheKey]
           : undefined
-        if (!hasPreviousCachedRun || !areRuntimeRunProjectionsEqual(previousCachedRun, runtimeRun)) {
+        const previousRailCachedRun = hasOwnRecord(railRuntimeRunsBySessionRef.current, cacheKey)
+          ? railRuntimeRunsBySessionRef.current[cacheKey]
+          : undefined
+        const runtimeSessionCacheChanged =
+          !hasPreviousCachedRun || !areRuntimeRunProjectionsEqual(previousCachedRun, runtimeRun)
+        const railRuntimeCacheChanged =
+          !hasOwnRecord(railRuntimeRunsBySessionRef.current, cacheKey) ||
+          !areRuntimeRunProjectionsEqual(previousRailCachedRun, runtimeRun)
+        if (runtimeSessionCacheChanged) {
           runtimeRunsBySessionRef.current[cacheKey] = runtimeRun
+        }
+        if (railRuntimeCacheChanged) {
+          railRuntimeRunsBySessionRef.current[cacheKey] = runtimeRun
+        }
+        if (runtimeSessionCacheChanged || railRuntimeCacheChanged) {
           setAgentSessionRuntimeCacheRevision((revision) => revision + 1)
         }
       }
@@ -2309,6 +2564,102 @@ export function useXeroDesktopState(
     },
     [adapter, applyAgentSessionRuntimeState],
   )
+
+  const hydrateProjectRailRuntimeState = useCallback(
+    async (projectId: string) => {
+      const trimmedProjectId = projectId.trim()
+      if (!trimmedProjectId || railRuntimeHydratedProjectIdsRef.current.has(trimmedProjectId)) {
+        return
+      }
+
+      const inFlight = railRuntimeHydrationInFlightRef.current[trimmedProjectId]
+      if (inFlight) {
+        await inFlight
+        return
+      }
+
+      const requestPromise = (async () => {
+        let project = projectDetailsRef.current[trimmedProjectId] ?? null
+        if (!project || projectPreviewShellsRef.current.has(project)) {
+          try {
+            project = mapProjectSnapshot(await adapter.getProjectSnapshot(trimmedProjectId))
+          } catch {
+            railRuntimeHydratedProjectIdsRef.current.add(trimmedProjectId)
+            return
+          }
+        }
+
+        const activeSessions = project.agentSessions.filter((session) => session.isActive)
+        if (activeSessions.length === 0) {
+          railRuntimeHydratedProjectIdsRef.current.add(trimmedProjectId)
+          return
+        }
+
+        let changed = false
+        await Promise.all(
+          activeSessions.map(async (session) => {
+            const cacheKey = createAgentSessionStateKey(trimmedProjectId, session.agentSessionId)
+            const previousRuntimeRun = hasOwnRecord(railRuntimeRunsBySessionRef.current, cacheKey)
+              ? railRuntimeRunsBySessionRef.current[cacheKey]
+              : undefined
+
+            try {
+              const response = await adapter.getRuntimeRun(trimmedProjectId, session.agentSessionId)
+              const runtimeRun = response ? mapRuntimeRun(response) : null
+              const nextRuntimeRun =
+                runtimeRun?.agentSessionId === session.agentSessionId ? runtimeRun : null
+              if (!areRuntimeRunProjectionsEqual(previousRuntimeRun, nextRuntimeRun)) {
+                railRuntimeRunsBySessionRef.current[cacheKey] = nextRuntimeRun
+                changed = true
+              }
+            } catch {
+              if (!hasOwnRecord(railRuntimeRunsBySessionRef.current, cacheKey)) {
+                railRuntimeRunsBySessionRef.current[cacheKey] = null
+                changed = true
+              }
+            }
+          }),
+        )
+
+        railRuntimeHydratedProjectIdsRef.current.add(trimmedProjectId)
+        if (changed) {
+          setAgentSessionRuntimeCacheRevision((revision) => revision + 1)
+        }
+      })()
+        .catch(() => undefined)
+        .finally(() => {
+          if (railRuntimeHydrationInFlightRef.current[trimmedProjectId] === requestPromise) {
+            delete railRuntimeHydrationInFlightRef.current[trimmedProjectId]
+          }
+        })
+
+      railRuntimeHydrationInFlightRef.current[trimmedProjectId] = requestPromise
+      await requestPromise
+    },
+    [adapter],
+  )
+
+  useEffect(() => {
+    if (isLoading || projects.length === 0) {
+      return
+    }
+
+    let cancelled = false
+    const projectIds = projects.map((project) => project.id)
+
+    void (async () => {
+      for (const projectId of projectIds) {
+        if (cancelled) {
+          return
+        }
+        await hydrateProjectRailRuntimeState(projectId)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [hydrateProjectRailRuntimeState, isLoading, projects])
 
   const prefetchProject = useCallback(
     (projectId: string) => {
@@ -3977,14 +4328,17 @@ export function useXeroDesktopState(
 
   const runningAgentProjectIds = useMemo<ReadonlySet<string>>(() => {
     const knownProjectIds = new Set(projects.map((project) => project.id))
+    const completedRuntimeRunKeys = completedRuntimeRunKeysRef.current
     const nextProjectIds = new Set<string>()
     const addRuntimeRun = (runtimeRun: RuntimeRunView | null | undefined) => {
       if (!isRunningAgentRuntimeRun(runtimeRun)) return
+      if (completedRuntimeRunKeys.has(createCompletedAgentSessionRunKey(runtimeRun))) return
       if (knownProjectIds.size > 0 && !knownProjectIds.has(runtimeRun.projectId)) return
       nextProjectIds.add(runtimeRun.projectId)
     }
 
     const cachedSessionRuns = runtimeRunsBySessionRef.current
+    Object.values(railRuntimeRunsBySessionRef.current).forEach(addRuntimeRun)
     Object.values(cachedSessionRuns).forEach(addRuntimeRun)
     Object.values(runtimeRuns).forEach((runtimeRun) => {
       if (
@@ -4000,7 +4354,7 @@ export function useXeroDesktopState(
     })
 
     return nextProjectIds
-  }, [agentSessionRuntimeCacheRevision, projects, runtimeRuns])
+  }, [agentSessionRuntimeCacheRevision, completedRuntimeRunRevision, projects, runtimeRuns])
 
   const executionView = useMemo<ExecutionPaneView | null>(
     () =>

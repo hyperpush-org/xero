@@ -25,6 +25,8 @@ export interface ThemeColors {
   popoverForeground: string
   primary: string
   primaryForeground: string
+  primaryBadge: string
+  primaryBadgeForeground: string
   secondary: string
   secondaryForeground: string
   muted: string
@@ -150,6 +152,8 @@ const DUSK: ThemeDefinition = {
     popoverForeground: '#f8f9fa',
     primary: '#d4a574',
     primaryForeground: '#0a0e12',
+    primaryBadge: '#b98755',
+    primaryBadgeForeground: '#0a0e12',
     secondary: '#242423',
     secondaryForeground: '#f8f9fa',
     muted: '#2d2d2d',
@@ -245,6 +249,8 @@ const MIDNIGHT: ThemeDefinition = {
     popoverForeground: '#d4d4d4',
     primary: '#4ea1ff',
     primaryForeground: '#0a1220',
+    primaryBadge: '#2f80d8',
+    primaryBadgeForeground: '#ffffff',
     secondary: '#2a2d2e',
     secondaryForeground: '#d4d4d4',
     muted: '#303033',
@@ -340,6 +346,8 @@ const DAYLIGHT: ThemeDefinition = {
     popoverForeground: '#1f2328',
     primary: '#0969da',
     primaryForeground: '#ffffff',
+    primaryBadge: '#0753ad',
+    primaryBadgeForeground: '#ffffff',
     secondary: '#f3f4f6',
     secondaryForeground: '#1f2328',
     muted: '#eef1f4',
@@ -435,6 +443,8 @@ const CARBON: ThemeDefinition = {
     popoverForeground: '#e6e6e6',
     primary: '#fafafa',
     primaryForeground: '#0a0a0a',
+    primaryBadge: '#c7c7c7',
+    primaryBadgeForeground: '#0a0a0a',
     secondary: '#1f1f1f',
     secondaryForeground: '#e6e6e6',
     muted: '#1f1f1f',
@@ -530,6 +540,8 @@ const TOKYO_NIGHT: ThemeDefinition = {
     popoverForeground: '#c0caf5',
     primary: '#7aa2f7',
     primaryForeground: '#1a1b26',
+    primaryBadge: '#5f83d6',
+    primaryBadgeForeground: '#ffffff',
     secondary: '#2f334d',
     secondaryForeground: '#c0caf5',
     muted: '#292e42',
@@ -664,6 +676,8 @@ const COLOR_CSS_VAR_MAP: Array<[keyof ThemeColors, string]> = [
   ['popoverForeground', '--popover-foreground'],
   ['primary', '--primary'],
   ['primaryForeground', '--primary-foreground'],
+  ['primaryBadge', '--primary-badge'],
+  ['primaryBadgeForeground', '--primary-badge-foreground'],
   ['secondary', '--secondary'],
   ['secondaryForeground', '--secondary-foreground'],
   ['muted', '--muted'],
@@ -760,6 +774,40 @@ export const EDITABLE_COLOR_KEYS = [
 
 export type EditableColorKey = (typeof EDITABLE_COLOR_KEYS)[number]
 
+function parseHexColor(value: string): [number, number, number] | null {
+  const normalized = normalizeHexColor(value, '')
+  if (!/^#[0-9a-f]{6}$/.test(normalized)) return null
+
+  return [
+    Number.parseInt(normalized.slice(1, 3), 16),
+    Number.parseInt(normalized.slice(3, 5), 16),
+    Number.parseInt(normalized.slice(5, 7), 16),
+  ]
+}
+
+function toHexChannel(value: number): string {
+  return Math.min(255, Math.max(0, Math.round(value))).toString(16).padStart(2, '0')
+}
+
+function mixHexColor(
+  sourceColor: string,
+  targetColor: string,
+  targetWeight: number,
+  fallback: string,
+): string {
+  const source = parseHexColor(sourceColor)
+  const target = parseHexColor(targetColor)
+  if (!source || !target) return fallback
+
+  const clampedTargetWeight = Math.min(1, Math.max(0, targetWeight))
+  const sourceWeight = 1 - clampedTargetWeight
+  const channels = source.map((channel, index) =>
+    toHexChannel(channel * sourceWeight + target[index] * clampedTargetWeight),
+  )
+
+  return `#${channels.join('')}`
+}
+
 /**
  * Take the 9 user-edited colors plus a base preset and produce a complete
  * `ThemeColors` object. The base provides accent semantics (success/warning/
@@ -771,6 +819,7 @@ export function expandCustomColors(
   base: ThemeColors,
 ): ThemeColors {
   const primaryFg = base.primaryForeground
+  const primaryBadge = mixHexColor(edits.primary, '#000000', 0.22, base.primaryBadge)
   return {
     ...base,
     background: edits.background,
@@ -781,6 +830,8 @@ export function expandCustomColors(
     popoverForeground: edits.foreground,
     primary: edits.primary,
     primaryForeground: primaryFg,
+    primaryBadge,
+    primaryBadgeForeground: base.primaryBadgeForeground,
     secondary: edits.secondary,
     secondaryForeground: edits.foreground,
     muted: edits.muted,

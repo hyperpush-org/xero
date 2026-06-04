@@ -259,7 +259,8 @@ export interface AgentRuntimeProps {
    * (loaded from the persisted session transcript). When provided, they are
    * prepended ahead of the live stream so a same-session handoff reads as a
    * continuous conversation. Items belonging to the active run must already
-   * be excluded by the caller.
+   * be excluded by the caller when possible; overlap is tolerated during
+   * transcript / stream replay races.
    */
   historicalConversationTurns?: readonly ConversationTurn[]
   /** True while the persisted transcript for this session is loading. */
@@ -1708,21 +1709,6 @@ function applyPersistedRoutingContinuationResolutions(turns: ConversationTurn[])
   return nextTurns
 }
 
-function conversationTurnTextKey(turn: ConversationTurn): string | null {
-  if (turn.kind !== 'message') {
-    return null
-  }
-
-  const runId = getConversationTurnRunId(turn)
-  const text = normalizeConversationTurnText(turn.text)
-  const attachmentKey = turn.attachments?.map((attachment) => attachment.id).join('|') ?? ''
-  if (!runId || (!text && !attachmentKey)) {
-    return null
-  }
-
-  return ['message', runId, turn.role, text, attachmentKey].join('\u0000')
-}
-
 function conversationMessageCovers(
   coveringTurn: ConversationTurn,
   candidateTurn: ConversationTurn,
@@ -1800,6 +1786,88 @@ function isConversationTurnCoveredByTurns(
   )
 }
 
+function findMergedConversationTurnIndex(
+  mergedTurns: readonly ConversationTurn[],
+  candidateTurn: ConversationTurn,
+): number {
+  const idIndex = mergedTurns.findIndex((turn) => turn.id === candidateTurn.id)
+  if (idIndex >= 0) {
+    return idIndex
+  }
+
+  return mergedTurns.findIndex((turn) =>
+    conversationMessageCovers(turn, candidateTurn) ||
+    conversationActionCovers(turn, candidateTurn),
+  )
+}
+
+function findAnchoredConversationInsertionIndex(
+  mergedTurns: readonly ConversationTurn[],
+  currentTurns: readonly ConversationTurn[],
+  currentIndex: number,
+): number {
+  for (let index = currentIndex - 1; index >= 0; index -= 1) {
+    const anchorIndex = findMergedConversationTurnIndex(mergedTurns, currentTurns[index])
+    if (anchorIndex >= 0) {
+      return anchorIndex + 1
+    }
+  }
+
+  for (let index = currentIndex + 1; index < currentTurns.length; index += 1) {
+    const anchorIndex = findMergedConversationTurnIndex(mergedTurns, currentTurns[index])
+    if (anchorIndex >= 0) {
+      return anchorIndex
+    }
+  }
+
+  return mergedTurns.length
+}
+
+function mergeConversationTurnsByCurrentOrder({
+  baseTurns,
+  currentTurns,
+  replaceEquivalentPendingPrompts = false,
+}: {
+  baseTurns: readonly ConversationTurn[]
+  currentTurns: readonly ConversationTurn[]
+  replaceEquivalentPendingPrompts?: boolean
+}): ConversationTurn[] {
+  const previousIds = new Set(baseTurns.map((turn) => turn.id))
+  const mergedTurns = baseTurns.slice() as ConversationTurn[]
+
+  for (let currentIndex = 0; currentIndex < currentTurns.length; currentIndex += 1) {
+    const currentTurn = currentTurns[currentIndex]
+    if (previousIds.has(currentTurn.id)) {
+      continue
+    }
+
+    if (isConversationTurnCoveredByTurns(currentTurn, mergedTurns)) {
+      continue
+    }
+
+    if (replaceEquivalentPendingPrompts) {
+      const equivalentPendingPromptIndex = mergedTurns.findIndex((previousTurn) =>
+        areEquivalentPendingPromptTurns(previousTurn, currentTurn),
+      )
+      if (equivalentPendingPromptIndex >= 0) {
+        mergedTurns[equivalentPendingPromptIndex] = currentTurn
+        previousIds.add(currentTurn.id)
+        continue
+      }
+    }
+
+    const insertionIndex = findAnchoredConversationInsertionIndex(
+      mergedTurns,
+      currentTurns,
+      currentIndex,
+    )
+    mergedTurns.splice(insertionIndex, 0, currentTurn)
+    previousIds.add(currentTurn.id)
+  }
+
+  return mergedTurns
+}
+
 function mergeHistoricalAndLiveTurns(
   historicalTurns: readonly ConversationTurn[] | null | undefined,
   liveTurns: readonly ConversationTurn[],
@@ -1812,31 +1880,10 @@ function mergeHistoricalAndLiveTurns(
     return historicalTurns.slice()
   }
 
-  const historicalIds = new Set(historicalTurns.map((turn) => turn.id))
-  const historicalTextKeys = new Set(
-    historicalTurns
-      .map(conversationTurnTextKey)
-      .filter((key): key is string => Boolean(key)),
-  )
-
-  const filteredLiveTurns = liveTurns.filter((turn) => {
-    if (historicalIds.has(turn.id)) {
-      return false
-    }
-
-    const textKey = conversationTurnTextKey(turn)
-    if (textKey && historicalTextKeys.has(textKey)) {
-      return false
-    }
-
-    if (isConversationTurnCoveredByTurns(turn, historicalTurns)) {
-      return false
-    }
-
-    return true
+  return mergeConversationTurnsByCurrentOrder({
+    baseTurns: historicalTurns,
+    currentTurns: liveTurns,
   })
-
-  return [...historicalTurns, ...filteredLiveTurns]
 }
 
 interface ConversationContinuitySnapshot {
@@ -1848,36 +1895,11 @@ function mergeConversationContinuityTurns(
   previousTurns: readonly ConversationTurn[],
   currentTurns: readonly ConversationTurn[],
 ): ConversationTurn[] {
-  const previousIds = new Set(previousTurns.map((turn) => turn.id))
-  const mergedTurns = previousTurns.slice() as ConversationTurn[]
-  const additions: ConversationTurn[] = []
-
-  for (const currentTurn of currentTurns) {
-    if (previousIds.has(currentTurn.id)) {
-      continue
-    }
-
-    if (isConversationTurnCoveredByTurns(currentTurn, mergedTurns)) {
-      continue
-    }
-
-    const equivalentPendingPromptIndex = mergedTurns.findIndex((previousTurn) =>
-      areEquivalentPendingPromptTurns(previousTurn, currentTurn),
-    )
-    if (equivalentPendingPromptIndex >= 0) {
-      mergedTurns[equivalentPendingPromptIndex] = currentTurn
-      previousIds.add(currentTurn.id)
-      continue
-    }
-
-    additions.push(currentTurn)
-  }
-
-  if (additions.length === 0) {
-    return mergedTurns
-  }
-
-  return [...mergedTurns, ...additions]
+  return mergeConversationTurnsByCurrentOrder({
+    baseTurns: previousTurns,
+    currentTurns,
+    replaceEquivalentPendingPrompts: true,
+  })
 }
 
 function areEquivalentPendingPromptTurns(
