@@ -109,6 +109,39 @@ describe('ProjectRail', () => {
     expect(onImportProject).not.toHaveBeenCalled()
   })
 
+  it('shows the browser-capture style border animation for projects with running agents', () => {
+    const secondProject = {
+      ...projects[0],
+      id: 'project-2',
+      name: 'nova-ui',
+    }
+    const { container } = render(
+      <ProjectRail
+        activeProjectId="project-1"
+        errorMessage={null}
+        isImporting={false}
+        isLoading={false}
+        onImportProject={() => undefined}
+        onRemoveProject={() => undefined}
+        onSelectProject={() => undefined}
+        pendingProjectRemovalId={null}
+        projectRemovalStatus="idle"
+        projects={[...projects, secondProject]}
+        runningProjectIds={new Set(['project-2'])}
+      />,
+    )
+
+    const idleProjectButton = screen.getByRole('button', { name: 'Open mesh-lang (active)' })
+    const runningProjectButton = screen.getByRole('button', { name: 'Open nova-ui' })
+
+    expect(idleProjectButton).not.toHaveAttribute('data-agent-running')
+    expect(runningProjectButton).toHaveAttribute('data-agent-running', 'true')
+    expect(
+      runningProjectButton.querySelector('.xero-project-rail-activity-aura-field'),
+    ).not.toBeNull()
+    expect(container.querySelectorAll('.xero-project-rail-activity-aura-field')).toHaveLength(1)
+  })
+
   it('does not render project load errors as a destructive rail slot', () => {
     const { container } = render(
       <ProjectRail

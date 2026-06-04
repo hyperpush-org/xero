@@ -365,6 +365,7 @@ export interface UseXeroDesktopStateResult {
   projects: ProjectListItem[]
   activeProject: ProjectDetailView | null
   activeProjectId: string | null
+  runningAgentProjectIds: ReadonlySet<string>
   pendingProjectSelectionId: string | null
   repositoryStatus: RepositoryStatusView | null
   workflowView: WorkflowPaneView | null

@@ -14,6 +14,7 @@ interface ProjectRailProps {
   projectRemovalStatus: 'idle' | 'running'
   pendingProjectRemovalId: string | null
   pendingProjectSelectionId?: string | null
+  runningProjectIds?: ReadonlySet<string>
   errorMessage: string | null
   onSelectProject: (projectId: string) => void
   onPreloadProject?: (projectId: string) => void
@@ -33,6 +34,7 @@ export function ProjectRail({
   projectRemovalStatus,
   pendingProjectRemovalId,
   pendingProjectSelectionId = null,
+  runningProjectIds,
   onSelectProject,
   onPreloadProject,
   onPreviewProject,
@@ -91,6 +93,7 @@ export function ProjectRail({
               <ProjectRailItem
                 project={project}
                 isActive={project.id === displayedActiveProjectId}
+                isAgentRunning={runningProjectIds?.has(project.id) ?? false}
                 isRemovalPending={project.id === pendingProjectRemovalId}
                 isRemovalLocked={isRemovingProject}
                 onPreloadProject={onPreloadProject}
@@ -153,6 +156,7 @@ export function ProjectRail({
 interface ProjectRailItemProps {
   project: ProjectListItem
   isActive: boolean
+  isAgentRunning: boolean
   isRemovalPending: boolean
   isRemovalLocked: boolean
   onSelectProject: (projectId: string) => void
@@ -164,6 +168,7 @@ interface ProjectRailItemProps {
 const ProjectRailItem = memo(function ProjectRailItem({
   project,
   isActive,
+  isAgentRunning,
   isRemovalPending,
   isRemovalLocked,
   onSelectProject,
@@ -181,12 +186,13 @@ const ProjectRailItem = memo(function ProjectRailItem({
           aria-label={`Open ${project.name}${isActive ? ' (active)' : ''}`}
           aria-current={isActive ? 'true' : undefined}
           className={cn(
-            'relative flex h-8 w-8 items-center justify-center rounded-lg border text-[12px] font-medium leading-none transition-colors duration-150',
+            'xero-project-rail-card relative isolate flex h-8 w-8 items-center justify-center overflow-hidden rounded-lg border text-[12px] font-medium leading-none transition-colors duration-150',
             'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30',
             isActive
               ? 'border-border/80 bg-secondary text-foreground'
               : 'border-transparent bg-secondary/30 text-foreground/55 hover:bg-secondary/60 hover:text-foreground',
           )}
+          data-agent-running={isAgentRunning ? 'true' : undefined}
           onClick={() => onSelectProject(project.id)}
           onContextMenu={(event) => {
             event.preventDefault()
@@ -200,10 +206,17 @@ const ProjectRailItem = memo(function ProjectRailItem({
           title={project.name}
           type="button"
         >
+          {isAgentRunning ? (
+            <span className="xero-project-rail-activity-aura" aria-hidden="true">
+              <span className="xero-project-rail-activity-aura-field" />
+            </span>
+          ) : null}
           {isRemovalPending ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <Loader2 className="relative z-10 h-3.5 w-3.5 animate-spin" />
           ) : (
-            <span aria-hidden="true">{projectInitial}</span>
+            <span className="relative z-10" aria-hidden="true">
+              {projectInitial}
+            </span>
           )}
           <span className="sr-only">{project.name}</span>
         </button>

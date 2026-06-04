@@ -1552,6 +1552,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     projects,
     activeProject,
     activeProjectId,
+    runningAgentProjectIds,
     pendingProjectSelectionId,
     repositoryStatus,
     workflowView,
@@ -5240,6 +5241,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
             pendingProjectRemovalId={pendingProjectRemovalId}
             projectRemovalStatus={projectRemovalStatus}
             projects={projects}
+            runningProjectIds={runningAgentProjectIds}
             onSessionsHoverEnter={
               activeView === 'agent' && explorerCollapsed && Boolean(activeProject)
                 ? requestExplorerPeek

@@ -364,6 +364,36 @@ describe('runtime run metadata coalescing', () => {
     expect(setRefreshSource).not.toHaveBeenCalled()
     expect(setErrorMessage).not.toHaveBeenCalled()
   })
+
+  it('passes agent session ids through for null runtime-run updates', () => {
+    let scheduledFlush: (() => void) | null = null
+    const applyRuntimeRunUpdate = vi.fn(
+      (_projectId: string, runtimeRun: RuntimeRunView | null) => runtimeRun,
+    )
+    const buffer = createRuntimeRunUpdateBuffer({
+      activeProjectIdRef: { current: 'project-1' },
+      applyRuntimeRunUpdate,
+      setRefreshSource: vi.fn(),
+      setErrorMessage: vi.fn(),
+      scheduleFlush: (callback) => {
+        scheduledFlush = callback
+        return vi.fn()
+      },
+    })
+
+    buffer.enqueue({
+      projectId: 'project-2',
+      agentSessionId: 'agent-session-background',
+      run: null,
+    })
+
+    const flush = scheduledFlush as (() => void) | null
+    flush?.()
+
+    expect(applyRuntimeRunUpdate).toHaveBeenCalledWith('project-2', null, {
+      agentSessionId: 'agent-session-background',
+    })
+  })
 })
 
 describe('runtime stream event coalescing', () => {

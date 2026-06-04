@@ -578,7 +578,18 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
 
     let token = lease.token();
     let outcome = drive_owned_agent_run(owned_request, token);
-    let failure = match outcome {
+    let terminal_failure = match outcome {
+        Ok(agent_snapshot)
+            if agent_snapshot.run.status == project_store::AgentRunStatus::Completed =>
+        {
+            record_owned_runtime_completion(
+                app,
+                &task.repo_root,
+                &runtime_snapshot,
+                "Owned agent runtime completed.",
+            );
+            None
+        }
         Ok(agent_snapshot)
             if agent_snapshot.run.status == project_store::AgentRunStatus::Failed =>
         {
@@ -597,7 +608,7 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
         _ => None,
     };
 
-    if let Some(diagnostic) = failure {
+    if let Some(diagnostic) = terminal_failure {
         runtime_snapshot = persist_owned_runtime_run(
             &task.repo_root,
             &task.project_id,
@@ -697,7 +708,72 @@ fn emit_owned_runtime_failure_from_latest<R: Runtime>(
     emit_owned_runtime_failure(app, repo_root, &latest, error, checkpoint_summary)
 }
 
+fn record_owned_runtime_completion<R: Runtime>(
+    app: &AppHandle<R>,
+    repo_root: &Path,
+    snapshot: &RuntimeRunSnapshotRecord,
+    checkpoint_summary: &str,
+) {
+    if let Err(error) = complete_owned_runtime_run(app, repo_root, snapshot, checkpoint_summary) {
+        eprintln!(
+            "[runtime] failed to record owned runtime completion for run `{}`: {}",
+            snapshot.run.run_id, error.message
+        );
+    }
+}
+
+pub(crate) fn complete_owned_runtime_run<R: Runtime>(
+    app: &AppHandle<R>,
+    repo_root: &Path,
+    snapshot: &RuntimeRunSnapshotRecord,
+    checkpoint_summary: &str,
+) -> CommandResult<RuntimeRunSnapshotRecord> {
+    let Some(next) =
+        mark_owned_runtime_run_completed_from_latest(repo_root, snapshot, checkpoint_summary)?
+    else {
+        return Ok(snapshot.clone());
+    };
+    let runtime_run = runtime_run_dto_from_snapshot(&next);
+    emit_runtime_run_updated(app, Some(&runtime_run))?;
+    Ok(next)
+}
+
+fn mark_owned_runtime_run_completed_from_latest(
+    repo_root: &Path,
+    snapshot: &RuntimeRunSnapshotRecord,
+    checkpoint_summary: &str,
+) -> CommandResult<Option<RuntimeRunSnapshotRecord>> {
+    let Some(latest) = latest_runtime_snapshot_for_owned_update(repo_root, snapshot)? else {
+        return Ok(None);
+    };
+    if owned_runtime_status_is_terminal(&latest.run.status) {
+        return Ok(Some(latest));
+    }
+
+    persist_owned_runtime_run(
+        repo_root,
+        &latest.run.project_id,
+        &latest.run.agent_session_id,
+        &latest.run.run_id,
+        &latest.run.provider_id,
+        &latest.controls,
+        RuntimeRunStatus::Stopped,
+        None,
+        checkpoint_summary,
+        latest.last_checkpoint_sequence.saturating_add(1),
+        Some(&latest),
+    )
+    .map(Some)
+}
+
 fn latest_runtime_snapshot_for_failure(
+    repo_root: &Path,
+    snapshot: &RuntimeRunSnapshotRecord,
+) -> CommandResult<Option<RuntimeRunSnapshotRecord>> {
+    latest_runtime_snapshot_for_owned_update(repo_root, snapshot)
+}
+
+fn latest_runtime_snapshot_for_owned_update(
     repo_root: &Path,
     snapshot: &RuntimeRunSnapshotRecord,
 ) -> CommandResult<Option<RuntimeRunSnapshotRecord>> {
@@ -2094,12 +2170,84 @@ fn queued_runtime_attachments(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::RuntimeAgentIdDto;
+    use crate::{
+        commands::RuntimeAgentIdDto, db::import_project, git::repository::CanonicalRepository,
+        state::ImportFailpoints,
+    };
+    use std::{fs, path::PathBuf};
     use xero_agent_core::{
         provider_capability_catalog, provider_preflight_cache_binding, provider_preflight_snapshot,
         ProviderCapabilityCatalogInput, ProviderPreflightInput, ProviderPreflightSource,
         DEFAULT_PROVIDER_CATALOG_TTL_SECONDS,
     };
+
+    struct TestProject {
+        _repo_dir: tempfile::TempDir,
+        project_id: String,
+        repo_root: PathBuf,
+        database_path: PathBuf,
+    }
+
+    impl Drop for TestProject {
+        fn drop(&mut self) {
+            if let Some(project_dir) = self.database_path.parent() {
+                let _ = fs::remove_dir_all(project_dir);
+            }
+        }
+    }
+
+    fn import_test_project() -> TestProject {
+        let repo_dir = tempfile::tempdir().expect("temp repo");
+        let repo_root = repo_dir.path().to_path_buf();
+        let project_id = format!("project-{}", project_store::generate_agent_session_id());
+        let root_path_string = repo_root.to_string_lossy().into_owned();
+        let repository = CanonicalRepository {
+            project_id: project_id.clone(),
+            repository_id: format!("repo-{project_id}"),
+            root_path: repo_root.clone(),
+            root_path_string,
+            common_git_dir: repo_root.join(".git"),
+            display_name: "Runtime Completion Test".into(),
+            branch_name: Some("main".into()),
+            head_sha: None,
+            branch: None,
+            last_commit: None,
+            status_entries: Vec::new(),
+            has_staged_changes: false,
+            has_unstaged_changes: false,
+            has_untracked_changes: false,
+            additions: 0,
+            deletions: 0,
+        };
+        let imported =
+            import_project(&repository, &ImportFailpoints::default()).expect("import project");
+
+        TestProject {
+            _repo_dir: repo_dir,
+            project_id,
+            repo_root,
+            database_path: imported.database_path,
+        }
+    }
+
+    fn test_runtime_controls() -> RuntimeRunControlStateRecord {
+        RuntimeRunControlStateRecord {
+            active: RuntimeRunActiveControlSnapshotRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Ask,
+                agent_definition_id: Some("ask".into()),
+                agent_definition_version: Some(1),
+                provider_profile_id: Some("xai-default".into()),
+                model_id: "grok-4.3-latest".into(),
+                thinking_effort: None,
+                approval_mode: crate::commands::RuntimeRunApprovalModeDto::Suggest,
+                plan_mode_required: false,
+                auto_compact_enabled: true,
+                revision: 1,
+                applied_at: "2026-06-04T20:53:49Z".into(),
+            },
+            pending: None,
+        }
+    }
 
     fn stored_codex_session(expires_at: i64) -> StoredOpenAiCodexSession {
         StoredOpenAiCodexSession {
@@ -2246,6 +2394,55 @@ mod tests {
         assert!(!owned_runtime_status_is_terminal(&RuntimeRunStatus::Stale));
         assert!(owned_runtime_status_is_terminal(&RuntimeRunStatus::Stopped));
         assert!(owned_runtime_status_is_terminal(&RuntimeRunStatus::Failed));
+    }
+
+    #[test]
+    fn owned_runtime_completion_marks_latest_runtime_run_stopped() {
+        let project = import_test_project();
+        let controls = test_runtime_controls();
+        let running = persist_owned_runtime_run(
+            &project.repo_root,
+            &project.project_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+            "run-complete",
+            XAI_PROVIDER_ID,
+            &controls,
+            RuntimeRunStatus::Running,
+            None,
+            "Owned agent runtime is running.",
+            1,
+            None,
+        )
+        .expect("persist running runtime");
+
+        let stopped = mark_owned_runtime_run_completed_from_latest(
+            &project.repo_root,
+            &running,
+            "Owned agent runtime completed.",
+        )
+        .expect("mark runtime completed")
+        .expect("same run runtime snapshot");
+
+        assert_eq!(stopped.run.status, RuntimeRunStatus::Stopped);
+        assert!(stopped.run.stopped_at.is_some());
+        assert_eq!(stopped.last_checkpoint_sequence, 2);
+        assert_eq!(
+            stopped
+                .checkpoints
+                .last()
+                .map(|checkpoint| checkpoint.summary.as_str()),
+            Some("Owned agent runtime completed."),
+        );
+
+        let loaded = load_persisted_runtime_run(
+            &project.repo_root,
+            &project.project_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+        )
+        .expect("load runtime")
+        .expect("runtime snapshot");
+        assert_eq!(loaded.run.status, RuntimeRunStatus::Stopped);
+        assert_eq!(loaded.run.run_id, "run-complete");
     }
 
     fn preflight_snapshot(source: ProviderPreflightSource) -> ProviderPreflightSnapshot {

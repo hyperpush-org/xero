@@ -30,9 +30,10 @@ use crate::{
 };
 
 use super::run::{
-    apply_owned_runtime_run_pending_controls_with_status, emit_owned_runtime_progress,
-    emit_runtime_run_updated, ensure_owned_runtime_provider_turn_capabilities,
-    fail_owned_runtime_run, runtime_control_input_from_active, runtime_run_dto_from_snapshot,
+    apply_owned_runtime_run_pending_controls_with_status, complete_owned_runtime_run,
+    emit_owned_runtime_progress, emit_runtime_run_updated,
+    ensure_owned_runtime_provider_turn_capabilities, fail_owned_runtime_run,
+    runtime_control_input_from_active, runtime_run_dto_from_snapshot,
     staged_attachment_dto_to_message_attachment, OwnedRuntimePromptStart,
 };
 
@@ -835,6 +836,12 @@ fn finalize_cursor_agent_run<R: Runtime>(
             "requestedModelId": report.requested_model_id,
             "resolvedModel": report.resolved_model,
         }),
+    )?;
+    complete_owned_runtime_run(
+        app,
+        repo_root,
+        snapshot,
+        "Cursor sidecar runtime completed.",
     )?;
     Ok(())
 }

@@ -262,6 +262,12 @@ function getRuntimeRunProjectionKey(runtimeRun: RuntimeRunView | null | undefine
   ].join('\u0000')
 }
 
+function isRunningAgentRuntimeRun(
+  runtimeRun: RuntimeRunView | null | undefined,
+): runtimeRun is RuntimeRunView {
+  return Boolean(runtimeRun?.isActive && !runtimeRun.isTerminal)
+}
+
 interface CompletedAgentSessionNotificationRecord {
   runId: string
   completedAt: string
@@ -1740,11 +1746,12 @@ export function useXeroDesktopState(
     (
       projectId: string,
       runtimeRun: RuntimeRunView | null,
-      options: { clearGlobalError?: boolean; loadError?: string | null } = {},
+      options: { agentSessionId?: string | null; clearGlobalError?: boolean; loadError?: string | null } = {},
     ) => {
       supersedeInFlightProjectLoad(projectId)
       const agentSessionId =
         runtimeRun?.agentSessionId ??
+        options.agentSessionId ??
         (activeProjectRef.current?.id === projectId
           ? selectAgentSessionId(activeProjectRef.current.agentSessions)
           : null)
@@ -3968,6 +3975,33 @@ export function useXeroDesktopState(
     trustSnapshotRef.current[activeProject.id] = agentViewProjection.trustSnapshot
   }, [activeProject, agentViewProjection.trustSnapshot])
 
+  const runningAgentProjectIds = useMemo<ReadonlySet<string>>(() => {
+    const knownProjectIds = new Set(projects.map((project) => project.id))
+    const nextProjectIds = new Set<string>()
+    const addRuntimeRun = (runtimeRun: RuntimeRunView | null | undefined) => {
+      if (!isRunningAgentRuntimeRun(runtimeRun)) return
+      if (knownProjectIds.size > 0 && !knownProjectIds.has(runtimeRun.projectId)) return
+      nextProjectIds.add(runtimeRun.projectId)
+    }
+
+    const cachedSessionRuns = runtimeRunsBySessionRef.current
+    Object.values(cachedSessionRuns).forEach(addRuntimeRun)
+    Object.values(runtimeRuns).forEach((runtimeRun) => {
+      if (
+        hasOwnRecord(
+          cachedSessionRuns,
+          createAgentSessionStateKey(runtimeRun.projectId, runtimeRun.agentSessionId),
+        )
+      ) {
+        return
+      }
+
+      addRuntimeRun(runtimeRun)
+    })
+
+    return nextProjectIds
+  }, [agentSessionRuntimeCacheRevision, projects, runtimeRuns])
+
   const executionView = useMemo<ExecutionPaneView | null>(
     () =>
       buildExecutionView({
@@ -3984,6 +4018,7 @@ export function useXeroDesktopState(
     projects,
     activeProject,
     activeProjectId,
+    runningAgentProjectIds,
     pendingProjectSelectionId,
     repositoryStatus,
     workflowView,

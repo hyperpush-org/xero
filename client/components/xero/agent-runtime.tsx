@@ -1007,20 +1007,54 @@ function upsertRoutingSuggestionTurn(
     routingResolutionMode: null,
   }
 
-  if (existingIndex >= 0) {
-    const existing = context.turns[existingIndex]
+  const replaceIndex = existingIndex >= 0
+    ? existingIndex
+    : findEquivalentRoutingSuggestionTurnIndex(context, parsed)
+
+  if (replaceIndex >= 0) {
+    const existing = context.turns[replaceIndex]
     if (existing.kind === 'routing_suggestion') {
+      next.id = existing.id
       next.isResolved = existing.isResolved
       next.acceptedTarget = existing.acceptedTarget
       next.acceptedTargetAgentDefinitionId = existing.acceptedTargetAgentDefinitionId
       next.acceptedTargetLabel = existing.acceptedTargetLabel
       next.routingResolutionMode = existing.routingResolutionMode
     }
-    context.turns[existingIndex] = next
+    context.turns[replaceIndex] = next
     return
   }
 
   context.turns.push(next)
+}
+
+function findEquivalentRoutingSuggestionTurnIndex(
+  context: TurnRoutingContext,
+  parsed: NonNullable<ReturnType<typeof parseRoutingMarker>>,
+): number {
+  for (let index = context.turns.length - 1; index >= 0; index -= 1) {
+    const turn = context.turns[index]
+    if (turn.kind === 'message' && turn.role === 'user') {
+      return -1
+    }
+    if (turn.kind === 'routing_suggestion' && routingSuggestionMatchesParsedMarker(turn, parsed)) {
+      return index
+    }
+  }
+
+  return -1
+}
+
+function routingSuggestionMatchesParsedMarker(
+  turn: Extract<ConversationTurn, { kind: 'routing_suggestion' }>,
+  parsed: NonNullable<ReturnType<typeof parseRoutingMarker>>,
+): boolean {
+  return (
+    turn.targetKind === parsed.targetKind &&
+    turn.targetAgentId === parsed.targetAgentId &&
+    turn.targetAgentDefinitionId === parsed.targetAgentDefinitionId &&
+    turn.targetAgentDefinitionVersion === parsed.targetAgentDefinitionVersion
+  )
 }
 
 function maybeAttachRoutingSuggestion(

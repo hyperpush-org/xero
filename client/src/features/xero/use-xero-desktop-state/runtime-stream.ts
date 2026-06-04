@@ -111,7 +111,7 @@ interface AttachDesktopRuntimeListenersArgs {
   applyRuntimeRunUpdate: (
     projectId: string,
     runtimeRun: RuntimeRunView | null,
-    options?: { clearGlobalError?: boolean; loadError?: string | null },
+    options?: { agentSessionId?: string | null; clearGlobalError?: boolean; loadError?: string | null },
   ) => RuntimeRunView | null
   recordRuntimeSessionCompletion?: RuntimeStreamEventBufferArgs['onRuntimeSessionCompleted']
   loadProject: (projectId: string, source: ProjectLoadSource) => Promise<ProjectDetailView | null>
@@ -169,7 +169,7 @@ interface RuntimeRunUpdateBufferArgs {
   applyRuntimeRunUpdate: (
     projectId: string,
     runtimeRun: RuntimeRunView | null,
-    options?: { clearGlobalError?: boolean; loadError?: string | null },
+    options?: { agentSessionId?: string | null; clearGlobalError?: boolean; loadError?: string | null },
   ) => RuntimeRunView | null
   recordRuntimeSessionCompletion?: RuntimeStreamEventBufferArgs['onRuntimeSessionCompleted']
   setRefreshSource: SetState<RefreshSource>
@@ -556,7 +556,9 @@ export function createRuntimeRunUpdateBuffer({
 
     startTransition(() => {
       for (const update of updates) {
-        applyRuntimeRunUpdate(update.projectId, update.runtimeRun)
+        applyRuntimeRunUpdate(update.projectId, update.runtimeRun, {
+          agentSessionId: update.agentSessionId,
+        })
         if (update.runtimeRun?.status === 'stopped') {
           recordRuntimeSessionCompletion?.({
             projectId: update.projectId,

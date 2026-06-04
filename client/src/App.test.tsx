@@ -3936,6 +3936,74 @@ describe('XeroApp current UI', () => {
     expect(screen.getByRole('button', { name: 'Open Xero (active)' })).toBeVisible()
   })
 
+  it('animates the active project rail card while an agent run is active', async () => {
+    const { adapter, emitRuntimeRunUpdated } = createAdapter({
+      runtimeRun: makeRuntimeRun('project-1'),
+    })
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    const projectButton = screen.getByRole('button', { name: 'Open Xero (active)' })
+    await waitFor(() => expect(projectButton).toHaveAttribute('data-agent-running', 'true'))
+    expect(projectButton.querySelector('.xero-project-rail-activity-aura-field')).not.toBeNull()
+
+    act(() => {
+      emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
+        run: makeRuntimeRun('project-1', {
+          status: 'stopped',
+          stoppedAt: '2026-04-15T20:05:00Z',
+          updatedAt: '2026-04-15T20:05:00Z',
+        }),
+      })
+    })
+
+    await waitFor(() => expect(projectButton).not.toHaveAttribute('data-agent-running'))
+  })
+
+  it('clears the project rail animation when a background project run is no longer active', async () => {
+    const { adapter, emitRuntimeRunUpdated } = createAdapter({
+      projects: [makeProjectSummary('project-1', 'Xero'), makeProjectSummary('project-2', 'Nova')],
+    })
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    const backgroundProjectButton = screen.getByRole('button', { name: 'Open Nova' })
+    expect(backgroundProjectButton).not.toHaveAttribute('data-agent-running')
+
+    act(() => {
+      emitRuntimeRunUpdated({
+        projectId: 'project-2',
+        agentSessionId: 'agent-session-main',
+        run: makeRuntimeRun('project-2', { runId: 'run-project-2' }),
+      })
+    })
+
+    await waitFor(() =>
+      expect(backgroundProjectButton).toHaveAttribute('data-agent-running', 'true'),
+    )
+
+    act(() => {
+      emitRuntimeRunUpdated({
+        projectId: 'project-2',
+        agentSessionId: 'agent-session-main',
+        run: null,
+      })
+    })
+
+    await waitFor(() => expect(backgroundProjectButton).not.toHaveAttribute('data-agent-running'))
+    expect(backgroundProjectButton.querySelector('.xero-project-rail-activity-aura-field')).toBeNull()
+  })
+
   it('keeps the compact project rail on the workflow canvas view', async () => {
     const { adapter } = createAdapter()
 

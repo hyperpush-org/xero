@@ -2175,6 +2175,33 @@ describe('AgentRuntime current UI', () => {
     expect(screen.getByRole('button', { name: 'Switch to Ask' })).toBeVisible()
   })
 
+  it('dedupes equivalent routing markers from reasoning and assistant text', () => {
+    renderRuntimeStreamItems([
+      makeTranscriptItem({ sequence: 2, role: 'user', text: 'What is this project about?' }),
+      makeReasoningItem({
+        sequence: 3,
+        text: [
+          'The question is: "What is this project about?"',
+          '<xero-routing-suggestion target="ask" reason="Question about project overview" summary="User seeks a high-level description of the project"/>',
+          'This project appears to be a software development initiative.',
+        ].join('\n\n'),
+      }),
+      makeTranscriptItem({
+        sequence: 4,
+        role: 'assistant',
+        text: [
+          '<xero-routing-suggestion target="ask" reason="Question-only explanation request for project overview" summary="User wants a high-level description of what this project is about."/>',
+          'This request is a straightforward question seeking an explanation of the project.',
+        ].join('\n\n'),
+      }),
+    ])
+
+    expect(screen.queryByText(/xero-routing-suggestion/)).not.toBeInTheDocument()
+    expect(screen.getAllByText('This task may be better suited for the Ask agent')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Switch to Ask' })).toBeVisible()
+    expect(screen.getByText(/This request is a straightforward question/)).toBeVisible()
+  })
+
   it('heals malformed routing markers emitted in assistant text', () => {
     renderRuntimeStreamItems([
       makeTranscriptItem({ sequence: 2, role: 'user', text: 'What is this project about?' }),
