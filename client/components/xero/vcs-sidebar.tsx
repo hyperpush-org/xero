@@ -53,7 +53,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { FloatingRightSidebarFrame } from "@/components/xero/floating-right-sidebar-frame"
 
 const MIN_WIDTH = 600
-const DEFAULT_WIDTH_RATIO = 0.7
+const DEFAULT_WIDTH_RATIO = 0.55
 const FILE_LIST_WIDTH = 300
 const MAX_DIFF_CACHE_ENTRIES = 80
 export const DIFF_PATCH_CACHE_MAX_BYTES = 4 * 1024 * 1024
@@ -824,11 +824,6 @@ type VcsFileListRow =
       count: number
     }
   | {
-      kind: "empty"
-      groupKind: "staged" | "unstaged"
-      label: string
-    }
-  | {
       kind: "file"
       groupKind: "staged" | "unstaged"
       entry: FileEntry
@@ -846,21 +841,13 @@ function createVcsFileListRows({
   const rows: VcsFileListRow[] = []
 
   rows.push({ kind: "group", groupKind: "staged", groupLabel: "Staged Changes", count: stagedFiles.length })
-  if (!collapsedGroups.staged) {
-    if (stagedFiles.length === 0) {
-      rows.push({ kind: "empty", groupKind: "staged", label: "No staged changes" })
-    } else {
-      for (const entry of stagedFiles) rows.push({ kind: "file", groupKind: "staged", entry })
-    }
+  if (!collapsedGroups.staged && stagedFiles.length > 0) {
+    for (const entry of stagedFiles) rows.push({ kind: "file", groupKind: "staged", entry })
   }
 
   rows.push({ kind: "group", groupKind: "unstaged", groupLabel: "Changes", count: unstagedFiles.length })
-  if (!collapsedGroups.unstaged) {
-    if (unstagedFiles.length === 0) {
-      rows.push({ kind: "empty", groupKind: "unstaged", label: "Working tree is clean" })
-    } else {
-      for (const entry of unstagedFiles) rows.push({ kind: "file", groupKind: "unstaged", entry })
-    }
+  if (!collapsedGroups.unstaged && unstagedFiles.length > 0) {
+    for (const entry of unstagedFiles) rows.push({ kind: "file", groupKind: "unstaged", entry })
   }
 
   return rows
@@ -927,7 +914,8 @@ const VcsFileList = memo(function VcsFileList({
       {renderedRowIndexes.map((rowIndex) => {
         const row = rows[rowIndex]
         if (row.kind === "group") {
-          const collapsed = collapsedGroups[row.groupKind]
+          const isEmpty = row.count === 0
+          const collapsed = isEmpty || collapsedGroups[row.groupKind]
           const groupAction =
             row.groupKind === "unstaged"
               ? {
@@ -951,8 +939,15 @@ const VcsFileList = memo(function VcsFileList({
             >
               <button
                 aria-expanded={!collapsed}
-                aria-label={collapsed ? `Expand ${row.groupLabel}` : `Collapse ${row.groupLabel}`}
-                className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                aria-label={
+                  isEmpty
+                    ? `${row.groupLabel} is empty`
+                    : collapsed
+                      ? `Expand ${row.groupLabel}`
+                      : `Collapse ${row.groupLabel}`
+                }
+                className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-default"
+                disabled={isEmpty}
                 onClick={() => toggleGroup(row.groupKind)}
                 type="button"
               >
@@ -974,18 +969,6 @@ const VcsFileList = memo(function VcsFileList({
                   <GroupActionButton disabled={busy} {...groupAction} />
                 </span>
               ) : null}
-            </div>
-          )
-        }
-
-        if (row.kind === "empty") {
-          return (
-            <div
-              className="flex h-[28px] shrink-0 items-center border-b border-border/40 px-7 text-[11px] text-muted-foreground/70"
-              key={`${row.groupKind}:empty`}
-              role="presentation"
-            >
-              {row.label}
             </div>
           )
         }

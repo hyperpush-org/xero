@@ -63,6 +63,7 @@ import {
 } from './use-xero-desktop-state/repository-status'
 import {
   attachDesktopRuntimeListeners,
+  attachRuntimeCompletionNotificationSubscription,
   attachRuntimeStreamSubscription,
   clearRuntimeMetadataRefresh,
   scheduleRuntimeMetadataRefresh as scheduleRuntimeMetadataRefreshHelper,
@@ -168,6 +169,20 @@ const AGENT_WORKSPACE_LAYOUT_UI_STATE_KEY = 'agent-workspace.layout.v1'
 const AGENT_WORKSPACE_LAYOUT_PERSIST_DEBOUNCE_MS = 250
 const AGENT_WORKSPACE_MAX_PANES = 6
 const SPAWNED_AGENT_WORKSPACE_DEFAULT_RUNTIME_AGENT_ID: RuntimeAgentIdDto = 'engineer'
+
+interface RuntimeSubscriptionTarget {
+  key: string
+  projectId: string
+  agentSessionId: string
+  runId: string
+  runtimeSession: RuntimeSessionView
+}
+
+function createRuntimeSubscriptionIdentity(
+  target: Pick<RuntimeSubscriptionTarget, 'projectId' | 'agentSessionId' | 'runId'>,
+): string {
+  return [target.projectId, target.agentSessionId, target.runId].join('\u0000')
+}
 const LAST_SELECTED_PROJECT_APP_STATE_KEY = 'project.lastSelectedProjectId.v1'
 
 let agentWorkspacePaneIdSequence = 0
@@ -264,15 +279,10 @@ interface RuntimeSessionCompletionNotification {
   completedAt: string
 }
 
-function countUnreadCompletedAgentSessions(
-  records: CompletedAgentSessionNotificationRecords,
-  projectId: string | null,
-): number {
-  if (!projectId) {
-    return 0
-  }
-
-  return Object.keys(records[projectId] ?? {}).length
+function createCompletedAgentSessionRunKey(
+  completion: Pick<RuntimeSessionCompletionNotification, 'projectId' | 'agentSessionId' | 'runId'>,
+): string {
+  return [completion.projectId, completion.agentSessionId, completion.runId].join('\u0000')
 }
 
 function countAllUnreadCompletedAgentSessions(
@@ -1067,6 +1077,8 @@ export function useXeroDesktopState(
     useState<Record<string, string | null>>({})
   const [completedAgentSessionNotifications, setCompletedAgentSessionNotifications] =
     useState<CompletedAgentSessionNotificationRecords>({})
+  const completedAgentSessionNotificationsRef = useRef<CompletedAgentSessionNotificationRecords>({})
+  const seenCompletedAgentSessionRunKeysRef = useRef<Set<string>>(new Set())
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [refreshSource, setRefreshSource] = useState<RefreshSource>(null)
   const [runtimeStreamRetryToken, setRuntimeStreamRetryToken] = useState(0)
@@ -1121,6 +1133,8 @@ export function useXeroDesktopState(
   } | null>(null)
   const runtimeActionRefreshKeysRef = useRef<Record<string, Set<string>>>({})
   const runtimeStreamSubscriptionProjectIdRef = useRef<string | null>(null)
+  const previousRuntimeSubscriptionTargetsRef = useRef<RuntimeSubscriptionTarget[]>([])
+  const runtimeCompletionSubscriptionCleanupsRef = useRef<Record<string, () => void>>({})
   const previousRuntimeAuthRef = useRef<Record<string, boolean>>({})
 
   const trimRuntimeStreamSessionCache = useCallback((protectedKey: string | null = null) => {
@@ -1472,6 +1486,10 @@ export function useXeroDesktopState(
     providerModelCatalogLoadErrorsRef.current = providerModelCatalogLoadErrors
   }, [providerModelCatalogLoadErrors])
 
+  useEffect(() => {
+    completedAgentSessionNotificationsRef.current = completedAgentSessionNotifications
+  }, [completedAgentSessionNotifications])
+
 
   useEffect(() => {
     mcpRegistryRef.current = mcpRegistry
@@ -1532,9 +1550,18 @@ export function useXeroDesktopState(
 
   const recordRuntimeSessionCompletion = useCallback(
     (completion: RuntimeSessionCompletionNotification) => {
-      setCompletedAgentSessionNotifications((currentNotifications) =>
-        recordCompletedAgentSessionNotification(currentNotifications, completion),
-      )
+      const completionKey = createCompletedAgentSessionRunKey(completion)
+      if (seenCompletedAgentSessionRunKeysRef.current.has(completionKey)) {
+        return
+      }
+
+      setCompletedAgentSessionNotifications((currentNotifications) => {
+        if (seenCompletedAgentSessionRunKeysRef.current.has(completionKey)) {
+          return currentNotifications
+        }
+
+        return recordCompletedAgentSessionNotification(currentNotifications, completion)
+      })
     },
     [],
   )
@@ -1555,13 +1582,48 @@ export function useXeroDesktopState(
         return
       }
 
-      setCompletedAgentSessionNotifications((currentNotifications) =>
-        acknowledgeCompletedAgentSessionNotifications(
-          currentNotifications,
-          options.projectId ?? activeProjectIdRef.current,
-          normalizedSessionIds,
-        ),
+      const projectId = options.projectId ?? activeProjectIdRef.current
+      if (!projectId) {
+        return
+      }
+
+      const markNotificationsSeen = (notifications: CompletedAgentSessionNotificationRecords) => {
+        const projectRecords = notifications[projectId]
+        if (!projectRecords) {
+          return
+        }
+
+        for (const agentSessionId of normalizedSessionIds) {
+          const record = projectRecords[agentSessionId]
+          if (!record) {
+            continue
+          }
+
+          seenCompletedAgentSessionRunKeysRef.current.add(
+            createCompletedAgentSessionRunKey({
+              projectId,
+              agentSessionId,
+              runId: record.runId,
+            }),
+          )
+        }
+      }
+
+      markNotificationsSeen(completedAgentSessionNotificationsRef.current)
+      completedAgentSessionNotificationsRef.current = acknowledgeCompletedAgentSessionNotifications(
+        completedAgentSessionNotificationsRef.current,
+        projectId,
+        normalizedSessionIds,
       )
+
+      setCompletedAgentSessionNotifications((currentNotifications) => {
+        markNotificationsSeen(currentNotifications)
+        return acknowledgeCompletedAgentSessionNotifications(
+          currentNotifications,
+          projectId,
+          normalizedSessionIds,
+        )
+      })
     },
     [],
   )
@@ -3470,7 +3532,7 @@ export function useXeroDesktopState(
         : null,
     [activeProject, agentWorkspaceLayouts],
   )
-  const activeRuntimeSubscriptionTargets = useMemo(() => {
+  const activeRuntimeSubscriptionTargets = useMemo<RuntimeSubscriptionTarget[]>(() => {
     if (
       !activeProjectId ||
       !activeProject ||
@@ -3533,6 +3595,50 @@ export function useXeroDesktopState(
   const activeRuntimeSubscriptionKey = activeRuntimeSubscriptionTargets
     .map((target) => target.key)
     .join('|')
+
+  useEffect(() => {
+    const activeTargetIds = new Set(
+      activeRuntimeSubscriptionTargets.map((target) => createRuntimeSubscriptionIdentity(target)),
+    )
+    const backgroundCleanups = runtimeCompletionSubscriptionCleanupsRef.current
+
+    for (const targetId of activeTargetIds) {
+      const cleanup = backgroundCleanups[targetId]
+      if (cleanup) {
+        cleanup()
+        delete backgroundCleanups[targetId]
+      }
+    }
+
+    for (const previousTarget of previousRuntimeSubscriptionTargetsRef.current) {
+      const targetId = createRuntimeSubscriptionIdentity(previousTarget)
+      if (activeTargetIds.has(targetId) || backgroundCleanups[targetId]) {
+        continue
+      }
+
+      backgroundCleanups[targetId] = attachRuntimeCompletionNotificationSubscription({
+        projectId: previousTarget.projectId,
+        agentSessionId: previousTarget.agentSessionId,
+        runtimeSession: previousTarget.runtimeSession,
+        runId: previousTarget.runId,
+        adapter,
+        recordRuntimeSessionCompletion,
+      })
+    }
+
+    previousRuntimeSubscriptionTargetsRef.current = activeRuntimeSubscriptionTargets
+  }, [activeRuntimeSubscriptionTargets, adapter, recordRuntimeSessionCompletion])
+
+  useEffect(() => {
+    return () => {
+      const backgroundCleanups = runtimeCompletionSubscriptionCleanupsRef.current
+      for (const cleanup of Object.values(backgroundCleanups)) {
+        cleanup()
+      }
+      runtimeCompletionSubscriptionCleanupsRef.current = {}
+      previousRuntimeSubscriptionTargetsRef.current = []
+    }
+  }, [])
 
   useEffect(() => {
     const previousSubscriptionProjectId = runtimeStreamSubscriptionProjectIdRef.current
@@ -3602,10 +3708,6 @@ export function useXeroDesktopState(
     activeRuntimeStreamCandidate?.agentSessionId === activeAgentSessionId
       ? activeRuntimeStreamCandidate
       : null
-  const activeProjectUnreadCompletedSessionCount = useMemo(
-    () => countUnreadCompletedAgentSessions(completedAgentSessionNotifications, activeProjectId),
-    [activeProjectId, completedAgentSessionNotifications],
-  )
   const unreadCompletedSessionCount = useMemo(
     () => countAllUnreadCompletedAgentSessions(completedAgentSessionNotifications),
     [completedAgentSessionNotifications],
@@ -3936,7 +4038,6 @@ export function useXeroDesktopState(
     runtimeRunActionStatus,
     pendingRuntimeRunAction,
     runtimeRunActionError,
-    activeProjectUnreadCompletedSessionCount,
     unreadCompletedSessionCount,
     unreadCompletedSessionNotifications,
     selectProject,

@@ -419,7 +419,6 @@ export interface UseXeroDesktopStateResult {
   runtimeRunActionStatus: RuntimeRunActionStatus
   pendingRuntimeRunAction: RuntimeRunActionKind | null
   runtimeRunActionError: OperatorActionErrorView | null
-  activeProjectUnreadCompletedSessionCount: number
   unreadCompletedSessionCount: number
   unreadCompletedSessionNotifications: CompletedAgentSessionNotificationView[]
   selectProject: (projectId: string) => Promise<void>

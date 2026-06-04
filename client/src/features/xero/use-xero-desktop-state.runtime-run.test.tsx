@@ -503,6 +503,8 @@ function createMockAdapter(options?: {
   const streamSubscriptions: Array<{
     projectId: string
     agentSessionId: string
+    itemKinds: RuntimeStreamEventDto['subscribedItemKinds']
+    options?: { afterSequence?: number | null; replayLimit?: number | null }
     active: boolean
     handler: (payload: RuntimeStreamEventDto) => void
     onError: ((error: XeroDesktopError) => void) | null
@@ -907,14 +909,16 @@ function createMockAdapter(options?: {
       async (
         projectId: string,
         agentSessionId: string,
-        _itemKinds,
+        itemKinds,
         handler: (payload: RuntimeStreamEventDto) => void,
         onError?: (error: XeroDesktopError) => void,
-        _options?: { afterSequence?: number | null; replayLimit?: number | null },
+        subscriptionOptions?: { afterSequence?: number | null; replayLimit?: number | null },
       ) => {
         const subscription = {
           projectId,
           agentSessionId,
+          itemKinds,
+          options: subscriptionOptions,
           active: true,
           handler,
           onError: onError ?? null,
@@ -1066,7 +1070,7 @@ function Harness({ adapter }: { adapter: XeroDesktopAdapter }) {
       <div data-testid="runtime-run-action-error">{state.agentView?.runtimeRunActionError?.message ?? 'none'}</div>
       <div data-testid="runtime-run-reason">{state.agentView?.runtimeRunUnavailableReason ?? 'none'}</div>
       <div data-testid="unread-completed-session-count">
-        {String(state.activeProjectUnreadCompletedSessionCount)}
+        {String(state.unreadCompletedSessionCount)}
       </div>
       <div data-testid="global-unread-completed-session-count">
         {String(state.unreadCompletedSessionCount)}
@@ -2104,6 +2108,21 @@ describe('useXeroDesktopState runtime-run hydration', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'View selected session' }))
     await waitFor(() => expect(screen.getByTestId('unread-completed-session-count')).toHaveTextContent('0'))
+
+    await act(async () => {
+      setup.emitRuntimeStream(0, makeRuntimeStreamEvent('project-1', {
+        runId: 'run-project-1',
+        item: {
+          kind: 'complete',
+          runId: 'run-project-1',
+          sequence: 10,
+          text: null,
+          detail: 'Replayed completion.',
+          createdAt: '2026-04-16T13:30:10Z',
+        },
+      }))
+    })
+    expect(screen.getByTestId('unread-completed-session-count')).toHaveTextContent('0')
   })
 
   it('counts stopped background runtime sessions across projects until that session is viewed', async () => {
@@ -2161,7 +2180,7 @@ describe('useXeroDesktopState runtime-run hydration', () => {
     await waitFor(() =>
       expect(screen.getByTestId('global-unread-completed-session-count')).toHaveTextContent('1'),
     )
-    expect(screen.getByTestId('unread-completed-session-count')).toHaveTextContent('0')
+    expect(screen.getByTestId('unread-completed-session-count')).toHaveTextContent('1')
     expect(screen.getByTestId('first-unread-completed-session-project')).toHaveTextContent('Xero')
     expect(screen.getByTestId('first-unread-completed-session-title')).toHaveTextContent('Main session')
 
@@ -2169,6 +2188,99 @@ describe('useXeroDesktopState runtime-run hydration', () => {
     await waitFor(() =>
       expect(screen.getByTestId('global-unread-completed-session-count')).toHaveTextContent('0'),
     )
+  })
+
+  it('keeps listening for completion after a running session leaves the active project', async () => {
+    const setup = createMockAdapter({
+      listProjects: {
+        projects: [
+          makeProjectSummary('project-1', 'Xero'),
+          makeProjectSummary('project-2', 'Orchestra'),
+        ],
+      },
+      runtimeSessions: {
+        'project-1': makeRuntimeSession('project-1', {
+          phase: 'authenticated',
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          accountId: 'acct-1',
+          lastErrorCode: null,
+          lastError: null,
+        }),
+        'project-2': makeRuntimeSession('project-2', {
+          phase: 'authenticated',
+          sessionId: 'session-2',
+          flowId: 'flow-2',
+          accountId: 'acct-2',
+          lastErrorCode: null,
+          lastError: null,
+        }),
+      },
+      runtimeRuns: {
+        'project-1': makeRuntimeRun('project-1', { runId: 'run-project-1' }),
+        'project-2': makeRuntimeRun('project-2', { runId: 'run-project-2' }),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('stream-run-id')).toHaveTextContent('run-project-1'))
+    await waitFor(() =>
+      expect(
+        setup.streamSubscriptions.some((subscription) =>
+          subscription.projectId === 'project-1' &&
+          subscription.active &&
+          subscription.itemKinds.includes('transcript'),
+        ),
+      ).toBe(true),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select project 2' }))
+
+    await waitFor(() => expect(screen.getByTestId('stream-run-id')).toHaveTextContent('run-project-2'))
+    await waitFor(() =>
+      expect(
+        setup.streamSubscriptions.some((subscription) =>
+          subscription.projectId === 'project-1' &&
+          subscription.active &&
+          subscription.itemKinds.join('|') === 'complete|failure' &&
+          subscription.options?.afterSequence === null &&
+          subscription.options?.replayLimit === null,
+        ),
+      ).toBe(true),
+    )
+
+    const backgroundSubscriptionIndex = setup.streamSubscriptions.findIndex((subscription) =>
+      subscription.projectId === 'project-1' &&
+      subscription.active &&
+      subscription.itemKinds.join('|') === 'complete|failure',
+    )
+    expect(backgroundSubscriptionIndex).toBeGreaterThanOrEqual(0)
+
+    act(() => {
+      setup.emitRuntimeStream(
+        backgroundSubscriptionIndex,
+        makeRuntimeStreamEvent('project-1', {
+          runId: 'run-project-1',
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          subscribedItemKinds: ['complete', 'failure'],
+          item: {
+            kind: 'complete',
+            runId: 'run-project-1',
+            sequence: 10,
+            createdAt: '2026-04-16T13:30:10Z',
+          },
+        }),
+      )
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId('global-unread-completed-session-count')).toHaveTextContent('1'),
+    )
+    expect(screen.getByTestId('unread-completed-session-count')).toHaveTextContent('1')
+    expect(screen.getByTestId('first-unread-completed-session-project')).toHaveTextContent('Xero')
+    expect(screen.getByTestId('first-unread-completed-session-title')).toHaveTextContent('Main session')
   })
 
   it('projects MCP capability tool summaries into the agent tool lane projection', async () => {

@@ -53,6 +53,10 @@ export const ACTIVE_RUNTIME_STREAM_ITEM_KINDS: RuntimeStreamItemKindDto[] = [
   'complete',
   'failure',
 ]
+const COMPLETION_NOTIFICATION_STREAM_ITEM_KINDS: RuntimeStreamItemKindDto[] = [
+  'complete',
+  'failure',
+]
 
 type SetState<T> = Dispatch<SetStateAction<T>>
 type RuntimeStreamUpdater = (current: RuntimeStreamView | null) => RuntimeStreamView | null
@@ -126,6 +130,15 @@ interface AttachRuntimeStreamSubscriptionArgs {
   scheduleRuntimeMetadataRefresh: (projectId: string, source: RuntimeMetadataRefreshSource) => void
   recordRuntimeSessionCompletion?: RuntimeStreamEventBufferArgs['onRuntimeSessionCompleted']
   subscribeTimeoutMs?: number
+}
+
+interface AttachRuntimeCompletionNotificationSubscriptionArgs {
+  projectId: string
+  agentSessionId: string
+  runtimeSession: RuntimeSessionView
+  runId: string
+  adapter: XeroDesktopAdapter
+  recordRuntimeSessionCompletion?: RuntimeStreamEventBufferArgs['onRuntimeSessionCompleted']
 }
 
 type ScheduledFlushCancel = () => void
@@ -974,6 +987,95 @@ export async function attachDesktopRuntimeListeners({
     runtimeUnlisten?.()
     runtimeRunUnlisten?.()
   }
+}
+
+export function attachRuntimeCompletionNotificationSubscription({
+  projectId,
+  agentSessionId,
+  runtimeSession,
+  runId,
+  adapter,
+  recordRuntimeSessionCompletion,
+}: AttachRuntimeCompletionNotificationSubscriptionArgs): () => void {
+  if (
+    !recordRuntimeSessionCompletion ||
+    !runtimeSession.isAuthenticated ||
+    !runtimeSession.sessionId ||
+    typeof adapter.subscribeRuntimeStream !== 'function'
+  ) {
+    return () => undefined
+  }
+
+  let disposed = false
+  let unsubscribe: () => void = () => {}
+
+  const dispose = () => {
+    if (disposed) {
+      return
+    }
+
+    disposed = true
+    unsubscribe()
+  }
+
+  const handleTerminalPayload = (payload: RuntimeStreamChannelPayload) => {
+    if (disposed) {
+      return
+    }
+
+    const item = getRuntimeStreamPayloadItem(payload)
+    const payloadProjectId = isRuntimeStreamPatch(payload)
+      ? payload.snapshot.projectId
+      : payload.projectId
+    const payloadAgentSessionId = isRuntimeStreamPatch(payload)
+      ? payload.snapshot.agentSessionId
+      : payload.agentSessionId
+    const payloadRunId = isRuntimeStreamPatch(payload) ? payload.snapshot.runId : payload.runId
+    if (
+      payloadProjectId !== projectId ||
+      payloadAgentSessionId !== agentSessionId ||
+      payloadRunId !== runId
+    ) {
+      return
+    }
+
+    notifyRuntimeStreamCompletions([payload], recordRuntimeSessionCompletion)
+    if (
+      item.kind === 'complete' ||
+      item.kind === 'failure' ||
+      (isRuntimeStreamPatch(payload) && (payload.snapshot.completion || payload.snapshot.failure))
+    ) {
+      dispose()
+    }
+  }
+
+  void adapter
+    .subscribeRuntimeStream(
+      projectId,
+      agentSessionId,
+      COMPLETION_NOTIFICATION_STREAM_ITEM_KINDS,
+      handleTerminalPayload,
+      () => {
+        dispose()
+      },
+      {
+        afterSequence: null,
+        replayLimit: null,
+      },
+    )
+    .then((subscription) => {
+      if (disposed) {
+        subscription.unsubscribe()
+        return
+      }
+
+      unsubscribe = subscription.unsubscribe
+    })
+    .catch(() => {
+      disposed = true
+    })
+
+  return dispose
 }
 
 export function attachRuntimeStreamSubscription({

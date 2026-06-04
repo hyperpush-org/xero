@@ -4,9 +4,12 @@ import { useMemo } from "react"
 import { formatDistanceToNow } from "date-fns"
 import { ArrowRight, Bell, MessageSquare, X } from "lucide-react"
 
-import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { FloatingRightSidebarFrame } from "@/components/xero/floating-right-sidebar-frame"
+import {
+  FloatingRightSidebarHeader,
+  FloatingRightSidebarHeaderButton,
+} from "@/components/xero/floating-right-sidebar-header"
 import type { CompletedAgentSessionNotificationView } from "@/src/features/xero/use-xero-desktop-state"
 
 interface SessionNotificationsSidebarProps {
@@ -38,60 +41,59 @@ export function SessionNotificationsSidebar({
       width={360}
     >
       <div className="flex min-h-0 flex-1 flex-col">
-        <header className="flex items-center justify-between gap-2 border-b border-border/60 px-2 py-1">
-          <div className="min-w-0">
-            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
-              Unread sessions
-            </p>
-          </div>
-          <Button
-            aria-label="Close notifications"
-            className="text-muted-foreground hover:text-foreground"
-            onClick={onClose}
-            size="icon-xs"
-            type="button"
-            variant="ghost"
-          >
-            <X className="h-3.5 w-3.5" />
-          </Button>
-        </header>
+        <FloatingRightSidebarHeader
+          title="Unread sessions"
+          actions={
+            <FloatingRightSidebarHeaderButton
+              aria-label="Close notifications"
+              onClick={onClose}
+            >
+              <X className="h-3.5 w-3.5" />
+            </FloatingRightSidebarHeaderButton>
+          }
+        />
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+        <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin">
           {groups.length > 0 ? (
-            <div className="space-y-3">
+            <div className="flex flex-col py-1">
               {groups.map((group) => (
-                <section key={group.projectId} aria-label={group.projectName} className="space-y-2">
-                  <div className="px-1">
-                    <h3 className="truncate text-[11px] font-medium uppercase text-muted-foreground">
+                <section key={group.projectId} aria-label={group.projectName}>
+                  <div className="px-3 pb-1 pt-2">
+                    <h3 className="truncate text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground">
                       {group.projectName}
                     </h3>
                   </div>
-                  <div className="space-y-1">
+                  <ul className="flex flex-col">
                     {group.sessions.map((session) => (
-                      <button
-                        key={`${session.projectId}:${session.agentSessionId}`}
-                        className={cn(
-                          "group flex w-full items-center gap-2 rounded-md border border-foreground/10 bg-foreground/[0.035] px-2 py-2 text-left",
-                          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                        )}
-                        onClick={() => onOpenSession(session.projectId, session.agentSessionId)}
-                        type="button"
-                      >
-                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-foreground/[0.055] text-muted-foreground">
-                          <MessageSquare className="h-3.5 w-3.5" />
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-xs font-medium text-foreground">
-                            {session.sessionTitle}
+                      <li key={`${session.projectId}:${session.agentSessionId}`}>
+                        <button
+                          className={cn(
+                            "group relative flex w-full items-start gap-3 px-3 py-3 text-left transition-colors",
+                            "hover:bg-secondary/30",
+                            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
+                          )}
+                          onClick={() => onOpenSession(session.projectId, session.agentSessionId)}
+                          type="button"
+                        >
+                          <MessageSquare
+                            aria-hidden="true"
+                            className="mt-[3px] h-3.5 w-3.5 shrink-0 text-muted-foreground/70"
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-[13px] font-medium leading-tight text-foreground">
+                              {session.sessionTitle}
+                            </span>
+                            <span className="mt-0.5 block truncate text-[11.5px] leading-snug text-muted-foreground">
+                              Finished {formatCompletionTime(session.completedAt)}
+                            </span>
                           </span>
-                          <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
-                            Finished {formatCompletionTime(session.completedAt)}
+                          <span className="flex shrink-0 items-center self-center pl-1">
+                            <ArrowRight className="h-3.5 w-3.5 text-muted-foreground group-hover:text-primary" />
                           </span>
-                        </span>
-                        <ArrowRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground group-hover:text-primary" />
-                      </button>
+                        </button>
+                      </li>
                     ))}
-                  </div>
+                  </ul>
                 </section>
               ))}
             </div>

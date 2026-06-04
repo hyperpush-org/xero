@@ -3827,6 +3827,41 @@ describe('XeroApp current UI', () => {
     await waitFor(() => expect(screen.getByLabelText('0 unread notifications')).toBeVisible())
   })
 
+  it('keeps the footer notification count global while switching projects', async () => {
+    const { adapter, emitRuntimeStream, streamSubscriptions } = createAdapter({
+      projects: [
+        makeProjectSummary('project-1', 'Xero'),
+        makeProjectSummary('project-2', 'Orchestra'),
+      ],
+      runtimeRun: makeRuntimeRun('project-1', { runId: 'run-1' }),
+    })
+    adapter.getProjectSnapshot = vi.fn(async (projectId: string) =>
+      projectId === 'project-2'
+        ? makeSnapshot('project-2', 'Orchestra')
+        : makeSnapshot('project-1', 'Xero'),
+    )
+
+    render(<XeroApp adapter={adapter} />)
+
+    expect(await screen.findByRole('button', { name: 'Workflow' })).toBeVisible()
+    await waitFor(() => expect(streamSubscriptions).toHaveLength(1))
+    expect(screen.getByLabelText('0 unread notifications')).toBeVisible()
+
+    act(() => {
+      emitRuntimeStream(0, makeRuntimeCompletionEvent('project-1'))
+    })
+
+    await waitFor(() => expect(screen.getByLabelText('1 unread notifications')).toBeVisible())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Orchestra' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open Orchestra (active)' })).toBeVisible())
+    expect(screen.getByLabelText('1 unread notifications')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Xero' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open Xero (active)' })).toBeVisible())
+    expect(screen.getByLabelText('1 unread notifications')).toBeVisible()
+  })
+
   it('opens the project usage sidebar from the footer spend button on the first click', async () => {
     const { adapter } = createAdapter()
 

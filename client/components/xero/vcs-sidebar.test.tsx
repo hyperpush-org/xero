@@ -188,6 +188,56 @@ describe('VcsSidebar', () => {
     expect(onLoadDiff).not.toHaveBeenCalled()
   })
 
+  it('auto-collapses empty changed-file groups', () => {
+    renderVcsSidebar(makeSingleFilePatch('visible diff'), {
+      status: makeStatus({
+        stagedCount: 0,
+        unstagedCount: 1,
+        statusCount: 1,
+        entries: [
+          {
+            path: 'file.txt',
+            staged: null,
+            unstaged: 'modified',
+            untracked: false,
+          },
+        ],
+      }),
+    })
+
+    const stagedGroup = screen.getByRole('button', { name: 'Staged Changes is empty' })
+    expect(stagedGroup).toHaveAttribute('aria-expanded', 'false')
+    expect(stagedGroup).toBeDisabled()
+    expect(screen.queryByText('No staged changes')).not.toBeInTheDocument()
+
+    expect(screen.getByRole('button', { name: 'Collapse Changes' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    expect(screen.getByRole('option', { name: 'file.txt' })).toBeVisible()
+  })
+
+  it('defaults the diff sidebar to 55 percent of the viewport width', () => {
+    const originalInnerWidth = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 2000,
+      writable: true,
+    })
+
+    try {
+      renderVcsSidebar(makeSingleFilePatch('visible diff'))
+
+      expect(screen.getByLabelText('Source control panel')).toHaveStyle({ width: '1100px' })
+    } finally {
+      Object.defineProperty(window, 'innerWidth', {
+        configurable: true,
+        value: originalInnerWidth,
+        writable: true,
+      })
+    }
+  })
+
   it('uses a width transition when the diff pane collapses after changes clear', () => {
     const dirtyStatus = makeStatus()
     const cleanStatus = makeStatus({
@@ -459,7 +509,7 @@ describe('VcsSidebar', () => {
     await waitFor(() => expect(screen.getByText('file-0000.ts')).toBeInTheDocument())
 
     expect(screen.getByLabelText('Changed files')).toHaveClass('overflow-y-auto')
-    expect(screen.getByText('No staged changes').closest('[role="presentation"]')).toHaveClass(
+    expect(screen.getByText('Staged Changes').closest('[role="presentation"]')).toHaveClass(
       'shrink-0',
     )
     expect(screen.getByText('Changes').closest('[role="presentation"]')).toHaveClass('shrink-0')
