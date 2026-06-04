@@ -4349,6 +4349,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
           id: insertId,
           prompt: request.visiblePrompt,
           hiddenPrompt: request.prompt,
+          contextCard: request.contextCard,
           image: request.image,
         },
       })

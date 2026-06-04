@@ -1037,6 +1037,8 @@ pub struct ProviderModelDto {
     pub model_id: String,
     pub display_name: String,
     pub thinking: ProviderModelThinkingCapabilityDto,
+    pub input_modalities: Vec<String>,
+    pub input_modalities_source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

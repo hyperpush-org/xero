@@ -678,6 +678,62 @@ describe("BrowserSidebar", () => {
     expect(forward).toBeDisabled()
   })
 
+  it("clears toolbar loading state when the active browser tab is closed natively", async () => {
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "xero-browser-tab-1",
+        title: "Local",
+        url: "http://127.0.0.1:5173/",
+        loading: true,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+
+    render(<BrowserSidebar open />)
+
+    await screen.findByLabelText("Stop")
+    await act(async () => {
+      emitEvent("browser:tab_updated", { tabs: [] })
+    })
+
+    await waitFor(() => expect(screen.getByLabelText("Reload")).toBeDisabled())
+    expect((screen.getByLabelText("Address") as HTMLInputElement).value).toBe("")
+  })
+
+  it("dispatches stop while loading and reload once the page is idle", async () => {
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "xero-browser-tab-1",
+        title: "Local",
+        url: "http://127.0.0.1:5173/",
+        loading: true,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+    const commands: string[] = []
+    registerInvoke("browser_stop", async () => {
+      commands.push("stop")
+      return null
+    })
+    registerInvoke("browser_reload", async () => {
+      commands.push("reload")
+      return null
+    })
+
+    render(<BrowserSidebar open />)
+    fireEvent.click(await screen.findByLabelText("Stop"))
+    await waitFor(() => expect(commands).toEqual(["stop"]))
+
+    fireEvent.click(await screen.findByLabelText("Reload"))
+    await waitFor(() => expect(commands).toEqual(["stop", "reload"]))
+  })
+
   it("exposes the new-tab button as soon as a single tab exists", async () => {
     registerInvoke("browser_tab_list", async () => [
       {
@@ -1457,6 +1513,8 @@ describe("BrowserSidebar", () => {
     expect(activationCall?.args).not.toHaveProperty("timeout_ms")
     expect(String(activationCall?.args?.js ?? "")).toContain('"popover":"#123456"')
     expect(String(activationCall?.args?.js ?? "")).toContain('"popoverForeground":"#abcdef"')
+    expect(String(activationCall?.args?.js ?? "")).toContain("bestComposerPlacement")
+    expect(String(activationCall?.args?.js ?? "")).toContain(".composer[data-closing='true']")
     expect(penButton).toHaveAttribute("aria-pressed", "true")
     expect(invokeCalls.some((call) => call.command === "browser_hide")).toBe(false)
 
@@ -1583,7 +1641,7 @@ describe("BrowserSidebar", () => {
     await waitFor(() => expect(screen.queryByLabelText("Sketch on page")).toBeNull())
   })
 
-  it("captures submitted browser tool context and adds it to the agent composer", async () => {
+  it("adds selected element context without taking a screenshot", async () => {
     const addedRequests: BrowserAgentContextRequest[] = []
     const onAddAgentContext = vi.fn(async (request: BrowserAgentContextRequest) => {
       addedRequests.push(request)
@@ -1604,6 +1662,7 @@ describe("BrowserSidebar", () => {
 
     render(<BrowserSidebar open onAddAgentContext={onAddAgentContext} />)
     fireEvent.click(await screen.findByLabelText("Inspect element"))
+    const callCountBeforeSubmit = invokeCalls.length
 
     await act(async () => {
       emitEvent("browser:tool_context", {
@@ -1621,6 +1680,26 @@ describe("BrowserSidebar", () => {
             role: "button",
             label: "Start",
             text: "Start",
+            attributes: [
+              { name: "data-testid", value: "hero-cta" },
+            ],
+            ancestors: [
+              {
+                selector: "section.hero",
+                tagName: "section",
+                id: null,
+                role: null,
+                label: "Hero",
+              },
+            ],
+            source: {
+              framework: "react",
+              componentName: "HeroCta",
+              filePath: "/app/src/components/HeroCta.tsx",
+              lineNumber: 42,
+              columnNumber: 7,
+              raw: "/app/src/components/HeroCta.tsx:42:7",
+            },
             rect: { x: 20, y: 40, width: 120, height: 36 },
           },
         },
@@ -1633,12 +1712,84 @@ describe("BrowserSidebar", () => {
     expect(request.prompt).toContain("local dev server /")
     expect(request.prompt).not.toContain("localhost:")
     expect(request.prompt).toContain("Selector: button.cta")
+    expect(request.prompt).toContain("for locating code; no screenshot")
+    expect(request.prompt).toContain("Source: /app/src/components/HeroCta.tsx:42:7")
+    expect(request.prompt).toContain('Stable attrs: data-testid="hero-cta"')
+    expect(request.prompt).toContain('Parent chain: <section> section.hero label "Hero"')
+    expect(request.prompt).not.toContain("DOM snippet")
     expect(request.prompt).not.toContain("Tighten the spacing here")
     expect(request.visiblePrompt).toBe("Tighten the spacing here")
+    expect(request.contextCard).toEqual({
+      kind: "element",
+      title: "Element context",
+      subtitle: "HeroCta.tsx:42",
+    })
+    expect(request.image).toBeUndefined()
+    const submitCalls = invokeCalls.slice(callCountBeforeSubmit)
+    expect(submitCalls.some((call) => call.command === "browser_screenshot")).toBe(false)
+    expect(
+      submitCalls.some(
+        (call) =>
+          call.command === "browser_eval_fire_and_forget" &&
+          String(call.args?.js ?? "").includes("prepareCapture"),
+      ),
+    ).toBe(false)
+    expect(
+      submitCalls.some(
+        (call) =>
+          call.command === "browser_eval_fire_and_forget" &&
+          String(call.args?.js ?? "").includes("deactivate"),
+      ),
+    ).toBe(true)
+  })
+
+  it("captures submitted pen context and adds it to the agent composer", async () => {
+    const addedRequests: BrowserAgentContextRequest[] = []
+    const onAddAgentContext = vi.fn(async (request: BrowserAgentContextRequest) => {
+      addedRequests.push(request)
+    })
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "xero-browser-tab-1",
+        title: "Local",
+        url: "http://localhost:5173/",
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+    registerInvoke("browser_screenshot", async () => "aGVsbG8=")
+
+    render(<BrowserSidebar open onAddAgentContext={onAddAgentContext} />)
+    fireEvent.click(await screen.findByLabelText("Sketch on page"))
+
+    await act(async () => {
+      emitEvent("browser:tool_context", {
+        tabId: "tab-1",
+        context: {
+          kind: "pen",
+          note: "Tighten the spacing here",
+          page: { url: "http://localhost:5173/", title: "Local" },
+          viewport: { width: 800, height: 600 },
+          strokeCount: 1,
+        },
+      })
+    })
+
+    await waitFor(() => expect(onAddAgentContext).toHaveBeenCalledTimes(1))
+    const request = addedRequests[0]!
+    expect(request.prompt).toContain("Browser sketch context")
+    expect(request.visiblePrompt).toBe("Tighten the spacing here")
+    expect(request.contextCard).toEqual({
+      kind: "sketch",
+      title: "Browser sketch context",
+      subtitle: "1 stroke on browser screenshot",
+    })
     expect(request.image).toBeTruthy()
     expect(Array.from(request.image!.bytes)).toEqual([104, 101, 108, 108, 111])
-    expect(request.image!.originalName).toMatch(/^browser-inspect-/)
-    expect(invokeCalls.some((call) => call.command === "browser_screenshot")).toBe(true)
+    expect(request.image!.originalName).toMatch(/^browser-pen-/)
     const prepareIndex = invokeCalls.findIndex(
       (call) =>
         call.command === "browser_eval_fire_and_forget" &&
@@ -1656,6 +1807,71 @@ describe("BrowserSidebar", () => {
     expect(prepareIndex).toBeGreaterThanOrEqual(0)
     expect(screenshotIndex).toBeGreaterThan(prepareIndex)
     expect(deactivateIndex).toBeGreaterThan(screenshotIndex)
+  })
+
+  it("shows the browser capture overlay while submitted context is being prepared", async () => {
+    const addedRequests: BrowserAgentContextRequest[] = []
+    const onAddAgentContext = vi.fn(async (request: BrowserAgentContextRequest) => {
+      addedRequests.push(request)
+    })
+    let resolveScreenshot: ((value: string) => void) | null = null
+    const screenshotStarted = new Promise<void>((resolveStarted) => {
+      registerInvoke("browser_screenshot", async () => {
+        resolveStarted()
+        return new Promise<string>((resolve) => {
+          resolveScreenshot = resolve
+        })
+      })
+    })
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "xero-browser-tab-1",
+        title: "Local",
+        url: "http://localhost:5173/",
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+
+    render(<BrowserSidebar open onAddAgentContext={onAddAgentContext} />)
+    await screen.findByLabelText("Sketch on page")
+
+    await act(async () => {
+      emitEvent("browser:tool_context", {
+        tabId: "tab-1",
+        context: {
+          kind: "pen",
+          note: "Attach this sketch",
+          page: { url: "http://localhost:5173/", title: "Local" },
+          strokeCount: 1,
+          viewport: { width: 800, height: 600 },
+        },
+      })
+    })
+
+    const captureStatus = await screen.findByRole("status", { name: "Adding browser context" })
+    expect(captureStatus).toBeVisible()
+    expect(captureStatus.querySelector(".xero-browser-capture-aura-field")).not.toBeNull()
+    expect(captureStatus.querySelectorAll(".xero-browser-capture-occlusion")).toHaveLength(8)
+    expect(
+      Array.from(captureStatus.querySelectorAll(".xero-browser-capture-occlusion")).every(
+        (element) => element.getAttribute("data-xero-browser-capture-overlay") === "true",
+      ),
+    ).toBe(true)
+    expect(captureStatus.querySelector(".xero-loading-symbol")).toBeNull()
+    await screenshotStarted
+    await act(async () => {
+      resolveScreenshot?.("aGVsbG8=")
+    })
+
+    await waitFor(() => expect(onAddAgentContext).toHaveBeenCalledTimes(1))
+    await waitFor(() =>
+      expect(screen.queryByRole("status", { name: "Adding browser context" })).toBeNull(),
+    )
+    expect(addedRequests[0]?.visiblePrompt).toBe("Attach this sketch")
   })
 
   it("accepts raw browser tool context events and adds them to the agent composer", async () => {
@@ -1775,27 +1991,18 @@ describe("BrowserSidebar", () => {
       emitEvent("browser:tool_context", {
         tab_id: "tab-1",
         context: {
-          kind: "inspect",
-          note: "Fix this heading",
+          kind: "pen",
+          note: "Keep this arrow attached",
           page: { url: "http://localhost:5173/", title: "Local" },
+          strokeCount: 1,
           viewport: { width: 800, height: 600 },
-          element: {
-            selector: "h1",
-            tagName: "h1",
-            id: null,
-            classes: [],
-            role: null,
-            label: null,
-            text: "Creators aren't content.",
-            rect: { x: 10, y: 20, width: 300, height: 80 },
-          },
         },
       })
     })
 
     await waitFor(() => expect(onAddAgentContext).toHaveBeenCalledTimes(1))
-    expect(addedRequests[0]?.visiblePrompt).toBe("Fix this heading")
-    expect(addedRequests[0]?.prompt).toContain("Browser element inspection context")
+    expect(addedRequests[0]?.visiblePrompt).toBe("Keep this arrow attached")
+    expect(addedRequests[0]?.prompt).toContain("Browser sketch context")
     expect(addedRequests[0]?.prompt).toContain("screenshot could not be captured")
     expect(addedRequests[0]?.image).toBeUndefined()
   })

@@ -31,9 +31,11 @@ import {
   BROWSER_TOOL_DEACTIVATE_SCRIPT,
   BROWSER_TOOL_PREPARE_CAPTURE_SCRIPT,
   BROWSER_TOOL_RESTORE_CAPTURE_SCRIPT,
+  BROWSER_TOOL_SHOW_LOADING_SCRIPT,
   browserScreenshotBytesFromBase64,
   buildBrowserToolActivationScript,
   buildBrowserToolAgentPrompt,
+  buildBrowserToolContextCard,
   buildBrowserToolVisiblePrompt,
   isDevServerUrl,
   readBrowserToolTheme,
@@ -71,7 +73,11 @@ const RESIZE_HANDLE_INSET = 6
 const TOOL_CAPTURE_SETTLE_MS = 50
 const SIDEBAR_GEOMETRY_SETTLE_MS = 190
 const OVERLAY_OCCLUSION_PADDING = 8
+const BROWSER_CAPTURE_FRAME_OCCLUSION_PADDING = 0
+const BROWSER_CAPTURE_OVERLAY_EXIT_MS = 180
+const BROWSER_CAPTURE_OVERLAY_SELECTOR = '[data-xero-browser-capture-overlay="true"]'
 const OVERLAY_OCCLUSION_SELECTOR = [
+  BROWSER_CAPTURE_OVERLAY_SELECTOR,
   '[data-slot="alert-dialog-content"]',
   '[data-slot="context-menu-content"]',
   '[data-slot="context-menu-sub-content"]',
@@ -248,16 +254,17 @@ function isVisibleOverlayElement(element: HTMLElement): boolean {
 function intersectClientRects(
   viewport: ViewportRect,
   overlay: DOMRect,
+  padding = OVERLAY_OCCLUSION_PADDING,
 ): BrowserOcclusionRect | null {
-  const left = Math.max(viewport.x, Math.floor(overlay.left - OVERLAY_OCCLUSION_PADDING))
-  const top = Math.max(viewport.y, Math.floor(overlay.top - OVERLAY_OCCLUSION_PADDING))
+  const left = Math.max(viewport.x, Math.floor(overlay.left - padding))
+  const top = Math.max(viewport.y, Math.floor(overlay.top - padding))
   const right = Math.min(
     viewport.x + viewport.width,
-    Math.ceil(overlay.right + OVERLAY_OCCLUSION_PADDING),
+    Math.ceil(overlay.right + padding),
   )
   const bottom = Math.min(
     viewport.y + viewport.height,
-    Math.ceil(overlay.bottom + OVERLAY_OCCLUSION_PADDING),
+    Math.ceil(overlay.bottom + padding),
   )
 
   const width = right - left
@@ -283,7 +290,10 @@ export function collectBrowserOverlayOcclusionRects(
 
   root.querySelectorAll<HTMLElement>(OVERLAY_OCCLUSION_SELECTOR).forEach((element) => {
     if (!isVisibleOverlayElement(element)) return
-    const rect = intersectClientRects(viewport, element.getBoundingClientRect())
+    const padding = element.matches(BROWSER_CAPTURE_OVERLAY_SELECTOR)
+      ? BROWSER_CAPTURE_FRAME_OCCLUSION_PADDING
+      : OVERLAY_OCCLUSION_PADDING
+    const rect = intersectClientRects(viewport, element.getBoundingClientRect(), padding)
     if (!rect) return
     const key = `${rect.x},${rect.y},${rect.width},${rect.height}`
     if (seen.has(key)) return
@@ -484,6 +494,8 @@ export function BrowserSidebar({
   const [toolMode, setToolMode] = useState<ToolMode>(null)
   const [penHasDrawing, setPenHasDrawing] = useState(false)
   const [toolSubmitting, setToolSubmitting] = useState(false)
+  const [captureOverlayVisible, setCaptureOverlayVisible] = useState(false)
+  const [captureOverlayExiting, setCaptureOverlayExiting] = useState(false)
   const [toolSubmitError, setToolSubmitError] = useState<string | null>(null)
   const motionOpen = useSidebarOpenMotion(open)
   const [openGeometrySettled, setOpenGeometrySettled] = useState(false)
@@ -732,6 +744,15 @@ export function BrowserSidebar({
     })
   }, [])
 
+  const showInjectedToolLoading = useCallback(async () => {
+    if (!isTauri()) return
+    await invoke("browser_eval_fire_and_forget", {
+      js: BROWSER_TOOL_SHOW_LOADING_SCRIPT,
+    }).catch(() => {
+      /* best-effort visual polish */
+    })
+  }, [])
+
   const addBrowserToolContextToAgent = useCallback(
     async (payload: unknown) => {
       const normalized = normalizeBrowserToolContextEvent(payload)
@@ -744,12 +765,33 @@ export function BrowserSidebar({
 
       const context = normalized.context
       setToolSubmitError(null)
+      if (context.kind === "inspect") {
+        try {
+          const add = onAddAgentContextRef.current
+          if (add) {
+            await add({
+              prompt: buildBrowserToolAgentPrompt(context, { screenshotAttached: false }),
+              visiblePrompt: buildBrowserToolVisiblePrompt(context),
+              contextCard: buildBrowserToolContextCard(context),
+            })
+          }
+          await deactivateInjectedTool()
+          setToolMode(null)
+        } catch (error) {
+          setToolSubmitError(
+            getToolErrorMessage(error, "Xero could not add this browser context to the agent composer."),
+          )
+          await restoreInjectedToolCapture()
+        }
+        return
+      }
+
       setToolSubmitting(true)
       try {
-        await waitForBrowserToolPaint()
         await prepareInjectedToolCapture()
         await waitForBrowserToolPaint()
         const screenshotBase64 = await invoke<string>("browser_screenshot").catch(() => null)
+        await showInjectedToolLoading()
         let image: BrowserAgentContextRequest["image"] | undefined
         if (screenshotBase64) {
           try {
@@ -767,6 +809,7 @@ export function BrowserSidebar({
           await add({
             prompt: buildBrowserToolAgentPromptForCapture(context, Boolean(image)),
             visiblePrompt: buildBrowserToolVisiblePrompt(context),
+            contextCard: buildBrowserToolContextCard(context),
             ...(image ? { image } : {}),
           })
         }
@@ -781,8 +824,31 @@ export function BrowserSidebar({
         setToolSubmitting(false)
       }
     },
-    [deactivateInjectedTool, prepareInjectedToolCapture, restoreInjectedToolCapture],
+    [deactivateInjectedTool, prepareInjectedToolCapture, restoreInjectedToolCapture, showInjectedToolLoading],
   )
+
+  useEffect(() => {
+    if (toolSubmitting) {
+      setCaptureOverlayVisible(true)
+      setCaptureOverlayExiting(false)
+      return
+    }
+
+    if (!captureOverlayVisible) return
+
+    setCaptureOverlayExiting(true)
+    const timeout = window.setTimeout(() => {
+      setCaptureOverlayVisible(false)
+      setCaptureOverlayExiting(false)
+    }, BROWSER_CAPTURE_OVERLAY_EXIT_MS)
+
+    return () => window.clearTimeout(timeout)
+  }, [captureOverlayVisible, toolSubmitting])
+
+  useEffect(() => {
+    if (!open || !isTauri()) return
+    syncBrowserOverlayOcclusions({ force: true })
+  }, [captureOverlayExiting, captureOverlayVisible, open, syncBrowserOverlayOcclusions])
 
   // Tools are gated to dev-server tabs. Drop the active tool whenever the
   // tab/URL changes to one that isn't a dev server, or when the sidebar closes.
@@ -992,6 +1058,17 @@ export function BrowserSidebar({
         if (active) {
           activeTabIdRef.current = active.id
           setActiveTabId(active.id)
+          setLoading(active.loading)
+          if (active.url && !addressFocusedRef.current) {
+            setAddress(active.url)
+          }
+        } else {
+          activeTabIdRef.current = null
+          setActiveTabId(null)
+          setLoading(false)
+          if (!addressFocusedRef.current) {
+            setAddress("")
+          }
         }
       },
     })
@@ -1084,7 +1161,13 @@ export function BrowserSidebar({
       if (active) {
         activeTabIdRef.current = active.id
         setActiveTabId(active.id)
+        setLoading(active.loading)
         if (active.url && !addressFocusedRef.current) setAddress(active.url)
+      } else {
+        activeTabIdRef.current = null
+        setActiveTabId(null)
+        setLoading(false)
+        if (!addressFocusedRef.current) setAddress("")
       }
     })
     return () => {
@@ -1292,10 +1375,17 @@ export function BrowserSidebar({
 
   const handleReload = useCallback(() => {
     if (!isTauri()) return
+    if (loading) {
+      setLoading(false)
+      void invoke("browser_stop").catch(() => {
+        /* swallow */
+      })
+      return
+    }
     void invoke("browser_reload", { tabId: activeTabId ?? null }).catch(() => {
       /* swallow */
     })
-  }, [activeTabId])
+  }, [activeTabId, loading])
 
   const handleTabFocus = useCallback(
     (tabId: string) => {
@@ -1305,6 +1395,7 @@ export function BrowserSidebar({
           if (meta) {
             activeTabIdRef.current = meta.id
             setActiveTabId(meta.id)
+            setLoading(meta.loading)
             if (meta.url && !addressFocusedRef.current) setAddress(meta.url)
           }
         })
@@ -1326,11 +1417,13 @@ export function BrowserSidebar({
             activeTabIdRef.current = null
             setActiveTabId(null)
             setAddress("")
+            setLoading(false)
             hasWebviewRef.current = false
           } else {
             const next = list.find((tab) => tab.active) ?? list[0]
             activeTabIdRef.current = next.id
             setActiveTabId(next.id)
+            setLoading(next.loading)
             if (next.url) setAddress(next.url)
           }
         })
@@ -1659,6 +1752,52 @@ export function BrowserSidebar({
             <div className="mt-2 text-muted-foreground/80">
               Browser engine is only available in the desktop app.
             </div>
+          </div>
+        ) : null}
+        {captureOverlayVisible ? (
+          <div
+            role="status"
+            aria-live="polite"
+            aria-busy={toolSubmitting}
+            aria-label="Adding browser context"
+            className="xero-browser-capture-indicator pointer-events-none absolute inset-0 z-20"
+            data-state={captureOverlayExiting ? "closed" : "open"}
+          >
+            <div className="xero-browser-capture-aura" aria-hidden="true">
+              <span className="xero-browser-capture-aura-field" />
+            </div>
+            <span
+              data-xero-browser-capture-overlay="true"
+              className="xero-browser-capture-occlusion xero-browser-capture-occlusion-top"
+            />
+            <span
+              data-xero-browser-capture-overlay="true"
+              className="xero-browser-capture-occlusion xero-browser-capture-occlusion-right"
+            />
+            <span
+              data-xero-browser-capture-overlay="true"
+              className="xero-browser-capture-occlusion xero-browser-capture-occlusion-bottom"
+            />
+            <span
+              data-xero-browser-capture-overlay="true"
+              className="xero-browser-capture-occlusion xero-browser-capture-occlusion-left"
+            />
+            <span
+              data-xero-browser-capture-overlay="true"
+              className="xero-browser-capture-occlusion xero-browser-capture-occlusion-corner xero-browser-capture-occlusion-top-left"
+            />
+            <span
+              data-xero-browser-capture-overlay="true"
+              className="xero-browser-capture-occlusion xero-browser-capture-occlusion-corner xero-browser-capture-occlusion-top-right"
+            />
+            <span
+              data-xero-browser-capture-overlay="true"
+              className="xero-browser-capture-occlusion xero-browser-capture-occlusion-corner xero-browser-capture-occlusion-bottom-right"
+            />
+            <span
+              data-xero-browser-capture-overlay="true"
+              className="xero-browser-capture-occlusion xero-browser-capture-occlusion-corner xero-browser-capture-occlusion-bottom-left"
+            />
           </div>
         ) : null}
       </div>

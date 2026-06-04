@@ -3254,6 +3254,8 @@ mod tests {
                 thinking_supported: true,
                 thinking_efforts: vec!["medium".into()],
                 thinking_default_effort: Some("medium".into()),
+                input_modalities: vec!["text".into(), "image".into(), "file".into()],
+                input_modalities_source: Some("live_catalog".into()),
             }),
             credential_ready: Some(true),
             endpoint_reachable: Some(true),

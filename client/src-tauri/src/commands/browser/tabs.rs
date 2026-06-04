@@ -100,6 +100,11 @@ impl BrowserTabs {
         guard.tabs.get(active).and_then(|tab| tab.url.clone())
     }
 
+    pub fn url_by_id(&self, id: &str) -> Option<String> {
+        let guard = self.inner.lock().ok()?;
+        guard.tabs.get(id).and_then(|tab| tab.url.clone())
+    }
+
     pub fn url_by_label(&self, label: &str) -> Option<String> {
         let guard = self.inner.lock().ok()?;
         guard

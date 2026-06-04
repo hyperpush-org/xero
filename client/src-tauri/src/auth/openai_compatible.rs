@@ -145,6 +145,8 @@ pub struct OpenAiCompatibleDiscoveredModel {
     pub id: String,
     pub display_name: String,
     pub thinking: OpenAiCompatibleDiscoveredThinkingCapability,
+    pub input_modalities: Vec<String>,
+    pub input_modalities_source: String,
     pub context_window_tokens: Option<u64>,
     pub max_output_tokens: Option<u64>,
 }
@@ -181,6 +183,10 @@ struct GitHubCatalogModelSummary {
     id: String,
     #[serde(default)]
     name: Option<String>,
+    #[serde(default, alias = "input_modalities")]
+    input_modalities: Vec<String>,
+    #[serde(default)]
+    architecture: Option<OpenAiCompatibleArchitecture>,
     #[serde(default, alias = "context_window_tokens", alias = "context_length")]
     context_window_tokens: Option<u64>,
     #[serde(default, alias = "max_output_tokens", alias = "max_completion_tokens")]
@@ -197,12 +203,23 @@ struct ModelSummary {
     display_name: Option<String>,
     #[serde(default)]
     capabilities: OpenAiCompatibleCapabilities,
+    #[serde(default, alias = "input_modalities")]
+    input_modalities: Vec<String>,
+    #[serde(default)]
+    architecture: Option<OpenAiCompatibleArchitecture>,
     #[serde(default, alias = "context_window_tokens", alias = "context_length")]
     context_window_tokens: Option<u64>,
     #[serde(default, alias = "max_input_tokens", alias = "max_context_length")]
     max_input_tokens: Option<u64>,
     #[serde(default, alias = "max_output_tokens", alias = "max_completion_tokens")]
     max_output_tokens: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenAiCompatibleArchitecture {
+    #[serde(default, rename = "input_modalities")]
+    input_modalities: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -612,11 +629,21 @@ fn normalize_models(
             } else {
                 display_name
             };
+        let input_modalities =
+            discovered_input_modalities(model.input_modalities, model.architecture);
+        let input_modalities_source = if input_modalities.is_empty() {
+            "provider_models_api_unreported"
+        } else {
+            "provider_models_api"
+        }
+        .into();
 
         normalized.push(OpenAiCompatibleDiscoveredModel {
             id: id.to_owned(),
             display_name,
             thinking,
+            input_modalities,
+            input_modalities_source,
             context_window_tokens,
             max_output_tokens,
         });
@@ -669,11 +696,21 @@ fn normalize_github_models_catalog(
             .filter(|value| !value.is_empty())
             .unwrap_or(id)
             .to_owned();
+        let input_modalities =
+            discovered_input_modalities(model.input_modalities, model.architecture);
+        let input_modalities_source = if input_modalities.is_empty() {
+            "github_models_catalog_unreported"
+        } else {
+            "github_models_catalog"
+        }
+        .into();
 
         normalized.push(OpenAiCompatibleDiscoveredModel {
             id: id.to_owned(),
             display_name,
             thinking: unsupported_thinking_capability(),
+            input_modalities,
+            input_modalities_source,
             context_window_tokens: model.context_window_tokens.filter(|tokens| *tokens > 0),
             max_output_tokens: model.max_output_tokens.filter(|tokens| *tokens > 0),
         });
@@ -686,6 +723,18 @@ fn normalize_github_models_catalog(
     });
 
     Ok(normalized)
+}
+
+fn discovered_input_modalities(
+    input_modalities: Vec<String>,
+    architecture: Option<OpenAiCompatibleArchitecture>,
+) -> Vec<String> {
+    if !input_modalities.is_empty() {
+        return input_modalities;
+    }
+    architecture
+        .map(|architecture| architecture.input_modalities)
+        .unwrap_or_default()
 }
 
 fn normalize_thinking_capability(
@@ -1182,6 +1231,8 @@ mod tests {
                     context_window_tokens: None,
                     max_input_tokens: None,
                     max_output_tokens: None,
+                    input_modalities: Vec::new(),
+                    architecture: None,
                 }],
             },
         )

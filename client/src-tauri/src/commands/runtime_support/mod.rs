@@ -1,4 +1,5 @@
 mod autonomous;
+mod cursor;
 mod project;
 mod run;
 mod session;
@@ -6,6 +7,7 @@ mod session;
 #[allow(unused_imports)]
 pub(crate) use autonomous::{autonomous_run_state_from_snapshot, load_persisted_autonomous_run};
 pub(crate) use autonomous::{sync_autonomous_run_state, AutonomousSyncIntent};
+pub(crate) use cursor::{drive_cursor_runtime_prompt, is_cursor_runtime_provider};
 pub(crate) use project::{emit_project_updated, resolve_project_root};
 pub(crate) use run::{
     agent_provider_config_identity, apply_owned_runtime_run_pending_controls_with_status,

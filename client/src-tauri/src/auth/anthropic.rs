@@ -90,6 +90,8 @@ pub struct AnthropicDiscoveredModel {
     pub display_name: String,
     pub thinking_supported: bool,
     pub effort_levels: Vec<AnthropicDiscoveredThinkingEffort>,
+    pub input_modalities: Vec<String>,
+    pub input_modalities_source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,6 +152,8 @@ struct ModelsResponse {
 struct ModelSummary {
     id: String,
     display_name: Option<String>,
+    #[serde(default)]
+    input_modalities: Vec<String>,
     #[serde(default)]
     capabilities: ModelCapabilities,
 }
@@ -386,6 +390,8 @@ fn normalize_anthropic_models(
             display_name,
             thinking_supported,
             effort_levels,
+            input_modalities: model.input_modalities,
+            input_modalities_source: "anthropic_models_api".into(),
         });
     }
 
@@ -522,6 +528,8 @@ fn manual_ambient_family_models(
         display_name: profile.model_id.clone(),
         thinking_supported,
         effort_levels,
+        input_modalities: Vec::new(),
+        input_modalities_source: "manual_ambient_profile".into(),
     }]
 }
 

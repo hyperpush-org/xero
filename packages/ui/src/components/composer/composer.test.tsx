@@ -402,6 +402,55 @@ describe("Composer", () => {
 		expect(screen.getByRole("button", { name: "Add files" })).toBeVisible();
 	});
 
+	it("opens pending image attachments in the shared image preview", () => {
+		const previewUrl = "data:image/png;base64,aGVsbG8=";
+		renderComposer({
+			pendingAttachments: [
+				{
+					id: "attachment-1",
+					kind: "image",
+					originalName: "browser-pen.png",
+					mediaType: "image/png",
+					sizeBytes: 512,
+					status: "ready",
+					previewUrl,
+				},
+			],
+		});
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Open image preview for browser-pen.png",
+			}),
+		);
+
+		expect(screen.getByRole("button", { name: "Close image preview" })).toBeVisible();
+		expect(screen.getByRole("button", { name: "Zoom in" })).toBeVisible();
+		expect(screen.getByRole("img", { name: "browser-pen.png" })).toHaveAttribute("src", previewUrl);
+		expect(screen.getByRole("link", { name: "Download browser-pen.png" })).toHaveAttribute("href", previewUrl);
+	});
+
+	it("renders removable metadata context cards with pending attachments", async () => {
+		const onRemoveContext = vi.fn();
+		renderComposer({
+			pendingContexts: [
+				{
+					id: "context-1",
+					kind: "element",
+					title: "Element context",
+					subtitle: "Hero.tsx:42",
+				},
+			],
+			onRemoveContext,
+		});
+
+		await waitFor(() => expect(screen.getByText("Element context")).toBeVisible());
+		expect(screen.getByText("Hero.tsx:42")).toBeVisible();
+
+		fireEvent.click(screen.getByRole("button", { name: "Remove Element context" }));
+		expect(onRemoveContext).toHaveBeenCalledWith("context-1");
+	});
+
 	it("renders a stop button that invokes onStop while a run is active", () => {
 		const onStop = vi.fn();
 		renderComposer({ isStopVisible: true, onStop });

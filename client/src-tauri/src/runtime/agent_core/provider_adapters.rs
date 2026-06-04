@@ -818,7 +818,6 @@ fn openai_chat_request_body(
     model_id: &str,
     request: &ProviderTurnRequest,
 ) -> CommandResult<JsonValue> {
-    ensure_openai_request_has_no_attachments(provider_id, request)?;
     let mut body = JsonMap::new();
     body.insert("model".into(), json!(model_id));
     body.insert(
@@ -939,8 +938,14 @@ fn openai_chat_messages(
     })];
     for message in &request.messages {
         match message {
-            ProviderMessage::User { content, .. } => {
-                messages.push(json!({ "role": "user", "content": content }));
+            ProviderMessage::User {
+                content,
+                attachments,
+            } => {
+                messages.push(json!({
+                    "role": "user",
+                    "content": openai_chat_user_content(content, attachments)?,
+                }));
             }
             ProviderMessage::Assistant {
                 content,
@@ -987,6 +992,49 @@ fn openai_chat_messages(
         }
     }
     Ok(messages)
+}
+
+fn openai_chat_user_content(
+    content: &str,
+    attachments: &[MessageAttachment],
+) -> CommandResult<JsonValue> {
+    if attachments.is_empty() {
+        return Ok(json!(content));
+    }
+
+    let mut blocks = Vec::with_capacity(attachments.len() + 1);
+    if !content.trim().is_empty() {
+        blocks.push(json!({ "type": "text", "text": content }));
+    }
+    for attachment in attachments {
+        match attachment.kind {
+            MessageAttachmentKind::Image => {
+                blocks.push(json!({
+                    "type": "image_url",
+                    "image_url": { "url": attachment_data_url(attachment)? },
+                }));
+            }
+            MessageAttachmentKind::Document => {
+                blocks.push(json!({
+                    "type": "file",
+                    "file": {
+                        "filename": attachment.original_name,
+                        "file_data": attachment_data_url(attachment)?,
+                    },
+                }));
+            }
+            MessageAttachmentKind::Text => {
+                blocks.push(json!({
+                    "type": "text",
+                    "text": inline_text_attachment(attachment)?,
+                }));
+            }
+        }
+    }
+    if blocks.is_empty() {
+        blocks.push(json!({ "type": "text", "text": "" }));
+    }
+    Ok(JsonValue::Array(blocks))
 }
 
 fn provider_replays_openai_reasoning_content(provider_id: &str) -> bool {
@@ -1042,7 +1090,6 @@ fn openai_responses_request_body(
     model_id: &str,
     request: &ProviderTurnRequest,
 ) -> CommandResult<JsonValue> {
-    ensure_openai_request_has_no_attachments(provider_id, request)?;
     let mut body = JsonMap::new();
     body.insert("model".into(), json!(model_id));
     body.insert("instructions".into(), json!(request.system_prompt));
@@ -1069,11 +1116,10 @@ fn openai_responses_request_body(
 }
 
 fn xai_responses_request_body(
-    provider_id: &str,
+    _provider_id: &str,
     model_id: &str,
     request: &ProviderTurnRequest,
 ) -> CommandResult<JsonValue> {
-    ensure_openai_request_has_no_attachments(provider_id, request)?;
     let mut body = JsonMap::new();
     body.insert("model".into(), json!(model_id));
     body.insert("instructions".into(), json!(request.system_prompt));
@@ -1168,7 +1214,7 @@ fn ensure_openai_request_has_no_attachments(
         return Err(CommandError::user_fixable(
             "provider_attachment_unsupported",
             format!(
-                "Xero cannot send attachment `{}` to provider `{provider_id}` because this owned OpenAI-style adapter does not serialize attachments yet.",
+                "Xero cannot send attachment `{}` to provider `{provider_id}` because this provider path was not admitted by an attachment-capable model catalog and preflight.",
                 attachment.original_name
             ),
         ));
@@ -1176,12 +1222,91 @@ fn ensure_openai_request_has_no_attachments(
     Ok(())
 }
 
+fn attachment_data_url(attachment: &MessageAttachment) -> CommandResult<String> {
+    let bytes = std::fs::read(&attachment.absolute_path).map_err(|error| {
+        CommandError::system_fault(
+            "agent_attachment_read_failed",
+            format!(
+                "Xero could not read attachment `{}` from disk: {error}",
+                attachment.original_name
+            ),
+        )
+    })?;
+    Ok(format!(
+        "data:{};base64,{}",
+        attachment.media_type,
+        BASE64_STANDARD.encode(bytes)
+    ))
+}
+
+fn inline_text_attachment(attachment: &MessageAttachment) -> CommandResult<String> {
+    let text = std::fs::read_to_string(&attachment.absolute_path).map_err(|error| {
+        CommandError::system_fault(
+            "agent_attachment_read_failed",
+            format!(
+                "Xero could not read attached text file `{}` from disk: {error}",
+                attachment.original_name
+            ),
+        )
+    })?;
+    Ok(format!(
+        "<attached_file name=\"{}\">\n{}\n</attached_file>",
+        attachment.original_name, text
+    ))
+}
+
+fn openai_response_user_content(
+    content: &str,
+    attachments: &[MessageAttachment],
+) -> CommandResult<JsonValue> {
+    if attachments.is_empty() {
+        return Ok(json!(content));
+    }
+
+    let mut blocks = Vec::with_capacity(attachments.len() + 1);
+    for attachment in attachments {
+        match attachment.kind {
+            MessageAttachmentKind::Image => {
+                blocks.push(json!({
+                    "type": "input_image",
+                    "image_url": attachment_data_url(attachment)?,
+                }));
+            }
+            MessageAttachmentKind::Document => {
+                blocks.push(json!({
+                    "type": "input_file",
+                    "filename": attachment.original_name,
+                    "file_data": attachment_data_url(attachment)?,
+                }));
+            }
+            MessageAttachmentKind::Text => {
+                blocks.push(json!({
+                    "type": "input_text",
+                    "text": inline_text_attachment(attachment)?,
+                }));
+            }
+        }
+    }
+    if !content.trim().is_empty() {
+        blocks.push(json!({ "type": "input_text", "text": content }));
+    } else if blocks.is_empty() {
+        blocks.push(json!({ "type": "input_text", "text": "" }));
+    }
+    Ok(JsonValue::Array(blocks))
+}
+
 fn openai_response_input(request: &ProviderTurnRequest) -> CommandResult<Vec<JsonValue>> {
     let mut input = Vec::new();
     for message in &request.messages {
         match message {
-            ProviderMessage::User { content, .. } => {
-                input.push(json!({ "role": "user", "content": content }));
+            ProviderMessage::User {
+                content,
+                attachments,
+            } => {
+                input.push(json!({
+                    "role": "user",
+                    "content": openai_response_user_content(content, attachments)?,
+                }));
             }
             ProviderMessage::Assistant {
                 content,
@@ -3184,7 +3309,160 @@ mod tests {
     }
 
     #[test]
-    fn openai_style_adapters_fail_closed_when_user_attachments_are_present() {
+    fn openai_compatible_chat_body_serializes_openrouter_attachments() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let image_path = dir.path().join("snap.png");
+        std::fs::write(&image_path, b"\x89PNG\r\n\x1a\nfake-image-bytes")
+            .expect("write image fixture");
+        let pdf_path = dir.path().join("notes.pdf");
+        std::fs::write(&pdf_path, b"%PDF-1.4 fake-pdf-bytes").expect("write pdf fixture");
+        let text_path = dir.path().join("note.md");
+        std::fs::write(&text_path, b"# heading\nbody").expect("write text fixture");
+
+        let mut request = test_request();
+        request.messages = vec![ProviderMessage::User {
+            content: "read the attachments".into(),
+            attachments: vec![
+                MessageAttachment {
+                    kind: MessageAttachmentKind::Image,
+                    absolute_path: image_path,
+                    media_type: "image/png".into(),
+                    original_name: "snap.png".into(),
+                    size_bytes: 10,
+                    width: None,
+                    height: None,
+                },
+                MessageAttachment {
+                    kind: MessageAttachmentKind::Document,
+                    absolute_path: pdf_path,
+                    media_type: "application/pdf".into(),
+                    original_name: "notes.pdf".into(),
+                    size_bytes: 20,
+                    width: None,
+                    height: None,
+                },
+                MessageAttachment {
+                    kind: MessageAttachmentKind::Text,
+                    absolute_path: text_path,
+                    media_type: "text/markdown".into(),
+                    original_name: "note.md".into(),
+                    size_bytes: 12,
+                    width: None,
+                    height: None,
+                },
+            ],
+        }];
+
+        let body = openai_chat_request_body(OPENROUTER_PROVIDER_ID, "x-ai/grok-4.3", &request)
+            .expect("openrouter chat body");
+        let content = body["messages"][1]["content"]
+            .as_array()
+            .expect("multipart chat content");
+
+        assert!(content.iter().any(|block| block["type"] == "image_url"));
+        assert!(content.iter().any(|block| block["type"] == "file"));
+        assert!(content.iter().any(|block| block["type"] == "text"
+            && block["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("note.md"))));
+    }
+
+    #[test]
+    fn openai_responses_body_serializes_image_file_and_text_attachments() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let image_path = dir.path().join("snap.png");
+        std::fs::write(&image_path, b"\x89PNG\r\n\x1a\nfake-image-bytes")
+            .expect("write image fixture");
+        let pdf_path = dir.path().join("notes.pdf");
+        std::fs::write(&pdf_path, b"%PDF-1.4 fake-pdf-bytes").expect("write pdf fixture");
+        let text_path = dir.path().join("note.md");
+        std::fs::write(&text_path, b"# heading\nbody").expect("write text fixture");
+
+        let mut request = test_request();
+        request.messages = vec![ProviderMessage::User {
+            content: "read the attachments".into(),
+            attachments: vec![
+                MessageAttachment {
+                    kind: MessageAttachmentKind::Image,
+                    absolute_path: image_path,
+                    media_type: "image/png".into(),
+                    original_name: "snap.png".into(),
+                    size_bytes: 10,
+                    width: None,
+                    height: None,
+                },
+                MessageAttachment {
+                    kind: MessageAttachmentKind::Document,
+                    absolute_path: pdf_path,
+                    media_type: "application/pdf".into(),
+                    original_name: "notes.pdf".into(),
+                    size_bytes: 20,
+                    width: None,
+                    height: None,
+                },
+                MessageAttachment {
+                    kind: MessageAttachmentKind::Text,
+                    absolute_path: text_path,
+                    media_type: "text/markdown".into(),
+                    original_name: "note.md".into(),
+                    size_bytes: 12,
+                    width: None,
+                    height: None,
+                },
+            ],
+        }];
+
+        let body = openai_responses_request_body(OPENAI_API_PROVIDER_ID, "gpt-5.4", &request)
+            .expect("responses body");
+        let content = body["input"][0]["content"]
+            .as_array()
+            .expect("multipart responses content");
+
+        assert!(content.iter().any(|block| block["type"] == "input_image"));
+        assert!(content.iter().any(|block| block["type"] == "input_file"));
+        assert!(content.iter().any(|block| block["type"] == "input_text"
+            && block["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("note.md"))));
+    }
+
+    #[test]
+    fn xai_responses_body_serializes_image_attachments() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let image_path = dir.path().join("snap.png");
+        std::fs::write(&image_path, b"\x89PNG\r\n\x1a\nfake-image-bytes")
+            .expect("write image fixture");
+
+        let mut request = test_request();
+        request.messages = vec![ProviderMessage::User {
+            content: "where is this in the code?".into(),
+            attachments: vec![MessageAttachment {
+                kind: MessageAttachmentKind::Image,
+                absolute_path: image_path,
+                media_type: "image/png".into(),
+                original_name: "browser-sketch.png".into(),
+                size_bytes: 10,
+                width: Some(800),
+                height: Some(600),
+            }],
+        }];
+
+        let body = xai_responses_request_body(XAI_PROVIDER_ID, "grok-4.3", &request)
+            .expect("xAI responses body");
+        let content = body["input"][0]["content"]
+            .as_array()
+            .expect("xAI multipart content");
+
+        assert!(content.iter().any(|block| {
+            block["type"] == "input_image"
+                && block["image_url"]
+                    .as_str()
+                    .is_some_and(|url| url.starts_with("data:image/png;base64,"))
+        }));
+    }
+
+    #[test]
+    fn openai_codex_adapter_still_fails_closed_when_user_attachments_are_present() {
         let mut request = test_request();
         request.messages = vec![ProviderMessage::User {
             content: "read the attachment".into(),
@@ -3198,15 +3476,6 @@ mod tests {
                 height: None,
             }],
         }];
-
-        let chat_error = openai_chat_request_body(OPENAI_API_PROVIDER_ID, "gpt-4.1", &request)
-            .expect_err("chat adapter should deny attachments");
-        assert_eq!(chat_error.code, "provider_attachment_unsupported");
-
-        let responses_error =
-            openai_responses_request_body(OPENAI_API_PROVIDER_ID, "gpt-5.4", &request)
-                .expect_err("responses adapter should deny attachments");
-        assert_eq!(responses_error.code, "provider_attachment_unsupported");
 
         let codex_error = openai_codex_responses_request_body(
             OPENAI_CODEX_PROVIDER_ID,

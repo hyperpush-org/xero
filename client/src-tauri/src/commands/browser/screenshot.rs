@@ -18,9 +18,9 @@ use {
 };
 
 #[cfg(target_os = "macos")]
-const WEBKIT_SNAPSHOT_TIMEOUT: Duration = Duration::from_millis(1_500);
+const WEBKIT_SNAPSHOT_TIMEOUT: Duration = Duration::from_millis(600);
 #[cfg(target_os = "macos")]
-const VIEW_CACHE_TIMEOUT: Duration = Duration::from_secs(2);
+const VIEW_CACHE_TIMEOUT: Duration = Duration::from_millis(900);
 
 #[cfg(target_os = "macos")]
 pub fn capture_webview<R: Runtime>(webview: &Webview<R>) -> CommandResult<String> {

@@ -11860,6 +11860,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "xero-cursor-sidecar"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "xero-agent-core",
+]
+
+[[package]]
 name = "xero-desktop"
 version = "0.1.42"
 dependencies = [

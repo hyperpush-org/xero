@@ -49,6 +49,7 @@ async function run() {
   }
 
   const prompt = required(args.prompt, 'prompt')
+  const attachments = parseStagedAttachments(args.attachmentsJson)
   const repoRoot = path.resolve(required(args.repoRoot, 'repo-root'))
   const projectId = required(args.projectId, 'project-id')
   const runId = required(args.runId, 'run-id')
@@ -69,7 +70,7 @@ async function run() {
     return
   }
 
-  const apiKey = readApiKey(args.apiKeyEnv)
+  const apiKey = readApiKey(args.apiKeyEnv, args.apiKeyFile)
   if (!apiKey) {
     emit('failed', {
       code: 'cursor_auth_missing',
@@ -81,30 +82,18 @@ async function run() {
 
   const { Agent, Cursor } = await importCursorSdk()
   const sdkVersion = await readCursorSdkVersion()
-  const mcpServers = {
-    xero: {
-      type: 'stdio',
-      command: xeroCliPath,
-      args: [
-        '--state-dir',
-        xeroStateDir,
-        'mcp',
-        'serve-tools',
-        '--project-id',
-        projectId,
-        '--run-id',
-        runId,
-        '--session-id',
-        sessionId,
-        '--repo',
-        repoRoot,
-        '--mode',
-        mcpMode,
-      ],
-      cwd: repoRoot,
-      env: sanitizedMcpEnv(),
-    },
-  }
+  const mcpServers = buildMcpServers({
+    xeroCliPath,
+    xeroStateDir,
+    projectId,
+    runId,
+    sessionId,
+    repoRoot,
+    mcpMode,
+    sidecarKind: args.mcpSidecarKind,
+    eventLog: args.mcpEventLog,
+    runtimeAgentId: args.runtimeAgentId,
+  })
   const platform = {
     stateRoot: path.join(xeroStateDir, 'cursor-sdk', safePathSegment(projectId)),
     workspaceRef: repoRoot,
@@ -119,7 +108,7 @@ async function run() {
       runtime: 'local',
       localAutoMode: args.localAutoMode,
     })
-    agent = await Agent.create(buildCursorAgentCreateOptions({
+    const agentOptions = buildCursorAgentCreateOptions({
       apiKey,
       modelRequest,
       local: {
@@ -128,8 +117,11 @@ async function run() {
       },
       mcpServers,
       platform,
-    }))
-    const cursorRun = await agent.send(prompt, {
+    })
+    agent = args.cursorAgentId
+      ? await Agent.resume(args.cursorAgentId, agentOptions)
+      : await Agent.create(agentOptions)
+    const cursorRun = await agent.send(buildCursorUserMessage(prompt, attachments), {
       mcpServers,
       onDelta: ({ update }) => emit('delta', { update }),
       onStep: ({ step }) => emit('step', { step }),
@@ -144,6 +136,9 @@ async function run() {
       sdkVersion,
       runtime: 'local',
       mcpMode,
+      resumed: Boolean(args.cursorAgentId),
+      attachmentCount: attachments.length,
+      imageAttachmentCount: attachments.filter((attachment) => attachment.kind === 'image').length,
       ...cursorModelRouteEventMetadata(modelRoute, modelRequest),
     })
 
@@ -185,7 +180,7 @@ async function run() {
 }
 
 async function listModels(args) {
-  const apiKey = readApiKey(args.apiKeyEnv)
+  const apiKey = readApiKey(args.apiKeyEnv, args.apiKeyFile)
   if (!apiKey) {
     emit('failed', {
       code: 'cursor_auth_missing',
@@ -343,6 +338,18 @@ export function normalizeCursorModelCatalog(models) {
       })
     })
     .filter(Boolean)
+}
+
+export function buildCursorUserMessage(prompt, attachments = []) {
+  const normalized = normalizeCursorAttachments(attachments)
+  if (normalized.length === 0) {
+    return prompt
+  }
+
+  return {
+    text: prompt,
+    images: normalized.map(cursorImageAttachment),
+  }
 }
 
 export function findCursorAutoCatalogAlias(models) {
@@ -571,9 +578,159 @@ function requireResolve(specifier) {
   return createRequire(import.meta.url).resolve(specifier)
 }
 
-function readApiKey(apiKeyEnv) {
+function readApiKey(apiKeyEnv, apiKeyFile) {
+  if (typeof apiKeyFile === 'string' && apiKeyFile.trim() !== '') {
+    try {
+      return fs.readFileSync(path.resolve(apiKeyFile), 'utf8').trim()
+    } catch (error) {
+      const wrapped = new Error(
+        error instanceof Error
+          ? `Cursor API key file could not be read: ${error.message}`
+          : 'Cursor API key file could not be read.',
+      )
+      wrapped.xeroCode = 'cursor_auth_missing'
+      throw wrapped
+    }
+  }
   const envName = apiKeyEnv || 'CURSOR_API_KEY'
   return (process.env[envName] || '').trim()
+}
+
+function buildMcpServers({
+  xeroCliPath,
+  xeroStateDir,
+  projectId,
+  runId,
+  sessionId,
+  repoRoot,
+  mcpMode,
+  sidecarKind,
+  eventLog,
+  runtimeAgentId,
+}) {
+  const args =
+    sidecarKind === 'cursor-sidecar'
+      ? [
+          'mcp',
+          'serve-tools',
+          '--state-dir',
+          xeroStateDir,
+          '--project-id',
+          projectId,
+          '--run-id',
+          runId,
+          '--session-id',
+          sessionId,
+          '--repo',
+          repoRoot,
+          '--mode',
+          mcpMode,
+          '--event-log',
+          required(eventLog, 'mcp-event-log'),
+          '--runtime-agent-id',
+          runtimeAgentId || 'engineer',
+        ]
+      : [
+          '--state-dir',
+          xeroStateDir,
+          'mcp',
+          'serve-tools',
+          '--project-id',
+          projectId,
+          '--run-id',
+          runId,
+          '--session-id',
+          sessionId,
+          '--repo',
+          repoRoot,
+          '--mode',
+          mcpMode,
+        ]
+  return {
+    xero: {
+      type: 'stdio',
+      command: xeroCliPath,
+      args,
+      cwd: repoRoot,
+      env: sanitizedMcpEnv(),
+    },
+  }
+}
+
+function parseStagedAttachments(raw) {
+  if (raw == null || raw.trim() === '') {
+    return []
+  }
+
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    throw bridgeError(
+      'cursor_attachment_payload_invalid',
+      error instanceof Error
+        ? `Cursor attachment payload was not valid JSON: ${error.message}`
+        : 'Cursor attachment payload was not valid JSON.',
+    )
+  }
+  return normalizeCursorAttachments(parsed)
+}
+
+function normalizeCursorAttachments(value) {
+  if (!Array.isArray(value)) {
+    throw bridgeError('cursor_attachment_payload_invalid', 'Cursor attachment payload must be an array.')
+  }
+
+  return value.map((attachment, index) => normalizeCursorAttachment(attachment, index))
+}
+
+function normalizeCursorAttachment(attachment, index) {
+  if (!attachment || typeof attachment !== 'object') {
+    throw bridgeError(
+      'cursor_attachment_payload_invalid',
+      `Cursor attachment at index ${index} must be an object.`,
+    )
+  }
+  const kind = stringOrNull(attachment.kind)?.replace(/_/g, '-').toLowerCase()
+  const absolutePath = stringOrNull(attachment.absolutePath ?? attachment.absolute_path)
+  const mediaType = stringOrNull(attachment.mediaType ?? attachment.media_type)
+  const originalName = stringOrNull(attachment.originalName ?? attachment.original_name) ?? 'attachment'
+  if (!kind || !absolutePath || !mediaType) {
+    throw bridgeError(
+      'cursor_attachment_payload_invalid',
+      `Cursor attachment at index ${index} is missing kind, absolutePath, or mediaType.`,
+    )
+  }
+
+  return stripUndefined({
+    kind,
+    absolutePath,
+    mediaType,
+    originalName,
+    width: positiveIntegerOrUndefined(attachment.width),
+    height: positiveIntegerOrUndefined(attachment.height),
+  })
+}
+
+function cursorImageAttachment(attachment) {
+  if (attachment.kind !== 'image' || !attachment.mediaType.startsWith('image/')) {
+    throw bridgeError(
+      'cursor_attachment_unsupported',
+      `Cursor SDK image forwarding only supports image attachments; ${attachment.originalName} is ${attachment.kind}.`,
+    )
+  }
+  const bytes = fs.readFileSync(attachment.absolutePath)
+  return stripUndefined({
+    data: bytes.toString('base64'),
+    mimeType: attachment.mediaType,
+    dimension:
+      attachment.width && attachment.height
+        ? {
+            width: attachment.width,
+            height: attachment.height,
+          }
+        : undefined,
+  })
 }
 
 function sanitizedMcpEnv() {
@@ -642,6 +799,16 @@ function required(value, name) {
   return value
 }
 
+function positiveIntegerOrUndefined(value) {
+  return Number.isInteger(value) && value > 0 ? value : undefined
+}
+
+function bridgeError(code, message) {
+  const error = new Error(message)
+  error.xeroCode = code
+  return error
+}
+
 function safePathSegment(value) {
   return value.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120) || 'project'
 }
@@ -670,14 +837,26 @@ function parseArgs(argv) {
       parsed.model = nextValue(argv, ++index, arg)
     } else if (arg === '--api-key-env') {
       parsed.apiKeyEnv = nextValue(argv, ++index, arg)
+    } else if (arg === '--api-key-file') {
+      parsed.apiKeyFile = nextValue(argv, ++index, arg)
     } else if (arg === '--xero-cli-path') {
       parsed.xeroCliPath = nextValue(argv, ++index, arg)
     } else if (arg === '--xero-state-dir') {
       parsed.xeroStateDir = nextValue(argv, ++index, arg)
     } else if (arg === '--mcp-mode') {
       parsed.mcpMode = nextValue(argv, ++index, arg)
+    } else if (arg === '--mcp-sidecar-kind') {
+      parsed.mcpSidecarKind = nextValue(argv, ++index, arg)
+    } else if (arg === '--mcp-event-log') {
+      parsed.mcpEventLog = nextValue(argv, ++index, arg)
+    } else if (arg === '--runtime-agent-id') {
+      parsed.runtimeAgentId = nextValue(argv, ++index, arg)
+    } else if (arg === '--cursor-agent-id') {
+      parsed.cursorAgentId = nextValue(argv, ++index, arg)
     } else if (arg === '--local-auto-mode') {
       parsed.localAutoMode = nextValue(argv, ++index, arg)
+    } else if (arg === '--attachments-json') {
+      parsed.attachmentsJson = nextValue(argv, ++index, arg)
     } else if (arg === '--fixture') {
       parsed.fixture = nextValue(argv, ++index, arg)
     } else {
@@ -701,7 +880,7 @@ function nextValue(argv, index, flag) {
 
 function usage() {
   return [
-    'Usage: node cursor-sdk-bridge.mjs --prompt PROMPT --repo-root PATH --project-id ID --run-id ID --session-id ID --xero-cli-path PATH --xero-state-dir PATH [--model MODEL] [--api-key-env ENV] [--mcp-mode MODE] [--local-auto-mode omit_model|catalog_alias|disabled]',
+    'Usage: node cursor-sdk-bridge.mjs --prompt PROMPT --repo-root PATH --project-id ID --run-id ID --session-id ID --xero-cli-path PATH --xero-state-dir PATH [--model MODEL] [--api-key-env ENV|--api-key-file PATH] [--mcp-mode MODE] [--local-auto-mode omit_model|catalog_alias|disabled] [--attachments-json JSON]',
     '       node cursor-sdk-bridge.mjs --list-models [--api-key-env ENV]',
     '',
     'Streams newline-delimited JSON events for Xero Cursor SDK runs.',

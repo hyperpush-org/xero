@@ -1,5 +1,6 @@
 import * as SelectPrimitive from "@radix-ui/react-select";
 import { Activity, Brain, ChevronDown, Cpu, MessageCircle, Settings, ShieldCheck, Sparkles } from "lucide-react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
 	type ChangeEvent,
 	type CSSProperties,
@@ -42,6 +43,7 @@ import {
 import {
 	ComposerAttachmentChips,
 	type ComposerPendingAttachment,
+	type ComposerPendingContext,
 } from "./composer-attachment-chips";
 import {
 	ComposerInlineTrigger,
@@ -56,6 +58,7 @@ import {
 
 export type { ComposerSelectGroup, ComposerSelectOption } from "./composer-types";
 export type ComposerPendingAttachmentType = ComposerPendingAttachment;
+export type ComposerPendingContextType = ComposerPendingContext;
 
 export interface ComposerShortcutBinding {
 	/** "Mod" — Cmd on macOS, Ctrl on Windows/Linux. */
@@ -138,8 +141,10 @@ export interface ComposerProps {
 	autoCompactDisabled?: boolean;
 
 	pendingAttachments?: readonly ComposerPendingAttachment[];
+	pendingContexts?: readonly ComposerPendingContext[];
 	onAddFiles?: (files: File[]) => void;
 	onRemoveAttachment?: (id: string) => void;
+	onRemoveContext?: (id: string) => void;
 
 	dictation?: ComposerDictationLike;
 	/** Defaults to Cmd/Ctrl+Shift+D. Pass null to disable the composer-owned shortcut. */
@@ -278,8 +283,10 @@ export function Composer({
 	onAutoCompactEnabledChange,
 	autoCompactDisabled,
 	pendingAttachments,
+	pendingContexts,
 	onAddFiles,
 	onRemoveAttachment,
+	onRemoveContext,
 	dictation: externalDictation,
 	dictationShortcut,
 	contextMeter,
@@ -320,8 +327,10 @@ export function Composer({
 	const dictationAudioLevel = clampAudioLevel(dictation.audioLevel);
 
 	const isMobile = useIsMobile();
+	const reduceComposerMotion = useReducedMotion();
 	const hasText = draftPrompt.trim().length > 0;
 	const hasPendingAttachments = (pendingAttachments?.length ?? 0) > 0;
+	const hasPendingContexts = (pendingContexts?.length ?? 0) > 0;
 	const sendDisabled = isSendDisabled || (!hasText && !hasPendingAttachments);
 
 	// Compact agent panes adopt the sidebar's flush, dense chrome.
@@ -465,15 +474,37 @@ export function Composer({
 	const hasAgents = agentGroups.some((group) => group.options.length > 0);
 	const hasModels = modelGroups.length > 0;
 
-	const attachmentsRow =
-		pendingAttachments && pendingAttachments.length > 0 ? (
-			<div className="border-b border-border/40 px-2.5 py-2">
-				<ComposerAttachmentChips
-					attachments={pendingAttachments}
-					onRemove={onRemoveAttachment}
-				/>
-			</div>
-		) : null;
+	const attachmentsRow = (
+		<AnimatePresence>
+			{hasPendingAttachments || hasPendingContexts ? (
+				<motion.div
+					key="composer-attachment-row"
+					initial={reduceComposerMotion ? false : { opacity: 0, height: 0, y: -4 }}
+					animate={{ opacity: 1, height: "auto", y: 0 }}
+					exit={
+						reduceComposerMotion
+							? { opacity: 0, height: 0 }
+							: { opacity: 0, height: 0, y: -3 }
+					}
+					transition={
+						reduceComposerMotion
+							? { duration: 0 }
+							: { duration: 0.24, ease: [0.2, 0, 0, 1] }
+					}
+					className="overflow-hidden border-b border-border/40"
+				>
+					<div className="px-2.5 py-2">
+						<ComposerAttachmentChips
+							attachments={pendingAttachments ?? []}
+							contexts={pendingContexts}
+							onRemove={onRemoveAttachment}
+							onRemoveContext={onRemoveContext}
+						/>
+					</div>
+				</motion.div>
+			) : null}
+		</AnimatePresence>
+	);
 
 	const agentPill = hasAgents ? (
 		<GroupedPillSelect

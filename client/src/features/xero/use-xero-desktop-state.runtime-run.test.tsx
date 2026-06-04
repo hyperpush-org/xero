@@ -721,7 +721,7 @@ function createMockAdapter(options?: {
                 retryable: false,
               }
             : null,
-        models:
+        models: (
           profile.providerId === 'openrouter'
             ? profile.readiness.ready
               ? [
@@ -730,8 +730,14 @@ function createMockAdapter(options?: {
                     displayName: 'OpenRouter model',
                     thinking: {
                       supported: true,
-                      effortOptions: ['minimal', 'low', 'medium', 'high', 'x_high'],
-                      defaultEffort: 'medium',
+                      effortOptions: [
+                        'minimal' as const,
+                        'low' as const,
+                        'medium' as const,
+                        'high' as const,
+                        'x_high' as const,
+                      ],
+                      defaultEffort: 'medium' as const,
                     },
                   },
                 ]
@@ -742,11 +748,16 @@ function createMockAdapter(options?: {
                   displayName: 'OpenAI Codex',
                   thinking: {
                     supported: true,
-                    effortOptions: ['low', 'medium', 'high'],
-                    defaultEffort: 'medium',
+                    effortOptions: ['low' as const, 'medium' as const, 'high' as const],
+                    defaultEffort: 'medium' as const,
                   },
                 },
-              ],
+              ]
+        ).map((model) => ({
+          inputModalities: [],
+          inputModalitiesSource: 'test_fixture_unreported',
+          ...model,
+        })),
         contractDiagnostics: [],
       }
     }),

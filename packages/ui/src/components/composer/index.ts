@@ -11,6 +11,7 @@ export { Composer } from "./composer";
 export type {
 	ComposerDictationLike,
 	ComposerPendingAttachmentType,
+	ComposerPendingContextType,
 	ComposerProps,
 	ComposerRuntimeError,
 	ComposerShortcutBinding,
@@ -45,6 +46,7 @@ export { ComposerAttachmentChips } from "./composer-attachment-chips";
 export type {
 	ComposerAttachmentChipsProps,
 	ComposerPendingAttachment,
+	ComposerPendingContext,
 } from "./composer-attachment-chips";
 export { useComposerDictation } from "./use-composer-dictation";
 export type {

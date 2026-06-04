@@ -41,6 +41,22 @@ export interface BrowserToolElementContext {
   role: string | null
   label: string | null
   text: string | null
+  attributes?: Array<{ name: string; value: string }>
+  ancestors?: Array<{
+    selector: string | null
+    tagName: string
+    id: string | null
+    role: string | null
+    label: string | null
+  }>
+  source?: {
+    framework: string | null
+    componentName: string | null
+    filePath: string | null
+    lineNumber: number | null
+    columnNumber: number | null
+    raw: string | null
+  } | null
   rect: {
     x: number
     y: number
@@ -78,6 +94,11 @@ export interface BrowserToolClosedEventPayload {
 export interface BrowserAgentContextRequest {
   prompt: string
   visiblePrompt: string
+  contextCard?: {
+    kind: "element" | "sketch"
+    title: string
+    subtitle?: string
+  }
   image?: {
     bytes: Uint8Array
     mediaType: "image/png"
@@ -311,14 +332,233 @@ const BROWSER_TOOL_RUNTIME = String.raw`
     return parts.length > 0 ? parts.join(" > ") : element.tagName.toLowerCase();
   }
 
+  function compactAttributeValue(value, max) {
+    return compactText(String(value || ""), max) || "";
+  }
+
+  function importantAttributes(element) {
+    if (!element || typeof element.getAttributeNames !== "function") return [];
+    var names = [];
+    try {
+      names = element.getAttributeNames();
+    } catch (_error) {
+      names = [];
+    }
+    var priority = {
+      role: true,
+      "aria-label": true,
+      "aria-labelledby": true,
+      title: true,
+      alt: true,
+      name: true,
+      type: true,
+      href: true,
+      placeholder: true,
+      "data-testid": true,
+      "data-test": true,
+      "data-cy": true,
+      "data-component": true,
+    };
+    var attrs = [];
+    names.sort(function (a, b) {
+      var ap = priority[a] ? 0 : 1;
+      var bp = priority[b] ? 0 : 1;
+      if (ap !== bp) return ap - bp;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+    for (var index = 0; index < names.length && attrs.length < 6; index += 1) {
+      var name = String(names[index] || "");
+      if (!name || !priority[name]) continue;
+      if (/password|secret|token|key/i.test(name)) continue;
+      var value = element.getAttribute(name);
+      if (value == null) continue;
+      attrs.push({ name: name, value: compactAttributeValue(value, 140) });
+    }
+    return attrs;
+  }
+
+  function readNumericSourceValue(value) {
+    var number = Number(value);
+    return Number.isFinite(number) && number > 0 ? Math.round(number) : null;
+  }
+
+  function parseSourceRaw(raw) {
+    var text = compactText(raw, 500);
+    if (!text) return null;
+    var match = text.match(/((?:[A-Za-z]:[\\/]|\/|\.{1,2}\/|[^\s:()]+\/)[^\s:()]+\.(?:tsx?|jsx?|vue|svelte|astro|html|css|scss))(?:[:(](\d+))?(?::(\d+))?/i);
+    if (!match) return { raw: text };
+    return {
+      filePath: match[1] || null,
+      lineNumber: readNumericSourceValue(match[2]),
+      columnNumber: readNumericSourceValue(match[3]),
+      raw: text
+    };
+  }
+
+  function normalizeSourceHint(hint) {
+    if (!hint) return null;
+    var raw = hint.raw ? compactText(hint.raw, 500) : null;
+    var parsed = hint.filePath ? null : parseSourceRaw(raw || "");
+    return {
+      framework: hint.framework || null,
+      componentName: hint.componentName || null,
+      filePath: hint.filePath || (parsed && parsed.filePath) || hint.fileName || null,
+      lineNumber: readNumericSourceValue(hint.lineNumber) || (parsed && parsed.lineNumber) || null,
+      columnNumber: readNumericSourceValue(hint.columnNumber) || (parsed && parsed.columnNumber) || null,
+      raw: raw || (parsed && parsed.raw) || null
+    };
+  }
+
+  function sourceFromAttributes(element) {
+    var filePath =
+      element.getAttribute("data-file-path") ||
+      element.getAttribute("data-file") ||
+      element.getAttribute("data-source-file") ||
+      element.getAttribute("data-astro-source-file") ||
+      null;
+    var raw =
+      element.getAttribute("data-source") ||
+      element.getAttribute("data-src") ||
+      element.getAttribute("data-loc") ||
+      element.getAttribute("data-vite-dev-id") ||
+      element.getAttribute("data-astro-source-loc") ||
+      filePath ||
+      null;
+    var componentName =
+      element.getAttribute("data-component") ||
+      element.getAttribute("data-component-name") ||
+      null;
+    var lineNumber =
+      readNumericSourceValue(element.getAttribute("data-line")) ||
+      readNumericSourceValue(element.getAttribute("data-source-line"));
+    var columnNumber =
+      readNumericSourceValue(element.getAttribute("data-column")) ||
+      readNumericSourceValue(element.getAttribute("data-source-column"));
+    if (!filePath && !raw && !componentName && !lineNumber && !columnNumber) return null;
+    return normalizeSourceHint({
+      framework: "dom-attributes",
+      componentName: componentName,
+      filePath: filePath,
+      lineNumber: lineNumber,
+      columnNumber: columnNumber,
+      raw: raw
+    });
+  }
+
+  function componentNameForType(type) {
+    if (!type) return null;
+    if (typeof type === "string") return type;
+    return type.displayName || type.name || type.__name || null;
+  }
+
+  function reactFiberForElement(element) {
+    var keys = [];
+    try {
+      keys = Object.keys(element);
+    } catch (_error) {
+      keys = [];
+    }
+    for (var index = 0; index < keys.length; index += 1) {
+      var key = keys[index];
+      if (/^__react(?:Fiber|InternalInstance)\$/i.test(key)) {
+        return element[key] || null;
+      }
+    }
+    return null;
+  }
+
+  function sourceFromReact(element) {
+    var fiber = reactFiberForElement(element);
+    var current = fiber;
+    var fallbackName = null;
+    for (var depth = 0; current && depth < 30; depth += 1) {
+      fallbackName =
+        fallbackName ||
+        componentNameForType(current.elementType) ||
+        componentNameForType(current.type);
+      var source = current._debugSource || (current._debugOwner && current._debugOwner._debugSource);
+      if (source) {
+        return normalizeSourceHint({
+          framework: "react",
+          componentName:
+            fallbackName ||
+            componentNameForType(current._debugOwner && current._debugOwner.type),
+          filePath: source.fileName || source.filePath || null,
+          lineNumber: source.lineNumber || null,
+          columnNumber: source.columnNumber || null,
+          raw: source.fileName || null
+        });
+      }
+      current = current.return || null;
+    }
+    return fallbackName ? normalizeSourceHint({ framework: "react", componentName: fallbackName }) : null;
+  }
+
+  function sourceFromVue(element) {
+    var current = element && element.__vueParentComponent;
+    for (var depth = 0; current && depth < 20; depth += 1) {
+      var type = current.type || {};
+      var file = type.__file || null;
+      var name = type.name || type.__name || null;
+      if (file || name) {
+        return normalizeSourceHint({
+          framework: "vue",
+          componentName: name,
+          filePath: file,
+          raw: file
+        });
+      }
+      current = current.parent || null;
+    }
+    return null;
+  }
+
+  function sourceHintForElement(element) {
+    return (
+      sourceFromAttributes(element) ||
+      sourceFromReact(element) ||
+      sourceFromVue(element) ||
+      null
+    );
+  }
+
+  function ancestorSummary(element) {
+    var ancestors = [];
+    var current = element ? element.parentElement : null;
+    while (
+      current &&
+      current.nodeType === 1 &&
+      current !== document.body &&
+      current !== document.documentElement &&
+      ancestors.length < 3
+    ) {
+      ancestors.push({
+        selector: selectorFor(current),
+        tagName: current.tagName.toLowerCase(),
+        id: current.id ? String(current.id) : null,
+        role: current.getAttribute("role") || null,
+        label: (
+          current.getAttribute("aria-label") ||
+          current.getAttribute("title") ||
+          current.getAttribute("alt") ||
+          current.getAttribute("name") ||
+          null
+        )
+      });
+      current = current.parentElement;
+    }
+    return ancestors;
+  }
+
   function elementContext(element) {
     var rect = element.getBoundingClientRect();
     var classes = [];
     try {
-      classes = Array.prototype.slice.call(element.classList || []).slice(0, 8).map(String);
+      classes = Array.prototype.slice.call(element.classList || []).slice(0, 4).map(String);
     } catch (_error) {
       classes = [];
     }
+    var attrs = importantAttributes(element);
     return {
       selector: selectorFor(element),
       tagName: element.tagName.toLowerCase(),
@@ -333,6 +573,9 @@ const BROWSER_TOOL_RUNTIME = String.raw`
         null
       ),
       text: compactText(element.innerText || element.textContent || "", 500),
+      attributes: attrs,
+      ancestors: ancestorSummary(element),
+      source: sourceHintForElement(element),
       rect: {
         x: round(rect.left),
         y: round(rect.top),
@@ -442,16 +685,176 @@ const BROWSER_TOOL_RUNTIME = String.raw`
     return false;
   }
 
-  function positionComposer(composer, x, y) {
-    var width = 320;
-    var height = 154;
-    var left = x + 12;
-    var top = y;
-    if (left + width + 8 > window.innerWidth) left = x - width - 12;
-    left = clamp(left, 8, Math.max(8, window.innerWidth - width - 8));
-    top = clamp(top, 8, Math.max(8, window.innerHeight - height - 8));
+  function rectFromEdges(left, top, width, height) {
+    return {
+      left: left,
+      top: top,
+      right: left + width,
+      bottom: top + height,
+      width: width,
+      height: height
+    };
+  }
+
+  function normalizeClientRect(rect) {
+    if (!rect) return null;
+    var left = Number(rect.left != null ? rect.left : rect.x);
+    var top = Number(rect.top != null ? rect.top : rect.y);
+    var width = Number(rect.width != null ? rect.width : (rect.right - rect.left));
+    var height = Number(rect.height != null ? rect.height : (rect.bottom - rect.top));
+    if (!Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(width) || !Number.isFinite(height)) {
+      return null;
+    }
+    width = Math.max(1, width);
+    height = Math.max(1, height);
+    return rectFromEdges(left, top, width, height);
+  }
+
+  function inflateRect(rect, padding) {
+    return rectFromEdges(
+      rect.left - padding,
+      rect.top - padding,
+      rect.width + padding * 2,
+      rect.height + padding * 2
+    );
+  }
+
+  function overlapArea(a, b) {
+    var width = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+    var height = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+    return width * height;
+  }
+
+  function clampComposerRect(left, top, width, height) {
+    var margin = 8;
+    return rectFromEdges(
+      clamp(left, margin, Math.max(margin, window.innerWidth - width - margin)),
+      clamp(top, margin, Math.max(margin, window.innerHeight - height - margin)),
+      width,
+      height
+    );
+  }
+
+  function bestComposerPlacement(width, height, avoidRect) {
+    var avoid = normalizeClientRect(avoidRect);
+    if (!avoid) return null;
+
+    var gap = 20;
+    var centerX = avoid.left + avoid.width / 2;
+    var centerY = avoid.top + avoid.height / 2;
+    var candidates = [
+      {
+        side: "left",
+        space: avoid.left,
+        origin: "right center",
+        rect: clampComposerRect(avoid.left - width - gap, centerY - height / 2, width, height)
+      },
+      {
+        side: "right",
+        space: window.innerWidth - avoid.right,
+        origin: "left center",
+        rect: clampComposerRect(avoid.right + gap, centerY - height / 2, width, height)
+      },
+      {
+        side: "above",
+        space: avoid.top,
+        origin: "center bottom",
+        rect: clampComposerRect(centerX - width / 2, avoid.top - height - gap, width, height)
+      },
+      {
+        side: "below",
+        space: window.innerHeight - avoid.bottom,
+        origin: "center top",
+        rect: clampComposerRect(centerX - width / 2, avoid.bottom + gap, width, height)
+      }
+    ];
+    var inflatedAvoid = inflateRect(avoid, 14);
+    candidates.sort(function (a, b) {
+      var aOverlap = overlapArea(a.rect, inflatedAvoid);
+      var bOverlap = overlapArea(b.rect, inflatedAvoid);
+      if (aOverlap !== bOverlap) return aOverlap - bOverlap;
+      return b.space - a.space;
+    });
+    return candidates[0];
+  }
+
+  function positionComposer(composer, x, y, avoidRect) {
+    var width = composer.offsetWidth || 320;
+    var height = composer.offsetHeight || 154;
+    var placement = bestComposerPlacement(width, height, avoidRect);
+    var left;
+    var top;
+    if (placement) {
+      left = placement.rect.left;
+      top = placement.rect.top;
+      composer.style.setProperty("--xero-composer-origin", placement.origin);
+    } else {
+      left = x + 12;
+      top = y;
+      if (left + width + 8 > window.innerWidth) left = x - width - 12;
+      left = clamp(left, 8, Math.max(8, window.innerWidth - width - 8));
+      top = clamp(top, 8, Math.max(8, window.innerHeight - height - 8));
+      composer.style.setProperty("--xero-composer-origin", left > x ? "left top" : "right top");
+    }
     composer.style.left = left + "px";
     composer.style.top = top + "px";
+  }
+
+  function removeComposer(state, composer, afterRemove) {
+    if (!composer || composer.getAttribute("data-closing") === "true") return;
+    composer.setAttribute("data-closing", "true");
+    composer.removeAttribute("data-open");
+    var finished = false;
+    function complete() {
+      if (finished) return;
+      finished = true;
+      composer.removeEventListener("transitionend", complete);
+      if (composer.parentNode) composer.parentNode.removeChild(composer);
+      if (state.composer === composer) {
+        state.composer = null;
+        state.composerInput = null;
+        state.composerAvoidRect = null;
+      }
+      if (typeof afterRemove === "function") afterRemove();
+    }
+    composer.addEventListener("transitionend", complete);
+    var reducedMotion = false;
+    try {
+      reducedMotion = Boolean(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    } catch (_error) {
+      reducedMotion = false;
+    }
+    window.setTimeout(complete, reducedMotion ? 0 : 290);
+  }
+
+  function showCaptureLoading(state) {
+    if (!state) return false;
+    state.loadingMode = true;
+    if (state.root) state.root.setAttribute("data-loading", "true");
+    if (state.captureLoading && state.captureLoading.parentNode) {
+      state.captureLoading.setAttribute("data-open", "true");
+      return true;
+    }
+    var loading = createNode("div", "capture-loading");
+    loading.setAttribute("aria-hidden", "true");
+    state.layer.appendChild(loading);
+    state.captureLoading = loading;
+    requestAnimationFrame(function () {
+      loading.setAttribute("data-open", "true");
+    });
+    return true;
+  }
+
+  function hideCaptureLoading(state) {
+    if (!state) return false;
+    state.loadingMode = false;
+    if (state.root) state.root.setAttribute("data-loading", "false");
+    var loading = state.captureLoading;
+    state.captureLoading = null;
+    if (loading && loading.parentNode) {
+      loading.parentNode.removeChild(loading);
+    }
+    return true;
   }
 
   function makeComposer(state, options) {
@@ -491,18 +894,21 @@ const BROWSER_TOOL_RUNTIME = String.raw`
     state.layer.appendChild(composer);
     state.composer = composer;
     state.composerInput = textarea;
-    positionComposer(composer, options.x, options.y);
+    state.composerAvoidRect = options.avoidRect || null;
+    positionComposer(composer, options.x, options.y, options.avoidRect || null);
+    requestAnimationFrame(function () {
+      composer.setAttribute("data-open", "true");
+    });
 
     close.addEventListener("click", function () {
-      composer.remove();
-      if (state.composer === composer) {
-        state.composer = null;
-        state.composerInput = null;
-      }
+      removeComposer(state, composer);
     });
     send.addEventListener("click", function () {
+      if (composer.getAttribute("data-closing") === "true") return;
       var note = String(textarea.value || "").trim();
-      options.onSubmit(note);
+      removeComposer(state, composer, function () {
+        options.onSubmit(note);
+      });
     });
     textarea.addEventListener("keydown", function (event) {
       if (event.key === "Escape") {
@@ -891,6 +1297,18 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       };
     }
 
+    function strokeClientRect(stroke) {
+      var bounds = stroke.renderedBounds || boundsForPoints(stroke.points || []);
+      var topLeft = pagePointToClient({ x: bounds.minX, y: bounds.minY });
+      var bottomRight = pagePointToClient({ x: bounds.maxX, y: bounds.maxY });
+      return {
+        x: Math.min(topLeft.x, bottomRight.x),
+        y: Math.min(topLeft.y, bottomRight.y),
+        width: Math.max(1, Math.abs(bottomRight.x - topLeft.x)),
+        height: Math.max(1, Math.abs(bottomRight.y - topLeft.y))
+      };
+    }
+
     function emitPenState() {
       bridgeEmit("tool_state", {
         mode: "pen",
@@ -904,7 +1322,7 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       var points = state.composerStroke.points || [];
       if (points.length === 0) return;
       var anchor = pagePointToClient(points[points.length - 1]);
-      positionComposer(state.composer, anchor.x, anchor.y);
+      positionComposer(state.composer, anchor.x, anchor.y, strokeClientRect(state.composerStroke));
     }
 
     function syncPenLayer() {
@@ -1072,6 +1490,7 @@ const BROWSER_TOOL_RUNTIME = String.raw`
           footer: "Drawing will be attached as an image",
           x: composerAnchor.x,
           y: composerAnchor.y,
+          avoidRect: strokeClientRect(finished),
           onSubmit: function (note) {
             if (state.strokes.length === 0 && !note) return;
             startCapture(state, {
@@ -1191,9 +1610,10 @@ const BROWSER_TOOL_RUNTIME = String.raw`
         title: "Element note",
         subtitle: (context.selector || context.tagName),
         placeholder: "Describe what should change about this element...",
-        footer: "Selection and screenshot will be attached",
+        footer: "Element metadata will be attached",
         x: context.rect.x + context.rect.width,
         y: context.rect.y,
+        avoidRect: context.rect,
         onSubmit: function (note) {
           startCapture(state, {
             kind: "inspect",
@@ -1222,7 +1642,13 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       ".toolbar-dot{color:var(--xero-tool-muted-foreground,#a1a1aa)}" +
       ".toolbar-button{appearance:none;border:0;border-radius:6px;background:transparent;color:var(--xero-tool-muted-foreground,#a1a1aa);height:24px;padding:0 6px;font:inherit;cursor:pointer}" +
       ".toolbar-button:hover{background:var(--xero-tool-secondary,#27272a);color:var(--xero-tool-secondary-foreground,#fafafa)}" +
-      ".composer{position:fixed;z-index:5;width:320px;overflow:hidden;border:1px solid var(--xero-tool-border,#3f3f46);border-radius:8px;background:var(--xero-tool-popover,#18181b);color:var(--xero-tool-popover-foreground,#fafafa);box-shadow:0 24px 70px rgba(0,0,0,.32),0 0 0 1px rgba(255,255,255,.03) inset}" +
+      ".composer{position:fixed;z-index:5;width:320px;overflow:hidden;border:1px solid var(--xero-tool-border,#3f3f46);border-radius:8px;background:var(--xero-tool-popover,#18181b);color:var(--xero-tool-popover-foreground,#fafafa);box-shadow:0 24px 70px rgba(0,0,0,.32),0 0 0 1px rgba(255,255,255,.03) inset;opacity:0;filter:blur(6px);transform:translateY(10px) scale(.96);transform-origin:var(--xero-composer-origin,top left);transition-property:opacity,transform,filter;transition-duration:240ms;transition-timing-function:cubic-bezier(.2,0,0,1);will-change:opacity,transform,filter}" +
+      ".composer[data-open='true']{opacity:1;filter:blur(0);transform:translateY(0) scale(1)}" +
+      ".composer[data-closing='true']{opacity:0;filter:blur(6px);transform:translateY(10px) scale(.96);pointer-events:none}" +
+      ".capture-loading{position:fixed;inset:0;z-index:6;background:rgba(0,0,0,.38);opacity:0;pointer-events:all;transition-property:opacity;transition-duration:240ms;transition-timing-function:cubic-bezier(.2,0,0,1);will-change:opacity}" +
+      ".capture-loading[data-open='true']{opacity:1}" +
+      "[data-loading='true'] .pen-layer,[data-loading='true'] .inspect-highlight{display:none!important}" +
+      "@media (prefers-reduced-motion:reduce){.composer,.capture-loading{filter:none;transform:none;transition-duration:0ms}.composer[data-closing='true']{filter:none;transform:none}}" +
       ".composer-header{display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid var(--xero-tool-border,#3f3f46);padding:9px 10px 8px}" +
       ".composer-title-wrap{min-width:0}" +
       ".composer-title{font-size:12px;font-weight:750;color:var(--xero-tool-popover-foreground,#fafafa);line-height:1.2}" +
@@ -1260,6 +1686,7 @@ const BROWSER_TOOL_RUNTIME = String.raw`
     installStyles(shadow);
     var layer = createNode("div", "layer");
     layer.setAttribute("data-capture", "false");
+    layer.setAttribute("data-loading", "false");
     shadow.appendChild(layer);
     document.documentElement.appendChild(host);
 
@@ -1322,13 +1749,21 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       if (!state) {
         return false;
       }
+      hideCaptureLoading(state);
       state.captureMode = false;
       if (state.root) state.root.setAttribute("data-capture", "false");
       return true;
     },
+    showLoading: function () {
+      return showCaptureLoading(api.state);
+    },
+    hideLoading: function () {
+      return hideCaptureLoading(api.state);
+    },
     deactivate: function () {
       var state = api.state;
       if (state) {
+        hideCaptureLoading(state);
         for (var index = 0; index < state.cleanups.length; index += 1) {
           try { state.cleanups[index](); } catch (_error) { /* ignore */ }
         }
@@ -1371,6 +1806,12 @@ if (window.__xeroBrowserTool && typeof window.__xeroBrowserTool.prepareCapture =
 }
 `
 
+export const BROWSER_TOOL_SHOW_LOADING_SCRIPT = `
+if (window.__xeroBrowserTool && typeof window.__xeroBrowserTool.showLoading === "function") {
+  window.__xeroBrowserTool.showLoading();
+}
+`
+
 export const BROWSER_TOOL_RESTORE_CAPTURE_SCRIPT = `
 if (window.__xeroBrowserTool && typeof window.__xeroBrowserTool.restoreCapture === "function") {
   window.__xeroBrowserTool.restoreCapture();
@@ -1408,6 +1849,96 @@ function sanitizedBrowserToolPromptUrl(rawUrl: string): string {
   }
 }
 
+function formatElementSourceHint(source: BrowserToolElementContext["source"]): string {
+  if (!source) return "Source: unavailable"
+  const location = source.filePath
+    ? `${source.filePath}${source.lineNumber ? `:${source.lineNumber}` : ""}${source.columnNumber ? `:${source.columnNumber}` : ""}`
+    : null
+  const details = [
+    location,
+    source.componentName ? `component ${source.componentName}` : null,
+    source.framework ? `via ${source.framework}` : null,
+    !location && source.raw ? source.raw : null,
+  ].filter((value): value is string => Boolean(value))
+  return details.length > 0
+    ? `Source: ${details.join(" | ")}`
+    : "Source: unavailable"
+}
+
+function lastBrowserToolPathSegment(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean)
+  return parts.at(-1) ?? path
+}
+
+function compactBrowserToolCardText(value: string, maxLength = 54): string {
+  const normalized = value.replace(/\s+/g, " ").trim()
+  if (normalized.length <= maxLength) return normalized
+  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`
+}
+
+function elementContextCardSubtitle(element: BrowserToolElementContext): string {
+  const source = element.source ?? null
+  if (source?.filePath) {
+    const fileName = lastBrowserToolPathSegment(source.filePath)
+    return source.lineNumber ? `${fileName}:${source.lineNumber}` : fileName
+  }
+  if (source?.componentName) {
+    return source.componentName
+  }
+  if (element.label) {
+    return element.label
+  }
+  if (element.selector) {
+    return element.selector
+  }
+  return `<${element.tagName}>`
+}
+
+export function buildBrowserToolContextCard(
+  context: BrowserToolContext,
+): BrowserAgentContextRequest["contextCard"] | undefined {
+  if (context.kind === "pen") {
+    const strokeLabel = `${context.strokeCount} stroke${context.strokeCount === 1 ? "" : "s"}`
+    return {
+      kind: "sketch",
+      title: "Browser sketch context",
+      subtitle: compactBrowserToolCardText(`${strokeLabel} on browser screenshot`),
+    }
+  }
+  return {
+    kind: "element",
+    title: "Element context",
+    subtitle: compactBrowserToolCardText(elementContextCardSubtitle(context.element)),
+  }
+}
+
+function formatElementAttributes(
+  attributes: BrowserToolElementContext["attributes"],
+): string | null {
+  if (!attributes?.length) return null
+  return `Stable attrs: ${attributes
+    .slice(0, 6)
+    .map((attribute) => `${attribute.name}="${attribute.value}"`)
+    .join(", ")}`
+}
+
+function formatElementAncestors(
+  ancestors: BrowserToolElementContext["ancestors"],
+): string | null {
+  if (!ancestors?.length) return null
+  const chain = ancestors.slice(0, 3).map((ancestor) => {
+    const parts = [
+      `<${ancestor.tagName}>`,
+      ancestor.selector,
+      ancestor.id ? `id ${ancestor.id}` : null,
+      ancestor.role ? `role ${ancestor.role}` : null,
+      ancestor.label ? `label "${ancestor.label}"` : null,
+    ].filter((value): value is string => Boolean(value))
+    return parts.join(" ")
+  })
+  return `Parent chain: ${chain.join(" > ")}`
+}
+
 export function buildBrowserToolAgentPrompt(
   context: BrowserToolContext,
   options: { screenshotAttached?: boolean } = {},
@@ -1427,24 +1958,24 @@ export function buildBrowserToolAgentPrompt(
 
   const element = context.element
   const details = [
-    `Selector: ${element.selector ?? "unavailable"}`,
-    `Tag: <${element.tagName}>`,
+    formatElementSourceHint(element.source ?? null),
+    `Element: <${element.tagName}>`,
+    element.selector ? `Selector: ${element.selector}` : null,
     element.id ? `ID: ${element.id}` : null,
     element.classes.length ? `Classes: ${element.classes.join(" ")}` : null,
     element.role ? `Role: ${element.role}` : null,
     element.label ? `Label: ${element.label}` : null,
     element.text ? `Text: ${element.text}` : null,
-    `Bounds: x=${element.rect.x}, y=${element.rect.y}, width=${element.rect.width}, height=${element.rect.height}`,
+    formatElementAttributes(element.attributes),
+    formatElementAncestors(element.ancestors),
   ].filter((line): line is string => Boolean(line))
 
   return [
     "Browser element inspection context:",
     `Page: ${pageLine}`,
-    "Selected element:",
+    "Selected element (for locating code; no screenshot):",
     ...details.map((line) => `- ${line}`),
-    screenshotAttached
-      ? "The attached browser screenshot highlights this selection."
-      : "No browser screenshot was attached; use the selected element metadata above.",
+    "Use these identifiers to find the implementation before editing.",
   ].join("\n")
 }
 

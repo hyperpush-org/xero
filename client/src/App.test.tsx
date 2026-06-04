@@ -887,7 +887,11 @@ function buildProviderModelCatalog(profile: ProviderProfileDto): ProviderModelCa
     fetchedAt: isReady ? '2026-04-21T12:00:00Z' : null,
     lastSuccessAt: isReady ? '2026-04-21T12:00:00Z' : null,
     lastRefreshError,
-    models,
+    models: (models ?? []).map((model) => ({
+      inputModalities: [],
+      inputModalitiesSource: 'test_fixture_unreported',
+      ...model,
+    })),
   })
 }
 
@@ -999,6 +1003,7 @@ function buildProviderPreflightSnapshot(
       toolCalls: options.requiredFeatures?.toolCalls ?? true,
       reasoningControls: options.requiredFeatures?.reasoningControls ?? false,
       attachments: options.requiredFeatures?.attachments ?? false,
+      attachmentInputModalities: options.requiredFeatures?.attachmentInputModalities ?? [],
     },
     capabilities: buildProviderCapabilityCatalog(profile, modelId),
     checks: [

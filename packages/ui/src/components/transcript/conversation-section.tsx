@@ -28,6 +28,8 @@ import {
   Info,
   Loader2,
   MoreHorizontal,
+  MousePointer2,
+  PencilLine,
   Terminal,
   Undo2,
   User,
@@ -345,6 +347,25 @@ export function getReturnSessionToHereStateKey({
  */
 const HANDOFF_COMPLETION_DETAIL_MARKER = 'handed off to a same-type target run'
 
+const BROWSER_TOOL_CONTEXT_MARKER_PATTERN =
+  /^Browser (sketch context|element inspection context):$/
+const BROWSER_TOOL_CONTEXT_BLOCK_PATTERN =
+  /(^|\n{2,})(Browser (?:sketch context|element inspection context):\n[\s\S]*?)(?=\n{2,}Browser (?:sketch context|element inspection context):\n|$)/g
+
+export interface BrowserToolPromptContext {
+  id: string
+  kind: 'sketch' | 'element'
+  title: string
+  page: string | null
+  lines: string[]
+  rawText: string
+}
+
+export interface BrowserToolPromptParts {
+  visibleText: string
+  contexts: BrowserToolPromptContext[]
+}
+
 function isHandoffCompletion(
   completion: RuntimeStreamCompleteItemView | null | undefined,
 ): boolean {
@@ -353,6 +374,71 @@ function isHandoffCompletion(
       ?.toLowerCase()
       .includes(HANDOFF_COMPLETION_DETAIL_MARKER),
   )
+}
+
+export function splitBrowserToolPromptContext(text: string): BrowserToolPromptParts {
+  const contexts: BrowserToolPromptContext[] = []
+  const visibleParts: string[] = []
+  let cursor = 0
+
+  BROWSER_TOOL_CONTEXT_BLOCK_PATTERN.lastIndex = 0
+  let match = BROWSER_TOOL_CONTEXT_BLOCK_PATTERN.exec(text)
+  while (match !== null) {
+    visibleParts.push(text.slice(cursor, match.index))
+
+    const separator = match[1] ?? ''
+    const rawText = (match[2] ?? '').trim()
+    const context = parseBrowserToolPromptContext(rawText, contexts.length)
+    if (context) {
+      contexts.push(context)
+      cursor = match.index + separator.length + (match[2] ?? '').length
+    } else {
+      visibleParts.push(separator, match[2] ?? '')
+      cursor = match.index + separator.length + (match[2] ?? '').length
+    }
+
+    match = BROWSER_TOOL_CONTEXT_BLOCK_PATTERN.exec(text)
+  }
+
+  visibleParts.push(text.slice(cursor))
+
+  return {
+    visibleText: visibleParts.join('').trim(),
+    contexts,
+  }
+}
+
+export function userVisiblePromptText(text: string): string {
+  return splitBrowserToolPromptContext(text).visibleText
+}
+
+function parseBrowserToolPromptContext(
+  rawText: string,
+  index: number,
+): BrowserToolPromptContext | null {
+  const lines = rawText.split(/\r?\n/)
+  const marker = lines[0]?.trim() ?? ''
+  const markerMatch = BROWSER_TOOL_CONTEXT_MARKER_PATTERN.exec(marker)
+  if (!markerMatch) {
+    return null
+  }
+
+  const kind = markerMatch[1] === 'sketch context' ? 'sketch' : 'element'
+  const pageLine = lines.find((line) => line.trim().startsWith('Page: '))
+  const page = pageLine ? pageLine.trim().replace(/^Page:\s*/, '') : null
+  const bodyLines = lines
+    .slice(1)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('Page: '))
+
+  return {
+    id: `${kind}-${index}`,
+    kind,
+    title: kind === 'sketch' ? 'Browser sketch context' : 'Element context',
+    page,
+    lines: bodyLines,
+    rawText,
+  }
 }
 
 function visibleConversationCopyText(turns: readonly ConversationTurn[]): string {
@@ -367,7 +453,15 @@ function conversationTurnCopySections(turn: ConversationTurn): string[] {
   switch (turn.kind) {
     case 'message': {
       if (turn.role === 'user') {
-        return turn.text.trim().length > 0 ? [`You:\n${turn.text.trim()}`] : []
+        const parsed = splitBrowserToolPromptContext(turn.text)
+        const sections: string[] = []
+        if (parsed.visibleText.trim().length > 0) {
+          sections.push(`You:\n${parsed.visibleText.trim()}`)
+        }
+        for (const context of parsed.contexts) {
+          sections.push(`${context.title}:\n${context.rawText}`)
+        }
+        return sections
       }
 
       return splitAssistantText(turn.text).flatMap((segment) => {
@@ -2713,6 +2807,9 @@ function UserMessage({
   accountAvatarUrl,
   accountLogin,
 }: UserMessageProps) {
+  const promptParts = useMemo(() => splitBrowserToolPromptContext(text), [text])
+  const visibleText = promptParts.visibleText
+  const browserContexts = promptParts.contexts
   const hasAttachments = attachments && attachments.length > 0
   const isTouch = useIsTouchDevice()
   const [tapCopied, setTapCopied] = useState(false)
@@ -2723,19 +2820,19 @@ function UserMessage({
     return () => window.clearTimeout(timeoutId)
   }, [tapCopied])
 
-  const trimmedLength = text.trim().length
+  const trimmedLength = visibleText.trim().length
   const canTapCopy = isTouch && trimmedLength > 0
 
   const handleBubbleTap = useCallback(async () => {
     if (!canTapCopy) return
     try {
       if (!navigator.clipboard?.writeText) return
-      await navigator.clipboard.writeText(text)
+      await navigator.clipboard.writeText(visibleText)
       setTapCopied(true)
     } catch {
       // Clipboard writes can be denied by WebView permissions or test runners.
     }
-  }, [canTapCopy, text])
+  }, [canTapCopy, visibleText])
 
   const bubbleClassName = cn(
     'rounded-2xl px-3.5 py-2',
@@ -2763,7 +2860,7 @@ function UserMessage({
             ))}
           </div>
         ) : null}
-        {text.length > 0 ? (
+        {visibleText.length > 0 ? (
           canTapCopy ? (
             <button
               type="button"
@@ -2773,11 +2870,18 @@ function UserMessage({
               }
               className={bubbleClassName}
             >
-              {text}
+              {visibleText}
             </button>
           ) : (
-            <div className={bubbleClassName}>{text}</div>
+            <div className={bubbleClassName}>{visibleText}</div>
           )
+        ) : null}
+        {browserContexts.length > 0 ? (
+          <div className="mt-2 flex w-full flex-col items-end gap-1.5">
+            {browserContexts.map((context) => (
+              <BrowserToolContextCard key={context.id} context={context} />
+            ))}
+          </div>
         ) : null}
         {!isTouch && trimmedLength > 0 ? (
           <div
@@ -2788,7 +2892,7 @@ function UserMessage({
             )}
           >
             <CopyTextButton
-              text={text}
+              text={visibleText}
               label="Copy your prompt"
               copiedLabel="Copied your prompt"
               tooltip="Copy"
@@ -2812,6 +2916,41 @@ function UserMessage({
       </div>
       <UserAvatar avatarUrl={accountAvatarUrl} login={accountLogin} />
     </div>
+  )
+}
+
+function BrowserToolContextCard({ context }: { context: BrowserToolPromptContext }) {
+  const Icon = context.kind === 'sketch' ? PencilLine : MousePointer2
+  return (
+    <article
+      role="note"
+      aria-label={`${context.title} attached to prompt`}
+      className="w-full rounded-lg border border-border/50 bg-muted/30 px-3 py-2 text-left text-foreground shadow-sm"
+    >
+      <div className="flex items-start gap-2">
+        <Icon
+          aria-hidden="true"
+          className="mt-[2px] h-3.5 w-3.5 shrink-0 text-primary/80"
+        />
+        <div className="min-w-0 flex-1">
+          <p className="m-0 text-[12.5px] font-medium">{context.title}</p>
+          {context.page ? (
+            <p className="mt-0.5 truncate text-[11.5px] text-muted-foreground/80" title={context.page}>
+              {context.page}
+            </p>
+          ) : null}
+          {context.lines.length > 0 ? (
+            <div className="mt-1.5 space-y-0.5 text-[12px] leading-relaxed text-muted-foreground">
+              {context.lines.map((line, index) => (
+                <p key={`${context.id}:line-${index}`} className="m-0 whitespace-pre-wrap break-words">
+                  {line}
+                </p>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </article>
   )
 }
 
@@ -3647,10 +3786,21 @@ function DenseMessageItem({
   const [open, setOpen] = useState(!isUser)
   const marker = isUser ? '>' : '◆'
   const tone = isUser ? 'text-primary/85' : 'text-foreground/90'
-  const normalized = text.trim()
+  const promptParts = useMemo(
+    () => (isUser ? splitBrowserToolPromptContext(text) : null),
+    [isUser, text],
+  )
+  const displayText = promptParts?.visibleText ?? text
+  const browserContexts = promptParts?.contexts ?? []
+  const normalized = displayText.trim()
   const hasAttachments = Boolean(attachments && attachments.length > 0)
   const hasMore =
-    normalized.length > 240 || /\r?\n/.test(normalized) || hasAttachments
+    normalized.length > 240 ||
+    /\r?\n/.test(normalized) ||
+    hasAttachments ||
+    browserContexts.length > 0
+  const summaryText =
+    normalized || (browserContexts.length > 0 ? browserContexts[0]?.title ?? 'Browser context' : '')
 
   return (
     <li
@@ -3678,9 +3828,9 @@ function DenseMessageItem({
         </span>
         <span
           className="min-w-0 flex-1 truncate text-foreground/85"
-          title={hasMore && !open ? text : undefined}
+          title={hasMore && !open ? summaryText : undefined}
         >
-          {truncateForLine(text)}
+          {truncateForLine(summaryText)}
         </span>
         {hasMore ? (
           <ChevronDown
@@ -3700,12 +3850,21 @@ function DenseMessageItem({
           )}
         >
           {isUser ? (
+            normalized.length > 0 ? (
             <p className="m-0 whitespace-pre-wrap break-words text-[12px] text-foreground/85">
               {normalized}
             </p>
+            ) : null
           ) : (
             <Markdown messageId={`${id}:dense`} text={text} scale="dense" />
           )}
+          {browserContexts.length > 0 ? (
+            <div className="mt-1.5 flex flex-col gap-1.5">
+              {browserContexts.map((context) => (
+                <BrowserToolContextCard key={`${id}:${context.id}`} context={context} />
+              ))}
+            </div>
+          ) : null}
           {hasAttachments ? (
             <ul className="mt-1.5 flex flex-wrap gap-1 text-[11px] text-muted-foreground/80">
               {attachments?.map((attachment) => (

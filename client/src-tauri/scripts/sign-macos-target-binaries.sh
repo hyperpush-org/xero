@@ -117,9 +117,11 @@ helper_names=(
   xero-harness-evals
   tool-harness
   xero
+  xero-cursor-sidecar
   xero-desktop-sidecar
 )
 resource_helper_paths=(
+  "$tauri_dir/resources/xero-cursor-sidecar"
   "$tauri_dir/resources/xero-desktop-sidecar"
 )
 codesign_timeout_seconds="${XERO_CODESIGN_TIMEOUT_SECONDS:-300}"

@@ -55,6 +55,8 @@ function makeCatalog(
     models: models.map((m) => ({
       modelId: m.modelId,
       displayName: m.displayName,
+      inputModalities: [],
+      inputModalitiesSource: 'test_fixture_unreported',
       thinking: {
         supported: m.thinking ?? false,
         effortOptions: m.thinking ? ['medium', 'high'] : [],

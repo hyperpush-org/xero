@@ -52,8 +52,10 @@ function makeModel(modelId: string, displayName?: string): ProviderModelDto {
   return {
     modelId,
     displayName: displayName ?? modelId,
-    thinking: { supported: false, effortOptions: [] },
-  } as ProviderModelDto
+    inputModalities: [],
+    inputModalitiesSource: 'test_fixture_unreported',
+    thinking: { supported: false, effortOptions: [], defaultEffort: null },
+  }
 }
 
 function makeCatalog(

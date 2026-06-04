@@ -11,8 +11,10 @@ pub mod settings;
 pub mod tabs;
 
 use std::{
+    collections::HashMap,
     fs::OpenOptions,
     io::Write,
+    net::{IpAddr, TcpStream, ToSocketAddrs},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
@@ -77,6 +79,10 @@ const HIDDEN_OFFSET: f64 = -32_000.0;
 const DEFAULT_AUTONOMOUS_BROWSER_WIDTH: f64 = 1_280.0;
 const DEFAULT_AUTONOMOUS_BROWSER_HEIGHT: f64 = 720.0;
 const RESIZE_DRAG_MAX_DURATION: Duration = Duration::from_secs(30);
+const DEV_SERVER_MONITOR_INITIAL_DELAY: Duration = Duration::from_secs(2);
+const DEV_SERVER_MONITOR_INTERVAL: Duration = Duration::from_secs(2);
+const DEV_SERVER_MONITOR_CONNECT_TIMEOUT: Duration = Duration::from_millis(350);
+const DEV_SERVER_MONITOR_FAILURE_THRESHOLD: u8 = 3;
 const BROWSER_RESIZE_NUDGE_SCRIPT: &str = r#"
 (() => {
   try {
@@ -262,6 +268,7 @@ pub struct BrowserState {
     creation_lock: Mutex<()>,
     resize_coalescer: Arc<BrowserResizeCoalescer>,
     resize_drag: Arc<BrowserResizeDragState>,
+    dev_server_monitor: Arc<BrowserDevServerMonitorState>,
     waiters: Arc<BridgeWaiters>,
     tabs: Arc<BrowserTabs>,
     diagnostics: Arc<BrowserDiagnostics>,
@@ -275,12 +282,58 @@ impl Default for BrowserState {
             creation_lock: Mutex::new(()),
             resize_coalescer: Arc::new(BrowserResizeCoalescer::default()),
             resize_drag: Arc::new(BrowserResizeDragState::default()),
+            dev_server_monitor: Arc::new(BrowserDevServerMonitorState::default()),
             waiters: Arc::new(BridgeWaiters::new()),
             tabs: Arc::new(BrowserTabs::new()),
             diagnostics: Arc::new(BrowserDiagnostics::default()),
             automation: Arc::new(BrowserAutomationState::default()),
             native_cdp: Arc::new(NativeCdpBrowserService::default()),
         }
+    }
+}
+
+#[derive(Default)]
+struct BrowserDevServerMonitorState {
+    generations: Mutex<HashMap<String, u64>>,
+    next_generation: AtomicU64,
+}
+
+impl BrowserDevServerMonitorState {
+    fn start(&self, tab_id: &str) -> CommandResult<u64> {
+        let generation = self.next_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        let mut generations = self.generations.lock().map_err(|_| {
+            CommandError::system_fault(
+                "browser_dev_server_monitor_lock_poisoned",
+                "Browser dev-server monitor lock poisoned.",
+            )
+        })?;
+        generations.insert(tab_id.to_string(), generation);
+        Ok(generation)
+    }
+
+    fn cancel(&self, tab_id: &str) {
+        if let Ok(mut generations) = self.generations.lock() {
+            generations.remove(tab_id);
+        }
+    }
+
+    fn is_current(&self, tab_id: &str, generation: u64) -> bool {
+        self.generations
+            .lock()
+            .ok()
+            .and_then(|generations| generations.get(tab_id).copied())
+            == Some(generation)
+    }
+
+    fn clear_if_current(&self, tab_id: &str, generation: u64) -> bool {
+        let Ok(mut generations) = self.generations.lock() else {
+            return false;
+        };
+        if generations.get(tab_id).copied() != Some(generation) {
+            return false;
+        }
+        generations.remove(tab_id);
+        true
     }
 }
 
@@ -408,6 +461,10 @@ impl BrowserState {
 
     pub fn waiters(&self) -> Arc<BridgeWaiters> {
         Arc::clone(&self.waiters)
+    }
+
+    fn dev_server_monitor(&self) -> Arc<BrowserDevServerMonitorState> {
+        Arc::clone(&self.dev_server_monitor)
     }
 
     pub fn diagnostics(&self) -> Arc<BrowserDiagnostics> {
@@ -562,6 +619,7 @@ pub fn provision_browser_tab<R: Runtime + 'static>(
 ) -> CommandResult<BrowserTabMetadata> {
     let target = actions::parse_url(url)?;
     let tabs = state.tabs();
+    let dev_server_monitor = state.dev_server_monitor();
     let viewport = resolve_browser_viewport(app, viewport);
 
     let _guard = state.creation_lock.lock().map_err(|_| {
@@ -598,7 +656,16 @@ pub fn provision_browser_tab<R: Runtime + 'static>(
     tabs.set_active(&tab_id)?;
     tabs.record_page_state(&tab_id, Some(target.to_string()), None, Some(true));
 
-    if let Err(error) = ensure_browser_webview(app, &tabs, &tab_id, &label, &target, viewport) {
+    if let Err(error) = ensure_browser_webview(
+        app,
+        &tabs,
+        &dev_server_monitor,
+        &tab_id,
+        &label,
+        &target,
+        viewport,
+    ) {
+        dev_server_monitor.cancel(&tab_id);
         if inserted_tab {
             let _ = tabs.remove(&tab_id);
         }
@@ -610,6 +677,7 @@ pub fn provision_browser_tab<R: Runtime + 'static>(
         return Err(error);
     }
 
+    sync_browser_dev_server_monitor(app, &tabs, &dev_server_monitor, &tab_id, &target);
     hide_inactive_webviews(app, &tabs);
     emit_tab_list(app, &tabs);
     Ok(current_tab_meta(&tabs, &tab_id))
@@ -618,6 +686,7 @@ pub fn provision_browser_tab<R: Runtime + 'static>(
 fn ensure_browser_webview<R: Runtime + 'static>(
     app: &AppHandle<R>,
     tabs: &Arc<BrowserTabs>,
+    dev_server_monitor: &Arc<BrowserDevServerMonitorState>,
     tab_id: &str,
     label: &str,
     target: &Url,
@@ -651,10 +720,12 @@ fn ensure_browser_webview<R: Runtime + 'static>(
 
     let tab_id_for_nav = tab_id.to_string();
     let tabs_for_nav = Arc::clone(tabs);
+    let monitor_for_nav = Arc::clone(dev_server_monitor);
     let app_for_nav = app.clone();
 
     let tab_id_for_load = tab_id.to_string();
     let tabs_for_load = Arc::clone(tabs);
+    let monitor_for_load = Arc::clone(dev_server_monitor);
     let app_for_load = app.clone();
 
     let about_blank = Url::parse("about:blank").map_err(|error| {
@@ -667,20 +738,27 @@ fn ensure_browser_webview<R: Runtime + 'static>(
     let builder = WebviewBuilder::new(label.to_string(), WebviewUrl::External(about_blank))
         .initialization_script(BROWSER_BRIDGE_INIT_SCRIPT)
         .on_navigation(move |url| {
+            let url = url.to_string();
             #[cfg(debug_assertions)]
             append_browser_probe_log(format!("on_navigation tab={tab_id_for_nav} url={url}"));
-            tabs_for_nav.record_page_state(
-                &tab_id_for_nav,
-                Some(url.to_string()),
-                None,
-                Some(true),
-            );
+            tabs_for_nav.record_page_state(&tab_id_for_nav, Some(url.clone()), None, Some(true));
+            if let Ok(target) = actions::parse_url(&url) {
+                sync_browser_dev_server_monitor(
+                    &app_for_nav,
+                    &tabs_for_nav,
+                    &monitor_for_nav,
+                    &tab_id_for_nav,
+                    &target,
+                );
+            } else {
+                monitor_for_nav.cancel(&tab_id_for_nav);
+            }
             events::emit(
                 &app_for_nav,
                 BROWSER_URL_CHANGED_EVENT,
                 &BrowserUrlChangedPayload {
                     tab_id: tab_id_for_nav.clone(),
-                    url: url.to_string(),
+                    url,
                     title: None,
                     can_go_back: false,
                     can_go_forward: false,
@@ -704,6 +782,17 @@ fn ensure_browser_webview<R: Runtime + 'static>(
                 None,
                 Some(loading),
             );
+            if let Ok(target) = actions::parse_url(&url) {
+                sync_browser_dev_server_monitor(
+                    &app_for_load,
+                    &tabs_for_load,
+                    &monitor_for_load,
+                    &tab_id_for_load,
+                    &target,
+                );
+            } else {
+                monitor_for_load.cancel(&tab_id_for_load);
+            }
             events::emit(
                 &app_for_load,
                 BROWSER_LOAD_STATE_EVENT,
@@ -1352,6 +1441,9 @@ pub fn browser_navigate<R: Runtime + 'static>(
     if let Some(tab_id) = tabs.find_by_label(&label) {
         schedule_browser_webview_probe(&app, &tab_id, &label, &target, "command-navigate");
     }
+    if let Some(tab_id) = tabs.find_by_label(&label) {
+        sync_browser_dev_server_monitor(&app, &tabs, &state.dev_server_monitor, &tab_id, &target);
+    }
     Ok(())
 }
 
@@ -1392,6 +1484,15 @@ pub fn browser_reload<R: Runtime + 'static>(
         )
     })?;
     let current = actions::parse_url(&current)?;
+    if browser_dev_server_origin_key(&current).is_some()
+        && !browser_dev_server_accepts_connections(&current, DEV_SERVER_MONITOR_CONNECT_TIMEOUT)
+    {
+        if let Some(tab_id) = tabs.find_by_label(&label) {
+            state.dev_server_monitor.cancel(&tab_id);
+            close_browser_tab(&app, &tabs, &tab_id)?;
+        }
+        return Ok(());
+    }
     webview.navigate(current.clone()).map_err(|error| {
         CommandError::system_fault(
             "browser_navigate_failed",
@@ -1401,6 +1502,9 @@ pub fn browser_reload<R: Runtime + 'static>(
     #[cfg(debug_assertions)]
     if let Some(tab_id) = tabs.find_by_label(&label) {
         schedule_browser_webview_probe(&app, &tab_id, &label, &current, "command-reload");
+    }
+    if let Some(tab_id) = tabs.find_by_label(&label) {
+        sync_browser_dev_server_monitor(&app, &tabs, &state.dev_server_monitor, &tab_id, &current);
     }
     Ok(())
 }
@@ -1637,7 +1741,16 @@ pub fn browser_tab_close<R: Runtime>(
     tab_id: String,
 ) -> CommandResult<Vec<BrowserTabMetadata>> {
     let tabs = state.tabs();
-    let removed_label = tabs.remove(&tab_id)?;
+    state.dev_server_monitor.cancel(&tab_id);
+    close_browser_tab(&app, &tabs, &tab_id)
+}
+
+fn close_browser_tab<R: Runtime>(
+    app: &AppHandle<R>,
+    tabs: &Arc<BrowserTabs>,
+    tab_id: &str,
+) -> CommandResult<Vec<BrowserTabMetadata>> {
+    let removed_label = tabs.remove(tab_id)?;
     if let Some(label) = removed_label {
         if let Some(webview) = app.get_webview(&label) {
             let _ = webview.close();
@@ -1942,6 +2055,156 @@ fn emit_tab_list<R: Runtime>(app: &AppHandle<R>, tabs: &BrowserTabs) {
     }
 }
 
+fn sync_browser_dev_server_monitor<R: Runtime + 'static>(
+    app: &AppHandle<R>,
+    tabs: &Arc<BrowserTabs>,
+    monitor: &Arc<BrowserDevServerMonitorState>,
+    tab_id: &str,
+    url: &Url,
+) {
+    if browser_dev_server_origin_key(url).is_none() {
+        monitor.cancel(tab_id);
+        return;
+    }
+
+    let Ok(generation) = monitor.start(tab_id) else {
+        return;
+    };
+    let app = app.clone();
+    let tabs = Arc::clone(tabs);
+    let monitor = Arc::clone(monitor);
+    let tab_id = tab_id.to_string();
+    let target = url.clone();
+
+    thread::spawn(move || {
+        monitor_browser_dev_server_tab(app, tabs, monitor, tab_id, target, generation);
+    });
+}
+
+fn monitor_browser_dev_server_tab<R: Runtime + 'static>(
+    app: AppHandle<R>,
+    tabs: Arc<BrowserTabs>,
+    monitor: Arc<BrowserDevServerMonitorState>,
+    tab_id: String,
+    target: Url,
+    generation: u64,
+) {
+    let Some(origin_key) = browser_dev_server_origin_key(&target) else {
+        monitor.cancel(&tab_id);
+        return;
+    };
+    let mut failures = 0_u8;
+    let mut delay = DEV_SERVER_MONITOR_INITIAL_DELAY;
+
+    loop {
+        thread::sleep(delay);
+        delay = DEV_SERVER_MONITOR_INTERVAL;
+
+        if !monitor.is_current(&tab_id, generation) {
+            return;
+        }
+
+        let Some(current_url) = tabs.url_by_id(&tab_id) else {
+            monitor.cancel(&tab_id);
+            return;
+        };
+        let Ok(current) = actions::parse_url(&current_url) else {
+            monitor.cancel(&tab_id);
+            return;
+        };
+        if browser_dev_server_origin_key(&current).as_deref() != Some(origin_key.as_str()) {
+            monitor.cancel(&tab_id);
+            return;
+        }
+
+        if browser_dev_server_accepts_connections(&current, DEV_SERVER_MONITOR_CONNECT_TIMEOUT) {
+            failures = 0;
+            continue;
+        }
+
+        failures = failures.saturating_add(1);
+        if failures >= DEV_SERVER_MONITOR_FAILURE_THRESHOLD {
+            close_browser_tab_if_monitor_current(&app, &tabs, &monitor, &tab_id, generation);
+            return;
+        }
+    }
+}
+
+fn close_browser_tab_if_monitor_current<R: Runtime + 'static>(
+    app: &AppHandle<R>,
+    tabs: &Arc<BrowserTabs>,
+    monitor: &Arc<BrowserDevServerMonitorState>,
+    tab_id: &str,
+    generation: u64,
+) {
+    let app_for_main = app.clone();
+    let tabs_for_main = Arc::clone(tabs);
+    let monitor_for_main = Arc::clone(monitor);
+    let tab_id_for_main = tab_id.to_string();
+
+    let app_for_fallback = app.clone();
+    let tabs_for_fallback = Arc::clone(tabs);
+    let monitor_for_fallback = Arc::clone(monitor);
+    let tab_id_for_fallback = tab_id.to_string();
+
+    if app
+        .run_on_main_thread(move || {
+            if monitor_for_main.clear_if_current(&tab_id_for_main, generation) {
+                let _ = close_browser_tab(&app_for_main, &tabs_for_main, &tab_id_for_main);
+            }
+        })
+        .is_err()
+        && monitor_for_fallback.clear_if_current(&tab_id_for_fallback, generation)
+    {
+        let _ = close_browser_tab(&app_for_fallback, &tabs_for_fallback, &tab_id_for_fallback);
+    }
+}
+
+fn browser_dev_server_accepts_connections(url: &Url, timeout: Duration) -> bool {
+    let Some((host, port)) = browser_dev_server_probe_target(url) else {
+        return false;
+    };
+    let Ok(addrs) = (host.as_str(), port).to_socket_addrs() else {
+        return false;
+    };
+
+    addrs
+        .into_iter()
+        .any(|addr| TcpStream::connect_timeout(&addr, timeout).is_ok())
+}
+
+fn browser_dev_server_probe_target(url: &Url) -> Option<(String, u16)> {
+    browser_dev_server_origin_key(url)?;
+    let port = url.port_or_known_default()?;
+    let host = url.host_str()?.to_ascii_lowercase();
+    let host = match host.as_str() {
+        "localhost" | "0.0.0.0" => "127.0.0.1".to_string(),
+        "::1" => "::1".to_string(),
+        _ => host,
+    };
+    Some((host, port))
+}
+
+fn browser_dev_server_origin_key(url: &Url) -> Option<String> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = url.host_str()?.to_ascii_lowercase();
+    let is_loopback = match host.as_str() {
+        "localhost" | "0.0.0.0" | "::1" => true,
+        _ => host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback()),
+    };
+    if !is_loopback {
+        return None;
+    }
+    let port = url.port_or_known_default()?;
+    let normalized_host = match host.as_str() {
+        "localhost" | "0.0.0.0" => "127.0.0.1",
+        other => other,
+    };
+    Some(format!("{}://{}:{}", url.scheme(), normalized_host, port))
+}
+
 /// Move every non-active tab's webview off-screen so only the active one is
 /// visible. Native child webviews paint on top of all HTML regardless of
 /// CSS z-index, so without this all created tabs would stack over one
@@ -1979,6 +2242,7 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, id);
         assert_eq!(list[0].url.as_deref(), Some("https://example.com/"));
+        assert_eq!(tabs.url_by_id(&id).as_deref(), Some("https://example.com/"));
         assert!(list[0].active);
     }
 
@@ -2002,6 +2266,48 @@ mod tests {
             .tab_label("tab-missing")
             .expect_err("missing tab should fail");
         assert_eq!(error.code, "browser_tab_not_found");
+    }
+
+    #[test]
+    fn dev_server_origin_key_normalizes_loopback_only() {
+        let local = actions::parse_url("http://localhost:5173/app").unwrap();
+        let any_addr = actions::parse_url("http://0.0.0.0:3000/").unwrap();
+        let google = actions::parse_url("https://google.com/").unwrap();
+
+        assert_eq!(
+            browser_dev_server_origin_key(&local).as_deref(),
+            Some("http://127.0.0.1:5173"),
+        );
+        assert_eq!(
+            browser_dev_server_origin_key(&any_addr).as_deref(),
+            Some("http://127.0.0.1:3000"),
+        );
+        assert_eq!(browser_dev_server_origin_key(&google), None);
+    }
+
+    #[test]
+    fn dev_server_liveness_probe_detects_open_loopback_port() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = actions::parse_url(&format!("http://127.0.0.1:{port}/")).unwrap();
+
+        assert!(browser_dev_server_accepts_connections(
+            &url,
+            Duration::from_millis(100),
+        ));
+    }
+
+    #[test]
+    fn dev_server_monitor_generation_guards_stale_threads() {
+        let monitor = BrowserDevServerMonitorState::default();
+        let first = monitor.start("tab-1").unwrap();
+        assert!(monitor.is_current("tab-1", first));
+
+        let second = monitor.start("tab-1").unwrap();
+        assert!(!monitor.is_current("tab-1", first));
+        assert!(!monitor.clear_if_current("tab-1", first));
+        assert!(monitor.clear_if_current("tab-1", second));
+        assert!(!monitor.is_current("tab-1", second));
     }
 
     #[test]

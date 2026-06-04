@@ -9,6 +9,29 @@ describe("EmptySessionState", () => {
 		cleanup();
 	});
 
+	it("renders the default project prompt with the project name on its own line", () => {
+		render(<EmptySessionState projectLabel="tokenloom-stream-repo" />);
+
+		const heading = screen.getByRole("heading", {
+			name: "What can we build together in tokenloom-stream-repo?",
+		});
+		const [questionLine, projectLine] = Array.from(heading.children);
+
+		expect(heading).toHaveAttribute(
+			"aria-label",
+			"What can we build together in tokenloom-stream-repo?",
+		);
+		expect(questionLine).toHaveTextContent("What can we build together in");
+		expect(questionLine).toHaveClass("block");
+		expect(projectLine).toHaveTextContent("tokenloom-stream-repo?");
+		expect(projectLine).toHaveClass("block");
+		expect(
+			screen.queryByText(
+				"Just ask — I can read your code, suggest changes, or run a task for you. Everything we do will show up right here.",
+			),
+		).not.toBeInTheDocument();
+	});
+
 	it("uses a smaller title for Computer Use empty state", () => {
 		render(
 			<EmptySessionState

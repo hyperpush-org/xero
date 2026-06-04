@@ -125,7 +125,7 @@ export function EmptySessionState({
 				: "Start from a description. Agent Create will draft an agent or Workflow definition for review."
 			: isComputerUse
 				? "Give a concrete instruction and Xero will use the available computer and project tools."
-				: "Just ask — I can read your code, suggest changes, or run a task for you. Everything we do will show up right here.");
+				: null);
 
 	if (variant === "dense") {
 		return (
@@ -216,8 +216,13 @@ export function EmptySessionState({
 				) : null}
 
 				<h2
+					aria-label={
+						title
+							? undefined
+							: `What can we build together in ${projectLabel}?`
+					}
 					className={cn(
-						"mt-3 font-semibold tracking-tight text-foreground",
+						"mt-3 font-semibold leading-tight tracking-tight text-foreground",
 						isComputerUse ? "text-[22px] sm:text-2xl" : "text-2xl sm:text-[26px]",
 					)}
 				>
@@ -225,14 +230,16 @@ export function EmptySessionState({
 						title
 					) : (
 						<>
-							What can we build together in{" "}
-							<span className="text-primary">{projectLabel}</span>?
+							<span className="block">What can we build together in</span>
+							<span className="mt-1 block text-primary">{projectLabel}?</span>
 						</>
 					)}
 				</h2>
-				<p className="mt-3 max-w-md text-[13px] leading-relaxed text-muted-foreground">
-					{description}
-				</p>
+				{description ? (
+					<p className="mt-3 max-w-md text-[13px] leading-relaxed text-muted-foreground">
+						{description}
+					</p>
+				) : null}
 
 				{!isDisabled && (onSelectSuggestion || showWorkflowCanvasAction) ? (
 					<ul className="mt-7 flex w-full max-w-md flex-col divide-y divide-border/60 overflow-hidden rounded-xl border border-border/70 bg-card/40 backdrop-blur-sm sm:mt-8">

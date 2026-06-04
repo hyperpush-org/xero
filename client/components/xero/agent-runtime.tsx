@@ -95,7 +95,11 @@ import {
   type RoutingSuggestionDecision,
   type RoutingSuggestionDispatchValue,
 } from '@xero/ui/components/transcript/routing-suggestion-card'
-import { ComposerDock, type ComposerPendingAttachment } from './agent-runtime/composer-dock'
+import {
+  ComposerDock,
+  type ComposerPendingAttachment,
+  type ComposerPendingContext,
+} from './agent-runtime/composer-dock'
 import { PlanTray } from './agent-runtime/plan-tray'
 import {
   AGENT_PANE_COMPACT_WIDTH_PX,
@@ -107,6 +111,7 @@ import {
   ConversationSection,
   getCodeUndoStateKey,
   getReturnSessionToHereStateKey,
+  userVisiblePromptText,
   type CodeUndoRequest,
   type CodeUndoConflictSummary,
   type CodeUndoUiState,
@@ -321,6 +326,8 @@ export interface AgentComposerInsert {
   prompt: string
   /** Extra context submitted with the next prompt, hidden from the composer draft. */
   hiddenPrompt?: string | null
+  /** Visible indicator for hidden composer context, such as selected element metadata. */
+  contextCard?: Omit<ComposerPendingContext, 'id'> | null
   image?: {
     bytes: Uint8Array
     mediaType: 'image/png'
@@ -427,7 +434,7 @@ function findFollowUpAnchorTurnIndex(
     return directIndex
   }
 
-  const fallbackText = queuedAnchorText?.trim()
+  const fallbackText = queuedAnchorText ? userVisiblePromptText(queuedAnchorText).trim() : ''
   if (!fallbackText) {
     return -1
   }
@@ -437,7 +444,7 @@ function findFollowUpAnchorTurnIndex(
     if (
       turn.kind === 'message' &&
       turn.role === 'user' &&
-      turn.text.trim() === fallbackText
+      userVisiblePromptText(turn.text).trim() === fallbackText
     ) {
       return index
     }
@@ -1417,7 +1424,7 @@ function findTranscriptForPendingPrompt(
     return null
   }
 
-  const promptText = pendingPrompt.text.trim()
+  const promptText = userVisiblePromptText(pendingPrompt.text).trim()
   if (!promptText) {
     return null
   }
@@ -1426,7 +1433,11 @@ function findTranscriptForPendingPrompt(
   const hasQueuedTimestamp = Number.isFinite(queuedAtMs)
 
   for (const item of runtimeStreamItems) {
-    if (item.kind !== 'transcript' || item.role !== 'user' || item.text.trim() !== promptText) {
+    if (
+      item.kind !== 'transcript' ||
+      item.role !== 'user' ||
+      userVisiblePromptText(item.text).trim() !== promptText
+    ) {
       continue
     }
 
@@ -2641,6 +2652,7 @@ export const AgentRuntime = memo(function AgentRuntime({
   )
 
   const [pendingAttachments, setPendingAttachments] = useState<ComposerPendingAttachment[]>([])
+  const [pendingContextCards, setPendingContextCards] = useState<ComposerPendingContext[]>([])
   const pendingAttachmentsRef = useRef<ComposerPendingAttachment[]>([])
   pendingAttachmentsRef.current = pendingAttachments
   const consumedComposerInsertIdsRef = useRef<Set<string>>(new Set())
@@ -2820,6 +2832,7 @@ export const AgentRuntime = memo(function AgentRuntime({
   }, [])
 
   const handleSubmitAttachmentsSettled = useCallback(() => {
+    setPendingContextCards([])
     setPendingAttachments((prev) => {
       for (const attachment of prev) {
         if (attachment.previewUrl && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
@@ -2883,6 +2896,14 @@ export const AgentRuntime = memo(function AgentRuntime({
     onSubmitAttachmentsSettled: handleSubmitAttachmentsSettled,
   })
 
+  const handleRemoveContextCard = useCallback(
+    (id: string) => {
+      setPendingContextCards((prev) => prev.filter((context) => context.id !== id))
+      controller.handleRemoveHiddenDraftPrompt(id)
+    },
+    [controller],
+  )
+
   useEffect(() => {
     if (!pendingComposerInsert) {
       return
@@ -2892,8 +2913,28 @@ export const AgentRuntime = memo(function AgentRuntime({
     }
 
     consumedComposerInsertIdsRef.current.add(pendingComposerInsert.id)
+    const hiddenPrompt = pendingComposerInsert.hiddenPrompt?.trim() ?? ''
+    const hiddenPromptId = `composer-context-${pendingComposerInsert.id}`
     controller.handleAppendDraftPrompt(pendingComposerInsert.prompt)
-    controller.handleAppendHiddenDraftPrompt(pendingComposerInsert.hiddenPrompt ?? '')
+    if (hiddenPrompt) {
+      controller.handleAppendHiddenDraftPrompt(hiddenPrompt, hiddenPromptId)
+      const contextCard = pendingComposerInsert.contextCard
+      if (contextCard) {
+        setPendingContextCards((prev) =>
+          prev.some((context) => context.id === hiddenPromptId)
+            ? prev
+            : [
+                ...prev,
+                {
+                  id: hiddenPromptId,
+                  kind: contextCard.kind,
+                  title: contextCard.title,
+                  subtitle: contextCard.subtitle,
+                },
+              ],
+        )
+      }
+    }
     if (pendingComposerInsert.image) {
       stageExternalComposerAttachment(pendingComposerInsert.id, pendingComposerInsert.image)
     }
@@ -4008,6 +4049,8 @@ export const AgentRuntime = memo(function AgentRuntime({
   const isDense = isCompact || paneCount >= 4 || useBackgroundPaneFastPath
   const showPaneNumberChip = paneCount > 1 && paneNumber != null
   const showCloseButton = paneCount > 1 && typeof onClosePane === 'function'
+  const useCompactHeaderChrome = isCompactWidth
+  const showIconOnlyNewSessionButton = useCompactHeaderChrome
   const isStopComposerMode = Boolean(
     controller.canStopRuntimeRun &&
       renderableRuntimeRun?.isActive &&
@@ -4042,7 +4085,7 @@ export const AgentRuntime = memo(function AgentRuntime({
     >
       <div ref={paneRootRef} className="flex min-h-0 min-w-0 flex-1">
         <div className="relative flex min-w-0 flex-1 flex-col">
-          <div className="pointer-events-none absolute left-0 right-[var(--scrollbar-overlay-gutter)] top-0 z-20">
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-20">
             {isComputerUseSidebar ? (
               <ComputerUseSidebarHeader
                 label={sessionLabel}
@@ -4076,8 +4119,12 @@ export const AgentRuntime = memo(function AgentRuntime({
                       P{paneNumber}
                     </span>
                   ) : null}
-                  <span className="truncate font-semibold text-foreground">{projectLabel}</span>
-                  <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground/70" />
+                  {useCompactHeaderChrome ? null : (
+                    <>
+                      <span className="truncate font-semibold text-foreground">{projectLabel}</span>
+                      <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground/70" />
+                    </>
+                  )}
                   {inSidebar && sidebarSessions && sidebarSessions.length > 0 && onSelectSidebarSession ? (
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
@@ -4154,15 +4201,19 @@ export const AgentRuntime = memo(function AgentRuntime({
                 </div>
                 <div className="pointer-events-auto flex items-center gap-1">
                   {onCreateSession && paneCount === 1 ? (
-                    <button
+                    <Button
                       type="button"
+                      variant="ghost"
+                      size={showIconOnlyNewSessionButton ? 'icon-sm' : 'sm'}
                       aria-label="New session"
+                      title={showIconOnlyNewSessionButton ? 'New session' : undefined}
                       onClick={onCreateSession}
                       disabled={isCreatingSession}
                       className={cn(
-                        'inline-flex h-[30px] items-center gap-1.5 rounded-md px-2 text-[12.5px] font-semibold text-muted-foreground transition-colors',
+                        'h-[30px] rounded-md text-[12.5px] font-semibold text-muted-foreground',
                         'hover:bg-primary/10 hover:text-primary',
                         'disabled:cursor-not-allowed disabled:opacity-50',
+                        showIconOnlyNewSessionButton ? 'w-[30px] p-0' : 'gap-1.5 px-2',
                       )}
                     >
                       {isCreatingSession ? (
@@ -4170,8 +4221,10 @@ export const AgentRuntime = memo(function AgentRuntime({
                       ) : (
                         <Plus className="h-3.5 w-3.5" />
                       )}
-                      <span>{inSidebar ? 'New' : 'New Session'}</span>
-                    </button>
+                      {showIconOnlyNewSessionButton ? null : (
+                        <span>{inSidebar ? 'New' : 'New Session'}</span>
+                      )}
+                    </Button>
                   ) : null}
                   {onSpawnPane ? (
                     <button
@@ -4394,8 +4447,10 @@ export const AgentRuntime = memo(function AgentRuntime({
           onDraftPromptChange={controller.handleDraftPromptChange}
           onSubmitDraftPrompt={handleSubmitDraftPrompt}
           pendingAttachments={pendingAttachments}
+          pendingContexts={pendingContextCards}
           onAddFiles={handleAddFiles}
           onRemoveAttachment={handleRemoveAttachment}
+          onRemoveContext={handleRemoveContextCard}
           pendingRuntimeRunAction={pendingRuntimeRunAction}
           placeholder={composerPlaceholder}
           promptInputRef={controller.promptInputRef}

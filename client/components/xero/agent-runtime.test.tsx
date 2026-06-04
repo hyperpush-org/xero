@@ -2988,6 +2988,90 @@ describe('AgentRuntime current UI', () => {
     expect(within(conversation).getByText(submittedPrompt)).toBe(promptRow)
   })
 
+  it('renders browser tool context as an attached card while deduping the echoed prompt', async () => {
+    const submittedPrompt = 'Where is this component located in the repo'
+    const hiddenContext = [
+      'Browser element inspection context:',
+      'Page: Local App',
+      'Selected element (for locating code; no screenshot):',
+      '- Source: /app/src/Hero.tsx:42',
+      '- Element: <header>',
+      '- Selector: header',
+      'Use these identifiers to find the implementation before editing.',
+    ].join('\n')
+    const onUpdateRuntimeRunControls = vi.fn(async () => makeRuntimeRun())
+    const baseAgent = {
+      runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+      runtimeRun: makeRuntimeRun(),
+      runtimeStreamStatus: 'live' as const,
+      runtimeStreamStatusLabel: 'Live stream',
+      runtimeStreamItems: [],
+    }
+
+    const { rerender } = render(
+      <AgentRuntime
+        agent={makeAgent(baseAgent)}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+        pendingComposerInsert={{
+          id: 'browser-context-deduped',
+          prompt: submittedPrompt,
+          hiddenPrompt: hiddenContext,
+          contextCard: {
+            kind: 'element',
+            title: 'Element context',
+            subtitle: 'Hero.tsx:42',
+          },
+        }}
+      />,
+    )
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('Agent input')).toHaveValue(submittedPrompt),
+    )
+    fireEvent.keyDown(screen.getByLabelText('Agent input'), { key: 'Enter' })
+
+    await waitFor(() =>
+      expect(onUpdateRuntimeRunControls).toHaveBeenCalledWith({
+        prompt: `${submittedPrompt}\n\n${hiddenContext}`,
+      }),
+    )
+
+    const conversation = screen.getByRole('list', { name: 'Agent conversation turns' })
+    expect(within(conversation).getAllByText(submittedPrompt)).toHaveLength(1)
+
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          ...baseAgent,
+          runtimeStreamItems: [
+            {
+              ...makeTranscriptItem({
+                sequence: 2,
+                role: 'user',
+                text: `${submittedPrompt}\n\n${hiddenContext}`,
+              }),
+              createdAt: new Date(Date.now() + 1_000).toISOString(),
+            },
+          ],
+        })}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+      />,
+    )
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    const updatedConversation = screen.getByRole('list', { name: 'Agent conversation turns' })
+    expect(within(updatedConversation).getAllByText(submittedPrompt)).toHaveLength(1)
+    expect(
+      within(updatedConversation).getByRole('note', { name: /element context attached to prompt/i }),
+    ).toBeVisible()
+    expect(within(updatedConversation).getByText('Element context')).toBeVisible()
+    expect(within(updatedConversation).getByText('Local App')).toBeVisible()
+    expect(within(updatedConversation).getByText('- Source: /app/src/Hero.tsx:42')).toBeVisible()
+    expect(within(updatedConversation).queryByText('Browser element inspection context:')).not.toBeInTheDocument()
+  })
+
   it('keeps the first submitted prompt row mounted when the started run echoes it', async () => {
     const submittedPrompt = 'Kick off the first run.'
     const onStartRuntimeRun = vi.fn(() => new Promise<RuntimeRunView>(() => undefined))
@@ -5333,6 +5417,49 @@ describe('AgentRuntime current UI', () => {
     )
   })
 
+  it('shows removable browser element metadata context in the composer', async () => {
+    const dictation = createDictationAdapter()
+    const onUpdateRuntimeRunControls = vi.fn(async () => makeRuntimeRun())
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun(),
+        })}
+        desktopAdapter={dictation.adapter}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+        pendingComposerInsert={{
+          id: 'browser-context-2',
+          prompt: 'Make this CTA clearer.',
+          hiddenPrompt:
+            'Browser element inspection context:\nPage: Local App\nSelected element (for locating code; no screenshot):\n- Source: /app/src/Hero.tsx:42',
+          contextCard: {
+            kind: 'element',
+            title: 'Element context',
+            subtitle: 'Hero.tsx:42',
+          },
+        }}
+      />,
+    )
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('Agent input')).toHaveValue('Make this CTA clearer.'),
+    )
+    await waitFor(() => expect(screen.getByText('Element context')).toBeVisible())
+    expect(screen.getByText('Hero.tsx:42')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Element context' }))
+    await waitFor(() => expect(screen.queryByText('Element context')).toBeNull())
+    fireEvent.keyDown(screen.getByLabelText('Agent input'), { key: 'Enter' })
+
+    await waitFor(() =>
+      expect(onUpdateRuntimeRunControls).toHaveBeenCalledWith({
+        prompt: 'Make this CTA clearer.',
+      }),
+    )
+  })
+
   it('streams dictated partials into the composer without duplicating revised fragments', async () => {
     const dictation = createDictationAdapter()
 
@@ -5623,6 +5750,63 @@ describe('AgentRuntime current UI', () => {
       expect(screen.queryByRole('button', { name: 'Close pane' })).not.toBeInTheDocument()
     })
 
+    it('keeps the full new session label above the compact pane breakpoint', async () => {
+      const restoreResizeObserver = installResizeObserverMock(540)
+      try {
+        render(
+          <AgentRuntime
+            agent={makeAgent({ runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }) })}
+            paneCount={1}
+            paneNumber={1}
+            onCreateSession={vi.fn()}
+          />,
+        )
+
+        const newSessionButton = screen.getByRole('button', { name: 'New session' })
+        const header = newSessionButton.parentElement?.parentElement as HTMLElement
+
+        await waitFor(() => {
+          expect(within(newSessionButton).getByText('New Session')).toBeVisible()
+        })
+        expect(within(header).getByText('Xero')).toBeVisible()
+        expect(within(header).getByText('New Chat')).toBeVisible()
+        expect(newSessionButton).not.toHaveClass('w-[30px]')
+      } finally {
+        restoreResizeObserver()
+      }
+    })
+
+    it('collapses the new session action to a plus icon at compact pane width', async () => {
+      const restoreResizeObserver = installResizeObserverMock(470)
+      const onCreateSession = vi.fn()
+      try {
+        render(
+          <AgentRuntime
+            agent={makeAgent({ runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }) })}
+            paneCount={1}
+            paneNumber={1}
+            onCreateSession={onCreateSession}
+          />,
+        )
+
+        const newSessionButton = screen.getByRole('button', { name: 'New session' })
+        const header = newSessionButton.parentElement?.parentElement as HTMLElement
+
+        await waitFor(() => {
+          expect(within(newSessionButton).queryByText('New Session')).not.toBeInTheDocument()
+        })
+        expect(within(header).queryByText('Xero')).not.toBeInTheDocument()
+        expect(within(header).getByText('New Chat')).toBeVisible()
+        expect(newSessionButton).toHaveClass('w-[30px]')
+        expect(newSessionButton.querySelector('svg')).not.toBeNull()
+
+        fireEvent.click(newSessionButton)
+        expect(onCreateSession).toHaveBeenCalledTimes(1)
+      } finally {
+        restoreResizeObserver()
+      }
+    })
+
     it('shows the close button and pane number chip when multiple panes are open', () => {
       const onClose = vi.fn()
       render(
@@ -5843,7 +6027,7 @@ describe('AgentRuntime current UI', () => {
       expect(spawnBtn).toBeDisabled()
     })
 
-    it('keeps the floating agent header out of the scrollbar lane', () => {
+    it('keeps the floating agent header aligned to the pane edge', () => {
       render(
         <AgentRuntime
           agent={makeAgent({ runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }) })}
@@ -5855,8 +6039,8 @@ describe('AgentRuntime current UI', () => {
       const viewport = screen.getByLabelText('Agent conversation viewport')
       const headerOverlay = viewport.parentElement?.previousElementSibling
 
-      expect(headerOverlay?.className).toContain('right-[var(--scrollbar-overlay-gutter)]')
-      expect(headerOverlay?.className).not.toContain('inset-x-0')
+      expect(headerOverlay?.className).toContain('inset-x-0')
+      expect(headerOverlay?.className).not.toContain('right-[var(--scrollbar-overlay-gutter)]')
     })
 
     it('renders the dense inline composer variant when density is compact', () => {

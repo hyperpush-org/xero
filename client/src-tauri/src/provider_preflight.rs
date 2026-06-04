@@ -399,6 +399,8 @@ pub(crate) fn static_provider_preflight_snapshot(
             thinking_supported: false,
             thinking_efforts: Vec::new(),
             thinking_default_effort: None,
+            input_modalities: Vec::new(),
+            input_modalities_source: Some("unknown".into()),
         }),
         credential_ready: None,
         endpoint_reachable: None,
@@ -470,6 +472,11 @@ fn live_xai_preflight_for_profile(
             thinking_default_effort: selected_model
                 .and_then(|model| model.thinking.default_effort.as_ref())
                 .map(thinking_effort_label),
+            input_modalities: selected_model
+                .map(|model| model.input_modalities.clone())
+                .unwrap_or_default(),
+            input_modalities_source: selected_model
+                .map(|model| model.input_modalities_source.clone()),
         },
     )))
 }
@@ -559,6 +566,11 @@ fn live_openai_compatible_preflight_for_profile(
             thinking_default_effort: selected_model
                 .and_then(|model| model.thinking.default_effort.as_ref())
                 .map(thinking_effort_label),
+            input_modalities: selected_model
+                .map(|model| model.input_modalities.clone())
+                .unwrap_or_default(),
+            input_modalities_source: selected_model
+                .map(|model| model.input_modalities_source.clone()),
         },
     )))
 }
@@ -701,6 +713,10 @@ fn openai_codex_capability_catalog_with_credential_proof(
         thinking_default_effort: thinking
             .and_then(|thinking| thinking.default_effort.as_ref())
             .map(thinking_effort_label),
+        input_modalities: selected_model
+            .map(|model| model.input_modalities.clone())
+            .unwrap_or_default(),
+        input_modalities_source: selected_model.map(|model| model.input_modalities_source.clone()),
     })
 }
 
@@ -988,6 +1004,8 @@ mod tests {
                     effort_options: vec![ProviderModelThinkingEffort::Medium],
                     default_effort: Some(ProviderModelThinkingEffort::Medium),
                 },
+                input_modalities: Vec::new(),
+                input_modalities_source: "unknown".into(),
                 context_window_tokens: Some(128_000),
                 max_output_tokens: Some(16_384),
                 context_limit_source: None,
@@ -1045,6 +1063,8 @@ mod tests {
                     effort_options: vec![ProviderModelThinkingEffort::Medium],
                     default_effort: Some(ProviderModelThinkingEffort::Medium),
                 },
+                input_modalities: Vec::new(),
+                input_modalities_source: "unknown".into(),
                 context_window_tokens: Some(400_000),
                 max_output_tokens: Some(16_384),
                 context_limit_source: Some(SessionContextLimitSourceDto::BuiltInRegistry),
@@ -1101,6 +1121,8 @@ mod tests {
                     effort_options: vec![ProviderModelThinkingEffort::Medium],
                     default_effort: Some(ProviderModelThinkingEffort::Medium),
                 },
+                input_modalities: Vec::new(),
+                input_modalities_source: "unknown".into(),
                 context_window_tokens: Some(400_000),
                 max_output_tokens: Some(16_384),
                 context_limit_source: Some(SessionContextLimitSourceDto::BuiltInRegistry),

@@ -32,6 +32,7 @@ import {
 import { cn } from '@/lib/utils'
 import {
   Composer,
+  type ComposerPendingContext,
   type ComposerSelectGroup,
   type ComposerSelectOption,
 } from '@xero/ui/components/composer'
@@ -47,6 +48,7 @@ import type { SpeechDictationPhase } from './use-speech-dictation'
 export type { ComposerPendingAttachment } from '@xero/ui/components/composer'
 import type { ComposerPendingAttachment } from '@xero/ui/components/composer'
 export type ComposerAttachmentKind = ComposerPendingAttachment['kind']
+export type { ComposerPendingContext } from '@xero/ui/components/composer'
 
 interface ComposerDictationControl {
   audioLevel?: number
@@ -101,8 +103,10 @@ interface ComposerDockProps {
   contextMeter?: ReactNode
   hideContextMeter?: boolean
   pendingAttachments?: ComposerPendingAttachment[]
+  pendingContexts?: ComposerPendingContext[]
   onAddFiles?: (files: File[]) => void
   onRemoveAttachment?: (id: string) => void
+  onRemoveContext?: (id: string) => void
   onOpenDiagnostics?: () => void
   onDraftPromptChange: (value: string) => void
   onSubmitDraftPrompt: () => void
@@ -195,8 +199,10 @@ export function ComposerDock({
   contextMeter,
   hideContextMeter = false,
   pendingAttachments,
+  pendingContexts,
   onAddFiles,
   onRemoveAttachment,
+  onRemoveContext,
   onOpenDiagnostics,
   onDraftPromptChange,
   onSubmitDraftPrompt,
@@ -376,8 +382,10 @@ export function ComposerDock({
       onAutoCompactEnabledChange={hideAutoCompact ? undefined : onAutoCompactEnabledChange}
       autoCompactDisabled={runtimeRunActionStatus === 'running'}
       pendingAttachments={pendingAttachments}
+      pendingContexts={pendingContexts}
       onAddFiles={onAddFiles}
       onRemoveAttachment={onRemoveAttachment}
+      onRemoveContext={onRemoveContext}
       dictation={hideDictation ? { ...dictation, isVisible: false } : dictation}
       dictationShortcut={bindings['composer.dictation']}
       contextMeter={hideContextMeter ? undefined : contextMeter}

@@ -5,14 +5,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 
 use crate::{
-    CoreError, CoreResult, ProviderCapabilityCatalog, ProviderCapabilityCatalogInput,
-    DEFAULT_PROVIDER_CATALOG_TTL_SECONDS,
+    CoreError, CoreResult, ProviderAttachmentCapability, ProviderCapabilityCatalog,
+    ProviderCapabilityCatalogInput, DEFAULT_PROVIDER_CATALOG_TTL_SECONDS,
 };
 
 pub const PROVIDER_PREFLIGHT_CONTRACT_VERSION: u32 = 1;
 pub const DEFAULT_PROVIDER_PREFLIGHT_TTL_SECONDS: i64 = 6 * 60 * 60;
 const DEFAULT_PROVIDER_PREFLIGHT_TIMEOUT_MS: u64 = 30_000;
 const PREFLIGHT_PROBE_TOOL_NAME: &str = "xero_preflight_noop";
+const PREFLIGHT_TINY_PNG_DATA_URL: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+const PREFLIGHT_TINY_TEXT_DATA_URL: &str = "data:text/plain;base64,cHJlZmxpZ2h0";
 const AZURE_OPENAI_PROVIDER_ID: &str = "azure_openai";
 const DEEPSEEK_PROVIDER_ID: &str = "deepseek";
 const GITHUB_MODELS_PROVIDER_ID: &str = "github_models";
@@ -75,6 +77,8 @@ pub struct ProviderPreflightRequiredFeatures {
     pub reasoning_controls: bool,
     #[serde(default)]
     pub attachments: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachment_input_modalities: Vec<String>,
 }
 
 impl ProviderPreflightRequiredFeatures {
@@ -84,8 +88,63 @@ impl ProviderPreflightRequiredFeatures {
             tool_calls: true,
             reasoning_controls: false,
             attachments: false,
+            attachment_input_modalities: Vec::new(),
         }
     }
+
+    pub fn set_attachment_input_modalities<I, S>(&mut self, modalities: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.attachment_input_modalities = normalize_attachment_input_modalities(modalities);
+        self.attachments = !self.attachment_input_modalities.is_empty();
+    }
+
+    pub fn normalized_attachment_input_modalities(&self) -> Vec<String> {
+        normalize_attachment_input_modalities(self.attachment_input_modalities.iter())
+    }
+
+    pub fn requires_attachment_route(&self) -> bool {
+        self.attachments || !self.attachment_input_modalities.is_empty()
+    }
+
+    pub fn requires_image_attachment_input(&self) -> bool {
+        self.normalized_attachment_input_modalities()
+            .iter()
+            .any(|modality| modality == "image")
+    }
+
+    pub fn requires_file_attachment_input(&self) -> bool {
+        self.normalized_attachment_input_modalities()
+            .iter()
+            .any(|modality| is_file_attachment_modality(modality))
+    }
+}
+
+fn normalize_attachment_input_modalities<I, S>(modalities: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut out = modalities
+        .into_iter()
+        .filter_map(|modality| {
+            let normalized = modality
+                .as_ref()
+                .trim()
+                .replace('-', "_")
+                .to_ascii_lowercase();
+            (!normalized.is_empty()).then_some(normalized)
+        })
+        .collect::<Vec<_>>();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn is_file_attachment_modality(modality: &str) -> bool {
+    matches!(modality, "file" | "document" | "pdf" | "text_file")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -207,6 +266,8 @@ pub struct OpenAiCompatibleProviderPreflightProbeRequest {
     pub thinking_supported: bool,
     pub thinking_efforts: Vec<String>,
     pub thinking_default_effort: Option<String>,
+    pub input_modalities: Vec<String>,
+    pub input_modalities_source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,6 +287,8 @@ pub struct XaiProviderPreflightProbeRequest {
     pub thinking_supported: bool,
     pub thinking_efforts: Vec<String>,
     pub thinking_default_effort: Option<String>,
+    pub input_modalities: Vec<String>,
+    pub input_modalities_source: Option<String>,
 }
 
 pub fn provider_preflight_snapshot(input: ProviderPreflightInput) -> ProviderPreflightSnapshot {
@@ -235,6 +298,10 @@ pub fn provider_preflight_snapshot(input: ProviderPreflightInput) -> ProviderPre
         .unwrap_or(DEFAULT_PROVIDER_PREFLIGHT_TTL_SECONDS);
     let stale = input.age_seconds.is_some_and(|age| age > ttl_seconds)
         || matches!(input.source, ProviderPreflightSource::Unavailable);
+    let attachment_capability_status = attachment_capability_check_status(
+        &input.capabilities.capabilities.attachments,
+        &input.required_features,
+    );
     let mut checks = vec![
         boolean_check(
             &input,
@@ -300,9 +367,9 @@ pub fn provider_preflight_snapshot(input: ProviderPreflightInput) -> ProviderPre
             &input,
             "provider_preflight_attachments",
             "attachment route",
-            input.required_features.attachments,
+            input.required_features.requires_attachment_route(),
             input.attachments_accepted,
-            input.capabilities.capabilities.attachments.status.as_str(),
+            attachment_capability_status,
         ),
         boolean_check(
             &input,
@@ -552,6 +619,11 @@ pub fn run_openai_compatible_provider_preflight_probe(
         thinking_supported: request.thinking_supported,
         thinking_efforts: request.thinking_efforts.clone(),
         thinking_default_effort: request.thinking_default_effort.clone(),
+        input_modalities: request.input_modalities.clone(),
+        input_modalities_source: request
+            .input_modalities_source
+            .clone()
+            .or_else(|| Some("live_probe".into())),
     };
     let capabilities = crate::provider_capability_catalog(capability_input);
 
@@ -686,7 +758,10 @@ pub fn run_openai_compatible_provider_preflight_probe(
                         .required_features
                         .reasoning_controls
                         .then_some(true),
-                    attachments_accepted: request.required_features.attachments.then_some(false),
+                    attachments_accepted: request
+                        .required_features
+                        .requires_attachment_route()
+                        .then_some(true),
                     context_limit_known: Some(request.context_window_tokens.is_some()),
                     provider_error: None,
                 })
@@ -777,6 +852,11 @@ pub fn run_xai_provider_preflight_probe(
         thinking_supported: request.thinking_supported,
         thinking_efforts: request.thinking_efforts.clone(),
         thinking_default_effort: request.thinking_default_effort.clone(),
+        input_modalities: request.input_modalities.clone(),
+        input_modalities_source: request
+            .input_modalities_source
+            .clone()
+            .or_else(|| Some("live_probe".into())),
     };
     let capabilities = crate::provider_capability_catalog(capability_input);
 
@@ -909,7 +989,10 @@ pub fn run_xai_provider_preflight_probe(
                         .required_features
                         .reasoning_controls
                         .then_some(true),
-                    attachments_accepted: request.required_features.attachments.then_some(false),
+                    attachments_accepted: request
+                        .required_features
+                        .requires_attachment_route()
+                        .then_some(true),
                     context_limit_known: Some(request.context_window_tokens.is_some()),
                     provider_error: None,
                 })
@@ -1139,9 +1222,58 @@ fn feature_check(
     }
 }
 
+pub fn provider_attachment_capability_satisfies_required_features(
+    capability: &ProviderAttachmentCapability,
+    required_features: &ProviderPreflightRequiredFeatures,
+) -> bool {
+    if !required_features.requires_attachment_route() {
+        return true;
+    }
+
+    let required_modalities = required_features.normalized_attachment_input_modalities();
+    if required_modalities.is_empty() {
+        return matches!(capability.status.as_str(), "supported" | "probed");
+    }
+
+    required_modalities.iter().all(|modality| {
+        if modality == "image" {
+            capability.image_input == "supported"
+        } else if is_file_attachment_modality(modality) {
+            capability.document_input == "supported"
+        } else {
+            false
+        }
+    })
+}
+
+fn attachment_capability_check_status<'a>(
+    capability: &'a ProviderAttachmentCapability,
+    required_features: &ProviderPreflightRequiredFeatures,
+) -> &'a str {
+    if !required_features.requires_attachment_route() {
+        return capability.status.as_str();
+    }
+
+    let required_modalities = required_features.normalized_attachment_input_modalities();
+    if required_modalities.is_empty() {
+        return capability.status.as_str();
+    }
+
+    if provider_attachment_capability_satisfies_required_features(capability, required_features) {
+        "supported"
+    } else if capability.status == "unknown" {
+        "unknown"
+    } else {
+        "unavailable"
+    }
+}
+
 impl ProviderPreflightRequiredFeatures {
     fn requires_live_feature_probe(&self) -> bool {
-        self.streaming || self.tool_calls || self.reasoning_controls || self.attachments
+        self.streaming
+            || self.tool_calls
+            || self.reasoning_controls
+            || self.requires_attachment_route()
     }
 }
 
@@ -1159,7 +1291,7 @@ fn required_feature_checks(
             "provider_preflight_reasoning",
         ),
         (
-            required_features.attachments,
+            required_features.requires_attachment_route(),
             "provider_preflight_attachments",
         ),
     ]
@@ -1193,6 +1325,33 @@ fn openai_compatible_preflight_body(
     request: &OpenAiCompatibleProviderPreflightProbeRequest,
 ) -> JsonValue {
     let mut body = JsonMap::new();
+    let user_content = if request.required_features.requires_attachment_route() {
+        let required_modalities = request
+            .required_features
+            .normalized_attachment_input_modalities();
+        let probe_image = required_modalities.is_empty()
+            || request.required_features.requires_image_attachment_input();
+        let probe_file = request.required_features.requires_file_attachment_input();
+        let mut content = vec![json!({ "type": "text", "text": "preflight" })];
+        if probe_image {
+            content.push(json!({
+                "type": "image_url",
+                "image_url": { "url": PREFLIGHT_TINY_PNG_DATA_URL }
+            }));
+        }
+        if probe_file {
+            content.push(json!({
+                "type": "file",
+                "file": {
+                    "filename": "xero-preflight.txt",
+                    "file_data": PREFLIGHT_TINY_TEXT_DATA_URL
+                }
+            }));
+        }
+        JsonValue::Array(content)
+    } else {
+        json!("preflight")
+    };
     body.insert("model".into(), json!(&request.model_id));
     body.insert(
         "messages".into(),
@@ -1203,7 +1362,7 @@ fn openai_compatible_preflight_body(
             },
             {
                 "role": "user",
-                "content": "preflight"
+                "content": user_content
             }
         ]),
     );
@@ -1230,6 +1389,31 @@ fn openai_compatible_preflight_body(
 
 fn xai_preflight_body(request: &XaiProviderPreflightProbeRequest) -> JsonValue {
     let mut body = JsonMap::new();
+    let user_content = if request.required_features.requires_attachment_route() {
+        let required_modalities = request
+            .required_features
+            .normalized_attachment_input_modalities();
+        let probe_image = required_modalities.is_empty()
+            || request.required_features.requires_image_attachment_input();
+        let probe_file = request.required_features.requires_file_attachment_input();
+        let mut content = vec![json!({ "type": "input_text", "text": "preflight" })];
+        if probe_image {
+            content.push(json!({
+                "type": "input_image",
+                "image_url": PREFLIGHT_TINY_PNG_DATA_URL
+            }));
+        }
+        if probe_file {
+            content.push(json!({
+                "type": "input_file",
+                "filename": "xero-preflight.txt",
+                "file_data": PREFLIGHT_TINY_TEXT_DATA_URL
+            }));
+        }
+        JsonValue::Array(content)
+    } else {
+        json!("preflight")
+    };
     body.insert("model".into(), json!(&request.model_id));
     body.insert(
         "instructions".into(),
@@ -1237,7 +1421,7 @@ fn xai_preflight_body(request: &XaiProviderPreflightProbeRequest) -> JsonValue {
     );
     body.insert(
         "input".into(),
-        json!([{ "role": "user", "content": "preflight" }]),
+        json!([{ "role": "user", "content": user_content }]),
     );
     body.insert("stream".into(), json!(request.required_features.streaming));
     body.insert("max_output_tokens".into(), json!(16));
@@ -1438,6 +1622,8 @@ mod tests {
             thinking_supported: true,
             thinking_efforts: vec!["low".into(), "medium".into()],
             thinking_default_effort: Some("medium".into()),
+            input_modalities: vec!["text".into(), "image".into()],
+            input_modalities_source: Some("live_catalog".into()),
         })
     }
 
@@ -1517,6 +1703,7 @@ mod tests {
                 tool_calls: true,
                 reasoning_controls: true,
                 attachments: false,
+                attachment_input_modalities: Vec::new(),
             },
             credential_proof: Some("app_data_profile".into()),
             context_window_tokens: Some(1_000_000),
@@ -1526,6 +1713,8 @@ mod tests {
             thinking_supported: true,
             thinking_efforts: vec!["low".into(), "medium".into(), "high".into()],
             thinking_default_effort: Some("medium".into()),
+            input_modalities: vec!["text".into(), "image".into()],
+            input_modalities_source: Some("xai_language_models_api".into()),
         };
 
         let body = xai_preflight_body(&request);
@@ -1540,6 +1729,44 @@ mod tests {
             xai_preflight_responses_url("https://api.x.ai/v1").expect("url"),
             "https://api.x.ai/v1/responses"
         );
+    }
+
+    #[test]
+    fn xai_preflight_body_probes_image_attachments_when_required() {
+        let mut request = XaiProviderPreflightProbeRequest {
+            profile_id: "xai-default".into(),
+            provider_id: "xai".into(),
+            model_id: "grok-4.3".into(),
+            base_url: "https://api.x.ai/v1".into(),
+            bearer_token: Some("test-key".into()),
+            timeout_ms: 1_000,
+            required_features: ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+            credential_proof: Some("app_data_profile".into()),
+            context_window_tokens: Some(1_000_000),
+            max_output_tokens: None,
+            context_limit_source: Some("built_in_registry".into()),
+            context_limit_confidence: Some("high".into()),
+            thinking_supported: true,
+            thinking_efforts: vec!["low".into(), "medium".into(), "high".into()],
+            thinking_default_effort: Some("medium".into()),
+            input_modalities: vec!["text".into(), "image".into()],
+            input_modalities_source: Some("xai_language_models_api".into()),
+        };
+        request
+            .required_features
+            .set_attachment_input_modalities(["image"]);
+
+        let body = xai_preflight_body(&request);
+        let content = body["input"][0]["content"]
+            .as_array()
+            .expect("xAI preflight content blocks");
+
+        assert!(content.iter().any(|block| {
+            block["type"] == "input_image"
+                && block["image_url"]
+                    .as_str()
+                    .is_some_and(|url| url.starts_with("data:image/png;base64,"))
+        }));
     }
 
     #[test]
@@ -1573,7 +1800,7 @@ mod tests {
     #[test]
     fn cached_probe_blocks_when_required_features_do_not_match() {
         let mut required = ProviderPreflightRequiredFeatures::owned_agent_text_turn();
-        required.attachments = true;
+        required.set_attachment_input_modalities(["image"]);
         let cached = provider_preflight_snapshot(ProviderPreflightInput {
             profile_id: "openrouter-work".into(),
             provider_id: "openrouter".into(),
@@ -1604,7 +1831,7 @@ mod tests {
     #[test]
     fn required_attachments_fail_closed_when_unproven() {
         let mut required = ProviderPreflightRequiredFeatures::owned_agent_text_turn();
-        required.attachments = true;
+        required.set_attachment_input_modalities(["image"]);
         let snapshot = provider_preflight_snapshot(ProviderPreflightInput {
             profile_id: "openrouter-work".into(),
             provider_id: "openrouter".into(),
@@ -1626,6 +1853,42 @@ mod tests {
             provider_error: None,
         });
 
+        assert!(provider_preflight_blockers(&snapshot)
+            .iter()
+            .any(|check| { check.code == "provider_preflight_attachments" }));
+    }
+
+    #[test]
+    fn required_file_attachments_need_file_model_modality() {
+        let mut required = ProviderPreflightRequiredFeatures::owned_agent_text_turn();
+        required.set_attachment_input_modalities(["file"]);
+        let snapshot = provider_preflight_snapshot(ProviderPreflightInput {
+            profile_id: "openrouter-work".into(),
+            provider_id: "openrouter".into(),
+            model_id: "openai/gpt-5.4".into(),
+            source: ProviderPreflightSource::LiveProbe,
+            checked_at: "2026-05-04T00:00:00Z".into(),
+            age_seconds: Some(30),
+            ttl_seconds: Some(120),
+            required_features: required,
+            capabilities: capabilities("live"),
+            credential_ready: Some(true),
+            endpoint_reachable: Some(true),
+            model_available: Some(true),
+            streaming_route_available: Some(true),
+            tool_schema_accepted: Some(true),
+            reasoning_controls_accepted: None,
+            attachments_accepted: None,
+            context_limit_known: Some(true),
+            provider_error: None,
+        });
+
+        let attachment = snapshot
+            .checks
+            .iter()
+            .find(|check| check.code == "provider_preflight_attachments")
+            .expect("attachment check");
+        assert_eq!(attachment.status, ProviderPreflightStatus::Failed);
         assert!(provider_preflight_blockers(&snapshot)
             .iter()
             .any(|check| { check.code == "provider_preflight_attachments" }));
@@ -1656,7 +1919,7 @@ mod tests {
             &required,
         );
         let mut attachment_required = required.clone();
-        attachment_required.attachments = true;
+        attachment_required.set_attachment_input_modalities(["image"]);
         let different_features = provider_preflight_cache_binding(
             "openai_api",
             "gpt-5.4",
@@ -1695,6 +1958,8 @@ mod tests {
                 thinking_supported: true,
                 thinking_efforts: vec!["high".into(), "x_high".into()],
                 thinking_default_effort: Some("high".into()),
+                input_modalities: vec!["text".into()],
+                input_modalities_source: Some("live_catalog".into()),
             });
 
         assert_eq!(body["thinking"]["type"], "enabled");
@@ -1728,11 +1993,86 @@ mod tests {
                 thinking_supported: true,
                 thinking_efforts: vec!["high".into(), "x_high".into()],
                 thinking_default_effort: Some("high".into()),
+                input_modalities: vec!["text".into(), "image".into()],
+                input_modalities_source: Some("openrouter_models_api".into()),
             });
 
         assert_eq!(body["reasoning"]["effort"], "low");
         assert_eq!(body["stream_options"]["include_usage"], true);
         assert!(body.get("thinking").is_none());
         assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn openai_compatible_preflight_body_probes_image_attachments_when_required() {
+        let mut required = ProviderPreflightRequiredFeatures::owned_agent_text_turn();
+        required.set_attachment_input_modalities(["image"]);
+        let body =
+            openai_compatible_preflight_body(&OpenAiCompatibleProviderPreflightProbeRequest {
+                profile_id: "openrouter-default".into(),
+                provider_id: OPENROUTER_PROVIDER_ID.into(),
+                model_id: "x-ai/grok-4.3".into(),
+                base_url: "https://openrouter.ai/api/v1".into(),
+                api_key: Some("test-key".into()),
+                timeout_ms: 1_000,
+                required_features: required,
+                credential_proof: Some("test".into()),
+                context_window_tokens: Some(1_000_000),
+                max_output_tokens: Some(16_384),
+                context_limit_source: Some("live_catalog".into()),
+                context_limit_confidence: Some("high".into()),
+                thinking_supported: true,
+                thinking_efforts: vec!["high".into()],
+                thinking_default_effort: Some("high".into()),
+                input_modalities: vec!["text".into(), "image".into()],
+                input_modalities_source: Some("openrouter_models_api".into()),
+            });
+        let content = body["messages"][1]["content"]
+            .as_array()
+            .expect("OpenAI-compatible image preflight content blocks");
+
+        assert!(content.iter().any(|block| {
+            block["type"] == "image_url"
+                && block["image_url"]["url"]
+                    .as_str()
+                    .is_some_and(|url| url.starts_with("data:image/png;base64,"))
+        }));
+    }
+
+    #[test]
+    fn openai_compatible_preflight_body_probes_file_attachments_when_required() {
+        let mut required = ProviderPreflightRequiredFeatures::owned_agent_text_turn();
+        required.set_attachment_input_modalities(["file"]);
+        let body =
+            openai_compatible_preflight_body(&OpenAiCompatibleProviderPreflightProbeRequest {
+                profile_id: "openrouter-default".into(),
+                provider_id: OPENROUTER_PROVIDER_ID.into(),
+                model_id: "anthropic/claude-3-7-sonnet".into(),
+                base_url: "https://openrouter.ai/api/v1".into(),
+                api_key: Some("test-key".into()),
+                timeout_ms: 1_000,
+                required_features: required,
+                credential_proof: Some("test".into()),
+                context_window_tokens: Some(200_000),
+                max_output_tokens: Some(8_192),
+                context_limit_source: Some("live_catalog".into()),
+                context_limit_confidence: Some("high".into()),
+                thinking_supported: true,
+                thinking_efforts: vec!["high".into()],
+                thinking_default_effort: Some("high".into()),
+                input_modalities: vec!["text".into(), "file".into()],
+                input_modalities_source: Some("openrouter_models_api".into()),
+            });
+        let content = body["messages"][1]["content"]
+            .as_array()
+            .expect("OpenAI-compatible file preflight content blocks");
+
+        assert!(content.iter().any(|block| {
+            block["type"] == "file"
+                && block["file"]["file_data"]
+                    .as_str()
+                    .is_some_and(|url| url.starts_with("data:text/plain;base64,"))
+        }));
+        assert!(!content.iter().any(|block| block["type"] == "image_url"));
     }
 }

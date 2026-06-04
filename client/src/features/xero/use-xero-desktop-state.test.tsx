@@ -400,8 +400,14 @@ function makeProviderModelCatalog(
               displayName: 'OpenAI GPT-4.1 Mini',
               thinking: {
                 supported: true,
-                effortOptions: ['minimal', 'low', 'medium', 'high', 'x_high'],
-                defaultEffort: 'medium',
+                effortOptions: [
+                  'minimal' as const,
+                  'low' as const,
+                  'medium' as const,
+                  'high' as const,
+                  'x_high' as const,
+                ],
+                defaultEffort: 'medium' as const,
               },
             },
             {
@@ -420,11 +426,15 @@ function makeProviderModelCatalog(
               displayName: 'OpenAI Codex',
               thinking: {
                 supported: true,
-                effortOptions: ['low', 'medium', 'high'],
-                defaultEffort: 'medium',
+                effortOptions: ['low' as const, 'medium' as const, 'high' as const],
+                defaultEffort: 'medium' as const,
               },
             },
-          ]),
+          ]).map((model) => ({
+            inputModalities: [],
+            inputModalitiesSource: 'test_fixture_unreported',
+            ...model,
+          })),
     contractDiagnostics: [],
   }
 }
@@ -537,6 +547,7 @@ function makeProviderPreflightSnapshot(
       toolCalls: options.requiredFeatures?.toolCalls ?? true,
       reasoningControls: options.requiredFeatures?.reasoningControls ?? false,
       attachments: options.requiredFeatures?.attachments ?? false,
+      attachmentInputModalities: options.requiredFeatures?.attachmentInputModalities ?? [],
     },
     capabilities: makeProviderCapabilityCatalog(profile, modelId),
     checks: [

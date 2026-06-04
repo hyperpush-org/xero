@@ -3,6 +3,7 @@ members = [
     ".",
     "crates/xero-agent-core",
     "crates/xero-cli",
+    "crates/xero-cursor-sidecar",
     "crates/xero-desktop-control-ipc",
     "crates/xero-desktop-sidecar",
     "crates/xero-remote-bridge",

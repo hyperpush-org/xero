@@ -21,6 +21,8 @@ pub struct ProviderCapabilityCatalogInput {
     pub thinking_supported: bool,
     pub thinking_efforts: Vec<String>,
     pub thinking_default_effort: Option<String>,
+    pub input_modalities: Vec<String>,
+    pub input_modalities_source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -201,7 +203,7 @@ fn provider_capability_feature_set(
         streaming: streaming_capability(provider),
         tool_calls: tool_call_capability(provider),
         reasoning: reasoning_capability(provider, input, model_id),
-        attachments: attachment_capability(provider),
+        attachments: attachment_capability(provider, input),
         context_limits: context_limit_capability(input),
         cost_hints: cost_hint_capability(provider, &input.catalog_source),
     }
@@ -582,41 +584,109 @@ fn reasoning_capability(
     }
 }
 
-fn attachment_capability(provider: ProviderStaticCapability) -> ProviderAttachmentCapability {
-    match provider.provider_id {
-        "anthropic" | "bedrock" | "vertex" => ProviderAttachmentCapability {
-            status: "supported".into(),
-            source: "static".into(),
-            image_input: "supported".into(),
-            document_input: "supported".into(),
-            supported_types: vec![
-                "image/*".into(),
-                "application/pdf".into(),
-                "text/plain".into(),
-                "text/markdown".into(),
-            ],
-            limits: vec![
-                "Documents are sent as provider-native PDF blocks where supported.".into(),
-            ],
-        },
-        id if id.starts_with("external_") => ProviderAttachmentCapability {
+fn attachment_capability(
+    provider: ProviderStaticCapability,
+    input: &ProviderCapabilityCatalogInput,
+) -> ProviderAttachmentCapability {
+    if provider.provider_id.starts_with("external_") {
+        return ProviderAttachmentCapability {
             status: "not_applicable".into(),
-            source: "static".into(),
+            source: "external_agent".into(),
             image_input: "external_agent_owned".into(),
             document_input: "external_agent_owned".into(),
             supported_types: Vec::new(),
             limits: vec![
                 "External agent CLIs own their own attachment and file-ingest behavior.".into(),
             ],
-        },
-        _ => ProviderAttachmentCapability {
-            status: "unavailable".into(),
-            source: "static".into(),
-            image_input: "not_wired_in_owned_adapter".into(),
-            document_input: "not_wired_in_owned_adapter".into(),
+        };
+    }
+
+    let source = input
+        .input_modalities_source
+        .as_deref()
+        .map(str::trim)
+        .filter(|source| !source.is_empty())
+        .unwrap_or_else(|| catalog_source_for_capability(&input.catalog_source))
+        .to_owned();
+    let modalities = normalized_modalities(&input.input_modalities);
+    if modalities.is_empty() {
+        return ProviderAttachmentCapability {
+            status: "unknown".into(),
+            source,
+            image_input: "unknown".into(),
+            document_input: "unknown".into(),
             supported_types: Vec::new(),
-            limits: vec!["This owned adapter currently sends text and tool calls only.".into()],
-        },
+            limits: vec![
+                "The selected model catalog did not report input modalities for attachment support."
+                    .into(),
+            ],
+        };
+    }
+
+    let image_supported = modalities.iter().any(|modality| modality == "image");
+    let document_supported = modalities.iter().any(|modality| {
+        matches!(
+            modality.as_str(),
+            "file" | "document" | "pdf" | "text_file"
+        )
+    });
+    let mut supported_types = Vec::new();
+    if image_supported {
+        supported_types.push("image/*".into());
+    }
+    if document_supported {
+        supported_types.push("file/*".into());
+    }
+    let supports_any_attachment = image_supported || document_supported;
+
+    ProviderAttachmentCapability {
+        status: if supports_any_attachment {
+            "supported"
+        } else {
+            "unavailable"
+        }
+        .into(),
+        source,
+        image_input: if image_supported {
+            "supported"
+        } else {
+            "unavailable_from_model_modalities"
+        }
+        .into(),
+        document_input: if document_supported {
+            "supported"
+        } else {
+            "unavailable_from_model_modalities"
+        }
+        .into(),
+        supported_types,
+        limits: vec![format!(
+            "Attachment support is derived from model input modalities: {}.",
+            modalities.join(", ")
+        )],
+    }
+}
+
+fn normalized_modalities(modalities: &[String]) -> Vec<String> {
+    let mut out = modalities
+        .iter()
+        .filter_map(|modality| {
+            let normalized = modality.trim().replace('-', "_").to_ascii_lowercase();
+            (!normalized.is_empty()).then_some(normalized)
+        })
+        .collect::<Vec<_>>();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn catalog_source_for_capability(catalog_source: &str) -> &'static str {
+    match catalog_source.trim() {
+        "live" => "live_catalog",
+        "cache" => "cached_catalog",
+        "manual" => "manual_catalog",
+        "unavailable" => "unavailable_catalog",
+        _ => "unknown_catalog",
     }
 }
 
@@ -730,8 +800,10 @@ fn provider_known_limitations(
         limitations.push("Provider turns are not streamed by this adapter.".into());
     }
     if capabilities.attachments.status == "unavailable" {
-        limitations
-            .push("Image and document attachments are not sent by this owned adapter.".into());
+        limitations.push(
+            "The selected model catalog did not report image or file input modalities for attachments."
+                .into(),
+        );
     }
     if provider.external_agent_adapter {
         limitations.push(
@@ -836,6 +908,8 @@ mod tests {
             thinking_supported: true,
             thinking_efforts: vec!["low".into(), "medium".into(), "high".into()],
             thinking_default_effort: Some("medium".into()),
+            input_modalities: vec!["text".into()],
+            input_modalities_source: Some("live_catalog".into()),
         }
     }
 
@@ -876,7 +950,9 @@ mod tests {
 
     #[test]
     fn ambient_cloud_bridges_classify_streaming_and_attachments() {
-        let catalog = provider_capability_catalog(input("bedrock"));
+        let mut input = input("bedrock");
+        input.input_modalities = vec!["text".into(), "image".into(), "file".into()];
+        let catalog = provider_capability_catalog(input);
 
         assert_eq!(catalog.transport_mode, "cloud_cli_bridge");
         assert_eq!(catalog.auth_method, "ambient");
@@ -939,6 +1015,7 @@ mod tests {
         input.context_window_tokens = Some(1_000_000);
         input.thinking_efforts = vec!["none".into(), "low".into(), "medium".into(), "high".into()];
         input.thinking_default_effort = Some("low".into());
+        input.input_modalities = vec!["text".into(), "image".into()];
 
         let catalog = provider_capability_catalog(input);
 
@@ -958,6 +1035,8 @@ mod tests {
             catalog.capabilities.reasoning.summary_support,
             "reasoning_summary_delta_supported"
         );
+        assert_eq!(catalog.capabilities.attachments.status, "supported");
+        assert_eq!(catalog.capabilities.attachments.image_input, "supported");
         assert!(catalog
             .known_limitations
             .iter()

@@ -2649,12 +2649,35 @@ impl CursorModelRoute {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CursorAgentAttachmentKind {
+    Image,
+    Document,
+    Text,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CursorAgentAttachment {
+    kind: CursorAgentAttachmentKind,
+    absolute_path: String,
+    media_type: String,
+    original_name: String,
+    size_bytes: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    width: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    height: Option<i64>,
+}
+
 #[derive(Debug)]
 struct CursorAgentRunRequest {
     project_id: String,
     agent_session_id: String,
     run_id: String,
     prompt: String,
+    attachments: Vec<CursorAgentAttachment>,
     model_id: String,
     repo_root: PathBuf,
     bridge_path: PathBuf,
@@ -2690,6 +2713,17 @@ fn parse_cursor_model_id(value: Option<String>) -> Result<String, CliError> {
     Ok(trimmed.into())
 }
 
+fn parse_cursor_attachments(value: Option<String>) -> Result<Vec<CursorAgentAttachment>, CliError> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    serde_json::from_str::<Vec<CursorAgentAttachment>>(&value).map_err(|error| {
+        CliError::usage(format!(
+            "Could not parse --attachments-json for Cursor: {error}"
+        ))
+    })
+}
+
 fn cursor_model_route(model_id: &str) -> CursorModelRoute {
     match model_id.trim().to_ascii_lowercase().as_str() {
         CURSOR_AUTO_MODEL_ID => CursorModelRoute::Auto,
@@ -2713,7 +2747,7 @@ fn command_agent_cursor(
     if take_help(&args) {
         return Ok(response(
             &globals,
-            "Usage: xero agent cursor [PROMPT] [--repo PATH] [--project-id ID] [--model auto|default|composer-latest|MODEL] [--mode observe-only|workspace-write|command-enabled] [--allow-writes] [--allow-commands] --allow-subprocess\nRuns Cursor through the Cursor SDK bridge as a Xero external-agent adapter.",
+            "Usage: xero agent cursor [PROMPT] [--repo PATH] [--project-id ID] [--model auto|default|composer-latest|MODEL] [--mode observe-only|workspace-write|command-enabled] [--attachments-json JSON] [--allow-writes] [--allow-commands] --allow-subprocess\nRuns Cursor through the Cursor SDK bridge as a Xero external-agent adapter.",
             json!({ "command": "agent cursor" }),
         ));
     }
@@ -2768,6 +2802,7 @@ fn command_agent_cursor(
         .map(PathBuf::from)
         .unwrap_or_else(default_xero_cli_path);
     let fixture = take_option(&mut args, "--fixture")?.map(PathBuf::from);
+    let attachments = parse_cursor_attachments(take_option(&mut args, "--attachments-json")?)?;
     let allow_subprocess = take_bool_flag(&mut args, "--allow-subprocess");
     reject_unknown_options(&args)?;
 
@@ -2790,6 +2825,7 @@ fn command_agent_cursor(
         agent_session_id,
         run_id,
         prompt,
+        attachments,
         model_id,
         repo_root,
         bridge_path,
@@ -6919,6 +6955,8 @@ fn provider_capability_for_selection(
         thinking_supported: provider_supports_reasoning(entry.provider_id),
         thinking_efforts,
         thinking_default_effort,
+        input_modalities: Vec::new(),
+        input_modalities_source: Some("unknown".into()),
     })
 }
 
@@ -7444,6 +7482,8 @@ fn cli_provider_preflight_for_execution(
                     thinking_supported: provider_supports_reasoning(entry.provider_id),
                     thinking_efforts: provider_reasoning_efforts(entry.provider_id),
                     thinking_default_effort: provider_reasoning_default_effort(entry.provider_id),
+                    input_modalities: Vec::new(),
+                    input_modalities_source: Some("unknown".into()),
                 },
             ))
         }
@@ -7508,6 +7548,8 @@ fn cli_provider_preflight_snapshot(
             context_limit_confidence: Some("high".into()),
             thinking_supported: false,
             thinking_efforts: Vec::new(),
+            input_modalities: Vec::new(),
+            input_modalities_source: Some("unknown".into()),
             thinking_default_effort: None,
         })
     } else {
@@ -8978,7 +9020,7 @@ fn run_cursor_bridge_process(
     effective_repo_root: &Path,
     sandbox_metadata: &SandboxExecutionMetadata,
 ) -> Result<CursorBridgeRunReport, CliError> {
-    let argv = cursor_bridge_argv(globals, request, effective_repo_root);
+    let argv = cursor_bridge_argv(globals, request, effective_repo_root)?;
     let output = SandboxedProcessRunner::new().run(
         SandboxedProcessRequest {
             argv,
@@ -9043,7 +9085,7 @@ fn cursor_bridge_argv(
     globals: &GlobalOptions,
     request: &CursorAgentRunRequest,
     effective_repo_root: &Path,
-) -> Vec<String> {
+) -> Result<Vec<String>, CliError> {
     let mut argv = vec![
         "node".to_string(),
         request.bridge_path.display().to_string(),
@@ -9074,7 +9116,17 @@ fn cursor_bridge_argv(
         argv.push("--fixture".into());
         argv.push(fixture.display().to_string());
     }
-    argv
+    if !request.attachments.is_empty() {
+        let attachments = serde_json::to_string(&request.attachments).map_err(|error| {
+            CliError::system_fault(
+                "cursor_attachment_payload_encode_failed",
+                format!("Xero could not encode Cursor attachments for the bridge: {error}"),
+            )
+        })?;
+        argv.push("--attachments-json".into());
+        argv.push(attachments);
+    }
+    Ok(argv)
 }
 
 fn cursor_run_cancelled(store: &CliAgentStore, request: &CursorAgentRunRequest) -> bool {
@@ -16053,6 +16105,7 @@ mod tests {
             agent_session_id: snapshot.agent_session_id.clone(),
             run_id: snapshot.run_id.clone(),
             prompt: "test".into(),
+            attachments: Vec::new(),
             model_id: CURSOR_DEFAULT_MODEL_ID.into(),
             repo_root: repo_dir.clone(),
             bridge_path: PathBuf::from("bridge"),
@@ -16145,6 +16198,7 @@ mod tests {
             agent_session_id: snapshot.agent_session_id.clone(),
             run_id: snapshot.run_id.clone(),
             prompt: "test".into(),
+            attachments: Vec::new(),
             model_id: CURSOR_DEFAULT_MODEL_ID.into(),
             repo_root: repo_dir.clone(),
             bridge_path: PathBuf::from("bridge"),
@@ -16263,7 +16317,7 @@ mod tests {
     }
 
     #[test]
-    fn cursor_bridge_argv_preserves_auto_sentinel_without_forcing_composer_latest() {
+    fn cursor_bridge_argv_preserves_auto_sentinel_and_forwards_attachments() {
         let state_dir = unique_temp_dir("cursor-argv-state");
         let repo_dir = unique_temp_dir("cursor-argv-repo");
         let globals = GlobalOptions {
@@ -16277,6 +16331,15 @@ mod tests {
             agent_session_id: "session-cursor-argv".into(),
             run_id: "run-cursor-argv".into(),
             prompt: "test".into(),
+            attachments: vec![CursorAgentAttachment {
+                kind: CursorAgentAttachmentKind::Image,
+                absolute_path: repo_dir.join("sketch.png").display().to_string(),
+                media_type: "image/png".into(),
+                original_name: "sketch.png".into(),
+                size_bytes: 68,
+                width: Some(12),
+                height: Some(8),
+            }],
             model_id: CURSOR_AUTO_MODEL_ID.into(),
             repo_root: repo_dir.clone(),
             bridge_path: PathBuf::from("bridge"),
@@ -16293,7 +16356,7 @@ mod tests {
             approval_source: ExternalAgentApprovalSource::OperatorFlag,
         };
 
-        let argv = cursor_bridge_argv(&globals, &request, &repo_dir);
+        let argv = cursor_bridge_argv(&globals, &request, &repo_dir).expect("argv");
         let model_flag = argv
             .windows(2)
             .find(|pair| pair[0] == "--model")
@@ -16303,6 +16366,16 @@ mod tests {
         assert!(!argv
             .windows(2)
             .any(|pair| pair[0] == "--model" && pair[1] == CURSOR_DEFAULT_MODEL_ID));
+        let attachments_json = argv
+            .windows(2)
+            .find(|pair| pair[0] == "--attachments-json")
+            .map(|pair| pair[1].as_str())
+            .expect("attachments json");
+        let decoded: Vec<CursorAgentAttachment> =
+            serde_json::from_str(attachments_json).expect("decode attachments");
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].kind, CursorAgentAttachmentKind::Image);
+        assert_eq!(decoded[0].media_type, "image/png");
     }
 
     fn seed_registered_project(state_dir: &Path, project_id: &str, repo_root: &Path) {

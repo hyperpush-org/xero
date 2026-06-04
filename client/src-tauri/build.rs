@@ -21,6 +21,7 @@ const IDB_COMPANION_DIR: &str = "idb-companion.universal";
 const BUILD_COOKIE_IMPORTER_ENV: &str = "XERO_BUILD_COOKIE_IMPORTER";
 const SKIP_COOKIE_IMPORTER_ENV: &str = "XERO_SKIP_COOKIE_IMPORTER";
 const SKIP_DESKTOP_SIDECAR_ENV: &str = "XERO_SKIP_DESKTOP_SIDECAR";
+const SKIP_CURSOR_SIDECAR_ENV: &str = "XERO_SKIP_CURSOR_SIDECAR";
 const SKIP_SIDECAR_FETCH_ENV: &str = "XERO_SKIP_SIDECAR_FETCH";
 #[cfg(target_os = "macos")]
 const SKIP_IDB_COMPANION_FETCH_ENV: &str = "XERO_SKIP_IDB_COMPANION_FETCH";
@@ -33,6 +34,7 @@ fn main() {
     fetch_scrcpy_server();
     fetch_idb_companion();
     prepare_desktop_sidecar();
+    prepare_cursor_sidecar();
     tauri_build::build();
     compile_dictation_shim();
     compile_ios_helper();
@@ -514,6 +516,103 @@ fn prepare_desktop_sidecar() {
             &manifest_dir
                 .join("resources")
                 .join(desktop_sidecar_binary_name()),
+        );
+    }
+}
+
+fn prepare_cursor_sidecar() {
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    println!("cargo:rerun-if-changed=crates/xero-cursor-sidecar/Cargo.toml");
+    println!("cargo:rerun-if-changed=crates/xero-cursor-sidecar/src/main.rs");
+    println!("cargo:rerun-if-changed=../scripts/cursor-sdk-bridge.mjs");
+    println!("cargo:rerun-if-env-changed={SKIP_CURSOR_SIDECAR_ENV}");
+
+    if std::env::var_os(SKIP_CURSOR_SIDECAR_ENV).is_some() {
+        return;
+    }
+
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let profile_dir = out_dir
+        .ancestors()
+        .nth(3)
+        .expect("OUT_DIR should be inside target/<profile>/build/<pkg>/out")
+        .to_path_buf();
+    let target = profile_dir.join(cursor_sidecar_binary_name());
+
+    if !target.exists() {
+        println!("cargo:rustc-env=XERO_BUNDLED_CURSOR_SIDECAR_SHA256=");
+        ensure_cursor_sidecar_debug_resource_placeholder(&manifest_dir);
+        if should_copy_generated_resource_binaries() {
+            println!(
+                "cargo:warning=xero-cursor-sidecar not found at {}; build it before packaging with `cargo build --package xero-cursor-sidecar`.",
+                target.display()
+            );
+        }
+        return;
+    }
+    match sha256_of(&target) {
+        Ok(hash) => println!("cargo:rustc-env=XERO_BUNDLED_CURSOR_SIDECAR_SHA256={hash}"),
+        Err(error) => println!(
+            "cargo:warning=failed to hash xero-cursor-sidecar at {}: {error}",
+            target.display()
+        ),
+    }
+
+    copy_cursor_sidecar(&target, &profile_dir.join(cursor_sidecar_binary_name()));
+    copy_cursor_sidecar(
+        &target,
+        &manifest_dir
+            .join("resources")
+            .join(cursor_sidecar_binary_name()),
+    );
+}
+
+fn cursor_sidecar_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "xero-cursor-sidecar.exe"
+    } else {
+        "xero-cursor-sidecar"
+    }
+}
+
+fn copy_cursor_sidecar(source: &Path, destination: &Path) {
+    if source == destination {
+        return;
+    }
+    if let Err(error) = copy_file_if_changed(source, destination) {
+        println!(
+            "cargo:warning=failed to copy xero-cursor-sidecar to {}: {error}",
+            destination.display()
+        );
+    }
+}
+
+fn ensure_cursor_sidecar_debug_resource_placeholder(manifest_dir: &Path) {
+    if should_copy_generated_resource_binaries() {
+        return;
+    }
+    let placeholder = manifest_dir
+        .join("resources")
+        .join("xero-cursor-sidecar.placeholder");
+    if placeholder.exists() {
+        return;
+    }
+    if let Some(parent) = placeholder.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            println!(
+                "cargo:warning=failed to create Cursor sidecar resource placeholder directory {}: {error}",
+                parent.display()
+            );
+            return;
+        }
+    }
+    if let Err(error) = std::fs::write(
+        &placeholder,
+        b"debug placeholder; build xero-cursor-sidecar for runtime use\n",
+    ) {
+        println!(
+            "cargo:warning=failed to create Cursor sidecar resource placeholder {}: {error}",
+            placeholder.display()
         );
     }
 }

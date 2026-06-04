@@ -96,6 +96,16 @@ function makeOpenRouterCapabilities() {
   }
 }
 
+function makeProviderModel<T extends Record<string, unknown>>(
+  model: T,
+): T & { inputModalities: string[]; inputModalitiesSource: string } {
+  return {
+    inputModalities: [],
+    inputModalitiesSource: 'test_fixture_unreported',
+    ...model,
+  }
+}
+
 function makeOpenRouterCatalog() {
   return {
     profileId: 'openrouter-work',
@@ -109,9 +119,11 @@ function makeOpenRouterCatalog() {
     cacheAgeSeconds: 120,
     cacheTtlSeconds: 86_400,
     models: [
-      {
+      makeProviderModel({
         modelId: 'openai/o4-mini',
         displayName: 'OpenAI o4-mini',
+        inputModalities: ['text', 'image'],
+        inputModalitiesSource: 'openrouter_models_api',
         thinking: {
           supported: true,
           effortOptions: ['minimal', 'low', 'medium', 'high', 'x_high'] as const,
@@ -123,16 +135,18 @@ function makeOpenRouterCatalog() {
         contextLimitConfidence: 'high',
         contextLimitFetchedAt: '2026-04-21T12:00:00Z',
         capabilities: makeOpenRouterCapabilities(),
-      },
-      {
+      }),
+      makeProviderModel({
         modelId: 'anthropic/claude-3.7-sonnet',
         displayName: 'Claude 3.7 Sonnet',
+        inputModalities: ['text', 'image', 'file'],
+        inputModalitiesSource: 'openrouter_models_api',
         thinking: {
           supported: false,
           effortOptions: [],
           defaultEffort: null,
         },
-      },
+      }),
     ],
   }
 }
@@ -147,7 +161,7 @@ function makeCursorCatalog() {
     lastSuccessAt: '2026-05-23T12:00:00Z',
     lastRefreshError: null,
     models: [
-      {
+      makeProviderModel({
         modelId: CURSOR_AUTO_MODEL_ID,
         displayName: 'Auto',
         thinking: {
@@ -155,8 +169,8 @@ function makeCursorCatalog() {
           effortOptions: [] as const,
           defaultEffort: null,
         },
-      },
-      {
+      }),
+      makeProviderModel({
         modelId: 'composer-latest',
         displayName: 'Composer Latest',
         thinking: {
@@ -164,7 +178,7 @@ function makeCursorCatalog() {
           effortOptions: [] as const,
           defaultEffort: null,
         },
-      },
+      }),
     ],
     contractDiagnostics: [],
   }
@@ -208,7 +222,7 @@ describe('provider-models', () => {
       ...makeOpenRouterCatalog(),
       configuredModelId: CURSOR_AUTO_MODEL_ID,
       models: [
-        {
+        makeProviderModel({
           modelId: CURSOR_AUTO_MODEL_ID,
           displayName: 'Auto',
           thinking: {
@@ -216,7 +230,7 @@ describe('provider-models', () => {
             effortOptions: [] as const,
             defaultEffort: null,
           },
-        },
+        }),
       ],
     }
 
@@ -260,7 +274,7 @@ describe('provider-models', () => {
       configuredModelId: 'deepseek-v4-pro',
       capabilities: deepseekCapabilities,
       models: [
-        {
+        makeProviderModel({
           modelId: 'deepseek-v4-pro',
           displayName: 'DeepSeek V4 Pro',
           thinking: {
@@ -273,7 +287,7 @@ describe('provider-models', () => {
           contextLimitSource: 'built_in_registry',
           contextLimitConfidence: 'medium',
           capabilities: deepseekCapabilities,
-        },
+        }),
       ],
     })
 
@@ -298,6 +312,7 @@ describe('provider-models', () => {
         toolCalls: true,
         reasoningControls: false,
         attachments: false,
+        attachmentInputModalities: [],
       },
       capabilities: makeOpenRouterCapabilities(),
       checks: [
@@ -390,7 +405,7 @@ describe('provider-models', () => {
       lastSuccessAt: '2026-04-21T12:00:00Z',
       lastRefreshError: null,
       models: [
-        {
+        makeProviderModel({
           modelId: 'gpt-5.4',
           displayName: 'GPT-5.4',
           thinking: {
@@ -398,7 +413,7 @@ describe('provider-models', () => {
             effortOptions: ['low', 'medium', 'high'],
             defaultEffort: 'medium',
           },
-        },
+        }),
       ],
     })
     expect(valid.success).toBe(true)
@@ -414,24 +429,28 @@ describe('provider-models', () => {
       lastSuccessAt: '2026-04-21T12:00:00Z',
       lastRefreshError: null,
       models: [
-        {
+        makeProviderModel({
           modelId: 'claude-3-7-sonnet-latest',
           displayName: 'Claude 3.7 Sonnet',
+          inputModalities: ['text', 'image', 'file'],
+          inputModalitiesSource: 'anthropic_models_api',
           thinking: {
             supported: true,
             effortOptions: ['low', 'medium', 'high'],
             defaultEffort: 'medium',
           },
-        },
-        {
+        }),
+        makeProviderModel({
           modelId: 'claude-3-5-haiku-latest',
           displayName: 'Claude 3.5 Haiku',
+          inputModalities: ['text', 'image'],
+          inputModalitiesSource: 'anthropic_models_api',
           thinking: {
             supported: false,
             effortOptions: [],
             defaultEffort: null,
           },
-        },
+        }),
       ],
     })
 

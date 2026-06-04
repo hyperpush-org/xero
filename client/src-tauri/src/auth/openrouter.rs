@@ -75,6 +75,8 @@ pub struct OpenRouterDiscoveredModel {
     pub id: String,
     pub display_name: String,
     pub supported_parameters: Vec<String>,
+    pub input_modalities: Vec<String>,
+    pub input_modalities_source: String,
     pub context_window_tokens: Option<u64>,
     pub max_output_tokens: Option<u64>,
 }
@@ -90,12 +92,21 @@ struct ModelsResponse {
 struct ModelSummary {
     id: String,
     name: Option<String>,
+    #[serde(default)]
+    architecture: Option<ModelArchitecture>,
     #[serde(rename = "supported_parameters")]
     supported_parameters: Vec<String>,
     #[serde(default, rename = "context_length")]
     context_length: Option<u64>,
     #[serde(default, rename = "top_provider")]
     top_provider: Option<ModelTopProvider>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelArchitecture {
+    #[serde(default, rename = "input_modalities")]
+    input_modalities: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -165,15 +176,15 @@ pub(crate) fn reconcile_openrouter_runtime_session<R: Runtime>(
 }
 
 pub(crate) fn fetch_openrouter_models(
-    api_key: &str,
+    api_key: Option<&str>,
     config: &OpenRouterAuthConfig,
 ) -> Result<Vec<OpenRouterDiscoveredModel>, AuthFlowError> {
     let client = config.http_client()?;
-    let response = client
-        .get(&config.models_url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .send()
-        .map_err(map_probe_transport_error)?;
+    let mut request = client.get(&config.models_url);
+    if let Some(api_key) = api_key.map(str::trim).filter(|key| !key.is_empty()) {
+        request = request.header("Authorization", format!("Bearer {api_key}"));
+    }
+    let response = request.send().map_err(map_probe_transport_error)?;
 
     let status = response.status();
     if !status.is_success() {
@@ -197,7 +208,7 @@ fn validate_openrouter_models_probe(
     model_id: &str,
     config: &OpenRouterAuthConfig,
 ) -> Result<(), AuthFlowError> {
-    let models = fetch_openrouter_models(api_key, config)?;
+    let models = fetch_openrouter_models(Some(api_key), config)?;
 
     if !models.iter().any(|model| model.id.trim() == model_id) {
         return Err(AuthFlowError::terminal(
@@ -254,6 +265,11 @@ fn normalize_openrouter_models(
                 id: id.to_owned(),
                 display_name,
                 supported_parameters,
+                input_modalities: model
+                    .architecture
+                    .map(|architecture| architecture.input_modalities)
+                    .unwrap_or_default(),
+                input_modalities_source: "openrouter_models_api".into(),
                 context_window_tokens: model.context_length.filter(|tokens| *tokens > 0),
                 max_output_tokens: model
                     .top_provider

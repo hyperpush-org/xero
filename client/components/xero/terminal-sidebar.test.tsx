@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const mocks = vi.hoisted(() => {
@@ -117,49 +117,16 @@ vi.mock("@/src/lib/xero-desktop", () => ({
   XeroDesktopAdapter: mocks.adapter,
 }))
 
-import { TerminalSidebar } from "./terminal-sidebar"
+import { TerminalSidebar, type TerminalSidebarHandle } from "./terminal-sidebar"
 import { TERMINAL_SUGGESTION_SETTINGS_KEY } from "./terminal-suggestion-settings"
 
-const basePersistedTab = {
-  clientId: "client-web",
-  label: "web",
-  labelLocked: true,
-  browserSupported: true,
-  cwd: "/repo/project-a",
-  inputBuffer: null as string | null,
-  command: {
-    text: "pnpm dev",
-    sourceKind: "start-target",
-    sourceId: "target-web",
-    sourceLabel: "web",
-    autoReplay: false,
-  },
-}
-
-function persistedState(
-  tabs: Array<typeof basePersistedTab>,
-  activeTabId: string | null = tabs[0]?.clientId ?? null,
-) {
-  return {
-    schema: "xero.terminal.tabs.v1",
-    tabs,
-    activeTabId,
-  }
-}
-
-function setupAdapter({
-  states = new Map<string, unknown>(),
-  transcripts = new Map<string, string>(),
-}: {
-  states?: Map<string, unknown>
-  transcripts?: Map<string, string>
-} = {}) {
+function setupAdapter() {
   let nextTerminal = 1
   mocks.adapter.readProjectUiState.mockImplementation(async ({ projectId }: { projectId: string }) => ({
     schema: "xero.project_ui_state.v1",
     projectId,
     key: "terminal.tabs.v1",
-    value: states.get(projectId) ?? null,
+    value: null,
     storageScope: "os_app_data",
     uiDeferred: true,
   }))
@@ -181,7 +148,7 @@ function setupAdapter({
     async ({ projectId, clientTerminalId }) => ({
       projectId,
       clientTerminalId,
-      content: transcripts.get(clientTerminalId) ?? "",
+      content: "",
     }),
   )
   mocks.adapter.terminalWrite.mockResolvedValue(undefined)
@@ -204,7 +171,37 @@ function emitTerminalData(terminalId: string, data: string) {
   }
 }
 
-describe("TerminalSidebar persistence", () => {
+function renderWithHandle(projectId: string) {
+  const handleRef: { current: TerminalSidebarHandle | null } = { current: null }
+  const view = render(
+    <TerminalSidebar
+      open
+      projectId={projectId}
+      registerHandle={(handle) => {
+        handleRef.current = handle
+      }}
+    />,
+  )
+  return { ...view, handleRef }
+}
+
+async function spawnLabeledTab(
+  handleRef: { current: TerminalSidebarHandle | null },
+  label: string,
+): Promise<string | null> {
+  await waitFor(() => expect(handleRef.current).not.toBeNull())
+  let terminalId: string | null = null
+  await act(async () => {
+    terminalId = await handleRef.current?.spawnTabWithCommand("", {
+      label,
+      source: { kind: "xero-command", label },
+    }) ?? null
+  })
+  await screen.findByRole("button", { name: label })
+  return terminalId
+}
+
+describe("TerminalSidebar session lifetime", () => {
   beforeEach(() => {
     mocks.listeners.clear()
     mocks.terminals.length = 0
@@ -217,43 +214,22 @@ describe("TerminalSidebar persistence", () => {
     vi.useRealTimers()
   })
 
-  it("hydrates project tabs from app-data without repainting stale transcript output", async () => {
-    setupAdapter({
-      states: new Map([
-        [
-          "project-a",
-          persistedState([basePersistedTab]),
-        ],
-      ]),
-      transcripts: new Map([["client-web", "old prompt\r\nold output\r\n"]]),
-    })
-
+  it("starts fresh on cold mount and ignores stale app-data terminal tabs", async () => {
     render(<TerminalSidebar open projectId="project-a" />)
 
     await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1))
     expect(mocks.adapter.terminalOpen).toHaveBeenCalledWith({
       projectId: "project-a",
-      clientTerminalId: "client-web",
+      clientTerminalId: null,
       cols: 120,
       rows: 32,
       suppressTranscriptUntilInput: false,
     })
+    expect(screen.queryByRole("button", { name: "web" })).not.toBeInTheDocument()
+    expect(mocks.adapter.readProjectUiState).not.toHaveBeenCalled()
+    expect(mocks.adapter.writeProjectUiState).not.toHaveBeenCalled()
     expect(mocks.adapter.terminalReadTranscript).not.toHaveBeenCalled()
-    expect(mocks.terminals[0].writes.join("")).not.toContain("old output")
-    expect(mocks.adapter.terminalWrite).not.toHaveBeenCalledWith(
-      "pty-1",
-      expect.stringContaining("pnpm dev"),
-    )
-
-    await waitFor(() => expect(mocks.adapter.writeProjectUiState).toHaveBeenCalled())
-    const write = mocks.adapter.writeProjectUiState.mock.calls.at(-1)?.[0]
-    expect(write.value.tabs[0]).toMatchObject({
-      clientId: "client-web",
-      label: "web",
-      command: expect.objectContaining({ text: "pnpm dev", autoReplay: false }),
-    })
-    expect(write.value.tabs[0]).not.toHaveProperty("id")
-    expect(write.value.tabs[0]).not.toHaveProperty("terminalId")
+    expect(mocks.adapter.terminalClearTranscript).not.toHaveBeenCalled()
   })
 
   it("lifts xterm custom scrollbars above elevated chrome", async () => {
@@ -272,146 +248,168 @@ describe("TerminalSidebar persistence", () => {
     expect(css).toContain("z-index: var(--scrollbar-z-index) !important;")
   })
 
-  it("switches projects by hiding and closing the old project's PTY, then restoring the next project", async () => {
-    setupAdapter({
-      states: new Map([
-        ["project-a", persistedState([basePersistedTab])],
-        [
-          "project-b",
-          persistedState([
-            {
-              ...basePersistedTab,
-              clientId: "client-api",
-              label: "api",
-              cwd: "/repo/project-b",
-            },
-          ]),
-        ],
-      ]),
-    })
-
+  it("keeps project PTYs alive across project switches without durable writes", async () => {
     const { rerender } = render(<TerminalSidebar open projectId="project-a" />)
-    expect(await screen.findByRole("button", { name: "web" })).toBeVisible()
+    await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1))
+    emitTerminalData("pty-1", "project a output\r\n")
+    expect(mocks.terminals[0].writes.join("")).toContain("project a output")
 
     rerender(<TerminalSidebar open projectId="project-b" />)
 
-    expect(screen.queryByRole("button", { name: "web" })).not.toBeInTheDocument()
-    expect(await screen.findByRole("button", { name: "api" })).toBeVisible()
-    await waitFor(() => expect(mocks.adapter.terminalClose).toHaveBeenCalledWith("pty-1"))
+    await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(2))
+    expect(mocks.adapter.terminalClose).not.toHaveBeenCalledWith("pty-1")
     expect(mocks.adapter.terminalOpen).toHaveBeenLastCalledWith({
       projectId: "project-b",
-      clientTerminalId: "client-api",
+      clientTerminalId: null,
       cols: 120,
       rows: 32,
       suppressTranscriptUntilInput: false,
     })
+
+    emitTerminalData("pty-1", "still alive while hidden\r\n")
+    expect(mocks.terminals[0].writes.join("")).toContain("still alive while hidden")
+
+    rerender(<TerminalSidebar open projectId="project-a" />)
+
+    expect(await screen.findByRole("button", { name: "zsh" })).toBeVisible()
+    expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(2)
+    expect(mocks.adapter.writeProjectUiState).not.toHaveBeenCalled()
   })
 
-  it("clears transcript storage and removes the descriptor when a tab is closed", async () => {
-    setupAdapter({
-      states: new Map([["project-a", persistedState([basePersistedTab])]]),
+  it("replaces an unused auto-created blank tab when launching a project command", async () => {
+    const { handleRef } = renderWithHandle("project-a")
+    await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1))
+
+    await act(async () => {
+      await handleRef.current?.spawnTabWithCommand("pnpm dev", {
+        label: "landing",
+        browserSupported: true,
+        source: {
+          kind: "start-target",
+          targetId: "target-landing",
+          targetName: "landing",
+        },
+      })
     })
 
+    expect(await screen.findByRole("button", { name: "landing" })).toBeVisible()
+    expect(screen.queryByRole("button", { name: "zsh" })).not.toBeInTheDocument()
+    expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(mocks.adapter.terminalWrite).toHaveBeenCalledWith("pty-1", "pnpm dev\r"))
+  })
+
+  it("claims the auto-opening blank tab when a project command arrives during terminal startup", async () => {
+    let resolveFirstOpen: (response: {
+      terminalId: string
+      shell: string
+      cwd: string
+      startedAt: string
+    }) => void = () => undefined
+    mocks.adapter.terminalOpen.mockImplementationOnce(
+      async (request) =>
+        new Promise((resolve) => {
+          resolveFirstOpen = resolve
+        }).then(() => ({
+          terminalId: "pty-1",
+          shell: "/bin/zsh",
+          cwd: `/repo/${request.projectId}`,
+          startedAt: "2026-06-01T12:00:00Z",
+        })),
+    )
+
+    const { handleRef } = renderWithHandle("project-a")
+    await waitFor(() => expect(handleRef.current).not.toBeNull())
+    await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1))
+
+    let commandPromise: Promise<string | null> = Promise.resolve(null)
+    act(() => {
+      commandPromise = handleRef.current?.spawnTabWithCommand("pnpm dev", {
+        label: "landing",
+        source: {
+          kind: "start-target",
+          targetId: "target-landing",
+          targetName: "landing",
+        },
+      }) ?? Promise.resolve(null)
+    })
+    expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      resolveFirstOpen({
+        terminalId: "pty-1",
+        shell: "/bin/zsh",
+        cwd: "/repo/project-a",
+        startedAt: "2026-06-01T12:00:00Z",
+      })
+      await commandPromise
+    })
+
+    expect(await screen.findByRole("button", { name: "landing" })).toBeVisible()
+    expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(mocks.adapter.terminalWrite).toHaveBeenCalledWith("pty-1", "pnpm dev\r"))
+  })
+
+  it("opens a new command tab when the existing blank terminal has user input", async () => {
+    const { handleRef } = renderWithHandle("project-a")
+    await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1))
+
+    mocks.terminals[0].dataHandler?.("git")
+    await waitFor(() => expect(mocks.adapter.terminalWrite).toHaveBeenCalledWith("pty-1", "git"))
+
+    await act(async () => {
+      await handleRef.current?.spawnTabWithCommand("pnpm dev", {
+        label: "landing",
+        source: {
+          kind: "start-target",
+          targetId: "target-landing",
+          targetName: "landing",
+        },
+      })
+    })
+
+    expect(await screen.findByRole("button", { name: "landing" })).toBeVisible()
+    expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(mocks.adapter.terminalWrite).toHaveBeenCalledWith("pty-2", "pnpm dev\r"))
+  })
+
+  it("closes an explicit tab without clearing or writing durable terminal state", async () => {
     render(<TerminalSidebar open projectId="project-a" />)
     const closeButton = await screen.findByRole("button", { name: "Close terminal" })
 
     fireEvent.click(closeButton)
 
-    await waitFor(() =>
-      expect(mocks.adapter.terminalClearTranscript).toHaveBeenCalledWith({
-        projectId: "project-a",
-        clientTerminalId: "client-web",
-      }),
-    )
-    await waitFor(() => {
-      const values = mocks.adapter.writeProjectUiState.mock.calls.map(([request]) => request.value)
-      expect(
-        values.some((value) =>
-          Array.isArray(value.tabs) &&
-          value.tabs.every((tab: { clientId: string }) => tab.clientId !== "client-web"),
-        ),
-      ).toBe(true)
+    await waitFor(() => expect(mocks.adapter.terminalClose).toHaveBeenCalledWith("pty-1"))
+    await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(2))
+    expect(mocks.adapter.terminalOpen).toHaveBeenLastCalledWith({
+      projectId: "project-a",
+      clientTerminalId: null,
+      cols: 120,
+      rows: 32,
+      suppressTranscriptUntilInput: false,
     })
+    expect(mocks.adapter.terminalClearTranscript).not.toHaveBeenCalled()
+    expect(mocks.adapter.writeProjectUiState).not.toHaveBeenCalled()
   })
 
-  it("wipes malformed persisted state and falls back to a fresh terminal", async () => {
-    setupAdapter({
-      states: new Map([["project-a", { schema: "legacy-terminal-state" }]]),
-    })
-
-    render(<TerminalSidebar open projectId="project-a" />)
-
-    await waitFor(() =>
-      expect(mocks.adapter.writeProjectUiState).toHaveBeenCalledWith({
-        projectId: "project-a",
-        key: "terminal.tabs.v1",
-        value: null,
-      }),
-    )
-    await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1))
-    expect(mocks.adapter.terminalReadTranscript).not.toHaveBeenCalled()
-  })
-
-  it("paints restored tab output from the fresh PTY immediately", async () => {
-    setupAdapter({
-      states: new Map([["project-a", persistedState([basePersistedTab])]]),
-      transcripts: new Map([["client-web", "old prompt\r\nold output\r\n"]]),
-    })
-
-    render(<TerminalSidebar open projectId="project-a" />)
-
-    await waitFor(() => expect(mocks.listeners.get("terminal:data")?.length).toBeGreaterThan(0))
-    await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1))
-    emitTerminalData("pty-1", "fresh startup\r\n")
-    expect(mocks.terminals[0].writes.join("")).not.toContain("old output")
-    expect(mocks.terminals[0].writes.join("")).toContain("fresh startup")
-
-    mocks.terminals[0].dataHandler?.("git status\r")
-    expect(mocks.adapter.terminalWrite).toHaveBeenCalledWith("pty-1", "git status\r")
-
-    emitTerminalData("pty-1", "new command output\r\n")
-    expect(mocks.terminals[0].writes.join("")).toContain("new command output")
-  })
-
-  it("ignores persisted input buffers when opening a fresh PTY for a restored tab", async () => {
-    setupAdapter({
-      states: new Map([
-        [
-          "project-a",
-          persistedState([
-            {
-              ...basePersistedTab,
-              inputBuffer: "clear",
-            },
-          ]),
-        ],
-      ]),
-      transcripts: new Map([["client-web", "sn0w@host project % clear\x1b[H\x1b[2J"]]),
-    })
-
-    render(<TerminalSidebar open projectId="project-a" />)
-
-    await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1))
-    expect(mocks.adapter.terminalReadTranscript).not.toHaveBeenCalled()
-    expect(mocks.terminals[0].writes.join("")).toBe("")
-  })
-
-  it("persists the current unsubmitted input buffer with the tab descriptor", async () => {
+  it("does not persist unsubmitted input buffers on unmount", async () => {
     const { unmount } = render(<TerminalSidebar open projectId="project-a" />)
-    await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1))
 
+    await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1))
     mocks.terminals[0].dataHandler?.("clear")
     unmount()
 
-    await waitFor(() => {
-      const values = mocks.adapter.writeProjectUiState.mock.calls.map(([request]) => request.value)
-      expect(
-        values.some((value) =>
-          Array.isArray(value.tabs) &&
-          value.tabs.some((tab: { inputBuffer?: string | null }) => tab.inputBuffer === "clear"),
-        ),
-      ).toBe(true)
-    })
+    await waitFor(() => expect(mocks.adapter.terminalClose).toHaveBeenCalledWith("pty-1"))
+    expect(mocks.adapter.writeProjectUiState).not.toHaveBeenCalled()
+    expect(mocks.adapter.terminalClearTranscript).not.toHaveBeenCalled()
+  })
+
+  it("cleans up live PTYs when the sidebar unmounts", async () => {
+    const { unmount } = render(<TerminalSidebar open projectId="project-a" />)
+    await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1))
+
+    unmount()
+
+    await waitFor(() => expect(mocks.adapter.terminalClose).toHaveBeenCalledWith("pty-1"))
   })
 
   it("explains local and AI terminal suggestion modes in settings", async () => {
@@ -429,89 +427,67 @@ describe("TerminalSidebar persistence", () => {
     expect(screen.getByText(/configured model when local sources have no useful match/i)).toBeVisible()
   })
 
-  it("does not wipe persisted tabs when StrictMode cleanup runs before hydration finishes", () => {
-    let resolveRead: (value: unknown) => void = () => undefined
-    mocks.adapter.readProjectUiState.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveRead = resolve
-        }),
-    )
-
+  it("does not touch project UI state if unmounted immediately", () => {
     const { unmount } = render(<TerminalSidebar open projectId="project-a" />)
 
     unmount()
-    resolveRead({
-      schema: "xero.project_ui_state.v1",
-      projectId: "project-a",
-      key: "terminal.tabs.v1",
-      value: persistedState([basePersistedTab]),
-      storageScope: "os_app_data",
-      uiDeferred: true,
-    })
 
+    expect(mocks.adapter.readProjectUiState).not.toHaveBeenCalled()
     expect(mocks.adapter.writeProjectUiState).not.toHaveBeenCalled()
-    expect(mocks.adapter.terminalOpen).not.toHaveBeenCalled()
   })
 
-  it("restores the persisted active tab instead of selecting the last hydrated tab", async () => {
-    setupAdapter({
-      states: new Map([
-        [
-          "project-a",
-          persistedState(
-            [
-              basePersistedTab,
-              {
-                ...basePersistedTab,
-                clientId: "client-api",
-                label: "api",
-              },
-            ],
-            "client-web",
-          ),
-        ],
-      ]),
-    })
-
-    render(<TerminalSidebar open projectId="project-a" />)
+  it("remembers the active tab for each project in memory", async () => {
+    const { handleRef, rerender } = renderWithHandle("project-a")
+    await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1))
+    await spawnLabeledTab(handleRef, "web")
+    await spawnLabeledTab(handleRef, "api")
 
     const webTab = await screen.findByRole("button", { name: "web" })
     await screen.findByRole("button", { name: "api" })
+    fireEvent.click(webTab.closest("div")!)
+    await waitFor(() => expect(webTab.closest("div")).toHaveClass("text-foreground"))
 
-    expect(webTab.closest("div")).toHaveClass("text-foreground")
+    rerender(
+      <TerminalSidebar
+        open
+        projectId="project-b"
+        registerHandle={(handle) => {
+          handleRef.current = handle
+        }}
+      />,
+    )
+    await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(4))
+
+    rerender(
+      <TerminalSidebar
+        open
+        projectId="project-a"
+        registerHandle={(handle) => {
+          handleRef.current = handle
+        }}
+      />,
+    )
+
+    const restoredWebTab = await screen.findByRole("button", { name: "web" })
+    expect(restoredWebTab).toBeVisible()
+    expect(restoredWebTab.closest("div")).toHaveClass("text-foreground")
+    expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(4)
   })
 
   it("switches tabs when clicking the visual tab outside the label text", async () => {
-    setupAdapter({
-      states: new Map([
-        [
-          "project-a",
-          persistedState(
-            [
-              basePersistedTab,
-              {
-                ...basePersistedTab,
-                clientId: "client-api",
-                label: "api",
-              },
-            ],
-            "client-web",
-          ),
-        ],
-      ]),
-    })
+    const { handleRef } = renderWithHandle("project-a")
+    await waitFor(() => expect(mocks.adapter.terminalOpen).toHaveBeenCalledTimes(1))
+    await spawnLabeledTab(handleRef, "web")
+    await spawnLabeledTab(handleRef, "api")
 
-    render(<TerminalSidebar open projectId="project-a" />)
+    const webLabelButton = await screen.findByRole("button", { name: "web" })
+    const webTab = webLabelButton.closest("div")
+    expect(webTab).not.toBeNull()
+    expect(webTab).not.toHaveClass("text-foreground")
 
-    const apiLabelButton = await screen.findByRole("button", { name: "api" })
-    const apiTab = apiLabelButton.closest("div")
-    expect(apiTab).not.toBeNull()
-    expect(apiTab).not.toHaveClass("text-foreground")
+    fireEvent.click(webTab!)
 
-    fireEvent.click(apiTab!)
-
-    await waitFor(() => expect(apiTab).toHaveClass("text-foreground"))
+    await waitFor(() => expect(webTab).toHaveClass("text-foreground"))
   })
 
   it("renders ghost suggestions without writing them until accepted", async () => {

@@ -43,6 +43,11 @@ interface SubmitExplicitPromptOptions {
   replaceQueuedPrompt?: boolean
 }
 
+interface HiddenDraftPromptEntry {
+  id: string
+  value: string
+}
+
 interface UseAgentRuntimeControllerOptions {
   projectId: string
   selectedModelSelectionKey: string | null
@@ -495,7 +500,7 @@ export function useAgentRuntimeController({
   const lastSeenProjectIdRef = useRef(projectId)
   const lastSeenRuntimeRunIdRef = useRef<string | null>(renderableRuntimeRun?.runId ?? null)
   const draftPromptRef = useRef(draftPrompt)
-  const hiddenDraftPromptsRef = useRef<string[]>([])
+  const hiddenDraftPromptsRef = useRef<HiddenDraftPromptEntry[]>([])
   const lastReportedComposerControlsRef = useRef<RuntimeRunControlInputDto | null | undefined>(undefined)
   const hasUserComposerSettingsRef = useRef(getInitialComposerSettings().fromStoredControls)
 
@@ -867,7 +872,7 @@ export function useAgentRuntimeController({
 
   function promptWithHiddenContext(visiblePrompt: string): string {
     const hiddenPrompt = hiddenDraftPromptsRef.current
-      .map((value) => value.trim())
+      .map((entry) => entry.value.trim())
       .filter((value) => value.length > 0)
       .join('\n\n')
     if (!hiddenPrompt) {
@@ -1095,12 +1100,23 @@ export function useAgentRuntimeController({
     })
   }
 
-  function handleAppendHiddenDraftPrompt(value: string) {
+  function handleAppendHiddenDraftPrompt(value: string, id?: string) {
     const nextPrompt = value.trim()
     if (nextPrompt.length === 0) {
       return
     }
-    hiddenDraftPromptsRef.current = [...hiddenDraftPromptsRef.current, nextPrompt]
+    const nextEntry: HiddenDraftPromptEntry = {
+      id: id ?? `hidden-draft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      value: nextPrompt,
+    }
+    hiddenDraftPromptsRef.current = [
+      ...hiddenDraftPromptsRef.current.filter((entry) => entry.id !== nextEntry.id),
+      nextEntry,
+    ]
+  }
+
+  function handleRemoveHiddenDraftPrompt(id: string) {
+    hiddenDraftPromptsRef.current = hiddenDraftPromptsRef.current.filter((entry) => entry.id !== id)
   }
 
   function handleAutoCompactEnabledChange(value: boolean) {
@@ -1371,6 +1387,7 @@ export function useAgentRuntimeController({
     handleDraftPromptChange,
     handleAppendDraftPrompt,
     handleAppendHiddenDraftPrompt,
+    handleRemoveHiddenDraftPrompt,
     handleSubmitExplicitPrompt,
     handleAutoCompactEnabledChange,
     handleSubmitDraftPrompt,

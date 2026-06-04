@@ -83,6 +83,8 @@ pub struct ProviderModelRecord {
     pub model_id: String,
     pub display_name: String,
     pub thinking: ProviderModelThinkingCapability,
+    pub input_modalities: Vec<String>,
+    pub input_modalities_source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -466,7 +468,7 @@ fn refresh_provider_model_catalog(
                 };
             };
 
-            fetch_openrouter_models(&secret.api_key, &state.openrouter_auth_config())
+            fetch_openrouter_models(Some(&secret.api_key), &state.openrouter_auth_config())
                 .map(normalize_openrouter_models)
                 .map_err(diagnostic_from_auth_error)
         }
@@ -528,7 +530,7 @@ fn refresh_provider_model_catalog(
     match live_models {
         Ok(models) => {
             let now = crate::auth::now_timestamp();
-            let models = models
+            let mut models = models
                 .into_iter()
                 .map(|mut model| {
                     if model.context_limit_source == Some(SessionContextLimitSourceDto::LiveCatalog)
@@ -538,6 +540,11 @@ fn refresh_provider_model_catalog(
                     model
                 })
                 .collect::<Vec<_>>();
+            enrich_model_modalities_from_openrouter(
+                state,
+                profile.provider_id.as_str(),
+                &mut models,
+            );
             let source = if matches!(
                 refresh_target,
                 ProviderModelCatalogRefreshTarget::AnthropicAmbient
@@ -601,6 +608,79 @@ fn refresh_provider_model_catalog(
     }
 }
 
+fn enrich_model_modalities_from_openrouter(
+    state: &DesktopState,
+    provider_id: &str,
+    models: &mut [ProviderModelRecord],
+) {
+    if models
+        .iter()
+        .all(|model| !model.input_modalities.is_empty())
+    {
+        return;
+    }
+    let Some(namespace) = openrouter_namespace_for_provider(provider_id) else {
+        return;
+    };
+    let Ok(openrouter_models) = fetch_openrouter_models(None, &state.openrouter_auth_config())
+    else {
+        return;
+    };
+    let by_id = openrouter_models
+        .into_iter()
+        .map(|model| (model.id.clone(), model))
+        .collect::<BTreeMap<_, _>>();
+
+    for model in models
+        .iter_mut()
+        .filter(|model| model.input_modalities.is_empty())
+    {
+        for candidate in openrouter_model_id_candidates(namespace, &model.model_id) {
+            let Some(openrouter_model) = by_id.get(&candidate) else {
+                continue;
+            };
+            if openrouter_model.input_modalities.is_empty() {
+                continue;
+            }
+            model.input_modalities =
+                normalize_input_modalities(openrouter_model.input_modalities.clone());
+            model.input_modalities_source = "openrouter_public_models_api".into();
+            break;
+        }
+    }
+}
+
+fn openrouter_namespace_for_provider(provider_id: &str) -> Option<&'static str> {
+    match provider_id {
+        OPENAI_API_PROVIDER_ID => Some("openai"),
+        OPENROUTER_PROVIDER_ID => Some("openrouter"),
+        GITHUB_MODELS_PROVIDER_ID => Some(""),
+        ANTHROPIC_PROVIDER_ID | BEDROCK_PROVIDER_ID | VERTEX_PROVIDER_ID => Some("anthropic"),
+        DEEPSEEK_PROVIDER_ID => Some("deepseek"),
+        GEMINI_AI_STUDIO_PROVIDER_ID => Some("google"),
+        XAI_PROVIDER_ID => Some("x-ai"),
+        _ => None,
+    }
+}
+
+fn openrouter_model_id_candidates(namespace: &str, model_id: &str) -> Vec<String> {
+    let trimmed = model_id.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let mut candidates = Vec::new();
+    if trimmed.contains('/') {
+        candidates.push(trimmed.to_owned());
+    } else if namespace.is_empty() {
+        return Vec::new();
+    } else {
+        candidates.push(format!("{namespace}/{trimmed}"));
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates
+}
+
 fn openai_codex_projection() -> Vec<ProviderModelRecord> {
     OPENAI_CODEX_SUPPORTED_MODEL_IDS
         .iter()
@@ -619,6 +699,8 @@ fn openai_codex_projection() -> Vec<ProviderModelRecord> {
                 (*model_id).into(),
                 display_name,
                 openai_codex_thinking_capability(model_id),
+                Vec::new(),
+                "unknown".into(),
                 None,
                 None,
             )
@@ -627,7 +709,11 @@ fn openai_codex_projection() -> Vec<ProviderModelRecord> {
 }
 
 fn xai_projection() -> Vec<ProviderModelRecord> {
-    vec![xai_model_record(XAI_DEFAULT_MODEL_ID.into())]
+    vec![xai_model_record(
+        XAI_DEFAULT_MODEL_ID.into(),
+        Vec::new(),
+        "unknown".into(),
+    )]
 }
 
 fn cursor_projection() -> Vec<ProviderModelRecord> {
@@ -637,6 +723,8 @@ fn cursor_projection() -> Vec<ProviderModelRecord> {
             CURSOR_AUTO_MODEL_ID.into(),
             "Auto".into(),
             unsupported_thinking_capability(),
+            Vec::new(),
+            "external_agent".into(),
             None,
             None,
         ),
@@ -645,6 +733,8 @@ fn cursor_projection() -> Vec<ProviderModelRecord> {
             CURSOR_DEFAULT_MODEL_ID.into(),
             "Composer Latest".into(),
             unsupported_thinking_capability(),
+            Vec::new(),
+            "external_agent".into(),
             None,
             None,
         ),
@@ -815,6 +905,8 @@ fn cursor_model_record(model_id: &str, display_name: String) -> ProviderModelRec
         model_id.into(),
         display_name,
         unsupported_thinking_capability(),
+        Vec::new(),
+        "external_agent".into(),
         None,
         None,
     )
@@ -854,12 +946,18 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
 
-fn xai_model_record(model_id: String) -> ProviderModelRecord {
+fn xai_model_record(
+    model_id: String,
+    input_modalities: Vec<String>,
+    input_modalities_source: String,
+) -> ProviderModelRecord {
     provider_model_record(
         XAI_PROVIDER_ID,
         model_id.clone(),
         xai_display_name(&model_id),
         xai_thinking_capability(&model_id),
+        input_modalities,
+        input_modalities_source,
         xai_context_window_tokens(&model_id),
         None,
     )
@@ -868,12 +966,18 @@ fn xai_model_record(model_id: String) -> ProviderModelRecord {
 #[derive(Debug, Deserialize)]
 struct XaiModelListResponse {
     #[serde(default)]
+    models: Vec<XaiModelEntry>,
+    #[serde(default)]
     data: Vec<XaiModelEntry>,
 }
 
 #[derive(Debug, Deserialize)]
 struct XaiModelEntry {
     id: String,
+    #[serde(default)]
+    aliases: Vec<String>,
+    #[serde(default)]
+    input_modalities: Vec<String>,
 }
 
 fn fetch_xai_models(
@@ -891,7 +995,7 @@ fn fetch_xai_models(
             )
         })?;
     let response = client
-        .get("https://api.x.ai/v1/models")
+        .get("https://api.x.ai/v1/language-models")
         .bearer_auth(bearer_token.trim())
         .send()
         .map_err(|error| {
@@ -933,18 +1037,35 @@ fn fetch_xai_models(
             format!("Xero could not decode the xAI model catalog response: {error}"),
         )
     })?;
-    Ok(payload.data)
+    Ok(if payload.models.is_empty() {
+        payload.data
+    } else {
+        payload.models
+    })
 }
 
 fn normalize_xai_models(models: Vec<XaiModelEntry>) -> Vec<ProviderModelRecord> {
     let normalized = models
         .into_iter()
-        .filter_map(|model| {
-            let model_id = model.id.trim().to_owned();
-            if model_id.is_empty() || !is_supported_xai_text_model_id(&model_id) {
-                return None;
-            }
-            Some(xai_model_record(model_id))
+        .flat_map(|model| {
+            let input_modalities = model.input_modalities;
+            let mut ids = std::iter::once(model.id)
+                .chain(model.aliases)
+                .filter_map(|model_id| {
+                    let model_id = model_id.trim().to_owned();
+                    (!model_id.is_empty() && is_supported_xai_text_model_id(&model_id))
+                        .then_some(model_id)
+                })
+                .collect::<Vec<_>>();
+            ids.sort();
+            ids.dedup();
+            ids.into_iter().map(move |model_id| {
+                xai_model_record(
+                    model_id,
+                    input_modalities.clone(),
+                    "xai_language_models_api".into(),
+                )
+            })
         })
         .collect::<Vec<_>>();
 
@@ -959,7 +1080,11 @@ fn xai_cached_models(models: &[ProviderModelRecord]) -> Vec<ProviderModelRecord>
             if model_id.is_empty() || !is_supported_xai_text_model_id(&model_id) {
                 return None;
             }
-            Some(xai_model_record(model_id))
+            Some(xai_model_record(
+                model_id,
+                model.input_modalities.clone(),
+                model.input_modalities_source.clone(),
+            ))
         })
         .collect::<Vec<_>>();
 
@@ -1101,6 +1226,8 @@ fn provider_model_record(
     model_id: String,
     display_name: String,
     thinking: ProviderModelThinkingCapability,
+    input_modalities: Vec<String>,
+    input_modalities_source: String,
     live_context_window_tokens: Option<u64>,
     live_max_output_tokens: Option<u64>,
 ) -> ProviderModelRecord {
@@ -1112,6 +1239,8 @@ fn provider_model_record(
         model_id,
         display_name,
         thinking,
+        input_modalities: normalize_input_modalities(input_modalities),
+        input_modalities_source: normalize_modality_source(input_modalities_source),
         context_window_tokens: live_context_window_tokens
             .or(context_resolution.context_window_tokens),
         max_output_tokens: live_max_output_tokens.or(context_resolution.max_output_tokens),
@@ -1126,6 +1255,28 @@ fn provider_model_record(
             context_resolution.confidence
         }),
         context_limit_fetched_at: None,
+    }
+}
+
+fn normalize_input_modalities(modalities: Vec<String>) -> Vec<String> {
+    let mut out = modalities
+        .into_iter()
+        .filter_map(|modality| {
+            let normalized = modality.trim().replace('-', "_").to_ascii_lowercase();
+            (!normalized.is_empty()).then_some(normalized)
+        })
+        .collect::<Vec<_>>();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn normalize_modality_source(source: String) -> String {
+    let trimmed = source.trim();
+    if trimmed.is_empty() {
+        "unknown".into()
+    } else {
+        trimmed.into()
     }
 }
 
@@ -1169,6 +1320,10 @@ fn provider_capability_catalog_for_parts(
         thinking_default_effort: thinking
             .and_then(|thinking| thinking.default_effort.as_ref())
             .map(provider_model_thinking_effort_string),
+        input_modalities: model
+            .map(|model| model.input_modalities.clone())
+            .unwrap_or_default(),
+        input_modalities_source: model.map(|model| model.input_modalities_source.clone()),
     })
 }
 
@@ -1232,6 +1387,8 @@ fn normalize_openrouter_models(models: Vec<OpenRouterDiscoveredModel>) -> Vec<Pr
                 model.id,
                 model.display_name,
                 thinking,
+                model.input_modalities,
+                model.input_modalities_source,
                 model.context_window_tokens,
                 model.max_output_tokens,
             )
@@ -1260,6 +1417,8 @@ fn normalize_anthropic_models(
                 model.id,
                 model.display_name,
                 thinking,
+                model.input_modalities,
+                model.input_modalities_source,
                 None,
                 None,
             )
@@ -1287,6 +1446,8 @@ fn normalize_openai_compatible_models(
                 model.id,
                 model.display_name,
                 thinking,
+                model.input_modalities,
+                model.input_modalities_source,
                 model.context_window_tokens,
                 model.max_output_tokens,
             )
@@ -1317,6 +1478,8 @@ fn manual_openai_compatible_projection(
         profile.model_id.clone(),
         profile.model_id.clone(),
         unsupported_thinking_capability(),
+        Vec::new(),
+        "unknown".into(),
         None,
         None,
     )]
@@ -1341,6 +1504,8 @@ fn manual_anthropic_family_projection(
         profile.model_id.clone(),
         profile.model_id.clone(),
         thinking,
+        Vec::new(),
+        "unknown".into(),
         None,
         None,
     )]
@@ -2230,24 +2395,38 @@ mod tests {
         let models = normalize_xai_models(vec![
             XaiModelEntry {
                 id: "grok-4.20-0309-non-reasoning".into(),
+                aliases: Vec::new(),
+                input_modalities: Vec::new(),
             },
             XaiModelEntry {
                 id: "grok-4.20-0309-reasoning".into(),
+                aliases: Vec::new(),
+                input_modalities: Vec::new(),
             },
             XaiModelEntry {
                 id: "grok-4.20-multi-agent-0309".into(),
+                aliases: Vec::new(),
+                input_modalities: Vec::new(),
             },
             XaiModelEntry {
                 id: "grok-imagine-image-quality".into(),
+                aliases: Vec::new(),
+                input_modalities: Vec::new(),
             },
             XaiModelEntry {
                 id: "grok-imagine-video".into(),
+                aliases: Vec::new(),
+                input_modalities: Vec::new(),
             },
             XaiModelEntry {
                 id: "grok-latest".into(),
+                aliases: vec!["grok-4.3".into()],
+                input_modalities: vec!["text".into(), "image".into()],
             },
             XaiModelEntry {
                 id: "grok-4.3-latest".into(),
+                aliases: Vec::new(),
+                input_modalities: vec!["text".into(), "image".into()],
             },
         ]);
 

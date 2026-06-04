@@ -39,6 +39,14 @@ pub(crate) struct ProviderContextPackageInput<'a> {
     pub provider_preflight: Option<&'a xero_agent_core::ProviderPreflightSnapshot>,
 }
 
+fn required_attachment_input_modality(attachment: &MessageAttachment) -> Option<&'static str> {
+    match attachment.kind {
+        MessageAttachmentKind::Image => Some("image"),
+        MessageAttachmentKind::Document => Some("file"),
+        MessageAttachmentKind::Text => None,
+    }
+}
+
 pub(crate) fn assemble_provider_context_package(
     input: ProviderContextPackageInput<'_>,
     skill_contexts: Vec<XeroSkillToolContextPayload>,
@@ -351,10 +359,17 @@ pub(crate) fn assemble_provider_context_package(
     };
     let mut required_provider_features =
         xero_agent_core::ProviderPreflightRequiredFeatures::owned_agent_text_turn();
-    required_provider_features.attachments = input.messages.iter().any(|message| match message {
-        ProviderMessage::User { attachments, .. } => !attachments.is_empty(),
-        ProviderMessage::Assistant { .. } | ProviderMessage::Tool { .. } => false,
-    });
+    required_provider_features.set_attachment_input_modalities(input.messages.iter().flat_map(
+        |message| {
+            match message {
+                ProviderMessage::User { attachments, .. } => attachments
+                    .iter()
+                    .filter_map(required_attachment_input_modality)
+                    .collect::<Vec<_>>(),
+                ProviderMessage::Assistant { .. } | ProviderMessage::Tool { .. } => Vec::new(),
+            }
+        },
+    ));
     let provider_preflight = input.provider_preflight.cloned().unwrap_or_else(|| {
         crate::provider_preflight::static_provider_preflight_snapshot(
             input.provider_id,

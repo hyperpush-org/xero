@@ -355,6 +355,8 @@ function makeProviderModelCatalog(modelCount: number): ProviderModelCatalogDto {
     models: Array.from({ length: modelCount }, (_, index) => ({
       modelId: `model-${index}`,
       displayName: `Model ${index}`,
+      inputModalities: [],
+      inputModalitiesSource: 'test_fixture_unreported',
       thinking: {
         supported: index % 2 === 0,
         effortOptions: index % 2 === 0 ? ['low' as const, 'medium' as const, 'high' as const] : [],

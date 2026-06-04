@@ -6,7 +6,8 @@ use std::{
 use rand::RngCore;
 use tauri::{AppHandle, Emitter, Runtime};
 use xero_agent_core::{
-    provider_preflight_blockers, ProviderPreflightRequiredFeatures, ProviderPreflightSnapshot,
+    provider_attachment_capability_satisfies_required_features, provider_preflight_blockers,
+    ProviderPreflightRequiredFeatures, ProviderPreflightSnapshot,
 };
 
 use crate::{
@@ -70,16 +71,16 @@ pub(crate) struct ActiveProviderProfileSelection {
 }
 
 pub(crate) struct OwnedRuntimePromptStart {
-    repo_root: PathBuf,
-    project_id: String,
-    agent_session_id: String,
-    run_id: String,
-    provider_profile_id: String,
-    provider_id: String,
-    run_controls: RuntimeRunControlStateRecord,
-    accepted_snapshot: RuntimeRunSnapshotRecord,
-    prompt: String,
-    attachments: Vec<crate::commands::StagedAgentAttachmentDto>,
+    pub(crate) repo_root: PathBuf,
+    pub(crate) project_id: String,
+    pub(crate) agent_session_id: String,
+    pub(crate) run_id: String,
+    pub(crate) provider_profile_id: String,
+    pub(crate) provider_id: String,
+    pub(crate) run_controls: RuntimeRunControlStateRecord,
+    pub(crate) accepted_snapshot: RuntimeRunSnapshotRecord,
+    pub(crate) prompt: String,
+    pub(crate) attachments: Vec<crate::commands::StagedAgentAttachmentDto>,
 }
 
 pub(crate) fn load_persisted_runtime_run(
@@ -424,6 +425,24 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
         "Checking provider.",
     )?;
 
+    if task.provider_id == CURSOR_PROVIDER_ID {
+        if let Err(error) = super::cursor::bootstrap_and_drive_cursor_runtime_prompt(
+            app,
+            state,
+            task,
+            runtime_snapshot,
+        ) {
+            record_owned_runtime_failure(
+                app,
+                &error.repo_root,
+                &error.snapshot,
+                &error.error,
+                "Cursor sidecar task failed.",
+            );
+        }
+        return Ok(());
+    }
+
     let provider_preflight = match ensure_owned_runtime_provider_turn_capabilities(
         app,
         state,
@@ -598,7 +617,7 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
     Ok(())
 }
 
-fn emit_owned_runtime_progress<R: Runtime>(
+pub(crate) fn emit_owned_runtime_progress<R: Runtime>(
     app: &AppHandle<R>,
     repo_root: &Path,
     snapshot: &RuntimeRunSnapshotRecord,
@@ -856,8 +875,8 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
             }
         },
         CURSOR_PROVIDER_ID => Err(CommandError::user_fixable(
-            "cursor_external_agent_runtime",
-            "Cursor is configured as an external-agent provider. Use the Cursor SDK harness (`xero agent cursor`) until desktop external-agent run orchestration is wired.",
+            "cursor_sidecar_provider_config_unavailable",
+            "Cursor runs are handled by the Cursor sidecar and do not expose an in-process owned-provider config.",
         )),
         OPENROUTER_PROVIDER_ID => {
             let api_key = runtime_settings
@@ -1128,15 +1147,12 @@ pub(crate) fn ensure_owned_runtime_provider_turn_capabilities<R: Runtime>(
     model_id: &str,
     initial_attachments: &[crate::commands::StagedAgentAttachmentDto],
 ) -> CommandResult<ProviderPreflightSnapshot> {
-    if provider_id == CURSOR_PROVIDER_ID {
-        return Err(CommandError::user_fixable(
-            "cursor_external_agent_runtime",
-            "Cursor is configured as an external-agent provider. Use the Cursor SDK harness (`xero agent cursor`) until desktop external-agent run orchestration is wired.",
-        ));
-    }
-
     let mut required_features = ProviderPreflightRequiredFeatures::owned_agent_text_turn();
-    required_features.attachments = !initial_attachments.is_empty();
+    required_features.set_attachment_input_modalities(
+        initial_attachments
+            .iter()
+            .filter_map(required_attachment_input_modality),
+    );
     let preflight = if require_persisted_profile {
         let expected_cache_binding =
             crate::provider_preflight::current_provider_preflight_cache_binding(
@@ -1192,18 +1208,29 @@ pub(crate) fn ensure_owned_runtime_provider_turn_capabilities<R: Runtime>(
         }
     }
 
-    if required_features.attachments
-        && preflight.capabilities.capabilities.attachments.status != "supported"
-    {
+    if !provider_attachment_capability_satisfies_required_features(
+        &preflight.capabilities.capabilities.attachments,
+        &required_features,
+    ) {
         return Err(CommandError::user_fixable(
             "provider_attachment_capability_missing",
             format!(
-                "Xero cannot send attachments to provider `{provider_id}` with the current owned adapter. Choose an attachment-capable provider or remove the attachments before starting the run."
+                "Xero cannot send the requested attachment input to provider `{provider_id}` with model `{model_id}` because the selected model catalog does not report the required input modalities. Choose a compatible model or remove the attachments before starting the run."
             ),
         ));
     }
 
     Ok(preflight)
+}
+
+fn required_attachment_input_modality(
+    attachment: &crate::commands::StagedAgentAttachmentDto,
+) -> Option<&'static str> {
+    match attachment.kind {
+        crate::commands::AgentAttachmentKindDto::Image => Some("image"),
+        crate::commands::AgentAttachmentKindDto::Document => Some("file"),
+        crate::commands::AgentAttachmentKindDto::Text => None,
+    }
 }
 
 fn reusable_provider_preflight_snapshot(
@@ -2243,6 +2270,8 @@ mod tests {
                 thinking_supported: true,
                 thinking_efforts: vec!["medium".into()],
                 thinking_default_effort: Some("medium".into()),
+                input_modalities: Vec::new(),
+                input_modalities_source: Some("unknown".into()),
             }),
             credential_ready: Some(true),
             endpoint_reachable: Some(true),

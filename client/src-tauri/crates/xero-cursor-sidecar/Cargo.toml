@@ -1,0 +1,13 @@
+[package]
+name = "xero-cursor-sidecar"
+version = "0.1.0"
+edition = "2021"
+description = "Xero Cursor SDK sidecar process"
+
+[[bin]]
+name = "xero-cursor-sidecar"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+xero-agent-core = { path = "../xero-agent-core" }
