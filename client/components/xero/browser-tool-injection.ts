@@ -26,6 +26,7 @@ export interface BrowserToolTheme {
 
 export const BROWSER_TOOL_CONTEXT_EVENT = "browser:tool_context"
 export const BROWSER_TOOL_CLOSED_EVENT = "browser:tool_closed"
+export const BROWSER_TOOL_STATE_EVENT = "browser:tool_state"
 
 export interface BrowserToolPageContext {
   url: string
@@ -77,7 +78,7 @@ export interface BrowserToolClosedEventPayload {
 export interface BrowserAgentContextRequest {
   prompt: string
   visiblePrompt: string
-  image: {
+  image?: {
     bytes: Uint8Array
     mediaType: "image/png"
     originalName: string
@@ -167,6 +168,7 @@ const BROWSER_TOOL_RUNTIME = String.raw`
 ;(function () {
   var VERSION = 1;
   var ROOT_ID = "__xero-browser-tool-root";
+  var PEN_DOCUMENT_LAYER_ID = "__xero-browser-pen-document-layer";
   var DEFAULT_THEME = ${JSON.stringify(DEFAULT_BROWSER_TOOL_THEME)};
   var THEME_KEYS = Object.keys(DEFAULT_THEME);
   var RAINBOW_STOPS = [
@@ -179,10 +181,45 @@ const BROWSER_TOOL_RUNTIME = String.raw`
     ["100%", "#ff2dff"]
   ];
 
+  function safeStringify(value) {
+    try {
+      if (value === undefined) return null;
+      return JSON.stringify(value);
+    } catch (_error) {
+      try {
+        return JSON.stringify(String(value));
+      } catch (_inner) {
+        return null;
+      }
+    }
+  }
+
+  function emitTauriInternalBrowserEvent(kind, payload) {
+    try {
+      var tauri = window.__TAURI_INTERNALS__;
+      if (!tauri || typeof tauri.invoke !== "function") return false;
+      var result = tauri.invoke("browser_internal_event", {
+        kind: String(kind || ""),
+        payload: safeStringify(payload || {})
+      });
+      if (result && typeof result.catch === "function") {
+        result.catch(function () {});
+      }
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
   function bridgeEmit(kind, payload) {
+    if (emitTauriInternalBrowserEvent(kind, payload)) {
+      return;
+    }
+
     try {
       if (window.__xeroBridge__ && typeof window.__xeroBridge__.emit === "function") {
         window.__xeroBridge__.emit(kind, payload || {});
+        return;
       }
     } catch (_error) {
       // best-effort bridge
@@ -344,17 +381,24 @@ const BROWSER_TOOL_RUNTIME = String.raw`
 
   function updateRainbowGradient(stroke) {
     if (!stroke || !stroke.gradient || !stroke.points || stroke.points.length === 0) return;
-    var first = stroke.points[0];
-    var last = stroke.points[stroke.points.length - 1] || first;
+    var points = stroke.renderedPoints || stroke.points;
+    var first = points[0];
+    var last = points[points.length - 1] || first;
     var x1 = first.x;
     var y1 = first.y;
     var x2 = last.x;
     var y2 = last.y;
     if (Math.hypot(x2 - x1, y2 - y1) < 8) {
-      x1 = stroke.minX;
-      y1 = stroke.minY;
-      x2 = stroke.maxX;
-      y2 = stroke.maxY;
+      var bounds = stroke.renderedBounds || {
+        minX: stroke.minX,
+        minY: stroke.minY,
+        maxX: stroke.maxX,
+        maxY: stroke.maxY
+      };
+      x1 = bounds.minX;
+      y1 = bounds.minY;
+      x2 = bounds.maxX;
+      y2 = bounds.maxY;
     }
     if (Math.hypot(x2 - x1, y2 - y1) < 1) {
       x2 = x1 + 1;
@@ -457,7 +501,8 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       }
     });
     send.addEventListener("click", function () {
-      options.onSubmit(String(textarea.value || "").trim());
+      var note = String(textarea.value || "").trim();
+      options.onSubmit(note);
     });
     textarea.addEventListener("keydown", function (event) {
       if (event.key === "Escape") {
@@ -514,21 +559,239 @@ const BROWSER_TOOL_RUNTIME = String.raw`
   }
 
   function setupPen(state) {
-    var svg = createSvgNode("svg", "pen-layer");
-    var defs = createPenDefs(svg);
+    var overlay = createSvgNode("svg", "pen-layer");
+    var existingPageLayer = document.getElementById(PEN_DOCUMENT_LAYER_ID);
+    if (existingPageLayer && existingPageLayer.parentNode) {
+      existingPageLayer.parentNode.removeChild(existingPageLayer);
+    }
+    var pageLayer = createSvgNode("svg", "xero-pen-document-layer");
+    pageLayer.id = PEN_DOCUMENT_LAYER_ID;
+    pageLayer.setAttribute("data-xero-browser-tool-document-layer", "true");
+    pageLayer.setAttribute("aria-hidden", "true");
+    pageLayer.setAttribute("preserveAspectRatio", "none");
+    pageLayer.style.position = "absolute";
+    pageLayer.style.left = "0";
+    pageLayer.style.top = "0";
+    pageLayer.style.overflow = "visible";
+    pageLayer.style.pointerEvents = "none";
+    pageLayer.style.zIndex = "2147483646";
+    (document.body || document.documentElement).appendChild(pageLayer);
+    var pageDefs = createPenDefs(pageLayer);
     var active = null;
     var rafId = 0;
+    var syncFrameId = 0;
     var strokeIndex = 0;
+    var visualViewport = window.visualViewport || null;
+    var mutationObserver = null;
+    var penSurface = {
+      kind: "document",
+      element: null,
+      restorePosition: null
+    };
     state.strokes = [];
-    state.layer.appendChild(svg);
-    state.penLayer = svg;
+    state.pageLayer = pageLayer;
+    state.layer.appendChild(overlay);
+    state.penLayer = overlay;
+    overlay.setAttribute("width", "100%");
+    overlay.setAttribute("height", "100%");
+    overlay.setAttribute("preserveAspectRatio", "none");
 
-    function resize() {
-      var width = Math.max(1, Math.round(window.innerWidth || 1));
-      var height = Math.max(1, Math.round(window.innerHeight || 1));
-      svg.setAttribute("viewBox", "0 0 " + width + " " + height);
-      svg.setAttribute("width", String(width));
-      svg.setAttribute("height", String(height));
+    function readViewportSize() {
+      return {
+        width: Math.max(1, Math.round(window.innerWidth || 1)),
+        height: Math.max(1, Math.round(window.innerHeight || 1))
+      };
+    }
+
+    function readScrollPosition() {
+      var doc = document.documentElement || {};
+      var body = document.body || {};
+      return {
+        x: Number(window.scrollX || window.pageXOffset || doc.scrollLeft || body.scrollLeft || 0),
+        y: Number(window.scrollY || window.pageYOffset || doc.scrollTop || body.scrollTop || 0)
+      };
+    }
+
+    function readDocumentSize() {
+      var doc = document.documentElement || {};
+      var body = document.body || {};
+      var scrolling = document.scrollingElement || doc || body;
+      return {
+        width: Math.max(
+          1,
+          Math.ceil(
+            scrolling.scrollWidth ||
+            doc.scrollWidth ||
+            body.scrollWidth ||
+            scrolling.clientWidth ||
+            doc.clientWidth ||
+            body.clientWidth ||
+            window.innerWidth ||
+            1
+          )
+        ),
+        height: Math.max(
+          1,
+          Math.ceil(
+            scrolling.scrollHeight ||
+            doc.scrollHeight ||
+            body.scrollHeight ||
+            scrolling.clientHeight ||
+            doc.clientHeight ||
+            body.clientHeight ||
+            window.innerHeight ||
+            1
+          )
+        )
+      };
+    }
+
+    function isDocumentScrollRoot(element) {
+      return (
+        !element ||
+        element === document.documentElement ||
+        element === document.body ||
+        element === document.scrollingElement
+      );
+    }
+
+    function isScrollableContainer(element) {
+      if (!element || element.nodeType !== 1 || isDocumentScrollRoot(element)) return false;
+      var style = window.getComputedStyle(element);
+      var overflowX = style.overflowX;
+      var overflowY = style.overflowY;
+      var scrollsX = /(auto|scroll|overlay)/.test(overflowX) && element.scrollWidth > element.clientWidth;
+      var scrollsY = /(auto|scroll|overlay)/.test(overflowY) && element.scrollHeight > element.clientHeight;
+      return scrollsX || scrollsY;
+    }
+
+    function scrollContainerForElement(element) {
+      var current = element;
+      while (current && current.nodeType === 1) {
+        if (isScrollableContainer(current)) return current;
+        current = current.parentElement;
+      }
+      return null;
+    }
+
+    function samePenSurface(surface, element) {
+      if (!surface) return false;
+      if (!element) return surface.kind === "document";
+      return surface.kind === "element" && surface.element === element;
+    }
+
+    function restorePenSurfacePosition() {
+      if (penSurface && typeof penSurface.restorePosition === "function") {
+        penSurface.restorePosition();
+      }
+      if (penSurface) penSurface.restorePosition = null;
+    }
+
+    function activatePenSurface(element) {
+      var nextElement = isDocumentScrollRoot(element) ? null : element;
+      if (samePenSurface(penSurface, nextElement)) return;
+
+      restorePenSurfacePosition();
+      if (pageLayer.parentNode) pageLayer.parentNode.removeChild(pageLayer);
+
+      if (!nextElement) {
+        penSurface = {
+          kind: "document",
+          element: null,
+          restorePosition: null
+        };
+        (document.body || document.documentElement).appendChild(pageLayer);
+      } else {
+        var previousPosition = nextElement.style.position;
+        var computedPosition = window.getComputedStyle(nextElement).position;
+        var changedPosition = !computedPosition || computedPosition === "static";
+        if (changedPosition) nextElement.style.position = "relative";
+        penSurface = {
+          kind: "element",
+          element: nextElement,
+          restorePosition: changedPosition
+            ? function () {
+                nextElement.style.position = previousPosition;
+              }
+            : null
+        };
+        nextElement.appendChild(pageLayer);
+      }
+
+      clearNode(pageLayer);
+      pageDefs = createPenDefs(pageLayer);
+      syncLayerSize();
+    }
+
+    function activatePenSurfaceForPoint(clientX, clientY) {
+      if (state.strokes.length > 0 || active) return;
+      var element = underlyingElementAt(clientX, clientY);
+      activatePenSurface(scrollContainerForElement(element));
+    }
+
+    function readSurfaceScrollPosition() {
+      if (penSurface.kind === "element" && penSurface.element) {
+        return {
+          x: Number(penSurface.element.scrollLeft || 0),
+          y: Number(penSurface.element.scrollTop || 0)
+        };
+      }
+      return readScrollPosition();
+    }
+
+    function readSurfaceClientOrigin() {
+      if (penSurface.kind === "element" && penSurface.element) {
+        var rect = penSurface.element.getBoundingClientRect();
+        return {
+          x: rect.left,
+          y: rect.top
+        };
+      }
+      return { x: 0, y: 0 };
+    }
+
+    function readSurfaceSize() {
+      if (penSurface.kind === "element" && penSurface.element) {
+        return {
+          width: Math.max(
+            1,
+            Math.ceil(penSurface.element.scrollWidth || penSurface.element.clientWidth || 1)
+          ),
+          height: Math.max(
+            1,
+            Math.ceil(penSurface.element.scrollHeight || penSurface.element.clientHeight || 1)
+          )
+        };
+      }
+      return readDocumentSize();
+    }
+
+    function syncLayerSize() {
+      var size = readSurfaceSize();
+      pageLayer.setAttribute("viewBox", "0 0 " + size.width + " " + size.height);
+      pageLayer.setAttribute("width", String(size.width));
+      pageLayer.setAttribute("height", String(size.height));
+      pageLayer.style.width = size.width + "px";
+      pageLayer.style.height = size.height + "px";
+    }
+
+    function syncOverlayViewport() {
+      var viewport = readViewportSize();
+      overlay.setAttribute(
+        "viewBox",
+        "0 0 " + viewport.width + " " + viewport.height
+      );
+    }
+
+    function pagePoint(event) {
+      var scroll = readSurfaceScrollPosition();
+      var origin = readSurfaceClientOrigin();
+      return {
+        x: event.clientX - origin.x + scroll.x,
+        y: event.clientY - origin.y + scroll.y,
+        clientX: event.clientX,
+        clientY: event.clientY
+      };
     }
 
     function pathData(points) {
@@ -540,10 +803,30 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       return segments.join(" ");
     }
 
+    function boundsForPoints(points) {
+      var first = points && points[0] ? points[0] : { x: 0, y: 0 };
+      var bounds = {
+        minX: first.x,
+        maxX: first.x,
+        minY: first.y,
+        maxY: first.y
+      };
+      for (var index = 1; points && index < points.length; index += 1) {
+        bounds.minX = Math.min(bounds.minX, points[index].x);
+        bounds.maxX = Math.max(bounds.maxX, points[index].x);
+        bounds.minY = Math.min(bounds.minY, points[index].y);
+        bounds.maxY = Math.max(bounds.maxY, points[index].y);
+      }
+      return bounds;
+    }
+
     function updateActivePath() {
       rafId = 0;
       if (!active || !active.path) return;
+      syncLayerSize();
       active.path.setAttribute("d", pathData(active.points));
+      active.renderedPoints = active.points;
+      active.renderedBounds = boundsForPoints(active.points);
       updateRainbowGradient(active);
     }
 
@@ -552,20 +835,33 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       rafId = requestAnimationFrame(updateActivePath);
     }
 
+    function stylePenPath(path, stroke) {
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke-width", "3");
+      path.setAttribute("stroke-linecap", "round");
+      path.setAttribute("stroke-linejoin", "round");
+      path.style.vectorEffect = "non-scaling-stroke";
+      path.style.pointerEvents = "none";
+      path.style.stroke = stroke;
+    }
+
     function createStroke(start) {
-      var gradientId = "xero-pen-rainbow-" + Date.now().toString(36) + "-" + strokeIndex;
+      syncLayerSize();
+      var gradientId = "xero-pen-rainbow-doc-" + Date.now().toString(36) + "-" + strokeIndex;
       strokeIndex += 1;
-      var gradient = createRainbowGradient(defs, gradientId);
-      var path = createSvgNode("path", "pen-path active");
+      var gradient = createRainbowGradient(pageDefs, gradientId);
+      var path = createSvgNode("path", "xero-document-pen-path active");
       path.setAttribute("d", pathData([start]));
-      path.style.stroke = "url(#" + gradientId + ")";
-      svg.appendChild(path);
+      stylePenPath(path, "url(#" + gradientId + ")");
+      pageLayer.appendChild(path);
       var stroke = {
         points: [start],
         minX: start.x,
         maxX: start.x,
         minY: start.y,
         maxY: start.y,
+        renderedPoints: [start],
+        renderedBounds: { minX: start.x, maxX: start.x, minY: start.y, maxY: start.y },
         gradient: gradient,
         path: path
       };
@@ -573,13 +869,9 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       return stroke;
     }
 
-    function point(event) {
-      return { x: event.clientX, y: event.clientY };
-    }
-
     function appendPoint(event, force) {
       if (!active) return;
-      var next = point(event);
+      var next = pagePoint(event);
       var last = active.points[active.points.length - 1];
       if (last && Math.hypot(next.x - last.x, next.y - last.y) < (force ? 0.5 : 2)) return;
       active.points.push(next);
@@ -590,6 +882,65 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       scheduleActivePathUpdate();
     }
 
+    function pagePointToClient(point) {
+      var scroll = readSurfaceScrollPosition();
+      var origin = readSurfaceClientOrigin();
+      return {
+        x: point.x - scroll.x + origin.x,
+        y: point.y - scroll.y + origin.y
+      };
+    }
+
+    function emitPenState() {
+      bridgeEmit("tool_state", {
+        mode: "pen",
+        strokeCount: state.strokes.length,
+        hasDrawing: state.strokes.length > 0
+      });
+    }
+
+    function repositionComposer() {
+      if (!state.composer || !state.composerStroke) return;
+      var points = state.composerStroke.points || [];
+      if (points.length === 0) return;
+      var anchor = pagePointToClient(points[points.length - 1]);
+      positionComposer(state.composer, anchor.x, anchor.y);
+    }
+
+    function syncPenLayer() {
+      syncFrameId = 0;
+      syncLayerSize();
+      syncOverlayViewport();
+      repositionComposer();
+    }
+
+    function schedulePenSync() {
+      if (syncFrameId) return;
+      syncFrameId = requestAnimationFrame(syncPenLayer);
+    }
+
+    function mutationBelongsToTool(target) {
+      return Boolean(
+        target &&
+        (
+          target === pageLayer ||
+          target === state.host ||
+          (pageLayer.contains && pageLayer.contains(target)) ||
+          (state.host.contains && state.host.contains(target))
+        )
+      );
+    }
+
+    function pageMutationCallback(records) {
+      for (var index = 0; index < records.length; index += 1) {
+        var record = records[index];
+        if (!mutationBelongsToTool(record.target)) {
+          schedulePenSync();
+          return;
+        }
+      }
+    }
+
     state.clearPen = function () {
       state.strokes = [];
       active = null;
@@ -597,28 +948,97 @@ const BROWSER_TOOL_RUNTIME = String.raw`
         cancelAnimationFrame(rafId);
         rafId = 0;
       }
+      if (syncFrameId) {
+        cancelAnimationFrame(syncFrameId);
+        syncFrameId = 0;
+      }
       state.pendingContext = null;
+      state.composerAnchor = null;
+      state.composerStroke = null;
       if (state.composer) state.composer.remove();
       state.composer = null;
       state.composerInput = null;
-      clearNode(svg);
-      defs = createPenDefs(svg);
+      clearNode(pageLayer);
+      pageDefs = createPenDefs(pageLayer);
+      emitPenState();
     };
 
-    svg.addEventListener("pointerdown", function (event) {
+    function underlyingElementAt(clientX, clientY) {
+      var previous = state.host.style.pointerEvents;
+      state.host.style.pointerEvents = "none";
+      try {
+        return document.elementFromPoint ? document.elementFromPoint(clientX, clientY) : null;
+      } finally {
+        state.host.style.pointerEvents = previous;
+      }
+    }
+
+    function canScrollElement(element, axis, delta) {
+      if (!element) return false;
+      if (element === document.documentElement || element === document.body || element === document.scrollingElement) {
+        var scrolling = document.scrollingElement || document.documentElement || document.body;
+        if (!scrolling) return false;
+        if (axis === "x") return scrolling.scrollWidth > scrolling.clientWidth;
+        return scrolling.scrollHeight > scrolling.clientHeight;
+      }
+      var style = window.getComputedStyle(element);
+      var overflow = axis === "x" ? style.overflowX : style.overflowY;
+      if (!/(auto|scroll|overlay)/.test(overflow)) return false;
+      if (axis === "x") {
+        if (element.scrollWidth <= element.clientWidth) return false;
+        if (delta < 0) return element.scrollLeft > 0;
+        if (delta > 0) return element.scrollLeft + element.clientWidth < element.scrollWidth;
+        return true;
+      }
+      if (element.scrollHeight <= element.clientHeight) return false;
+      if (delta < 0) return element.scrollTop > 0;
+      if (delta > 0) return element.scrollTop + element.clientHeight < element.scrollHeight;
+      return true;
+    }
+
+    function scrollTargetForWheel(start, event) {
+      var axis = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? "x" : "y";
+      var delta = axis === "x" ? event.deltaX : event.deltaY;
+      var current = start;
+      while (current && current.nodeType === 1) {
+        if (canScrollElement(current, axis, delta)) return current;
+        current = current.parentElement;
+      }
+      return document.scrollingElement || document.documentElement || document.body;
+    }
+
+    overlay.addEventListener("wheel", function (event) {
+      if (eventHitsChrome(event)) return;
+      var start = underlyingElementAt(event.clientX, event.clientY);
+      var target = scrollTargetForWheel(start, event);
+      if (!target) return;
+      event.preventDefault();
+      if (target === document.documentElement || target === document.body || target === document.scrollingElement) {
+        window.scrollBy(event.deltaX, event.deltaY);
+        schedulePenSync();
+        return;
+      }
+      target.scrollLeft += event.deltaX;
+      target.scrollTop += event.deltaY;
+      schedulePenSync();
+    }, { passive: false });
+
+    overlay.addEventListener("pointerdown", function (event) {
       if (event.button !== 0 || eventHitsChrome(event)) return;
       event.preventDefault();
+      activatePenSurfaceForPoint(event.clientX, event.clientY);
+      syncPenLayer();
       state.captureMode = false;
       if (state.root) state.root.setAttribute("data-capture", "false");
-      active = createStroke(point(event));
+      active = createStroke(pagePoint(event));
       try {
-        svg.setPointerCapture(event.pointerId);
+        overlay.setPointerCapture(event.pointerId);
       } catch (_error) {
         // ignore
       }
     });
 
-    svg.addEventListener("pointermove", function (event) {
+    overlay.addEventListener("pointermove", function (event) {
       if (!active) return;
       event.preventDefault();
       appendPoint(event, false);
@@ -628,31 +1048,30 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       if (!active) return;
       event.preventDefault();
       try {
-        svg.releasePointerCapture(event.pointerId);
+        overlay.releasePointerCapture(event.pointerId);
       } catch (_error) {
         // ignore
       }
       appendPoint(event, true);
       var finished = active;
-      finished.path.setAttribute("d", pathData(finished.points));
-      updateRainbowGradient(finished);
-      finished.path.setAttribute("class", "pen-path");
       active = null;
       if (finished.points.length > 1) {
-        state.strokes.push({
-          points: finished.points,
-          minX: finished.minX,
-          maxX: finished.maxX,
-          minY: finished.minY,
-          maxY: finished.maxY
-        });
+        finished.path.setAttribute("class", "xero-document-pen-path");
+        finished.path.setAttribute("d", pathData(finished.points));
+        finished.renderedPoints = finished.points;
+        finished.renderedBounds = boundsForPoints(finished.points);
+        updateRainbowGradient(finished);
+        state.strokes.push(finished);
+        state.composerStroke = finished;
+        emitPenState();
+        var composerAnchor = pagePointToClient(finished.points[finished.points.length - 1]);
         makeComposer(state, {
           title: "Sketch note",
           subtitle: state.strokes.length + " stroke" + (state.strokes.length === 1 ? "" : "s"),
           placeholder: "Tell the agent what to do with this sketch...",
           footer: "Drawing will be attached as an image",
-          x: finished.maxX,
-          y: finished.minY,
+          x: composerAnchor.x,
+          y: composerAnchor.y,
           onSubmit: function (note) {
             if (state.strokes.length === 0 && !note) return;
             startCapture(state, {
@@ -669,14 +1088,40 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       }
     }
 
-    svg.addEventListener("pointerup", finish);
-    svg.addEventListener("pointercancel", finish);
-    window.addEventListener("resize", resize);
+    overlay.addEventListener("pointerup", finish);
+    overlay.addEventListener("pointercancel", finish);
+    window.addEventListener("resize", schedulePenSync);
+    window.addEventListener("scroll", schedulePenSync, true);
+    if (visualViewport) {
+      visualViewport.addEventListener("resize", schedulePenSync);
+      visualViewport.addEventListener("scroll", schedulePenSync);
+    }
+    if (typeof MutationObserver === "function" && document.documentElement) {
+      mutationObserver = new MutationObserver(pageMutationCallback);
+      mutationObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["class", "style", "hidden"],
+        childList: true,
+        subtree: true
+      });
+    }
+    state.syncPenLayer = syncPenLayer;
     state.cleanups.push(function () {
-      window.removeEventListener("resize", resize);
+      window.removeEventListener("resize", schedulePenSync);
+      window.removeEventListener("scroll", schedulePenSync, true);
+      if (visualViewport) {
+        visualViewport.removeEventListener("resize", schedulePenSync);
+        visualViewport.removeEventListener("scroll", schedulePenSync);
+      }
+      if (mutationObserver) mutationObserver.disconnect();
       if (rafId) cancelAnimationFrame(rafId);
+      if (syncFrameId) cancelAnimationFrame(syncFrameId);
+      bridgeEmit("tool_state", { mode: "pen", strokeCount: 0, hasDrawing: false });
+      if (pageLayer && pageLayer.parentNode) pageLayer.parentNode.removeChild(pageLayer);
+      restorePenSurfacePosition();
     });
-    resize();
+    syncPenLayer();
+    emitPenState();
   }
 
   function setupInspect(state) {
@@ -827,11 +1272,14 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       toolbar: null,
       composer: null,
       composerInput: null,
+      composerAnchor: null,
+      composerStroke: null,
       penLayer: null,
       highlight: null,
       cleanups: [],
       pendingContext: null,
       captureMode: false,
+      syncPenLayer: null,
       clearPen: null,
       strokes: [],
       hoveredElement: null,
@@ -861,14 +1309,19 @@ const BROWSER_TOOL_RUNTIME = String.raw`
     },
     prepareCapture: function () {
       var state = api.state;
-      if (!state) return null;
+      if (!state) {
+        return null;
+      }
+      if (typeof state.syncPenLayer === "function") state.syncPenLayer();
       state.captureMode = true;
       if (state.root) state.root.setAttribute("data-capture", "true");
       return state.pendingContext || null;
     },
     restoreCapture: function () {
       var state = api.state;
-      if (!state) return false;
+      if (!state) {
+        return false;
+      }
       state.captureMode = false;
       if (state.root) state.root.setAttribute("data-capture", "false");
       return true;
@@ -955,14 +1408,20 @@ function sanitizedBrowserToolPromptUrl(rawUrl: string): string {
   }
 }
 
-export function buildBrowserToolAgentPrompt(context: BrowserToolContext): string {
+export function buildBrowserToolAgentPrompt(
+  context: BrowserToolContext,
+  options: { screenshotAttached?: boolean } = {},
+): string {
   const pageLine = browserToolPromptPageReference(context.page)
+  const screenshotAttached = options.screenshotAttached ?? true
 
   if (context.kind === "pen") {
     return [
       "Browser sketch context:",
       `Page: ${pageLine}`,
-      `Drawing: ${context.strokeCount} stroke${context.strokeCount === 1 ? "" : "s"} on the attached browser screenshot.`,
+      screenshotAttached
+        ? `Drawing: ${context.strokeCount} stroke${context.strokeCount === 1 ? "" : "s"} on the attached browser screenshot.`
+        : `Drawing: ${context.strokeCount} stroke${context.strokeCount === 1 ? "" : "s"} captured by the browser sketch tool. No browser screenshot was attached.`,
     ].join("\n")
   }
 
@@ -983,7 +1442,9 @@ export function buildBrowserToolAgentPrompt(context: BrowserToolContext): string
     `Page: ${pageLine}`,
     "Selected element:",
     ...details.map((line) => `- ${line}`),
-    "The attached browser screenshot highlights this selection.",
+    screenshotAttached
+      ? "The attached browser screenshot highlights this selection."
+      : "No browser screenshot was attached; use the selected element metadata above.",
   ].join("\n")
 }
 

@@ -27,6 +27,7 @@ import {
 import {
   BROWSER_TOOL_CLOSED_EVENT,
   BROWSER_TOOL_CONTEXT_EVENT,
+  BROWSER_TOOL_STATE_EVENT,
   BROWSER_TOOL_DEACTIVATE_SCRIPT,
   BROWSER_TOOL_PREPARE_CAPTURE_SCRIPT,
   BROWSER_TOOL_RESTORE_CAPTURE_SCRIPT,
@@ -37,9 +38,7 @@ import {
   isDevServerUrl,
   readBrowserToolTheme,
   type BrowserAgentContextRequest,
-  type BrowserToolClosedEventPayload,
   type BrowserToolContext,
-  type BrowserToolContextEventPayload,
 } from "./browser-tool-injection"
 import {
   createBrowserResizeScheduler,
@@ -92,7 +91,6 @@ const OVERLAY_OCCLUSION_SELECTOR = [
 interface BrowserSidebarProps {
   open: boolean
   onAddAgentContext?: (request: BrowserAgentContextRequest) => Promise<void>
-  onAddAgentContextLoadingChange?: (loading: boolean) => void
   projectBrowserTargets?: BrowserLaunchTarget[]
   pendingOpenUrl?: { id: string; url: string } | null
   onPendingOpenUrlConsumed?: (id: string) => void
@@ -139,6 +137,23 @@ interface BrowserResizeDragRuntime {
   latestWidth: number
   nativeActive: boolean
   finish: (() => void) | null
+}
+
+interface NormalizedBrowserToolContextEvent {
+  tabId: string | null
+  context: BrowserToolContext
+}
+
+interface NormalizedBrowserToolClosedEvent {
+  tabId: string | null
+  mode: ToolMode
+}
+
+interface NormalizedBrowserToolStateEvent {
+  tabId: string | null
+  mode: ToolMode
+  strokeCount: number
+  hasDrawing: boolean
 }
 
 type BrowserOcclusionRect = ViewportRect
@@ -353,9 +368,79 @@ function isBrowserToolContext(value: unknown): value is BrowserToolContext {
   return typeof page.url === "string"
 }
 
+function readBrowserToolEventTabId(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null
+  const payload = value as { tabId?: unknown; tab_id?: unknown }
+  const tabId = payload.tabId ?? payload.tab_id
+  return typeof tabId === "string" && tabId.trim() ? tabId : null
+}
+
+function normalizeBrowserToolContextEvent(
+  value: unknown,
+): NormalizedBrowserToolContextEvent | null {
+  if (!value || typeof value !== "object") return null
+  const payload = value as { context?: unknown }
+  const context = payload.context ?? value
+  if (!isBrowserToolContext(context)) return null
+
+  return {
+    tabId: readBrowserToolEventTabId(value),
+    context,
+  }
+}
+
+function normalizeBrowserToolClosedEvent(
+  value: unknown,
+): NormalizedBrowserToolClosedEvent | null {
+  if (!value || typeof value !== "object") return null
+  const payload = value as { mode?: unknown }
+  const mode =
+    payload.mode === "pen" || payload.mode === "inspect" ? payload.mode : null
+
+  return {
+    tabId: readBrowserToolEventTabId(value),
+    mode,
+  }
+}
+
+function normalizeBrowserToolStateEvent(
+  value: unknown,
+): NormalizedBrowserToolStateEvent | null {
+  if (!value || typeof value !== "object") return null
+  const payload = value as {
+    hasDrawing?: unknown
+    mode?: unknown
+    strokeCount?: unknown
+    stroke_count?: unknown
+  }
+  const mode =
+    payload.mode === "pen" || payload.mode === "inspect" ? payload.mode : null
+  const strokeCount = Number(payload.strokeCount ?? payload.stroke_count ?? 0)
+
+  return {
+    tabId: readBrowserToolEventTabId(value),
+    mode,
+    strokeCount: Number.isFinite(strokeCount) ? Math.max(0, strokeCount) : 0,
+    hasDrawing: payload.hasDrawing === true || strokeCount > 0,
+  }
+}
+
 function imageNameForContext(context: BrowserToolContext): string {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-")
   return `browser-${context.kind}-${timestamp}.png`
+}
+
+function buildBrowserToolAgentPromptForCapture(
+  context: BrowserToolContext,
+  screenshotAttached: boolean,
+): string {
+  const fallbackLine =
+    context.kind === "pen"
+      ? "The browser sketch screenshot could not be captured, so use the note as the primary context."
+      : "The browser element screenshot could not be captured, so use the selected element metadata as the primary context."
+
+  const prompt = buildBrowserToolAgentPrompt(context, { screenshotAttached })
+  return screenshotAttached ? prompt : [prompt, fallbackLine].join("\n")
 }
 
 function waitForBrowserToolPaint(): Promise<void> {
@@ -383,7 +468,6 @@ function readBrowserViewportRectForWidth(
 export function BrowserSidebar({
   open,
   onAddAgentContext,
-  onAddAgentContextLoadingChange,
   projectBrowserTargets = [],
   pendingOpenUrl = null,
   onPendingOpenUrlConsumed,
@@ -398,6 +482,7 @@ export function BrowserSidebar({
   const [navError, setNavError] = useState<string | null>(null)
   const [showCookieBanner, setShowCookieBanner] = useState(false)
   const [toolMode, setToolMode] = useState<ToolMode>(null)
+  const [penHasDrawing, setPenHasDrawing] = useState(false)
   const [toolSubmitting, setToolSubmitting] = useState(false)
   const [toolSubmitError, setToolSubmitError] = useState<string | null>(null)
   const motionOpen = useSidebarOpenMotion(open)
@@ -431,7 +516,6 @@ export function BrowserSidebar({
   const injectedToolModeRef = useRef<ToolMode>(null)
   const toolActivationRequestRef = useRef(0)
   const onAddAgentContextRef = useRef(onAddAgentContext)
-  const onAddAgentContextLoadingChangeRef = useRef(onAddAgentContextLoadingChange)
   const consumedPendingOpenUrlIdsRef = useRef<Set<string>>(new Set())
   const occlusionFrameRef = useRef<number | null>(null)
   const lastOcclusionKeyRef = useRef("")
@@ -440,7 +524,6 @@ export function BrowserSidebar({
   activeTabIdRef.current = activeTabId
   toolModeRef.current = toolMode
   onAddAgentContextRef.current = onAddAgentContext
-  onAddAgentContextLoadingChangeRef.current = onAddAgentContextLoadingChange
 
   useEffect(() => {
     if (!open || !motionOpen) {
@@ -620,6 +703,7 @@ export function BrowserSidebar({
 
   const isDevTab = isDevServerUrl(activeTab?.url ?? null)
   const pageLabel = activeTab?.title ?? activeTab?.url ?? null
+  const resizeLockedByPenDrawing = toolMode === "pen" || penHasDrawing
 
   const deactivateInjectedTool = useCallback(async () => {
     if (!isTauri()) return
@@ -629,6 +713,7 @@ export function BrowserSidebar({
       /* the active page may already have navigated away */
     })
     injectedToolModeRef.current = null
+    setPenHasDrawing(false)
   }, [])
 
   const restoreInjectedToolCapture = useCallback(async () => {
@@ -640,32 +725,49 @@ export function BrowserSidebar({
     })
   }, [])
 
-  const addBrowserToolContextToAgent = useCallback(
-    async (payload: BrowserToolContextEventPayload) => {
-      if (payload.tabId !== activeTabIdRef.current) return
-      if (!isBrowserToolContext(payload.context)) return
+  const prepareInjectedToolCapture = useCallback(async () => {
+    if (!isTauri()) return
+    await invoke("browser_eval_fire_and_forget", {
+      js: BROWSER_TOOL_PREPARE_CAPTURE_SCRIPT,
+    })
+  }, [])
 
-      const context = payload.context
+  const addBrowserToolContextToAgent = useCallback(
+    async (payload: unknown) => {
+      const normalized = normalizeBrowserToolContextEvent(payload)
+      if (!normalized) {
+        return
+      }
+      if (normalized.tabId && normalized.tabId !== activeTabIdRef.current) {
+        return
+      }
+
+      const context = normalized.context
       setToolSubmitError(null)
       setToolSubmitting(true)
-      onAddAgentContextLoadingChangeRef.current?.(true)
       try {
         await waitForBrowserToolPaint()
-        await invoke("browser_eval_fire_and_forget", {
-          js: BROWSER_TOOL_PREPARE_CAPTURE_SCRIPT,
-        })
+        await prepareInjectedToolCapture()
         await waitForBrowserToolPaint()
-        const screenshotBase64 = await invoke<string>("browser_screenshot")
-        const add = onAddAgentContextRef.current
-        if (add) {
-          await add({
-            prompt: buildBrowserToolAgentPrompt(context),
-            visiblePrompt: buildBrowserToolVisiblePrompt(context),
-            image: {
+        const screenshotBase64 = await invoke<string>("browser_screenshot").catch(() => null)
+        let image: BrowserAgentContextRequest["image"] | undefined
+        if (screenshotBase64) {
+          try {
+            image = {
               bytes: browserScreenshotBytesFromBase64(screenshotBase64),
               mediaType: "image/png",
               originalName: imageNameForContext(context),
-            },
+            }
+          } catch {
+            image = undefined
+          }
+        }
+        const add = onAddAgentContextRef.current
+        if (add) {
+          await add({
+            prompt: buildBrowserToolAgentPromptForCapture(context, Boolean(image)),
+            visiblePrompt: buildBrowserToolVisiblePrompt(context),
+            ...(image ? { image } : {}),
           })
         }
         await deactivateInjectedTool()
@@ -677,10 +779,9 @@ export function BrowserSidebar({
         await restoreInjectedToolCapture()
       } finally {
         setToolSubmitting(false)
-        onAddAgentContextLoadingChangeRef.current?.(false)
       }
     },
-    [deactivateInjectedTool, restoreInjectedToolCapture],
+    [deactivateInjectedTool, prepareInjectedToolCapture, restoreInjectedToolCapture],
   )
 
   // Tools are gated to dev-server tabs. Drop the active tool whenever the
@@ -689,6 +790,7 @@ export function BrowserSidebar({
     if (toolMode === null) return
     if (!open || !isDevTab) {
       setToolMode(null)
+      setPenHasDrawing(false)
     }
   }, [open, isDevTab, toolMode])
 
@@ -703,6 +805,7 @@ export function BrowserSidebar({
     }
 
     const requestId = ++toolActivationRequestRef.current
+    setPenHasDrawing(false)
     const script = buildBrowserToolActivationScript({
       mode: toolMode,
       pageLabel,
@@ -933,19 +1036,32 @@ export function BrowserSidebar({
     )
 
     trackUnlisten(
-      listen<BrowserToolContextEventPayload>(BROWSER_TOOL_CONTEXT_EVENT, (event) => {
+      listen<unknown>(BROWSER_TOOL_CONTEXT_EVENT, (event) => {
         recordIpcPayloadSample({ boundary: "event", name: BROWSER_TOOL_CONTEXT_EVENT, payload: event.payload })
         void addBrowserToolContextToAgent(event.payload)
       }),
     )
 
     trackUnlisten(
-      listen<BrowserToolClosedEventPayload>(BROWSER_TOOL_CLOSED_EVENT, (event) => {
+      listen<unknown>(BROWSER_TOOL_CLOSED_EVENT, (event) => {
         recordIpcPayloadSample({ boundary: "event", name: BROWSER_TOOL_CLOSED_EVENT, payload: event.payload })
-        if (event.payload.tabId === activeTabIdRef.current) {
+        const payload = normalizeBrowserToolClosedEvent(event.payload)
+        if (!payload) return
+        if (!payload.tabId || payload.tabId === activeTabIdRef.current) {
           injectedToolModeRef.current = null
           setToolMode(null)
+          setPenHasDrawing(false)
         }
+      }),
+    )
+
+    trackUnlisten(
+      listen<unknown>(BROWSER_TOOL_STATE_EVENT, (event) => {
+        recordIpcPayloadSample({ boundary: "event", name: BROWSER_TOOL_STATE_EVENT, payload: event.payload })
+        const payload = normalizeBrowserToolStateEvent(event.payload)
+        if (!payload) return
+        if (payload.tabId && payload.tabId !== activeTabIdRef.current) return
+        setPenHasDrawing(payload.mode === "pen" && payload.hasDrawing)
       }),
     )
 
@@ -980,6 +1096,7 @@ export function BrowserSidebar({
     (event: React.PointerEvent<HTMLDivElement>) => {
       if (event.button !== 0) return
       event.preventDefault()
+      if (resizeLockedByPenDrawing) return
       const startX = event.clientX
       const startWidth = widthRef.current
       const ceiling = viewportMaxWidth()
@@ -1084,6 +1201,7 @@ export function BrowserSidebar({
     [
       applySidebarWidth,
       markBrowserViewportSyncedToWidth,
+      resizeLockedByPenDrawing,
       resizeScheduler,
       setSidebarWidthAndSync,
       syncBrowserViewportToWidth,
@@ -1093,6 +1211,7 @@ export function BrowserSidebar({
   const handleResizeKey = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return
     event.preventDefault()
+    if (resizeLockedByPenDrawing) return
     const step = event.shiftKey ? 32 : 8
     const ceiling = viewportMaxWidth()
     const delta = event.key === "ArrowLeft" ? step : -step
@@ -1100,7 +1219,7 @@ export function BrowserSidebar({
     setMaxWidth(ceiling)
     setSidebarWidthAndSync(nextWidth)
     resizeScheduler.schedule({ force: true })
-  }, [resizeScheduler, setSidebarWidthAndSync])
+  }, [resizeLockedByPenDrawing, resizeScheduler, setSidebarWidthAndSync])
 
   const openUrl = useCallback(
     (target: string, options?: { tabId?: string; newTab?: boolean }) => {
@@ -1299,9 +1418,12 @@ export function BrowserSidebar({
         aria-valuemax={maxWidth}
         aria-valuemin={MIN_WIDTH}
         aria-valuenow={width}
+        aria-disabled={resizeLockedByPenDrawing ? true : undefined}
         className={cn(
-          "absolute inset-y-0 -left-[3px] z-10 w-[6px] cursor-col-resize bg-transparent transition-colors",
-          "hover:bg-primary/30",
+          "absolute inset-y-0 -left-[3px] z-10 w-[6px] bg-transparent transition-colors",
+          resizeLockedByPenDrawing
+            ? "cursor-not-allowed hover:bg-destructive/20"
+            : "cursor-col-resize hover:bg-primary/30",
           isResizing && "bg-primary/40",
         )}
         onKeyDown={handleResizeKey}
@@ -1499,19 +1621,6 @@ export function BrowserSidebar({
             >
               <MousePointerSquareDashed className="h-3.5 w-3.5" />
             </button>
-          </div>
-        ) : null}
-        {toolSubmitting ? (
-          <div
-            aria-live="polite"
-            aria-label="Adding browser context"
-            className="absolute inset-0 z-20 flex items-center justify-center bg-background/90 backdrop-blur-sm"
-            role="status"
-          >
-            <div className="flex items-center gap-2 rounded-md border border-border/70 bg-card px-3 py-2 text-[12px] font-medium text-foreground shadow-lg">
-              <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-              <span>Adding browser context…</span>
-            </div>
           </div>
         ) : null}
       </div>

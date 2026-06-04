@@ -132,6 +132,86 @@ function rect({
   } as DOMRect
 }
 
+function setWindowInnerSize(width: number, height = window.innerHeight) {
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    value: width,
+  })
+  Object.defineProperty(window, "innerHeight", {
+    configurable: true,
+    value: height,
+  })
+}
+
+function setWindowScroll(x: number, y: number) {
+  Object.defineProperty(window, "scrollX", {
+    configurable: true,
+    value: x,
+  })
+  Object.defineProperty(window, "scrollY", {
+    configurable: true,
+    value: y,
+  })
+  Object.defineProperty(window, "pageXOffset", {
+    configurable: true,
+    value: x,
+  })
+  Object.defineProperty(window, "pageYOffset", {
+    configurable: true,
+    value: y,
+  })
+}
+
+function setNumberProperty(target: object, key: string, value: number): () => void {
+  const original = Object.getOwnPropertyDescriptor(target, key)
+  Object.defineProperty(target, key, {
+    configurable: true,
+    value,
+  })
+
+  return () => {
+    if (original) {
+      Object.defineProperty(target, key, original)
+    } else {
+      delete (target as Record<string, unknown>)[key]
+    }
+  }
+}
+
+function setDocumentSize(width: number, height: number): () => void {
+  const restores = [
+    setNumberProperty(document.documentElement, "scrollWidth", width),
+    setNumberProperty(document.documentElement, "scrollHeight", height),
+    setNumberProperty(document.documentElement, "clientWidth", Math.min(width, window.innerWidth)),
+    setNumberProperty(document.documentElement, "clientHeight", Math.min(height, window.innerHeight)),
+    setNumberProperty(document.body, "scrollWidth", width),
+    setNumberProperty(document.body, "scrollHeight", height),
+    setNumberProperty(document.body, "clientWidth", Math.min(width, window.innerWidth)),
+    setNumberProperty(document.body, "clientHeight", Math.min(height, window.innerHeight)),
+  ]
+
+  return () => {
+    for (let index = restores.length - 1; index >= 0; index -= 1) {
+      restores[index]?.()
+    }
+  }
+}
+
+function dispatchPointer(
+  target: EventTarget,
+  type: string,
+  init: MouseEventInit,
+) {
+  target.dispatchEvent(
+    new MouseEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      ...init,
+    }),
+  )
+}
+
 beforeEach(() => {
   cookieStorage = installLocalStorage()
 })
@@ -141,6 +221,8 @@ afterEach(() => {
   vi.restoreAllMocks()
   document.documentElement.removeAttribute("style")
   document.body.removeAttribute("style")
+  document.getElementById("__xero-browser-pen-document-layer")?.remove()
+  setWindowScroll(0, 0)
   cookieStorage?.clear()
 })
 
@@ -207,8 +289,10 @@ describe("BrowserSidebar", () => {
     ])
     registerInvoke("browser_set_occlusion_regions", async () => null)
 
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function () {
-      if ((this as HTMLElement).dataset.slot === "dropdown-menu-content") {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.dataset.slot === "dropdown-menu-content") {
         return rect({
           bottom: 260,
           height: 100,
@@ -1042,6 +1126,155 @@ describe("BrowserSidebar", () => {
     }
   })
 
+  it("blocks sidebar resizing as soon as pen mode is active", async () => {
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "xero-browser-tab-1",
+        title: "Local",
+        url: "http://localhost:5173/",
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+    registerInvoke("browser_resize", async () => null)
+    registerInvoke("browser_resize_drag_start", async () => null)
+    registerInvoke("browser_resize_drag_end", async () => null)
+
+    const originalInnerWidth = window.innerWidth
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1600,
+    })
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      x: 760,
+      y: 100,
+      left: 760,
+      top: 100,
+      right: 1400,
+      bottom: 900,
+      width: 640,
+      height: 800,
+      toJSON: () => ({}),
+    } as DOMRect)
+
+    try {
+      render(<BrowserSidebar open />)
+      const penButton = await screen.findByLabelText("Sketch on page")
+
+      fireEvent.click(penButton)
+
+      await waitFor(() => expect(penButton).toHaveAttribute("aria-pressed", "true"))
+
+      const separator = screen.getByRole("separator", {
+        name: "Resize browser sidebar",
+      })
+      expect(separator.getAttribute("aria-disabled")).toBe("true")
+      expect(separator.className).toContain("cursor-not-allowed")
+
+      invokeCalls.length = 0
+      fireEvent.pointerDown(separator, { button: 0, clientX: 760 })
+      fireEvent.keyDown(separator, { key: "ArrowLeft" })
+
+      expect(invokeCalls.some((call) => call.command === "browser_resize_drag_start")).toBe(false)
+      expect(invokeCalls.some((call) => call.command === "browser_resize")).toBe(false)
+
+      fireEvent.click(penButton)
+
+      await waitFor(() => expect(penButton).toHaveAttribute("aria-pressed", "false"))
+
+      expect(separator.getAttribute("aria-disabled")).toBeNull()
+      expect(separator.className).toContain("cursor-col-resize")
+    } finally {
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: originalInnerWidth,
+      })
+    }
+  })
+
+  it("blocks sidebar resizing while a pen drawing exists", async () => {
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "xero-browser-tab-1",
+        title: "Local",
+        url: "http://localhost:5173/",
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+    registerInvoke("browser_resize", async () => null)
+    registerInvoke("browser_resize_drag_start", async () => null)
+    registerInvoke("browser_resize_drag_end", async () => null)
+
+    const originalInnerWidth = window.innerWidth
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1600,
+    })
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      x: 760,
+      y: 100,
+      left: 760,
+      top: 100,
+      right: 1400,
+      bottom: 900,
+      width: 640,
+      height: 800,
+      toJSON: () => ({}),
+    } as DOMRect)
+
+    try {
+      render(<BrowserSidebar open />)
+      await screen.findByDisplayValue("http://localhost:5173/")
+
+      await act(async () => {
+        emitEvent("browser:tool_state", {
+          tabId: "tab-1",
+          mode: "pen",
+          strokeCount: 1,
+          hasDrawing: true,
+        })
+      })
+
+      const separator = screen.getByRole("separator", {
+        name: "Resize browser sidebar",
+      })
+      expect(separator.getAttribute("aria-disabled")).toBe("true")
+      expect(separator.className).toContain("cursor-not-allowed")
+
+      invokeCalls.length = 0
+      fireEvent.pointerDown(separator, { button: 0, clientX: 760 })
+      fireEvent.keyDown(separator, { key: "ArrowLeft" })
+
+      expect(invokeCalls.some((call) => call.command === "browser_resize_drag_start")).toBe(false)
+      expect(invokeCalls.some((call) => call.command === "browser_resize")).toBe(false)
+      expect(document.body.style.cursor).toBe("")
+
+      await act(async () => {
+        emitEvent("browser:tool_state", {
+          tabId: "tab-1",
+          mode: "pen",
+          strokeCount: 0,
+          hasDrawing: false,
+        })
+      })
+
+      expect(separator.getAttribute("aria-disabled")).toBeNull()
+      expect(separator.className).toContain("cursor-col-resize")
+    } finally {
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: originalInnerWidth,
+      })
+    }
+  })
+
   it("shows the cookie-import banner once a tab exists and a source is available, then dispatches browser_import_cookies", async () => {
     registerInvoke("browser_tab_list", async () => [
       {
@@ -1402,9 +1635,212 @@ describe("BrowserSidebar", () => {
     expect(request.prompt).toContain("Selector: button.cta")
     expect(request.prompt).not.toContain("Tighten the spacing here")
     expect(request.visiblePrompt).toBe("Tighten the spacing here")
-    expect(Array.from(request.image.bytes)).toEqual([104, 101, 108, 108, 111])
-    expect(request.image.originalName).toMatch(/^browser-inspect-/)
+    expect(request.image).toBeTruthy()
+    expect(Array.from(request.image!.bytes)).toEqual([104, 101, 108, 108, 111])
+    expect(request.image!.originalName).toMatch(/^browser-inspect-/)
     expect(invokeCalls.some((call) => call.command === "browser_screenshot")).toBe(true)
+    const prepareIndex = invokeCalls.findIndex(
+      (call) =>
+        call.command === "browser_eval_fire_and_forget" &&
+        String(call.args?.js ?? "").includes("prepareCapture"),
+    )
+    const screenshotIndex = invokeCalls.findIndex(
+      (call) => call.command === "browser_screenshot",
+    )
+    const deactivateIndex = invokeCalls.findIndex(
+      (call, index) =>
+        index > screenshotIndex &&
+        call.command === "browser_eval_fire_and_forget" &&
+        String(call.args?.js ?? "").includes("deactivate"),
+    )
+    expect(prepareIndex).toBeGreaterThanOrEqual(0)
+    expect(screenshotIndex).toBeGreaterThan(prepareIndex)
+    expect(deactivateIndex).toBeGreaterThan(screenshotIndex)
+  })
+
+  it("accepts raw browser tool context events and adds them to the agent composer", async () => {
+    const addedRequests: BrowserAgentContextRequest[] = []
+    const onAddAgentContext = vi.fn(async (request: BrowserAgentContextRequest) => {
+      addedRequests.push(request)
+    })
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "xero-browser-tab-1",
+        title: "Local",
+        url: "http://localhost:5173/",
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+    registerInvoke("browser_screenshot", async () => "aGVsbG8=")
+
+    render(<BrowserSidebar open onAddAgentContext={onAddAgentContext} />)
+    await screen.findByLabelText("Sketch on page")
+
+    await act(async () => {
+      emitEvent("browser:tool_context", {
+        kind: "pen",
+        note: "Keep this arrow attached",
+        page: { url: "http://localhost:5173/", title: "Local" },
+        strokeCount: 1,
+        viewport: { width: 800, height: 600 },
+      })
+    })
+
+    await waitFor(() => expect(onAddAgentContext).toHaveBeenCalledTimes(1))
+    const request = addedRequests[0]!
+    expect(request.prompt).toContain("Browser sketch context")
+    expect(request.visiblePrompt).toBe("Keep this arrow attached")
+    expect(request.image).toBeTruthy()
+    expect(Array.from(request.image!.bytes)).toEqual([104, 101, 108, 108, 111])
+  })
+
+  it("adds browser context without requiring bridge-backed eval during capture prep", async () => {
+    const addedRequests: BrowserAgentContextRequest[] = []
+    const onAddAgentContext = vi.fn(async (request: BrowserAgentContextRequest) => {
+      addedRequests.push(request)
+    })
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "xero-browser-tab-1",
+        title: "Local",
+        url: "http://localhost:5173/",
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+    registerInvoke("browser_eval", async () => {
+      throw new Error("bridge not installed")
+    })
+    registerInvoke("browser_screenshot", async () => "aGVsbG8=")
+
+    render(<BrowserSidebar open onAddAgentContext={onAddAgentContext} />)
+    await screen.findByLabelText("Sketch on page")
+
+    await act(async () => {
+      emitEvent("browser:tool_context", {
+        tab_id: "tab-1",
+        context: {
+          kind: "pen",
+          note: "Still attach this",
+          page: { url: "http://localhost:5173/", title: "Local" },
+          strokeCount: 1,
+          viewport: { width: 800, height: 600 },
+        },
+      })
+    })
+
+    await waitFor(() => expect(onAddAgentContext).toHaveBeenCalledTimes(1))
+    expect(addedRequests[0]?.visiblePrompt).toBe("Still attach this")
+    expect(
+      invokeCalls.some(
+        (call) =>
+          call.command === "browser_eval_fire_and_forget" &&
+          String(call.args?.js ?? "").includes("prepareCapture"),
+      ),
+    ).toBe(true)
+  })
+
+  it("still adds the browser note when screenshot capture fails", async () => {
+    const addedRequests: BrowserAgentContextRequest[] = []
+    const onAddAgentContext = vi.fn(async (request: BrowserAgentContextRequest) => {
+      addedRequests.push(request)
+    })
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "xero-browser-tab-1",
+        title: "Local",
+        url: "http://localhost:5173/",
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+    registerInvoke("browser_screenshot", async () => {
+      throw new Error("screenshot failed")
+    })
+
+    render(<BrowserSidebar open onAddAgentContext={onAddAgentContext} />)
+    await screen.findByLabelText("Sketch on page")
+
+    await act(async () => {
+      emitEvent("browser:tool_context", {
+        tab_id: "tab-1",
+        context: {
+          kind: "inspect",
+          note: "Fix this heading",
+          page: { url: "http://localhost:5173/", title: "Local" },
+          viewport: { width: 800, height: 600 },
+          element: {
+            selector: "h1",
+            tagName: "h1",
+            id: null,
+            classes: [],
+            role: null,
+            label: null,
+            text: "Creators aren't content.",
+            rect: { x: 10, y: 20, width: 300, height: 80 },
+          },
+        },
+      })
+    })
+
+    await waitFor(() => expect(onAddAgentContext).toHaveBeenCalledTimes(1))
+    expect(addedRequests[0]?.visiblePrompt).toBe("Fix this heading")
+    expect(addedRequests[0]?.prompt).toContain("Browser element inspection context")
+    expect(addedRequests[0]?.prompt).toContain("screenshot could not be captured")
+    expect(addedRequests[0]?.image).toBeUndefined()
+  })
+
+  it("accepts native browser tool context envelopes with bridge metadata", async () => {
+    const addedRequests: BrowserAgentContextRequest[] = []
+    const onAddAgentContext = vi.fn(async (request: BrowserAgentContextRequest) => {
+      addedRequests.push(request)
+    })
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "xero-browser-tab-1",
+        title: "Local",
+        url: "http://localhost:5173/",
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+    registerInvoke("browser_screenshot", async () => "aGVsbG8=")
+
+    render(<BrowserSidebar open onAddAgentContext={onAddAgentContext} />)
+    await screen.findByLabelText("Sketch on page")
+
+    await act(async () => {
+      emitEvent("browser:tool_context", {
+        tab_id: "tab-1",
+        context: {
+          protocolVersion: "xero.in_app_browser_bridge.v1",
+          sequence: 12,
+          navigationGeneration: 1,
+          mutationGeneration: 0,
+          kind: "pen",
+          note: "Use this exact spot",
+          page: { url: "http://localhost:5173/", title: "Local" },
+          strokeCount: 2,
+          viewport: { width: 800, height: 600 },
+        },
+      })
+    })
+
+    await waitFor(() => expect(onAddAgentContext).toHaveBeenCalledTimes(1))
+    expect(addedRequests[0]?.visiblePrompt).toBe("Use this exact spot")
   })
 
   it("redacts local dev-server URLs from browser tool prompts", () => {
@@ -1467,6 +1903,433 @@ describe("BrowserSidebar", () => {
     expect(script).toContain("#ff2d55")
     expect(script).toContain("#34c759")
     expect(script).toContain("#ff2dff")
-    expect(script).toContain('path.style.stroke = "url(#" + gradientId + ")"')
+    expect(script).toContain('stylePenPath(path, "url(#" + gradientId + ")")')
+  })
+
+  it("emits browser tool context through Tauri internals when the page bridge is unavailable", async () => {
+    const originalTauriInternals = Object.getOwnPropertyDescriptor(
+      window,
+      "__TAURI_INTERNALS__",
+    )
+    const originalBridge = Object.getOwnPropertyDescriptor(window, "__xeroBridge__")
+    const invoke = vi.fn(async (_command: string, _args?: Record<string, unknown>) => null)
+    const theme: BrowserToolTheme = {
+      background: "#09090b",
+      foreground: "#fafafa",
+      card: "#18181b",
+      cardForeground: "#fafafa",
+      popover: "#18181b",
+      popoverForeground: "#fafafa",
+      primary: "#fafafa",
+      primaryForeground: "#18181b",
+      secondary: "#27272a",
+      secondaryForeground: "#fafafa",
+      muted: "#27272a",
+      mutedForeground: "#a1a1aa",
+      accent: "#f97316",
+      accentForeground: "#111827",
+      destructive: "#ef4444",
+      destructiveForeground: "#fafafa",
+      border: "#3f3f46",
+      input: "#3f3f46",
+      ring: "#f97316",
+    }
+    const script = buildBrowserToolActivationScript({
+      mode: "pen",
+      pageLabel: "Local App",
+      theme,
+    })
+
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: { invoke },
+    })
+    Object.defineProperty(window, "__xeroBridge__", {
+      configurable: true,
+      value: undefined,
+    })
+
+    try {
+      new Function(script)()
+      const toolHost = document.getElementById("__xero-browser-tool-root")
+      const shadow = toolHost?.shadowRoot
+      const overlay = shadow?.querySelector(".pen-layer")
+      expect(overlay).toBeTruthy()
+
+      dispatchPointer(overlay!, "pointerdown", { clientX: 100, clientY: 100 })
+      dispatchPointer(overlay!, "pointermove", { clientX: 140, clientY: 110 })
+      dispatchPointer(overlay!, "pointerup", { clientX: 180, clientY: 120 })
+
+      const textarea = shadow?.querySelector<HTMLTextAreaElement>(".composer-input")
+      const send = shadow?.querySelector<HTMLButtonElement>(".send-button")
+      expect(textarea).toBeTruthy()
+      expect(send).toBeTruthy()
+
+      textarea!.value = "Keep this attached"
+      send!.click()
+
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith(
+          "browser_internal_event",
+          expect.objectContaining({
+            kind: "tool_context",
+            payload: expect.any(String),
+          }),
+        ),
+      )
+      const contextCall = invoke.mock.calls.find(
+        ([command, args]) =>
+          command === "browser_internal_event" &&
+          (args as { kind?: unknown } | undefined)?.kind === "tool_context",
+      )
+      const payload = JSON.parse(
+        String((contextCall?.[1] as { payload?: unknown } | undefined)?.payload ?? "{}"),
+      ) as { kind?: unknown; note?: unknown; strokeCount?: unknown }
+      expect(payload.kind).toBe("pen")
+      expect(payload.note).toBe("Keep this attached")
+      expect(payload.strokeCount).toBe(1)
+    } finally {
+      ;(window as unknown as { __xeroBrowserTool?: { deactivate: () => void } })
+        .__xeroBrowserTool?.deactivate()
+      if (originalTauriInternals) {
+        Object.defineProperty(window, "__TAURI_INTERNALS__", originalTauriInternals)
+      } else {
+        delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+      }
+      if (originalBridge) {
+        Object.defineProperty(window, "__xeroBridge__", originalBridge)
+      } else {
+        delete (window as unknown as { __xeroBridge__?: unknown }).__xeroBridge__
+      }
+    }
+  })
+
+  it("commits pen strokes into one document-space SVG layer without resize scaling", async () => {
+    const originalWidth = window.innerWidth
+    const originalHeight = window.innerHeight
+    let restoreDocumentSize = () => {}
+    const theme: BrowserToolTheme = {
+      background: "#09090b",
+      foreground: "#fafafa",
+      card: "#18181b",
+      cardForeground: "#fafafa",
+      popover: "#18181b",
+      popoverForeground: "#fafafa",
+      primary: "#fafafa",
+      primaryForeground: "#18181b",
+      secondary: "#27272a",
+      secondaryForeground: "#fafafa",
+      muted: "#27272a",
+      mutedForeground: "#a1a1aa",
+      accent: "#f97316",
+      accentForeground: "#111827",
+      destructive: "#ef4444",
+      destructiveForeground: "#fafafa",
+      border: "#3f3f46",
+      input: "#3f3f46",
+      ring: "#f97316",
+    }
+    const script = buildBrowserToolActivationScript({
+      mode: "pen",
+      pageLabel: "Local App",
+      theme,
+    })
+
+    try {
+      setWindowScroll(0, 0)
+      setWindowInnerSize(800, 600)
+      restoreDocumentSize = setDocumentSize(1200, 1600)
+      new Function(script)()
+
+      const toolHost = document.getElementById("__xero-browser-tool-root")
+      const shadow = toolHost?.shadowRoot
+      const overlay = shadow?.querySelector(".pen-layer")
+      const documentLayer = document.getElementById("__xero-browser-pen-document-layer")
+      expect(overlay).toBeTruthy()
+      expect(documentLayer).toBeTruthy()
+      expect(documentLayer?.parentElement).toBe(document.body)
+      expect(documentLayer?.getAttribute("data-xero-browser-tool-document-layer")).toBe("true")
+      expect(overlay?.getAttribute("viewBox")).toBe("0 0 800 600")
+      expect(documentLayer?.getAttribute("viewBox")).toBe("0 0 1200 1600")
+      expect(documentLayer?.getAttribute("width")).toBe("1200")
+      expect((documentLayer as SVGSVGElement | null)?.style.width).toBe("1200px")
+
+      dispatchPointer(overlay!, "pointerdown", { clientX: 100, clientY: 100 })
+      dispatchPointer(overlay!, "pointermove", { clientX: 140, clientY: 110 })
+      dispatchPointer(overlay!, "pointerup", { clientX: 180, clientY: 120 })
+
+      expect(shadow?.querySelector(".pen-path")).toBeNull()
+      const path = documentLayer?.querySelector(".xero-document-pen-path")
+      expect(path?.getAttribute("d")).toContain("M 100 100")
+      expect(path?.getAttribute("d")).toContain("L 180 120")
+
+      setWindowInnerSize(400, 600)
+      restoreDocumentSize()
+      restoreDocumentSize = setDocumentSize(900, 1600)
+      await act(async () => {
+        window.dispatchEvent(new Event("resize"))
+        await new Promise((resolve) => window.requestAnimationFrame(resolve))
+      })
+
+      expect(overlay?.getAttribute("viewBox")).toBe("0 0 400 600")
+      expect(documentLayer?.getAttribute("viewBox")).toBe("0 0 900 1600")
+      expect(documentLayer?.getAttribute("width")).toBe("900")
+      expect(path?.getAttribute("d")).toContain("M 100 100")
+      expect(path?.getAttribute("d")).toContain("L 180 120")
+    } finally {
+      ;(window as unknown as { __xeroBrowserTool?: { deactivate: () => void } })
+        .__xeroBrowserTool?.deactivate()
+      restoreDocumentSize()
+      setWindowInnerSize(originalWidth, originalHeight)
+      setWindowScroll(0, 0)
+    }
+  })
+
+  it("records scrolled drawings in document coordinates instead of viewport coordinates", async () => {
+    const originalWidth = window.innerWidth
+    const originalHeight = window.innerHeight
+    let restoreDocumentSize = () => {}
+    const theme: BrowserToolTheme = {
+      background: "#09090b",
+      foreground: "#fafafa",
+      card: "#18181b",
+      cardForeground: "#fafafa",
+      popover: "#18181b",
+      popoverForeground: "#fafafa",
+      primary: "#fafafa",
+      primaryForeground: "#18181b",
+      secondary: "#27272a",
+      secondaryForeground: "#fafafa",
+      muted: "#27272a",
+      mutedForeground: "#a1a1aa",
+      accent: "#f97316",
+      accentForeground: "#111827",
+      destructive: "#ef4444",
+      destructiveForeground: "#fafafa",
+      border: "#3f3f46",
+      input: "#3f3f46",
+      ring: "#f97316",
+    }
+    const script = buildBrowserToolActivationScript({
+      mode: "pen",
+      pageLabel: "Local App",
+      theme,
+    })
+
+    try {
+      setWindowScroll(0, 0)
+      setWindowInnerSize(800, 600)
+      restoreDocumentSize = setDocumentSize(1000, 1800)
+      new Function(script)()
+
+      const toolHost = document.getElementById("__xero-browser-tool-root")
+      const shadow = toolHost?.shadowRoot
+      const overlay = shadow?.querySelector(".pen-layer")
+      const documentLayer = document.getElementById("__xero-browser-pen-document-layer")
+      expect(overlay).toBeTruthy()
+      expect(documentLayer).toBeTruthy()
+
+      setWindowScroll(0, 300)
+      dispatchPointer(overlay!, "pointerdown", { clientX: 680, clientY: 320 })
+      dispatchPointer(overlay!, "pointermove", { clientX: 715, clientY: 325 })
+      dispatchPointer(overlay!, "pointerup", { clientX: 760, clientY: 340 })
+
+      const path = documentLayer?.querySelector(".xero-document-pen-path")
+      expect(path?.getAttribute("d")).toContain("M 680 620")
+      expect(path?.getAttribute("d")).toContain("L 760 640")
+
+      await act(async () => {
+        setWindowScroll(0, 520)
+        window.dispatchEvent(new Event("scroll"))
+        await new Promise((resolve) => window.requestAnimationFrame(resolve))
+      })
+
+      expect(path?.getAttribute("d")).toContain("M 680 620")
+      expect(path?.getAttribute("d")).toContain("L 760 640")
+    } finally {
+      ;(window as unknown as { __xeroBrowserTool?: { deactivate: () => void } })
+        .__xeroBrowserTool?.deactivate()
+      restoreDocumentSize()
+      setWindowInnerSize(originalWidth, originalHeight)
+      setWindowScroll(0, 0)
+    }
+  })
+
+  it("keeps pen strokes attached to an inner scroll container", async () => {
+    const scroller = document.createElement("div")
+    const child = document.createElement("div")
+    const originalElementFromPoint = Object.getOwnPropertyDescriptor(
+      document,
+      "elementFromPoint",
+    )
+    const restores = [
+      setNumberProperty(scroller, "clientWidth", 320),
+      setNumberProperty(scroller, "clientHeight", 240),
+      setNumberProperty(scroller, "scrollWidth", 320),
+      setNumberProperty(scroller, "scrollHeight", 1000),
+    ]
+    scroller.style.overflowY = "auto"
+    child.textContent = "Scrollable content"
+    scroller.appendChild(child)
+    document.body.appendChild(scroller)
+    vi.spyOn(scroller, "getBoundingClientRect").mockReturnValue(
+      rect({
+        bottom: 340,
+        height: 240,
+        left: 50,
+        right: 370,
+        top: 100,
+        width: 320,
+      }),
+    )
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn(() => child),
+    })
+    scroller.scrollTop = 200
+    const theme: BrowserToolTheme = {
+      background: "#09090b",
+      foreground: "#fafafa",
+      card: "#18181b",
+      cardForeground: "#fafafa",
+      popover: "#18181b",
+      popoverForeground: "#fafafa",
+      primary: "#fafafa",
+      primaryForeground: "#18181b",
+      secondary: "#27272a",
+      secondaryForeground: "#fafafa",
+      muted: "#27272a",
+      mutedForeground: "#a1a1aa",
+      accent: "#f97316",
+      accentForeground: "#111827",
+      destructive: "#ef4444",
+      destructiveForeground: "#fafafa",
+      border: "#3f3f46",
+      input: "#3f3f46",
+      ring: "#f97316",
+    }
+    const script = buildBrowserToolActivationScript({
+      mode: "pen",
+      pageLabel: "Local App",
+      theme,
+    })
+
+    try {
+      new Function(script)()
+      const toolHost = document.getElementById("__xero-browser-tool-root")
+      const overlay = toolHost?.shadowRoot?.querySelector(".pen-layer")
+      expect(overlay).toBeTruthy()
+
+      dispatchPointer(overlay!, "pointerdown", { clientX: 100, clientY: 150 })
+      dispatchPointer(overlay!, "pointermove", { clientX: 140, clientY: 165 })
+      dispatchPointer(overlay!, "pointerup", { clientX: 180, clientY: 175 })
+
+      const documentLayer = document.getElementById("__xero-browser-pen-document-layer")
+      expect(documentLayer?.parentElement).toBe(scroller)
+      expect(scroller.style.position).toBe("relative")
+      expect(documentLayer?.getAttribute("viewBox")).toBe("0 0 320 1000")
+
+      const path = documentLayer?.querySelector(".xero-document-pen-path")
+      expect(path?.getAttribute("d")).toContain("M 50 250")
+      expect(path?.getAttribute("d")).toContain("L 130 275")
+
+      scroller.scrollTop = 320
+      await act(async () => {
+        scroller.dispatchEvent(new Event("scroll", { bubbles: true }))
+        await new Promise((resolve) => window.requestAnimationFrame(resolve))
+      })
+
+      expect(documentLayer?.parentElement).toBe(scroller)
+      expect(path?.getAttribute("d")).toContain("M 50 250")
+      expect(path?.getAttribute("d")).toContain("L 130 275")
+    } finally {
+      ;(window as unknown as { __xeroBrowserTool?: { deactivate: () => void } })
+        .__xeroBrowserTool?.deactivate()
+      for (let index = restores.length - 1; index >= 0; index -= 1) {
+        restores[index]?.()
+      }
+      scroller.remove()
+      if (originalElementFromPoint) {
+        Object.defineProperty(document, "elementFromPoint", originalElementFromPoint)
+      } else {
+        delete (document as unknown as { elementFromPoint?: unknown }).elementFromPoint
+      }
+    }
+  })
+
+  it("forwards wheel scrolling through the pen overlay to the page", async () => {
+    const scroller = document.createElement("div")
+    const originalElementFromPoint = Object.getOwnPropertyDescriptor(
+      document,
+      "elementFromPoint",
+    )
+    scroller.style.overflowY = "auto"
+    document.body.appendChild(scroller)
+    Object.defineProperty(scroller, "clientHeight", {
+      configurable: true,
+      value: 200,
+    })
+    Object.defineProperty(scroller, "scrollHeight", {
+      configurable: true,
+      value: 1000,
+    })
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn(() => scroller),
+    })
+    const theme: BrowserToolTheme = {
+      background: "#09090b",
+      foreground: "#fafafa",
+      card: "#18181b",
+      cardForeground: "#fafafa",
+      popover: "#18181b",
+      popoverForeground: "#fafafa",
+      primary: "#fafafa",
+      primaryForeground: "#18181b",
+      secondary: "#27272a",
+      secondaryForeground: "#fafafa",
+      muted: "#27272a",
+      mutedForeground: "#a1a1aa",
+      accent: "#f97316",
+      accentForeground: "#111827",
+      destructive: "#ef4444",
+      destructiveForeground: "#fafafa",
+      border: "#3f3f46",
+      input: "#3f3f46",
+      ring: "#f97316",
+    }
+    const script = buildBrowserToolActivationScript({
+      mode: "pen",
+      pageLabel: "Local App",
+      theme,
+    })
+
+    try {
+      new Function(script)()
+      const toolHost = document.getElementById("__xero-browser-tool-root")
+      const overlay = toolHost?.shadowRoot?.querySelector(".pen-layer")
+      expect(overlay).toBeTruthy()
+
+      overlay!.dispatchEvent(
+        new WheelEvent("wheel", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 20,
+          clientY: 20,
+          deltaY: 120,
+        }),
+      )
+
+      expect(scroller.scrollTop).toBe(120)
+    } finally {
+      ;(window as unknown as { __xeroBrowserTool?: { deactivate: () => void } })
+        .__xeroBrowserTool?.deactivate()
+      scroller.remove()
+      if (originalElementFromPoint) {
+        Object.defineProperty(document, "elementFromPoint", originalElementFromPoint)
+      } else {
+        delete (document as unknown as { elementFromPoint?: unknown }).elementFromPoint
+      }
+    }
   })
 })

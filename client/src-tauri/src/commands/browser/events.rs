@@ -10,6 +10,7 @@ pub const BROWSER_DOWNLOAD_EVENT: &str = "browser:download";
 pub const BROWSER_RESIZE_DRAG_EVENT: &str = "browser:resize_drag";
 pub const BROWSER_TOOL_CONTEXT_EVENT: &str = "browser:tool_context";
 pub const BROWSER_TOOL_CLOSED_EVENT: &str = "browser:tool_closed";
+pub const BROWSER_TOOL_STATE_EVENT: &str = "browser:tool_state";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -84,6 +85,15 @@ pub struct BrowserToolContextPayload {
 pub struct BrowserToolClosedPayload {
     pub tab_id: String,
     pub mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserToolStatePayload {
+    pub tab_id: String,
+    pub mode: Option<String>,
+    pub stroke_count: u64,
+    pub has_drawing: bool,
 }
 
 pub fn emit<R: Runtime, T: Serialize + Clone>(app: &AppHandle<R>, event: &str, payload: &T) {

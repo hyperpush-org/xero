@@ -272,8 +272,6 @@ export interface AgentRuntimeProps {
   pendingComposerInsert?: AgentComposerInsert | null
   /** Called once the pending composer insert has been applied locally. */
   onPendingComposerInsertConsumed?: (id: string) => void
-  /** True while browser tooling is preparing context for this composer. */
-  browserContextLoading?: boolean
   /** Display preference for compacting completed tool calls. */
   toolCallGroupingPreference?: ToolCallGroupingPreference
   /** Automatically accept agent routing suggestions and continue in the suggested agent. */
@@ -2308,7 +2306,6 @@ export const AgentRuntime = memo(function AgentRuntime({
   onPendingInitialRuntimeAgentIdConsumed,
   pendingComposerInsert = null,
   onPendingComposerInsertConsumed,
-  browserContextLoading = false,
   toolCallGroupingPreference = 'grouped',
   agentRoutingAutoSwitchEnabled = false,
 }: AgentRuntimeProps) {
@@ -2644,9 +2641,6 @@ export const AgentRuntime = memo(function AgentRuntime({
   )
 
   const [pendingAttachments, setPendingAttachments] = useState<ComposerPendingAttachment[]>([])
-  const [externalComposerInsertLoadingIds, setExternalComposerInsertLoadingIds] = useState<Set<string>>(
-    () => new Set(),
-  )
   const pendingAttachmentsRef = useRef<ComposerPendingAttachment[]>([])
   pendingAttachmentsRef.current = pendingAttachments
   const consumedComposerInsertIdsRef = useRef<Set<string>>(new Set())
@@ -2734,9 +2728,7 @@ export const AgentRuntime = memo(function AgentRuntime({
         type: image.mediaType,
         size: image.bytes.byteLength,
       })
-      if (classification.kind === null) {
-        return
-      }
+      if (classification.kind === null) return
 
       const id = `composer-insert-${insertId}`
       const previewUrl =
@@ -2756,11 +2748,6 @@ export const AgentRuntime = memo(function AgentRuntime({
       setPendingAttachments((prev) =>
         prev.some((attachment) => attachment.id === id) ? prev : [...prev, optimistic],
       )
-      setExternalComposerInsertLoadingIds((current) => {
-        const next = new Set(current)
-        next.add(id)
-        return next
-      })
 
       void stageAgentAttachment({
         projectId: projectIdForAttachments,
@@ -2793,14 +2780,6 @@ export const AgentRuntime = memo(function AgentRuntime({
                 : attachment,
             ),
           )
-        })
-        .finally(() => {
-          setExternalComposerInsertLoadingIds((current) => {
-            if (!current.has(id)) return current
-            const next = new Set(current)
-            next.delete(id)
-            return next
-          })
         })
     },
     [projectIdForAttachments, runIdForAttachments, stageAgentAttachment],
@@ -4036,7 +4015,6 @@ export const AgentRuntime = memo(function AgentRuntime({
       hasLiveRuntimeStream,
   )
   const isStoppingRuntimeRun = runtimeRunActionStatus === 'running' && pendingRuntimeRunAction === 'stop'
-  const showBrowserContextLoadingOverlay = browserContextLoading || externalComposerInsertLoadingIds.size > 0
   const closeState = useMemo<AgentPaneCloseState>(
     () => ({
       hasRunningRun: Boolean(renderableRuntimeRun && !renderableRuntimeRun.isTerminal),
@@ -4429,24 +4407,6 @@ export const AgentRuntime = memo(function AgentRuntime({
           sendButtonLabel={sendButtonLabel}
           onOpenDiagnostics={onOpenDiagnostics}
         />
-        {showBrowserContextLoadingOverlay ? (
-          <div
-            aria-label="Adding browser context"
-            aria-live="polite"
-            className="absolute inset-0 z-50 flex items-center justify-center bg-background/95 backdrop-blur-sm"
-            role="status"
-          >
-            <div className="flex flex-col items-center gap-3 rounded-lg border border-border/70 bg-card px-5 py-4 text-center shadow-xl">
-              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                <Loader2 className="h-4 w-4 animate-spin" />
-              </span>
-              <div className="space-y-1">
-                <p className="text-[13px] font-semibold text-foreground">Adding browser context</p>
-                <p className="text-[11.5px] text-muted-foreground">Preparing the note and screenshot.</p>
-              </div>
-            </div>
-          </div>
-        ) : null}
         </div>
       </div>
       <HandoffContextDialog

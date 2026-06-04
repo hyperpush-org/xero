@@ -64,11 +64,11 @@ fn tauri_config_enables_in_app_browser_webview_capability() {
                 .to_owned()
         })
         .collect::<Vec<_>>();
-    let allows_http = remote_urls.contains(&"http://**".to_owned());
-    let allows_https = remote_urls.contains(&"https://**".to_owned());
+    let allows_http = remote_urls.contains(&"http://*:*".to_owned());
+    let allows_https = remote_urls.contains(&"https://*:*".to_owned());
     assert!(
         allows_http && allows_https,
-        "browser-webview must allow http(s) pages so localhost dev servers can load in the in-app browser"
+        "browser-webview must allow http(s) pages with non-default ports so localhost dev servers can call the browser bridge"
     );
 }
 

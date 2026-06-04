@@ -55,10 +55,10 @@ pub use diagnostics::{
 pub use events::{
     BrowserConsolePayload, BrowserDialogPayload, BrowserDownloadPayload, BrowserLoadStatePayload,
     BrowserResizeDragPayload, BrowserTabUpdatedPayload, BrowserToolClosedPayload,
-    BrowserToolContextPayload, BrowserUrlChangedPayload, BROWSER_CONSOLE_EVENT,
-    BROWSER_DIALOG_EVENT, BROWSER_DOWNLOAD_EVENT, BROWSER_LOAD_STATE_EVENT,
+    BrowserToolContextPayload, BrowserToolStatePayload, BrowserUrlChangedPayload,
+    BROWSER_CONSOLE_EVENT, BROWSER_DIALOG_EVENT, BROWSER_DOWNLOAD_EVENT, BROWSER_LOAD_STATE_EVENT,
     BROWSER_RESIZE_DRAG_EVENT, BROWSER_TAB_UPDATED_EVENT, BROWSER_TOOL_CLOSED_EVENT,
-    BROWSER_TOOL_CONTEXT_EVENT, BROWSER_URL_CHANGED_EVENT,
+    BROWSER_TOOL_CONTEXT_EVENT, BROWSER_TOOL_STATE_EVENT, BROWSER_URL_CHANGED_EVENT,
 };
 pub use native_cdp::{NativeCdpActionResult, NativeCdpBrowserService};
 pub use screenshot::capture_webview as screenshot_webview;
@@ -1682,14 +1682,14 @@ pub fn browser_internal_event<R: Runtime>(
     kind: String,
     payload: Option<String>,
 ) -> CommandResult<()> {
-    let Some(tab_id) = state.tabs().active_tab_id() else {
-        return Ok(());
-    };
     let parsed: JsonValue = payload
         .as_deref()
         .filter(|s| !s.is_empty())
         .and_then(|raw| serde_json::from_str(raw).ok())
         .unwrap_or(JsonValue::Null);
+    let Some(tab_id) = state.tabs().active_tab_id() else {
+        return Ok(());
+    };
 
     match kind.as_str() {
         "page" => {
@@ -1796,6 +1796,32 @@ pub fn browser_internal_event<R: Runtime>(
                 &app,
                 BROWSER_TOOL_CLOSED_EVENT,
                 &BrowserToolClosedPayload { tab_id, mode },
+            );
+        }
+        "tool_state" => {
+            let mode = parsed
+                .get("mode")
+                .and_then(|value| value.as_str())
+                .map(str::to_string);
+            let stroke_count = parsed
+                .get("strokeCount")
+                .or_else(|| parsed.get("stroke_count"))
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let has_drawing = parsed
+                .get("hasDrawing")
+                .or_else(|| parsed.get("has_drawing"))
+                .and_then(|value| value.as_bool())
+                .unwrap_or(stroke_count > 0);
+            events::emit(
+                &app,
+                BROWSER_TOOL_STATE_EVENT,
+                &BrowserToolStatePayload {
+                    tab_id,
+                    mode,
+                    stroke_count,
+                    has_drawing,
+                },
             );
         }
         _ => {}

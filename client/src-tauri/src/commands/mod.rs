@@ -146,8 +146,9 @@ pub use browser::{
     browser_tab_close, browser_tab_focus, browser_tab_list, browser_type, browser_wait_for_load,
     browser_wait_for_selector, BrowserControlPreferenceDto, BrowserControlSettingsDto,
     BrowserState, BrowserTabMetadata, UpsertBrowserControlSettingsRequestDto,
-    BROWSER_CONSOLE_EVENT, BROWSER_DIALOG_EVENT, BROWSER_DOWNLOAD_EVENT, BROWSER_LOAD_STATE_EVENT,
-    BROWSER_TAB_PREFIX, BROWSER_TAB_UPDATED_EVENT, BROWSER_URL_CHANGED_EVENT,
+    BROWSER_CONSOLE_EVENT, BROWSER_DIALOG_EVENT, BROWSER_DOWNLOAD_EVENT,
+    BROWSER_LOAD_STATE_EVENT, BROWSER_TAB_PREFIX, BROWSER_TAB_UPDATED_EVENT,
+    BROWSER_URL_CHANGED_EVENT,
 };
 pub use cancel_autonomous_run::cancel_autonomous_run;
 pub use code_rollback::{apply_selective_undo, apply_session_rollback};

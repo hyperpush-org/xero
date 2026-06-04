@@ -1769,8 +1769,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const [computerUseOpen, setComputerUseOpen] = useState(false)
   const [pendingBrowserComposerInsert, setPendingBrowserComposerInsert] =
     useState<PendingBrowserComposerInsert | null>(null)
-  const [browserComposerInsertLoadingTarget, setBrowserComposerInsertLoadingTarget] =
-    useState<BrowserComposerInsertTarget | null>(null)
   const [computerUseProject, setComputerUseProject] = useState<ProjectDetailView | null>(null)
   const [computerUseRuntimeSession, setComputerUseRuntimeSession] =
     useState<RuntimeSessionView | null>(null)
@@ -4344,10 +4342,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
 
       const target: BrowserComposerInsertTarget =
         activeView === 'agent' ? 'agent-view' : 'agent-dock'
+      const insertId = `browser-context-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       setPendingBrowserComposerInsert({
         target,
         insert: {
-          id: `browser-context-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          id: insertId,
           prompt: request.visiblePrompt,
           hiddenPrompt: request.prompt,
           image: request.image,
@@ -4371,14 +4370,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
       activeProject,
       activeView,
     ],
-  )
-  const handleBrowserContextLoadingChange = useCallback(
-    (loading: boolean) => {
-      setBrowserComposerInsertLoadingTarget(
-        loading ? (activeView === 'agent' ? 'agent-view' : 'agent-dock') : null,
-      )
-    },
-    [activeView],
   )
   const handleBrowserComposerInsertConsumed = useCallback((id: string) => {
     setPendingBrowserComposerInsert((current) =>
@@ -4941,7 +4932,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
                     : null
                 }
                 onPendingComposerInsertConsumed={handleBrowserComposerInsertConsumed}
-                browserContextLoading={browserComposerInsertLoadingTarget === 'agent-view'}
               />
             </LazyActivityPane>
           ) : null}
@@ -5241,7 +5231,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 pendingOpenUrl={pendingBrowserOpenUrl}
                 onPendingOpenUrlConsumed={handlePendingBrowserOpenUrlConsumed}
                 onAddAgentContext={handleAddBrowserContextToAgentComposer}
-                onAddAgentContextLoadingChange={handleBrowserContextLoadingChange}
               />
             </Suspense>
           </LazyPrerenderedSurface>
@@ -5465,9 +5454,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
                   !computerUseOpen && pendingBrowserComposerInsert?.target === 'agent-dock'
                     ? pendingBrowserComposerInsert.insert
                     : null
-                }
-                browserContextLoading={
-                  !computerUseOpen && browserComposerInsertLoadingTarget === 'agent-dock'
                 }
                 onPendingComposerInsertConsumed={handleBrowserComposerInsertConsumed}
                 onPendingInitialRuntimeAgentIdConsumed={() => {
