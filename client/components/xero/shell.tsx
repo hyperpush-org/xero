@@ -940,6 +940,8 @@ export function XeroShell({
           git={footer?.git}
           spend={footer?.spend}
           notifications={footer?.notifications}
+          notificationsActive={footer?.notificationsActive}
+          onNotificationsClick={footer?.onNotificationsClick}
           spendActive={footer?.spendActive}
           onSpendClick={footer?.onSpendClick}
         />

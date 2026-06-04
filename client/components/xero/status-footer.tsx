@@ -35,6 +35,8 @@ export interface StatusFooterProps {
   } | null
   spend?: FooterSpendData | null
   notifications?: number
+  notificationsActive?: boolean
+  onNotificationsClick?: () => void
   /** Whether the spend section is currently active (sidebar open). */
   spendActive?: boolean
   onSpendClick?: () => void
@@ -50,6 +52,8 @@ export function StatusFooter({
   git = null,
   spend = null,
   notifications = 0,
+  notificationsActive = false,
+  onNotificationsClick,
   spendActive = false,
   onSpendClick,
 }: StatusFooterProps) {
@@ -157,10 +161,22 @@ export function StatusFooter({
 
         <Divider />
 
-        <span className="flex items-center gap-1.5" aria-label={`${notifications} unread notifications`}>
+        <button
+          type="button"
+          onClick={onNotificationsClick}
+          aria-label={`${notifications} unread notifications`}
+          aria-pressed={notificationsActive}
+          title={notifications > 0 ? "View unread session responses" : "No unread session responses"}
+          className={cn(
+            "flex items-center gap-1.5 rounded px-1.5 py-0.5 -my-0.5 transition-colors",
+            "hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            notificationsActive && "bg-foreground/10 text-foreground",
+            !onNotificationsClick && "cursor-default",
+          )}
+        >
           <Bell className="h-3 w-3" />
           <span>{notifications}</span>
-        </span>
+        </button>
       </div>
     </footer>
   )

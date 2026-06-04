@@ -171,6 +171,7 @@ import {
 } from '@/lib/sidebar-motion'
 import { cn } from '@/lib/utils'
 import { FloatingRightSidebarFrame } from '@/components/xero/floating-right-sidebar-frame'
+import { SessionNotificationsSidebar } from '@/components/xero/session-notifications-sidebar'
 import type { BrowserAgentContextRequest } from '@/components/xero/browser-tool-injection'
 import { DesktopControlBanner } from '@/components/xero/desktop-control-banner'
 import { checkAttachmentModelCompatibility } from '@/lib/agent-attachments'
@@ -202,6 +203,18 @@ function preloadSolanaWorkbenchSurface() {
 const ACTIVE_VIEW_APP_STATE_KEY = 'app.activeView.v1'
 const GLOBAL_COMPUTER_USE_PROJECT_ID = 'global-computer-use'
 const GLOBAL_COMPUTER_USE_AGENT_SESSION_ID = 'agent-session-global-computer-use'
+
+type AppSidebarSurface =
+  | 'agentDock'
+  | 'browser'
+  | 'computerUse'
+  | 'ios'
+  | 'notifications'
+  | 'solana'
+  | 'terminal'
+  | 'usage'
+  | 'vcs'
+  | 'workflows'
 
 interface ComputerUseLoadResult {
   project: ProjectDetailView
@@ -1578,7 +1591,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
     pendingSkillSourceId,
     skillRegistryMutationError,
     isDesktopRuntime,
-    activeProjectUnreadCompletedSessionCount,
     selectProject,
     prefetchProject,
     importProject,
@@ -1646,6 +1658,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
     openSessionInNewPane,
     setSplitterRatios,
     acknowledgeCompletedAgentSessions,
+    unreadCompletedSessionCount,
+    unreadCompletedSessionNotifications,
   } = useXeroDesktopState({ adapter, subscribeRuntimeStreams: false })
 
   const {
@@ -1769,6 +1783,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     projectId: activeProjectId,
   })
   const [usageOpen, setUsageOpen] = useState(false)
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [agentDockOpen, setAgentDockOpen] = useState(false)
   const [computerUseOpen, setComputerUseOpen] = useState(false)
   const [pendingBrowserComposerInsert, setPendingBrowserComposerInsert] =
@@ -2112,34 +2127,34 @@ export function XeroApp({ adapter }: XeroAppProps) {
 
   useEffect(() => clearPendingAgentDockOpen, [clearPendingAgentDockOpen])
 
+  const closeSidebarsExcept = useCallback((except: AppSidebarSurface | null = null) => {
+    if (except !== 'browser') setBrowserOpen(false)
+    if (except !== 'ios') setIosOpen(false)
+    if (except !== 'solana') setSolanaOpen(false)
+    if (except !== 'vcs') setVcsOpen(false)
+    if (except !== 'workflows') setWorkflowsOpen(false)
+    if (except !== 'usage') setUsageOpen(false)
+    if (except !== 'notifications') setNotificationsOpen(false)
+    if (except !== 'agentDock') setAgentDockOpen(false)
+    if (except !== 'computerUse') setComputerUseOpen(false)
+    if (except !== 'terminal') setTerminalOpen(false)
+  }, [])
+
   const toggleBrowser = useCallback(() => {
     clearPendingAgentDockOpen()
     if (browserOpen) {
       setBrowserOpen(false)
       return
     }
-    setIosOpen(false)
-    setSolanaOpen(false)
-    setVcsOpen(false)
-    setWorkflowsOpen(false)
-    setAgentDockOpen(false)
-    setComputerUseOpen(false)
-    setTerminalOpen(false)
+    closeSidebarsExcept('browser')
     setBrowserOpen(true)
-  }, [browserOpen, clearPendingAgentDockOpen])
+  }, [browserOpen, clearPendingAgentDockOpen, closeSidebarsExcept])
 
   const revealBrowserSidebar = useCallback(() => {
     clearPendingAgentDockOpen()
-    setIosOpen(false)
-    setSolanaOpen(false)
-    setVcsOpen(false)
-    setWorkflowsOpen(false)
-    setUsageOpen(false)
-    setAgentDockOpen(false)
-    setComputerUseOpen(false)
-    setTerminalOpen(false)
+    closeSidebarsExcept('browser')
     setBrowserOpen(true)
-  }, [clearPendingAgentDockOpen])
+  }, [clearPendingAgentDockOpen, closeSidebarsExcept])
 
   const handleOpenUrlInBrowser = useCallback(
     (url: string) => {
@@ -2174,15 +2189,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setIosOpen(false)
       return
     }
-    setBrowserOpen(false)
-    setSolanaOpen(false)
-    setVcsOpen(false)
-    setWorkflowsOpen(false)
-    setAgentDockOpen(false)
-    setComputerUseOpen(false)
-    setTerminalOpen(false)
+    closeSidebarsExcept('ios')
     setIosOpen(true)
-  }, [clearPendingAgentDockOpen, iosOpen])
+  }, [clearPendingAgentDockOpen, closeSidebarsExcept, iosOpen])
 
   const toggleSolana = useCallback(() => {
     clearPendingAgentDockOpen()
@@ -2190,15 +2199,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setSolanaOpen(false)
       return
     }
-    setBrowserOpen(false)
-    setIosOpen(false)
-    setVcsOpen(false)
-    setWorkflowsOpen(false)
-    setAgentDockOpen(false)
-    setComputerUseOpen(false)
-    setTerminalOpen(false)
+    closeSidebarsExcept('solana')
     setSolanaOpen(true)
-  }, [clearPendingAgentDockOpen, solanaOpen])
+  }, [clearPendingAgentDockOpen, closeSidebarsExcept, solanaOpen])
 
   const toggleVcs = useCallback(() => {
     clearPendingAgentDockOpen()
@@ -2206,15 +2209,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setVcsOpen(false)
       return
     }
-    setBrowserOpen(false)
-    setIosOpen(false)
-    setSolanaOpen(false)
-    setWorkflowsOpen(false)
-    setAgentDockOpen(false)
-    setComputerUseOpen(false)
-    setTerminalOpen(false)
+    closeSidebarsExcept('vcs')
     setVcsOpen(true)
-  }, [clearPendingAgentDockOpen, vcsOpen])
+  }, [clearPendingAgentDockOpen, closeSidebarsExcept, vcsOpen])
 
   const toggleWorkflows = useCallback(() => {
     clearPendingAgentDockOpen()
@@ -2222,15 +2219,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setWorkflowsOpen(false)
       return
     }
-    setBrowserOpen(false)
-    setIosOpen(false)
-    setSolanaOpen(false)
-    setVcsOpen(false)
-    setAgentDockOpen(false)
-    setComputerUseOpen(false)
-    setTerminalOpen(false)
+    closeSidebarsExcept('workflows')
     setWorkflowsOpen(true)
-  }, [clearPendingAgentDockOpen, workflowsOpen])
+  }, [clearPendingAgentDockOpen, closeSidebarsExcept, workflowsOpen])
 
   const toggleAgentDock = useCallback(() => {
     clearPendingAgentDockOpen()
@@ -2245,13 +2236,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
         agentDefinitionId: null,
       })
     }
-    setBrowserOpen(false)
-    setIosOpen(false)
-    setSolanaOpen(false)
-    setVcsOpen(false)
-    setWorkflowsOpen(false)
-    setUsageOpen(false)
-    setTerminalOpen(false)
+    closeSidebarsExcept('agentDock')
 
     if (computerUseOpen) {
       setComputerUseOpen(false)
@@ -2270,6 +2255,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     activeView,
     agentDockOpen,
     clearPendingAgentDockOpen,
+    closeSidebarsExcept,
     computerUseOpen,
   ])
 
@@ -2556,14 +2542,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setSelectedWorkflowRun(null)
     setSelectedWorkflowIsDraft(false)
     setSelectedWorkflowTemplatePreviewId(null)
-    setBrowserOpen(false)
-    setIosOpen(false)
-    setSolanaOpen(false)
-    setVcsOpen(false)
-    setWorkflowsOpen(false)
-    setUsageOpen(false)
-    setTerminalOpen(false)
-    setAgentDockOpen(false)
+    closeSidebarsExcept('computerUse')
     setIsCreatingAgentSession(true)
     const openComputerUse = () => {
       void (async () => {
@@ -2589,6 +2568,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     agentDockOpen,
     clearPendingAgentDockOpen,
     closeComputerUse,
+    closeSidebarsExcept,
     computerUseOpen,
     preloadComputerUseProject,
   ])
@@ -2599,16 +2579,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setTerminalOpen(false)
       return
     }
-    setBrowserOpen(false)
-    setIosOpen(false)
-    setSolanaOpen(false)
-    setVcsOpen(false)
-    setWorkflowsOpen(false)
-    setUsageOpen(false)
-    setAgentDockOpen(false)
-    setComputerUseOpen(false)
+    closeSidebarsExcept('terminal')
     setTerminalOpen(true)
-  }, [clearPendingAgentDockOpen, terminalOpen])
+  }, [clearPendingAgentDockOpen, closeSidebarsExcept, terminalOpen])
   useEffect(() => {
     if (activeView === 'agent' && agentDockOpen) {
       setAgentDockOpen(false)
@@ -2636,16 +2609,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
   }, [])
 
   const revealTerminalSidebar = useCallback(() => {
-    setBrowserOpen(false)
-    setIosOpen(false)
-    setSolanaOpen(false)
-    setVcsOpen(false)
-    setWorkflowsOpen(false)
-    setUsageOpen(false)
-    setAgentDockOpen(false)
-    setComputerUseOpen(false)
+    closeSidebarsExcept('terminal')
     setTerminalOpen(true)
-  }, [])
+  }, [closeSidebarsExcept])
 
   const waitForTerminalSidebarHandle = useCallback(async () => {
     for (let attempt = 0; attempt < 30; attempt += 1) {
@@ -2856,12 +2822,15 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setPhaseNodePanelOpen(hasSelection)
   }, [])
   const phaseSidebarRestoreKeyRef = useRef<
-    'browser' | 'ios' | 'solana' | 'vcs' | 'workflows' | 'usage' | 'agentDock' | null
+    AppSidebarSurface | null
   >(null)
   const phaseSidebarStateRef = useRef({
     browserOpen,
+    computerUseOpen,
     iosOpen,
+    notificationsOpen,
     solanaOpen,
+    terminalOpen,
     vcsOpen,
     workflowsOpen,
     usageOpen,
@@ -2870,14 +2839,28 @@ export function XeroApp({ adapter }: XeroAppProps) {
   useEffect(() => {
     phaseSidebarStateRef.current = {
       browserOpen,
+      computerUseOpen,
       iosOpen,
+      notificationsOpen,
       solanaOpen,
+      terminalOpen,
       vcsOpen,
       workflowsOpen,
       usageOpen,
       agentDockOpen,
     }
-  }, [browserOpen, iosOpen, solanaOpen, vcsOpen, workflowsOpen, usageOpen, agentDockOpen])
+  }, [
+    agentDockOpen,
+    browserOpen,
+    computerUseOpen,
+    iosOpen,
+    notificationsOpen,
+    solanaOpen,
+    terminalOpen,
+    usageOpen,
+    vcsOpen,
+    workflowsOpen,
+  ])
   useEffect(() => {
     if (phaseNodePanelOpen) {
       // Don't double-collapse if we already stashed a sidebar for this open.
@@ -2886,12 +2869,21 @@ export function XeroApp({ adapter }: XeroAppProps) {
       if (snapshot.browserOpen) {
         phaseSidebarRestoreKeyRef.current = 'browser'
         setBrowserOpen(false)
+      } else if (snapshot.computerUseOpen) {
+        phaseSidebarRestoreKeyRef.current = 'computerUse'
+        setComputerUseOpen(false)
       } else if (snapshot.iosOpen) {
         phaseSidebarRestoreKeyRef.current = 'ios'
         setIosOpen(false)
+      } else if (snapshot.notificationsOpen) {
+        phaseSidebarRestoreKeyRef.current = 'notifications'
+        setNotificationsOpen(false)
       } else if (snapshot.solanaOpen) {
         phaseSidebarRestoreKeyRef.current = 'solana'
         setSolanaOpen(false)
+      } else if (snapshot.terminalOpen) {
+        phaseSidebarRestoreKeyRef.current = 'terminal'
+        setTerminalOpen(false)
       } else if (snapshot.vcsOpen) {
         phaseSidebarRestoreKeyRef.current = 'vcs'
         setVcsOpen(false)
@@ -2913,8 +2905,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
     const snapshot = phaseSidebarStateRef.current
     const anySidebarOpen =
       snapshot.browserOpen ||
+      snapshot.computerUseOpen ||
       snapshot.iosOpen ||
+      snapshot.notificationsOpen ||
       snapshot.solanaOpen ||
+      snapshot.terminalOpen ||
       snapshot.vcsOpen ||
       snapshot.workflowsOpen ||
       snapshot.usageOpen ||
@@ -2924,8 +2919,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
     // single-open invariant the toggle handlers maintain).
     if (anySidebarOpen) return
     if (key === 'browser') setBrowserOpen(true)
+    else if (key === 'computerUse') setComputerUseOpen(true)
     else if (key === 'ios') setIosOpen(true)
+    else if (key === 'notifications') setNotificationsOpen(true)
     else if (key === 'solana') setSolanaOpen(true)
+    else if (key === 'terminal') setTerminalOpen(true)
     else if (key === 'vcs') setVcsOpen(true)
     else if (key === 'workflows') setWorkflowsOpen(true)
     else if (key === 'usage') setUsageOpen(true)
@@ -3062,12 +3060,26 @@ export function XeroApp({ adapter }: XeroAppProps) {
           totalCostMicros: footerSpend.totalCostMicros,
         }
       : null,
-    notifications: activeProjectUnreadCompletedSessionCount,
+    notifications: unreadCompletedSessionCount,
+    notificationsActive: notificationsOpen,
+    onNotificationsClick: () => {
+      if (notificationsOpen) {
+        setNotificationsOpen(false)
+        return
+      }
+      closeSidebarsExcept('notifications')
+      setNotificationsOpen(true)
+    },
     spendActive: usageOpen,
     onSpendClick: activeProjectId
       ? () => {
           preloadSurfaceChunk('usage')
-          setUsageOpen((current) => !current)
+          if (usageOpen) {
+            setUsageOpen(false)
+            return
+          }
+          closeSidebarsExcept('usage')
+          setUsageOpen(true)
         }
       : undefined,
   }
@@ -3184,7 +3196,29 @@ export function XeroApp({ adapter }: XeroAppProps) {
     }
 
     acknowledgeCompletedAgentSessions(visibleAgentSessionIds)
-  }, [acknowledgeCompletedAgentSessions, visibleAgentSessionIds])
+  }, [acknowledgeCompletedAgentSessions, unreadCompletedSessionCount, visibleAgentSessionIds])
+  const handleOpenNotificationSession = useCallback(
+    (projectId: string, agentSessionId: string) => {
+      void (async () => {
+        closeSidebarsExcept(null)
+        setActiveView('agent')
+
+        if (projectId !== activeProjectId) {
+          await selectProject(projectId)
+        }
+
+        await selectAgentSession(agentSessionId)
+        acknowledgeCompletedAgentSessions([agentSessionId], { projectId })
+      })().catch(() => undefined)
+    },
+    [
+      acknowledgeCompletedAgentSessions,
+      activeProjectId,
+      closeSidebarsExcept,
+      selectAgentSession,
+      selectProject,
+    ],
+  )
   const resolvePaneAgentSessionId = useCallback(
     (paneId: string): string | null => {
       const slot = agentWorkspaceLayout?.paneSlots.find((candidate) => candidate.id === paneId)
@@ -3480,12 +3514,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setSelectedWorkflowRun(null)
       setSelectedWorkflowIsDraft(false)
       setSelectedWorkflowTemplatePreviewId(null)
-      setWorkflowsOpen(false)
-      setBrowserOpen(false)
-      setIosOpen(false)
-      setSolanaOpen(false)
-      setVcsOpen(false)
-      setUsageOpen(false)
+      closeSidebarsExcept('agentDock')
       setActiveView('phases')
       setAgentAuthoringSession({ mode: 'create', initialDetail: null })
       setAgentDockOpen(true)
@@ -3505,7 +3534,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
           setIsCreatingAgentSession(false)
         })
     },
-    [activeProjectId, createAgentSession],
+    [activeProjectId, closeSidebarsExcept, createAgentSession],
   )
 
   const handleClearPendingInitialRuntimeAgent = useCallback(
@@ -3634,12 +3663,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setSelectedWorkflowTemplatePreviewId(null)
     setAgentAuthoringSession(null)
     workflowAgentInspector.selectAgent(null)
-    setWorkflowsOpen(false)
-    setBrowserOpen(false)
-    setIosOpen(false)
-    setSolanaOpen(false)
-    setVcsOpen(false)
-    setUsageOpen(false)
+    closeSidebarsExcept('agentDock')
     setActiveView('phases')
     setAgentDockOpen(true)
     const selectAgentCreate = (agentSessionId: string) => {
@@ -3665,6 +3689,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
   }, [
     activeProject?.selectedAgentSessionId,
     activeProjectId,
+    closeSidebarsExcept,
     createAgentSession,
     setActiveView,
     workflowAgentInspector.selectAgent,
@@ -3790,6 +3815,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
 
   const handleCreateWorkflow = useCallback(() => {
     if (!activeProjectId) {
+      closeSidebarsExcept('workflows')
       setWorkflowsOpen(true)
       return
     }
@@ -3803,10 +3829,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setSelectedWorkflowTemplatePreviewId(null)
     setAgentAuthoringSession(null)
     workflowAgentInspector.selectAgent(null)
-    setWorkflowsOpen(false)
+    closeSidebarsExcept(null)
     setActiveView('phases')
   }, [
     activeProjectId,
+    closeSidebarsExcept,
     setActiveView,
     workflowAgentInspector,
   ])
@@ -3825,11 +3852,12 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setSelectedWorkflowTemplatePreviewId(null)
       setAgentAuthoringSession(null)
       workflowAgentInspector.selectAgent(null)
-      setWorkflowsOpen(false)
+      closeSidebarsExcept(null)
       setActiveView('phases')
     },
     [
       activeProjectId,
+      closeSidebarsExcept,
       setActiveView,
       workflowAgentInspector,
       workflowAgentInspector.agents,
@@ -4106,14 +4134,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
         })
       }
 
-      setWorkflowsOpen(false)
-      setBrowserOpen(false)
-      setIosOpen(false)
-      setSolanaOpen(false)
-      setVcsOpen(false)
-      setUsageOpen(false)
-      setTerminalOpen(false)
-      setAgentDockOpen(false)
+      closeSidebarsExcept(null)
       setActiveView('agent')
 
       if (activeProject?.selectedAgentSessionId) {
@@ -4134,6 +4155,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     [
       activeProject?.selectedAgentSessionId,
       activeProjectId,
+      closeSidebarsExcept,
       createAgentSession,
       customAgentDefinitions,
       workflowAgentInspector.agents,
@@ -4377,14 +4399,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
 
       if (target === 'agent-dock') {
         preloadSurfaceChunk('agent-dock')
-        setBrowserOpen(false)
-        setIosOpen(false)
-        setSolanaOpen(false)
-        setVcsOpen(false)
-        setWorkflowsOpen(false)
-        setUsageOpen(false)
-        setTerminalOpen(false)
-        setComputerUseOpen(false)
+        closeSidebarsExcept('agentDock')
         setAgentDockOpen(true)
       }
     },
@@ -4392,6 +4407,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
       activeProject,
       activeView,
       browserPenToolDisabledReason,
+      closeSidebarsExcept,
     ],
   )
   const handleBrowserComposerInsertConsumed = useCallback((id: string) => {
@@ -5282,6 +5298,12 @@ export function XeroApp({ adapter }: XeroAppProps) {
               />
             </Suspense>
           </LazyPrerenderedSurface>
+          <SessionNotificationsSidebar
+            notifications={unreadCompletedSessionNotifications}
+            onClose={() => setNotificationsOpen(false)}
+            onOpenSession={handleOpenNotificationSession}
+            open={notificationsOpen}
+          />
           {MOBILE_EMULATOR_SURFACES_ENABLED ? (
             <IosEmulatorSurface
               open={iosOpen}

@@ -101,6 +101,15 @@ export type AutonomousRunActionStatus = 'idle' | 'running'
 export type RuntimeRunActionKind = 'start' | 'update_controls' | 'stop'
 export type RuntimeRunActionStatus = 'idle' | 'running'
 
+export interface CompletedAgentSessionNotificationView {
+  projectId: string
+  projectName: string
+  agentSessionId: string
+  sessionTitle: string
+  runId: string
+  completedAt: string
+}
+
 export interface OperatorActionErrorView {
   code: string
   message: string
@@ -411,6 +420,8 @@ export interface UseXeroDesktopStateResult {
   pendingRuntimeRunAction: RuntimeRunActionKind | null
   runtimeRunActionError: OperatorActionErrorView | null
   activeProjectUnreadCompletedSessionCount: number
+  unreadCompletedSessionCount: number
+  unreadCompletedSessionNotifications: CompletedAgentSessionNotificationView[]
   selectProject: (projectId: string) => Promise<void>
   prefetchProject: (projectId: string) => void
   importProject: (path?: string) => Promise<boolean>
@@ -522,7 +533,10 @@ export interface UseXeroDesktopStateResult {
     options?: { atIndex?: number },
   ) => 'opened' | 'focused' | 'rejected-max' | 'noop'
   setSplitterRatios: (arrangementKey: string, ratios: number[]) => void
-  acknowledgeCompletedAgentSessions: (agentSessionIds: string[]) => void
+  acknowledgeCompletedAgentSessions: (
+    agentSessionIds: string[],
+    options?: { projectId?: string | null },
+  ) => void
   usageSummaries: Record<string, ProjectUsageSummaryDto>
   activeUsageSummary: ProjectUsageSummaryDto | null
   activeUsageSummaryLoadError: string | null

@@ -1068,6 +1068,15 @@ function Harness({ adapter }: { adapter: XeroDesktopAdapter }) {
       <div data-testid="unread-completed-session-count">
         {String(state.activeProjectUnreadCompletedSessionCount)}
       </div>
+      <div data-testid="global-unread-completed-session-count">
+        {String(state.unreadCompletedSessionCount)}
+      </div>
+      <div data-testid="first-unread-completed-session-project">
+        {state.unreadCompletedSessionNotifications[0]?.projectName ?? 'none'}
+      </div>
+      <div data-testid="first-unread-completed-session-title">
+        {state.unreadCompletedSessionNotifications[0]?.sessionTitle ?? 'none'}
+      </div>
       <div data-testid="autonomous-run-id">{state.agentView?.autonomousRun?.runId ?? 'none'}</div>
       <div data-testid="autonomous-run-provider-id">{state.agentView?.autonomousRun?.providerId ?? 'none'}</div>
       <div data-testid="autonomous-run-status">{state.agentView?.autonomousRun?.status ?? 'none'}</div>
@@ -1219,6 +1228,16 @@ function Harness({ adapter }: { adapter: XeroDesktopAdapter }) {
         type="button"
       >
         View selected session
+      </button>
+      <button
+        onClick={() =>
+          state.acknowledgeCompletedAgentSessions(['agent-session-main'], {
+            projectId: 'project-1',
+          })
+        }
+        type="button"
+      >
+        View project 1 session
       </button>
     </div>
   )
@@ -2085,6 +2104,71 @@ describe('useXeroDesktopState runtime-run hydration', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'View selected session' }))
     await waitFor(() => expect(screen.getByTestId('unread-completed-session-count')).toHaveTextContent('0'))
+  })
+
+  it('counts stopped background runtime sessions across projects until that session is viewed', async () => {
+    const setup = createMockAdapter({
+      listProjects: {
+        projects: [
+          makeProjectSummary('project-1', 'Xero'),
+          makeProjectSummary('project-2', 'Orchestra'),
+        ],
+      },
+      runtimeSessions: {
+        'project-1': makeRuntimeSession('project-1', {
+          phase: 'authenticated',
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          accountId: 'acct-1',
+          lastErrorCode: null,
+          lastError: null,
+        }),
+        'project-2': makeRuntimeSession('project-2', {
+          phase: 'authenticated',
+          sessionId: 'session-2',
+          flowId: 'flow-2',
+          accountId: 'acct-2',
+          lastErrorCode: null,
+          lastError: null,
+        }),
+      },
+      runtimeRuns: {
+        'project-1': makeRuntimeRun('project-1', { runId: 'run-project-1' }),
+        'project-2': makeRuntimeRun('project-2', { runId: 'run-project-2' }),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+    fireEvent.click(screen.getByRole('button', { name: 'Select project 2' }))
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2'))
+    expect(screen.getByTestId('global-unread-completed-session-count')).toHaveTextContent('0')
+
+    act(() => {
+      setup.emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
+        run: makeRuntimeRun('project-1', {
+          runId: 'run-project-1',
+          status: 'stopped',
+          stoppedAt: '2026-04-16T13:30:10Z',
+          updatedAt: '2026-04-16T13:30:10Z',
+        }),
+      })
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId('global-unread-completed-session-count')).toHaveTextContent('1'),
+    )
+    expect(screen.getByTestId('unread-completed-session-count')).toHaveTextContent('0')
+    expect(screen.getByTestId('first-unread-completed-session-project')).toHaveTextContent('Xero')
+    expect(screen.getByTestId('first-unread-completed-session-title')).toHaveTextContent('Main session')
+
+    fireEvent.click(screen.getByRole('button', { name: 'View project 1 session' }))
+    await waitFor(() =>
+      expect(screen.getByTestId('global-unread-completed-session-count')).toHaveTextContent('0'),
+    )
   })
 
   it('projects MCP capability tool summaries into the agent tool lane projection', async () => {

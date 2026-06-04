@@ -109,6 +109,7 @@ interface AttachDesktopRuntimeListenersArgs {
     runtimeRun: RuntimeRunView | null,
     options?: { clearGlobalError?: boolean; loadError?: string | null },
   ) => RuntimeRunView | null
+  recordRuntimeSessionCompletion?: RuntimeStreamEventBufferArgs['onRuntimeSessionCompleted']
   loadProject: (projectId: string, source: ProjectLoadSource) => Promise<ProjectDetailView | null>
   resetRepositoryDiffs: (status: RepositoryStatusView | null) => void
 }
@@ -157,6 +158,7 @@ interface RuntimeRunUpdateBufferArgs {
     runtimeRun: RuntimeRunView | null,
     options?: { clearGlobalError?: boolean; loadError?: string | null },
   ) => RuntimeRunView | null
+  recordRuntimeSessionCompletion?: RuntimeStreamEventBufferArgs['onRuntimeSessionCompleted']
   setRefreshSource: SetState<RefreshSource>
   setErrorMessage: SetState<string | null>
   scheduleFlush?: FlushScheduler
@@ -501,6 +503,7 @@ function notifyRuntimeStreamCompletions(
 export function createRuntimeRunUpdateBuffer({
   activeProjectIdRef,
   applyRuntimeRunUpdate,
+  recordRuntimeSessionCompletion,
   setRefreshSource,
   setErrorMessage,
   scheduleFlush = scheduleRuntimeRunUpdateFlush,
@@ -541,6 +544,14 @@ export function createRuntimeRunUpdateBuffer({
     startTransition(() => {
       for (const update of updates) {
         applyRuntimeRunUpdate(update.projectId, update.runtimeRun)
+        if (update.runtimeRun?.status === 'stopped') {
+          recordRuntimeSessionCompletion?.({
+            projectId: update.projectId,
+            agentSessionId: update.agentSessionId,
+            runId: update.runtimeRun.runId,
+            completedAt: update.runtimeRun.stoppedAt ?? update.runtimeRun.updatedAt,
+          })
+        }
       }
 
       if (touchesActiveProject) {
@@ -745,6 +756,7 @@ export async function attachDesktopRuntimeListeners({
   setters,
   handleAdapterEventError,
   applyRuntimeRunUpdate,
+  recordRuntimeSessionCompletion,
   loadProject,
   resetRepositoryDiffs,
 }: AttachDesktopRuntimeListenersArgs): Promise<() => void> {
@@ -758,6 +770,7 @@ export async function attachDesktopRuntimeListeners({
   const runtimeRunUpdateBuffer = createRuntimeRunUpdateBuffer({
     activeProjectIdRef: refs.activeProjectIdRef,
     applyRuntimeRunUpdate,
+    recordRuntimeSessionCompletion,
     setRefreshSource: setters.setRefreshSource,
     setErrorMessage: setters.setErrorMessage,
   })

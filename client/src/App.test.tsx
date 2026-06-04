@@ -3815,7 +3815,14 @@ describe('XeroApp current UI', () => {
 
     await waitFor(() => expect(screen.getByLabelText('1 unread notifications')).toBeVisible())
 
-    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+    fireEvent.click(screen.getByLabelText('1 unread notifications'))
+    const notificationsPanel = await screen.findByRole('complementary', {
+      name: 'Session notifications',
+    })
+    expect(within(notificationsPanel).getByText('Unread sessions')).toBeVisible()
+    expect(within(notificationsPanel).getByText('Xero')).toBeVisible()
+    fireEvent.click(within(notificationsPanel).getByRole('button', { name: /Main session/i }))
+
     expect(await screen.findByLabelText('Agent conversation viewport')).toBeVisible()
     await waitFor(() => expect(screen.getByLabelText('0 unread notifications')).toBeVisible())
   })
@@ -3847,6 +3854,37 @@ describe('XeroApp current UI', () => {
     expect(panel).toHaveClass('gpu-layer')
     expect(document.querySelector('[data-slot="floating-right-sidebar-overlay"]')).toBeInTheDocument()
     expect(screen.getByText('No agent runs recorded for this project yet.')).toBeVisible()
+  })
+
+  it('keeps footer floating sidebars mutually exclusive with app sidebars', async () => {
+    const { adapter } = createAdapter()
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open browser' }))
+    expect(screen.getByRole('button', { name: 'Close browser' })).toHaveAttribute('aria-pressed', 'true')
+
+    const statusBar = screen.getByRole('contentinfo', { name: 'Status bar' })
+    const spendButton = within(statusBar).getByRole('button', {
+      name: /Project spend: no usage recorded yet/i,
+    })
+    fireEvent.click(spendButton)
+
+    await screen.findByRole('complementary', { name: 'Project usage statistics' })
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Open browser' })).toHaveAttribute('aria-pressed', 'false'),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open browser' }))
+
+    await waitFor(() =>
+      expect(screen.queryByRole('complementary', { name: 'Project usage statistics' })).not.toBeInTheDocument(),
+    )
+    expect(screen.getByRole('button', { name: 'Close browser' })).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('renders the project rail as a compact icon strip', async () => {
