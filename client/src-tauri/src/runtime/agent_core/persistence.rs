@@ -1833,7 +1833,6 @@ pub(crate) fn capture_memory_candidates_for_run(
         project_store::AgentMemoryListFilter {
             agent_session_id: Some(&snapshot.run.agent_session_id),
             include_disabled: true,
-            include_rejected: false,
         },
     )?;
     let request = ProviderMemoryExtractionRequest {
@@ -1881,10 +1880,8 @@ pub(crate) fn capture_memory_candidates_for_run(
         }
     };
 
-    let mut candidate_count = 0_usize;
-    let mut promoted_count = 0_usize;
-    let mut rejected_count = 0_usize;
-    let mut kept_candidate_count = 0_usize;
+    let mut created_count = 0_usize;
+    let mut skipped_count = 0_usize;
     let mut reinforced_duplicate_count = 0_usize;
     let mut diagnostics = Vec::new();
     let now = now_timestamp();
@@ -1922,48 +1919,18 @@ pub(crate) fn capture_memory_candidates_for_run(
                     reinforced_duplicate_count = reinforced_duplicate_count.saturating_add(1);
                     continue;
                 }
-                let inserted = project_store::insert_agent_memory(repo_root, &prepared.record)?;
-                candidate_count = candidate_count.saturating_add(1);
-                let decision = automated_memory_promotion_gate(&inserted, &prepared, &policy);
+                let decision = automated_memory_promotion_gate(&prepared, &policy);
                 match decision.outcome {
                     AutomatedMemoryPromotionOutcome::Promote => {
-                        project_store::update_agent_memory(
-                            repo_root,
-                            &project_store::AgentMemoryUpdateRecord {
-                                project_id: snapshot.run.project_id.clone(),
-                                memory_id: inserted.memory_id,
-                                review_state: Some(project_store::AgentMemoryReviewState::Approved),
-                                enabled: Some(true),
-                                diagnostic: Some(decision.diagnostic),
-                            },
-                        )?;
-                        promoted_count = promoted_count.saturating_add(1);
+                        let mut record = prepared.record;
+                        record.enabled = true;
+                        record.diagnostic = Some(decision.diagnostic);
+                        project_store::insert_agent_memory(repo_root, &record)?;
+                        created_count = created_count.saturating_add(1);
                     }
-                    AutomatedMemoryPromotionOutcome::Reject => {
-                        project_store::update_agent_memory(
-                            repo_root,
-                            &project_store::AgentMemoryUpdateRecord {
-                                project_id: snapshot.run.project_id.clone(),
-                                memory_id: inserted.memory_id,
-                                review_state: Some(project_store::AgentMemoryReviewState::Rejected),
-                                enabled: Some(false),
-                                diagnostic: Some(decision.diagnostic),
-                            },
-                        )?;
-                        rejected_count = rejected_count.saturating_add(1);
-                    }
-                    AutomatedMemoryPromotionOutcome::KeepCandidate => {
-                        project_store::update_agent_memory(
-                            repo_root,
-                            &project_store::AgentMemoryUpdateRecord {
-                                project_id: snapshot.run.project_id.clone(),
-                                memory_id: inserted.memory_id,
-                                review_state: None,
-                                enabled: Some(false),
-                                diagnostic: Some(decision.diagnostic),
-                            },
-                        )?;
-                        kept_candidate_count = kept_candidate_count.saturating_add(1);
+                    AutomatedMemoryPromotionOutcome::Skip => {
+                        skipped_count = skipped_count.saturating_add(1);
+                        diagnostics.push(decision.diagnostic);
                     }
                 }
             }
@@ -1980,13 +1947,10 @@ pub(crate) fn capture_memory_candidates_for_run(
             "label": "memory_extraction",
             "outcome": "passed",
             "trigger": trigger,
-            "candidateCount": candidate_count,
-            "createdCount": candidate_count,
-            "promotedCount": promoted_count,
-            "rejectedCount": rejected_count,
-            "keptCandidateCount": kept_candidate_count,
+            "createdCount": created_count,
+            "skippedCount": skipped_count,
             "reinforcedDuplicateCount": reinforced_duplicate_count,
-            "preInsertRejectedCount": diagnostics.len(),
+            "diagnosticCount": diagnostics.len(),
             "promotionGate": AUTOMATED_MEMORY_PROMOTION_GATE,
             "promotionGateVersion": AUTOMATED_MEMORY_PROMOTION_GATE_VERSION,
         }),
@@ -1996,7 +1960,7 @@ pub(crate) fn capture_memory_candidates_for_run(
             repo_root,
             snapshot,
             trigger,
-            candidate_count,
+            created_count,
             reinforced_duplicate_count,
             &diagnostics,
         )?;
@@ -2274,8 +2238,7 @@ struct RuntimeMemoryExtractionPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AutomatedMemoryPromotionOutcome {
     Promote,
-    Reject,
-    KeepCandidate,
+    Skip,
 }
 
 #[derive(Debug, Clone)]
@@ -2437,24 +2400,11 @@ fn prepare_automatic_memory_candidate(
             scope,
             kind,
             text,
-            review_state: project_store::AgentMemoryReviewState::Candidate,
-            enabled: false,
+            enabled: true,
             confidence: Some(confidence),
             source_run_id: Some(source.source_run_id.clone()),
             source_item_ids: provenance.source_item_ids,
-            diagnostic: Some(memory_promotion_gate_diagnostic(
-                "memory_promotion_gate_candidate_prepared",
-                MemoryPromotionGateDiagnosticInput {
-                    decision: "kept_candidate",
-                    trigger: &policy.trigger,
-                    policy,
-                    confidence,
-                    provenance_quality: provenance.provenance_quality,
-                    source_item_fallback: provenance.source_item_fallback,
-                    evidence_snippets: &provenance.evidence_snippets,
-                    message: "Candidate persisted for automated promotion-gate evaluation.",
-                },
-            )),
+            diagnostic: None,
             created_at: created_at.into(),
         },
         confidence,
@@ -2502,19 +2452,19 @@ impl RuntimeMemoryExtractionPolicy {
 }
 
 fn automated_memory_promotion_gate(
-    memory: &project_store::AgentMemoryRecord,
     prepared: &PreparedAutomaticMemoryCandidate,
     policy: &RuntimeMemoryExtractionPolicy,
 ) -> AutomatedMemoryPromotionDecision {
+    let memory = &prepared.record;
     let threshold = memory_kind_confidence_threshold(&memory.kind);
     if prepared.confidence < threshold || prepared.confidence < MIN_AUTOMATIC_MEMORY_CONFIDENCE {
         return memory_promotion_decision(
-            AutomatedMemoryPromotionOutcome::Reject,
+            AutomatedMemoryPromotionOutcome::Skip,
             "memory_promotion_gate_low_confidence",
             prepared,
             policy,
             format!(
-                "Automated memory promotion rejected `{}` because confidence {} is below the `{}` threshold {}.",
+                "Automated memory promotion skipped `{}` because confidence {} is below the `{}` threshold {}.",
                 memory.memory_id,
                 prepared.confidence,
                 agent_memory_kind_policy_label(&memory.kind),
@@ -2524,19 +2474,19 @@ fn automated_memory_promotion_gate(
     }
     if prepared.provenance_quality == "fallback_source" {
         return memory_promotion_decision(
-            AutomatedMemoryPromotionOutcome::KeepCandidate,
+            AutomatedMemoryPromotionOutcome::Skip,
             "memory_promotion_gate_low_provenance",
             prepared,
             policy,
             format!(
-                "Automated memory promotion kept `{}` inactive because the provider did not cite a source item with enough overlap.",
+                "Automated memory promotion skipped `{}` because the provider did not cite a source item with enough overlap.",
                 memory.memory_id
             ),
         );
     }
     if let Some(reason) = memory_kind_quality_rejection_reason(memory, prepared) {
         return memory_promotion_decision(
-            AutomatedMemoryPromotionOutcome::Reject,
+            AutomatedMemoryPromotionOutcome::Skip,
             reason.0,
             prepared,
             policy,
@@ -2566,8 +2516,7 @@ fn memory_promotion_decision(
 ) -> AutomatedMemoryPromotionDecision {
     let decision = match outcome {
         AutomatedMemoryPromotionOutcome::Promote => "promoted",
-        AutomatedMemoryPromotionOutcome::Reject => "rejected",
-        AutomatedMemoryPromotionOutcome::KeepCandidate => "kept_candidate",
+        AutomatedMemoryPromotionOutcome::Skip => "skipped",
     };
     AutomatedMemoryPromotionDecision {
         outcome,
@@ -2839,7 +2788,7 @@ fn memory_kind_confidence_threshold(kind: &project_store::AgentMemoryKind) -> u8
 }
 
 fn memory_kind_quality_rejection_reason(
-    memory: &project_store::AgentMemoryRecord,
+    memory: &project_store::NewAgentMemoryRecord,
     prepared: &PreparedAutomaticMemoryCandidate,
 ) -> Option<(&'static str, String)> {
     match memory.kind {
@@ -2848,7 +2797,7 @@ fn memory_kind_quality_rejection_reason(
                 return Some((
                     "memory_promotion_gate_decision_source_missing",
                     format!(
-                        "Automated memory promotion rejected `{}` because decision memory requires decision-source evidence.",
+                        "Automated memory promotion skipped `{}` because decision memory requires decision-source evidence.",
                         memory.memory_id
                     ),
                 ));
@@ -2863,7 +2812,7 @@ fn memory_kind_quality_rejection_reason(
                 return Some((
                     "memory_promotion_gate_troubleshooting_incomplete",
                     format!(
-                        "Automated memory promotion rejected `{}` because troubleshooting memory requires symptom, fix, or failed-attempt evidence.",
+                        "Automated memory promotion skipped `{}` because troubleshooting memory requires symptom, fix, or failed-attempt evidence.",
                         memory.memory_id
                     ),
                 ));
@@ -2874,7 +2823,7 @@ fn memory_kind_quality_rejection_reason(
                 return Some((
                     "memory_promotion_gate_session_summary_scope_invalid",
                     format!(
-                        "Automated memory promotion rejected `{}` because session summaries must remain session-scoped.",
+                        "Automated memory promotion skipped `{}` because session summaries must remain session-scoped.",
                         memory.memory_id
                     ),
                 ));
@@ -2887,7 +2836,7 @@ fn memory_kind_quality_rejection_reason(
 }
 
 fn evidence_or_text_contains(
-    memory: &project_store::AgentMemoryRecord,
+    memory: &project_store::NewAgentMemoryRecord,
     prepared: &PreparedAutomaticMemoryCandidate,
     needles: &[&str],
 ) -> bool {
@@ -2927,7 +2876,7 @@ fn record_memory_extraction_diagnostics(
             record_kind: project_store::ProjectRecordKind::Diagnostic,
             title: "Memory extraction diagnostics".into(),
             summary: format!(
-                "{} candidate{} rejected during {trigger} extraction.",
+                "{} memory item{} skipped during {trigger} extraction.",
                 diagnostics.len(),
                 if diagnostics.len() == 1 { "" } else { "s" }
             ),
@@ -2937,7 +2886,7 @@ fn record_memory_extraction_diagnostics(
                 "trigger": trigger,
                 "createdCount": created_count,
                 "reinforcedDuplicateCount": reinforced_duplicate_count,
-                "rejectedCount": diagnostics.len(),
+                "skippedCount": diagnostics.len(),
                 "diagnostics": diagnostics.iter().map(|diagnostic| json!({
                     "code": diagnostic.code,
                     "message": diagnostic.message,
@@ -5109,7 +5058,6 @@ mod tests {
                 project_store::AgentMemoryListFilter {
                     agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID),
                     include_disabled: true,
-                    include_rejected: true,
                 },
             )
             .expect("list memories");
@@ -5119,10 +5067,6 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(enabled.len(), 1, "{trigger}: {memories:?}");
             let memory = enabled[0];
-            assert_eq!(
-                memory.review_state,
-                project_store::AgentMemoryReviewState::Approved
-            );
             let diagnostic = memory.diagnostic.as_ref().expect("gate diagnostic");
             assert_eq!(diagnostic.code, "memory_promotion_gate_promoted");
             assert!(diagnostic
@@ -5138,7 +5082,7 @@ mod tests {
     }
 
     #[test]
-    fn automatic_memory_extraction_keeps_low_confidence_memory_disabled_after_gate() {
+    fn automatic_memory_extraction_skips_low_confidence_memory_before_storage() {
         let _guard = PROJECT_DB_LOCK.lock().expect("project db lock");
         project_store::agent_memory_lance::reset_connection_cache_for_tests();
         let project_id = "project-memory-gate-low-confidence";
@@ -5162,25 +5106,10 @@ mod tests {
             project_store::AgentMemoryListFilter {
                 agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID),
                 include_disabled: true,
-                include_rejected: true,
             },
         )
         .expect("list memories");
-        assert_eq!(memories.len(), 1, "{memories:?}");
-        let memory = &memories[0];
-        assert!(!memory.enabled);
-        assert_eq!(
-            memory.review_state,
-            project_store::AgentMemoryReviewState::Rejected
-        );
-        assert_eq!(
-            memory
-                .diagnostic
-                .as_ref()
-                .map(|diagnostic| diagnostic.code.as_str()),
-            Some("memory_promotion_gate_low_confidence")
-        );
-        assert!(!project_store::is_retrievable_agent_memory(memory));
+        assert!(memories.is_empty(), "{memories:?}");
     }
 
     #[test]

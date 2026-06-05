@@ -497,12 +497,12 @@ import {
   correctSessionMemoryRequestSchema,
   correctSessionMemoryResponseSchema,
   deleteSessionMemoryRequestSchema,
-  extractSessionMemoryCandidatesRequestSchema,
-  extractSessionMemoryCandidatesResponseSchema,
+  extractSessionMemoriesRequestSchema,
+  extractSessionMemoriesResponseSchema,
   exportSessionTranscriptRequestSchema,
   getSessionContextSnapshotRequestSchema,
-  getSessionMemoryReviewQueueRequestSchema,
-  getSessionMemoryReviewQueueResponseSchema,
+  getSessionMemoryItemsRequestSchema,
+  getSessionMemoryItemsResponseSchema,
   getSessionTranscriptRequestSchema,
   listSessionMemoriesRequestSchema,
   listSessionMemoriesResponseSchema,
@@ -522,11 +522,11 @@ import {
   type CorrectSessionMemoryRequestDto,
   type CorrectSessionMemoryResponseDto,
   type DeleteSessionMemoryRequestDto,
-  type ExtractSessionMemoryCandidatesRequestDto,
-  type ExtractSessionMemoryCandidatesResponseDto,
+  type ExtractSessionMemoriesRequestDto,
+  type ExtractSessionMemoriesResponseDto,
   type GetSessionContextSnapshotRequestDto,
-  type GetSessionMemoryReviewQueueRequestDto,
-  type GetSessionMemoryReviewQueueResponseDto,
+  type GetSessionMemoryItemsRequestDto,
+  type GetSessionMemoryItemsResponseDto,
   type GetSessionTranscriptRequestDto,
   type ListSessionMemoriesRequestDto,
   type ListSessionMemoriesResponseDto,
@@ -756,8 +756,8 @@ const COMMANDS = {
   branchAgentSession: 'branch_agent_session',
   rewindAgentSession: 'rewind_agent_session',
   listSessionMemories: 'list_session_memories',
-  extractSessionMemoryCandidates: 'extract_session_memory_candidates',
-  getSessionMemoryReviewQueue: 'get_session_memory_review_queue',
+  extractSessionMemories: 'extract_session_memories',
+  getSessionMemoryItems: 'get_session_memory_review_queue',
   updateSessionMemory: 'update_session_memory',
   correctSessionMemory: 'correct_session_memory',
   deleteSessionMemory: 'delete_session_memory',
@@ -1438,12 +1438,12 @@ export interface XeroDesktopAdapter {
   listSessionMemories?(
     request: ListSessionMemoriesRequestDto,
   ): Promise<ListSessionMemoriesResponseDto>
-  extractSessionMemoryCandidates?(
-    request: ExtractSessionMemoryCandidatesRequestDto,
-  ): Promise<ExtractSessionMemoryCandidatesResponseDto>
-  getSessionMemoryReviewQueue?(
-    request: GetSessionMemoryReviewQueueRequestDto,
-  ): Promise<GetSessionMemoryReviewQueueResponseDto>
+  extractSessionMemories?(
+    request: ExtractSessionMemoriesRequestDto,
+  ): Promise<ExtractSessionMemoriesResponseDto>
+  getSessionMemoryItems?(
+    request: GetSessionMemoryItemsRequestDto,
+  ): Promise<GetSessionMemoryItemsResponseDto>
   updateSessionMemory?(request: UpdateSessionMemoryRequestDto): Promise<SessionMemoryRecordDto>
   correctSessionMemory?(
     request: CorrectSessionMemoryRequestDto,
@@ -1751,6 +1751,24 @@ function normalizeError(error: unknown, context: string): XeroDesktopError {
       message: error.message,
       cause: error,
     })
+  }
+
+  if (typeof error === 'string' && error.trim().length > 0) {
+    return new XeroDesktopError({
+      message: `${context} failed: ${error}`,
+      cause: error,
+    })
+  }
+
+  if (error && typeof error === 'object') {
+    const candidate = error as { message?: unknown; code?: unknown }
+    if (typeof candidate.message === 'string' && candidate.message.trim().length > 0) {
+      return new XeroDesktopError({
+        code: typeof candidate.code === 'string' ? candidate.code : undefined,
+        message: candidate.message,
+        cause: error,
+      })
+    }
   }
 
   return new XeroDesktopError({
@@ -3395,18 +3413,18 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     })
   },
 
-  extractSessionMemoryCandidates(request) {
-    const parsed = extractSessionMemoryCandidatesRequestSchema.parse(request)
-    return invokeTyped(COMMANDS.extractSessionMemoryCandidates, extractSessionMemoryCandidatesResponseSchema, {
+  extractSessionMemories(request) {
+    const parsed = extractSessionMemoriesRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.extractSessionMemories, extractSessionMemoriesResponseSchema, {
       request: parsed,
     })
   },
 
-  getSessionMemoryReviewQueue(request) {
-    const parsed = getSessionMemoryReviewQueueRequestSchema.parse(request)
+  getSessionMemoryItems(request) {
+    const parsed = getSessionMemoryItemsRequestSchema.parse(request)
     return invokeTyped(
-      COMMANDS.getSessionMemoryReviewQueue,
-      getSessionMemoryReviewQueueResponseSchema,
+      COMMANDS.getSessionMemoryItems,
+      getSessionMemoryItemsResponseSchema,
       { request: parsed },
     )
   },

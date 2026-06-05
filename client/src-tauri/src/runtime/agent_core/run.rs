@@ -5112,7 +5112,6 @@ mod tests {
                 scope: project_store::AgentMemoryScope::Project,
                 kind: project_store::AgentMemoryKind::ProjectFact,
                 text: "Parser release uses zero-copy token normalization.".into(),
-                review_state: project_store::AgentMemoryReviewState::Approved,
                 enabled: true,
                 confidence: Some(92),
                 source_run_id: Some("run-handoff-carryover-source".into()),

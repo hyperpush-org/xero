@@ -954,11 +954,10 @@ impl AutonomousToolRuntime {
             &now_timestamp(),
         )?;
         let memory = project_store::get_agent_memory(&self.repo_root, project_id, memory_id)?;
-        if memory.review_state != project_store::AgentMemoryReviewState::Approved || !memory.enabled
-        {
+        if !memory.enabled {
             return Err(CommandError::user_fixable(
                 "project_context_update_memory_not_approved",
-                format!("Memory `{memory_id}` is not approved and enabled."),
+                format!("Memory `{memory_id}` is not enabled."),
             ));
         }
         Ok(memory)

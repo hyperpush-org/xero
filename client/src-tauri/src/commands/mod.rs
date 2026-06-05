@@ -273,7 +273,7 @@ pub use resume_operator_run::resume_operator_run;
 pub use search_project::{replace_in_project, search_project};
 pub use session_history::{
     branch_agent_session, compact_session_history, correct_session_memory, delete_session_memory,
-    export_session_transcript, extract_session_memory_candidates, get_session_context_snapshot,
+    export_session_transcript, extract_session_memories, get_session_context_snapshot,
     get_session_memory_review_queue, get_session_transcript, list_session_memories,
     rewind_agent_session, save_session_transcript_export, search_session_transcripts,
     update_session_memory,

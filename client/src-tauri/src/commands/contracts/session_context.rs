@@ -6,9 +6,8 @@ use serde_json::{json, Value as JsonValue};
 use crate::db::project_store::{
     agent_memory_retrieval_reason, agent_run_status_sql_value, source_fingerprint_paths,
     AgentCompactionRecord, AgentCompactionTrigger, AgentMemoryKind, AgentMemoryRecord,
-    AgentMemoryReviewState, AgentMemoryScope, AgentRunEventKind, AgentRunRecord,
-    AgentRunSnapshotRecord, AgentRunStatus, AgentSessionRecord, AgentSessionStatus,
-    AgentToolCallState, AgentUsageRecord,
+    AgentMemoryScope, AgentRunEventKind, AgentRunRecord, AgentRunSnapshotRecord, AgentRunStatus,
+    AgentSessionRecord, AgentSessionStatus, AgentToolCallState, AgentUsageRecord,
 };
 
 use super::code_history::CodePatchAvailabilityDto;
@@ -771,14 +770,6 @@ pub enum SessionMemoryKindDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionMemoryReviewStateDto {
-    Candidate,
-    Approved,
-    Rejected,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionMemoryDiagnosticDto {
     pub code: String,
@@ -797,7 +788,6 @@ pub struct SessionMemoryRecordDto {
     pub scope: SessionMemoryScopeDto,
     pub kind: SessionMemoryKindDto,
     pub text: String,
-    pub review_state: SessionMemoryReviewStateDto,
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<u8>,
@@ -842,10 +832,6 @@ pub struct ListSessionMemoriesRequestDto {
     pub agent_session_id: Option<String>,
     #[serde(default)]
     pub include_disabled: bool,
-    #[serde(default)]
-    pub include_rejected: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub review_state: Option<SessionMemoryReviewStateDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<SessionMemoryScopeDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -877,7 +863,7 @@ pub struct ListSessionMemoriesResponseDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GetSessionMemoryReviewQueueRequestDto {
+pub struct GetSessionMemoryItemsRequestDto {
     pub project_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session_id: Option<String>,
@@ -889,7 +875,7 @@ pub struct GetSessionMemoryReviewQueueRequestDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ExtractSessionMemoryCandidatesRequestDto {
+pub struct ExtractSessionMemoriesRequestDto {
     pub project_id: String,
     pub agent_session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -898,13 +884,13 @@ pub struct ExtractSessionMemoryCandidatesRequestDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ExtractSessionMemoryCandidatesResponseDto {
+pub struct ExtractSessionMemoriesResponseDto {
     pub project_id: String,
     pub agent_session_id: String,
     pub memories: Vec<SessionMemoryRecordDto>,
     pub created_count: usize,
     pub reinforced_duplicate_count: usize,
-    pub rejected_count: usize,
+    pub skipped_count: usize,
     pub diagnostics: Vec<SessionMemoryDiagnosticDto>,
 }
 
@@ -913,8 +899,6 @@ pub struct ExtractSessionMemoryCandidatesResponseDto {
 pub struct UpdateSessionMemoryRequestDto {
     pub project_id: String,
     pub memory_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub review_state: Option<SessionMemoryReviewStateDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
 }
@@ -1077,11 +1061,6 @@ pub fn session_memory_record_dto(record: &AgentMemoryRecord) -> SessionMemoryRec
             AgentMemoryKind::Troubleshooting => SessionMemoryKindDto::Troubleshooting,
         },
         text,
-        review_state: match record.review_state {
-            AgentMemoryReviewState::Candidate => SessionMemoryReviewStateDto::Candidate,
-            AgentMemoryReviewState::Approved => SessionMemoryReviewStateDto::Approved,
-            AgentMemoryReviewState::Rejected => SessionMemoryReviewStateDto::Rejected,
-        },
         enabled: record.enabled,
         confidence: record.confidence,
         source_run_id: record.source_run_id.clone(),
@@ -1125,11 +1104,12 @@ pub fn session_memory_promotion_status(record: &AgentMemoryRecord) -> String {
                 .and_then(JsonValue::as_str)
                 .map(ToOwned::to_owned)
         })
-        .unwrap_or_else(|| match record.review_state {
-            AgentMemoryReviewState::Candidate => "candidate".into(),
-            AgentMemoryReviewState::Approved if record.enabled => "approved_enabled".into(),
-            AgentMemoryReviewState::Approved => "approved_disabled".into(),
-            AgentMemoryReviewState::Rejected => "rejected".into(),
+        .unwrap_or_else(|| {
+            if record.enabled {
+                "approved_enabled".into()
+            } else {
+                "approved_disabled".into()
+            }
         })
 }
 
@@ -1772,9 +1752,7 @@ pub fn approved_memory_context_contributors(
 
     let mut approved = memories
         .iter()
-        .filter(|memory| {
-            memory.enabled && memory.review_state == SessionMemoryReviewStateDto::Approved
-        })
+        .filter(|memory| memory.enabled)
         .cloned()
         .collect::<Vec<_>>();
     approved.sort_by(|left, right| {
@@ -2422,9 +2400,6 @@ pub fn validate_session_memory_record_contract(
         }
         _ => {}
     }
-    if memory.review_state != SessionMemoryReviewStateDto::Approved && memory.enabled {
-        return Err("only approved memories can be enabled".into());
-    }
     if let Some(confidence) = memory.confidence {
         if confidence > 100 {
             return Err("session memory confidence must be between 0 and 100".into());
@@ -2541,7 +2516,7 @@ fn transcript_parts_from_event(
         AgentRunEventKind::PlanUpdated => Some("Plan updated".into()),
         AgentRunEventKind::ContextManifestRecorded => Some("Context manifest".into()),
         AgentRunEventKind::RetrievalPerformed => Some("Context retrieval".into()),
-        AgentRunEventKind::MemoryCandidateCaptured => Some("Memory candidate".into()),
+        AgentRunEventKind::MemoryCandidateCaptured => Some("Memory captured".into()),
         AgentRunEventKind::EnvironmentLifecycleUpdate => Some("Environment".into()),
         AgentRunEventKind::SandboxLifecycleUpdate => Some("Sandbox".into()),
         AgentRunEventKind::VerificationGate => Some("Verification gate".into()),

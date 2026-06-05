@@ -379,7 +379,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::session_history::rewind_agent_session,
             commands::session_history::list_session_memories,
             commands::session_history::get_session_memory_review_queue,
-            commands::session_history::extract_session_memory_candidates,
+            commands::session_history::extract_session_memories,
             commands::session_history::update_session_memory,
             commands::session_history::correct_session_memory,
             commands::session_history::delete_session_memory,

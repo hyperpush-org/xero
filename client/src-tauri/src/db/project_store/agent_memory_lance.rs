@@ -35,9 +35,7 @@ use crate::commands::CommandError;
 
 use super::agent_core::AgentRunDiagnosticRecord;
 use super::agent_embeddings::AGENT_RETRIEVAL_EMBEDDING_DIM;
-use super::agent_memory::{
-    AgentMemoryKind, AgentMemoryRecord, AgentMemoryReviewState, AgentMemoryScope,
-};
+use super::agent_memory::{AgentMemoryKind, AgentMemoryRecord, AgentMemoryScope};
 use super::{lance_health, FreshnessUpdate, SupersessionUpdate};
 
 /// Reserved fixed dimension for opt-in semantic embeddings. Picked to match the
@@ -60,7 +58,6 @@ const MAX_REINFORCEMENT_SOURCES: usize = 25;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct AgentMemoryListFilterOwned {
     pub include_disabled: bool,
-    pub include_rejected: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -70,7 +67,6 @@ pub struct AgentMemoryUpdate {
     #[allow(dead_code)]
     pub project_id: String,
     pub memory_id: String,
-    pub review_state: Option<AgentMemoryReviewState>,
     pub enabled: Option<bool>,
     pub diagnostic: Option<AgentRunDiagnosticRecord>,
 }
@@ -91,7 +87,6 @@ pub fn schema() -> SchemaRef {
         Field::new("memory_kind", DataType::Utf8, false),
         Field::new("text", DataType::Utf8, false),
         Field::new("text_hash", DataType::Utf8, false),
-        Field::new("review_state", DataType::Utf8, false),
         Field::new("enabled", DataType::Boolean, false),
         Field::new("confidence", DataType::UInt8, true),
         Field::new("source_run_id", DataType::Utf8, true),
@@ -134,7 +129,6 @@ pub struct AgentMemoryRow {
     pub kind: AgentMemoryKind,
     pub text: String,
     pub text_hash: String,
-    pub review_state: AgentMemoryReviewState,
     pub enabled: bool,
     pub confidence: Option<u8>,
     pub source_run_id: Option<String>,
@@ -170,7 +164,6 @@ impl AgentMemoryRow {
             kind: self.kind,
             text: self.text,
             text_hash: self.text_hash,
-            review_state: self.review_state,
             enabled: self.enabled,
             confidence: self.confidence,
             source_run_id: self.source_run_id,
@@ -392,7 +385,6 @@ fn build_batch(rows: &[AgentMemoryRow]) -> Result<RecordBatch, CommandError> {
     let mut memory_kind = StringBuilder::new();
     let mut text = StringBuilder::new();
     let mut text_hash = StringBuilder::new();
-    let mut review_state = StringBuilder::new();
     let mut enabled = BooleanBuilder::new();
     let mut confidence = UInt8Builder::new();
     let mut source_run_id = StringBuilder::new();
@@ -427,7 +419,6 @@ fn build_batch(rows: &[AgentMemoryRow]) -> Result<RecordBatch, CommandError> {
         memory_kind.append_value(kind_sql_value(&row.kind));
         text.append_value(&row.text);
         text_hash.append_value(&row.text_hash);
-        review_state.append_value(review_state_sql_value(&row.review_state));
         enabled.append_value(row.enabled);
         match row.confidence {
             Some(value) => confidence.append_value(value),
@@ -504,7 +495,6 @@ fn build_batch(rows: &[AgentMemoryRow]) -> Result<RecordBatch, CommandError> {
         Arc::new(memory_kind.finish()),
         Arc::new(text.finish()),
         Arc::new(text_hash.finish()),
-        Arc::new(review_state.finish()),
         Arc::new(enabled.finish()),
         Arc::new(confidence.finish()),
         Arc::new(source_run_id.finish()),
@@ -593,7 +583,6 @@ fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<AgentMemoryRow>, CommandErro
     let memory_kind_arr = column_str(batch, "memory_kind")?;
     let text_arr = column_str(batch, "text")?;
     let text_hash_arr = column_str(batch, "text_hash")?;
-    let review_state_arr = column_str(batch, "review_state")?;
     let enabled_arr = column_bool(batch, "enabled")?;
     let confidence_arr = column_u8(batch, "confidence")?;
     let source_run_id_arr = column_str(batch, "source_run_id")?;
@@ -622,8 +611,6 @@ fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<AgentMemoryRow>, CommandErro
         let memory_id = require_str(memory_id_arr, index, "memory_id")?;
         let scope = parse_scope(require_str(scope_kind_arr, index, "scope_kind")?);
         let kind = parse_kind(require_str(memory_kind_arr, index, "memory_kind")?);
-        let review_state =
-            parse_review_state(require_str(review_state_arr, index, "review_state")?);
         let source_item_ids = decode_source_item_ids(require_str(
             source_item_ids_json_arr,
             index,
@@ -642,7 +629,6 @@ fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<AgentMemoryRow>, CommandErro
             kind,
             text: require_str(text_arr, index, "text")?.to_string(),
             text_hash: require_str(text_hash_arr, index, "text_hash")?.to_string(),
-            review_state,
             enabled: enabled_arr.value(index),
             confidence: if confidence_arr.is_null(index) {
                 None
@@ -853,22 +839,6 @@ fn parse_kind(value: &str) -> AgentMemoryKind {
         "session_summary" => AgentMemoryKind::SessionSummary,
         "troubleshooting" => AgentMemoryKind::Troubleshooting,
         _ => AgentMemoryKind::ProjectFact,
-    }
-}
-
-fn review_state_sql_value(review_state: &AgentMemoryReviewState) -> &'static str {
-    match review_state {
-        AgentMemoryReviewState::Candidate => "candidate",
-        AgentMemoryReviewState::Approved => "approved",
-        AgentMemoryReviewState::Rejected => "rejected",
-    }
-}
-
-fn parse_review_state(value: &str) -> AgentMemoryReviewState {
-    match value {
-        "approved" => AgentMemoryReviewState::Approved,
-        "rejected" => AgentMemoryReviewState::Rejected,
-        _ => AgentMemoryReviewState::Candidate,
     }
 }
 
@@ -1089,10 +1059,6 @@ impl ProjectMemoryStore {
                     scope_sql_value(&row.scope) == scope_value
                         && kind_sql_value(&row.kind) == kind_value
                         && row.text_hash == text_hash
-                        && matches!(
-                            row.review_state,
-                            AgentMemoryReviewState::Candidate | AgentMemoryReviewState::Approved
-                        )
                         && row.agent_session_id.as_deref() == agent_session_id.as_deref()
                 })
                 .collect::<Vec<_>>();
@@ -1160,14 +1126,8 @@ impl ProjectMemoryStore {
                 .await?
                 .ok_or_else(|| missing_memory_error(&project_id, &update.memory_id))?;
             let mut row = previous.clone();
-            if let Some(state) = update.review_state {
-                row.review_state = state;
-            }
             if let Some(enabled) = update.enabled {
                 row.enabled = enabled;
-            }
-            if row.review_state != AgentMemoryReviewState::Approved {
-                row.enabled = false;
             }
             if let Some(diagnostic) = update.diagnostic {
                 row.diagnostic = Some(diagnostic);
@@ -1359,7 +1319,6 @@ fn same_dedup_key(left: &AgentMemoryRow, right: &AgentMemoryRow) -> bool {
         && left.kind == right.kind
         && left.agent_session_id == right.agent_session_id
         && left.text_hash == right.text_hash
-        && !matches!(left.review_state, AgentMemoryReviewState::Rejected)
 }
 
 fn ordering_for_list(rows: &mut [AgentMemoryRow]) {
@@ -1420,13 +1379,11 @@ fn filter_rows(
             if !scope_ok {
                 return false;
             }
-            let enabled_ok = filter.include_disabled
-                || row.enabled
-                || row.review_state == AgentMemoryReviewState::Candidate;
+            let enabled_ok = filter.include_disabled || row.enabled;
             if !enabled_ok {
                 return false;
             }
-            filter.include_rejected || row.review_state != AgentMemoryReviewState::Rejected
+            true
         })
         .collect()
 }
@@ -1437,8 +1394,7 @@ fn filter_approved(
 ) -> Vec<AgentMemoryRow> {
     rows.into_iter()
         .filter(|row| {
-            row.review_state == AgentMemoryReviewState::Approved
-                && row.enabled
+            row.enabled
                 && match row.scope {
                     AgentMemoryScope::Project => true,
                     AgentMemoryScope::Session => match (&row.agent_session_id, agent_session_id) {
@@ -1640,7 +1596,6 @@ mod tests {
             kind: AgentMemoryKind::Decision,
             text: format!("Memory body for {memory_id}"),
             text_hash: "0".repeat(64),
-            review_state: AgentMemoryReviewState::Candidate,
             enabled: false,
             confidence: Some(50),
             source_run_id: Some("run-1".into()),
@@ -1755,7 +1710,6 @@ mod tests {
 
     fn approved_project_row(memory_id: &str) -> AgentMemoryRow {
         AgentMemoryRow {
-            review_state: AgentMemoryReviewState::Approved,
             enabled: true,
             ..sample_row(memory_id, AgentMemoryScope::Project)
         }
@@ -1764,7 +1718,7 @@ mod tests {
     fn embedded_approved_memory_row(index: usize) -> AgentMemoryRow {
         let memory_id = format!("s34-memory-{index:03}");
         let mut row = approved_project_row(&memory_id);
-        row.text = format!("S34 approved memory {index} release blocker context");
+        row.text = format!("S34 enabled memory {index} release blocker context");
         row.text_hash = format!("{:064x}", index + 1);
         row.created_at = format!("2026-04-26T00:{:02}:00Z", index % 60);
         row.updated_at = row.created_at.clone();
@@ -1931,9 +1885,7 @@ mod tests {
             .vector_search_rows(
                 &query.vector,
                 24,
-                Some(
-                    "review_state = 'approved' AND enabled = true AND scope_kind = 'project' AND memory_kind = 'decision'",
-                ),
+                Some("enabled = true AND scope_kind = 'project' AND memory_kind = 'decision'"),
             )
             .expect("bounded memory vector search");
 
@@ -1943,8 +1895,7 @@ mod tests {
         );
         assert!(results.len() <= 24);
         assert!(results.iter().all(|row| {
-            row.review_state == AgentMemoryReviewState::Approved
-                && row.enabled
+            row.enabled
                 && row.scope == AgentMemoryScope::Project
                 && row.kind == AgentMemoryKind::Decision
         }));
@@ -1991,15 +1942,12 @@ mod tests {
                 AgentMemoryUpdate {
                     project_id: "project-rt".into(),
                     memory_id: "memory-1".into(),
-                    review_state: Some(AgentMemoryReviewState::Rejected),
-                    enabled: None,
+                    enabled: Some(false),
                     diagnostic: None,
                 },
                 "2026-04-26T00:01:00Z".into(),
             )
             .expect("update");
-        assert_eq!(updated.review_state, AgentMemoryReviewState::Rejected);
-        // Rejection forces enabled=false even if the caller did not pass it.
         assert!(!updated.enabled);
 
         let removed = store.delete("memory-1").expect("delete");
@@ -2113,13 +2061,11 @@ mod tests {
 
         let mut session_a = sample_row("memory-sa", AgentMemoryScope::Session);
         session_a.agent_session_id = Some("session-a".into());
-        session_a.review_state = AgentMemoryReviewState::Approved;
         session_a.enabled = true;
         store.insert(session_a).expect("insert session a");
 
         let mut session_b = sample_row("memory-sb", AgentMemoryScope::Session);
         session_b.agent_session_id = Some("session-b".into());
-        session_b.review_state = AgentMemoryReviewState::Approved;
         session_b.enabled = true;
         store.insert(session_b).expect("insert session b");
 
@@ -2142,11 +2088,9 @@ mod tests {
     fn filter_rows_respects_session_scope_match() {
         let mut session_row = sample_row("session-mem", AgentMemoryScope::Session);
         session_row.agent_session_id = Some("session-a".into());
-        session_row.review_state = AgentMemoryReviewState::Approved;
         session_row.enabled = true;
 
         let mut project_row = sample_row("project-mem", AgentMemoryScope::Project);
-        project_row.review_state = AgentMemoryReviewState::Approved;
         project_row.enabled = true;
 
         let rows = vec![session_row.clone(), project_row.clone()];

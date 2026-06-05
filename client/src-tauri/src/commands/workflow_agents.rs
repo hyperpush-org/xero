@@ -2259,7 +2259,7 @@ fn authoring_policy_controls() -> Vec<AgentAuthoringPolicyControlDto> {
             "memory.memoryKinds",
             AgentAuthoringPolicyControlKindDto::Memory,
             "Memory Kinds",
-            "Approved memory kinds this custom agent may retrieve or propose.",
+            "Memory kinds this custom agent may retrieve or record automatically.",
             "memoryCandidatePolicy.memoryKinds",
             AgentAuthoringPolicyControlValueKindDto::StringArray,
             json!([
@@ -2269,19 +2269,8 @@ fn authoring_policy_controls() -> Vec<AgentAuthoringPolicyControlDto> {
                 "session_summary",
                 "troubleshooting"
             ]),
-            "Constrains memory candidates and approved-memory retrieval for this agent.",
+            "Constrains automated memory capture and retrieval for this agent.",
             false,
-        ),
-        policy_control(
-            "memory.reviewRequired",
-            AgentAuthoringPolicyControlKindDto::Memory,
-            "Memory Review Required",
-            "Whether new memory candidates require review before becoming retrievable.",
-            "memoryCandidatePolicy.reviewRequired",
-            AgentAuthoringPolicyControlValueKindDto::Boolean,
-            json!(true),
-            "Keeps memory writes in review until explicitly approved.",
-            true,
         ),
         policy_control(
             "retrieval.enabled",
@@ -2329,7 +2318,7 @@ fn authoring_policy_controls() -> Vec<AgentAuthoringPolicyControlDto> {
             "retrieval.memoryKinds",
             AgentAuthoringPolicyControlKindDto::Retrieval,
             "Retrieval Memory Kinds",
-            "Approved memory kinds eligible for retrieval.",
+            "Enabled memory kinds eligible for retrieval.",
             "retrievalDefaults.memoryKinds",
             AgentAuthoringPolicyControlValueKindDto::StringArray,
             json!([
@@ -2339,7 +2328,7 @@ fn authoring_policy_controls() -> Vec<AgentAuthoringPolicyControlDto> {
                 "session_summary",
                 "troubleshooting"
             ]),
-            "Filters approved memory before first-turn working-set summary construction.",
+            "Filters enabled memory before first-turn working-set summary construction.",
             false,
         ),
         policy_control(
@@ -2644,8 +2633,7 @@ fn template_definition(
             "structuredSchemas": ["xero.project_record.v1"]
         },
         "memoryCandidatePolicy": {
-            "memoryKinds": ["project_fact", "user_preference", "decision", "session_summary", "troubleshooting"],
-            "reviewRequired": true
+            "memoryKinds": ["project_fact", "user_preference", "decision", "session_summary", "troubleshooting"]
         },
         "retrievalDefaults": {
             "enabled": true,
@@ -4646,8 +4634,7 @@ mod tests {
                     "structuredSchemas": ["xero.project_record.v1"]
                 },
                 "memoryCandidatePolicy": {
-                    "memoryKinds": ["project_fact"],
-                    "reviewRequired": true
+                    "memoryKinds": ["project_fact"]
                 },
                 "retrievalDefaults": {
                     "enabled": true,
@@ -4724,21 +4711,20 @@ mod tests {
                 .find(|control| control.id == id)
                 .unwrap_or_else(|| panic!("missing policy control `{id}`"))
         };
-        let memory_review = control("memory.reviewRequired");
+        let memory_kinds = control("memory.memoryKinds");
         assert_eq!(
-            memory_review.kind,
+            memory_kinds.kind,
             AgentAuthoringPolicyControlKindDto::Memory
         );
         assert_eq!(
-            memory_review.value_kind,
-            AgentAuthoringPolicyControlValueKindDto::Boolean
+            memory_kinds.value_kind,
+            AgentAuthoringPolicyControlValueKindDto::StringArray
         );
         assert_eq!(
-            memory_review.snapshot_path,
-            "memoryCandidatePolicy.reviewRequired"
+            memory_kinds.snapshot_path,
+            "memoryCandidatePolicy.memoryKinds"
         );
-        assert_eq!(memory_review.default_value, json!(true));
-        assert!(memory_review.review_required);
+        assert!(!memory_kinds.review_required);
 
         let retrieval_limit = control("retrieval.limit");
         assert_eq!(

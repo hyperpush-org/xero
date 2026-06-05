@@ -12,11 +12,11 @@ import {
   createRedactedSessionContextText,
   deleteSessionMemoryRequestSchema,
   exportSessionTranscriptRequestSchema,
-  extractSessionMemoryCandidatesRequestSchema,
-  extractSessionMemoryCandidatesResponseSchema,
+  extractSessionMemoriesRequestSchema,
+  extractSessionMemoriesResponseSchema,
   getSessionContextSnapshotRequestSchema,
-  getSessionMemoryReviewQueueRequestSchema,
-  getSessionMemoryReviewQueueResponseSchema,
+  getSessionMemoryItemsRequestSchema,
+  getSessionMemoryItemsResponseSchema,
   getSessionTranscriptRequestSchema,
   listSessionMemoriesRequestSchema,
   listSessionMemoriesResponseSchema,
@@ -305,7 +305,7 @@ describe('session context contract', () => {
     ).toBe('recompact_now')
   })
 
-  it('keeps approved memory schema explicit and redacts secret-bearing text helpers', () => {
+  it('keeps memory schema explicit and redacts secret-bearing text helpers', () => {
     const redacted = createRedactedSessionContextText('Use api_key=sk-context-secret')
     expect(redacted.value).toBe('Xero redacted sensitive session-context text.')
     expect(redacted.redaction).toMatchObject({
@@ -341,7 +341,6 @@ describe('session context contract', () => {
       scope: 'project',
       kind: 'decision',
       text: redacted.value,
-      reviewState: 'approved',
       enabled: true,
       confidence: 95,
       sourceRunId: runId,
@@ -396,15 +395,14 @@ describe('session context contract', () => {
       message: 'The source run was deleted.',
       redaction: createPublicSessionContextRedaction(),
     })
-    const candidate = sessionMemoryRecordSchema.parse({
+    const disabledMemory = sessionMemoryRecordSchema.parse({
       contractVersion: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
-      memoryId: 'memory-candidate',
+      memoryId: 'memory-disabled',
       projectId,
       agentSessionId,
       scope: 'session',
       kind: 'session_summary',
       text: 'The session established the reviewed memory workflow.',
-      reviewState: 'candidate',
       enabled: false,
       confidence: 72,
       sourceRunId: runId,
@@ -430,8 +428,8 @@ describe('session context contract', () => {
       invalidatedAt: null,
       factKey: null,
       retrievable: false,
-      retrievabilityReason: 'pending_or_rejected_review',
-      promotionStatus: 'candidate',
+      retrievabilityReason: 'disabled',
+      promotionStatus: 'approved_disabled',
       provenance: {
         sourceRunId: runId,
         sourceItemIds: ['message:1'],
@@ -447,7 +445,7 @@ describe('session context contract', () => {
       },
       retrievalImpact: {
         eligibleByDefault: false,
-        eligibilityReason: 'pending_or_rejected_review',
+        eligibilityReason: 'disabled',
         searchModes: ['diagnostic_historical'],
       },
       conflict: {
@@ -457,9 +455,7 @@ describe('session context contract', () => {
 
     const serialized = JSON.stringify(memory)
     expect(serialized).not.toContain('sk-context-secret')
-    expect(memory.reviewState).toBe('approved')
-    expect(candidate.diagnostic?.code).toBe('memory_source_deleted')
-    expect(() => sessionMemoryRecordSchema.parse({ ...candidate, enabled: true })).toThrow(/Only approved/)
+    expect(disabledMemory.diagnostic?.code).toBe('memory_source_deleted')
     expect(() => sessionMemoryRecordSchema.parse({ ...memory, agentSessionId, scope: 'project' })).toThrow(
       /Project memory/,
     )
@@ -468,14 +464,13 @@ describe('session context contract', () => {
         projectId,
         agentSessionId,
         includeDisabled: true,
-        includeRejected: false,
       }),
-    ).toEqual({ projectId, agentSessionId, includeDisabled: true, includeRejected: false })
+    ).toEqual({ projectId, agentSessionId, includeDisabled: true })
     expect(
       listSessionMemoriesResponseSchema.parse({
         projectId,
         agentSessionId,
-        memories: [memory, candidate],
+        memories: [memory, disabledMemory],
       }).memories,
     ).toHaveLength(2)
     expect(() =>
@@ -484,21 +479,21 @@ describe('session context contract', () => {
         agentSessionId,
         memories: [
           {
-            ...candidate,
+            ...disabledMemory,
             agentSessionId: 'different-session',
           },
         ],
       }),
     ).toThrow(/agent session/)
     expect(
-      getSessionMemoryReviewQueueRequestSchema.parse({
+      getSessionMemoryItemsRequestSchema.parse({
         projectId,
         agentSessionId,
         offset: 25,
         limit: 25,
       }),
     ).toMatchObject({ offset: 25, limit: 25 })
-    const reviewQueue = getSessionMemoryReviewQueueResponseSchema.parse({
+    const memoryItems = getSessionMemoryItemsResponseSchema.parse({
       schema: 'xero.agent_memory_review_queue.v1',
       projectId,
       agentSessionId,
@@ -506,18 +501,15 @@ describe('session context contract', () => {
       limit: 25,
       total: 2,
       counts: {
-        candidate: 1,
-        approved: 1,
-        rejected: 0,
+        enabled: 1,
         disabled: 1,
-        retrievableApproved: 1,
+        retrievable: 1,
       },
       items: [
         {
           memoryId: memory.memoryId,
           scope: memory.scope,
           kind: memory.kind,
-          reviewState: memory.reviewState,
           enabled: memory.enabled,
           confidence: memory.confidence,
           textPreview: 'Redacted memory preview',
@@ -553,8 +545,7 @@ describe('session context contract', () => {
             rawTextHidden: true,
           },
           availableActions: {
-            canApprove: false,
-            canReject: true,
+            canEnable: false,
             canDisable: true,
             canDelete: true,
             canEditByCorrection: true,
@@ -564,8 +555,7 @@ describe('session context contract', () => {
         },
       ],
       actions: {
-        approve: 'Approve memory',
-        reject: 'Reject memory',
+        enable: 'Enable memory',
         disable: 'Disable memory',
         delete: 'Delete memory',
         edit: 'Create a corrected memory',
@@ -574,13 +564,13 @@ describe('session context contract', () => {
       nextOffset: 1,
       uiDeferred: true,
     })
-    expect(reviewQueue.items[0].redaction.rawTextHidden).toBe(true)
+    expect(memoryItems.items[0].redaction.rawTextHidden).toBe(true)
     expect(() =>
-      getSessionMemoryReviewQueueResponseSchema.parse({
-        ...reviewQueue,
+      getSessionMemoryItemsResponseSchema.parse({
+        ...memoryItems,
         items: [
           {
-            ...reviewQueue.items[0],
+            ...memoryItems.items[0],
             retrieval: {
               eligible: true,
               reason: 'stale',
@@ -590,102 +580,102 @@ describe('session context contract', () => {
       }),
     ).toThrow(/eligibility/)
     expect(() =>
-      getSessionMemoryReviewQueueResponseSchema.parse({
-        ...reviewQueue,
+      getSessionMemoryItemsResponseSchema.parse({
+        ...memoryItems,
         items: [
           {
-            ...reviewQueue.items[0],
+            ...memoryItems.items[0],
             textPreview: 'leaked preview',
             redaction: {
-              ...reviewQueue.items[0].redaction,
+              ...memoryItems.items[0].redaction,
               textPreviewRedacted: true,
             },
             availableActions: {
-              ...reviewQueue.items[0].availableActions,
-              canApprove: true,
+              ...memoryItems.items[0].availableActions,
+              canEnable: true,
             },
           },
         ],
       }),
     ).toThrow(/hidden/)
     expect(() =>
-      getSessionMemoryReviewQueueResponseSchema.parse({
-        ...reviewQueue,
+      getSessionMemoryItemsResponseSchema.parse({
+        ...memoryItems,
         limit: 1,
-        items: [reviewQueue.items[0], { ...reviewQueue.items[0], memoryId: 'memory-extra' }],
+        items: [memoryItems.items[0], { ...memoryItems.items[0], memoryId: 'memory-extra' }],
       }),
     ).toThrow(/limit/)
     expect(() =>
-      getSessionMemoryReviewQueueResponseSchema.parse({
-        ...reviewQueue,
+      getSessionMemoryItemsResponseSchema.parse({
+        ...memoryItems,
         counts: {
-          ...reviewQueue.counts,
-          retrievableApproved: 2,
-          approved: 1,
+          ...memoryItems.counts,
+          retrievable: 2,
+          enabled: 1,
         },
       }),
-    ).toThrow(/approved memory count/)
+    ).toThrow(/enabled memory count/)
     expect(() =>
-      getSessionMemoryReviewQueueResponseSchema.parse({
-        ...reviewQueue,
+      getSessionMemoryItemsResponseSchema.parse({
+        ...memoryItems,
         counts: {
-          ...reviewQueue.counts,
-          retrievableApproved: 0,
+          ...memoryItems.counts,
+          retrievable: 0,
         },
       }),
     ).toThrow(/retrievable count/)
     expect(() =>
-      getSessionMemoryReviewQueueResponseSchema.parse({
-        ...reviewQueue,
+      getSessionMemoryItemsResponseSchema.parse({
+        ...memoryItems,
         hasMore: false,
         nextOffset: null,
       }),
     ).toThrow(/hasMore/)
     expect(() =>
-      getSessionMemoryReviewQueueResponseSchema.parse({
-        ...reviewQueue,
+      getSessionMemoryItemsResponseSchema.parse({
+        ...memoryItems,
         nextOffset: 10,
       }),
     ).toThrow(/nextOffset/)
     expect(() =>
-      getSessionMemoryReviewQueueResponseSchema.parse({
-        ...reviewQueue,
+      getSessionMemoryItemsResponseSchema.parse({
+        ...memoryItems,
         hasMore: false,
         nextOffset: null,
-        items: [reviewQueue.items[0], { ...reviewQueue.items[0] }],
+        items: [memoryItems.items[0], { ...memoryItems.items[0] }],
       }),
     ).toThrow(/unique/)
     expect(
-      extractSessionMemoryCandidatesRequestSchema.parse({
+      extractSessionMemoriesRequestSchema.parse({
         projectId,
         agentSessionId,
         runId,
       }),
     ).toEqual({ projectId, agentSessionId, runId })
     expect(
-      extractSessionMemoryCandidatesResponseSchema.parse({
+      extractSessionMemoriesResponseSchema.parse({
         projectId,
         agentSessionId,
-        memories: [memory, candidate],
+        memories: [memory, disabledMemory],
         createdCount: 2,
         reinforcedDuplicateCount: 1,
-        rejectedCount: 1,
+        skippedCount: 1,
         diagnostics: [diagnostic],
       }).reinforcedDuplicateCount,
     ).toBe(1)
     expect(() =>
-      extractSessionMemoryCandidatesResponseSchema.parse({
+      extractSessionMemoriesResponseSchema.parse({
         projectId,
         agentSessionId,
         memories: [
           {
-            ...candidate,
+            ...disabledMemory,
             projectId: 'different-project',
           },
         ],
         createdCount: 1,
         reinforcedDuplicateCount: 0,
-        rejectedCount: 0,
+        skippedCount: 0,
         diagnostics: [],
       }),
     ).toThrow(/response project/)
@@ -693,7 +683,6 @@ describe('session context contract', () => {
       updateSessionMemoryRequestSchema.parse({
         projectId,
         memoryId: memory.memoryId,
-        reviewState: 'approved',
         enabled: true,
       }).enabled,
     ).toBe(true)
@@ -731,7 +720,6 @@ describe('session context contract', () => {
       uiDeferred: true,
     })
     expect(correction.correctedMemory.memoryId).not.toBe(correction.originalMemory.memoryId)
-    expect(correction.correctedMemory.reviewState).toBe('approved')
     expect(correction.correctedMemory.enabled).toBe(true)
     expect(() =>
       correctSessionMemoryResponseSchema.parse({

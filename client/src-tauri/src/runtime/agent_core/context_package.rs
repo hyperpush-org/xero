@@ -2870,7 +2870,6 @@ mod tests {
                 scope: project_store::AgentMemoryScope::Project,
                 kind: project_store::AgentMemoryKind::ProjectFact,
                 text: "Phase 3 approved memory is injected for every runtime agent.".into(),
-                review_state: project_store::AgentMemoryReviewState::Approved,
                 enabled: true,
                 confidence: Some(95),
                 source_run_id: Some("run-context-package".into()),

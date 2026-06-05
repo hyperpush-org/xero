@@ -666,10 +666,10 @@ mod tests {
             project_store::{
                 insert_agent_definition, insert_agent_memory, insert_project_record,
                 list_agent_memories, list_project_records, load_agent_definition, AgentMemoryKind,
-                AgentMemoryListFilter, AgentMemoryReviewState, AgentMemoryScope,
-                NewAgentDefinitionRecord, NewAgentMemoryRecord, NewProjectRecordRecord,
-                ProjectRecordImportance, ProjectRecordKind, ProjectRecordRedactionState,
-                ProjectRecordVisibility, BUILTIN_AGENT_DEFINITION_VERSION,
+                AgentMemoryListFilter, AgentMemoryScope, NewAgentDefinitionRecord,
+                NewAgentMemoryRecord, NewProjectRecordRecord, ProjectRecordImportance,
+                ProjectRecordKind, ProjectRecordRedactionState, ProjectRecordVisibility,
+                BUILTIN_AGENT_DEFINITION_VERSION,
             },
             register_project_database_path,
         },
@@ -759,7 +759,6 @@ mod tests {
             scope: AgentMemoryScope::Project,
             kind: AgentMemoryKind::ProjectFact,
             text: text.into(),
-            review_state: AgentMemoryReviewState::Approved,
             enabled: true,
             confidence: Some(90),
             source_run_id: None,
@@ -932,7 +931,6 @@ mod tests {
             project_id,
             AgentMemoryListFilter {
                 include_disabled: true,
-                include_rejected: true,
                 ..AgentMemoryListFilter::default()
             },
         )

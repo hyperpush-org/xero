@@ -3116,9 +3116,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
     () => getProjectRunnerModelOptions(agentView),
     [agentView],
   )
-  const memoryReviewAdapter = useMemo(() => {
+  const memoryAdapter = useMemo(() => {
     if (
-      !resolvedAdapter.getSessionMemoryReviewQueue ||
+      !resolvedAdapter.getSessionMemoryItems ||
       !resolvedAdapter.updateSessionMemory ||
       !resolvedAdapter.correctSessionMemory ||
       !resolvedAdapter.deleteSessionMemory
@@ -3126,7 +3126,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
       return null
     }
     return {
-      getQueue: resolvedAdapter.getSessionMemoryReviewQueue.bind(resolvedAdapter),
+      getQueue: resolvedAdapter.getSessionMemoryItems.bind(resolvedAdapter),
       updateMemory: resolvedAdapter.updateSessionMemory.bind(resolvedAdapter),
       correctMemory: resolvedAdapter.correctSessionMemory.bind(resolvedAdapter),
       deleteMemory: resolvedAdapter.deleteSessionMemory.bind(resolvedAdapter),
@@ -5641,7 +5641,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onToolCallGroupingPreferenceChange={handleToolCallGroupingPreferenceChange}
                 agentRoutingAutoSwitchEnabled={agentRoutingAutoSwitchEnabled}
                 onAgentRoutingAutoSwitchChange={handleAgentRoutingAutoSwitchChange}
-                memoryReviewAdapter={memoryReviewAdapter}
+                memoryAdapter={memoryAdapter}
                 projectStateAdapter={projectStateAdapter}
                 dangerAdapter={dangerAdapter}
                 projects={projects}

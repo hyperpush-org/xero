@@ -20,7 +20,7 @@ import type {
 } from "@/components/xero/settings-dialog/account-danger-zone"
 import type { DictationSettingsAdapter } from "@/components/xero/settings-dialog/dictation-section"
 import type { DesktopControlSettingsAdapter } from "@/components/xero/settings-dialog/desktop-control-section"
-import type { MemoryReviewAdapter } from "@/components/xero/settings-dialog/memory-review-section"
+import type { MemoryAdapter } from "@/components/xero/settings-dialog/memory-review-section"
 import type { PowerSettingsAdapter } from "@/components/xero/settings-dialog/power-section"
 import type { ProjectStateAdapter } from "@/components/xero/settings-dialog/project-state-section"
 import type { SoulSettingsAdapter } from "@/components/xero/settings-dialog/soul-section"
@@ -175,9 +175,9 @@ const loadMcpSection = () =>
   import("@/components/xero/settings-dialog/mcp-section").then((module) => ({
     default: module.McpSection,
   }))
-const loadMemoryReviewSection = () =>
+const loadMemorySection = () =>
   import("@/components/xero/settings-dialog/memory-review-section").then((module) => ({
-    default: module.MemoryReviewSection,
+    default: module.MemorySection,
   }))
 const loadProvidersSection = () =>
   import("@/components/xero/settings-dialog/providers-section").then((module) => ({
@@ -240,7 +240,7 @@ const LazyDevelopmentSection = lazy(loadDevelopmentSection)
 const LazyDictationSection = lazy(loadDictationSection)
 const LazyDiagnosticsSection = lazy(loadDiagnosticsSection)
 const LazyMcpSection = lazy(loadMcpSection)
-const LazyMemoryReviewSection = lazy(loadMemoryReviewSection)
+const LazyMemorySection = lazy(loadMemorySection)
 const LazyProvidersSection = lazy(loadProvidersSection)
 const LazySolanaRpcSection = lazy(loadSolanaRpcSection)
 const LazyPluginsSection = lazy(loadPluginsSection)
@@ -266,7 +266,7 @@ const SETTINGS_SECTION_LOADERS: Record<SettingsSection, () => Promise<unknown>> 
   agents: loadAgentsSection,
   agentTooling: loadAgentToolingSection,
   webSearch: loadWebSearchSection,
-  memory: loadMemoryReviewSection,
+  memory: loadMemorySection,
   skills: loadSkillsSection,
   plugins: loadPluginsSection,
   browser: loadBrowserSection,
@@ -415,7 +415,7 @@ export interface SettingsDialogProps {
   onToolCallGroupingPreferenceChange?: (preference: ToolCallGroupingPreference) => Promise<void> | void
   agentRoutingAutoSwitchEnabled?: boolean
   onAgentRoutingAutoSwitchChange?: (enabled: boolean) => Promise<void> | void
-  memoryReviewAdapter?: MemoryReviewAdapter | null
+  memoryAdapter?: MemoryAdapter | null
   projectStateAdapter?: ProjectStateAdapter | null
   dangerAdapter?: DangerSettingsAdapter | null
   projects?: DangerZoneProject[]
@@ -548,7 +548,7 @@ export function SettingsDialog({
   onToolCallGroupingPreferenceChange,
   agentRoutingAutoSwitchEnabled,
   onAgentRoutingAutoSwitchChange,
-  memoryReviewAdapter = null,
+  memoryAdapter = null,
   projectStateAdapter = null,
   dangerAdapter = null,
   projects = [],
@@ -824,11 +824,11 @@ export function SettingsDialog({
     if (renderedSection === "memory") {
       const sessionId = agent?.project.selectedAgentSessionId
       return (
-        <LazyMemoryReviewSection
+        <LazyMemorySection
           projectId={agent?.project.id ?? null}
           projectLabel={agent?.project.repository?.displayName ?? agent?.project.name ?? null}
           agentSessionId={sessionId && sessionId.length > 0 ? sessionId : null}
-          adapter={memoryReviewAdapter}
+          adapter={memoryAdapter}
         />
       )
     }

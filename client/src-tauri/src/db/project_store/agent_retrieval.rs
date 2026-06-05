@@ -24,10 +24,7 @@ use super::{
         AgentEmbeddingService, LOCAL_HASH_AGENT_EMBEDDING_PROVIDER,
     },
     agent_memory::refresh_agent_memory_rows,
-    agent_memory::{
-        agent_memory_retrieval_reason_from_parts, AgentMemoryKind, AgentMemoryReviewState,
-        AgentMemoryScope,
-    },
+    agent_memory::{agent_memory_retrieval_reason_from_parts, AgentMemoryKind, AgentMemoryScope},
     agent_memory_lance::{self, AgentMemoryListFilterOwned, AgentMemoryRow, ProjectMemoryStore},
     freshness::{
         evaluate_freshness, freshness_metadata_json, freshness_update_changed,
@@ -369,8 +366,7 @@ pub fn enqueue_missing_agent_embedding_backfill_jobs(
     }
 
     for row in memory_store.list_all_rows()? {
-        if row.review_state != AgentMemoryReviewState::Approved
-            || !row.enabled
+        if !row.enabled
             || backfill_should_skip_for_freshness(&row.freshness_state)
             || embedding_is_current(
                 row.embedding.as_ref(),
@@ -732,7 +728,6 @@ fn collect_candidates(
         for row in rows {
             scanned_approved_memories += 1;
             let retrieval_reason = agent_memory_retrieval_reason_from_parts(
-                &row.review_state,
                 row.enabled,
                 &row.freshness_state,
                 row.superseded_by_id.as_deref(),
@@ -814,7 +809,6 @@ fn default_memory_exclusion_counts(
         session_filter,
         AgentMemoryListFilterOwned {
             include_disabled: true,
-            include_rejected: true,
         },
     )?;
     for row in rows {
@@ -822,7 +816,6 @@ fn default_memory_exclusion_counts(
             continue;
         }
         let reason = agent_memory_retrieval_reason_from_parts(
-            &row.review_state,
             row.enabled,
             &row.freshness_state,
             row.superseded_by_id.as_deref(),
@@ -999,10 +992,7 @@ fn memory_vector_filter_sql(
     request: &AgentContextRetrievalRequest,
     session_filter: Option<&str>,
 ) -> Option<String> {
-    let mut conditions = vec![
-        "review_state = 'approved'".to_string(),
-        "enabled = true".to_string(),
-    ];
+    let mut conditions = vec!["enabled = true".to_string()];
     if !request.filters.include_historical {
         conditions.push("freshness_state IN ('current', 'source_unknown')".to_string());
         conditions.push("superseded_by_id IS NULL".to_string());
@@ -1275,7 +1265,6 @@ fn memory_candidate(
 ) -> Result<Option<SearchCandidate>, CommandError> {
     if !request.filters.include_historical
         && agent_memory_retrieval_reason_from_parts(
-            &row.review_state,
             row.enabled,
             &row.freshness_state,
             row.superseded_by_id.as_deref(),
@@ -1284,8 +1273,7 @@ fn memory_candidate(
     {
         return Ok(None);
     }
-    if row.review_state != AgentMemoryReviewState::Approved
-        || !row.enabled
+    if !row.enabled
         || !request.filters.tags.is_empty()
         || !request.filters.related_paths.is_empty()
         || request.filters.runtime_agent_id.is_some()
@@ -1815,12 +1803,12 @@ fn apply_backfill_job(
             else {
                 return Ok(BackfillOutcome::Skipped(json!({
                     "code": "agent_embedding_backfill_source_missing",
-                    "message": "The approved memory no longer exists.",
+                    "message": "The memory no longer exists.",
                     "freshnessState": JsonValue::Null
                 })));
             };
             let row = refresh_memory_backfill_freshness(repo_root, memory_store, row, now)?;
-            if row.review_state != AgentMemoryReviewState::Approved || !row.enabled {
+            if !row.enabled {
                 return Ok(BackfillOutcome::Skipped(backfill_memory_diagnostic(
                     &row,
                     "agent_embedding_backfill_source_not_approved",
@@ -1831,14 +1819,14 @@ fn apply_backfill_job(
                 return Ok(BackfillOutcome::Skipped(backfill_memory_diagnostic(
                     &row,
                     "agent_embedding_backfill_source_hash_mismatch",
-                    "The approved memory text changed after this embedding backfill job was queued.",
+                    "The memory text changed after this embedding backfill job was queued.",
                 )));
             }
             if backfill_should_skip_for_freshness(&row.freshness_state) {
                 return Ok(BackfillOutcome::Skipped(backfill_memory_diagnostic(
                     &row,
                     "agent_embedding_backfill_source_not_fresh",
-                    "The approved memory is not factually current, so Xero skipped embedding backfill.",
+                    "The memory is not factually current, so Xero skipped embedding backfill.",
                 )));
             }
             let embedding = embedding_with_service(default_embedding_service(), &row.text)?;
@@ -3183,7 +3171,6 @@ mod tests {
 
         let memory_filter =
             memory_vector_filter_sql(&request, Some("session-a")).expect("memory vector filter");
-        assert!(memory_filter.contains("review_state = 'approved'"));
         assert!(memory_filter.contains("enabled = true"));
         assert!(memory_filter.contains("freshness_state IN ('current', 'source_unknown')"));
         assert!(memory_filter.contains("superseded_by_id IS NULL"));

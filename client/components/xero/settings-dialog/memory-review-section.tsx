@@ -8,6 +8,7 @@ import {
   Loader2,
   MoreHorizontal,
   Pencil,
+  Power,
   PowerOff,
   RefreshCw,
   ShieldAlert,
@@ -35,12 +36,12 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import type {
-  AgentMemoryReviewQueueItemDto,
+  AgentMemoryItemDto,
   CorrectSessionMemoryRequestDto,
   CorrectSessionMemoryResponseDto,
   DeleteSessionMemoryRequestDto,
-  GetSessionMemoryReviewQueueRequestDto,
-  GetSessionMemoryReviewQueueResponseDto,
+  GetSessionMemoryItemsRequestDto,
+  GetSessionMemoryItemsResponseDto,
   SessionMemoryRecordDto,
   UpdateSessionMemoryRequestDto,
 } from "@/src/lib/xero-model/session-context"
@@ -48,29 +49,29 @@ import type {
 import { SectionHeader } from "./section-header"
 import { EmptyPanel, ErrorBanner, Pill, SubHeading, type Tone } from "./_shared"
 
-type MemoryReviewItem = AgentMemoryReviewQueueItemDto
+type MemoryItem = AgentMemoryItemDto
 
-export interface MemoryReviewAdapter {
-  getQueue: (request: GetSessionMemoryReviewQueueRequestDto) => Promise<GetSessionMemoryReviewQueueResponseDto>
+export interface MemoryAdapter {
+  getQueue: (request: GetSessionMemoryItemsRequestDto) => Promise<GetSessionMemoryItemsResponseDto>
   updateMemory: (request: UpdateSessionMemoryRequestDto) => Promise<SessionMemoryRecordDto>
   correctMemory: (request: CorrectSessionMemoryRequestDto) => Promise<CorrectSessionMemoryResponseDto>
   deleteMemory: (request: DeleteSessionMemoryRequestDto) => Promise<void>
 }
 
-interface MemoryReviewSectionProps {
+interface MemorySectionProps {
   projectId: string | null
   projectLabel: string | null
   agentSessionId?: string | null
-  adapter?: MemoryReviewAdapter | null
+  adapter?: MemoryAdapter | null
 }
 
 type LoadStatus = "idle" | "loading" | "ready" | "error"
-type ActionKind = "approve" | "reject" | "disable" | "delete" | "edit"
+type ActionKind = "enable" | "disable" | "delete" | "edit"
 
 interface QueueState {
   status: LoadStatus
   errorMessage: string | null
-  response: GetSessionMemoryReviewQueueResponseDto | null
+  response: GetSessionMemoryItemsResponseDto | null
 }
 
 const INITIAL_QUEUE_STATE: QueueState = {
@@ -79,13 +80,7 @@ const INITIAL_QUEUE_STATE: QueueState = {
   response: null,
 }
 
-const MEMORY_REVIEW_PAGE_SIZE = 10
-
-const REVIEW_STATE_TONE: Record<MemoryReviewItem["reviewState"], Tone> = {
-  candidate: "info",
-  approved: "good",
-  rejected: "bad",
-}
+const MEMORY_PAGE_SIZE = 10
 
 const METRIC_TONE: Record<Tone, string> = {
   good: "text-success",
@@ -103,17 +98,17 @@ const METRIC_DOT: Record<Tone, string> = {
   neutral: "bg-muted-foreground/50",
 }
 
-export function MemoryReviewSection({
+export function MemorySection({
   projectId,
   projectLabel,
   agentSessionId,
   adapter,
-}: MemoryReviewSectionProps) {
+}: MemorySectionProps) {
   const [queueState, setQueueState] = useState<QueueState>(INITIAL_QUEUE_STATE)
   const [pageOffset, setPageOffset] = useState(0)
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set())
   const [pendingAction, setPendingAction] = useState<{ memoryId: string; kind: ActionKind } | null>(null)
-  const [editing, setEditing] = useState<MemoryReviewItem | null>(null)
+  const [editing, setEditing] = useState<MemoryItem | null>(null)
   const [editText, setEditText] = useState("")
   const [editError, setEditError] = useState<string | null>(null)
 
@@ -126,7 +121,7 @@ export function MemoryReviewSection({
           projectId,
           agentSessionId: agentSessionId ?? null,
           offset: requestedOffset,
-          limit: MEMORY_REVIEW_PAGE_SIZE,
+          limit: MEMORY_PAGE_SIZE,
         })
         setQueueState({ status: "ready", errorMessage: null, response })
         if (response.offset !== requestedOffset) {
@@ -136,7 +131,7 @@ export function MemoryReviewSection({
         setQueueState((current) => ({
           ...current,
           status: "error",
-          errorMessage: errorMessage(caught, "Xero could not load the memory review queue."),
+          errorMessage: errorMessage(caught, "Xero could not load memory."),
         }))
       }
     },
@@ -158,12 +153,12 @@ export function MemoryReviewSection({
   const responseOffset = queueState.response?.offset ?? pageOffset
   const pageStart = totalItems === 0 ? 0 : responseOffset + 1
   const pageEnd = totalItems === 0 ? 0 : responseOffset + items.length
-  const pageCount = Math.max(1, Math.ceil(totalItems / MEMORY_REVIEW_PAGE_SIZE))
-  const pageNumber = Math.floor(responseOffset / MEMORY_REVIEW_PAGE_SIZE) + 1
+  const pageCount = Math.max(1, Math.ceil(totalItems / MEMORY_PAGE_SIZE))
+  const pageNumber = Math.floor(responseOffset / MEMORY_PAGE_SIZE) + 1
   const pageSummary = totalItems === 0 ? "0" : `${pageStart}-${pageEnd} of ${totalItems}`
 
   const runUpdate = useCallback(
-    async (item: MemoryReviewItem, kind: ActionKind, payload: Omit<UpdateSessionMemoryRequestDto, "projectId" | "memoryId">) => {
+    async (item: MemoryItem, kind: ActionKind, payload: Omit<UpdateSessionMemoryRequestDto, "projectId" | "memoryId">) => {
       if (!projectId || !adapter) return
       setPendingAction({ memoryId: item.memoryId, kind })
       try {
@@ -185,29 +180,24 @@ export function MemoryReviewSection({
     [adapter, loadQueue, pageOffset, projectId],
   )
 
-  const handleApprove = useCallback(
-    (item: MemoryReviewItem) => runUpdate(item, "approve", { reviewState: "approved", enabled: true }),
-    [runUpdate],
-  )
-
-  const handleReject = useCallback(
-    (item: MemoryReviewItem) => runUpdate(item, "reject", { reviewState: "rejected" }),
+  const handleEnable = useCallback(
+    (item: MemoryItem) => runUpdate(item, "enable", { enabled: true }),
     [runUpdate],
   )
 
   const handleDisable = useCallback(
-    (item: MemoryReviewItem) => runUpdate(item, "disable", { enabled: false }),
+    (item: MemoryItem) => runUpdate(item, "disable", { enabled: false }),
     [runUpdate],
   )
 
   const handleDelete = useCallback(
-    async (item: MemoryReviewItem) => {
+    async (item: MemoryItem) => {
       if (!projectId || !adapter) return
       setPendingAction({ memoryId: item.memoryId, kind: "delete" })
       try {
         await adapter.deleteMemory({ projectId, memoryId: item.memoryId })
         const nextOffset =
-          items.length === 1 && pageOffset > 0 ? Math.max(0, pageOffset - MEMORY_REVIEW_PAGE_SIZE) : pageOffset
+          items.length === 1 && pageOffset > 0 ? Math.max(0, pageOffset - MEMORY_PAGE_SIZE) : pageOffset
         if (nextOffset !== pageOffset) {
           setPageOffset(nextOffset)
         } else {
@@ -225,7 +215,7 @@ export function MemoryReviewSection({
     [adapter, items.length, loadQueue, pageOffset, projectId],
   )
 
-  const openEditor = useCallback((item: MemoryReviewItem) => {
+  const openEditor = useCallback((item: MemoryItem) => {
     setEditing(item)
     setEditText(item.textPreview ?? "")
     setEditError(null)
@@ -261,11 +251,9 @@ export function MemoryReviewSection({
   }, [adapter, closeEditor, editText, editing, loadQueue, pageOffset, projectId])
 
   const handleAction = useCallback(
-    (item: MemoryReviewItem, kind: ActionKind) => {
-      if (kind === "approve") {
-        void handleApprove(item)
-      } else if (kind === "reject") {
-        void handleReject(item)
+    (item: MemoryItem, kind: ActionKind) => {
+      if (kind === "enable") {
+        void handleEnable(item)
       } else if (kind === "disable") {
         void handleDisable(item)
       } else if (kind === "delete") {
@@ -274,7 +262,7 @@ export function MemoryReviewSection({
         openEditor(item)
       }
     },
-    [handleApprove, handleDelete, handleDisable, handleReject, openEditor],
+    [handleDelete, handleDisable, handleEnable, openEditor],
   )
 
   const handleExpandedChange = useCallback((memoryId: string, open: boolean) => {
@@ -303,7 +291,7 @@ export function MemoryReviewSection({
       className="h-8 gap-1.5 text-[12.5px]"
       onClick={() => void loadQueue(pageOffset)}
       disabled={isBusy || !projectId || !adapter}
-      aria-label="Refresh memory review queue"
+      aria-label="Refresh memory"
     >
       {isBusy ? (
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -318,8 +306,8 @@ export function MemoryReviewSection({
     return (
       <div className="flex flex-col gap-6">
         <SectionHeader
-          title="Memory Review"
-          description="Approve, edit, or reject memory candidates extracted from agent sessions."
+          title="Memory"
+          description="Automated memories captured from agent sessions are scoped to the active project."
         />
         <EmptyPanel
           icon={<Brain className="h-5 w-5 text-muted-foreground/70" />}
@@ -334,16 +322,16 @@ export function MemoryReviewSection({
     return (
       <div className="flex flex-col gap-6">
         <SectionHeader
-          title="Memory Review"
+          title="Memory"
           description={
-            projectLabel ? `Memory candidates for ${projectLabel}.` : "Memory candidates for the active project."
+            projectLabel ? `Automated memories for ${projectLabel}.` : "Automated memories for the active project."
           }
           actions={headerActions}
         />
         <EmptyPanel
           icon={<Brain className="h-5 w-5 text-muted-foreground/70" />}
           title="Memory review unavailable"
-          body="The desktop adapter did not provide memory review commands. Restart Xero or upgrade to enable this surface."
+          body="The desktop adapter did not provide memory commands. Restart Xero or upgrade to enable this surface."
         />
       </div>
     )
@@ -352,11 +340,11 @@ export function MemoryReviewSection({
   return (
     <div className="flex flex-col gap-6">
       <SectionHeader
-        title="Memory Review"
+        title="Memory"
         description={
           projectLabel
-            ? `Memory candidates extracted from agent sessions for ${projectLabel}.`
-            : "Memory candidates extracted from agent sessions."
+            ? `Automated memories captured from agent sessions for ${projectLabel}.`
+            : "Automated memories captured from agent sessions."
         }
         actions={headerActions}
       />
@@ -368,7 +356,7 @@ export function MemoryReviewSection({
       {queueState.status === "loading" && items.length === 0 ? (
         <div
           aria-busy="true"
-          aria-label="Loading memory review queue"
+          aria-label="Loading memory"
           className="flex min-h-[200px] flex-col gap-2.5"
         >
           <div className="h-[76px] rounded-lg border border-border/40 bg-secondary/40" />
@@ -380,13 +368,13 @@ export function MemoryReviewSection({
       {queueState.status === "ready" && items.length === 0 ? (
         <EmptyPanel
           icon={<Brain className="h-5 w-5 text-muted-foreground/70" />}
-          title="No memory to review"
-          body="Memory candidates appear here when agent sessions complete, pause, fail, or hand off."
+          title="No memory yet"
+          body="Automated memories appear here when agent sessions complete, pause, fail, or hand off."
         />
       ) : null}
 
       {items.length > 0 ? (
-        <section className="flex flex-col gap-3" data-testid="memory-review-items">
+        <section className="flex flex-col gap-3" data-testid="memory-items">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <SubHeading count={pageSummary}>Memory</SubHeading>
             <span className="text-[12px] text-muted-foreground">
@@ -395,7 +383,7 @@ export function MemoryReviewSection({
           </div>
           <div className="grid gap-2.5">
             {items.map((item) => (
-              <MemoryReviewRow
+              <MemoryRow
                 key={item.memoryId}
                 item={item}
                 expanded={expandedIds.has(item.memoryId)}
@@ -405,10 +393,10 @@ export function MemoryReviewSection({
               />
             ))}
           </div>
-          <MemoryReviewPager
+          <MemoryPager
             offset={responseOffset}
             total={totalItems}
-            pageSize={MEMORY_REVIEW_PAGE_SIZE}
+            pageSize={MEMORY_PAGE_SIZE}
             disabled={isBusy}
             onPageChange={handlePageChange}
           />
@@ -420,7 +408,7 @@ export function MemoryReviewSection({
         onOpenChange={(open) => (open ? null : closeEditor())}
         variant="form"
         title="Correct memory"
-        description="Submitting a correction creates a new approved memory that cites this one. The original record stays in the audit trail."
+        description="Submitting a correction creates a new enabled memory that cites this one. The original record stays in the audit trail."
         titleClassName="text-[15px] font-semibold tracking-tight"
         descriptionClassName="text-[12.5px] leading-[1.55]"
         footer={
@@ -471,27 +459,30 @@ export function MemoryReviewSection({
   )
 }
 
-interface MemoryReviewRowProps {
-  item: MemoryReviewItem
+interface MemoryRowProps {
+  item: MemoryItem
   expanded: boolean
   pendingKind: ActionKind | null
-  onAction: (item: MemoryReviewItem, kind: ActionKind) => void
+  onAction: (item: MemoryItem, kind: ActionKind) => void
   onExpandedChange: (memoryId: string, open: boolean) => void
 }
 
-const MemoryReviewRow = memo(function MemoryReviewRow({
+const MemoryRow = memo(function MemoryRow({
   item,
   expanded,
   pendingKind,
   onAction,
   onExpandedChange,
-}: MemoryReviewRowProps) {
+}: MemoryRowProps) {
   const redacted = item.redaction.textPreviewRedacted
   const factKeyRedacted = item.redaction.factKeyRedacted
   const freshnessReason = freshnessExplanation(item)
   const ariaBusy = pendingKind !== null
-  const canShowPrimaryApprove = item.reviewState !== "approved"
   const retrievalLabel = item.retrieval.eligible ? "Eligible" : reasonLabel(item.retrieval.reason)
+  const status = memoryStatus(item)
+  const primaryAction = item.enabled ? "disable" : "enable"
+  const primaryActionAllowed = item.enabled ? item.availableActions.canDisable : item.availableActions.canEnable
+  const PrimaryIcon = item.enabled ? PowerOff : Power
 
   return (
     <Collapsible open={expanded} onOpenChange={(open) => onExpandedChange(item.memoryId, open)}>
@@ -500,26 +491,27 @@ const MemoryReviewRow = memo(function MemoryReviewRow({
         data-memory-id={item.memoryId}
         aria-busy={ariaBusy}
         className={cn(
-          "overflow-hidden rounded-lg border border-border/60 bg-card/25 shadow-xs [contain-intrinsic-size:96px] [content-visibility:auto]",
-          redacted && "border-warning/30 bg-warning/[0.035]",
+          "overflow-hidden rounded-lg border border-border/55 bg-card/35 shadow-xs [contain-intrinsic-size:112px] [content-visibility:auto]",
+          item.enabled && item.retrieval.eligible && "border-success/25 bg-success/[0.025]",
+          !item.enabled && "bg-muted/20",
+          redacted && "border-warning/35 bg-warning/[0.035]",
         )}
       >
-        <div className="flex items-start gap-2 p-3.5">
+        <div className="flex items-start gap-2 p-3">
           <CollapsibleTrigger asChild>
             <button
               type="button"
-              className="group flex min-w-0 flex-1 items-start gap-3 rounded-md text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50"
+              className="group grid min-w-0 flex-1 grid-cols-[2rem_minmax(0,1fr)_1rem] items-start gap-3 rounded-md text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50"
               aria-label={`Toggle memory details for ${item.memoryId}`}
             >
-              <span className="mt-[1px] flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border/60 bg-secondary/40 text-muted-foreground transition-colors group-hover:text-foreground">
+              <span className="flex h-8 w-8 items-center justify-center rounded-md border border-border/55 bg-background/70 text-muted-foreground transition-colors group-hover:text-foreground">
                 <Brain className="h-4 w-4" aria-hidden="true" />
               </span>
               <span className="min-w-0 flex-1">
-                <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
                   <Pill tone="neutral">{item.scope}</Pill>
                   <Pill tone="neutral">{formatEnum(item.kind)}</Pill>
-                  <Pill tone={REVIEW_STATE_TONE[item.reviewState]}>{item.reviewState}</Pill>
-                  {!item.enabled ? <Pill tone="neutral">Disabled</Pill> : null}
+                  <Pill tone={status.tone}>{status.label}</Pill>
                   {redacted ? (
                     <Pill tone="warn" className="gap-1">
                       <span data-testid="redaction-badge" className="inline-flex items-center gap-1">
@@ -542,13 +534,13 @@ const MemoryReviewRow = memo(function MemoryReviewRow({
                 ) : (
                   <span
                     data-testid="memory-preview"
-                    className="mt-2 block whitespace-pre-wrap text-[13px] leading-[1.5] text-foreground line-clamp-2"
+                    className="mt-2 block max-w-full whitespace-pre-wrap break-words text-[13px] leading-[1.5] text-foreground line-clamp-2"
                   >
                     {item.textPreview}
                   </span>
                 )}
 
-                <span className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-muted-foreground">
+                <span className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] leading-5 text-muted-foreground">
                   <span>Updated {formatTimestamp(item.updatedAt)}</span>
                   <span>Freshness {formatEnum(item.freshness.state)}</span>
                   <span>Retrieval {retrievalLabel}</span>
@@ -565,45 +557,43 @@ const MemoryReviewRow = memo(function MemoryReviewRow({
           </CollapsibleTrigger>
 
           <div className="flex shrink-0 items-center gap-1.5">
-            {canShowPrimaryApprove ? (
-              <Button
-                size="sm"
-                variant="default"
-                className="h-8 gap-1.5 text-[12px]"
-                onClick={() => onAction(item, "approve")}
-                disabled={ariaBusy || !item.availableActions.canApprove}
-                aria-label="Approve memory"
-              >
-                {pendingKind === "approve" ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Check className="h-3.5 w-3.5" />
-                )}
-                Approve
-              </Button>
-            ) : null}
+            <Button
+              size="sm"
+              variant={item.enabled ? "outline" : "default"}
+              className="h-8 gap-1.5 text-[12px]"
+              onClick={() => onAction(item, primaryAction)}
+              disabled={ariaBusy || !primaryActionAllowed}
+              aria-label={item.enabled ? "Disable memory" : "Enable memory"}
+            >
+              {pendingKind === primaryAction ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <PrimaryIcon className="h-3.5 w-3.5" />
+              )}
+              {item.enabled ? "Disable" : "Enable"}
+            </Button>
             <MemoryActionsMenu item={item} pendingKind={pendingKind} onAction={onAction} />
           </div>
         </div>
 
         <CollapsibleContent>
-          <div className="border-t border-border/50 px-4 pb-4 pt-3">
-            <div className="ml-0 flex flex-col gap-3 sm:ml-11">
+          <div className="border-t border-border/45 px-3 pb-3 pt-3">
+            <div className="grid min-w-0 gap-3 sm:pl-11">
               {!redacted ? (
-                <div className="rounded-md border border-border/50 bg-secondary/20 px-3 py-2.5">
+                <div className="min-w-0 border-b border-border/35 pb-3">
                   <p className="mb-1 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70">
                     Full preview
                   </p>
                   <p
                     data-testid="memory-full-preview"
-                    className="whitespace-pre-wrap text-[12.5px] leading-[1.55] text-foreground"
+                    className="max-w-full whitespace-pre-wrap break-words text-[12.5px] leading-[1.55] text-foreground"
                   >
                     {item.textPreview}
                   </p>
                 </div>
               ) : null}
 
-              <dl className="grid grid-cols-1 gap-2.5 text-[12px] sm:grid-cols-2">
+              <dl className="grid min-w-0 grid-cols-1 gap-x-4 gap-y-3 text-[12px] sm:grid-cols-2">
                 <MemoryDetail label="Freshness" value={formatEnum(item.freshness.state)} />
                 <MemoryDetail label="Retrieval" value={retrievalLabel} />
                 <MemoryDetail label="Created" value={formatTimestamp(item.createdAt)} />
@@ -618,17 +608,21 @@ const MemoryReviewRow = memo(function MemoryReviewRow({
               </dl>
 
               {freshnessReason ? (
-                <p className="flex items-start gap-2 rounded-md border border-warning/25 bg-warning/[0.05] px-3 py-2 text-[12px] leading-[1.5] text-warning">
+                <p className="flex min-w-0 items-start gap-2 rounded-md border border-warning/25 bg-warning/[0.05] px-3 py-2 text-[12px] leading-[1.5] text-warning">
                   <AlertTriangle className="mt-[2px] h-3.5 w-3.5 shrink-0" />
-                  <span>{freshnessReason}</span>
+                  <span className="min-w-0 break-words">{freshnessReason}</span>
                 </p>
               ) : null}
 
               {item.provenance.diagnostic ? (
-                <p className="rounded-md border border-border/50 bg-secondary/20 px-3 py-2 text-[12px] leading-[1.5] text-muted-foreground">
-                  <span className="font-medium text-foreground/80">Diagnostic </span>
-                  {item.provenance.diagnostic.message}
-                </p>
+                <div className="min-w-0 border-t border-border/35 pt-3">
+                  <p className="mb-1 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70">
+                    Diagnostic
+                  </p>
+                  <pre className="max-h-44 min-w-0 overflow-auto whitespace-pre-wrap break-words rounded-md bg-secondary/25 px-3 py-2 text-[11.5px] leading-[1.5] text-muted-foreground">
+                    {formatDiagnosticMessage(item.provenance.diagnostic.message)}
+                  </pre>
+                </div>
               ) : null}
             </div>
           </div>
@@ -643,9 +637,9 @@ function MemoryActionsMenu({
   pendingKind,
   onAction,
 }: {
-  item: MemoryReviewItem
+  item: MemoryItem
   pendingKind: ActionKind | null
-  onAction: (item: MemoryReviewItem, kind: ActionKind) => void
+  onAction: (item: MemoryItem, kind: ActionKind) => void
 }) {
   const ariaBusy = pendingKind !== null
 
@@ -668,27 +662,23 @@ function MemoryActionsMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-44">
-        <DropdownMenuItem
-          disabled={!item.availableActions.canApprove}
-          onSelect={() => onAction(item, "approve")}
-        >
-          <Check className="h-4 w-4" />
-          Approve memory
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          disabled={!item.availableActions.canReject}
-          onSelect={() => onAction(item, "reject")}
-        >
-          <X className="h-4 w-4" />
-          Reject memory
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          disabled={!item.availableActions.canDisable}
-          onSelect={() => onAction(item, "disable")}
-        >
-          <PowerOff className="h-4 w-4" />
-          Disable memory
-        </DropdownMenuItem>
+        {item.enabled ? (
+          <DropdownMenuItem
+            disabled={!item.availableActions.canDisable}
+            onSelect={() => onAction(item, "disable")}
+          >
+            <PowerOff className="h-4 w-4" />
+            Disable memory
+          </DropdownMenuItem>
+        ) : (
+          <DropdownMenuItem
+            disabled={!item.availableActions.canEnable}
+            onSelect={() => onAction(item, "enable")}
+          >
+            <Power className="h-4 w-4" />
+            Enable memory
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem
           disabled={!item.availableActions.canEditByCorrection}
           onSelect={() => onAction(item, "edit")}
@@ -710,19 +700,17 @@ function MemoryActionsMenu({
   )
 }
 
-function MemoryMetricStrip({ counts }: { counts: GetSessionMemoryReviewQueueResponseDto["counts"] }) {
+function MemoryMetricStrip({ counts }: { counts: GetSessionMemoryItemsResponseDto["counts"] }) {
   const metrics = [
-    { label: "Candidates", value: counts.candidate, tone: "info" as Tone },
-    { label: "Approved", value: counts.approved, tone: "good" as Tone },
-    { label: "Retrievable", value: counts.retrievableApproved, tone: "good" as Tone },
+    { label: "Enabled", value: counts.enabled, tone: "good" as Tone },
+    { label: "Retrievable", value: counts.retrievable, tone: "good" as Tone },
     { label: "Disabled", value: counts.disabled, tone: "neutral" as Tone },
-    { label: "Rejected", value: counts.rejected, tone: "warn" as Tone },
   ]
 
   return (
     <dl
       data-testid="memory-review-counts"
-      className="grid grid-cols-2 overflow-hidden rounded-lg border border-border/60 bg-card/20 sm:grid-cols-5"
+      className="grid grid-cols-1 overflow-hidden rounded-lg border border-border/60 bg-card/20 sm:grid-cols-3"
     >
       {metrics.map((metric) => {
         const isZero = metric.value === 0
@@ -755,7 +743,7 @@ function MemoryMetricStrip({ counts }: { counts: GetSessionMemoryReviewQueueResp
   )
 }
 
-function MemoryReviewPager({
+function MemoryPager({
   offset,
   total,
   pageSize,
@@ -824,17 +812,27 @@ function MemoryDetail({
   tone?: Tone
 }) {
   return (
-    <div className="min-w-0 rounded-md border border-border/45 bg-secondary/15 px-3 py-2">
+    <div className="min-w-0">
       <dt className="text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70">{label}</dt>
-      <dd className={cn("mt-1 truncate text-[12px] text-foreground/85", tone === "warn" && "text-warning")}>{value}</dd>
+      <dd className={cn("mt-1 max-w-full break-words text-[12px] leading-[1.45] text-foreground/85", tone === "warn" && "text-warning")}>{value}</dd>
     </div>
   )
 }
 
-function reasonLabel(reason: MemoryReviewItem["retrieval"]["reason"]): string {
+function memoryStatus(item: MemoryItem): { label: string; tone: Tone } {
+  if (!item.enabled) return { label: "Disabled", tone: "neutral" }
+  if (item.retrieval.eligible) return { label: "Retrievable", tone: "good" }
+  if (["stale", "source_missing", "blocked"].includes(item.retrieval.reason)) {
+    return { label: reasonLabel(item.retrieval.reason), tone: "warn" }
+  }
+  if (item.retrieval.reason === "invalidated" || item.retrieval.reason === "superseded") {
+    return { label: reasonLabel(item.retrieval.reason), tone: "neutral" }
+  }
+  return { label: "Enabled", tone: "info" }
+}
+
+function reasonLabel(reason: MemoryItem["retrieval"]["reason"]): string {
   switch (reason) {
-    case "pending_or_rejected_review":
-      return "Pending review"
     case "disabled":
       return "Disabled"
     case "superseded":
@@ -852,7 +850,15 @@ function reasonLabel(reason: MemoryReviewItem["retrieval"]["reason"]): string {
   }
 }
 
-function freshnessExplanation(item: MemoryReviewItem): string | null {
+function formatDiagnosticMessage(message: string): string {
+  try {
+    return JSON.stringify(JSON.parse(message), null, 2)
+  } catch {
+    return message
+  }
+}
+
+function freshnessExplanation(item: MemoryItem): string | null {
   const { freshness } = item
   if (freshness.staleReason) return freshness.staleReason
   if (freshness.state === "stale") return "Source content has changed since this memory was captured."

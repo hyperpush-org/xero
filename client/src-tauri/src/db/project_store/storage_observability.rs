@@ -41,13 +41,13 @@ const PROJECT_PERFORMANCE_BUDGETS: &[(&str, u64, &str, &str)] = &[
     (
         "retrieval_latency",
         750,
-        "project-record and approved-memory retrieval",
+        "project-record and enabled-memory retrieval",
         "warning",
     ),
     (
-        "memory_review_query",
+        "memory_items_query",
         500,
-        "memory candidate and approved-memory support queries",
+        "memory capture and enabled-memory support queries",
         "warning",
     ),
     (
@@ -762,7 +762,7 @@ fn support_failure_area_summary(
         },
         "memory": {
             "status": storage.agent_memory_health_status,
-            "memoryReviewBudgetStatus": performance_budget_status(performance, "memory_review_query"),
+            "memoryItemsBudgetStatus": performance_budget_status(performance, "memory_items_query"),
             "freshness": lance_freshness_counts_json(&storage.agent_memory_health.freshness_counts),
         },
         "handoff": {
