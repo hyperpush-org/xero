@@ -9,7 +9,6 @@ import type {
   RuntimeProviderIdDto,
   RuntimeSessionView,
   UpsertProviderCredentialRequestDto,
-  XaiDeviceCodeLoginDto,
 } from "@/src/lib/xero-model"
 import { ProviderCredentialsList } from "@/components/xero/provider-profiles/provider-credentials-list"
 
@@ -33,11 +32,6 @@ interface ProvidersStepProps {
     providerId: RuntimeProviderIdDto
     originator?: string | null
   }) => Promise<ProviderAuthSessionView | null>
-  onStartXaiDeviceCodeLogin?: (request: { providerId: "xai" }) => Promise<XaiDeviceCodeLoginDto>
-  onPollXaiDeviceCodeLogin?: (request: {
-    providerId: "xai"
-    flowId: string
-  }) => Promise<XaiDeviceCodeLoginDto>
 }
 
 export function ProvidersStep({
@@ -51,8 +45,6 @@ export function ProvidersStep({
   onUpsertProviderCredential,
   onDeleteProviderCredential,
   onStartOAuthLogin,
-  onStartXaiDeviceCodeLogin,
-  onPollXaiDeviceCodeLogin,
 }: ProvidersStepProps) {
   return (
     <div>
@@ -73,8 +65,6 @@ export function ProvidersStep({
           onUpsertProviderCredential={onUpsertProviderCredential}
           onDeleteProviderCredential={onDeleteProviderCredential}
           onStartOAuthLogin={onStartOAuthLogin}
-          onStartXaiDeviceCodeLogin={onStartXaiDeviceCodeLogin}
-          onPollXaiDeviceCodeLogin={onPollXaiDeviceCodeLogin}
         />
       </div>
     </div>

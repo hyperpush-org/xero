@@ -9,7 +9,6 @@ import type {
   ProviderAuthSessionView,
   RuntimeProviderIdDto,
   UpsertProviderCredentialRequestDto,
-  XaiDeviceCodeLoginDto,
 } from "@/src/lib/xero-model"
 import { ProviderCredentialsList } from "@/components/xero/provider-profiles/provider-credentials-list"
 import { SectionHeader } from "./section-header"
@@ -35,11 +34,6 @@ export interface ProvidersSectionProps {
     providerId: RuntimeProviderIdDto
     originator?: string | null
   }) => Promise<ProviderAuthSessionView | null>
-  onStartXaiDeviceCodeLogin?: (request: { providerId: "xai" }) => Promise<XaiDeviceCodeLoginDto>
-  onPollXaiDeviceCodeLogin?: (request: {
-    providerId: "xai"
-    flowId: string
-  }) => Promise<XaiDeviceCodeLoginDto>
 }
 
 export function ProvidersSection({
@@ -54,8 +48,6 @@ export function ProvidersSection({
   onUpsertProviderCredential,
   onDeleteProviderCredential,
   onStartOAuthLogin,
-  onStartXaiDeviceCodeLogin,
-  onPollXaiDeviceCodeLogin,
 }: ProvidersSectionProps) {
   return (
     <div className="flex flex-col gap-6">
@@ -75,8 +67,6 @@ export function ProvidersSection({
         onUpsertProviderCredential={onUpsertProviderCredential}
         onDeleteProviderCredential={onDeleteProviderCredential}
         onStartOAuthLogin={onStartOAuthLogin}
-        onStartXaiDeviceCodeLogin={onStartXaiDeviceCodeLogin}
-        onPollXaiDeviceCodeLogin={onPollXaiDeviceCodeLogin}
       />
     </div>
   )

@@ -44,7 +44,7 @@ import {
   type PlatformVariant,
   type SurfacePreloadTarget,
 } from '@/components/xero/shell'
-import { invoke, isTauri } from '@tauri-apps/api/core'
+import { isTauri } from '@tauri-apps/api/core'
 import type { StatusFooterProps } from '@/components/xero/status-footer'
 import type { SettingsSection } from '@/components/xero/settings-dialog'
 import type { TerminalSidebarHandle } from '@/components/xero/terminal-sidebar'
@@ -175,6 +175,7 @@ import {
 import { cn } from '@/lib/utils'
 import { FloatingRightSidebarFrame } from '@/components/xero/floating-right-sidebar-frame'
 import { SessionNotificationsSidebar } from '@/components/xero/session-notifications-sidebar'
+import { SignInReminderToast } from '@/components/xero/sign-in-reminder-toast'
 import type { BrowserAgentContextRequest } from '@/components/xero/browser-tool-injection'
 import { DesktopControlBanner } from '@/components/xero/desktop-control-banner'
 import { checkAttachmentModelCompatibility } from '@/lib/agent-attachments'
@@ -211,6 +212,7 @@ function preloadSolanaWorkbenchSurface() {
 }
 
 const ACTIVE_VIEW_APP_STATE_KEY = 'app.activeView.v1'
+const ONBOARDING_COMPLETED_APP_STATE_KEY = 'app.onboarding.completed.v1'
 const GLOBAL_BROWSER_PROJECT_KEY = '__global_browser__'
 const GLOBAL_COMPUTER_USE_PROJECT_ID = 'global-computer-use'
 const GLOBAL_COMPUTER_USE_AGENT_SESSION_ID = 'agent-session-global-computer-use'
@@ -298,6 +300,32 @@ async function persistActiveView(adapter: XeroDesktopAdapter, view: View): Promi
   await adapter.writeAppUiState({
     key: ACTIVE_VIEW_APP_STATE_KEY,
     value: persistedActiveViewValue(view),
+  })
+}
+
+async function readPersistedOnboardingCompleted(adapter: XeroDesktopAdapter): Promise<boolean> {
+  if (!adapter.readAppUiState) {
+    return false
+  }
+
+  try {
+    const response = await adapter.readAppUiState({
+      key: ONBOARDING_COMPLETED_APP_STATE_KEY,
+    })
+    return response.value === true
+  } catch {
+    return false
+  }
+}
+
+async function persistOnboardingCompleted(adapter: XeroDesktopAdapter): Promise<void> {
+  if (!adapter.writeAppUiState) {
+    return
+  }
+
+  await adapter.writeAppUiState({
+    key: ONBOARDING_COMPLETED_APP_STATE_KEY,
+    value: true,
   })
 }
 
@@ -1662,8 +1690,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
     upsertProviderCredential,
     deleteProviderCredential,
     startOAuthLogin,
-    startXaiDeviceCodeLogin,
-    pollXaiDeviceCodeLogin,
     refreshMcpRegistry,
     upsertMcpServer,
     removeMcpServer,
@@ -3117,24 +3143,44 @@ export function XeroApp({ adapter }: XeroAppProps) {
 
   const [platformOverride, setPlatformOverride] = useState<PlatformVariant | null>(null)
   const [onboardingDismissed, setOnboardingDismissed] = useState(false)
+  const [onboardingCompletionHydrated, setOnboardingCompletionHydrated] = useState(
+    () => !resolvedAdapter.readAppUiState,
+  )
   const [onboardingOpen, setOnboardingOpen] = useState(false)
-  const [launchMode, setLaunchMode] = useState<string | null>(null)
+  const completeOnboarding = useCallback(() => {
+    setOnboardingDismissed(true)
+    setOnboardingOpen(false)
+    void persistOnboardingCompleted(resolvedAdapter).catch(() => undefined)
+  }, [resolvedAdapter])
+
   useEffect(() => {
-    if (!isTauri()) return
-    let cancelled = false
-    void invoke<string>('get_launch_mode')
-      .then((value) => {
-        if (!cancelled && typeof value === 'string' && value.length > 0) {
-          setLaunchMode(value)
-        }
-      })
-      .catch(() => {
-        // Command unavailable in older builds — leave launchMode null.
-      })
-    return () => {
-      cancelled = true
+    if (!resolvedAdapter.readAppUiState) {
+      setOnboardingCompletionHydrated(true)
+      return
     }
-  }, [])
+
+    let disposed = false
+    setOnboardingCompletionHydrated(false)
+    void readPersistedOnboardingCompleted(resolvedAdapter)
+      .then((completed) => {
+        if (disposed || !completed) {
+          return
+        }
+        setOnboardingDismissed(true)
+        setOnboardingOpen(false)
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (disposed) {
+          return
+        }
+        setOnboardingCompletionHydrated(true)
+      })
+
+    return () => {
+      disposed = true
+    }
+  }, [resolvedAdapter])
   useEffect(() => {
     const wasBrowserOpen = previousBrowserOpenRef.current
 
@@ -3293,10 +3339,15 @@ export function XeroApp({ adapter }: XeroAppProps) {
     pendingAgentDockSelection?.agentDefinitionId ?? null
 
   useEffect(() => {
-    if (!onboardingDismissed && !isLoading && projects.length === 0) {
+    if (
+      onboardingCompletionHydrated &&
+      !onboardingDismissed &&
+      !isLoading &&
+      projects.length === 0
+    ) {
       setOnboardingOpen(true)
     }
-  }, [isLoading, onboardingDismissed, projects.length])
+  }, [isLoading, onboardingCompletionHydrated, onboardingDismissed, projects.length])
 
   const selectedAgentSessionId = activeProject?.selectedAgentSessionId ?? null
   const currentAgentWorkspaceDisplay = useMemo<AgentWorkspaceDisplaySnapshot | null>(() => {
@@ -5191,11 +5242,13 @@ export function XeroApp({ adapter }: XeroAppProps) {
         path: activeProject.repository?.rootPath ?? activeProject.name,
       }
     : null
-  const shouldAutoOpenOnboarding = !onboardingDismissed && !isLoading && projects.length === 0
+  const shouldAutoOpenOnboarding =
+    onboardingCompletionHydrated && !onboardingDismissed && !isLoading && projects.length === 0
   const showOnboarding =
     (onboardingOpen || shouldAutoOpenOnboarding) &&
     !onboardingDismissed &&
     !isLoading &&
+    onboardingCompletionHydrated &&
     activeViewHydrated
   const isForegroundProjectSelection = pendingProjectSelectionId !== null
   const pendingProjectSelectionName = pendingProjectSelectionId
@@ -5232,9 +5285,13 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const showStartupSurfacePrewarm = !startupSurfacePrewarm.ready
   const showAppBootLoading = !showOnboarding && (
     !activeViewHydrated ||
+    !onboardingCompletionHydrated ||
     isLoading ||
     isBlockingProjectLoading ||
     showStartupSurfacePrewarm
+  )
+  const signInReminderToast = (
+    <SignInReminderToast enabled={!showOnboarding && !showAppBootLoading} />
   )
 
   useEffect(() => {
@@ -5281,75 +5338,70 @@ export function XeroApp({ adapter }: XeroAppProps) {
 
   if (showOnboarding) {
     return (
-      <XeroShell
-        activeView={activeView}
-        onViewChange={setActiveView}
-        onViewPreload={preloadViewChunk}
-        onSurfacePreload={preloadSurfaceChunk}
-        projectId={activeProjectId}
-        projectName={shellProjectName}
-        onToggleBrowser={toggleBrowser}
-        browserOpen={browserOpen}
-        onToggleIos={toggleIos}
-        iosOpen={iosOpen}
-        onToggleSolana={toggleSolana}
-        solanaOpen={solanaOpen}
-        onToggleVcs={toggleVcs}
-        vcsOpen={vcsOpen}
-        onToggleWorkflows={toggleWorkflows}
-        workflowsOpen={workflowsOpen}
-        onToggleAgentDock={toggleAgentDock}
-        agentDockOpen={agentDockOpen}
-        agentDockDisabled={activeView === 'agent' || !activeProject}
-        onToggleComputerUse={toggleComputerUse}
-        computerUseOpen={computerUseOpen}
-        computerUseRunning={computerUseRunning}
-        vcsChangeCount={repositoryStatus?.statusCount ?? 0}
-        vcsAdditions={repositoryStatus?.additions ?? 0}
-        vcsDeletions={repositoryStatus?.deletions ?? 0}
-        platformOverride={platformOverride}
-        footer={statusFooter}
-        chromeOnly
-        hideFooter
-      >
-        <OnboardingFlow
-          providerCredentials={providerCredentials}
-          providerCredentialsLoadStatus={providerCredentialsLoadStatus}
-          providerCredentialsLoadError={providerCredentialsLoadError}
-          providerCredentialsSaveStatus={providerCredentialsSaveStatus}
-          providerCredentialsSaveError={providerCredentialsSaveError}
-          runtimeSession={agentView?.runtimeSession ?? null}
-          project={onboardingProject}
-          isImporting={isImporting}
-          isProjectLoading={isProjectLoading}
-          projectErrorMessage={errorMessage}
-          environmentPermissionRequests={environmentDiscoveryStatus?.permissionRequests ?? []}
-          onResolveEnvironmentPermissions={resolveEnvironmentPermissions}
-          launchMode={launchMode}
-          onImportProject={async () => {
-            await importProject()
-          }}
-          onRefreshProviderCredentials={(options) => refreshProviderCredentials(options)}
-          onUpsertProviderCredential={(request) => upsertProviderCredential(request)}
-          onDeleteProviderCredential={(providerId) => deleteProviderCredential(providerId)}
-          onStartOAuthLogin={(request) => startOAuthLogin(request)}
-          onStartXaiDeviceCodeLogin={(request) => startXaiDeviceCodeLogin(request)}
-          onPollXaiDeviceCodeLogin={(request) => pollXaiDeviceCodeLogin(request)}
-          onComplete={() => {
-            setOnboardingDismissed(true)
-            setOnboardingOpen(false)
-          }}
-          onDismiss={() => {
-            setOnboardingDismissed(true)
-            setOnboardingOpen(false)
-          }}
-        />
-      </XeroShell>
+      <>
+        {signInReminderToast}
+        <XeroShell
+          activeView={activeView}
+          onViewChange={setActiveView}
+          onViewPreload={preloadViewChunk}
+          onSurfacePreload={preloadSurfaceChunk}
+          projectId={activeProjectId}
+          projectName={shellProjectName}
+          onToggleBrowser={toggleBrowser}
+          browserOpen={browserOpen}
+          onToggleIos={toggleIos}
+          iosOpen={iosOpen}
+          onToggleSolana={toggleSolana}
+          solanaOpen={solanaOpen}
+          onToggleVcs={toggleVcs}
+          vcsOpen={vcsOpen}
+          onToggleWorkflows={toggleWorkflows}
+          workflowsOpen={workflowsOpen}
+          onToggleAgentDock={toggleAgentDock}
+          agentDockOpen={agentDockOpen}
+          agentDockDisabled={activeView === 'agent' || !activeProject}
+          onToggleComputerUse={toggleComputerUse}
+          computerUseOpen={computerUseOpen}
+          computerUseRunning={computerUseRunning}
+          vcsChangeCount={repositoryStatus?.statusCount ?? 0}
+          vcsAdditions={repositoryStatus?.additions ?? 0}
+          vcsDeletions={repositoryStatus?.deletions ?? 0}
+          platformOverride={platformOverride}
+          footer={statusFooter}
+          chromeOnly
+          hideFooter
+        >
+          <OnboardingFlow
+            providerCredentials={providerCredentials}
+            providerCredentialsLoadStatus={providerCredentialsLoadStatus}
+            providerCredentialsLoadError={providerCredentialsLoadError}
+            providerCredentialsSaveStatus={providerCredentialsSaveStatus}
+            providerCredentialsSaveError={providerCredentialsSaveError}
+            runtimeSession={agentView?.runtimeSession ?? null}
+            project={onboardingProject}
+            isImporting={isImporting}
+            isProjectLoading={isProjectLoading}
+            projectErrorMessage={errorMessage}
+            environmentPermissionRequests={environmentDiscoveryStatus?.permissionRequests ?? []}
+            onResolveEnvironmentPermissions={resolveEnvironmentPermissions}
+            onImportProject={async () => {
+              await importProject()
+            }}
+            onRefreshProviderCredentials={(options) => refreshProviderCredentials(options)}
+            onUpsertProviderCredential={(request) => upsertProviderCredential(request)}
+            onDeleteProviderCredential={(providerId) => deleteProviderCredential(providerId)}
+            onStartOAuthLogin={(request) => startOAuthLogin(request)}
+            onComplete={completeOnboarding}
+            onDismiss={completeOnboarding}
+          />
+        </XeroShell>
+      </>
     )
   }
 
   return (
     <>
+      {signInReminderToast}
       <div
         aria-hidden={showAppBootLoading}
         className={cn('h-screen w-screen', showAppBootLoading && 'invisible')}
@@ -5738,8 +5790,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onUpsertProviderCredential={(request) => upsertProviderCredential(request)}
                 onDeleteProviderCredential={(providerId) => deleteProviderCredential(providerId)}
                 onStartOAuthLogin={(request) => startOAuthLogin(request)}
-                onStartXaiDeviceCodeLogin={(request) => startXaiDeviceCodeLogin(request)}
-                onPollXaiDeviceCodeLogin={(request) => pollXaiDeviceCodeLogin(request)}
                 doctorReport={doctorReport}
                 doctorReportStatus={doctorReportStatus}
                 doctorReportError={doctorReportError}

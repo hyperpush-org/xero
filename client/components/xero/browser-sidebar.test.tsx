@@ -659,6 +659,73 @@ describe("BrowserSidebar", () => {
     })
   })
 
+  it("switches to another detected project app from the browser header picker", async () => {
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "xero-browser-tab-1",
+        title: "Current app",
+        url: "http://127.0.0.1:4100/feed",
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+    registerInvoke("browser_dev_server_running", async () => true)
+    const shownRequests: Array<Record<string, unknown> | undefined> = []
+    registerInvoke("browser_show", async (args) => {
+      shownRequests.push(args)
+      return {
+        id: "tab-1",
+        label: "xero-browser-tab-1",
+        title: null,
+        url: String((args as { url?: string })?.url ?? ""),
+        loading: true,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      }
+    })
+
+    render(
+      <BrowserSidebar
+        open
+        projectBrowserTargets={[
+          {
+            id: "browser-app:http://127.0.0.1:4100/",
+            label: "All - 127.0.0.1:4100",
+            url: "http://127.0.0.1:4100/",
+            source: "All",
+            detectedAt: 1,
+          },
+          {
+            id: "browser-app:http://127.0.0.1:4200/",
+            label: "All - 127.0.0.1:4200",
+            url: "http://127.0.0.1:4200/",
+            source: "All",
+            detectedAt: 2,
+          },
+        ]}
+      />,
+    )
+
+    const input = (await screen.findByLabelText("Address")) as HTMLInputElement
+    await waitFor(() => expect(input.value).toBe("http://127.0.0.1:4100/feed"))
+
+    const projectButton = await screen.findByRole("button", { name: "Open project app in browser" })
+    await waitFor(() => expect(projectButton).toBeEnabled())
+    fireEvent.click(projectButton)
+    fireEvent.click(await screen.findByRole("button", { name: /Open All .*127\.0\.0\.1:4200/ }))
+
+    await waitFor(() => {
+      expect(shownRequests.at(-1)).toMatchObject({
+        tabId: "tab-1",
+        url: "http://127.0.0.1:4200/",
+      })
+    })
+  })
+
   it("opens a detected project app from the address bar suggestions", async () => {
     registerInvoke("browser_tab_list", async () => [])
     registerInvoke("browser_dev_server_running", async () => true)
@@ -743,7 +810,7 @@ describe("BrowserSidebar", () => {
     })
   })
 
-  it("does not open a project app that stops after the button becomes available", async () => {
+  it("opens a previously verified project app without a second blocking liveness probe", async () => {
     registerInvoke("browser_tab_list", async () => [])
     let probeCount = 0
     registerInvoke("browser_dev_server_running", async () => {
@@ -787,10 +854,9 @@ describe("BrowserSidebar", () => {
     fireEvent.click(projectButton)
 
     await waitFor(() => {
-      expect(probeCount).toBe(2)
-      expect(projectButton).toBeDisabled()
+      expect(shownUrls).toEqual(["http://127.0.0.1:5173/"])
     })
-    expect(shownUrls).toEqual([])
+    expect(probeCount).toBe(1)
   })
 
   it("opens a pending in-app browser URL request", async () => {

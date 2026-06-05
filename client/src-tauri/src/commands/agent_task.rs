@@ -140,6 +140,7 @@ pub fn send_agent_message<R: Runtime + 'static>(
         provider_config,
         provider_preflight: Some(provider_preflight),
         answer_pending_actions: false,
+        answer_pending_action_id: None,
         auto_compact: auto_compact_preference(request.auto_compact)?,
         internal_resume: None,
     };
@@ -209,6 +210,9 @@ pub fn resume_agent_run<R: Runtime + 'static>(
 ) -> CommandResult<AgentRunDto> {
     validate_non_empty(&request.run_id, "runId")?;
     validate_non_empty(&request.response, "response")?;
+    if let Some(action_id) = request.action_id.as_deref() {
+        validate_non_empty(action_id, "actionId")?;
+    }
     let LocatedAgentRun {
         repo_root,
         project_id,
@@ -228,7 +232,8 @@ pub fn resume_agent_run<R: Runtime + 'static>(
         tool_runtime,
         provider_config,
         provider_preflight: None,
-        answer_pending_actions: true,
+        answer_pending_actions: request.action_id.is_none(),
+        answer_pending_action_id: request.action_id.clone(),
         auto_compact: auto_compact_preference(request.auto_compact)?,
         internal_resume: None,
     };

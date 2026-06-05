@@ -2566,7 +2566,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_EDIT,
             "mutation",
-            "Apply an exact expected-text line-range edit with mandatory owned-agent file hash anchors.",
+            "Apply an exact expected-text line-range edit with mandatory owned-agent file hash anchors; non-empty replacements keep line boundaries when the final newline is omitted.",
             &["file", "edit", "line", "expected_text", "hash_guard"],
             &[
                 "path",
@@ -5687,14 +5687,14 @@ impl AutonomousToolRuntime {
                     granted_tools,
                     granted_tool_details,
                     denied_tools: denied.into_iter().collect(),
-                    available_groups: self.available_tool_access_groups(),
-                    available_tool_packs: self.available_tool_pack_manifests(),
-                    tool_pack_health: self.tool_pack_health_reports(),
-                    capability_manifest: Some(self.computer_use_capability_manifest()),
+                    available_groups: Vec::new(),
+                    available_tool_packs: Vec::new(),
+                    tool_pack_health: Vec::new(),
+                    capability_manifest: None,
                     exposure_diagnostics: Some(Self::tool_access_exposure_diagnostics(
                         request.reason.as_deref(),
                     )),
-                    message: "Requested tools will be exposed on the next provider turn.".into(),
+                    message: "Requested tools will be exposed on the next provider turn. Use action=list only when you need the full available tool catalog.".into(),
                 }
             }
         };
@@ -11703,6 +11703,38 @@ mod tests {
             powershell["availabilityDiagnostics"]["platform"]["missingReasonCode"],
             json!("platform_unsupported"),
             "unsupported host platform should be an explicit diagnostic, not folded into rollout"
+        );
+    }
+
+    #[test]
+    fn tool_access_request_returns_compact_grant_output() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let runtime = AutonomousToolRuntime::new(tempdir.path()).expect("runtime");
+        let result = runtime
+            .tool_access(AutonomousToolAccessRequest {
+                action: AutonomousToolAccessAction::Request,
+                groups: Vec::new(),
+                tools: vec![AUTONOMOUS_TOOL_READ.into()],
+                reason: Some("Need to inspect a source file.".into()),
+            })
+            .expect("tool access request");
+        let AutonomousToolOutput::ToolAccess(output) = result.output else {
+            panic!("unexpected output");
+        };
+
+        assert_eq!(output.granted_tools, vec![AUTONOMOUS_TOOL_READ.to_string()]);
+        assert!(output.denied_tools.is_empty());
+        assert!(output.available_groups.is_empty());
+        assert!(output.available_tool_packs.is_empty());
+        assert!(output.tool_pack_health.is_empty());
+        assert!(output.capability_manifest.is_none());
+        assert_eq!(
+            output
+                .exposure_diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.get("requestReason"))
+                .and_then(JsonValue::as_str),
+            Some("Need to inspect a source file.")
         );
     }
 

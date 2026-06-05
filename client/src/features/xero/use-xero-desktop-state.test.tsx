@@ -33,7 +33,6 @@ import {
   type RuntimeUpdatedPayloadDto,
   type SkillRegistryDto,
   type WriteProjectFileResponseDto,
-  type XaiDeviceCodeLoginDto,
 } from '@/src/lib/xero-model'
 import { type ProviderProfilesDto } from '@/src/test/legacy-provider-profiles'
 import { XeroDesktopError, type XeroDesktopAdapter } from '@/src/lib/xero-desktop'
@@ -225,27 +224,6 @@ function makeProviderAuthSession(overrides: Partial<ProviderAuthSessionDto> = {}
     callbackBound: true,
     authorizationUrl: 'https://auth.openai.com/oauth/authorize',
     redirectUri: 'http://127.0.0.1:1455/auth/callback',
-    lastErrorCode: null,
-    lastError: null,
-    updatedAt: '2026-04-13T19:33:32Z',
-    ...overrides,
-  }
-}
-
-function makeXaiDeviceCodeLogin(
-  overrides: Partial<XaiDeviceCodeLoginDto> = {},
-): XaiDeviceCodeLoginDto {
-  return {
-    providerId: 'xai',
-    flowId: 'xai-device-flow-1',
-    userCode: 'GROK-1234',
-    verificationUri: 'https://auth.x.ai/device',
-    verificationUriComplete: 'https://auth.x.ai/device?user_code=GROK-1234',
-    intervalSeconds: 5,
-    expiresAt: 1_779_984_000,
-    phase: 'awaiting_manual_input',
-    sessionId: null,
-    accountId: null,
     lastErrorCode: null,
     lastError: null,
     updatedAt: '2026-04-13T19:33:32Z',
@@ -2204,10 +2182,6 @@ function createMockAdapter(options?: {
     deleteProviderCredential: vi.fn(async () => ({ credentials: [] })),
     startOAuthLogin: vi.fn(async () => makeProviderAuthSession()),
     completeOAuthCallback: vi.fn(async () => makeProviderAuthSession()),
-    startXaiDeviceCodeLogin: vi.fn(async () => makeXaiDeviceCodeLogin()),
-    pollXaiDeviceCodeLogin: vi.fn(async (request) =>
-      makeXaiDeviceCodeLogin({ flowId: request.flowId }),
-    ),
     resolveOperatorAction,
     resumeOperatorRun,
     browserEval: vi.fn(async () => undefined),

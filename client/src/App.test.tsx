@@ -6,11 +6,13 @@ const {
   githubLogoutMock,
   githubRefreshMock,
   openUrlMock,
+  signInReminderToastMock,
 } = vi.hoisted(() => ({
   githubLoginMock: vi.fn(async () => undefined),
   githubLogoutMock: vi.fn(async () => undefined),
   githubRefreshMock: vi.fn(async () => undefined),
   openUrlMock: vi.fn(),
+  signInReminderToastMock: vi.fn(),
 }))
 
 vi.mock('@tauri-apps/plugin-opener', () => ({
@@ -26,6 +28,13 @@ vi.mock('@/src/lib/github-auth', () => ({
     logout: githubLogoutMock,
     refresh: githubRefreshMock,
   }),
+}))
+
+vi.mock('@/components/xero/sign-in-reminder-toast', () => ({
+  SignInReminderToast: (props: { enabled?: boolean }) => {
+    signInReminderToastMock(props)
+    return null
+  },
 }))
 
 vi.mock('@/components/ui/tooltip', () => ({
@@ -109,6 +118,7 @@ afterEach(() => {
   githubLoginMock.mockClear()
   githubLogoutMock.mockClear()
   githubRefreshMock.mockClear()
+  signInReminderToastMock.mockClear()
   openUrlMock.mockReset()
   if (typeof window.localStorage?.clear === 'function') {
     window.localStorage.clear()
@@ -170,7 +180,6 @@ import type {
   SubscribeRuntimeStreamResponseDto,
   SkillRegistryDto,
   UpsertMcpServerRequestDto,
-  XaiDeviceCodeLoginDto,
 } from '@/src/lib/xero-model'
 import type {
   AgentRefDto,
@@ -445,27 +454,6 @@ function makeProviderAuthSession(overrides: Partial<ProviderAuthSessionDto> = {}
     callbackBound: true,
     authorizationUrl: 'https://auth.openai.com/oauth/authorize?client_id=test',
     redirectUri: 'http://127.0.0.1:1455/auth/callback',
-    lastErrorCode: null,
-    lastError: null,
-    updatedAt: '2026-04-15T20:00:00Z',
-    ...overrides,
-  }
-}
-
-function makeXaiDeviceCodeLogin(
-  overrides: Partial<XaiDeviceCodeLoginDto> = {},
-): XaiDeviceCodeLoginDto {
-  return {
-    providerId: 'xai',
-    flowId: 'xai-device-flow-1',
-    userCode: 'GROK-1234',
-    verificationUri: 'https://auth.x.ai/device',
-    verificationUriComplete: 'https://auth.x.ai/device?user_code=GROK-1234',
-    intervalSeconds: 5,
-    expiresAt: 1_779_984_000,
-    phase: 'awaiting_manual_input',
-    sessionId: null,
-    accountId: null,
     lastErrorCode: null,
     lastError: null,
     updatedAt: '2026-04-15T20:00:00Z',
@@ -2330,9 +2318,6 @@ function createAdapter(options?: {
     completeOAuthCallback: async () => {
       return makeProviderAuthSession()
     },
-    startXaiDeviceCodeLogin: async () => makeXaiDeviceCodeLogin(),
-    pollXaiDeviceCodeLogin: async (request) =>
-      makeXaiDeviceCodeLogin({ flowId: request.flowId }),
     startRuntimeSession: async (projectId) => {
       currentRuntimeSession = makeRuntimeSession(projectId)
       return currentRuntimeSession
@@ -2723,8 +2708,8 @@ describe('XeroApp current UI', () => {
     expect(screen.queryByRole('heading', { name: /Review environment access/i })).not.toBeInTheDocument()
   })
 
-  it('falls through to the legacy empty state when onboarding is dismissed', async () => {
-    const { adapter, startEnvironmentDiscovery } = createAdapter({
+  it('defers the sign-in reminder until onboarding is dismissed', async () => {
+    const { adapter } = createAdapter({
       projects: [],
       runtimeSession: makeRuntimeSession('project-1', {
         phase: 'idle',
@@ -2735,11 +2720,117 @@ describe('XeroApp current UI', () => {
 
     render(<XeroApp adapter={adapter} />)
 
+    expect(await screen.findByRole('heading', { name: /Welcome to Xero/i })).toBeVisible()
+    expect(signInReminderToastMock.mock.calls.at(-1)?.[0]).toEqual({ enabled: false })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skip setup' }))
+
+    expect(await screen.findByRole('heading', { name: 'Add your first project' })).toBeVisible()
+    await waitFor(() =>
+      expect(signInReminderToastMock.mock.calls.at(-1)?.[0]).toEqual({ enabled: true }),
+    )
+  })
+
+  it('falls through to the legacy empty state when onboarding is dismissed', async () => {
+    const { adapter, startEnvironmentDiscovery } = createAdapter({
+      projects: [],
+      runtimeSession: makeRuntimeSession('project-1', {
+        phase: 'idle',
+        sessionId: null,
+        accountId: null,
+      }),
+    })
+    const writeAppUiState = vi.fn(async (request: { key: string; value?: unknown | null }) => ({
+      schema: 'xero.app_ui_state.v1' as const,
+      key: request.key,
+      value: request.value ?? null,
+      storageScope: 'os_app_data' as const,
+      uiDeferred: true,
+    }))
+    adapter.writeAppUiState = writeAppUiState
+
+    render(<XeroApp adapter={adapter} />)
+
     fireEvent.click(await screen.findByRole('button', { name: 'Skip setup' }))
 
     expect(await screen.findByRole('heading', { name: 'Add your first project' })).toBeVisible()
     expect(screen.getAllByRole('button', { name: /Import repository/ }).length).toBeGreaterThanOrEqual(1)
     await waitFor(() => expect(startEnvironmentDiscovery).toHaveBeenCalledTimes(1))
+    await waitFor(() =>
+      expect(writeAppUiState).toHaveBeenCalledWith({
+        key: 'app.onboarding.completed.v1',
+        value: true,
+      }),
+    )
+  })
+
+  it('persists onboarding completion after continuing through every step without setup data', async () => {
+    const { adapter } = createAdapter({
+      projects: [],
+      runtimeSession: makeRuntimeSession('project-1', {
+        phase: 'idle',
+        sessionId: null,
+        accountId: null,
+      }),
+      environmentDiscoveryStatus: makeEnvironmentDiscoveryStatus({
+        hasProfile: true,
+        status: 'ready',
+        stale: false,
+        shouldStart: false,
+        refreshedAt: '2026-04-30T18:00:00Z',
+      }),
+    })
+    const writeAppUiState = vi.fn(async (request: { key: string; value?: unknown | null }) => ({
+      schema: 'xero.app_ui_state.v1' as const,
+      key: request.key,
+      value: request.value ?? null,
+      storageScope: 'os_app_data' as const,
+      uiDeferred: true,
+    }))
+    adapter.writeAppUiState = writeAppUiState
+
+    render(<XeroApp adapter={adapter} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Get started' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue' }))
+    expect(await screen.findByRole('heading', { name: 'Review and finish' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByRole('heading', { name: 'Early beta' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Enter Xero' }))
+
+    expect(await screen.findByRole('heading', { name: 'Add your first project' })).toBeVisible()
+    await waitFor(() =>
+      expect(writeAppUiState).toHaveBeenCalledWith({
+        key: 'app.onboarding.completed.v1',
+        value: true,
+      }),
+    )
+  })
+
+  it('does not reopen onboarding on an empty cold start after completion was persisted', async () => {
+    const { adapter } = createAdapter({
+      projects: [],
+      runtimeSession: makeRuntimeSession('project-1', {
+        phase: 'idle',
+        sessionId: null,
+        accountId: null,
+      }),
+    })
+    const readAppUiState = vi.fn(async (request: { key: string }) => ({
+      schema: 'xero.app_ui_state.v1' as const,
+      key: request.key,
+      value: request.key === 'app.onboarding.completed.v1' ? true : null,
+      storageScope: 'os_app_data' as const,
+      uiDeferred: true,
+    }))
+    adapter.readAppUiState = readAppUiState
+
+    render(<XeroApp adapter={adapter} />)
+
+    expect(await screen.findByRole('heading', { name: 'Add your first project' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: /Welcome to Xero/i })).not.toBeInTheDocument()
+    expect(readAppUiState).toHaveBeenCalledWith({ key: 'app.onboarding.completed.v1' })
   })
 
   it('persists environment access decisions before confirmation', async () => {
@@ -2826,7 +2917,7 @@ describe('XeroApp current UI', () => {
 
     expect(await screen.findByRole('heading', { name: 'Review environment access' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Skip' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /^Skip$/ })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Allow Required toolchain access' }))
     expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled()

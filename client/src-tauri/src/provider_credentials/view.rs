@@ -284,6 +284,7 @@ fn synthesize_profile_from_credential(
                 _ => None,
             }
         }
+        ProviderCredentialKind::ApiKey if provider_id == XAI_PROVIDER_ID => return None,
         ProviderCredentialKind::ApiKey => Some(ProviderCredentialLink::ApiKey {
             updated_at: record.updated_at.clone(),
         }),
@@ -441,7 +442,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn xai_api_key_profile_is_synthesized_as_native_provider() {
+    fn xai_local_credential_profile_is_not_synthesized() {
         let record = ProviderCredentialRecord {
             provider_id: XAI_PROVIDER_ID.into(),
             kind: ProviderCredentialKind::ApiKey,
@@ -459,28 +460,7 @@ mod tests {
             updated_at: "2026-05-20T12:00:00Z".into(),
         };
 
-        let synthesized = synthesize_profile_from_credential(&record).expect("xAI profile");
-
-        assert_eq!(synthesized.profile.profile_id, XAI_DEFAULT_PROFILE_ID);
-        assert_eq!(synthesized.profile.provider_id, XAI_PROVIDER_ID);
-        assert_eq!(synthesized.profile.runtime_kind, XAI_RUNTIME_KIND);
-        assert_eq!(synthesized.profile.label, "xAI / Grok");
-        assert_eq!(synthesized.profile.model_id, XAI_DEFAULT_MODEL_ID);
-        assert_eq!(
-            synthesized.profile.preset_id.as_deref(),
-            Some(XAI_PROVIDER_ID)
-        );
-        assert!(matches!(
-            synthesized.profile.credential_link,
-            Some(ProviderCredentialLink::ApiKey { .. })
-        ));
-        assert_eq!(
-            synthesized
-                .api_key_entry
-                .as_ref()
-                .map(|entry| entry.profile_id.as_str()),
-            Some(XAI_DEFAULT_PROFILE_ID)
-        );
+        assert!(synthesize_profile_from_credential(&record).is_none());
     }
 
     #[test]

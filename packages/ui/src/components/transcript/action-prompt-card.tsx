@@ -25,6 +25,10 @@ export interface ActionPromptDispatchValue {
   pendingActionId: string | null
   pendingDecision: ActionPromptDecision | null
   isResolving: boolean
+  actionError?: {
+    actionId: string
+    message: string
+  } | null
   resolveActionPrompt: (
     actionId: string,
     decision: ActionPromptDecision,
@@ -82,6 +86,8 @@ export function ActionPromptCard({
   const dispatch = useActionPromptDispatch()
   const isPendingForThis =
     dispatch?.pendingActionId === actionId && dispatch?.isResolving === true
+  const actionError =
+    dispatch?.actionError?.actionId === actionId ? dispatch.actionError.message : null
   const isLockedOut = resolved || isPendingForThis
 
   const Icon = useMemo(() => {
@@ -111,6 +117,9 @@ export function ActionPromptCard({
           <span className="truncate text-[12.5px] font-medium text-foreground">{title}</span>
           {detail.length > 0 ? (
             <span className="text-[12px] text-muted-foreground">{detail}</span>
+          ) : null}
+          {actionError ? (
+            <span className="text-[12px] font-medium text-destructive">{actionError}</span>
           ) : null}
         </div>
         {resolved ? (

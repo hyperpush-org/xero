@@ -58,6 +58,34 @@ describe('ActionPromptCard', () => {
     })
   })
 
+  it('renders the matching action error inline', () => {
+    renderPrompt(
+      {},
+      {
+        actionError: {
+          actionId: 'question-1',
+          message: 'Xero could not resolve this action.',
+        },
+      },
+    )
+
+    expect(screen.getByText('Xero could not resolve this action.')).toBeInTheDocument()
+  })
+
+  it('does not render errors for other action cards', () => {
+    renderPrompt(
+      {},
+      {
+        actionError: {
+          actionId: 'question-2',
+          message: 'This belongs to another prompt.',
+        },
+      },
+    )
+
+    expect(screen.queryByText('This belongs to another prompt.')).not.toBeInTheDocument()
+  })
+
   it('renders compact single-choice prompts as command buttons without stale radio state', () => {
     const { resolveActionPrompt } = renderPrompt({
       actionType: 'single_choice_required',

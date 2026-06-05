@@ -4,6 +4,12 @@ import { useEffect, useRef } from 'react'
 
 import { useGitHubAuth } from '@/src/lib/github-auth'
 
+interface SignInReminderToastProps {
+  enabled?: boolean
+}
+
+const SIGN_IN_REMINDER_TOAST_DURATION_MS = 5_000
+
 /**
  * One-time, per-launch nudge: when the desktop app opens with no GitHub
  * account linked, remind the user that signing in lets them drive these
@@ -14,13 +20,21 @@ import { useGitHubAuth } from '@/src/lib/github-auth'
  * observed a load — otherwise the nudge would flash on every launch before
  * the real session is known.
  */
-export function SignInReminderToast() {
+export function SignInReminderToast({ enabled = true }: SignInReminderToastProps) {
   const { status, session, login } = useGitHubAuth()
   const observedLoadRef = useRef(false)
   const shownRef = useRef(false)
   const toastRef = useRef<ReturnType<typeof toast> | null>(null)
 
   useEffect(() => {
+    if (!enabled) {
+      if (status === 'loading' || status === 'authenticating') {
+        observedLoadRef.current = true
+      }
+      toastRef.current?.dismiss()
+      toastRef.current = null
+      return
+    }
     if (status === 'loading' || status === 'authenticating') {
       observedLoadRef.current = true
       return
@@ -42,8 +56,7 @@ export function SignInReminderToast() {
       title: 'Sign in to continue from anywhere',
       description:
         'Sign in with GitHub to drive your sessions from the cloud app on any device.',
-      // Hold until the user acts on or dismisses the nudge.
-      duration: Number.POSITIVE_INFINITY,
+      duration: SIGN_IN_REMINDER_TOAST_DURATION_MS,
       // Stack the action under the text (full-width description) instead of
       // reserving a wide right column, then tuck the button up into the
       // trailing whitespace of the last line.
@@ -58,7 +71,7 @@ export function SignInReminderToast() {
         </ToastAction>
       ),
     })
-  }, [status, session, login])
+  }, [enabled, status, session, login])
 
   return null
 }

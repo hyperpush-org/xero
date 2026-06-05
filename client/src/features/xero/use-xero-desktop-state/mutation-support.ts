@@ -76,8 +76,6 @@ export type XeroDesktopMutationActions = Pick<
   | 'deleteProviderCredential'
   | 'startOAuthLogin'
   | 'completeOAuthCallback'
-  | 'startXaiDeviceCodeLogin'
-  | 'pollXaiDeviceCodeLogin'
   | 'refreshMcpRegistry'
   | 'upsertMcpServer'
   | 'removeMcpServer'

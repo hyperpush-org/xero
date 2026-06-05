@@ -70,7 +70,6 @@ import type {
   UpsertProviderCredentialRequestDto,
   VerificationRecordView,
   WriteProjectFileResponseDto,
-  XaiDeviceCodeLoginDto,
 } from '@/src/lib/xero-model'
 import type {
   ComposerModelOptionView,
@@ -485,12 +484,6 @@ export interface UseXeroDesktopStateResult {
       manualInput?: string | null
     },
   ) => Promise<ProviderAuthSessionView | null>
-  startXaiDeviceCodeLogin: (
-    request: { providerId: 'xai' },
-  ) => Promise<XaiDeviceCodeLoginDto>
-  pollXaiDeviceCodeLogin: (
-    request: { providerId: 'xai'; flowId: string },
-  ) => Promise<XaiDeviceCodeLoginDto>
   refreshProviderModelCatalog: (
     profileId: string,
     options?: { force?: boolean },

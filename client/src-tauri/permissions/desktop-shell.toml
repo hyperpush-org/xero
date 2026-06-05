@@ -211,8 +211,6 @@ commands.allow = [
   "submit_openai_callback",
   "start_oauth_login",
   "complete_oauth_callback",
-  "start_xai_device_code_login",
-  "poll_xai_device_code_login",
   "logout_runtime_session",
   "start_autonomous_run",
   "stage_agent_attachment",

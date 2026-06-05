@@ -79,7 +79,6 @@ pub mod wipe_data;
 pub mod workflow_agents;
 pub mod workflows;
 pub mod workspace_index;
-pub mod xai_device_code_login;
 
 pub(crate) mod contracts;
 pub(crate) mod runtime_support;
@@ -337,7 +336,6 @@ pub use workflows::{
 pub use workspace_index::{
     workspace_explain, workspace_index, workspace_query, workspace_reset, workspace_status,
 };
-pub use xai_device_code_login::{poll_xai_device_code_login, start_xai_device_code_login};
 
 pub use crate::environment::service::EnvironmentDiscoveryStatus;
 pub use contracts::{

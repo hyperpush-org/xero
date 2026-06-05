@@ -49,13 +49,6 @@ import {
   readBrowserViewportRect,
   type ViewportRect,
 } from "./browser-resize-scheduler"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
   normalizeLoopbackBrowserUrl,
@@ -544,6 +537,7 @@ export function BrowserSidebar({
   const [isResizing, setIsResizing] = useState(false)
   const [address, setAddress] = useState("")
   const [addressSuggestionsOpen, setAddressSuggestionsOpen] = useState(false)
+  const [projectTargetPickerOpen, setProjectTargetPickerOpen] = useState(false)
   const [tabs, setTabs] = useState<BrowserTabMeta[]>([])
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -579,6 +573,8 @@ export function BrowserSidebar({
   const sidebarRef = useRef<HTMLElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
   const viewportRef = useRef<HTMLDivElement | null>(null)
+  const projectTargetPickerButtonRef = useRef<HTMLButtonElement | null>(null)
+  const projectTargetPanelRef = useRef<HTMLDivElement | null>(null)
   const addressFocusedRef = useRef(false)
   const hasWebviewRef = useRef(false)
   if (tabs.length > 0) {
@@ -793,7 +789,8 @@ export function BrowserSidebar({
     () => projectBrowserTargets.filter((target) => projectBrowserTargetLiveness[target.id] === true),
     [projectBrowserTargetLiveness, projectBrowserTargets],
   )
-  const showAddressProjectSuggestions = addressSuggestionsOpen && liveProjectBrowserTargets.length > 0
+  const showProjectTargetPanel =
+    liveProjectBrowserTargets.length > 0 && (addressSuggestionsOpen || projectTargetPickerOpen)
   const isCheckingProjectBrowserTargets =
     projectBrowserTargets.length > 0 &&
     projectBrowserTargets.some((target) => !(target.id in projectBrowserTargetLiveness))
@@ -984,6 +981,7 @@ export function BrowserSidebar({
   useEffect(() => {
     if (!open || projectBrowserTargets.length === 0 || !isTauri()) {
       setProjectBrowserTargetLiveness({})
+      setProjectTargetPickerOpen(false)
       return
     }
 
@@ -1020,6 +1018,40 @@ export function BrowserSidebar({
       if (timeout !== null) window.clearTimeout(timeout)
     }
   }, [checkProjectBrowserTargetRunning, open, projectBrowserTargets])
+
+  useEffect(() => {
+    if (liveProjectBrowserTargets.length > 0) return
+    setProjectTargetPickerOpen(false)
+  }, [liveProjectBrowserTargets.length])
+
+  useEffect(() => {
+    if (!open) {
+      setProjectTargetPickerOpen(false)
+      setAddressSuggestionsOpen(false)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!projectTargetPickerOpen) return
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (projectTargetPickerButtonRef.current?.contains(target)) return
+      if (projectTargetPanelRef.current?.contains(target)) return
+      setProjectTargetPickerOpen(false)
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown, true)
+    return () => document.removeEventListener("pointerdown", handlePointerDown, true)
+  }, [projectTargetPickerOpen])
+
+  useEffect(() => {
+    if (!showProjectTargetPanel || !open || !isTauri()) return
+    if (!hasWebviewRef.current && tabsRef.current.length === 0) return
+    resizeScheduler.schedule({ force: true })
+    syncBrowserOverlayOcclusions({ force: true })
+  }, [open, resizeScheduler, showProjectTargetPanel, syncBrowserOverlayOcclusions])
 
   // Tools are gated to dev-server tabs. Drop the active tool whenever the
   // tab/URL changes to one that isn't a dev server, or when the sidebar closes.
@@ -1651,11 +1683,16 @@ export function BrowserSidebar({
   const handleOpenProjectBrowserTarget = useCallback(
     async (target: BrowserLaunchTarget) => {
       setAddressSuggestionsOpen(false)
-      const running = await checkProjectBrowserTargetRunning(target)
-      if (!running) {
-        markProjectBrowserTargetUnavailable(target)
-        return
+      setProjectTargetPickerOpen(false)
+
+      if (projectBrowserTargetLiveness[target.id] !== true) {
+        const running = await checkProjectBrowserTargetRunning(target)
+        if (!running) {
+          markProjectBrowserTargetUnavailable(target)
+          return
+        }
       }
+
       setProjectBrowserTargetLiveness((current) => {
         if (current[target.id] === true) return current
         return { ...current, [target.id]: true }
@@ -1663,7 +1700,12 @@ export function BrowserSidebar({
       setAddress(target.url)
       openUrl(target.url)
     },
-    [checkProjectBrowserTargetRunning, markProjectBrowserTargetUnavailable, openUrl],
+    [
+      checkProjectBrowserTargetRunning,
+      markProjectBrowserTargetUnavailable,
+      openUrl,
+      projectBrowserTargetLiveness,
+    ],
   )
 
   useEffect(() => {
@@ -1828,114 +1870,60 @@ export function BrowserSidebar({
             <RotateCw className="h-3.5 w-3.5" />
           )}
         </button>
-        {liveProjectBrowserTargets.length > 1 ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                aria-label="Open project app in browser"
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground"
-                title="Open project app"
-                type="button"
-              >
-                <FolderGit2 className="h-3.5 w-3.5" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-64">
-              {liveProjectBrowserTargets.map((target) => (
-                <DropdownMenuItem
-                  key={target.id}
-                  className="flex min-w-0 flex-col items-start gap-0.5"
-                  onSelect={() => {
-                    void handleOpenProjectBrowserTarget(target)
-                  }}
-                >
-                  <span className="max-w-full truncate text-[12px]">{target.label}</span>
-                  <span className="max-w-full truncate font-mono text-[10.5px] text-muted-foreground">
-                    {target.url}
-                  </span>
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : (
-          <button
-            aria-label="Open project app in browser"
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
-            disabled={liveProjectBrowserTargets.length === 0}
-            onClick={() => {
-              const [target] = liveProjectBrowserTargets
-              if (target) void handleOpenProjectBrowserTarget(target)
-            }}
-            title={
-              liveProjectBrowserTargets.length === 0
-                ? isCheckingProjectBrowserTargets
-                  ? "Checking project app availability"
-                  : "No running browser-supported project app detected"
-                : "Open project app"
+        <button
+          ref={projectTargetPickerButtonRef}
+          aria-expanded={projectTargetPickerOpen}
+          aria-label="Open project app in browser"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          disabled={liveProjectBrowserTargets.length === 0}
+          onClick={() => {
+            if (liveProjectBrowserTargets.length > 1) {
+              setProjectTargetPickerOpen((current) => !current)
+              setAddressSuggestionsOpen(false)
+              return
             }
-            type="button"
-          >
-            <FolderGit2 className="h-3.5 w-3.5" />
-          </button>
-        )}
-        <Popover open={showAddressProjectSuggestions} onOpenChange={setAddressSuggestionsOpen}>
-          <PopoverAnchor asChild>
-            <form className="ml-1 flex min-w-0 flex-1" onSubmit={handleSubmit}>
-              <input
-                aria-label="Address"
-                autoCapitalize="none"
-                autoComplete="off"
-                autoCorrect="off"
-                className="h-7 w-full min-w-0 rounded-md border border-border/70 bg-background/40 px-2 text-[11.5px] text-foreground placeholder:text-muted-foreground/70 focus:border-primary/50 focus:outline-none"
-                onBlur={() => {
-                  addressFocusedRef.current = false
-                  setAddressSuggestionsOpen(false)
-                }}
-                onChange={(event) => {
-                  setAddress(event.target.value)
-                  setAddressSuggestionsOpen(true)
-                }}
-                onFocus={(event) => {
-                  addressFocusedRef.current = true
-                  setAddressSuggestionsOpen(true)
-                  event.currentTarget.select()
-                }}
-                placeholder="Search or enter URL"
-                spellCheck={false}
-                type="text"
-                value={address}
-              />
-            </form>
-          </PopoverAnchor>
-          <PopoverContent
-            align="start"
-            aria-label="Project app suggestions"
-            className="w-[min(380px,var(--radix-popover-trigger-width))] p-1"
-            onCloseAutoFocus={(event) => event.preventDefault()}
-            onOpenAutoFocus={(event) => event.preventDefault()}
-            sideOffset={6}
-          >
-            <div className="space-y-0.5">
-              {liveProjectBrowserTargets.map((target) => (
-                <button
-                  key={target.id}
-                  aria-label={`Open ${target.label}`}
-                  className="flex w-full min-w-0 flex-col items-start gap-0.5 rounded-sm px-2 py-1.5 text-left outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
-                  onClick={() => {
-                    void handleOpenProjectBrowserTarget(target)
-                  }}
-                  onMouseDown={(event) => event.preventDefault()}
-                  type="button"
-                >
-                  <span className="max-w-full truncate text-[12px]">{target.label}</span>
-                  <span className="max-w-full truncate font-mono text-[10.5px] text-muted-foreground">
-                    {target.url}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </PopoverContent>
-        </Popover>
+            const [target] = liveProjectBrowserTargets
+            if (target) void handleOpenProjectBrowserTarget(target)
+          }}
+          title={
+            liveProjectBrowserTargets.length === 0
+              ? isCheckingProjectBrowserTargets
+                ? "Checking project app availability"
+                : "No running browser-supported project app detected"
+              : "Open project app"
+          }
+          type="button"
+        >
+          <FolderGit2 className="h-3.5 w-3.5" />
+        </button>
+        <form className="ml-1 flex min-w-0 flex-1" onSubmit={handleSubmit}>
+          <input
+            aria-label="Address"
+            autoCapitalize="none"
+            autoComplete="off"
+            autoCorrect="off"
+            className="h-7 w-full min-w-0 rounded-md border border-border/70 bg-background/40 px-2 text-[11.5px] text-foreground placeholder:text-muted-foreground/70 focus:border-primary/50 focus:outline-none"
+            onBlur={() => {
+              addressFocusedRef.current = false
+              setAddressSuggestionsOpen(false)
+            }}
+            onChange={(event) => {
+              setAddress(event.target.value)
+              setAddressSuggestionsOpen(true)
+              setProjectTargetPickerOpen(false)
+            }}
+            onFocus={(event) => {
+              addressFocusedRef.current = true
+              setAddressSuggestionsOpen(true)
+              setProjectTargetPickerOpen(false)
+              event.currentTarget.select()
+            }}
+            placeholder="Search or enter URL"
+            spellCheck={false}
+            type="text"
+            value={address}
+          />
+        </form>
         {isDevTab ? (
           <div
             className="ml-1 flex shrink-0 items-center gap-0.5 rounded-md border border-border/60 bg-background/40 px-0.5"
@@ -2019,6 +2007,34 @@ export function BrowserSidebar({
           </div>
         ) : null}
       </div>
+
+      {showProjectTargetPanel ? (
+        <div
+          ref={projectTargetPanelRef}
+          aria-label="Project app suggestions"
+          className="shrink-0 border-b border-border/70 bg-popover p-1 text-popover-foreground shadow-sm"
+        >
+          <div className="max-h-56 space-y-0.5 overflow-y-auto">
+            {liveProjectBrowserTargets.map((target) => (
+              <button
+                key={target.id}
+                aria-label={`Open ${target.label}`}
+                className="flex w-full min-w-0 flex-col items-start gap-0.5 rounded-sm px-2 py-1.5 text-left outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
+                onClick={() => {
+                  void handleOpenProjectBrowserTarget(target)
+                }}
+                onMouseDown={(event) => event.preventDefault()}
+                type="button"
+              >
+                <span className="max-w-full truncate text-[12px]">{target.label}</span>
+                <span className="max-w-full truncate font-mono text-[10.5px] text-muted-foreground">
+                  {target.url}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {showCookieBanner ? (
         <CookieImportBanner

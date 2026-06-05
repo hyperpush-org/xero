@@ -444,6 +444,7 @@ export const resumeAgentRunRequestSchema = z
   .object({
     runId: z.string().trim().min(1),
     response: z.string().trim().min(1),
+    actionId: z.string().trim().min(1).nullable().optional(),
     autoCompact: agentAutoCompactPreferenceSchema.nullable().optional(),
   })
   .strict()

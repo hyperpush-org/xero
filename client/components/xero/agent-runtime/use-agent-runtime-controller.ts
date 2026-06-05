@@ -37,6 +37,11 @@ export interface PendingOperatorIntent {
   kind: OperatorIntentKind
 }
 
+export interface ActionPromptError {
+  actionId: string
+  message: string
+}
+
 interface SubmitExplicitPromptOptions {
   controls?: RuntimeRunControlInputDto | null
   promptVisibility?: 'user' | 'internal'
@@ -486,6 +491,8 @@ export function useAgentRuntimeController({
   const [runtimeSessionBindInFlight, setRuntimeSessionBindInFlight] = useState(false)
   const [queuedDraftAcknowledgement, setQueuedDraftAcknowledgement] = useState<string | null>(null)
   const [runtimeRunActionMessage, setRuntimeRunActionMessage] = useState<string | null>(null)
+  const [operatorActionPromptError, setOperatorActionPromptError] =
+    useState<ActionPromptError | null>(null)
   const [autoCompactEnabled, setAutoCompactEnabled] = useState(
     () => getInitialComposerSettings().autoCompactEnabled,
   )
@@ -1292,12 +1299,18 @@ export function useAgentRuntimeController({
     }
 
     setPendingOperatorIntent({ actionId, kind: decision })
+    setOperatorActionPromptError(null)
 
     try {
       await onResolveOperatorAction(actionId, decision, {
         userAnswer: options.userAnswer ?? null,
       })
-    } catch {
+      setOperatorActionPromptError(null)
+    } catch (error) {
+      setOperatorActionPromptError({
+        actionId,
+        message: getErrorMessage(error, 'Xero could not persist the operator decision for this project.'),
+      })
       // Preserve the last truthful UI state. Hook-backed callers surface operatorActionError.
     } finally {
       setPendingOperatorIntent((currentIntent) =>
@@ -1312,12 +1325,18 @@ export function useAgentRuntimeController({
     }
 
     setPendingOperatorIntent({ actionId, kind: 'resume' })
+    setOperatorActionPromptError(null)
 
     try {
       await onResumeOperatorRun(actionId, {
         userAnswer: options.userAnswer ?? null,
       })
-    } catch {
+      setOperatorActionPromptError(null)
+    } catch (error) {
+      setOperatorActionPromptError({
+        actionId,
+        message: getErrorMessage(error, 'Xero could not record the operator resume request for this project.'),
+      })
       // Preserve the last truthful UI state. Hook-backed callers surface operatorActionError.
     } finally {
       setPendingOperatorIntent((currentIntent) =>
@@ -1379,6 +1398,7 @@ export function useAgentRuntimeController({
     runtimeSessionBindInFlight,
     operatorAnswers,
     pendingOperatorIntent,
+    operatorActionPromptError,
     recentRunReplacement,
     runtimeRunActionError: composerActionError,
     runtimeRunActionErrorTitle: composerActionErrorTitle,

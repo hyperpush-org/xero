@@ -1533,6 +1533,67 @@ pub fn answer_pending_agent_action_requests(
     Ok(())
 }
 
+pub fn answer_pending_agent_action_request(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    action_id: &str,
+    response: &str,
+) -> Result<AgentActionRequestRecord, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    validate_non_empty_text(action_id, "actionId")?;
+    validate_non_empty_text(response, "response")?;
+
+    let connection = open_agent_database(repo_root)?;
+    let existing = read_agent_action_requests(&connection, project_id, run_id, repo_root)?
+        .into_iter()
+        .find(|action| action.action_id == action_id)
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "agent_action_request_not_found",
+                format!(
+                    "Xero could not find pending owned-agent action `{action_id}` for run `{run_id}`."
+                ),
+            )
+        })?;
+    if existing.status != "pending" {
+        return Err(CommandError::user_fixable(
+            "agent_action_request_already_resolved",
+            format!(
+                "Xero cannot answer owned-agent action `{action_id}` because it is already {}.",
+                existing.status
+            ),
+        ));
+    }
+
+    let now = crate::auth::now_timestamp();
+    connection
+        .execute(
+            r#"
+            UPDATE agent_action_requests
+            SET status = 'answered',
+                resolved_at = ?4,
+                response = ?5
+            WHERE project_id = ?1
+              AND run_id = ?2
+              AND action_id = ?3
+              AND status = 'pending'
+            "#,
+            params![project_id, run_id, action_id, now, response],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_action_request_answer_failed", error)
+        })?;
+
+    Ok(AgentActionRequestRecord {
+        status: "answered".into(),
+        resolved_at: Some(now),
+        response: Some(response.to_owned()),
+        ..existing
+    })
+}
+
 pub fn reject_pending_agent_action_request(
     repo_root: &Path,
     project_id: &str,
@@ -3309,4 +3370,132 @@ fn map_agent_store_write_error(
             database_path_for_repo(repo_root).display()
         ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::fs;
+
+    use crate::db::{
+        configure_connection, migrations::migrations, register_project_database_path_for_tests,
+    };
+
+    fn create_project_database(repo_root: &Path, project_id: &str) {
+        let database_path = repo_root.join("state.db");
+        register_project_database_path_for_tests(repo_root, database_path.clone());
+        let mut connection = Connection::open(&database_path).expect("open project database");
+        configure_connection(&connection).expect("configure project database");
+        migrations()
+            .to_latest(&mut connection)
+            .expect("migrate project database");
+        connection
+            .execute(
+                "INSERT INTO projects (id, name, description, milestone) VALUES (?1, 'Project', '', '')",
+                params![project_id],
+            )
+            .expect("insert project");
+        connection
+            .execute(
+                r#"
+                INSERT INTO repositories (id, project_id, root_path, display_name, branch, head_sha, is_git_repo)
+                VALUES ('repo-1', ?1, ?2, 'Project', 'main', 'abc123', 1)
+                "#,
+                params![project_id, repo_root.to_string_lossy().as_ref()],
+            )
+            .expect("insert repository");
+        connection
+            .execute(
+                "INSERT INTO agent_sessions (project_id, agent_session_id, title, status, selected) VALUES (?1, 'session-1', 'Default', 'active', 1)",
+                params![project_id],
+            )
+            .expect("insert agent session");
+    }
+
+    fn seed_run(repo_root: &Path, project_id: &str, run_id: &str) {
+        insert_agent_run(
+            repo_root,
+            &NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: None,
+                agent_definition_version: None,
+                project_id: project_id.into(),
+                agent_session_id: "session-1".into(),
+                run_id: run_id.into(),
+                provider_id: "provider-1".into(),
+                model_id: "model-1".into(),
+                prompt: "Do the thing".into(),
+                system_prompt: "System prompt".into(),
+                now: "2026-06-05T12:00:00Z".into(),
+            },
+        )
+        .expect("insert agent run");
+    }
+
+    fn append_action(repo_root: &Path, project_id: &str, run_id: &str, action_id: &str) {
+        append_agent_action_request(
+            repo_root,
+            &NewAgentActionRequestRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                action_id: action_id.into(),
+                action_type: "command_review".into(),
+                title: format!("Review {action_id}"),
+                detail: "Review before continuing.".into(),
+                created_at: "2026-06-05T12:00:01Z".into(),
+            },
+        )
+        .expect("append action request");
+    }
+
+    #[test]
+    fn answer_pending_agent_action_request_resolves_only_matching_row() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "project-1";
+        let run_id = "run-1";
+        create_project_database(&repo_root, project_id);
+        seed_run(&repo_root, project_id, run_id);
+        append_action(&repo_root, project_id, run_id, "action-a");
+        append_action(&repo_root, project_id, run_id, "action-b");
+
+        let answered = answer_pending_agent_action_request(
+            &repo_root,
+            project_id,
+            run_id,
+            "action-a",
+            "Approved.",
+        )
+        .expect("answer action-a");
+
+        assert_eq!(answered.action_id, "action-a");
+        assert_eq!(answered.status, "answered");
+        assert_eq!(answered.response.as_deref(), Some("Approved."));
+        let snapshot = load_agent_run(&repo_root, project_id, run_id).expect("load run");
+        let action_a = snapshot
+            .action_requests
+            .iter()
+            .find(|action| action.action_id == "action-a")
+            .expect("action-a row");
+        let action_b = snapshot
+            .action_requests
+            .iter()
+            .find(|action| action.action_id == "action-b")
+            .expect("action-b row");
+        assert_eq!(action_a.status, "answered");
+        assert_eq!(action_b.status, "pending");
+        assert!(action_b.response.is_none());
+
+        let retry_error = answer_pending_agent_action_request(
+            &repo_root,
+            project_id,
+            run_id,
+            "action-a",
+            "Approved again.",
+        )
+        .expect_err("resolved action cannot be answered again");
+        assert_eq!(retry_error.code, "agent_action_request_already_resolved");
+    }
 }

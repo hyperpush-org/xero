@@ -4080,7 +4080,7 @@ fn record_command_action_required(
     reason: &str,
     code: &str,
 ) -> CommandResult<()> {
-    record_action_request(
+    let action = record_action_request(
         repo_root,
         project_id,
         run_id,
@@ -4095,10 +4095,15 @@ fn record_command_action_required(
         run_id,
         AgentRunEventKind::ActionRequired,
         json!({
+            "actionId": action.action_id,
+            "actionType": action.action_type,
+            "title": action.title,
+            "detail": action.detail,
             "reason": reason,
             "code": code,
             "toolName": tool_name,
             "argv": argv,
+            "answerShape": "plain_text",
         }),
     )?;
     Ok(())
@@ -4112,7 +4117,7 @@ pub(crate) fn record_action_request(
     action_type: &str,
     title: &str,
     detail: &str,
-) -> CommandResult<()> {
+) -> CommandResult<project_store::AgentActionRequestRecord> {
     project_store::append_agent_action_request(
         repo_root,
         &NewAgentActionRequestRecord {
@@ -4124,8 +4129,7 @@ pub(crate) fn record_action_request(
             detail: detail.into(),
             created_at: now_timestamp(),
         },
-    )?;
-    Ok(())
+    )
 }
 
 pub(crate) fn sanitize_action_id(value: &str) -> String {

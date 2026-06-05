@@ -949,42 +949,6 @@ pub struct CompleteOAuthCallbackRequestDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StartXaiDeviceCodeLoginRequestDto {
-    pub provider_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PollXaiDeviceCodeLoginRequestDto {
-    pub provider_id: String,
-    pub flow_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct XaiDeviceCodeLoginDto {
-    pub provider_id: String,
-    pub flow_id: String,
-    pub user_code: String,
-    pub verification_uri: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub verification_uri_complete: Option<String>,
-    pub interval_seconds: u64,
-    pub expires_at: i64,
-    pub phase: RuntimeAuthPhase,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub account_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_error_code: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<RuntimeDiagnosticDto>,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderModelCatalogSourceDto {
     Live,

@@ -747,7 +747,87 @@ pub fn prepare_owned_agent_continuation_for_drive(
     }
     ensure_context_budget_allows_continuation(request, provider.as_ref(), &before)?;
 
-    if request.answer_pending_actions {
+    if let Some(action_id) = request.answer_pending_action_id.as_deref() {
+        let answered = project_store::answer_pending_agent_action_request(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+            action_id,
+            &request.prompt,
+        )?;
+        append_event(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+            AgentRunEventKind::PolicyDecision,
+            json!({
+                "kind": "approval_decision",
+                "actionId": answered.action_id,
+                "actionType": answered.action_type,
+                "decision": "approved",
+                "response": answered.response,
+                "status": answered.status,
+            }),
+        )?;
+        before = project_store::load_agent_run(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+        )?;
+        let definition_snapshot =
+            load_agent_definition_snapshot_for_run(&request.repo_root, &before.run)?;
+        let (default_approval_mode, allowed_approval_modes) =
+            agent_definition_approval_modes_from_snapshot(
+                &definition_snapshot,
+                before.run.runtime_agent_id,
+            );
+        let controls = runtime_controls_for_agent_run(
+            &before.run,
+            request.controls.as_ref(),
+            &allowed_approval_modes,
+            default_approval_mode,
+        );
+        let agent_tool_policy =
+            effective_agent_tool_policy(&definition_snapshot, &request.tool_runtime);
+        let agent_workflow_policy =
+            workflow_policy_for_runtime_agent(before.run.runtime_agent_id, &definition_snapshot);
+        let tool_registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
+            skill_tool_enabled: request.tool_runtime.skill_tool_enabled(),
+            browser_control_preference: request.tool_runtime.browser_control_preference(),
+            runtime_agent_id: controls.active.runtime_agent_id,
+            agent_tool_policy: agent_tool_policy.clone(),
+            tool_application_policy: request.tool_runtime.tool_application_policy().clone(),
+        });
+        let replay_tool_runtime = request
+            .tool_runtime
+            .clone()
+            .with_runtime_run_controls(controls)
+            .with_agent_tool_policy(agent_tool_policy)
+            .with_agent_workflow_policy(agent_workflow_policy)
+            .with_agent_run_context(
+                &request.project_id,
+                &before.run.agent_session_id,
+                &request.run_id,
+            )
+            .with_durable_subagent_tasks_for_run(
+                &request.repo_root,
+                &request.project_id,
+                &request.run_id,
+            )?;
+        replay_answered_tool_action_requests(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+            &tool_registry,
+            &replay_tool_runtime,
+            &before,
+        )?;
+        before = project_store::load_agent_run(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+        )?;
+    } else if request.answer_pending_actions {
         project_store::answer_pending_agent_action_requests(
             &request.repo_root,
             &request.project_id,
@@ -2603,6 +2683,7 @@ fn request_for_handoff_target(
         provider_config: request.provider_config.clone(),
         provider_preflight: request.provider_preflight.clone(),
         answer_pending_actions: false,
+        answer_pending_action_id: None,
         auto_compact: None,
         internal_resume: None,
     }
@@ -3995,6 +4076,7 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
             provider_config,
             provider_preflight: None,
             answer_pending_actions: false,
+            answer_pending_action_id: None,
             auto_compact: None,
             internal_resume: None,
         };
@@ -5043,6 +5125,7 @@ mod tests {
             provider_config: AgentProviderConfig::Fake,
             provider_preflight: None,
             answer_pending_actions: false,
+            answer_pending_action_id: None,
             auto_compact: None,
             internal_resume: None,
         };

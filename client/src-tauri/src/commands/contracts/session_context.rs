@@ -1752,7 +1752,7 @@ pub fn approved_memory_context_contributors(
 
     let mut approved = memories
         .iter()
-        .filter(|memory| memory.enabled)
+        .filter(|memory| memory.enabled && memory.retrievable)
         .cloned()
         .collect::<Vec<_>>();
     approved.sort_by(|left, right| {

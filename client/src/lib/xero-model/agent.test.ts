@@ -579,6 +579,35 @@ describe('owned agent run schemas', () => {
       resumeAgentRunRequestSchema.parse({
         runId: 'run-agent-1',
         response: 'Approved; continue.',
+        actionId: 'tool-call-command',
+        autoCompact: {
+          enabled: false,
+        },
+      }),
+    ).toMatchObject({
+      actionId: 'tool-call-command',
+      autoCompact: {
+        enabled: false,
+      },
+    })
+    expect(
+      resumeAgentRunRequestSchema.parse({
+        runId: 'run-agent-1',
+        response: 'Approved; continue.',
+        actionId: null,
+      }).actionId,
+    ).toBeNull()
+    expect(() =>
+      resumeAgentRunRequestSchema.parse({
+        runId: 'run-agent-1',
+        response: 'Approved; continue.',
+        actionId: '',
+      }),
+    ).toThrow(/at least 1 character/)
+    expect(
+      resumeAgentRunRequestSchema.parse({
+        runId: 'run-agent-1',
+        response: 'Approved; continue.',
         autoCompact: {
           enabled: false,
         },

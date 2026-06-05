@@ -414,6 +414,7 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
                 provider_config,
                 provider_preflight: Some(provider_preflight.clone()),
                 answer_pending_actions,
+                answer_pending_action_id: None,
                 auto_compact,
                 internal_resume: None,
             };

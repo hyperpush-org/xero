@@ -2389,7 +2389,7 @@ fn finish_failed_tool_call_with_dispatch(
     )?;
 
     if error.class == CommandErrorClass::PolicyDenied {
-        record_action_request(
+        let action = record_action_request(
             repo_root,
             project_id,
             run_id,
@@ -2404,10 +2404,15 @@ fn finish_failed_tool_call_with_dispatch(
             run_id,
             AgentRunEventKind::ActionRequired,
             json!({
+                "actionId": action.action_id,
+                "actionType": action.action_type,
+                "title": action.title,
+                "detail": action.detail,
                 "toolCallId": tool_call.tool_call_id.clone(),
                 "toolName": tool_call.tool_name.clone(),
                 "code": error.code.clone(),
                 "message": error.message.clone(),
+                "answerShape": "plain_text",
             }),
         )?;
     }

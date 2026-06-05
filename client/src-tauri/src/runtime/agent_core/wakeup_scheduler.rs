@@ -514,6 +514,7 @@ fn resume_scheduled_wakeup<R: Runtime + 'static>(
         provider_config,
         provider_preflight: Some(provider_preflight),
         answer_pending_actions: false,
+        answer_pending_action_id: None,
         auto_compact: None,
         internal_resume: Some(AgentRunInternalResume {
             wake_id: record.wake_id.clone(),

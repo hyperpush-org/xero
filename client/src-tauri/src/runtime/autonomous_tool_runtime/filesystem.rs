@@ -100,6 +100,21 @@ const MAX_DIRECTORY_DIGEST_FILES: usize = 5_000;
 const DEFAULT_HASH_MAX_FILES: usize = 1_000;
 const MAX_HASH_FILES: usize = 5_000;
 const MAX_HASH_INLINE_FILES: usize = 50;
+const PACKAGE_MANAGER_LOCKFILE_NAMES: &[&str] = &[
+    "Cargo.lock",
+    "Gemfile.lock",
+    "Pipfile.lock",
+    "bun.lock",
+    "bun.lockb",
+    "composer.lock",
+    "deno.lock",
+    "npm-shrinkwrap.json",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "uv.lock",
+    "yarn.lock",
+];
 
 enum ReadManyPathResult {
     Read {
@@ -1087,14 +1102,14 @@ impl AutonomousToolRuntime {
             None
         };
         let files = search_file_summaries(search_result.files);
-        let summary = if search_result.returned_matches == 0 {
+        let summary_base = if search_result.returned_matches == 0 {
             match scope_string.as_deref() {
-                Some(scope) => format!("Found 0 matches for `{}` under `{scope}`.", request.query),
-                None => format!("Found 0 matches for `{}` in the repository.", request.query),
+                Some(scope) => format!("Found 0 matches for `{}` under `{scope}`", request.query),
+                None => format!("Found 0 matches for `{}` in the repository", request.query),
             }
         } else if search_result.truncated {
             format!(
-                "Found {} match(es) for `{}` across {} file(s); page truncated at {} returned match(es).",
+                "Found {} match(es) for `{}` across {} file(s); page truncated at {} returned match(es)",
                 search_result.returned_matches,
                 request.query,
                 matched_files,
@@ -1102,10 +1117,14 @@ impl AutonomousToolRuntime {
             )
         } else {
             format!(
-                "Found {} match(es) for `{}` across {} file(s).",
+                "Found {} match(es) for `{}` across {} file(s)",
                 search_result.returned_matches, request.query, matched_files
             )
         };
+        let summary = format!(
+            "{summary_base}{}.",
+            search_omission_summary_suffix(&search_result.omissions)
+        );
 
         Ok(AutonomousToolResult {
             tool_name: AUTONOMOUS_TOOL_SEARCH.into(),
@@ -1284,6 +1303,7 @@ impl AutonomousToolRuntime {
         let relative_path = normalize_relative_path(&request.path, "path")?;
         let resolved_path = self.resolve_existing_path(&relative_path)?;
         let display_path = path_to_forward_slash(&relative_path);
+        validate_not_package_manager_lockfile_mutation(&display_path)?;
 
         if request.start_line == 0 || request.end_line == 0 || request.end_line < request.start_line
         {
@@ -1365,7 +1385,7 @@ impl AutonomousToolRuntime {
         }
 
         let replacement =
-            normalize_replacement_line_endings(&request.replacement, decoded.line_ending);
+            normalize_line_range_replacement(&request.replacement, current, decoded.line_ending);
         let mut updated = String::with_capacity(existing.len() - current.len() + replacement.len());
         updated.push_str(&existing[..start_byte]);
         updated.push_str(&replacement);
@@ -1418,6 +1438,7 @@ impl AutonomousToolRuntime {
         validate_non_empty(&request.path, "path")?;
         let relative_path = normalize_relative_path(&request.path, "path")?;
         let display_path = path_to_forward_slash(&relative_path);
+        validate_not_package_manager_lockfile_mutation(&display_path)?;
         let target_path = self.repo_root.join(&relative_path);
         if fs::symlink_metadata(&target_path)
             .map(|metadata| metadata.file_type().is_symlink())
@@ -1655,6 +1676,7 @@ impl AutonomousToolRuntime {
         let to_relative = normalize_relative_path(&request.to, "to")?;
         let from_display = path_to_forward_slash(&from_relative);
         let to_display = path_to_forward_slash(&to_relative);
+        validate_not_package_manager_lockfile_mutation(&to_display)?;
         let from_candidate = self.repo_root.join(&from_relative);
         if fs::symlink_metadata(&from_candidate)
             .map(|metadata| metadata.file_type().is_symlink())
@@ -1958,6 +1980,7 @@ impl AutonomousToolRuntime {
                     let child_to = to.join(entry.file_name());
                     let child_to_relative = self.repo_relative_path(&child_to)?;
                     let child_to_display = path_to_forward_slash(&child_to_relative);
+                    validate_not_package_manager_lockfile_mutation(&child_to_display)?;
                     self.plan_copy_tree(
                         &child_from,
                         &child_to,
@@ -1968,6 +1991,7 @@ impl AutonomousToolRuntime {
                 }
             }
             AutonomousStatKind::File => {
+                validate_not_package_manager_lockfile_mutation(to_display)?;
                 if to.exists() {
                     return Err(CommandError::user_fixable(
                         "autonomous_tool_copy_target_exists",
@@ -2432,6 +2456,7 @@ impl AutonomousToolRuntime {
         let relative_path = normalize_relative_path(&request.path, "path")?;
         let resolved_path = self.resolve_existing_path(&relative_path)?;
         let display_path = path_to_forward_slash(&relative_path);
+        validate_not_package_manager_lockfile_mutation(&display_path)?;
         let decoded = self.read_decoded_text_file(&resolved_path)?;
         let old_hash = validate_expected_hash_for_bytes(
             "structured edit",
@@ -2532,6 +2557,8 @@ impl AutonomousToolRuntime {
     pub fn delete(&self, request: AutonomousDeleteRequest) -> CommandResult<AutonomousToolResult> {
         validate_non_empty(&request.path, "path")?;
         let relative_path = normalize_relative_path(&request.path, "path")?;
+        let display_path = path_to_forward_slash(&relative_path);
+        validate_not_package_manager_lockfile_mutation(&display_path)?;
         let target_path = self.repo_root.join(&relative_path);
         if fs::symlink_metadata(&target_path)
             .map(|metadata| metadata.file_type().is_symlink())
@@ -2543,7 +2570,6 @@ impl AutonomousToolRuntime {
             ));
         }
         let resolved_path = self.resolve_existing_path(&relative_path)?;
-        let display_path = path_to_forward_slash(&relative_path);
         let metadata = fs::symlink_metadata(&resolved_path).map_err(|error| {
             CommandError::retryable(
                 "autonomous_tool_delete_stat_failed",
@@ -2746,6 +2772,10 @@ impl AutonomousToolRuntime {
         validate_non_empty(&request.to_path, "toPath")?;
         let from_relative = normalize_relative_path(&request.from_path, "fromPath")?;
         let to_relative = normalize_relative_path(&request.to_path, "toPath")?;
+        let from_display = path_to_forward_slash(&from_relative);
+        let to_display = path_to_forward_slash(&to_relative);
+        validate_not_package_manager_lockfile_mutation(&from_display)?;
+        validate_not_package_manager_lockfile_mutation(&to_display)?;
         let from_candidate = self.repo_root.join(&from_relative);
         if fs::symlink_metadata(&from_candidate)
             .map(|metadata| metadata.file_type().is_symlink())
@@ -2783,7 +2813,7 @@ impl AutonomousToolRuntime {
             let existing = read_file_bytes(&from_resolved, "autonomous_tool_rename_read_failed")?;
             Some(validate_expected_hash_for_bytes(
                 "rename",
-                &path_to_forward_slash(&from_relative),
+                &from_display,
                 "expectedHash",
                 request.expected_hash.as_deref(),
                 &existing,
@@ -2844,7 +2874,7 @@ impl AutonomousToolRuntime {
                         read_file_bytes(&to_resolved, "autonomous_tool_rename_target_read_failed")?;
                     validate_expected_hash_for_bytes(
                         "rename overwrite",
-                        &path_to_forward_slash(&to_relative),
+                        &to_display,
                         "expectedTargetHash",
                         Some(expected_target_hash),
                         &target_bytes,
@@ -2855,10 +2885,7 @@ impl AutonomousToolRuntime {
                 Some(false) | None => {
                     return Err(CommandError::user_fixable(
                         "autonomous_tool_rename_target_exists",
-                        format!(
-                            "Xero refused to rename because `{}` already exists.",
-                            path_to_forward_slash(&to_relative)
-                        ),
+                        format!("Xero refused to rename because `{to_display}` already exists."),
                     ));
                 }
             }
@@ -2895,8 +2922,6 @@ impl AutonomousToolRuntime {
             })?;
         }
 
-        let from_path = path_to_forward_slash(&from_relative);
-        let to_path = path_to_forward_slash(&to_relative);
         let verb = if request.preview {
             "Previewed rename"
         } else {
@@ -2904,11 +2929,11 @@ impl AutonomousToolRuntime {
         };
         Ok(AutonomousToolResult {
             tool_name: AUTONOMOUS_TOOL_RENAME.into(),
-            summary: format!("{verb} `{from_path}` to `{to_path}`."),
+            summary: format!("{verb} `{from_display}` to `{to_display}`."),
             command_result: None,
             output: AutonomousToolOutput::Rename(AutonomousRenameOutput {
-                from_path,
-                to_path,
+                from_path: from_display,
+                to_path: to_display,
                 applied: !request.preview,
                 preview: request.preview,
                 overwritten,
@@ -3826,7 +3851,7 @@ impl AutonomousToolRuntime {
             }
 
             result.scanned_files = result.scanned_files.saturating_add(1);
-            let decoded = match self.read_decoded_text_file(path) {
+            let decoded = match self.read_decoded_search_text_file(path) {
                 Ok(decoded) => decoded,
                 Err(error) if should_skip_search_file_error(&error) => {
                     record_search_file_omission(&mut result.omissions, &error);
@@ -4531,6 +4556,35 @@ impl AutonomousToolRuntime {
         })
     }
 
+    fn read_decoded_search_text_file(&self, path: &Path) -> CommandResult<DecodedText> {
+        let metadata = fs::metadata(path).map_err(|error| {
+            CommandError::retryable(
+                "autonomous_tool_read_metadata_failed",
+                format!("Xero could not inspect {}: {error}", path.display()),
+            )
+        })?;
+        if metadata.len() > MAX_BINARY_READ_BYTES {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_file_too_large",
+                format!(
+                    "Xero refused to search {} because it exceeds the {} byte search text limit.",
+                    path.display(),
+                    MAX_BINARY_READ_BYTES
+                ),
+            ));
+        }
+        let bytes = read_file_bytes(path, "autonomous_tool_read_failed")?;
+        decode_text_bytes(bytes).map_err(|_| {
+            CommandError::user_fixable(
+                "autonomous_tool_file_not_text",
+                format!(
+                    "Xero refused to search {} because it is not valid UTF-8 text.",
+                    path.display()
+                ),
+            )
+        })
+    }
+
     fn plan_patch_files(
         &self,
         operations: &[NormalizedPatchOperation],
@@ -4549,6 +4603,7 @@ impl AutonomousToolRuntime {
 
         let mut planned_files = Vec::with_capacity(grouped.len());
         for (display_path, group) in grouped {
+            validate_not_package_manager_lockfile_mutation(&display_path)?;
             let resolved_path = self.resolve_existing_path(&group.relative_path)?;
             let decoded = self.read_decoded_text_file(&resolved_path)?;
             let original_text = decoded.text;
@@ -6117,6 +6172,34 @@ fn search_file_summaries(
         .collect()
 }
 
+fn search_omission_summary_suffix(omissions: &AutonomousSearchOmissions) -> String {
+    let mut parts = Vec::new();
+    if omissions.binary_files > 0 {
+        parts.push(format!("{} binary file(s)", omissions.binary_files));
+    }
+    if omissions.oversized_files > 0 {
+        parts.push(format!("{} oversized file(s)", omissions.oversized_files));
+    }
+    if omissions.unreadable_files > 0 {
+        parts.push(format!("{} unreadable file(s)", omissions.unreadable_files));
+    }
+    if omissions.filtered_files > 0 {
+        parts.push(format!("{} filtered file(s)", omissions.filtered_files));
+    }
+    if omissions.ignored_directories > 0 {
+        parts.push(format!(
+            "{} ignored generated/vendor directories",
+            omissions.ignored_directories
+        ));
+    }
+
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("; omitted {}", parts.join(", "))
+    }
+}
+
 fn record_search_file_omission(omissions: &mut AutonomousSearchOmissions, error: &CommandError) {
     match error.code.as_str() {
         "autonomous_tool_file_not_text" => {
@@ -6482,6 +6565,31 @@ fn normalize_replacement_line_endings(
     }
 }
 
+fn normalize_line_range_replacement(
+    replacement: &str,
+    current: &str,
+    line_ending: AutonomousLineEnding,
+) -> String {
+    let mut normalized = normalize_replacement_line_endings(replacement, line_ending);
+    if normalized.is_empty() || trailing_line_ending(normalized.as_str()).is_some() {
+        return normalized;
+    }
+    if let Some(ending) = trailing_line_ending(current) {
+        normalized.push_str(ending);
+    }
+    normalized
+}
+
+fn trailing_line_ending(text: &str) -> Option<&'static str> {
+    if text.ends_with("\r\n") {
+        Some("\r\n")
+    } else if text.ends_with('\n') {
+        Some("\n")
+    } else {
+        None
+    }
+}
+
 fn guarded_edit_expected_equivalent(
     current: &str,
     expected: &str,
@@ -6711,6 +6819,26 @@ fn validate_edit_expected_present(expected: &str) -> CommandResult<()> {
     }
 
     Ok(())
+}
+
+fn validate_not_package_manager_lockfile_mutation(display_path: &str) -> CommandResult<()> {
+    if package_manager_lockfile_name(display_path).is_none() {
+        return Ok(());
+    }
+
+    Err(CommandError::user_fixable(
+        "autonomous_tool_lockfile_direct_mutation_denied",
+        format!(
+            "Xero refused to mutate `{display_path}` directly because package-manager lockfiles are generated dependency state. Change the package manifest and run the appropriate package-manager command through command tooling so normal approval and lockfile generation apply."
+        ),
+    ))
+}
+
+fn package_manager_lockfile_name(display_path: &str) -> Option<&str> {
+    Path::new(display_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| PACKAGE_MANAGER_LOCKFILE_NAMES.contains(name))
 }
 
 fn line_content_without_ending(text: &str, line: usize) -> CommandResult<&str> {
@@ -7192,6 +7320,63 @@ mod tests {
     }
 
     #[test]
+    fn search_reads_text_files_above_edit_limit() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let mut content = "prefix line\n".repeat(runtime.limits.max_text_file_bytes / 12 + 1);
+        content.push_str("lockfile-sized needle\n");
+        fs::write(root.join("pnpm-lock.yaml"), content).expect("large text file");
+
+        let (summary, output) = search_result(runtime.search(AutonomousSearchRequest {
+            query: "lockfile-sized needle".into(),
+            path: Some("pnpm-lock.yaml".into()),
+            regex: false,
+            ignore_case: false,
+            include_hidden: false,
+            include_ignored: false,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            context_lines: None,
+            max_results: None,
+            files_only: false,
+            cursor: None,
+        }));
+
+        assert_eq!(output.matches.len(), 1);
+        assert_eq!(output.matches[0].path, "pnpm-lock.yaml");
+        assert_eq!(output.omissions.oversized_files, 0);
+        assert!(summary.contains("Found 1 match(es)"));
+    }
+
+    #[test]
+    fn search_summary_mentions_omitted_files() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        fs::write(root.join("binary.bin"), [0xff, 0xfe, 0xfd]).expect("binary file");
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+
+        let (summary, output) = search_result(runtime.search(AutonomousSearchRequest {
+            query: "missing".into(),
+            path: None,
+            regex: false,
+            ignore_case: false,
+            include_hidden: false,
+            include_ignored: false,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            context_lines: None,
+            max_results: None,
+            files_only: false,
+            cursor: None,
+        }));
+
+        assert_eq!(output.matches.len(), 0);
+        assert_eq!(output.omissions.binary_files, 1);
+        assert!(summary.contains("omitted 1 binary file(s)"));
+    }
+
+    #[test]
     fn result_page_reads_only_project_app_data_tool_artifacts() {
         let tempdir = tempdir().expect("tempdir");
         let root = tempdir.path();
@@ -7397,6 +7582,85 @@ mod tests {
             })
             .expect_err("line hash mismatch");
         assert_eq!(err.code, "autonomous_tool_edit_line_hash_mismatch");
+    }
+
+    #[test]
+    fn edit_preserves_line_boundary_when_replacement_omits_final_newline() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        let path = root.join("imports.tsx");
+        fs::write(
+            &path,
+            "import type { ReactNode } from \"react\";\nimport { X } from \"lucide-react\";\n",
+        )
+        .expect("imports");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let initial_read = read_output(runtime.read(read_request("imports.tsx")));
+        let edit_result = edit_output(runtime.edit(AutonomousEditRequest {
+            path: "imports.tsx".into(),
+            start_line: 1,
+            end_line: 1,
+            expected: "import type { ReactNode } from \"react\";".into(),
+            replacement: "import type { CSSProperties, ReactNode } from \"react\";".into(),
+            expected_hash: initial_read.sha256.clone(),
+            start_line_hash: None,
+            end_line_hash: None,
+            preview: false,
+        }));
+
+        assert_eq!(edit_result.start_line, 1);
+        assert_eq!(edit_result.end_line, 1);
+        assert_eq!(
+            fs::read_to_string(&path).expect("updated imports"),
+            "import type { CSSProperties, ReactNode } from \"react\";\nimport { X } from \"lucide-react\";\n",
+        );
+
+        let updated_read = read_output(runtime.read(read_request("imports.tsx")));
+        edit_output(runtime.edit(AutonomousEditRequest {
+            path: "imports.tsx".into(),
+            start_line: 2,
+            end_line: 2,
+            expected: "import { X } from \"lucide-react\";\n".into(),
+            replacement: String::new(),
+            expected_hash: updated_read.sha256.clone(),
+            start_line_hash: None,
+            end_line_hash: None,
+            preview: false,
+        }));
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("deleted import"),
+            "import type { CSSProperties, ReactNode } from \"react\";\n",
+        );
+    }
+
+    #[test]
+    fn edit_preserves_native_line_boundary_when_replacement_omits_final_newline() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        let path = root.join("notes.txt");
+        fs::write(&path, "one\r\ntwo\r\n").expect("notes");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let read_output = read_output(runtime.read(read_request("notes.txt")));
+        let edit_output = edit_output(runtime.edit(AutonomousEditRequest {
+            path: "notes.txt".into(),
+            start_line: 1,
+            end_line: 1,
+            expected: "one".into(),
+            replacement: "ONE".into(),
+            expected_hash: read_output.sha256.clone(),
+            start_line_hash: None,
+            end_line_hash: None,
+            preview: false,
+        }));
+
+        assert_eq!(edit_output.line_ending, Some(AutonomousLineEnding::Crlf));
+        assert_eq!(
+            fs::read_to_string(&path).expect("updated notes"),
+            "ONE\r\ntwo\r\n",
+        );
     }
 
     #[test]
@@ -7716,6 +7980,173 @@ mod tests {
         assert!(err.message.contains("notes.txt"));
     }
 
+    #[test]
+    fn filesystem_mutations_reject_package_manager_lockfiles() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        fs::write(root.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").expect("pnpm lock");
+        fs::write(root.join("manifest.txt"), "workspace dependency\n").expect("manifest");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let edit_error = runtime
+            .edit(AutonomousEditRequest {
+                path: "pnpm-lock.yaml".into(),
+                start_line: 1,
+                end_line: 1,
+                expected: "lockfileVersion: '9.0'\n".into(),
+                replacement: "lockfileVersion: '9.0'\n\nimporters: {}\n".into(),
+                expected_hash: None,
+                start_line_hash: None,
+                end_line_hash: None,
+                preview: false,
+            })
+            .expect_err("lockfile edit should be denied");
+        assert_eq!(
+            edit_error.code,
+            "autonomous_tool_lockfile_direct_mutation_denied"
+        );
+        assert!(edit_error.message.contains("package-manager lockfiles"));
+
+        let write_error = runtime
+            .write(AutonomousWriteRequest {
+                path: "package-lock.json".into(),
+                content: "{}\n".into(),
+                expected_hash: None,
+                create_only: true,
+                overwrite: Some(false),
+                preview: false,
+            })
+            .expect_err("lockfile write should be denied");
+        assert_eq!(
+            write_error.code,
+            "autonomous_tool_lockfile_direct_mutation_denied"
+        );
+
+        let patch_error = runtime
+            .patch(AutonomousPatchRequest {
+                path: Some("pnpm-lock.yaml".into()),
+                search: Some("lockfileVersion".into()),
+                replace: Some("lockfile_version".into()),
+                replace_all: false,
+                expected_hash: None,
+                preview: false,
+                operations: Vec::new(),
+            })
+            .expect_err("lockfile patch should be denied");
+        assert_eq!(
+            patch_error.code,
+            "autonomous_tool_lockfile_direct_mutation_denied"
+        );
+
+        let yaml_error = runtime
+            .structured_edit(
+                AutonomousStructuredEditRequest {
+                    path: "pnpm-lock.yaml".into(),
+                    operations: vec![super::super::AutonomousStructuredEditOperation {
+                        action: AutonomousStructuredEditAction::Set,
+                        pointer: "/lockfileVersion".into(),
+                        value: Some(JsonValue::String("9.0".into())),
+                    }],
+                    expected_hash: None,
+                    formatting_mode: AutonomousStructuredEditFormattingMode::Normalize,
+                    preview: false,
+                },
+                AutonomousStructuredEditFormat::Yaml,
+                "yaml_edit",
+            )
+            .expect_err("lockfile yaml edit should be denied");
+        assert_eq!(
+            yaml_error.code,
+            "autonomous_tool_lockfile_direct_mutation_denied"
+        );
+
+        let delete_error = runtime
+            .delete(AutonomousDeleteRequest {
+                path: "pnpm-lock.yaml".into(),
+                recursive: false,
+                expected_hash: None,
+                expected_digest: None,
+                preview: false,
+            })
+            .expect_err("lockfile delete should be denied");
+        assert_eq!(
+            delete_error.code,
+            "autonomous_tool_lockfile_direct_mutation_denied"
+        );
+
+        let rename_error = runtime
+            .rename(AutonomousRenameRequest {
+                from_path: "manifest.txt".into(),
+                to_path: "yarn.lock".into(),
+                expected_hash: None,
+                expected_target_hash: None,
+                overwrite: None,
+                preview: false,
+            })
+            .expect_err("rename into lockfile should be denied");
+        assert_eq!(
+            rename_error.code,
+            "autonomous_tool_lockfile_direct_mutation_denied"
+        );
+
+        let copy_error = runtime
+            .copy(AutonomousCopyRequest {
+                from: "manifest.txt".into(),
+                to: "bun.lock".into(),
+                recursive: false,
+                expected_source_hash: None,
+                expected_source_digest: None,
+                overwrite: None,
+                expected_target_hash: None,
+                preview: false,
+            })
+            .expect_err("copy into lockfile should be denied");
+        assert_eq!(
+            copy_error.code,
+            "autonomous_tool_lockfile_direct_mutation_denied"
+        );
+    }
+
+    #[test]
+    fn fs_transaction_reports_lockfile_mutation_as_validation_error() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        fs::write(root.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").expect("pnpm lock");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let result = runtime
+            .fs_transaction(AutonomousFsTransactionRequest {
+                operations: vec![AutonomousFsTransactionOperation {
+                    id: Some("manual-lockfile-edit".into()),
+                    action: AutonomousFsTransactionAction::EditFile,
+                    path: Some("pnpm-lock.yaml".into()),
+                    start_line: Some(1),
+                    end_line: Some(1),
+                    expected: Some("lockfileVersion: '9.0'\n".into()),
+                    replacement: Some("lockfileVersion: '9.0'\n\nimporters: {}\n".into()),
+                    ..AutonomousFsTransactionOperation::default()
+                }],
+                preview: false,
+                stop_on_first_error: true,
+            })
+            .expect("fs_transaction returns structured validation output");
+        let AutonomousToolOutput::FsTransaction(output) = result.output else {
+            panic!("expected fs_transaction output");
+        };
+
+        assert!(!output.applied);
+        assert!(!output.validation.ok);
+        assert_eq!(output.validation.validated_operations, 0);
+        assert_eq!(output.validation.errors.len(), 1);
+        assert_eq!(
+            output.validation.errors[0]
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("autonomous_tool_lockfile_direct_mutation_denied")
+        );
+    }
+
     fn read_request(path: &str) -> AutonomousReadRequest {
         AutonomousReadRequest {
             path: path.into(),
@@ -7742,6 +8173,18 @@ mod tests {
     fn search_output(result: CommandResult<AutonomousToolResult>) -> AutonomousSearchOutput {
         match result.expect("search").output {
             AutonomousToolOutput::Search(output) => output,
+            output => panic!("unexpected output: {output:?}"),
+        }
+    }
+
+    fn search_result(
+        result: CommandResult<AutonomousToolResult>,
+    ) -> (String, AutonomousSearchOutput) {
+        let AutonomousToolResult {
+            summary, output, ..
+        } = result.expect("search");
+        match output {
+            AutonomousToolOutput::Search(output) => (summary, output),
             output => panic!("unexpected output: {output:?}"),
         }
     }

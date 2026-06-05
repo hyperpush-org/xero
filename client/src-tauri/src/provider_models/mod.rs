@@ -2196,18 +2196,13 @@ fn is_local_openai_compatible_base_url(base_url: &str) -> bool {
 }
 
 fn xai_catalog_bearer_token(
-    profile: &ProviderCredentialProfile,
+    _profile: &ProviderCredentialProfile,
     provider_profiles: &ProviderCredentialsView,
 ) -> Option<String> {
     provider_profiles
-        .matched_api_key_credential_for_profile(&profile.profile_id)
-        .map(|entry| entry.api_key.clone())
-        .or_else(|| {
-            provider_profiles
-                .record_for_provider(XAI_PROVIDER_ID)
-                .filter(|record| record.kind == ProviderCredentialKind::OAuthSession)
-                .and_then(|record| record.oauth_access_token.clone())
-        })
+        .record_for_provider(XAI_PROVIDER_ID)
+        .filter(|record| record.kind == ProviderCredentialKind::OAuthSession)
+        .and_then(|record| record.oauth_access_token.clone())
         .map(|token| token.trim().to_owned())
         .filter(|token| !token.is_empty())
 }
@@ -2237,7 +2232,7 @@ fn missing_xai_credential_diagnostic(
     ProviderModelCatalogDiagnostic {
         code: "xai_credential_missing".into(),
         message: format!(
-            "Xero cannot discover xAI models for provider `{}` because no xAI OAuth session or app-local API key is configured.",
+            "Xero cannot discover xAI models for provider `{}` because no xAI sign-in session is configured.",
             profile.provider_id
         ),
         retryable: false,

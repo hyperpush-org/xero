@@ -5,7 +5,7 @@ use tauri::{AppHandle, Manager, Runtime};
 use crate::{
     auth::{
         ActiveAuthFlowRegistry, AnthropicAuthConfig, OpenAiCodexAuthConfig,
-        OpenAiCompatibleAuthConfig, OpenRouterAuthConfig, XaiAuthConfig, XaiDeviceCodeFlowRegistry,
+        OpenAiCompatibleAuthConfig, OpenRouterAuthConfig, XaiAuthConfig,
     },
     commands::{backend_jobs::BackendJobRegistry, CommandError},
     global_db::global_database_path,
@@ -48,7 +48,6 @@ pub struct DesktopState {
     backend_jobs: BackendJobRegistry,
     provider_model_catalog_refresh_registry: ProviderModelCatalogRefreshRegistry,
     active_auth_flows: ActiveAuthFlowRegistry,
-    xai_device_code_flows: XaiDeviceCodeFlowRegistry,
 }
 
 impl DesktopState {
@@ -183,10 +182,6 @@ impl DesktopState {
 
     pub fn active_auth_flows(&self) -> &ActiveAuthFlowRegistry {
         &self.active_auth_flows
-    }
-
-    pub fn xai_device_code_flows(&self) -> &XaiDeviceCodeFlowRegistry {
-        &self.xai_device_code_flows
     }
 
     pub fn app_data_dir<R: Runtime>(&self, app: &AppHandle<R>) -> Result<PathBuf, CommandError> {

@@ -2715,28 +2715,34 @@ fn compact_tool_access_output(output: &JsonValue) -> JsonValue {
             "message",
         ],
     );
-    insert_array(
-        &mut compact,
-        "availableGroups",
-        output
-            .get("availableGroups")
-            .and_then(JsonValue::as_array)
-            .map(|groups| {
-                JsonValue::Array(
-                    groups
-                        .iter()
-                        .take(MODEL_VISIBLE_MAX_ITEMS)
-                        .map(|group| {
-                            compact_fields(
-                                group,
-                                &["name", "description", "tools", "riskClass", "toolSummaries"],
-                            )
-                        })
-                        .collect(),
-                )
-            }),
-    );
+    if output.get("action").and_then(JsonValue::as_str) == Some("list") {
+        insert_array(
+            &mut compact,
+            "availableGroups",
+            output
+                .get("availableGroups")
+                .and_then(JsonValue::as_array)
+                .map(|groups| {
+                    JsonValue::Array(
+                        groups
+                            .iter()
+                            .take(MODEL_VISIBLE_MAX_ITEMS)
+                            .map(|group| {
+                                compact_fields(
+                                    group,
+                                    &["name", "description", "tools", "riskClass", "toolSummaries"],
+                                )
+                            })
+                            .collect(),
+                    )
+                }),
+        );
+    }
     if let Some(fields) = compact.as_object_mut() {
+        fields.insert(
+            "availableGroupCount".into(),
+            json!(array_len(output, "availableGroups")),
+        );
         fields.insert(
             "availableToolPackCount".into(),
             json!(array_len(output, "availableToolPacks")),
@@ -7765,6 +7771,67 @@ mod tests {
             visible["output"]["xeroCompact"]["format"],
             json!("tool_access_summary_json")
         );
+        assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
+    }
+
+    #[test]
+    fn model_visible_tool_access_request_omits_available_catalog() {
+        let result = AgentToolResult {
+            tool_call_id: "call-tool-access-request".into(),
+            tool_name: AUTONOMOUS_TOOL_TOOL_ACCESS.into(),
+            ok: true,
+            summary: "Requested tools will be exposed on the next provider turn.".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_TOOL_ACCESS,
+                "summary": "Requested tools will be exposed on the next provider turn.",
+                "commandResult": null,
+                "output": {
+                    "kind": "tool_access",
+                    "action": "request",
+                    "grantedTools": ["edit"],
+                    "grantedToolDetails": [
+                        {
+                            "toolName": "edit",
+                            "effectClass": "write",
+                            "riskClass": "write",
+                            "runtimeAvailable": true,
+                            "allowedForAgent": true,
+                            "activationGroups": ["mutation"]
+                        }
+                    ],
+                    "deniedTools": [],
+                    "availableGroups": [
+                        {
+                            "name": "mutation",
+                            "description": "Large catalog entry should not be repeated after a request.",
+                            "tools": ["edit", "write", "patch"],
+                            "riskClass": "write",
+                            "toolSummaries": [],
+                            "internalNote": "SHOULD_NOT_APPEAR"
+                        }
+                    ],
+                    "message": "Requested tools will be exposed on the next provider turn.",
+                    "availableToolPacks": [],
+                    "toolPackHealth": []
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize tool_access result");
+        let visible =
+            serde_json::from_str::<JsonValue>(&serialized).expect("decode tool_access result");
+
+        assert_eq!(visible["output"]["action"], json!("request"));
+        assert_eq!(visible["output"]["grantedTools"][0], json!("edit"));
+        assert_eq!(
+            visible["output"]["grantedToolDetails"][0]["activationGroups"][0],
+            json!("mutation")
+        );
+        assert!(visible["output"].get("availableGroups").is_none());
+        assert_eq!(visible["output"]["availableGroupCount"], json!(1));
         assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
     }
 

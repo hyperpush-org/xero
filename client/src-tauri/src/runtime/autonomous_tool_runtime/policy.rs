@@ -1199,7 +1199,7 @@ pub(super) fn command_tool_scope_escalation(
                 policy.profile,
                 "policy_escalated_command_verify_scope",
                 format!(
-                    "Xero requires operator review for command_verify `{}` because verification is limited to known test, lint, typecheck, build, format, and check commands.",
+                    "Xero requires operator review for command_verify `{}` because verification is limited to known test, lint, typecheck, type-check, build, format, and check commands.",
                     render_command_for_persistence(&prepared.argv)
                 ),
             ))
@@ -1251,13 +1251,14 @@ fn command_verify_allows(
             )
         }),
         "npm" | "pnpm" | "yarn" | "bun" => {
-            git_subcommand(&prepared.argv).is_some_and(|subcommand| {
+            package_manager_subcommand(&prepared.argv).is_some_and(|subcommand| {
                 matches!(
                     subcommand,
                     "test"
                         | "tests"
                         | "lint"
                         | "typecheck"
+                        | "type-check"
                         | "check"
                         | "build"
                         | "run"
@@ -1274,6 +1275,43 @@ fn git_subcommand(argv: &[String]) -> Option<&str> {
         .skip(1)
         .find(|argument| !argument.starts_with('-'))
         .map(String::as_str)
+}
+
+fn package_manager_subcommand(argv: &[String]) -> Option<&str> {
+    let mut skip_next = false;
+    for argument in argv.iter().skip(1) {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        let argument = argument.as_str();
+        if argument == "--" {
+            continue;
+        }
+        if package_manager_flag_takes_value(argument) {
+            skip_next = true;
+            continue;
+        }
+        if package_manager_flag_with_inline_value(argument) || argument.starts_with('-') {
+            continue;
+        }
+        return Some(argument);
+    }
+    None
+}
+
+fn package_manager_flag_takes_value(argument: &str) -> bool {
+    matches!(
+        argument,
+        "--filter" | "-F" | "--workspace" | "-w" | "--prefix" | "-C" | "--dir"
+    )
+}
+
+fn package_manager_flag_with_inline_value(argument: &str) -> bool {
+    matches!(
+        argument.split_once('=').map(|(name, _)| name),
+        Some("--filter" | "--workspace" | "--prefix" | "--dir")
+    )
 }
 
 struct SafetyDecisionContext<'a> {
@@ -1893,11 +1931,7 @@ fn classify_cargo_command(argv: &[String]) -> CommandClassification {
 }
 
 fn classify_package_manager_command(argv: &[String], cwd: &Path) -> CommandClassification {
-    let subcommand = argv
-        .iter()
-        .skip(1)
-        .find(|argument| !argument.starts_with('-'));
-    match subcommand.map(String::as_str) {
+    match package_manager_subcommand(argv) {
         Some("install" | "add" | "remove" | "unlink" | "upgrade" | "update") => {
             CommandClassification::Escalated {
                 profile: AutonomousCommandPolicyProfile::DependencyInstallation,
@@ -1908,7 +1942,7 @@ fn classify_package_manager_command(argv: &[String], cwd: &Path) -> CommandClass
                 ),
             }
         }
-        Some(script @ ("test" | "lint" | "typecheck" | "build")) => {
+        Some(script @ ("test" | "lint" | "typecheck" | "type-check" | "build")) => {
             classify_repo_package_script(argv, cwd, script, true)
         }
         Some("exec") => CommandClassification::Escalated {
@@ -2033,7 +2067,7 @@ fn classify_repo_package_script(
 fn is_safe_package_script_name(script_name: &str) -> bool {
     matches!(
         script_name,
-        "test" | "tests" | "lint" | "typecheck" | "check" | "build" | "rust:test"
+        "test" | "tests" | "lint" | "typecheck" | "type-check" | "check" | "build" | "rust:test"
     )
 }
 
@@ -2381,6 +2415,62 @@ mod tests {
     }
 
     #[test]
+    fn package_manager_type_check_forms_are_verification_safe() {
+        let tempdir = tempdir().expect("tempdir");
+        fs::write(
+            tempdir.path().join("package.json"),
+            r#"{"scripts":{"type-check":"tsc --noEmit","typecheck":"tsc --noEmit"}}"#,
+        )
+        .expect("package");
+
+        for argv in [
+            ["pnpm", "type-check"].as_slice(),
+            ["pnpm", "--filter", "client", "type-check"].as_slice(),
+            ["pnpm", "run", "type-check"].as_slice(),
+        ] {
+            let prepared = PreparedCommandRequest {
+                argv: argv.iter().map(|value| (*value).to_owned()).collect(),
+                cwd_relative: None,
+                cwd: tempdir.path().to_path_buf(),
+                timeout_ms: DEFAULT_COMMAND_TIMEOUT_MS,
+            };
+            let decision = classify_command(&prepared);
+
+            match decision {
+                CommandClassification::Safe { profile, reason } => {
+                    assert_eq!(
+                        profile,
+                        AutonomousCommandPolicyProfile::ReadOnlyVerification
+                    );
+                    assert!(reason.contains("type-check"));
+                }
+                other => panic!("expected safe type-check script, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn package_manager_type_check_variants_stay_reviewed() {
+        let tempdir = tempdir().expect("tempdir");
+        fs::write(
+            tempdir.path().join("package.json"),
+            r#"{"scripts":{"type-check:ci":"tsc --noEmit"}}"#,
+        )
+        .expect("package");
+        let prepared = prepared_command(tempdir.path(), ["pnpm", "run", "type-check:ci"]);
+
+        let decision = classify_command(&prepared);
+
+        match decision {
+            CommandClassification::Escalated { code, reason, .. } => {
+                assert_eq!(code, "policy_escalated_package_manager_run");
+                assert!(reason.contains("verification allowlist"));
+            }
+            other => panic!("expected reviewed type-check variant, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn package_manager_run_escalates_destructive_allowed_script() {
         let tempdir = tempdir().expect("tempdir");
         fs::write(
@@ -2699,6 +2789,11 @@ mod tests {
     #[test]
     fn safety_policy_keeps_command_probe_readonly_and_verify_scoped() {
         let tempdir = tempdir().expect("tempdir");
+        fs::write(
+            tempdir.path().join("package.json"),
+            r#"{"scripts":{"type-check":"tsc --noEmit","type-check:ci":"tsc --noEmit"}}"#,
+        )
+        .expect("package");
         let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Yolo);
         let probe_request = AutonomousToolRequest::Command(AutonomousCommandRequest {
             argv: vec!["cargo".into(), "test".into()],
@@ -2752,6 +2847,51 @@ mod tests {
         assert_eq!(
             root_cwd_verify_decision.action,
             AutonomousSafetyPolicyAction::Allow
+        );
+
+        let type_check_request = AutonomousToolRequest::Command(AutonomousCommandRequest {
+            argv: vec![
+                "pnpm".into(),
+                "--filter".into(),
+                "client".into(),
+                "type-check".into(),
+            ],
+            cwd: None,
+            timeout_ms: None,
+        });
+        let type_check_decision = runtime
+            .evaluate_safety_policy(
+                AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                &json!({"argv": ["pnpm", "--filter", "client", "type-check"]}),
+                &type_check_request,
+                false,
+                "input-hash",
+            )
+            .expect("scoped type-check verify policy");
+
+        assert_eq!(
+            type_check_decision.action,
+            AutonomousSafetyPolicyAction::Allow
+        );
+
+        let type_check_variant_request = AutonomousToolRequest::Command(AutonomousCommandRequest {
+            argv: vec!["pnpm".into(), "run".into(), "type-check:ci".into()],
+            cwd: None,
+            timeout_ms: None,
+        });
+        let type_check_variant_decision = runtime
+            .evaluate_safety_policy(
+                AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                &json!({"argv": ["pnpm", "run", "type-check:ci"]}),
+                &type_check_variant_request,
+                false,
+                "input-hash",
+            )
+            .expect("type-check variant verify policy");
+
+        assert_eq!(
+            type_check_variant_decision.action,
+            AutonomousSafetyPolicyAction::RequireApproval
         );
     }
 

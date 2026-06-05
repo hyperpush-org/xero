@@ -43,7 +43,7 @@ pub fn list_provider_credentials<R: Runtime>(
     Ok(ProviderCredentialsSnapshotDto {
         credentials: records
             .iter()
-            .filter(|record| !is_web_search_credential_provider_id(&record.provider_id))
+            .filter(|record| is_public_provider_credential(*record))
             .map(provider_credential_dto)
             .collect(),
     })
@@ -152,7 +152,7 @@ pub fn upsert_provider_credential<R: Runtime>(
     Ok(ProviderCredentialsSnapshotDto {
         credentials: records
             .iter()
-            .filter(|record| !is_web_search_credential_provider_id(&record.provider_id))
+            .filter(|record| is_public_provider_credential(*record))
             .map(provider_credential_dto)
             .collect(),
     })
@@ -175,10 +175,16 @@ pub fn delete_provider_credential<R: Runtime>(
     Ok(ProviderCredentialsSnapshotDto {
         credentials: records
             .iter()
-            .filter(|record| !is_web_search_credential_provider_id(&record.provider_id))
+            .filter(|record| is_public_provider_credential(*record))
             .map(provider_credential_dto)
             .collect(),
     })
+}
+
+fn is_public_provider_credential(record: &ProviderCredentialRecord) -> bool {
+    !is_web_search_credential_provider_id(&record.provider_id)
+        && !(record.provider_id == XAI_PROVIDER_ID
+            && matches!(record.kind, ProviderCredentialKind::ApiKey))
 }
 
 pub(crate) fn provider_credential_dto(record: &ProviderCredentialRecord) -> ProviderCredentialDto {
@@ -270,27 +276,10 @@ fn validate_per_provider_fields(
             }
         }
         XAI_PROVIDER_ID => {
-            if !matches!(kind, ProviderCredentialKind::ApiKey) {
-                return Err(CommandError::user_fixable(
-                    "provider_credentials_invalid_kind",
-                    "Xero requires kind=api_key for xAI credentials saved outside OAuth.",
-                ));
-            }
-            if api_key.is_none() {
-                return Err(CommandError::invalid_request("apiKey"));
-            }
-            if base_url.is_some() {
-                return Err(CommandError::invalid_request("baseUrl"));
-            }
-            if api_version.is_some() {
-                return Err(CommandError::invalid_request("apiVersion"));
-            }
-            if region.is_some() {
-                return Err(CommandError::invalid_request("region"));
-            }
-            if project_id.is_some() {
-                return Err(CommandError::invalid_request("projectId"));
-            }
+            return Err(CommandError::user_fixable(
+                "provider_credentials_oauth_via_login",
+                "Xero persists xAI credentials through the sign-in flow.",
+            ));
         }
         CURSOR_PROVIDER_ID => {
             if !matches!(kind, ProviderCredentialKind::ApiKey) {
@@ -498,8 +487,8 @@ mod tests {
     }
 
     #[test]
-    fn validate_xai_requires_api_key_and_rejects_endpoint_metadata() {
-        validate_per_provider_fields(
+    fn validate_xai_rejects_upserted_credentials() {
+        let err = validate_per_provider_fields(
             XAI_PROVIDER_ID,
             ProviderCredentialKind::ApiKey,
             Some("xai-test"),
@@ -508,31 +497,30 @@ mod tests {
             None,
             None,
         )
-        .expect("xAI with an API key and built-in endpoint should pass");
+        .expect_err("xAI must use the sign-in flow");
+        assert_eq!(err.code, "provider_credentials_oauth_via_login");
+    }
 
-        let missing_key = validate_per_provider_fields(
-            XAI_PROVIDER_ID,
-            ProviderCredentialKind::ApiKey,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .expect_err("xAI without api_key should fail");
-        assert_eq!(missing_key.code, "invalid_request");
+    #[test]
+    fn public_snapshot_filters_xai_local_credentials() {
+        let record = ProviderCredentialRecord {
+            provider_id: XAI_PROVIDER_ID.into(),
+            kind: ProviderCredentialKind::ApiKey,
+            api_key: Some("xai-test".into()),
+            oauth_account_id: None,
+            oauth_session_id: None,
+            oauth_access_token: None,
+            oauth_refresh_token: None,
+            oauth_expires_at: None,
+            base_url: None,
+            api_version: None,
+            region: None,
+            project_id: None,
+            default_model_id: None,
+            updated_at: "2026-05-20T12:00:00Z".into(),
+        };
 
-        let custom_url = validate_per_provider_fields(
-            XAI_PROVIDER_ID,
-            ProviderCredentialKind::ApiKey,
-            Some("xai-test"),
-            Some("https://api.x.ai/v1"),
-            None,
-            None,
-            None,
-        )
-        .expect_err("native xAI should reject custom base_url");
-        assert_eq!(custom_url.code, "invalid_request");
+        assert!(!is_public_provider_credential(&record));
     }
 
     #[test]

@@ -2288,7 +2288,6 @@ fn owned_agent_loop_dispatches_tools_and_persists_journal() {
             scope: db::project_store::AgentMemoryScope::Project,
             kind: db::project_store::AgentMemoryKind::Decision,
             text: "Use api_key=sk-runtime-secret when replaying approved memory.".into(),
-            review_state: db::project_store::AgentMemoryReviewState::Approved,
             enabled: true,
             confidence: Some(91),
             source_run_id: None,

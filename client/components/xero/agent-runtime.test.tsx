@@ -937,9 +937,56 @@ describe('AgentRuntime current UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
 
     await waitFor(() => {
-      expect(resumeAgentRun).toHaveBeenCalledWith('run-owned', 'Approved.')
+      expect(resumeAgentRun).toHaveBeenCalledWith('run-owned', 'Approved.', {
+        actionId: 'tool-call-command',
+      })
     })
     expect(resolveOperatorAction).not.toHaveBeenCalled()
+  })
+
+  it('surfaces owned-agent action failures inline and in the composer', async () => {
+    const resumeAgentRun = vi.fn(async () => {
+      throw new Error('Action row is no longer pending.')
+    })
+
+    renderRuntimeStreamItems(
+      [
+        {
+          id: 'action_required:run-owned:tool-call-command',
+          kind: 'action_required',
+          runId: 'run-owned',
+          sequence: 1,
+          createdAt: '2026-06-05T03:40:29Z',
+          mediaAttachments: [],
+          actionId: 'tool-call-command',
+          boundaryId: null,
+          actionType: 'safety_boundary',
+          title: 'Action required',
+          detail: 'Review the command before continuing.',
+          answerShape: 'plain_text',
+          options: null,
+          allowMultiple: null,
+          sensitiveFields: null,
+          intendedUse: null,
+        },
+      ],
+      {
+        desktopAdapter: {
+          isDesktopRuntime: () => false,
+          resumeAgentRun,
+        } as unknown as AgentRuntimeDesktopAdapter,
+      },
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+
+    await waitFor(() => {
+      expect(resumeAgentRun).toHaveBeenCalledWith('run-owned', 'Approved.', {
+        actionId: 'tool-call-command',
+      })
+    })
+    expect(await screen.findAllByText('Action row is no longer pending.')).not.toHaveLength(0)
+    expect(screen.getByText('Action failed')).toBeInTheDocument()
   })
 
   it('routes owned-agent action rejections through rejectAgentAction', async () => {

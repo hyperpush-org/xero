@@ -53,8 +53,6 @@ pub const OPENAI_CODEX_SUPPORTED_MODEL_IDS: &[&str] = &[
     "gpt-5.4",
     "gpt-5.5",
 ];
-const XAI_API_KEY_SESSION_ID: &str = "xai-api-key";
-const XAI_API_KEY_ACCOUNT_ID: &str = "xai-api-key";
 const CURSOR_API_KEY_SESSION_ID: &str = "cursor-api-key";
 const CURSOR_API_KEY_ACCOUNT_ID: &str = "cursor-api-key";
 
@@ -551,9 +549,6 @@ pub fn logout_provider_runtime_session<R: Runtime>(
             sync_openai_profile_link(app, state, None, None)
         }
         RuntimeProvider::Xai => {
-            if account_id == XAI_API_KEY_ACCOUNT_ID {
-                return Ok(());
-            }
             let auth_store_path = state
                 .global_db_path(app)
                 .map_err(auth_flow_error_from_command_error)?;
@@ -661,14 +656,6 @@ fn bind_xai_runtime_session<R: Runtime>(
     };
 
     match profile.credential_link.as_ref() {
-        Some(ProviderCredentialLink::ApiKey { updated_at }) => Ok(
-            RuntimeProviderBindOutcome::Ready(binding_from_stored_xai_session(
-                provider,
-                XAI_API_KEY_SESSION_ID,
-                XAI_API_KEY_ACCOUNT_ID,
-                updated_at,
-            )),
-        ),
         Some(ProviderCredentialLink::Xai { .. }) => {
             let auth_store_path = state
                 .global_db_path(app)
@@ -712,14 +699,6 @@ fn reconcile_xai_runtime_session<R: Runtime>(
     };
 
     match profile.credential_link.as_ref() {
-        Some(ProviderCredentialLink::ApiKey { updated_at }) => Ok(
-            RuntimeProviderReconcileOutcome::Authenticated(binding_from_stored_xai_session(
-                provider,
-                XAI_API_KEY_SESSION_ID,
-                XAI_API_KEY_ACCOUNT_ID,
-                updated_at,
-            )),
-        ),
         Some(ProviderCredentialLink::Xai { .. }) => {
             let auth_store_path = state
                 .global_db_path(app)
@@ -954,7 +933,7 @@ fn missing_xai_session_diagnostic() -> AuthDiagnostic {
     AuthDiagnostic {
         code: "auth_session_not_found".into(),
         message:
-            "Xero does not have an app-local xAI credential. Sign in to xAI or save an xAI API key from Providers settings."
+            "Xero does not have an app-local xAI credential. Sign in to xAI from Providers settings."
                 .into(),
         retryable: false,
     }
@@ -964,7 +943,7 @@ fn invalid_xai_profile_diagnostic() -> AuthDiagnostic {
     AuthDiagnostic {
         code: "provider_credentials_invalid".into(),
         message:
-            "Xero rejected the active xAI provider profile because it does not contain an xAI OAuth session or API key."
+            "Xero rejected the active xAI provider profile because it does not contain an xAI sign-in session."
                 .into(),
         retryable: false,
     }

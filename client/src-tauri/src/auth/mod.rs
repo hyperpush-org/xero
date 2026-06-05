@@ -40,10 +40,8 @@ pub use store::{
 };
 pub use xai::{
     cancel_xai_flow, complete_xai_flow, ensure_xai_profile_target, load_latest_xai_session,
-    load_xai_session, load_xai_session_for_profile_link, poll_xai_device_code_flow,
-    refresh_xai_session, remove_xai_session, start_xai_device_code_flow, start_xai_flow,
-    StartedXaiFlow, StoredXaiSession, XaiAuthConfig, XaiAuthSession, XaiDeviceCodeFlowRegistry,
-    XaiDeviceCodeLogin,
+    load_xai_session, load_xai_session_for_profile_link, refresh_xai_session, remove_xai_session,
+    start_xai_flow, StartedXaiFlow, StoredXaiSession, XaiAuthConfig, XaiAuthSession,
 };
 
 use std::{

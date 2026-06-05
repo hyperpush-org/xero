@@ -540,7 +540,6 @@ fn lancedb_freshness_phase1_marks_approved_memory_stale_after_source_file_change
             scope: project_store::AgentMemoryScope::Session,
             kind: project_store::AgentMemoryKind::ProjectFact,
             text: "freshcontract approved memory derives from memory_source.rs.".into(),
-            review_state: project_store::AgentMemoryReviewState::Approved,
             enabled: true,
             confidence: Some(95),
             source_run_id: Some("fresh-memory-source-run".into()),
@@ -579,10 +578,6 @@ fn lancedb_freshness_phase1_marks_approved_memory_stale_after_source_file_change
     );
     let memory = project_store::get_agent_memory(&repo_root, &project_id, "fresh-stale-memory")
         .expect("load stale approved memory");
-    assert_eq!(
-        memory.review_state,
-        project_store::AgentMemoryReviewState::Approved
-    );
     assert!(memory.enabled);
     assert_eq!(memory.freshness_state, "stale");
 }
@@ -606,7 +601,6 @@ fn lancedb_freshness_phase1_provider_turn_prompts_do_not_preload_raw_memory_or_r
             scope: project_store::AgentMemoryScope::Project,
             kind: project_store::AgentMemoryKind::ProjectFact,
             text: "FRESHNESS_RAW_MEMORY_SHOULD_NOT_APPEAR".into(),
-            review_state: project_store::AgentMemoryReviewState::Approved,
             enabled: true,
             confidence: Some(95),
             source_run_id: Some("fresh-raw-source-run".into()),
@@ -1453,7 +1447,6 @@ fn lancedb_freshness_phase1_retrieval_results_include_score_trust_citation_and_l
             scope: project_store::AgentMemoryScope::Project,
             kind: project_store::AgentMemoryKind::Decision,
             text: "freshcontract score metadata approved memory result.".into(),
-            review_state: project_store::AgentMemoryReviewState::Approved,
             enabled: true,
             confidence: Some(88),
             source_run_id: Some("fresh-retrieval-contract-run".into()),
@@ -1723,7 +1716,6 @@ fn lancedb_freshness_phase1_filtered_retrieval_preserves_filters_and_limit_contr
                 scope: project_store::AgentMemoryScope::Project,
                 kind,
                 text: format!("freshcontract filtered memory target body {memory_id}."),
-                review_state: project_store::AgentMemoryReviewState::Approved,
                 enabled: true,
                 confidence: Some(86),
                 source_run_id: Some(format!("{memory_id}-run")),
@@ -2195,7 +2187,6 @@ fn lancedb_freshness_phase8_embedding_backfill_skips_stale_approved_memory() {
             scope: project_store::AgentMemoryScope::Project,
             kind: project_store::AgentMemoryKind::ProjectFact,
             text: memory_text.into(),
-            review_state: project_store::AgentMemoryReviewState::Approved,
             enabled: true,
             confidence: Some(91),
             source_run_id: Some("fresh-backfill-memory-run".into()),
@@ -2532,7 +2523,8 @@ fn lancedb_freshness_phase9_project_context_direct_reads_include_stale_evidence_
 }
 
 #[test]
-fn lancedb_freshness_phase9_direct_memory_read_preserves_review_state_while_annotating_staleness() {
+fn lancedb_freshness_phase9_direct_memory_read_preserves_enabled_state_while_annotating_staleness()
+{
     let root = tempfile::tempdir().expect("temp dir");
     let (project_id, repo_root) = seed_project(&root);
     let source_path = "src/phase9_direct_memory.rs";
@@ -2566,7 +2558,6 @@ fn lancedb_freshness_phase9_direct_memory_read_preserves_review_state_while_anno
             scope: project_store::AgentMemoryScope::Project,
             kind: project_store::AgentMemoryKind::ProjectFact,
             text: "freshcontract phase9 direct approved memory evidence.".into(),
-            review_state: project_store::AgentMemoryReviewState::Approved,
             enabled: true,
             confidence: Some(93),
             source_run_id: Some("fresh-phase9-memory-source-run".into()),
@@ -2610,10 +2601,6 @@ fn lancedb_freshness_phase9_direct_memory_read_preserves_review_state_while_anno
     let stored =
         project_store::get_agent_memory(&repo_root, &project_id, "fresh-phase9-direct-memory")
             .expect("load direct memory after freshness refresh");
-    assert_eq!(
-        stored.review_state,
-        project_store::AgentMemoryReviewState::Approved
-    );
     assert!(stored.enabled);
     assert_eq!(stored.freshness_state, "stale");
 }

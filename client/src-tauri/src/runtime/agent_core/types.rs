@@ -26,6 +26,7 @@ pub struct ContinueOwnedAgentRunRequest {
     pub provider_config: AgentProviderConfig,
     pub provider_preflight: Option<xero_agent_core::ProviderPreflightSnapshot>,
     pub answer_pending_actions: bool,
+    pub answer_pending_action_id: Option<String>,
     pub auto_compact: Option<AgentAutoCompactPreference>,
     pub internal_resume: Option<AgentRunInternalResume>,
 }
@@ -1279,7 +1280,7 @@ fn decode_command_wrapper(
         CommandWrapperKind::Verify if !command_verify_allowed(&command.argv) => {
             Err(action_tool_invalid_input(
                 AUTONOMOUS_TOOL_COMMAND_VERIFY,
-                "command_verify only accepts verification commands such as cargo test/check/clippy/fmt/build or package-manager test/lint/typecheck/build scripts.",
+                "command_verify only accepts verification commands such as cargo test/check/clippy/fmt/build or package-manager test/lint/typecheck/type-check/build scripts.",
             ))
         }
         _ => Ok(request),
@@ -1410,7 +1411,7 @@ fn command_verify_allowed(argv: &[String]) -> bool {
         "npm" | "pnpm" | "yarn" | "bun" => argv.iter().skip(1).any(|argument| {
             matches!(
                 argument.as_str(),
-                "test" | "tests" | "lint" | "typecheck" | "check" | "build"
+                "test" | "tests" | "lint" | "typecheck" | "type-check" | "check" | "build"
             )
         }),
         _ => false,
@@ -2526,6 +2527,34 @@ mod tests {
             })
             .expect_err("command_verify must be narrower than general commands");
         assert_eq!(verify_error.code, "agent_action_tool_input_invalid");
+
+        registry
+            .decode_call(&AgentToolCall {
+                tool_call_id: "call-verify-type-check".into(),
+                tool_name: AUTONOMOUS_TOOL_COMMAND_VERIFY.into(),
+                input: json!({ "argv": ["pnpm", "--filter", "client", "type-check"] }),
+            })
+            .expect("command_verify accepts scoped type-check scripts");
+
+        registry
+            .decode_call(&AgentToolCall {
+                tool_call_id: "call-verify-run-type-check".into(),
+                tool_name: AUTONOMOUS_TOOL_COMMAND_VERIFY.into(),
+                input: json!({ "argv": ["pnpm", "run", "type-check"] }),
+            })
+            .expect("command_verify accepts run type-check scripts");
+
+        let type_check_variant_error = registry
+            .decode_call(&AgentToolCall {
+                tool_call_id: "call-verify-type-check-ci".into(),
+                tool_name: AUTONOMOUS_TOOL_COMMAND_VERIFY.into(),
+                input: json!({ "argv": ["pnpm", "run", "type-check:ci"] }),
+            })
+            .expect_err("command_verify rejects non-allowlisted type-check variants");
+        assert_eq!(
+            type_check_variant_error.code,
+            "agent_action_tool_input_invalid"
+        );
 
         registry
             .decode_call(&AgentToolCall {

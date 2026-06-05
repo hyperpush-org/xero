@@ -137,7 +137,10 @@ import {
   type HandoffContextDialogStatus,
 } from './agent-runtime/handoff-context-dialog'
 import { SetupEmptyState } from './agent-runtime/setup-empty-state'
-import { useAgentRuntimeController } from './agent-runtime/use-agent-runtime-controller'
+import {
+  useAgentRuntimeController,
+  type ActionPromptError,
+} from './agent-runtime/use-agent-runtime-controller'
 import type { SpeechDictationAdapter } from './agent-runtime/use-speech-dictation'
 import {
   parseRoutingMarker,
@@ -573,6 +576,16 @@ function ownedAgentActionResponse(
     return trimmed
   }
   return decision === 'approve' || decision === 'resume' ? 'Approved.' : null
+}
+
+function getRuntimeActionErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message
+  }
+  if (typeof error === 'string' && error.trim().length > 0) {
+    return error
+  }
+  return fallback
 }
 
 function actionPromptTurnFromItem(item: RuntimeStreamActionRequiredItemView): ConversationTurn {
@@ -3428,34 +3441,65 @@ export const AgentRuntime = memo(function AgentRuntime({
     actionId: string
     kind: ActionPromptDecision
   } | null>(null)
+  const [ownedAgentActionPromptError, setOwnedAgentActionPromptError] =
+    useState<ActionPromptError | null>(null)
+  const latestActionPromptError = ownedAgentActionPromptError ?? controller.operatorActionPromptError
+  const composerRuntimeRunActionError =
+    controller.runtimeRunActionError ??
+    (latestActionPromptError
+      ? {
+          code: 'agent_action_failed',
+          message: latestActionPromptError.message,
+          retryable: true,
+        }
+      : null)
+  const composerRuntimeRunActionErrorTitle = controller.runtimeRunActionError
+    ? controller.runtimeRunActionErrorTitle
+    : latestActionPromptError
+      ? 'Action failed'
+      : controller.runtimeRunActionErrorTitle
   const actionPromptDispatchValue = useMemo<ActionPromptDispatchValue>(() => {
     const pendingOperatorIntent = pendingOwnedAgentActionIntent ?? controller.pendingOperatorIntent
     return {
       pendingActionId: pendingOperatorIntent?.actionId ?? null,
       pendingDecision: pendingOperatorIntent?.kind ?? null,
       isResolving: agent.operatorActionStatus === 'running' || pendingOwnedAgentActionIntent !== null,
+      actionError: latestActionPromptError,
       resolveActionPrompt: async (actionId, decision, options) => {
         const runId = options?.runId?.trim() ?? ''
         const actionType = options?.actionType?.trim() ?? ''
         if (isOwnedAgentActionPrompt(runId, actionType)) {
           setPendingOwnedAgentActionIntent({ actionId, kind: decision })
+          setOwnedAgentActionPromptError(null)
           try {
             const response = ownedAgentActionResponse(decision, options?.userAnswer ?? null)
             if (decision === 'reject') {
               if (!desktopAdapter?.rejectAgentAction) {
                 throw new Error('Xero cannot reject this owned-agent action in the current runtime.')
               }
-              return desktopAdapter.rejectAgentAction(runId, actionId, { response })
+              await desktopAdapter.rejectAgentAction(runId, actionId, { response })
+              setOwnedAgentActionPromptError(null)
+              return
             }
             if (!desktopAdapter?.resumeAgentRun) {
               throw new Error('Xero cannot resume this owned-agent action in the current runtime.')
             }
-            return desktopAdapter.resumeAgentRun(runId, response ?? 'Approved.')
+            await desktopAdapter.resumeAgentRun(runId, response ?? 'Approved.', { actionId })
+            setOwnedAgentActionPromptError(null)
+          } catch (error) {
+            setOwnedAgentActionPromptError({
+              actionId,
+              message: getRuntimeActionErrorMessage(
+                error,
+                'Xero could not resolve this owned-agent action.',
+              ),
+            })
           } finally {
             setPendingOwnedAgentActionIntent((current) =>
               current?.actionId === actionId && current.kind === decision ? null : current,
             )
           }
+          return
         }
         if (decision === 'resume') {
           if (renderableRuntimeRun && !renderableRuntimeRun.isTerminal) {
@@ -3479,6 +3523,7 @@ export const AgentRuntime = memo(function AgentRuntime({
     controller.handleResumeLiveActionRequired,
     desktopAdapter,
     agent.operatorActionStatus,
+    latestActionPromptError,
     pendingOwnedAgentActionIntent,
     renderableRuntimeRun,
   ])
@@ -4650,8 +4695,8 @@ export const AgentRuntime = memo(function AgentRuntime({
           promptInputRef={controller.promptInputRef}
           promptInputLabel={promptInputLabel}
           runtimeSessionBindInFlight={controller.runtimeSessionBindInFlight}
-          runtimeRunActionError={controller.runtimeRunActionError}
-          runtimeRunActionErrorTitle={controller.runtimeRunActionErrorTitle}
+          runtimeRunActionError={composerRuntimeRunActionError}
+          runtimeRunActionErrorTitle={composerRuntimeRunActionErrorTitle}
           runtimeRunActionStatus={runtimeRunActionStatus}
           sendButtonLabel={sendButtonLabel}
           onOpenDiagnostics={onOpenDiagnostics}

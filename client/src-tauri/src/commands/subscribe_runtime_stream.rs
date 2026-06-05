@@ -1483,8 +1483,11 @@ fn owned_agent_event_runtime_item(
             item.tool_name = payload_string(&payload, "toolName");
             let ok = payload_bool(&payload, "ok").unwrap_or(false);
             let scheduled_runtime_wait = ok && tool_completed_is_scheduled_runtime_wait(&payload);
+            let pending_command_review = ok && tool_completed_is_pending_command_review(&payload);
             item.tool_state = Some(if scheduled_runtime_wait {
                 RuntimeToolCallState::Running
+            } else if pending_command_review {
+                RuntimeToolCallState::Pending
             } else if ok {
                 RuntimeToolCallState::Succeeded
             } else {
@@ -1492,6 +1495,8 @@ fn owned_agent_event_runtime_item(
             });
             if scheduled_runtime_wait {
                 item.code = Some(RUNTIME_WAIT_SCHEDULED_CODE.into());
+            } else if pending_command_review {
+                item.code = Some("owned_agent_command_review_pending".into());
             }
             item.detail = payload_string(&payload, "summary")
                 .or_else(|| payload_string(&payload, "message"))
@@ -1500,8 +1505,11 @@ fn owned_agent_event_runtime_item(
                         .as_ref()
                         .map(|name| format!("Completed `{name}`."))
                 });
+            if pending_command_review {
+                item.detail = pending_command_review_detail(&payload).or(item.detail);
+            }
             item.text = item.detail.clone();
-            if ok && !scheduled_runtime_wait {
+            if ok && !scheduled_runtime_wait && !pending_command_review {
                 if let Some(output) = payload.get("output") {
                     if item.tool_name.as_deref() == Some("project_context") {
                         item.detail =
@@ -1575,12 +1583,19 @@ fn owned_agent_event_runtime_item(
             item.tool_name = payload_string(&payload, "toolName");
             if item.tool_call_id.is_some() {
                 item.kind = RuntimeStreamItemKind::Tool;
+                let pending_command_review = command_output_is_pending_command_review(&payload);
                 item.tool_state = Some(if payload_bool(&payload, "partial").unwrap_or(false) {
                     RuntimeToolCallState::Running
+                } else if pending_command_review {
+                    RuntimeToolCallState::Pending
                 } else if payload_bool(&payload, "spawned").unwrap_or(false)
                     && payload.get("exitCode").is_some()
                 {
-                    RuntimeToolCallState::Succeeded
+                    match payload.get("exitCode").and_then(serde_json::Value::as_i64) {
+                        Some(0) => RuntimeToolCallState::Succeeded,
+                        Some(_) => RuntimeToolCallState::Failed,
+                        None => RuntimeToolCallState::Running,
+                    }
                 } else {
                     RuntimeToolCallState::Running
                 });
@@ -1748,9 +1763,27 @@ fn owned_agent_event_runtime_item(
             item.text = item.detail.clone();
         }
         AgentRunEventKind::ActionRequired | AgentRunEventKind::ApprovalRequired => {
+            let action_id = payload_string(&payload, "actionId");
+            if action_id.is_none() {
+                item.kind = RuntimeStreamItemKind::Activity;
+                item.code = payload_string(&payload, "code")
+                    .or_else(|| Some("owned_agent_action_missing_id".into()));
+                item.title = Some("Action unavailable".into());
+                item.message = payload_string(&payload, "message")
+                    .or_else(|| payload_string(&payload, "reason"))
+                    .or_else(|| payload_string(&payload, "detail"))
+                    .or_else(|| {
+                        Some(
+                            "Xero received an owned-agent action event without a durable action id."
+                                .into(),
+                        )
+                    });
+                item.detail = item.message.clone();
+                item.text = item.detail.clone();
+                return Some(item);
+            }
             item.kind = RuntimeStreamItemKind::ActionRequired;
-            item.action_id = payload_string(&payload, "actionId")
-                .or_else(|| Some(format!("owned-agent-action-{event_id}")));
+            item.action_id = action_id;
             item.boundary_id = Some("owned_agent".into());
             item.action_type =
                 payload_string(&payload, "actionType").or_else(|| Some("operator_review".into()));
@@ -2661,6 +2694,76 @@ fn tool_completed_is_scheduled_runtime_wait(payload: &serde_json::Value) -> bool
         && runtime_wait_output_is_scheduled(payload)
 }
 
+fn tool_completed_is_pending_command_review(payload: &serde_json::Value) -> bool {
+    let Some(output) = payload.get("output").map(normalized_tool_output) else {
+        return false;
+    };
+    match payload_string(output, "kind").as_deref() {
+        Some("command" | "command_session") => {
+            payload_bool(output, "spawned") == Some(false)
+                && output.get("exitCode").is_none()
+                && output_policy_requires_review(output)
+        }
+        Some("process_manager") => {
+            payload_bool(output, "spawned") == Some(false) && output_policy_requires_review(output)
+        }
+        _ => false,
+    }
+}
+
+fn command_output_is_pending_command_review(payload: &serde_json::Value) -> bool {
+    payload_bool(payload, "partial") != Some(true)
+        && payload_bool(payload, "spawned") == Some(false)
+        && payload.get("exitCode").is_none()
+        && output_policy_requires_review(payload)
+}
+
+fn output_policy_requires_review(output: &serde_json::Value) -> bool {
+    let Some(policy) = output.get("policy") else {
+        return false;
+    };
+    payload_bool(policy, "approvalRequired") == Some(true)
+        || payload_string(policy, "outcome").as_deref() == Some("escalated")
+        || payload_string(policy, "action").as_deref() == Some("require_approval")
+        || payload_string(policy, "decision").as_deref() == Some("require_approval")
+        || payload_string(policy, "code")
+            .as_deref()
+            .is_some_and(|code| code.contains("approval") || code.contains("escalated"))
+}
+
+fn pending_command_review_detail(payload: &serde_json::Value) -> Option<String> {
+    let output = payload.get("output").map(normalized_tool_output)?;
+    let argv = output
+        .get("argv")
+        .and_then(serde_json::Value::as_array)
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|command| !command.trim().is_empty())
+        .or_else(|| {
+            output
+                .get("processes")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|processes| processes.first())
+                .and_then(|process| process.get("command"))
+                .and_then(|command| command.get("argv"))
+                .and_then(serde_json::Value::as_array)
+                .map(|parts| {
+                    parts
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+        })
+        .unwrap_or_else(|| "command".into());
+    Some(format!("Command needs review before it can run: {argv}."))
+}
+
 fn runtime_wait_output_is_scheduled(value: &serde_json::Value) -> bool {
     payload_string(value, "status").as_deref() == Some("scheduled")
         || payload_string(value, "waitState").as_deref() == Some("scheduled_not_elapsed")
@@ -2858,6 +2961,9 @@ fn command_output_summary(payload: &serde_json::Value) -> String {
     }
     if payload_bool(payload, "timedOut").unwrap_or(false) {
         return format!("Command timed out: {argv}.");
+    }
+    if command_output_is_pending_command_review(payload) {
+        return format!("Command needs review before it can run: {argv}.");
     }
     match payload.get("exitCode").and_then(|value| value.as_i64()) {
         Some(code) => format!("Command exited with status {code}: {argv}."),
@@ -3340,10 +3446,84 @@ mod tests {
             None,
         )
         .expect("fallback action item");
+        assert_eq!(fallback_action.kind, RuntimeStreamItemKind::Activity);
+        assert_eq!(
+            fallback_action.code.as_deref(),
+            Some("owned_agent_action_missing_id")
+        );
+        assert_eq!(fallback_action.title.as_deref(), Some("Action unavailable"));
+        assert!(fallback_action.action_id.is_none());
         assert_eq!(
             fallback_action.detail.as_deref(),
-            Some("Owned agent requires operator input before continuing.")
+            Some("Xero received an owned-agent action event without a durable action id.")
         );
+    }
+
+    #[test]
+    fn owned_agent_command_review_completion_projects_as_pending_tool() {
+        let payload = serde_json::json!({
+            "toolCallId": "call-command-review",
+            "toolName": "command",
+            "ok": true,
+            "summary": "Command awaiting review.",
+            "output": {
+                "kind": "command",
+                "argv": ["pnpm", "test"],
+                "spawned": false,
+                "policy": {
+                    "outcome": "escalated",
+                    "code": "policy_escalated_approval_mode"
+                }
+            }
+        });
+        let tool = owned_agent_event_runtime_item(
+            event(AgentRunEventKind::ToolCompleted, &payload.to_string()),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("command review item");
+
+        assert_eq!(tool.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(tool.tool_call_id.as_deref(), Some("call-command-review"));
+        assert_eq!(tool.tool_name.as_deref(), Some("command"));
+        assert_eq!(tool.tool_state, Some(RuntimeToolCallState::Pending));
+        assert_eq!(
+            tool.code.as_deref(),
+            Some("owned_agent_command_review_pending")
+        );
+        assert_eq!(
+            tool.detail.as_deref(),
+            Some("Command needs review before it can run: pnpm test.")
+        );
+        assert!(tool.tool_summary.is_none());
+        assert!(tool.tool_result_preview.is_none());
+    }
+
+    #[test]
+    fn owned_agent_invalid_action_tool_input_projects_as_failed_tool_diagnostic() {
+        let tool = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ToolCompleted,
+                r#"{"toolCallId":"call-action","toolName":"action_required","ok":false,"code":"agent_action_tool_input_invalid","message":"Invalid action_required input."}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("invalid action tool item");
+
+        assert_eq!(tool.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(tool.tool_call_id.as_deref(), Some("call-action"));
+        assert_eq!(tool.tool_name.as_deref(), Some("action_required"));
+        assert_eq!(tool.tool_state, Some(RuntimeToolCallState::Failed));
+        assert_eq!(
+            tool.code.as_deref(),
+            Some("agent_action_tool_input_invalid")
+        );
+        assert_eq!(
+            tool.message.as_deref(),
+            Some("Invalid action_required input.")
+        );
+        assert!(tool.action_id.is_none());
     }
 
     #[test]
@@ -3431,6 +3611,55 @@ mod tests {
         assert_eq!(
             output.tool_result_preview.as_deref(),
             Some("stdout:\nrunning test 1")
+        );
+    }
+
+    #[test]
+    fn owned_agent_command_output_projection_tracks_review_and_exit_states() {
+        let pending = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::CommandOutput,
+                r#"{"toolCallId":"call-command-review","toolName":"command","argv":["pnpm","install"],"spawned":false,"policy":{"approvalRequired":true}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("pending command output item");
+        assert_eq!(pending.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(pending.tool_state, Some(RuntimeToolCallState::Pending));
+        assert_eq!(
+            pending.detail.as_deref(),
+            Some("Command needs review before it can run: pnpm install.")
+        );
+
+        let succeeded = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::CommandOutput,
+                r#"{"toolCallId":"call-command-success","toolName":"command","argv":["pnpm","test"],"spawned":true,"exitCode":0}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("successful command output item");
+        assert_eq!(succeeded.tool_state, Some(RuntimeToolCallState::Succeeded));
+        assert_eq!(
+            succeeded.detail.as_deref(),
+            Some("Command exited with status 0: pnpm test.")
+        );
+
+        let failed = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::CommandOutput,
+                r#"{"toolCallId":"call-command-failed","toolName":"command","argv":["pnpm","test"],"spawned":true,"exitCode":1}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("failed command output item");
+        assert_eq!(failed.tool_state, Some(RuntimeToolCallState::Failed));
+        assert_eq!(
+            failed.detail.as_deref(),
+            Some("Command exited with status 1: pnpm test.")
         );
     }
 

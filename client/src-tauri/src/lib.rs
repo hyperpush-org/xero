@@ -475,8 +475,6 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::submit_openai_callback::submit_openai_callback,
             commands::start_oauth_login::start_oauth_login,
             commands::complete_oauth_callback::complete_oauth_callback,
-            commands::xai_device_code_login::start_xai_device_code_login,
-            commands::xai_device_code_login::poll_xai_device_code_login,
             commands::logout_runtime_session::logout_runtime_session,
             commands::start_autonomous_run::start_autonomous_run,
             commands::stage_agent_attachment::stage_agent_attachment,

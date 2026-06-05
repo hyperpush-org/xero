@@ -906,23 +906,6 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
             }
         }
         XAI_PROVIDER_ID => match active_profile.credential_link.as_ref() {
-            Some(crate::provider_credentials::ProviderCredentialLink::ApiKey { .. }) => {
-                let api_key = runtime_settings.provider_api_key.clone().ok_or_else(|| {
-                    CommandError::user_fixable(
-                        "xai_api_key_missing",
-                        "Xero cannot start the owned xAI adapter because no xAI API key is configured.",
-                    )
-                })?;
-                Ok(AgentProviderConfig::XaiResponses(
-                    XaiResponsesProviderConfig {
-                        provider_id: XAI_PROVIDER_ID.into(),
-                        model_id,
-                        base_url: XAI_API_BASE_URL.into(),
-                        bearer_token: api_key,
-                        timeout_ms: 0,
-                    },
-                ))
-            }
             Some(link @ crate::provider_credentials::ProviderCredentialLink::Xai { .. }) => {
                 let auth_store_path = state.global_db_path(app)?;
                 let session = load_xai_session_for_profile_link(&auth_store_path, link)
@@ -946,7 +929,7 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
                 } else {
                     Err(CommandError::user_fixable(
                         "xai_auth_missing",
-                        "Xero cannot start the owned xAI adapter because no xAI OAuth session or API key is configured.",
+                        "Xero cannot start the owned xAI adapter because no xAI sign-in session is configured.",
                     ))
                 }
             }
