@@ -220,9 +220,7 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
     isResizing,
   })
   const islandClassName = isStripMode ? 'sidebar-peek-island' : widthMotion.islandClassName
-  const sidebarStyle = isStripMode
-    ? { ...widthMotion.style, transition: 'none' }
-    : widthMotion.style
+  const sidebarStyle = widthMotion.style
   const widthRef = useRef(width)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const wasStripModeRef = useRef(isStripMode)

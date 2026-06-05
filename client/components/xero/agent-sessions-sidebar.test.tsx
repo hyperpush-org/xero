@@ -269,7 +269,7 @@ describe('AgentSessionsSidebar', () => {
     expect(onReleasePeek).toHaveBeenCalledTimes(1)
   })
 
-  it('snaps the sessions strip closed while animating a compositor collapse ghost', () => {
+  it('transitions the sessions strip closed while animating a compositor collapse ghost', () => {
     const props: ComponentProps<typeof AgentSessionsSidebar> = {
       projectId: 'project-1',
       sessions,
@@ -291,7 +291,7 @@ describe('AgentSessionsSidebar', () => {
 
     const sidebar = container.querySelector('aside') as HTMLElement
     expect(sidebar.style.width).toBe('6px')
-    expect(sidebar.style.transition).toBe('none')
+    expect(sidebar.style.transition).toContain('width')
     expect(container.querySelector('[data-session-collapse-ghost="true"]')).toBeInTheDocument()
   })
 
@@ -318,7 +318,7 @@ describe('AgentSessionsSidebar', () => {
 
     const sidebar = container.querySelector('aside') as HTMLElement
     expect(sidebar.style.width).toBe('6px')
-    expect(sidebar.style.transition).toBe('none')
+    expect(sidebar.style.transition).toContain('width')
     expect(container.querySelector('[data-session-collapse-ghost="true"]')).not.toBeInTheDocument()
   })
 

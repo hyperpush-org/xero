@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   lazy,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -3360,7 +3361,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     })
   }, [displayedActiveProject, displayedAgentWorkspaceLayout])
   const preSpawnExplorerModeRef = useRef<'pinned' | 'collapsed' | null>(null)
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (activeView !== 'agent') return
     if (isMultiPane) {
       if (preSpawnExplorerModeRef.current === null) {

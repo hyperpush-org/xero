@@ -38,6 +38,7 @@ describe('client stylesheet', () => {
     const styles = readFileSync(sharedStylesPath, 'utf8')
 
     expect(styles).toContain('.agent-session-surface-enter')
+    expect(styles).toContain('.agent-workspace-pane-enter')
     expect(styles).toContain('@keyframes xero-agent-session-surface-enter')
     expect(styles).toContain('translate3d(0, 6px, 0)')
   })

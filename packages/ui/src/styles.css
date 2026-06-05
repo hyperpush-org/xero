@@ -1115,6 +1115,10 @@
     .sessions-collapse-ghost {
       animation-duration: 1ms !important;
     }
+
+    .agent-workspace-pane-enter {
+      animation-duration: 1ms !important;
+    }
   }
 
   /* Keep inactive view panes from re-laying out their heavy children every
@@ -1140,6 +1144,12 @@
   .agent-session-surface-enter {
     animation: xero-agent-session-surface-enter var(--motion-duration-standard) var(--motion-ease-out) both;
     transform-origin: 50% 36%;
+    will-change: opacity, transform;
+  }
+
+  .agent-workspace-pane-enter {
+    animation: xero-agent-session-surface-enter var(--motion-duration-standard) var(--motion-ease-out) both;
+    transform-origin: 50% 42%;
     will-change: opacity, transform;
   }
 

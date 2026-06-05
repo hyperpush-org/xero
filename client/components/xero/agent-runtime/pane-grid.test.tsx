@@ -122,6 +122,31 @@ describe('PaneGrid', () => {
     expect(onUnmount).toHaveBeenCalledWith('pane-3')
   })
 
+  it('animates pane shells only when panes are added after the first paint', async () => {
+    const renderPane = (slot: PaneGridSlot) => <div>{slot.paneId}</div>
+    const { rerender } = render(
+      <PaneGrid
+        slots={[makeSlot('pane-1', true), makeSlot('pane-2')]}
+        renderPane={renderPane}
+      />,
+    )
+
+    await screen.findByText('pane-2')
+    expect(screen.getByText('pane-2').closest('.agent-workspace-pane-enter')).toBeNull()
+
+    rerender(
+      <PaneGrid
+        slots={[makeSlot('pane-1'), makeSlot('pane-2'), makeSlot('pane-3', true)]}
+        renderPane={renderPane}
+      />,
+    )
+
+    await screen.findByText('pane-3')
+    expect(screen.getByText('pane-3').closest('.agent-workspace-pane-enter')).not.toBeNull()
+    expect(screen.getByText('pane-1').closest('.agent-workspace-pane-enter')).toBeNull()
+    expect(screen.getByText('pane-2').closest('.agent-workspace-pane-enter')).toBeNull()
+  })
+
   it('exposes a sortable drag handle to its rendered panes when more than one pane is open', async () => {
     const handles: Record<string, PaneDragHandle> = {}
     const renderPane = (slot: PaneGridSlot, _index: number, dragHandle: PaneDragHandle) => {
