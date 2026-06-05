@@ -77,6 +77,7 @@ import { ActionPromptCard } from './action-prompt-card'
 import { Markdown } from './conversation-markdown'
 import {
   AttachmentPreviewChip,
+  ImageAttachmentPreview,
   ToolMediaAttachments,
   attachmentDisplayName,
 } from './media-attachment-preview'
@@ -350,10 +351,14 @@ export function getReturnSessionToHereStateKey({
  */
 const HANDOFF_COMPLETION_DETAIL_MARKER = 'handed off to a same-type target run'
 
+const BROWSER_TOOL_CONTEXT_HEADING_PATTERN =
+  String.raw`Browser (?:sketch context|element inspection context)(?:\s*\(capture\s+\d+\))?:`
 const BROWSER_TOOL_CONTEXT_MARKER_PATTERN =
-  /^Browser (sketch context|element inspection context):$/
-const BROWSER_TOOL_CONTEXT_BLOCK_PATTERN =
-  /(^|\n{2,})(Browser (?:sketch context|element inspection context):\n[\s\S]*?)(?=\n{2,}Browser (?:sketch context|element inspection context):\n|$)/g
+  /^Browser (sketch context|element inspection context)(?:\s*\(capture\s+\d+\))?:$/
+const BROWSER_TOOL_CONTEXT_BLOCK_PATTERN = new RegExp(
+  String.raw`(^|\n{2,})(${BROWSER_TOOL_CONTEXT_HEADING_PATTERN}\n[\s\S]*?)(?=\n{2,}${BROWSER_TOOL_CONTEXT_HEADING_PATTERN}\n|$)`,
+  'g',
+)
 
 export interface BrowserToolPromptContext {
   id: string
@@ -367,6 +372,42 @@ export interface BrowserToolPromptContext {
 export interface BrowserToolPromptParts {
   visibleText: string
   contexts: BrowserToolPromptContext[]
+}
+
+interface BrowserToolContextAttachmentMapping {
+  pairedByContextId: Map<string, ConversationMessageAttachment>
+  unpairedAttachments: ConversationMessageAttachment[] | undefined
+}
+
+function pairBrowserToolContextAttachments(
+  contexts: readonly BrowserToolPromptContext[],
+  attachments: readonly ConversationMessageAttachment[] | null | undefined,
+): BrowserToolContextAttachmentMapping {
+  if (!attachments?.length || contexts.every((context) => context.kind !== 'sketch')) {
+    return {
+      pairedByContextId: new Map(),
+      unpairedAttachments: attachments?.slice(),
+    }
+  }
+
+  const imageAttachments = attachments.filter((attachment) => attachment.kind === 'image')
+  const pairedByContextId = new Map<string, ConversationMessageAttachment>()
+  const pairedAttachmentIds = new Set<string>()
+  let imageIndex = 0
+
+  for (const context of contexts) {
+    if (context.kind !== 'sketch') continue
+    const attachment = imageAttachments[imageIndex]
+    imageIndex += 1
+    if (!attachment) continue
+    pairedByContextId.set(context.id, attachment)
+    pairedAttachmentIds.add(attachment.id)
+  }
+
+  return {
+    pairedByContextId,
+    unpairedAttachments: attachments.filter((attachment) => !pairedAttachmentIds.has(attachment.id)),
+  }
 }
 
 function isHandoffCompletion(
@@ -2859,7 +2900,12 @@ function UserMessage({
   const promptParts = useMemo(() => splitBrowserToolPromptContext(text), [text])
   const visibleText = promptParts.visibleText
   const browserContexts = promptParts.contexts
-  const hasAttachments = attachments && attachments.length > 0
+  const browserContextAttachments = useMemo(
+    () => pairBrowserToolContextAttachments(browserContexts, attachments),
+    [attachments, browserContexts],
+  )
+  const visibleAttachments = browserContextAttachments.unpairedAttachments
+  const hasAttachments = Boolean(visibleAttachments?.length)
   const isTouch = useIsTouchDevice()
   const [tapCopied, setTapCopied] = useState(false)
 
@@ -2901,7 +2947,7 @@ function UserMessage({
         <span className="sr-only">You</span>
         {hasAttachments ? (
           <div className="flex max-w-full flex-wrap justify-end gap-1.5">
-            {attachments?.map((attachment) => (
+            {visibleAttachments?.map((attachment) => (
               <AttachmentPreviewChip
                 key={attachment.id}
                 attachment={attachment}
@@ -2928,7 +2974,11 @@ function UserMessage({
         {browserContexts.length > 0 ? (
           <div className="mt-2 flex w-full flex-col items-end gap-1.5">
             {browserContexts.map((context) => (
-              <BrowserToolContextCard key={context.id} context={context} />
+              <BrowserToolContextCard
+                key={context.id}
+                context={context}
+                attachment={browserContextAttachments.pairedByContextId.get(context.id)}
+              />
             ))}
           </div>
         ) : null}
@@ -2968,8 +3018,15 @@ function UserMessage({
   )
 }
 
-function BrowserToolContextCard({ context }: { context: BrowserToolPromptContext }) {
+function BrowserToolContextCard({
+  attachment,
+  context,
+}: {
+  attachment?: ConversationMessageAttachment
+  context: BrowserToolPromptContext
+}) {
   const Icon = context.kind === 'sketch' ? PencilLine : MousePointer2
+  const shouldShowAttachment = context.kind === 'sketch' && attachment?.kind === 'image'
   return (
     <article
       role="note"
@@ -2987,6 +3044,15 @@ function BrowserToolContextCard({ context }: { context: BrowserToolPromptContext
             <p className="mt-0.5 truncate text-[11.5px] text-muted-foreground/80" title={context.page}>
               {context.page}
             </p>
+          ) : null}
+          {shouldShowAttachment && attachment ? (
+            <div className="mt-2">
+              <ImageAttachmentPreview
+                attachment={attachment}
+                className="max-w-[260px]"
+                variant="response"
+              />
+            </div>
           ) : null}
           {context.lines.length > 0 ? (
             <div className="mt-1.5 space-y-0.5 text-[12px] leading-relaxed text-muted-foreground">
@@ -3893,8 +3959,13 @@ function DenseMessageItem({
   )
   const displayText = promptParts?.visibleText ?? text
   const browserContexts = promptParts?.contexts ?? []
+  const browserContextAttachments = useMemo(
+    () => pairBrowserToolContextAttachments(browserContexts, attachments),
+    [attachments, browserContexts],
+  )
+  const visibleAttachments = browserContextAttachments.unpairedAttachments
   const normalized = displayText.trim()
-  const hasAttachments = Boolean(attachments && attachments.length > 0)
+  const hasAttachments = Boolean(visibleAttachments && visibleAttachments.length > 0)
   const hasMore =
     normalized.length > 240 ||
     /\r?\n/.test(normalized) ||
@@ -3962,13 +4033,17 @@ function DenseMessageItem({
           {browserContexts.length > 0 ? (
             <div className="mt-1.5 flex flex-col gap-1.5">
               {browserContexts.map((context) => (
-                <BrowserToolContextCard key={`${id}:${context.id}`} context={context} />
+                <BrowserToolContextCard
+                  key={`${id}:${context.id}`}
+                  context={context}
+                  attachment={browserContextAttachments.pairedByContextId.get(context.id)}
+                />
               ))}
             </div>
           ) : null}
           {hasAttachments ? (
             <ul className="mt-1.5 flex flex-wrap gap-1 text-[11px] text-muted-foreground/80">
-              {attachments?.map((attachment) => (
+              {visibleAttachments?.map((attachment) => (
                 <li
                   key={attachment.id}
                   className="rounded-sm border border-border/40 bg-muted/20 px-1.5 py-0.5"

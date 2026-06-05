@@ -11,9 +11,9 @@ pub mod settings;
 pub mod tabs;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fs::OpenOptions,
-    io::Write,
+    io::{Read, Write},
     net::{IpAddr, TcpStream, ToSocketAddrs},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -22,6 +22,13 @@ use std::{
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(any(
+    windows,
+    target_os = "macos",
+    all(unix, not(any(target_os = "linux", target_os = "macos")))
+))]
+use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -36,8 +43,8 @@ use crate::commands::{CommandError, CommandResult};
 #[cfg(target_os = "macos")]
 use {
     block2::{Block, RcBlock},
-    objc2::{rc::Retained, ClassType},
-    objc2_app_kit::{NSEvent, NSEventTrackingRunLoopMode, NSView, NSWindow},
+    objc2::{rc::Retained, runtime::AnyObject, ClassType},
+    objc2_app_kit::{NSEvent, NSEventMask, NSEventTrackingRunLoopMode, NSView, NSWindow},
     objc2_core_graphics::CGMutablePath,
     objc2_foundation::{NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSTimer},
     objc2_quartz_core::{kCAFillRuleEvenOdd, CAShapeLayer, CATransaction},
@@ -56,13 +63,14 @@ pub use diagnostics::{
 };
 pub use events::{
     BrowserConsolePayload, BrowserDevServerUnavailablePayload, BrowserDialogPayload,
-    BrowserDownloadPayload, BrowserLoadStatePayload, BrowserResizeDragPayload,
-    BrowserTabUpdatedPayload, BrowserToolClosedPayload, BrowserToolContextPayload,
-    BrowserToolStatePayload, BrowserUrlChangedPayload, BROWSER_CONSOLE_EVENT,
-    BROWSER_DEV_SERVER_UNAVAILABLE_EVENT, BROWSER_DIALOG_EVENT, BROWSER_DOWNLOAD_EVENT,
-    BROWSER_LOAD_STATE_EVENT, BROWSER_RESIZE_DRAG_EVENT, BROWSER_TAB_UPDATED_EVENT,
-    BROWSER_TOOL_CLOSED_EVENT, BROWSER_TOOL_CONTEXT_EVENT, BROWSER_TOOL_STATE_EVENT,
-    BROWSER_URL_CHANGED_EVENT,
+    BrowserDownloadPayload, BrowserLoadStatePayload, BrowserOcclusionClickPayload,
+    BrowserOcclusionWheelPayload, BrowserResizeDragPayload, BrowserTabUpdatedPayload,
+    BrowserToolClosedPayload, BrowserToolContextPayload, BrowserToolStatePayload,
+    BrowserUrlChangedPayload, BROWSER_CONSOLE_EVENT, BROWSER_DEV_SERVER_UNAVAILABLE_EVENT,
+    BROWSER_DIALOG_EVENT, BROWSER_DOWNLOAD_EVENT, BROWSER_LOAD_STATE_EVENT,
+    BROWSER_OCCLUSION_CLICK_EVENT, BROWSER_OCCLUSION_WHEEL_EVENT, BROWSER_RESIZE_DRAG_EVENT,
+    BROWSER_TAB_UPDATED_EVENT, BROWSER_TOOL_CLOSED_EVENT, BROWSER_TOOL_CONTEXT_EVENT,
+    BROWSER_TOOL_STATE_EVENT, BROWSER_URL_CHANGED_EVENT,
 };
 pub use native_cdp::{NativeCdpActionResult, NativeCdpBrowserService};
 pub use screenshot::capture_webview as screenshot_webview;
@@ -85,6 +93,7 @@ const DEV_SERVER_MONITOR_INITIAL_DELAY: Duration = Duration::from_secs(2);
 const DEV_SERVER_MONITOR_INTERVAL: Duration = Duration::from_secs(2);
 const DEV_SERVER_MONITOR_CONNECT_TIMEOUT: Duration = Duration::from_millis(350);
 const DEV_SERVER_LIVENESS_CONNECT_TIMEOUT: Duration = Duration::from_millis(180);
+const DEV_SERVER_LIST_HTTP_PROBE_TIMEOUT: Duration = Duration::from_millis(220);
 const DEV_SERVER_MONITOR_FAILURE_THRESHOLD: u8 = 3;
 const DEV_SERVER_RECONCILER_INTERVAL: Duration = Duration::from_secs(2);
 const BROWSER_RESIZE_NUDGE_SCRIPT: &str = r#"
@@ -211,6 +220,28 @@ pub struct BrowserViewport {
     pub height: f64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRunningDevServerDto {
+    pub cwd: Option<String>,
+    pub detected_at: u64,
+    pub label: String,
+    pub local_addr: String,
+    pub pid: Option<u32>,
+    pub port: u16,
+    pub process_name: Option<String>,
+    pub url: String,
+}
+
+#[derive(Debug, Clone)]
+struct BrowserSystemPortInfo {
+    cwd: Option<String>,
+    local_addr: String,
+    local_port: u16,
+    pid: Option<u32>,
+    process_name: Option<String>,
+}
+
 impl BrowserViewport {
     fn sanitize(self) -> Self {
         Self {
@@ -272,6 +303,8 @@ pub struct BrowserState {
     creation_lock: Mutex<()>,
     resize_coalescer: Arc<BrowserResizeCoalescer>,
     resize_drag: Arc<BrowserResizeDragState>,
+    #[cfg(target_os = "macos")]
+    occlusion_wheel: Arc<BrowserOcclusionWheelState>,
     dev_server_monitor: Arc<BrowserDevServerMonitorState>,
     dev_server_reconciler_started: AtomicBool,
     waiters: Arc<BridgeWaiters>,
@@ -287,6 +320,8 @@ impl Default for BrowserState {
             creation_lock: Mutex::new(()),
             resize_coalescer: Arc::new(BrowserResizeCoalescer::default()),
             resize_drag: Arc::new(BrowserResizeDragState::default()),
+            #[cfg(target_os = "macos")]
+            occlusion_wheel: Arc::new(BrowserOcclusionWheelState::default()),
             dev_server_monitor: Arc::new(BrowserDevServerMonitorState::default()),
             dev_server_reconciler_started: AtomicBool::new(false),
             waiters: Arc::new(BridgeWaiters::new()),
@@ -387,6 +422,84 @@ type BrowserNativeResizeDragTimerHandler = dyn Fn(NonNull<NSTimer>);
 struct BrowserNativeResizeDragMonitor {
     timer: usize,
     block: usize,
+}
+
+#[cfg(target_os = "macos")]
+type BrowserNativeOcclusionWheelHandler = dyn Fn(NonNull<NSEvent>) -> *mut NSEvent;
+
+#[cfg(target_os = "macos")]
+type BrowserNativeOcclusionClickHandler = dyn Fn(NonNull<NSEvent>) -> *mut NSEvent;
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy)]
+struct BrowserNativeOcclusionWheelRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+#[cfg(target_os = "macos")]
+impl BrowserNativeOcclusionWheelRect {
+    fn contains(self, x: f64, y: f64) -> bool {
+        x >= self.x && x <= self.x + self.width && y >= self.y && y <= self.y + self.height
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct BrowserNativeOcclusionWheelMonitor {
+    event_monitor: usize,
+    block: usize,
+}
+
+#[cfg(target_os = "macos")]
+struct BrowserNativeOcclusionClickMonitor {
+    event_monitor: usize,
+    block: usize,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct BrowserOcclusionWheelState {
+    native_monitor: Mutex<Option<BrowserNativeOcclusionWheelMonitor>>,
+    native_click_monitor: Mutex<Option<BrowserNativeOcclusionClickMonitor>>,
+}
+
+#[cfg(target_os = "macos")]
+impl BrowserOcclusionWheelState {
+    fn replace_native_monitor(
+        &self,
+        monitor: BrowserNativeOcclusionWheelMonitor,
+    ) -> Option<BrowserNativeOcclusionWheelMonitor> {
+        match self.native_monitor.lock() {
+            Ok(mut active) => active.replace(monitor),
+            Err(_) => Some(monitor),
+        }
+    }
+
+    fn take_native_monitor(&self) -> Option<BrowserNativeOcclusionWheelMonitor> {
+        self.native_monitor
+            .lock()
+            .ok()
+            .and_then(|mut active| active.take())
+    }
+
+    fn replace_native_click_monitor(
+        &self,
+        monitor: BrowserNativeOcclusionClickMonitor,
+    ) -> Option<BrowserNativeOcclusionClickMonitor> {
+        match self.native_click_monitor.lock() {
+            Ok(mut active) => active.replace(monitor),
+            Err(_) => Some(monitor),
+        }
+    }
+
+    fn take_native_click_monitor(&self) -> Option<BrowserNativeOcclusionClickMonitor> {
+        self.native_click_monitor
+            .lock()
+            .ok()
+            .and_then(|mut active| active.take())
+    }
 }
 
 #[derive(Default)]
@@ -921,6 +1034,256 @@ fn set_browser_webview_occlusion_regions<R: Runtime>(
 }
 
 #[cfg(target_os = "macos")]
+fn sync_macos_browser_occlusion_wheel_monitor<R: Runtime + 'static>(
+    app: &AppHandle<R>,
+    webview: &Webview<R>,
+    state: Arc<BrowserOcclusionWheelState>,
+    rects: &[BrowserOcclusionRect],
+) -> tauri::Result<()> {
+    if rects.is_empty() {
+        cleanup_macos_browser_occlusion_wheel_monitor(app, &state);
+        return Ok(());
+    }
+
+    let app = app.clone();
+    let rects = rects.to_vec();
+    webview.with_webview(move |platform_webview| {
+        let raw_webview = platform_webview.inner();
+        let raw_window = platform_webview.ns_window();
+        if raw_webview.is_null() || raw_window.is_null() {
+            if let Some(previous) = state.take_native_monitor() {
+                unsafe { remove_macos_browser_occlusion_wheel_monitor(previous) };
+            }
+            if let Some(previous) = state.take_native_click_monitor() {
+                unsafe { remove_macos_browser_occlusion_click_monitor(previous) };
+            }
+            return;
+        }
+
+        let ns_view = unsafe { &*(raw_webview.cast::<NSView>()) };
+        let native_rects = macos_browser_occlusion_wheel_rects(ns_view, &rects);
+        if native_rects.is_empty() {
+            if let Some(previous) = state.take_native_monitor() {
+                unsafe { remove_macos_browser_occlusion_wheel_monitor(previous) };
+            }
+            if let Some(previous) = state.take_native_click_monitor() {
+                unsafe { remove_macos_browser_occlusion_click_monitor(previous) };
+            }
+            return;
+        }
+
+        let ns_view_ptr = raw_webview.cast::<NSView>() as usize;
+        let ns_window = unsafe { &*(raw_window.cast::<NSWindow>()) };
+        let ns_window_number = ns_window.windowNumber();
+        let app_for_wheel = app.clone();
+        let native_rects_for_wheel = native_rects.clone();
+        let block =
+            RcBlock::<BrowserNativeOcclusionWheelHandler>::new(move |event: NonNull<NSEvent>| {
+                let event_ref = unsafe { event.as_ref() };
+                let Some((x, y)) = macos_browser_occlusion_wheel_event_location(
+                    event_ref,
+                    ns_view_ptr,
+                    ns_window_number,
+                    &native_rects_for_wheel,
+                ) else {
+                    return event.as_ptr();
+                };
+
+                let (delta_x, delta_y) = macos_browser_occlusion_wheel_delta(event_ref);
+                if delta_x != 0.0 || delta_y != 0.0 {
+                    events::emit(
+                        &app_for_wheel,
+                        BROWSER_OCCLUSION_WHEEL_EVENT,
+                        &BrowserOcclusionWheelPayload {
+                            x,
+                            y,
+                            delta_x,
+                            delta_y,
+                        },
+                    );
+                }
+                std::ptr::null_mut()
+            });
+
+        let Some(event_monitor) = (unsafe {
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::ScrollWheel, &block)
+        }) else {
+            return;
+        };
+        let monitor = BrowserNativeOcclusionWheelMonitor {
+            event_monitor: Retained::into_raw(event_monitor) as usize,
+            block: RcBlock::into_raw(block) as usize,
+        };
+
+        if let Some(previous) = state.replace_native_monitor(monitor) {
+            unsafe { remove_macos_browser_occlusion_wheel_monitor(previous) };
+        }
+
+        let app_for_click = app.clone();
+        let native_rects_for_click = native_rects;
+        let click_block =
+            RcBlock::<BrowserNativeOcclusionClickHandler>::new(move |event: NonNull<NSEvent>| {
+                let event_ref = unsafe { event.as_ref() };
+                let Some((x, y)) = macos_browser_occlusion_wheel_event_location(
+                    event_ref,
+                    ns_view_ptr,
+                    ns_window_number,
+                    &native_rects_for_click,
+                ) else {
+                    return event.as_ptr();
+                };
+
+                events::emit(
+                    &app_for_click,
+                    BROWSER_OCCLUSION_CLICK_EVENT,
+                    &BrowserOcclusionClickPayload { x, y },
+                );
+                std::ptr::null_mut()
+            });
+
+        let click_mask = NSEventMask(NSEventMask::LeftMouseDown.0);
+        let Some(click_event_monitor) = (unsafe {
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(click_mask, &click_block)
+        }) else {
+            if let Some(previous) = state.take_native_click_monitor() {
+                unsafe { remove_macos_browser_occlusion_click_monitor(previous) };
+            }
+            return;
+        };
+        let click_monitor = BrowserNativeOcclusionClickMonitor {
+            event_monitor: Retained::into_raw(click_event_monitor) as usize,
+            block: RcBlock::into_raw(click_block) as usize,
+        };
+
+        if let Some(previous) = state.replace_native_click_monitor(click_monitor) {
+            unsafe { remove_macos_browser_occlusion_click_monitor(previous) };
+        }
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn cleanup_macos_browser_occlusion_wheel_monitor<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &BrowserOcclusionWheelState,
+) {
+    let monitor = state.take_native_monitor();
+    let click_monitor = state.take_native_click_monitor();
+    if monitor.is_none() && click_monitor.is_none() {
+        return;
+    }
+
+    let _ = app.run_on_main_thread(move || unsafe {
+        if let Some(monitor) = monitor {
+            remove_macos_browser_occlusion_wheel_monitor(monitor);
+        }
+        if let Some(click_monitor) = click_monitor {
+            remove_macos_browser_occlusion_click_monitor(click_monitor);
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn macos_browser_occlusion_wheel_rects(
+    ns_view: &NSView,
+    rects: &[BrowserOcclusionRect],
+) -> Vec<BrowserNativeOcclusionWheelRect> {
+    let bounds = ns_view.bounds();
+    let viewport = BrowserViewport {
+        x: 0.0,
+        y: 0.0,
+        width: bounds.size.width.max(1.0),
+        height: bounds.size.height.max(1.0),
+    }
+    .sanitize();
+
+    rects
+        .iter()
+        .filter_map(|rect| rect.sanitize(viewport))
+        .map(|rect| BrowserNativeOcclusionWheelRect {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn macos_browser_occlusion_wheel_event_location(
+    event: &NSEvent,
+    ns_view_ptr: usize,
+    ns_window_number: isize,
+    rects: &[BrowserNativeOcclusionWheelRect],
+) -> Option<(f64, f64)> {
+    if event.windowNumber() != ns_window_number {
+        return None;
+    }
+
+    let ns_view = unsafe { &*(ns_view_ptr as *const NSView) };
+    let bounds = ns_view.bounds();
+    let point = ns_view.convertPoint_fromView(event.locationInWindow(), None);
+    let local_x = point.x;
+    let local_y = if ns_view.isFlipped() {
+        point.y
+    } else {
+        bounds.size.height - point.y
+    };
+
+    if local_x < 0.0 || local_x > bounds.size.width || local_y < 0.0 || local_y > bounds.size.height
+    {
+        return None;
+    }
+
+    rects
+        .iter()
+        .any(|rect| rect.contains(local_x, local_y))
+        .then_some((local_x, local_y))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_browser_occlusion_wheel_delta(event: &NSEvent) -> (f64, f64) {
+    let scale = if event.hasPreciseScrollingDeltas() {
+        1.0
+    } else {
+        16.0
+    };
+    (
+        -event.scrollingDeltaX() * scale,
+        -event.scrollingDeltaY() * scale,
+    )
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn remove_macos_browser_occlusion_wheel_monitor(
+    monitor: BrowserNativeOcclusionWheelMonitor,
+) {
+    let event_monitor_ptr = monitor.event_monitor as *mut AnyObject;
+    if !event_monitor_ptr.is_null() {
+        if let Some(event_monitor) = unsafe { Retained::from_raw(event_monitor_ptr) } {
+            unsafe { NSEvent::removeMonitor(&event_monitor) };
+        }
+    }
+
+    let block_ptr = monitor.block as *mut Block<BrowserNativeOcclusionWheelHandler>;
+    let _ = unsafe { RcBlock::<BrowserNativeOcclusionWheelHandler>::from_raw(block_ptr) };
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn remove_macos_browser_occlusion_click_monitor(
+    monitor: BrowserNativeOcclusionClickMonitor,
+) {
+    let event_monitor_ptr = monitor.event_monitor as *mut AnyObject;
+    if !event_monitor_ptr.is_null() {
+        if let Some(event_monitor) = unsafe { Retained::from_raw(event_monitor_ptr) } {
+            unsafe { NSEvent::removeMonitor(&event_monitor) };
+        }
+    }
+
+    let block_ptr = monitor.block as *mut Block<BrowserNativeOcclusionClickHandler>;
+    let _ = unsafe { RcBlock::<BrowserNativeOcclusionClickHandler>::from_raw(block_ptr) };
+}
+
+#[cfg(target_os = "macos")]
 fn install_native_resize_drag_monitor<R: Runtime>(
     app: AppHandle<R>,
     webview: &Webview<R>,
@@ -1195,6 +1558,9 @@ pub fn browser_set_occlusion_regions<R: Runtime>(
         }
     })?;
 
+    #[cfg(target_os = "macos")]
+    let monitor_label = labels.first().cloned();
+
     for label in labels {
         if let Some(webview) = app.get_webview(&label) {
             set_browser_webview_occlusion_regions(&webview, &rects).map_err(|error| {
@@ -1203,6 +1569,28 @@ pub fn browser_set_occlusion_regions<R: Runtime>(
                     format!("Xero could not update the browser webview overlay mask: {error}"),
                 )
             })?;
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(webview) = monitor_label.and_then(|label| app.get_webview(&label)) {
+            sync_macos_browser_occlusion_wheel_monitor(
+                &app,
+                &webview,
+                Arc::clone(&state.occlusion_wheel),
+                &rects,
+            )
+            .map_err(|error| {
+                CommandError::system_fault(
+                    "browser_set_occlusion_regions_failed",
+                    format!(
+                        "Xero could not update the browser webview overlay input mask: {error}"
+                    ),
+                )
+            })?;
+        } else if rects.is_empty() {
+            cleanup_macos_browser_occlusion_wheel_monitor(&app, &state.occlusion_wheel);
         }
     }
 
@@ -1447,6 +1835,18 @@ pub async fn browser_dev_server_running(url: String) -> CommandResult<bool> {
             format!("Xero could not check project app availability: {error}"),
         )
     })
+}
+
+#[tauri::command]
+pub async fn browser_list_running_dev_servers() -> CommandResult<Vec<BrowserRunningDevServerDto>> {
+    tauri::async_runtime::spawn_blocking(list_running_browser_dev_servers_blocking)
+        .await
+        .map_err(|error| {
+            CommandError::system_fault(
+                "browser_running_dev_servers_task_failed",
+                format!("Xero could not list running local dev servers: {error}"),
+            )
+        })?
 }
 
 #[tauri::command]
@@ -2431,6 +2831,422 @@ fn close_browser_tab_if_monitor_current<R: Runtime + 'static>(
     }
 }
 
+fn list_running_browser_dev_servers_blocking() -> CommandResult<Vec<BrowserRunningDevServerDto>> {
+    let detected_at = browser_detected_at_millis();
+    let mut seen = BTreeSet::new();
+    let mut servers = Vec::new();
+
+    for port in list_browser_system_ports()? {
+        let Some(url) = browser_system_port_url(&port) else {
+            continue;
+        };
+        let Ok(target) = actions::parse_url(&url) else {
+            continue;
+        };
+        let Some(origin_key) = browser_dev_server_origin_key(&target) else {
+            continue;
+        };
+        if !seen.insert(origin_key) {
+            continue;
+        }
+        if !browser_dev_server_responds_like_http(&target, DEV_SERVER_LIST_HTTP_PROBE_TIMEOUT) {
+            continue;
+        }
+
+        servers.push(BrowserRunningDevServerDto {
+            cwd: port.cwd.clone(),
+            detected_at,
+            label: browser_running_dev_server_label(&port),
+            local_addr: port.local_addr.clone(),
+            pid: port.pid,
+            port: port.local_port,
+            process_name: port.process_name.clone(),
+            url,
+        });
+    }
+
+    servers.sort_by(|left, right| {
+        left.port
+            .cmp(&right.port)
+            .then_with(|| left.label.cmp(&right.label))
+            .then_with(|| left.url.cmp(&right.url))
+    });
+    Ok(servers)
+}
+
+fn browser_detected_at_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or_default()
+}
+
+fn browser_running_dev_server_label(port: &BrowserSystemPortInfo) -> String {
+    let host = browser_system_port_display_host(&port.local_addr);
+    match port
+        .process_name
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        Some(name) => format!("{name} · {host}:{}", port.local_port),
+        None => format!("{host}:{}", port.local_port),
+    }
+}
+
+fn browser_system_port_display_host(local_addr: &str) -> &'static str {
+    match browser_system_port_url_host(local_addr).as_deref() {
+        Some("[::1]") => "[::1]",
+        _ => "127.0.0.1",
+    }
+}
+
+fn browser_system_port_url(port: &BrowserSystemPortInfo) -> Option<String> {
+    let host = browser_system_port_url_host(&port.local_addr)?;
+    Some(format!("http://{host}:{}/", port.local_port))
+}
+
+fn browser_system_port_url_host(local_addr: &str) -> Option<String> {
+    let normalized = local_addr
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
+    match normalized.as_str() {
+        "" | "*" | "0.0.0.0" | "::" | "localhost" | "127.0.0.1" => {
+            return Some("127.0.0.1".into());
+        }
+        "::1" => return Some("[::1]".into()),
+        _ => {}
+    }
+
+    let ip = normalized.parse::<IpAddr>().ok()?;
+    if !ip.is_loopback() {
+        return None;
+    }
+    match ip {
+        IpAddr::V4(addr) => Some(addr.to_string()),
+        IpAddr::V6(addr) => Some(format!("[{addr}]")),
+    }
+}
+
+fn browser_dev_server_responds_like_http(url: &Url, timeout: Duration) -> bool {
+    let Some((host, port)) = browser_dev_server_probe_target(url) else {
+        return false;
+    };
+    let Ok(addrs) = (host.as_str(), port).to_socket_addrs() else {
+        return false;
+    };
+    let host_header = match url.host_str() {
+        Some(host) if !host.is_empty() => format!("{host}:{port}"),
+        _ => format!("127.0.0.1:{port}"),
+    };
+
+    for addr in addrs {
+        let Ok(mut stream) = TcpStream::connect_timeout(&addr, timeout) else {
+            continue;
+        };
+        let _ = stream.set_read_timeout(Some(timeout));
+        let _ = stream.set_write_timeout(Some(timeout));
+        let request = format!(
+            "GET / HTTP/1.1\r\nHost: {host_header}\r\nConnection: close\r\nAccept: */*\r\n\r\n"
+        );
+        if stream.write_all(request.as_bytes()).is_err() {
+            continue;
+        }
+        let mut buffer = [0_u8; 16];
+        let Ok(bytes_read) = stream.read(&mut buffer) else {
+            continue;
+        };
+        if bytes_read >= 5 && buffer[..bytes_read].starts_with(b"HTTP/") {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn list_browser_system_ports() -> CommandResult<Vec<BrowserSystemPortInfo>> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_browser_system_ports()
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        lsof_browser_system_ports()
+    }
+
+    #[cfg(windows)]
+    {
+        windows_browser_system_ports()
+    }
+
+    #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+    {
+        lsof_browser_system_ports()
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        Err(CommandError::system_fault(
+            "browser_running_dev_servers_unsupported",
+            "Xero cannot list running local dev servers on this platform yet.",
+        ))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_browser_system_ports() -> CommandResult<Vec<BrowserSystemPortInfo>> {
+    let mut ports = Vec::new();
+    ports.extend(linux_browser_tcp_ports("/proc/net/tcp", false)?);
+    ports.extend(linux_browser_tcp_ports("/proc/net/tcp6", true)?);
+    Ok(ports)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_browser_tcp_ports(path: &str, ipv6: bool) -> CommandResult<Vec<BrowserSystemPortInfo>> {
+    let content = std::fs::read_to_string(path).map_err(|error| {
+        CommandError::system_fault(
+            "browser_running_dev_servers_failed",
+            format!("Xero could not read {path} for listening ports: {error}"),
+        )
+    })?;
+    let mut ports = Vec::new();
+    for line in content.lines().skip(1) {
+        let columns = line.split_whitespace().collect::<Vec<_>>();
+        if columns.len() < 4 || columns[3] != "0A" {
+            continue;
+        }
+        let Some((addr_hex, port_hex)) = columns[1].split_once(':') else {
+            continue;
+        };
+        let Ok(local_port) = u16::from_str_radix(port_hex, 16) else {
+            continue;
+        };
+        ports.push(BrowserSystemPortInfo {
+            cwd: None,
+            local_addr: if ipv6 {
+                linux_browser_ipv6_addr(addr_hex)
+            } else {
+                linux_browser_ipv4_addr(addr_hex)
+            },
+            local_port,
+            pid: None,
+            process_name: None,
+        });
+    }
+    Ok(ports)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_browser_ipv4_addr(value: &str) -> String {
+    let Ok(raw) = u32::from_str_radix(value, 16) else {
+        return value.into();
+    };
+    let bytes = raw.to_le_bytes();
+    format!("{}.{}.{}.{}", bytes[0], bytes[1], bytes[2], bytes[3])
+}
+
+#[cfg(target_os = "linux")]
+fn linux_browser_ipv6_addr(value: &str) -> String {
+    if value.len() != 32 {
+        return value.into();
+    }
+    let mut segments = Vec::new();
+    for chunk in value.as_bytes().chunks(8) {
+        let chunk = String::from_utf8_lossy(chunk);
+        let Ok(raw) = u32::from_str_radix(&chunk, 16) else {
+            return value.into();
+        };
+        for segment in raw.to_le_bytes().chunks(2) {
+            segments.push(u16::from_be_bytes([segment[0], segment[1]]));
+        }
+    }
+    segments
+        .chunks(1)
+        .map(|chunk| format!("{:x}", chunk[0]))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(unix, not(any(target_os = "linux", target_os = "macos")))
+))]
+fn lsof_browser_system_ports() -> CommandResult<Vec<BrowserSystemPortInfo>> {
+    let output = Command::new("lsof")
+        .args(["-nP", "-iTCP", "-sTCP:LISTEN", "-F", "pcn"])
+        .output()
+        .map_err(|error| {
+            CommandError::system_fault(
+                "browser_running_dev_servers_failed",
+                format!("Xero could not execute lsof for listening ports: {error}"),
+            )
+        })?;
+    if !output.status.success() && output.stdout.is_empty() {
+        return Err(CommandError::system_fault(
+            "browser_running_dev_servers_failed",
+            format!("lsof exited with status {}.", output.status),
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut ports = Vec::new();
+    let mut pid = None;
+    let mut process_name = None;
+    for line in stdout.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let (tag, value) = line.split_at(1);
+        match tag {
+            "p" => {
+                pid = value.parse::<u32>().ok();
+                process_name = None;
+            }
+            "c" => process_name = Some(value.to_owned()),
+            "n" => {
+                if let Some((local_addr, local_port)) = parse_browser_lsof_address(value) {
+                    ports.push(BrowserSystemPortInfo {
+                        cwd: None,
+                        local_addr,
+                        local_port,
+                        pid,
+                        process_name: process_name.clone(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    hydrate_lsof_browser_system_port_cwds(&mut ports);
+    Ok(ports)
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(unix, not(any(target_os = "linux", target_os = "macos")))
+))]
+fn hydrate_lsof_browser_system_port_cwds(ports: &mut [BrowserSystemPortInfo]) {
+    let mut cwd_by_pid: HashMap<u32, Option<String>> = HashMap::new();
+    for port in ports {
+        let Some(pid) = port.pid else {
+            continue;
+        };
+        if let Some(cwd) = cwd_by_pid.get(&pid) {
+            port.cwd = cwd.clone();
+            continue;
+        }
+
+        let cwd = lsof_process_cwd(pid);
+        port.cwd = cwd.clone();
+        cwd_by_pid.insert(pid, cwd);
+    }
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(unix, not(any(target_os = "linux", target_os = "macos")))
+))]
+fn lsof_process_cwd(pid: u32) -> Option<String> {
+    let pid_arg = pid.to_string();
+    let output = Command::new("lsof")
+        .args(["-nP", "-a", "-p", pid_arg.as_str(), "-d", "cwd", "-Fn"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix('n'))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(unix, not(any(target_os = "linux", target_os = "macos")))
+))]
+fn parse_browser_lsof_address(value: &str) -> Option<(String, u16)> {
+    let without_state = value.split(" (").next().unwrap_or(value);
+    let (addr, port) = if let Some(end) = without_state.rfind("]:") {
+        let addr = without_state[..=end]
+            .trim_start_matches('[')
+            .trim_end_matches(']');
+        (addr.to_owned(), &without_state[end + 2..])
+    } else {
+        let (addr, port) = without_state.rsplit_once(':')?;
+        (addr.to_owned(), port)
+    };
+    Some((addr, port.parse::<u16>().ok()?))
+}
+
+#[cfg(windows)]
+fn windows_browser_system_ports() -> CommandResult<Vec<BrowserSystemPortInfo>> {
+    let output = Command::new("netstat")
+        .args(["-ano", "-p", "tcp"])
+        .output()
+        .map_err(|error| {
+            CommandError::system_fault(
+                "browser_running_dev_servers_failed",
+                format!("Xero could not execute netstat for listening ports: {error}"),
+            )
+        })?;
+    if !output.status.success() {
+        return Err(CommandError::system_fault(
+            "browser_running_dev_servers_failed",
+            format!("netstat exited with status {}.", output.status),
+        ));
+    }
+    parse_browser_windows_netstat(&String::from_utf8_lossy(&output.stdout)).map_err(|error| {
+        CommandError::system_fault(
+            "browser_running_dev_servers_failed",
+            format!("Xero could not parse netstat output: {error}"),
+        )
+    })
+}
+
+#[cfg(windows)]
+fn parse_browser_windows_netstat(text: &str) -> Result<Vec<BrowserSystemPortInfo>, String> {
+    let mut ports = Vec::new();
+    for line in text.lines() {
+        let columns = line.split_whitespace().collect::<Vec<_>>();
+        if columns.len() < 5 || !columns[0].eq_ignore_ascii_case("TCP") {
+            continue;
+        }
+        if !columns[3].eq_ignore_ascii_case("LISTENING") {
+            continue;
+        }
+        let Some((local_addr, local_port)) = parse_browser_windows_addr_port(columns[1]) else {
+            continue;
+        };
+        ports.push(BrowserSystemPortInfo {
+            cwd: None,
+            local_addr,
+            local_port,
+            pid: columns[4].parse::<u32>().ok(),
+            process_name: None,
+        });
+    }
+    Ok(ports)
+}
+
+#[cfg(windows)]
+fn parse_browser_windows_addr_port(value: &str) -> Option<(String, u16)> {
+    if let Some(end) = value.rfind("]:") {
+        let addr = value[..=end]
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_owned();
+        return Some((addr, value[end + 2..].parse::<u16>().ok()?));
+    }
+    let (addr, port) = value.rsplit_once(':')?;
+    Some((addr.to_owned(), port.parse::<u16>().ok()?))
+}
+
 fn browser_dev_server_accepts_connections(url: &Url, timeout: Duration) -> bool {
     let Some((host, port)) = browser_dev_server_probe_target(url) else {
         return false;
@@ -2622,6 +3438,66 @@ mod tests {
             &url,
             Duration::from_millis(100),
         ));
+    }
+
+    #[test]
+    fn running_dev_server_url_normalizes_local_listeners() {
+        let wildcard = BrowserSystemPortInfo {
+            cwd: None,
+            local_addr: "*".into(),
+            local_port: 4100,
+            pid: Some(123),
+            process_name: Some("node".into()),
+        };
+        let loopback_v6 = BrowserSystemPortInfo {
+            cwd: None,
+            local_addr: "::1".into(),
+            local_port: 5173,
+            pid: None,
+            process_name: None,
+        };
+        let remote = BrowserSystemPortInfo {
+            cwd: None,
+            local_addr: "192.168.1.12".into(),
+            local_port: 3000,
+            pid: None,
+            process_name: None,
+        };
+
+        assert_eq!(
+            browser_system_port_url(&wildcard).as_deref(),
+            Some("http://127.0.0.1:4100/")
+        );
+        assert_eq!(
+            browser_running_dev_server_label(&wildcard),
+            "node · 127.0.0.1:4100"
+        );
+        assert_eq!(
+            browser_system_port_url(&loopback_v6).as_deref(),
+            Some("http://[::1]:5173/")
+        );
+        assert_eq!(browser_system_port_url(&remote), None);
+    }
+
+    #[test]
+    fn running_dev_server_http_probe_requires_http_response() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 128];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+        });
+        let url = actions::parse_url(&format!("http://127.0.0.1:{port}/")).unwrap();
+
+        assert!(browser_dev_server_responds_like_http(
+            &url,
+            Duration::from_millis(500),
+        ));
+        handle.join().unwrap();
     }
 
     #[test]

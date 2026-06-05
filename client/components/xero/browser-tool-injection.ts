@@ -33,6 +33,24 @@ export interface BrowserToolPageContext {
   title: string | null
 }
 
+export interface BrowserToolRectContext {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface BrowserToolScrollContext {
+  x: number
+  y: number
+}
+
+export interface BrowserToolViewportContext {
+  width: number
+  height: number
+  devicePixelRatio?: number | null
+}
+
 export interface BrowserToolElementContext {
   selector: string | null
   tagName: string
@@ -57,12 +75,7 @@ export interface BrowserToolElementContext {
     columnNumber: number | null
     raw: string | null
   } | null
-  rect: {
-    x: number
-    y: number
-    width: number
-    height: number
-  }
+  rect: BrowserToolRectContext
 }
 
 export type BrowserToolContext =
@@ -71,15 +84,24 @@ export type BrowserToolContext =
       note: string
       page: BrowserToolPageContext
       strokeCount: number
-      viewport: { width: number; height: number }
+      viewport: BrowserToolViewportContext
+      scroll?: BrowserToolScrollContext | null
+      annotationBounds?: BrowserToolRectContext | null
     }
   | {
       kind: "inspect"
       note: string
       page: BrowserToolPageContext
       element: BrowserToolElementContext
-      viewport: { width: number; height: number }
+      viewport: BrowserToolViewportContext
+      scroll?: BrowserToolScrollContext | null
     }
+
+export interface BrowserToolPromptMetadata {
+  appLabel?: string | null
+  attachmentName?: string | null
+  captureIndex?: number | null
+}
 
 export interface BrowserToolContextEventPayload {
   tabId: string
@@ -190,6 +212,8 @@ const BROWSER_TOOL_RUNTIME = String.raw`
   var VERSION = 1;
   var ROOT_ID = "__xero-browser-tool-root";
   var PEN_DOCUMENT_LAYER_ID = "__xero-browser-pen-document-layer";
+  var PEN_DOCUMENT_ROOT_ID = "__xero-browser-pen-document-root";
+  var TOOL_Z_INDEX = "2147483647";
   var TOOLBAR_POSITION_KEY = "__xeroBrowserToolToolbarPosition";
   var DEFAULT_THEME = ${JSON.stringify(DEFAULT_BROWSER_TOOL_THEME)};
   var THEME_KEYS = Object.keys(DEFAULT_THEME);
@@ -258,7 +282,15 @@ const BROWSER_TOOL_RUNTIME = String.raw`
   function viewportContext() {
     return {
       width: Math.round(window.innerWidth || 0),
-      height: Math.round(window.innerHeight || 0)
+      height: Math.round(window.innerHeight || 0),
+      devicePixelRatio: round(window.devicePixelRatio || 1)
+    };
+  }
+
+  function pageScrollContext() {
+    return {
+      x: Math.round(window.scrollX || window.pageXOffset || 0),
+      y: Math.round(window.scrollY || window.pageYOffset || 0)
     };
   }
 
@@ -1146,6 +1178,28 @@ const BROWSER_TOOL_RUNTIME = String.raw`
     if (existingPageLayer && existingPageLayer.parentNode) {
       existingPageLayer.parentNode.removeChild(existingPageLayer);
     }
+    var existingPageRoot = document.getElementById(PEN_DOCUMENT_ROOT_ID);
+    if (existingPageRoot && existingPageRoot.parentNode) {
+      existingPageRoot.parentNode.removeChild(existingPageRoot);
+    }
+    var pageRoot = createNode("div");
+    pageRoot.id = PEN_DOCUMENT_ROOT_ID;
+    pageRoot.setAttribute("data-xero-browser-tool-document-root", "true");
+    pageRoot.setAttribute("aria-hidden", "true");
+    pageRoot.style.position = "fixed";
+    pageRoot.style.inset = "0";
+    pageRoot.style.overflow = "visible";
+    pageRoot.style.pointerEvents = "none";
+    pageRoot.style.background = "transparent";
+    pageRoot.style.zIndex = TOOL_Z_INDEX;
+    var pageFrame = createNode("div");
+    pageFrame.setAttribute("data-xero-browser-tool-document-frame", "true");
+    pageFrame.style.position = "absolute";
+    pageFrame.style.left = "0";
+    pageFrame.style.top = "0";
+    pageFrame.style.overflow = "visible";
+    pageFrame.style.pointerEvents = "none";
+    pageFrame.style.zIndex = "1";
     var pageLayer = createSvgNode("svg", "xero-pen-document-layer");
     pageLayer.id = PEN_DOCUMENT_LAYER_ID;
     pageLayer.setAttribute("data-xero-browser-tool-document-layer", "true");
@@ -1156,12 +1210,20 @@ const BROWSER_TOOL_RUNTIME = String.raw`
     pageLayer.style.top = "0";
     pageLayer.style.overflow = "visible";
     pageLayer.style.pointerEvents = "none";
-    pageLayer.style.zIndex = "2147483646";
+    pageLayer.style.zIndex = "1";
     pageLayer.style.opacity = "1";
+    pageLayer.style.transformOrigin = "top left";
     pageLayer.style.transitionProperty = "opacity";
     pageLayer.style.transitionDuration = "180ms";
     pageLayer.style.transitionTimingFunction = "cubic-bezier(.2,0,0,1)";
-    (document.body || document.documentElement).appendChild(pageLayer);
+    pageLayer.style.willChange = "transform, opacity";
+    pageFrame.appendChild(pageLayer);
+    pageRoot.appendChild(pageFrame);
+    if (state.host && state.host.parentNode) {
+      state.host.parentNode.insertBefore(pageRoot, state.host);
+    } else {
+      (document.documentElement || document.body).appendChild(pageRoot);
+    }
     var pageDefs = createPenDefs(pageLayer);
     var active = null;
     var rafId = 0;
@@ -1175,6 +1237,8 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       restorePosition: null
     };
     state.strokes = [];
+    state.pageRoot = pageRoot;
+    state.pageFrame = pageFrame;
     state.pageLayer = pageLayer;
     state.layer.appendChild(overlay);
     state.penLayer = overlay;
@@ -1278,7 +1342,6 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       if (samePenSurface(penSurface, nextElement)) return;
 
       restorePenSurfacePosition();
-      if (pageLayer.parentNode) pageLayer.parentNode.removeChild(pageLayer);
 
       if (!nextElement) {
         penSurface = {
@@ -1286,22 +1349,12 @@ const BROWSER_TOOL_RUNTIME = String.raw`
           element: null,
           restorePosition: null
         };
-        (document.body || document.documentElement).appendChild(pageLayer);
       } else {
-        var previousPosition = nextElement.style.position;
-        var computedPosition = window.getComputedStyle(nextElement).position;
-        var changedPosition = !computedPosition || computedPosition === "static";
-        if (changedPosition) nextElement.style.position = "relative";
         penSurface = {
           kind: "element",
           element: nextElement,
-          restorePosition: changedPosition
-            ? function () {
-                nextElement.style.position = previousPosition;
-              }
-            : null
+          restorePosition: null
         };
-        nextElement.appendChild(pageLayer);
       }
 
       clearNode(pageLayer);
@@ -1354,11 +1407,29 @@ const BROWSER_TOOL_RUNTIME = String.raw`
 
     function syncLayerSize() {
       var size = readSurfaceSize();
+      var viewport = readViewportSize();
+      var scroll = readSurfaceScrollPosition();
       pageLayer.setAttribute("viewBox", "0 0 " + size.width + " " + size.height);
       pageLayer.setAttribute("width", String(size.width));
       pageLayer.setAttribute("height", String(size.height));
       pageLayer.style.width = size.width + "px";
       pageLayer.style.height = size.height + "px";
+      pageLayer.style.transform = "translate(" + round(-scroll.x) + "px, " + round(-scroll.y) + "px)";
+
+      if (penSurface.kind === "element" && penSurface.element) {
+        var rect = penSurface.element.getBoundingClientRect();
+        pageFrame.style.left = round(rect.left) + "px";
+        pageFrame.style.top = round(rect.top) + "px";
+        pageFrame.style.width = Math.max(1, round(rect.width)) + "px";
+        pageFrame.style.height = Math.max(1, round(rect.height)) + "px";
+        pageFrame.style.overflow = "hidden";
+      } else {
+        pageFrame.style.left = "0px";
+        pageFrame.style.top = "0px";
+        pageFrame.style.width = viewport.width + "px";
+        pageFrame.style.height = viewport.height + "px";
+        pageFrame.style.overflow = "visible";
+      }
     }
 
     function syncOverlayViewport() {
@@ -1489,6 +1560,34 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       };
     }
 
+    function allStrokeClientRect() {
+      if (!state.strokes || state.strokes.length === 0) return null;
+      var rect = null;
+      for (var index = 0; index < state.strokes.length; index += 1) {
+        var next = strokeClientRect(state.strokes[index]);
+        if (!rect) {
+          rect = {
+            x: next.x,
+            y: next.y,
+            width: next.width,
+            height: next.height
+          };
+          continue;
+        }
+        var left = Math.min(rect.x, next.x);
+        var top = Math.min(rect.y, next.y);
+        var right = Math.max(rect.x + rect.width, next.x + next.width);
+        var bottom = Math.max(rect.y + rect.height, next.y + next.height);
+        rect = {
+          x: round(left),
+          y: round(top),
+          width: round(right - left),
+          height: round(bottom - top)
+        };
+      }
+      return rect;
+    }
+
     function emitPenState() {
       bridgeEmit("tool_state", {
         mode: "pen",
@@ -1522,8 +1621,11 @@ const BROWSER_TOOL_RUNTIME = String.raw`
         target &&
         (
           target === pageLayer ||
+          target === pageRoot ||
+          target === pageFrame ||
           target === state.host ||
           (pageLayer.contains && pageLayer.contains(target)) ||
+          (pageRoot.contains && pageRoot.contains(target)) ||
           (state.host.contains && state.host.contains(target))
         )
       );
@@ -1678,7 +1780,9 @@ const BROWSER_TOOL_RUNTIME = String.raw`
               note: note,
               page: pageContext(),
               strokeCount: state.strokes.length,
-              viewport: viewportContext()
+              viewport: viewportContext(),
+              scroll: pageScrollContext(),
+              annotationBounds: allStrokeClientRect()
             });
           }
         });
@@ -1716,7 +1820,7 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       if (rafId) cancelAnimationFrame(rafId);
       if (syncFrameId) cancelAnimationFrame(syncFrameId);
       bridgeEmit("tool_state", { mode: "pen", strokeCount: 0, hasDrawing: false });
-      if (pageLayer && pageLayer.parentNode) pageLayer.parentNode.removeChild(pageLayer);
+      if (pageRoot && pageRoot.parentNode) pageRoot.parentNode.removeChild(pageRoot);
       restorePenSurfacePosition();
     });
     syncPenLayer();
@@ -1813,7 +1917,8 @@ const BROWSER_TOOL_RUNTIME = String.raw`
             note: note,
             page: pageContext(),
             element: state.selectedContext,
-            viewport: viewportContext()
+            viewport: viewportContext(),
+            scroll: pageScrollContext()
           });
         }
       });
@@ -1824,7 +1929,7 @@ const BROWSER_TOOL_RUNTIME = String.raw`
     var style = createNode("style");
     style.textContent =
       ":host{all:initial}" +
-      ".layer{position:fixed;inset:0;z-index:2147483647;box-sizing:border-box;color:var(--xero-tool-foreground,#fafafa);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;letter-spacing:0}" +
+      ".layer{position:fixed;inset:0;z-index:" + TOOL_Z_INDEX + ";box-sizing:border-box;color:var(--xero-tool-foreground,#fafafa);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;letter-spacing:0}" +
       ".layer *{box-sizing:border-box;letter-spacing:0}" +
       ".pen-layer{position:absolute;inset:0;z-index:1;display:block;width:100vw;height:100vh;cursor:crosshair;touch-action:none;overflow:visible}" +
       ".pen-path{fill:none;stroke:var(--xero-tool-pen,#f97316);stroke-width:3;stroke-linecap:round;stroke-linejoin:round;vector-effect:non-scaling-stroke;pointer-events:none}" +
@@ -1872,13 +1977,17 @@ const BROWSER_TOOL_RUNTIME = String.raw`
   function createState(mode, pageLabel, theme) {
     var existing = document.getElementById(ROOT_ID);
     if (existing) existing.remove();
+    var existingPenRoot = document.getElementById(PEN_DOCUMENT_ROOT_ID);
+    if (existingPenRoot) existingPenRoot.remove();
+    var existingPenLayer = document.getElementById(PEN_DOCUMENT_LAYER_ID);
+    if (existingPenLayer) existingPenLayer.remove();
 
     var host = document.createElement("div");
     host.id = ROOT_ID;
     host.setAttribute("data-xero-browser-tool-host", "true");
     host.style.position = "fixed";
     host.style.inset = "0";
-    host.style.zIndex = "2147483647";
+    host.style.zIndex = TOOL_Z_INDEX;
     host.style.pointerEvents = "auto";
     host.style.background = "transparent";
     applyTheme(host, theme);
@@ -2013,6 +2122,10 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       } else {
         var existing = document.getElementById(ROOT_ID);
         if (existing) existing.remove();
+        var existingPenRoot = document.getElementById(PEN_DOCUMENT_ROOT_ID);
+        if (existingPenRoot) existingPenRoot.remove();
+        var existingPenLayer = document.getElementById(PEN_DOCUMENT_LAYER_ID);
+        if (existingPenLayer) existingPenLayer.remove();
       }
       api.state = null;
       return true;
@@ -2080,6 +2193,71 @@ function browserToolPromptPageReference(page: BrowserToolPageContext): string {
   const title = page.title?.trim()
   const url = sanitizedBrowserToolPromptUrl(page.url)
   return title ? `${title} (${url})` : url
+}
+
+function compactBrowserToolMetadataText(value: string | null | undefined, maxLength = 280): string | null {
+  const normalized = value?.replace(/\s+/g, " ").trim()
+  if (!normalized) return null
+  return normalized.length <= maxLength
+    ? normalized
+    : `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`
+}
+
+function browserToolPromptHeader(kind: BrowserToolContext["kind"], metadata?: BrowserToolPromptMetadata): string {
+  const index = metadata?.captureIndex
+  if (typeof index === "number" && Number.isFinite(index) && index > 0) {
+    return kind === "pen"
+      ? `Browser sketch context (capture ${Math.round(index)}):`
+      : `Browser element inspection context (capture ${Math.round(index)}):`
+  }
+  return kind === "pen" ? "Browser sketch context:" : "Browser element inspection context:"
+}
+
+function formatBrowserToolViewport(viewport: BrowserToolViewportContext): string {
+  const parts = [`${viewport.width}x${viewport.height} CSS px`]
+  if (typeof viewport.devicePixelRatio === "number" && Number.isFinite(viewport.devicePixelRatio)) {
+    parts.push(`DPR ${viewport.devicePixelRatio}`)
+  }
+  return `Viewport: ${parts.join(", ")}`
+}
+
+function formatBrowserToolScroll(scroll: BrowserToolScrollContext | null | undefined): string | null {
+  if (!scroll) return null
+  return `Scroll: x=${Math.round(scroll.x)} y=${Math.round(scroll.y)}`
+}
+
+function formatBrowserToolRect(label: string, rect: BrowserToolRectContext | null | undefined): string | null {
+  if (!rect) return null
+  return `${label}: x=${Math.round(rect.x)} y=${Math.round(rect.y)} w=${Math.round(rect.width)} h=${Math.round(rect.height)} (viewport CSS px)`
+}
+
+function formatBrowserToolAttachment(metadata: BrowserToolPromptMetadata | undefined, screenshotAttached: boolean): string | null {
+  if (!screenshotAttached) return null
+  const name = compactBrowserToolMetadataText(metadata?.attachmentName, 120)
+  const index = metadata?.captureIndex
+  const imageLabel =
+    typeof index === "number" && Number.isFinite(index) && index > 0
+      ? `attached image ${Math.round(index)}`
+      : "attached image"
+  return name
+    ? `Attached image: ${imageLabel}, ${name} (paired with this capture; images are ordered by capture number).`
+    : `Attached image: ${imageLabel} (paired with this capture; images are ordered by capture number).`
+}
+
+function browserToolCaptureMetadataLines(
+  context: BrowserToolContext,
+  metadata: BrowserToolPromptMetadata | undefined,
+  options: { screenshotAttached?: boolean } = {},
+): string[] {
+  const screenshotAttached = options.screenshotAttached ?? context.kind === "pen"
+  return [
+    metadata?.appLabel ? `App: ${compactBrowserToolMetadataText(metadata.appLabel, 120)}` : null,
+    `Page: ${browserToolPromptPageReference(context.page)}`,
+    context.note ? `User note: ${compactBrowserToolMetadataText(context.note)}` : null,
+    formatBrowserToolAttachment(metadata, screenshotAttached),
+    formatBrowserToolViewport(context.viewport),
+    formatBrowserToolScroll(context.scroll),
+  ].filter((line): line is string => Boolean(line))
 }
 
 function sanitizedBrowserToolPromptUrl(rawUrl: string): string {
@@ -2189,25 +2367,31 @@ function formatElementAncestors(
 
 export function buildBrowserToolAgentPrompt(
   context: BrowserToolContext,
-  options: { screenshotAttached?: boolean } = {},
+  options: { metadata?: BrowserToolPromptMetadata; screenshotAttached?: boolean } = {},
 ): string {
-  const pageLine = browserToolPromptPageReference(context.page)
   const screenshotAttached = options.screenshotAttached ?? true
+  const captureLines = browserToolCaptureMetadataLines(context, options.metadata, {
+    screenshotAttached,
+  })
 
   if (context.kind === "pen") {
     return [
-      "Browser sketch context:",
-      `Page: ${pageLine}`,
+      browserToolPromptHeader(context.kind, options.metadata),
+      ...captureLines,
+      formatBrowserToolRect("Annotation bounds", context.annotationBounds),
       screenshotAttached
         ? `Drawing: ${context.strokeCount} stroke${context.strokeCount === 1 ? "" : "s"} on the attached browser screenshot.`
         : `Drawing: ${context.strokeCount} stroke${context.strokeCount === 1 ? "" : "s"} captured by the browser sketch tool. No browser screenshot was attached.`,
-    ].join("\n")
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join("\n")
   }
 
   const element = context.element
   const details = [
     formatElementSourceHint(element.source ?? null),
     `Element: <${element.tagName}>`,
+    formatBrowserToolRect("Element bounds", element.rect),
     element.selector ? `Selector: ${element.selector}` : null,
     element.id ? `ID: ${element.id}` : null,
     element.classes.length ? `Classes: ${element.classes.join(" ")}` : null,
@@ -2219,8 +2403,8 @@ export function buildBrowserToolAgentPrompt(
   ].filter((line): line is string => Boolean(line))
 
   return [
-    "Browser element inspection context:",
-    `Page: ${pageLine}`,
+    browserToolPromptHeader(context.kind, options.metadata),
+    ...captureLines,
     "Selected element (for locating code; no screenshot):",
     ...details.map((line) => `- ${line}`),
     "Use these identifiers to find the implementation before editing.",

@@ -72,7 +72,19 @@ const TERMINAL_SUGGESTION_MAX_COMMAND_CHARS: usize = 1_000;
 const TERMINAL_SUGGESTION_MAX_BUFFER_CHARS: usize = 4_096;
 const TERMINAL_SUGGESTION_MAX_CANDIDATES: usize = 8;
 
-const SUGGEST_SYSTEM_PROMPT: &str = "You suggest the shell commands a developer would run to start this project locally. Return a JSON array of {\"name\": \"...\", \"command\": \"...\", \"browserSupported\": true/false} objects and nothing else. No markdown fences, no prose, no explanation.\n\nSet `browserSupported` to true only for commands that start a user-facing web app or dev server that should open in a browser, such as Vite, Next.js, Remix, Astro, SvelteKit, Nuxt, Storybook, Rails/Phoenix/Django/Laravel web servers, or a package named web/client/app/site/docs. Set it to false for backend APIs, workers, CLIs, database services, Tauri/native/mobile dev commands, test runners, codegen, queues, and generic orchestrators unless the command itself clearly launches a browser-served web UI.\n\nIMPORTANT — root orchestrator detection: if the root `package.json` (or `Makefile`/`Procfile`/`mprocs.yaml`/`turbo.json` task) defines a script that fans out to multiple services in one command (via `concurrently`, `npm-run-all`, `turbo run dev`, `nx run-many`, `pnpm -r run`, `make -j`, `mprocs`, `overmind`, `foreman`, `honcho`, etc.), include it as the FIRST target named `all` (or `dev` if that matches the script name). This is the single-command \"run everything\" entry the user reaches for most often.\n\nIn addition to (not instead of) the orchestrator, for monorepos (pnpm/yarn/npm workspaces, Turborepo, Nx, Lerna, Rush, Cargo workspaces, Go workspaces) propose one target per runnable service or app so users can launch them individually. Name each per-service target after the package (e.g. `web`, `api`, `worker`) and inline a `cd <relative-path> && <cmd>` so each command runs from the project root.\n\nFor single-app projects, return one target named `start`.\n\nEach `name` must be short, lowercase, unique, and filename-safe. Each `command` must be a single line of shell.";
+const SUGGEST_SYSTEM_PROMPT: &str = r#"You suggest the shell commands a developer would run to start this project locally. Return a JSON array of {"name": "...", "command": "...", "browserSupported": true/false} objects and nothing else. No markdown fences, no prose, no explanation.
+
+Set `browserSupported` to true only for commands that start a user-facing web app or dev server that should open in a browser, such as Vite, Next.js, Remix, Astro, SvelteKit, Nuxt, Storybook, Rails/Phoenix/Django/Laravel web servers, or a package named web/client/app/site/docs. Set it to false for backend APIs, workers, CLIs, database services, Tauri/native/mobile dev commands, test runners, codegen, queues, and generic orchestrators unless the command itself clearly launches a browser-served web UI.
+
+Target names are shown directly in project menus and browser server pickers. Use short, lowercase, unique, filename-safe role labels that describe what the command starts, not the runtime or tool. Prefer names like `main-client`, `admin-client`, `landing-site`, `docs-site`, `api-server`, `worker`, `mobile-app`, or `all-services`. Avoid vague names like `node`, `vite`, `app`, `web`, `dev`, or `server` when the project files reveal a clearer role.
+
+IMPORTANT — root orchestrator detection: if the root `package.json` (or `Makefile`/`Procfile`/`mprocs.yaml`/`turbo.json` task) defines a script that fans out to multiple services in one command (via `concurrently`, `npm-run-all`, `turbo run dev`, `nx run-many`, `pnpm -r run`, `make -j`, `mprocs`, `overmind`, `foreman`, `honcho`, etc.), include it as the FIRST target named `all-services` (or the script name if it is more specific). This is the single-command "run everything" entry the user reaches for most often.
+
+In addition to (not instead of) the orchestrator, for monorepos (pnpm/yarn/npm workspaces, Turborepo, Nx, Lerna, Rush, Cargo workspaces, Go workspaces) propose one target per runnable service or app so users can launch them individually. Name each per-service target after its product role (for example `main-client`, `admin-client`, `api-server`, `worker`) and inline a `cd <relative-path> && <cmd>` so each command runs from the project root.
+
+For single-app projects, return one target named `main-client` for browser apps or `api-server` for API-only servers.
+
+Each `name` must be short, lowercase, unique, and filename-safe. Each `command` must be a single line of shell."#;
 
 // ---------------------------------------------------------------------------
 // DTOs
@@ -2469,7 +2481,7 @@ fn build_suggest_prompt(repo_root: &Path) -> String {
     }
 
     sections.push(
-        "Return ONLY a JSON array of {\"name\": \"...\", \"command\": \"...\"} objects.".to_owned(),
+        "Return ONLY a JSON array of {\"name\": \"...\", \"command\": \"...\", \"browserSupported\": true/false} objects.".to_owned(),
     );
     sections.join("\n\n")
 }

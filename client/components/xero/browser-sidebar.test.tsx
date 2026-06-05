@@ -247,6 +247,7 @@ afterEach(() => {
   vi.restoreAllMocks()
   document.documentElement.removeAttribute("style")
   document.body.removeAttribute("style")
+  document.getElementById("__xero-browser-pen-document-root")?.remove()
   document.getElementById("__xero-browser-pen-document-layer")?.remove()
   setWindowScroll(0, 0)
   cookieStorage?.clear()
@@ -715,13 +716,168 @@ describe("BrowserSidebar", () => {
 
     const projectButton = await screen.findByRole("button", { name: "Open project app in browser" })
     await waitFor(() => expect(projectButton).toBeEnabled())
+    invokeCalls.length = 0
     fireEvent.click(projectButton)
-    fireEvent.click(await screen.findByRole("button", { name: /Open All .*127\.0\.0\.1:4200/ }))
+    const panel = await screen.findByLabelText("Project app suggestions")
+    expect(panel).toHaveClass("absolute")
+    expect(panel).toHaveClass("rounded-md")
+    expect(panel).toHaveAttribute("data-slot", "dropdown-menu-content")
+    expect(panel).toHaveStyle({ left: "104px", top: "78px" })
+    const wheel = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      deltaY: 64,
+    })
+    const preventDefault = vi.spyOn(wheel, "preventDefault")
+    act(() => {
+      panel.dispatchEvent(wheel)
+    })
+    expect(panel.scrollTop).toBe(64)
+    expect(preventDefault).toHaveBeenCalled()
+    act(() => {
+      emitEvent("browser:occlusion_wheel", { deltaX: 0, deltaY: 48 })
+    })
+    expect(panel.scrollTop).toBe(112)
+    const localServerButton = await screen.findByRole("button", { name: /Open All .*127\.0\.0\.1:4200/ })
+    const originalElementFromPoint = Object.getOwnPropertyDescriptor(document, "elementFromPoint")
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn(() => localServerButton),
+    })
+    try {
+      act(() => {
+        emitEvent("browser:occlusion_click", { x: 220, y: 32 })
+      })
+    } finally {
+      if (originalElementFromPoint) {
+        Object.defineProperty(document, "elementFromPoint", originalElementFromPoint)
+      } else {
+        delete (document as unknown as { elementFromPoint?: Document["elementFromPoint"] })
+          .elementFromPoint
+      }
+    }
 
     await waitFor(() => {
       expect(shownRequests.at(-1)).toMatchObject({
         tabId: "tab-1",
         url: "http://127.0.0.1:4200/",
+      })
+    })
+  })
+
+  it("opens a running local dev server discovered outside the Xero terminal", async () => {
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "xero-browser-tab-1",
+        title: "Current app",
+        url: "http://127.0.0.1:4100/feed",
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+    registerInvoke("browser_list_running_dev_servers", async () => [
+      {
+        cwd: "/repo/apps/api",
+        detectedAt: 10,
+        label: "beam.smp · 127.0.0.1:4100",
+        processName: "beam.smp",
+        url: "http://127.0.0.1:4100/",
+      },
+      {
+        cwd: "/repo/apps/web",
+        detectedAt: 11,
+        label: "node · 127.0.0.1:5173",
+        processName: "node",
+        url: "http://127.0.0.1:5173/",
+      },
+      {
+        cwd: "/repo/apps/admin",
+        detectedAt: 12,
+        label: "node · 127.0.0.1:3101",
+        processName: "node",
+        url: "http://127.0.0.1:3101/",
+      },
+      {
+        cwd: "/repo/apps/landing",
+        detectedAt: 13,
+        label: "node · 127.0.0.1:3001",
+        processName: "node",
+        url: "http://127.0.0.1:3001/",
+      },
+      {
+        cwd: "/repo/apps/landing",
+        detectedAt: 14,
+        label: "node · 127.0.0.1:4200",
+        processName: "node",
+        url: "http://127.0.0.1:4200/",
+      },
+    ])
+    registerInvoke("browser_dev_server_running", async () => true)
+    const shownRequests: Array<Record<string, unknown> | undefined> = []
+    registerInvoke("browser_show", async (args) => {
+      shownRequests.push(args)
+      return {
+        id: "tab-1",
+        label: "xero-browser-tab-1",
+        title: null,
+        url: String((args as { url?: string })?.url ?? ""),
+        loading: true,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      }
+    })
+
+    render(
+      <BrowserSidebar
+        open
+        projectRootPath="/repo"
+        projectStartTargets={[
+          {
+            name: "api",
+            command: "cd apps/api && mix phx.server",
+            browserSupported: false,
+          },
+          {
+            name: "web",
+            command: "cd apps/web && pnpm dev",
+            browserSupported: true,
+          },
+          {
+            name: "admin",
+            command: "cd apps/admin && pnpm dev",
+            browserSupported: true,
+          },
+          {
+            name: "landing",
+            command: "cd apps/landing && pnpm dev",
+            browserSupported: true,
+          },
+        ]}
+      />,
+    )
+
+    const projectButton = await screen.findByRole("button", { name: "Open project app in browser" })
+    await waitFor(() => expect(projectButton).toBeEnabled())
+    fireEvent.click(projectButton)
+    expect(screen.queryByRole("button", { name: /Open api .*127\.0\.0\.1:4100/ })).not.toBeInTheDocument()
+    const panel = await screen.findByLabelText("Project app suggestions")
+    expect(await within(panel).findByRole("button", { name: /Open admin .*127\.0\.0\.1:3101/ })).toBeInTheDocument()
+    expect(within(panel).getAllByRole("button", { name: /Open landing / })).toHaveLength(1)
+    expect(within(panel).getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "web · 127.0.0.1:5173",
+      "admin · 127.0.0.1:3101",
+      "landing · 127.0.0.1:4200",
+    ])
+    fireEvent.click(await screen.findByRole("button", { name: /Open web .*127\.0\.0\.1:5173/ }))
+
+    await waitFor(() => {
+      expect(shownRequests.at(-1)).toMatchObject({
+        tabId: "tab-1",
+        url: "http://127.0.0.1:5173/",
       })
     })
   })
@@ -2079,7 +2235,20 @@ describe("BrowserSidebar", () => {
     ])
     registerInvoke("browser_screenshot", async () => "aGVsbG8=")
 
-    render(<BrowserSidebar open onAddAgentContext={onAddAgentContext} />)
+    render(
+      <BrowserSidebar
+        open
+        onAddAgentContext={onAddAgentContext}
+        projectBrowserTargets={[
+          {
+            id: "web-app",
+            label: "Web app - 127.0.0.1:5173",
+            url: "http://127.0.0.1:5173/",
+            detectedAt: 1,
+          },
+        ]}
+      />,
+    )
     fireEvent.click(await screen.findByLabelText("Inspect element"))
     const callCountBeforeSubmit = invokeCalls.length
 
@@ -2090,7 +2259,8 @@ describe("BrowserSidebar", () => {
           kind: "inspect",
           note: "Tighten the spacing here",
           page: { url: "http://localhost:5173/", title: "Local" },
-          viewport: { width: 800, height: 600 },
+          viewport: { width: 800, height: 600, devicePixelRatio: 2 },
+          scroll: { x: 0, y: 120 },
           element: {
             selector: "button.cta",
             tagName: "button",
@@ -2128,15 +2298,20 @@ describe("BrowserSidebar", () => {
     await waitFor(() => expect(onAddAgentContext).toHaveBeenCalledTimes(1))
     const request = addedRequests[0]!
     expect(request.prompt).toContain("Browser element inspection context")
+    expect(request.prompt).toContain("capture 1")
+    expect(request.prompt).toContain("App: Web app - 127.0.0.1:5173")
     expect(request.prompt).toContain("local dev server /")
     expect(request.prompt).not.toContain("localhost:")
+    expect(request.prompt).toContain("User note: Tighten the spacing here")
+    expect(request.prompt).toContain("Viewport: 800x600 CSS px, DPR 2")
+    expect(request.prompt).toContain("Scroll: x=0 y=120")
+    expect(request.prompt).toContain("Element bounds: x=20 y=40 w=120 h=36")
     expect(request.prompt).toContain("Selector: button.cta")
     expect(request.prompt).toContain("for locating code; no screenshot")
     expect(request.prompt).toContain("Source: /app/src/components/HeroCta.tsx:42:7")
     expect(request.prompt).toContain('Stable attrs: data-testid="hero-cta"')
     expect(request.prompt).toContain('Parent chain: <section> section.hero label "Hero"')
     expect(request.prompt).not.toContain("DOM snippet")
-    expect(request.prompt).not.toContain("Tighten the spacing here")
     expect(request.visiblePrompt).toBe("Tighten the spacing here")
     expect(request.contextCard).toEqual({
       kind: "element",
@@ -2181,7 +2356,20 @@ describe("BrowserSidebar", () => {
     ])
     registerInvoke("browser_screenshot", async () => "aGVsbG8=")
 
-    render(<BrowserSidebar open onAddAgentContext={onAddAgentContext} />)
+    render(
+      <BrowserSidebar
+        open
+        onAddAgentContext={onAddAgentContext}
+        projectBrowserTargets={[
+          {
+            id: "web-app",
+            label: "Web app - 127.0.0.1:5173",
+            url: "http://127.0.0.1:5173/",
+            detectedAt: 1,
+          },
+        ]}
+      />,
+    )
     fireEvent.click(await screen.findByLabelText("Sketch on page"))
 
     await act(async () => {
@@ -2191,7 +2379,9 @@ describe("BrowserSidebar", () => {
           kind: "pen",
           note: "Tighten the spacing here",
           page: { url: "http://localhost:5173/", title: "Local" },
-          viewport: { width: 800, height: 600 },
+          viewport: { width: 800, height: 600, devicePixelRatio: 2 },
+          scroll: { x: 0, y: 120 },
+          annotationBounds: { x: 24, y: 80, width: 320, height: 160 },
           strokeCount: 1,
         },
       })
@@ -2200,6 +2390,12 @@ describe("BrowserSidebar", () => {
     await waitFor(() => expect(onAddAgentContext).toHaveBeenCalledTimes(1))
     const request = addedRequests[0]!
     expect(request.prompt).toContain("Browser sketch context")
+    expect(request.prompt).toContain("capture 1")
+    expect(request.prompt).toContain("App: Web app - 127.0.0.1:5173")
+    expect(request.prompt).toContain("User note: Tighten the spacing here")
+    expect(request.prompt).toContain("Viewport: 800x600 CSS px, DPR 2")
+    expect(request.prompt).toContain("Scroll: x=0 y=120")
+    expect(request.prompt).toContain("Annotation bounds: x=24 y=80 w=320 h=160")
     expect(request.visiblePrompt).toBe("Tighten the spacing here")
     expect(request.contextCard).toEqual({
       kind: "sketch",
@@ -2209,6 +2405,7 @@ describe("BrowserSidebar", () => {
     expect(request.image).toBeTruthy()
     expect(Array.from(request.image!.bytes)).toEqual([104, 101, 108, 108, 111])
     expect(request.image!.originalName).toMatch(/^browser-pen-/)
+    expect(request.prompt).toContain(request.image!.originalName)
     const prepareIndex = invokeCalls.findIndex(
       (call) =>
         call.command === "browser_eval_fire_and_forget" &&
@@ -2226,6 +2423,89 @@ describe("BrowserSidebar", () => {
     expect(prepareIndex).toBeGreaterThanOrEqual(0)
     expect(screenshotIndex).toBeGreaterThan(prepareIndex)
     expect(finishIndex).toBeGreaterThan(screenshotIndex)
+  })
+
+  it("labels multiple sketch captures from separate apps with ordered metadata", async () => {
+    const addedRequests: BrowserAgentContextRequest[] = []
+    const onAddAgentContext = vi.fn(async (request: BrowserAgentContextRequest) => {
+      addedRequests.push(request)
+    })
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "xero-browser-tab-1",
+        title: "App A",
+        url: "http://localhost:5173/",
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+    registerInvoke("browser_screenshot", async () => "aGVsbG8=")
+
+    render(
+      <BrowserSidebar
+        open
+        onAddAgentContext={onAddAgentContext}
+        projectBrowserTargets={[
+          {
+            id: "app-a",
+            label: "App A - 127.0.0.1:5173",
+            url: "http://127.0.0.1:5173/",
+            detectedAt: 1,
+          },
+          {
+            id: "app-b",
+            label: "App B - 127.0.0.1:3000",
+            url: "http://127.0.0.1:3000/",
+            detectedAt: 1,
+          },
+        ]}
+      />,
+    )
+    await screen.findByLabelText("Sketch on page")
+
+    await act(async () => {
+      emitEvent("browser:tool_context", {
+        tabId: "tab-1",
+        context: {
+          kind: "pen",
+          note: "First app note",
+          page: { url: "http://localhost:5173/dashboard", title: "App A" },
+          viewport: { width: 800, height: 600, devicePixelRatio: 2 },
+          scroll: { x: 0, y: 10 },
+          annotationBounds: { x: 10, y: 20, width: 100, height: 60 },
+          strokeCount: 2,
+        },
+      })
+    })
+    await waitFor(() => expect(onAddAgentContext).toHaveBeenCalledTimes(1))
+
+    await act(async () => {
+      emitEvent("browser:tool_context", {
+        tabId: "tab-1",
+        context: {
+          kind: "pen",
+          note: "Second app note",
+          page: { url: "http://localhost:3000/settings", title: "App B" },
+          viewport: { width: 1024, height: 768, devicePixelRatio: 1 },
+          scroll: { x: 0, y: 220 },
+          annotationBounds: { x: 48, y: 96, width: 240, height: 120 },
+          strokeCount: 1,
+        },
+      })
+    })
+
+    await waitFor(() => expect(onAddAgentContext).toHaveBeenCalledTimes(2))
+    expect(addedRequests[0]?.prompt).toContain("Browser sketch context (capture 1)")
+    expect(addedRequests[0]?.prompt).toContain("App: App A - 127.0.0.1:5173")
+    expect(addedRequests[0]?.prompt).toContain("User note: First app note")
+    expect(addedRequests[0]?.prompt).toContain("Attached image:")
+    expect(addedRequests[1]?.prompt).toContain("Browser sketch context (capture 2)")
+    expect(addedRequests[1]?.prompt).toContain("App: App B - 127.0.0.1:3000")
+    expect(addedRequests[1]?.prompt).toContain("User note: Second app note")
+    expect(addedRequests[1]?.prompt).toContain("Viewport: 1024x768 CSS px, DPR 1")
   })
 
   it("keeps the pen drawing visible until the composer insert is handed off", async () => {
@@ -2900,15 +3180,28 @@ describe("BrowserSidebar", () => {
       const toolHost = document.getElementById("__xero-browser-tool-root")
       const shadow = toolHost?.shadowRoot
       const overlay = shadow?.querySelector(".pen-layer")
+      const documentRoot = document.getElementById("__xero-browser-pen-document-root")
       const documentLayer = document.getElementById("__xero-browser-pen-document-layer")
+      const documentFrame = documentLayer?.parentElement as HTMLElement | null
       expect(overlay).toBeTruthy()
+      expect(documentRoot).toBeTruthy()
       expect(documentLayer).toBeTruthy()
-      expect(documentLayer?.parentElement).toBe(document.body)
+      expect(documentRoot?.parentElement).toBe(document.documentElement)
+      expect(documentRoot?.nextElementSibling).toBe(toolHost)
+      expect(documentRoot?.getAttribute("data-xero-browser-tool-document-root")).toBe("true")
+      expect(documentRoot?.style.zIndex).toBe("2147483647")
+      expect(documentRoot?.style.pointerEvents).toBe("none")
+      expect(documentFrame?.parentElement).toBe(documentRoot)
+      expect(documentFrame?.getAttribute("data-xero-browser-tool-document-frame")).toBe("true")
+      expect(documentFrame?.style.overflow).toBe("visible")
       expect(documentLayer?.getAttribute("data-xero-browser-tool-document-layer")).toBe("true")
       expect(overlay?.getAttribute("viewBox")).toBe("0 0 800 600")
       expect(documentLayer?.getAttribute("viewBox")).toBe("0 0 1200 1600")
       expect(documentLayer?.getAttribute("width")).toBe("1200")
       expect((documentLayer as SVGSVGElement | null)?.style.width).toBe("1200px")
+      expect(documentLayer?.style.transform).toBe("translate(0px, 0px)")
+      expect(documentFrame?.style.width).toBe("800px")
+      expect(documentFrame?.style.height).toBe("600px")
 
       dispatchPointer(overlay!, "pointerdown", { clientX: 100, clientY: 100 })
       dispatchPointer(overlay!, "pointermove", { clientX: 140, clientY: 110 })
@@ -2930,6 +3223,8 @@ describe("BrowserSidebar", () => {
       expect(overlay?.getAttribute("viewBox")).toBe("0 0 400 600")
       expect(documentLayer?.getAttribute("viewBox")).toBe("0 0 900 1600")
       expect(documentLayer?.getAttribute("width")).toBe("900")
+      expect(documentFrame?.style.width).toBe("400px")
+      expect(documentFrame?.style.height).toBe("600px")
       expect(path?.getAttribute("d")).toContain("M 100 100")
       expect(path?.getAttribute("d")).toContain("L 180 120")
     } finally {
@@ -2991,6 +3286,7 @@ describe("BrowserSidebar", () => {
       dispatchPointer(overlay!, "pointerup", { clientX: 760, clientY: 340 })
 
       const path = documentLayer?.querySelector(".xero-document-pen-path")
+      expect(documentLayer?.style.transform).toBe("translate(0px, -300px)")
       expect(path?.getAttribute("d")).toContain("M 680 620")
       expect(path?.getAttribute("d")).toContain("L 760 640")
 
@@ -3000,6 +3296,7 @@ describe("BrowserSidebar", () => {
         await new Promise((resolve) => window.requestAnimationFrame(resolve))
       })
 
+      expect(documentLayer?.style.transform).toBe("translate(0px, -520px)")
       expect(path?.getAttribute("d")).toContain("M 680 620")
       expect(path?.getAttribute("d")).toContain("L 760 640")
     } finally {
@@ -3080,10 +3377,20 @@ describe("BrowserSidebar", () => {
       dispatchPointer(overlay!, "pointermove", { clientX: 140, clientY: 165 })
       dispatchPointer(overlay!, "pointerup", { clientX: 180, clientY: 175 })
 
+      const documentRoot = document.getElementById("__xero-browser-pen-document-root")
       const documentLayer = document.getElementById("__xero-browser-pen-document-layer")
-      expect(documentLayer?.parentElement).toBe(scroller)
-      expect(scroller.style.position).toBe("relative")
+      const documentFrame = documentLayer?.parentElement as HTMLElement | null
+      expect(documentRoot?.parentElement).toBe(document.documentElement)
+      expect(documentRoot?.nextElementSibling).toBe(toolHost)
+      expect(documentFrame?.parentElement).toBe(documentRoot)
+      expect(documentFrame?.style.left).toBe("50px")
+      expect(documentFrame?.style.top).toBe("100px")
+      expect(documentFrame?.style.width).toBe("320px")
+      expect(documentFrame?.style.height).toBe("240px")
+      expect(documentFrame?.style.overflow).toBe("hidden")
+      expect(scroller.style.position).toBe("")
       expect(documentLayer?.getAttribute("viewBox")).toBe("0 0 320 1000")
+      expect(documentLayer?.style.transform).toBe("translate(0px, -200px)")
 
       const path = documentLayer?.querySelector(".xero-document-pen-path")
       expect(path?.getAttribute("d")).toContain("M 50 250")
@@ -3095,7 +3402,9 @@ describe("BrowserSidebar", () => {
         await new Promise((resolve) => window.requestAnimationFrame(resolve))
       })
 
-      expect(documentLayer?.parentElement).toBe(scroller)
+      expect(documentFrame?.style.left).toBe("50px")
+      expect(documentFrame?.style.top).toBe("100px")
+      expect(documentLayer?.style.transform).toBe("translate(0px, -320px)")
       expect(path?.getAttribute("d")).toContain("M 50 250")
       expect(path?.getAttribute("d")).toContain("L 130 275")
     } finally {

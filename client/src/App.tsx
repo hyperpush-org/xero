@@ -1873,6 +1873,13 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const [browserFullWidthTarget, setBrowserFullWidthTarget] =
     useState<number | null>(readBrowserFocusWidth)
   const [browserLaunchTargets, setBrowserLaunchTargets] = useState<BrowserLaunchTarget[]>([])
+  const activeBrowserLaunchTargets = useMemo(
+    () =>
+      browserLaunchTargets.filter((target) =>
+        activeProjectId ? target.projectId === activeProjectId : !target.projectId,
+      ),
+    [activeProjectId, browserLaunchTargets],
+  )
   const [pendingBrowserOpenUrl, setPendingBrowserOpenUrl] = useState<PendingBrowserOpenUrl | null>(null)
   const [iosOpen, setIosOpen] = useState(false)
   const [solanaOpen, setSolanaOpen] = useState(false)
@@ -2318,17 +2325,22 @@ export function XeroApp({ adapter }: XeroAppProps) {
 
   const handleBrowserLaunchTargetDetected = useCallback((target: BrowserLaunchTarget) => {
     setBrowserLaunchTargets((current) => {
-      const next = current.filter((entry) => entry.id !== target.id)
+      const next = current.filter(
+        (entry) => entry.id !== target.id || entry.projectId !== target.projectId,
+      )
       next.unshift(target)
-      return next.slice(0, 8)
+      return next.slice(0, 24)
     })
   }, [])
 
   const handleBrowserLaunchTargetUnavailable = useCallback((url: string) => {
     setBrowserLaunchTargets((current) =>
-      current.filter((target) => !browserLaunchTargetMatchesUrl(target, url)),
+      current.filter(
+        (target) =>
+          target.projectId !== activeProjectId || !browserLaunchTargetMatchesUrl(target, url),
+      ),
     )
-  }, [])
+  }, [activeProjectId])
 
   const handlePendingBrowserOpenUrlConsumed = useCallback((id: string) => {
     setPendingBrowserOpenUrl((current) => (current?.id === id ? null : current))
@@ -5503,7 +5515,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 fullWidthTarget={browserFullWidthTarget}
                 onFullWidthChange={handleBrowserFullWidthChange}
                 penToolDisabledReason={browserPenToolDisabledReason}
-                projectBrowserTargets={browserLaunchTargets}
+                projectBrowserTargets={activeBrowserLaunchTargets}
+                projectRootPath={activeProject?.repository?.rootPath ?? null}
+                projectStartTargets={activeProjectStartTargets}
                 onProjectBrowserTargetUnavailable={handleBrowserLaunchTargetUnavailable}
                 pendingOpenUrl={pendingBrowserOpenUrl}
                 onPendingOpenUrlConsumed={handlePendingBrowserOpenUrlConsumed}

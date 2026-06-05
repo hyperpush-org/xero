@@ -888,6 +888,10 @@ export function useAgentRuntimeController({
     return visiblePrompt.length > 0 ? `${visiblePrompt}\n\n${hiddenPrompt}` : hiddenPrompt
   }
 
+  function getDraftPromptWithHiddenContext(): string {
+    return promptWithHiddenContext(draftPromptRef.current.trim())
+  }
+
   async function handleStartRuntimeRun(): Promise<boolean> {
     if (!onStartRuntimeRun || (!canStartRuntimeRun && !canStartRuntimeSession)) {
       return false
@@ -1408,6 +1412,7 @@ export function useAgentRuntimeController({
     handleAppendDraftPrompt,
     handleAppendHiddenDraftPrompt,
     handleRemoveHiddenDraftPrompt,
+    getDraftPromptWithHiddenContext,
     handleSubmitExplicitPrompt,
     handleAutoCompactEnabledChange,
     handleSubmitDraftPrompt,

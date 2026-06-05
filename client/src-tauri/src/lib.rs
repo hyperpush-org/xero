@@ -513,6 +513,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::browser::browser_eval_fire_and_forget,
             commands::browser::browser_current_url,
             commands::browser::browser_dev_server_running,
+            commands::browser::browser_list_running_dev_servers,
             commands::browser::browser_screenshot,
             commands::browser::browser_navigate,
             commands::browser::browser_back,

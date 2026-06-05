@@ -298,6 +298,39 @@ describe("TerminalSidebar session lifetime", () => {
     await waitFor(() => expect(mocks.adapter.terminalWrite).toHaveBeenCalledWith("pty-1", "pnpm dev\r"))
   })
 
+  it("stamps detected browser launch targets with the terminal tab project", async () => {
+    const detected: unknown[] = []
+    const handleRef: { current: TerminalSidebarHandle | null } = { current: null }
+    render(
+      <TerminalSidebar
+        open
+        projectId="project-a"
+        onBrowserLaunchTargetDetected={(target) => detected.push(target)}
+        registerHandle={(handle) => {
+          handleRef.current = handle
+        }}
+      />,
+    )
+    await waitFor(() => expect(handleRef.current).not.toBeNull())
+
+    await act(async () => {
+      await handleRef.current?.spawnTabWithCommand("pnpm dev", {
+        label: "web",
+        browserSupported: true,
+      })
+    })
+
+    emitTerminalData("pty-1", "Local: http://localhost:4100/\r\n")
+
+    await waitFor(() => {
+      expect(detected.at(-1)).toMatchObject({
+        label: "web · 127.0.0.1:4100",
+        projectId: "project-a",
+        url: "http://127.0.0.1:4100/",
+      })
+    })
+  })
+
   it("claims the auto-opening blank tab when a project command arrives during terminal startup", async () => {
     let resolveFirstOpen: (response: {
       terminalId: string

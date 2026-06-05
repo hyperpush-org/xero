@@ -22,6 +22,7 @@ import {
   SplitSquareHorizontal,
   X,
 } from 'lucide-react'
+import { convertFileSrc } from '@tauri-apps/api/core'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -116,6 +117,7 @@ import {
   type CodeUndoRequest,
   type CodeUndoConflictSummary,
   type CodeUndoUiState,
+  type ConversationMessageAttachment,
   type ConversationTurn,
   type ReturnSessionToHereUiRequest,
 } from '@xero/ui/components/transcript/conversation-section'
@@ -994,6 +996,7 @@ interface PendingPromptTurn {
   id: string
   text: string
   queuedAt: string | null
+  attachments?: ConversationMessageAttachment[]
 }
 
 type RoutingResolutionRecord = {
@@ -1550,7 +1553,7 @@ function appendPendingPromptTurn(
   }
 
   const text = pendingPrompt.text.trim()
-  if (!text) {
+  if (!text && !pendingPrompt.attachments?.length) {
     return turns
   }
 
@@ -1563,8 +1566,47 @@ function appendPendingPromptTurn(
       role: 'user',
       sequence: latestSequence + 0.5,
       text,
+      attachments: pendingPrompt.attachments,
     },
   ]
+}
+
+function pendingComposerAttachmentPreviewSrc(
+  attachment: ComposerPendingAttachment & { absolutePath: string },
+): string | undefined {
+  if (attachment.kind !== 'image') {
+    return attachment.previewUrl
+  }
+
+  try {
+    return convertFileSrc(attachment.absolutePath)
+  } catch {
+    return attachment.previewUrl
+  }
+}
+
+function pendingComposerAttachmentsToConversation(
+  attachments: readonly ComposerPendingAttachment[],
+): ConversationMessageAttachment[] | undefined {
+  const readyAttachments = attachments.filter(
+    (attachment): attachment is ComposerPendingAttachment & { absolutePath: string } =>
+      attachment.status === 'ready' && typeof attachment.absolutePath === 'string',
+  )
+  if (readyAttachments.length === 0) {
+    return undefined
+  }
+
+  return readyAttachments.map((attachment) => ({
+    id: attachment.id,
+    kind: attachment.kind,
+    mediaType: attachment.mediaType,
+    originalName: attachment.originalName,
+    sizeBytes: attachment.sizeBytes,
+    title: attachment.originalName,
+    alt: attachment.kind === 'image' ? attachment.originalName : null,
+    previewSrc: pendingComposerAttachmentPreviewSrc(attachment),
+    absolutePath: attachment.absolutePath,
+  }))
 }
 
 function getConversationTurnRunIdFromId(id: string): string | null {
@@ -4103,12 +4145,14 @@ export const AgentRuntime = memo(function AgentRuntime({
       return
     }
 
-    const submittedText = controller.draftPrompt.trim()
+    const submittedText = controller.getDraftPromptWithHiddenContext().trim()
+    const submittedAttachments = pendingComposerAttachmentsToConversation(pendingAttachmentsRef.current)
     const optimisticPrompt = submittedText.length > 0
       ? {
           id: `${Date.now()}:${submittedText}`,
           text: submittedText,
           queuedAt: new Date().toISOString(),
+          attachments: submittedAttachments,
         }
       : null
     const shouldAnchorSubmittedPrompt = Boolean(

@@ -22,6 +22,10 @@ if (!HTMLElement.prototype.releasePointerCapture) {
   HTMLElement.prototype.releasePointerCapture = () => {}
 }
 
+vi.mock('@tauri-apps/api/core', () => ({
+  convertFileSrc: (path: string) => `asset://localhost/${encodeURIComponent(path)}`,
+}))
+
 function makeResizeContentRect(width: number, height = 640): DOMRectReadOnly {
   return {
     x: 0,
@@ -216,6 +220,7 @@ import type {
   ProjectDetailView,
   RuntimeRunView,
   RuntimeStreamActivityItemView,
+  RuntimeStreamMediaAttachmentDto,
   RuntimeSessionView,
   RuntimeStreamToolItemView,
 } from '@/src/lib/xero-model'
@@ -670,6 +675,7 @@ function createDictationAdapter(options: {
 }
 
 function makeTranscriptItem(options: {
+  mediaAttachments?: RuntimeStreamMediaAttachmentDto[]
   sequence: number
   role?: 'user' | 'assistant'
   runId?: string
@@ -682,7 +688,7 @@ function makeTranscriptItem(options: {
     runId,
     sequence: options.sequence,
     createdAt: `2026-04-29T00:48:${String(options.sequence).padStart(2, '0')}Z`,
-    mediaAttachments: [],
+    mediaAttachments: options.mediaAttachments ?? [],
     role: options.role ?? 'assistant',
     text: options.text,
   }
@@ -5916,6 +5922,75 @@ describe('AgentRuntime current UI', () => {
         ],
       }),
     )
+
+    const conversation = screen.getByRole('list', { name: 'Agent conversation turns' })
+    const sketchCard = within(conversation).getByRole('note', {
+      name: /browser sketch context attached to prompt/i,
+    })
+    expect(within(sketchCard).getByText('Browser sketch context')).toBeVisible()
+    expect(within(sketchCard).getByRole('img', { name: 'browser-pen.png' })).toHaveAttribute(
+      'src',
+      'asset://localhost/%2Ftmp%2Fbrowser-context.png',
+    )
+  })
+
+  it('renders browser sketch image attachments inside the sent context card', async () => {
+    const hiddenContext = [
+      'Browser sketch context (capture 1):',
+      'App: Web app - 127.0.0.1:5173',
+      'Page: Local App (local dev server /)',
+      'User note: Tighten the hero spacing.',
+      'Attached image: attached image 1, browser-pen.png (paired with this capture; images are ordered by capture number).',
+      'Viewport: 800x600 CSS px, DPR 2',
+      'Drawing: 1 stroke on the attached browser screenshot.',
+    ].join('\n')
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamItems: [
+            makeTranscriptItem({
+              sequence: 2,
+              role: 'user',
+              text: `Tighten the hero spacing.\n\n${hiddenContext}`,
+              mediaAttachments: [
+                {
+                  id: 'browser-pen-media',
+                  kind: 'image',
+                  mediaType: 'image/png',
+                  title: 'browser-pen.png',
+                  alt: 'Browser pen sketch',
+                  sizeBytes: 68,
+                  width: 1,
+                  height: 1,
+                  source: {
+                    kind: 'data_url',
+                    dataUrl:
+                      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
+                  },
+                  renderUrl: null,
+                },
+              ],
+            }),
+          ],
+        })}
+      />,
+    )
+
+    const conversation = screen.getByRole('list', { name: 'Agent conversation turns' })
+    const sketchCard = within(conversation).getByRole('note', {
+      name: /browser sketch context attached to prompt/i,
+    })
+    expect(within(sketchCard).getByText('Browser sketch context')).toBeVisible()
+    expect(within(sketchCard).getByText(/App: Web app/)).toBeVisible()
+    expect(within(sketchCard).getByRole('img', { name: 'Browser pen sketch' })).toBeVisible()
+    expect(
+      within(conversation).getAllByRole('button', {
+        name: /open image preview for browser-pen\.png/i,
+      }),
+    ).toHaveLength(1)
   })
 
   it('shows removable browser element metadata context in the composer', async () => {

@@ -387,6 +387,7 @@ export function TerminalSidebar({
     for (const url of urls) {
       const target = makeBrowserLaunchTarget({
         label: browserLaunchTargetLabel(url, tab.label),
+        projectId: tab.projectId,
         url,
         source: tab.label,
       })
