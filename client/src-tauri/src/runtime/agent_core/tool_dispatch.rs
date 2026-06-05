@@ -39,6 +39,20 @@ pub(crate) struct AgentToolBatchDispatchResult {
     pub(crate) failure: Option<CommandError>,
 }
 
+const AUTONOMOUS_TOOL_EDIT_EXPECTED_TEXT_MISMATCH_CODE: &str =
+    "autonomous_tool_edit_expected_text_mismatch";
+const AUTONOMOUS_TOOL_EDIT_LINE_HASH_MISMATCH_CODE: &str =
+    "autonomous_tool_edit_line_hash_mismatch";
+const AUTONOMOUS_TOOL_EDIT_EXPECTED_EMPTY_CODE: &str = "autonomous_tool_edit_expected_empty";
+
+const MODEL_RECOVERABLE_TOOL_ERROR_CODES: &[&str] = &[
+    AUTONOMOUS_TOOL_STALE_FILE_ERROR_CODE,
+    AUTONOMOUS_TOOL_EXPECTED_HASH_REQUIRED_CODE,
+    AUTONOMOUS_TOOL_EDIT_EXPECTED_TEXT_MISMATCH_CODE,
+    AUTONOMOUS_TOOL_EDIT_LINE_HASH_MISMATCH_CODE,
+    AUTONOMOUS_TOOL_EDIT_EXPECTED_EMPTY_CODE,
+];
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn dispatch_tool_call_with_write_approval(
     tool_registry: &ToolRegistry,
@@ -1612,7 +1626,7 @@ fn persist_tool_batch_report(
                         failure_log_context,
                     )?;
                     results.push(result);
-                    if failure.is_none() {
+                    if failure.is_none() && !model_can_recover_from_tool_error(&error) {
                         failure = Some(error);
                     }
                 }
@@ -2093,6 +2107,33 @@ fn tool_execution_error_json(error: &ToolExecutionError) -> JsonValue {
     })
 }
 
+fn model_can_recover_from_tool_error(error: &CommandError) -> bool {
+    model_can_recover_from_tool_error_code(&error.code)
+}
+
+fn model_can_recover_from_tool_error_code(code: &str) -> bool {
+    MODEL_RECOVERABLE_TOOL_ERROR_CODES.contains(&code)
+}
+
+fn model_recovery_message_for_tool_error_code(code: &str) -> Option<&'static str> {
+    match code {
+        AUTONOMOUS_TOOL_STALE_FILE_ERROR_CODE => Some(
+            "Re-read or re-hash the current file, then retry the tool call with the current expected hash.",
+        ),
+        AUTONOMOUS_TOOL_EXPECTED_HASH_REQUIRED_CODE => Some(
+            "Read or hash the current file, then retry the tool call with the required expected hash field.",
+        ),
+        AUTONOMOUS_TOOL_EDIT_EXPECTED_TEXT_MISMATCH_CODE
+        | AUTONOMOUS_TOOL_EDIT_LINE_HASH_MISMATCH_CODE => Some(
+            "Use the current nearby lines and line hashes returned by the tool, or re-read only if context is insufficient, then retry the edit with corrected startLine/endLine, expected text, and line/hash evidence.",
+        ),
+        AUTONOMOUS_TOOL_EDIT_EXPECTED_EMPTY_CODE => Some(
+            "Retry the edit with the exact current text in expected; for a blank line, use its line ending such as \\n.",
+        ),
+        _ => None,
+    }
+}
+
 fn command_error_to_tool_execution_error(error: CommandError) -> ToolExecutionError {
     let (category, model_message) = match error.class {
         CommandErrorClass::PolicyDenied => (
@@ -2112,11 +2153,14 @@ fn command_error_to_tool_execution_error(error: CommandError) -> ToolExecutionEr
             "The tool input was invalid or unavailable in the active runtime.",
         ),
     };
+    let retryable = error.retryable || model_can_recover_from_tool_error_code(&error.code);
+    let model_message =
+        model_recovery_message_for_tool_error_code(&error.code).unwrap_or(model_message);
     ToolExecutionError::new(
         category,
         error.code,
         error.message,
-        error.retryable,
+        retryable,
         model_message,
     )
 }
@@ -2441,6 +2485,151 @@ mod tests {
             result.output["dispatch"]["groupMode"],
             json!("parallel_read_only")
         );
+    }
+
+    #[test]
+    fn model_recoverable_edit_guard_failure_does_not_fail_batch() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "project-recoverable-edit-failure";
+        let run_id = "run-recoverable-edit-failure";
+        create_project_database(&repo_root, project_id);
+        let session = project_store::create_agent_session(
+            &repo_root,
+            &project_store::AgentSessionCreateRecord {
+                project_id: project_id.into(),
+                title: "Recoverable edit failure".into(),
+                summary: String::new(),
+                selected: true,
+                session_kind: project_store::AgentSessionKind::Standard,
+            },
+        )
+        .expect("create agent session");
+        project_store::insert_agent_run(
+            &repo_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: None,
+                agent_definition_version: None,
+                project_id: project_id.into(),
+                agent_session_id: session.agent_session_id,
+                run_id: run_id.into(),
+                provider_id: "test-provider".into(),
+                model_id: "test-model".into(),
+                prompt: "Remove the command K UI.".into(),
+                system_prompt: "Engineer test prompt.".into(),
+                now: "2026-06-05T00:00:00Z".into(),
+            },
+        )
+        .expect("insert run");
+
+        let tool_call = AgentToolCall {
+            tool_call_id: "call-edit".into(),
+            tool_name: AUTONOMOUS_TOOL_EDIT.into(),
+            input: json!({
+                "path": "src/app.tsx",
+                "startLine": 96,
+                "endLine": 104,
+                "expected": "<input />\n<kbd>Cmd+K</kbd>\n",
+                "replacement": "",
+                "expectedHash": "abc123",
+            }),
+        };
+        record_started_tool_call(&repo_root, project_id, run_id, &tool_call, false)
+            .expect("record started tool call");
+
+        let tool_error = command_error_to_tool_execution_error(CommandError::user_fixable(
+            AUTONOMOUS_TOOL_EDIT_EXPECTED_TEXT_MISMATCH_CODE,
+            "Xero refused to apply the edit because the expected text does not match.",
+        ));
+        assert!(tool_error.retryable);
+        assert!(tool_error
+            .model_message
+            .contains("re-read only if context is insufficient"));
+
+        let report = ToolBatchDispatchReport {
+            groups: vec![xero_agent_core::ToolGroupDispatchReport {
+                mode: ToolGroupExecutionMode::SequentialMutating,
+                elapsed_ms: 12,
+                outcomes: vec![ToolDispatchOutcome::Failed(ToolDispatchFailure {
+                    tool_call_id: tool_call.tool_call_id.clone(),
+                    tool_name: tool_call.tool_name.clone(),
+                    error: tool_error,
+                    doom_loop_signal: None,
+                    rollback_payload: None,
+                    rollback_error: None,
+                    pre_hook_payload: json!({}),
+                    post_hook_payload: json!({}),
+                    elapsed_ms: 11,
+                    sandbox_metadata: None,
+                })],
+                timeout_error: None,
+            }],
+        };
+        let budget = ToolBudget::default();
+        let original_calls = BTreeMap::from([(tool_call.tool_call_id.clone(), tool_call.clone())]);
+        let run_record = project_store::load_agent_run_record(&repo_root, project_id, run_id)
+            .expect("load run record");
+        let failure_log_context = AgentToolFailureLogContext::from_run_record(
+            &run_record,
+            2,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        );
+
+        let batch = persist_tool_batch_report(
+            &repo_root,
+            project_id,
+            run_id,
+            report,
+            &budget,
+            &original_calls,
+            &failure_log_context,
+        )
+        .expect("persist recoverable failure");
+
+        assert!(batch.failure.is_none());
+        assert_eq!(batch.results.len(), 1);
+        let result = &batch.results[0];
+        assert!(!result.ok);
+        assert_eq!(
+            result.output["error"]["code"],
+            json!(AUTONOMOUS_TOOL_EDIT_EXPECTED_TEXT_MISMATCH_CODE)
+        );
+        assert_eq!(result.output["error"]["retryable"], json!(true));
+        assert!(result.output["error"]["modelMessage"]
+            .as_str()
+            .expect("model message")
+            .contains("re-read only if context is insufficient"));
+
+        let snapshot =
+            project_store::load_agent_run(&repo_root, project_id, run_id).expect("load run");
+        let persisted_call = snapshot
+            .tool_calls
+            .iter()
+            .find(|call| call.tool_call_id == "call-edit")
+            .expect("persisted tool call");
+        assert_eq!(persisted_call.state, AgentToolCallState::Failed);
+        assert_eq!(
+            persisted_call
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some(AUTONOMOUS_TOOL_EDIT_EXPECTED_TEXT_MISMATCH_CODE)
+        );
+    }
+
+    #[test]
+    fn empty_edit_expected_is_model_recoverable() {
+        let tool_error = command_error_to_tool_execution_error(CommandError::user_fixable(
+            AUTONOMOUS_TOOL_EDIT_EXPECTED_EMPTY_CODE,
+            "Xero requires edit expected to include the exact current text to replace.",
+        ));
+
+        assert!(tool_error.retryable);
+        assert_eq!(tool_error.code, AUTONOMOUS_TOOL_EDIT_EXPECTED_EMPTY_CODE);
+        assert!(tool_error.model_message.contains("blank line"));
     }
 
     #[test]

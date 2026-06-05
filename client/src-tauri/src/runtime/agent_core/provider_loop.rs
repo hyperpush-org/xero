@@ -5938,11 +5938,37 @@ fn granted_tools_from_tool_access_result(result: &AgentToolResult) -> Option<Vec
     if result.tool_name != AUTONOMOUS_TOOL_TOOL_ACCESS || !result.ok {
         return None;
     }
-    let result = serde_json::from_value::<AutonomousToolResult>(result.output.clone()).ok()?;
+    granted_tools_from_tool_access_value(&result.output)
+        .or_else(|| {
+            result
+                .output
+                .get("output")
+                .and_then(granted_tools_from_tool_access_output)
+        })
+        .or_else(|| granted_tools_from_tool_access_output(&result.output))
+}
+
+fn granted_tools_from_tool_access_value(value: &JsonValue) -> Option<Vec<String>> {
+    let result = serde_json::from_value::<AutonomousToolResult>(value.clone()).ok()?;
     match result.output {
         AutonomousToolOutput::ToolAccess(output) => Some(output.granted_tools),
         _ => None,
     }
+}
+
+fn granted_tools_from_tool_access_output(output: &JsonValue) -> Option<Vec<String>> {
+    if output.get("kind").and_then(JsonValue::as_str) != Some("tool_access") {
+        return None;
+    }
+    Some(
+        output
+            .get("grantedTools")?
+            .as_array()?
+            .iter()
+            .filter_map(JsonValue::as_str)
+            .map(str::to_owned)
+            .collect(),
+    )
 }
 
 pub(crate) fn skill_contexts_from_provider_messages(
@@ -7740,6 +7766,177 @@ mod tests {
             json!("tool_access_summary_json")
         );
         assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
+    }
+
+    #[test]
+    fn tool_access_activation_reads_full_and_compact_outputs() {
+        let full_result = AgentToolResult {
+            tool_call_id: "call-tool-access-full".into(),
+            tool_name: AUTONOMOUS_TOOL_TOOL_ACCESS.into(),
+            ok: true,
+            summary: "Requested tools will be exposed.".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_TOOL_ACCESS,
+                "summary": "Requested tools will be exposed.",
+                "commandResult": null,
+                "output": {
+                    "kind": "tool_access",
+                    "action": "request",
+                    "grantedTools": ["edit", "write"],
+                    "deniedTools": [],
+                    "availableGroups": []
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+        assert_eq!(
+            granted_tools_from_tool_access_result(&full_result),
+            Some(vec!["edit".into(), "write".into()])
+        );
+
+        let partial_wrapper_result = AgentToolResult {
+            tool_call_id: "call-tool-access-wrapper".into(),
+            tool_name: AUTONOMOUS_TOOL_TOOL_ACCESS.into(),
+            ok: true,
+            summary: "Requested tools will be exposed.".into(),
+            output: json!({
+                "commandResult": null,
+                "output": {
+                    "kind": "tool_access",
+                    "action": "request",
+                    "grantedTools": ["patch"],
+                    "deniedTools": [],
+                    "availableGroups": []
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+        assert_eq!(
+            granted_tools_from_tool_access_result(&partial_wrapper_result),
+            Some(vec!["patch".into()])
+        );
+
+        let compact_result = AgentToolResult {
+            tool_call_id: "call-tool-access-compact".into(),
+            tool_name: AUTONOMOUS_TOOL_TOOL_ACCESS.into(),
+            ok: true,
+            summary: "Requested tools will be exposed.".into(),
+            output: json!({
+                "kind": "tool_access",
+                "action": "request",
+                "grantedTools": ["edit"],
+                "grantedToolDetails": [],
+                "deniedTools": [],
+                "availableGroups": []
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+        assert_eq!(
+            granted_tools_from_tool_access_result(&compact_result),
+            Some(vec!["edit".into()])
+        );
+    }
+
+    #[test]
+    fn tool_access_activation_respects_runtime_agent_boundaries() {
+        let compact_result = AgentToolResult {
+            tool_call_id: "call-tool-access-compact-policy".into(),
+            tool_name: AUTONOMOUS_TOOL_TOOL_ACCESS.into(),
+            ok: true,
+            summary: "Requested tools will be exposed.".into(),
+            output: json!({
+                "kind": "tool_access",
+                "action": "request",
+                "grantedTools": ["edit", "write", "command_verify"],
+                "grantedToolDetails": [],
+                "deniedTools": [],
+                "availableGroups": []
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+        let granted_tools = granted_tools_from_tool_access_result(&compact_result)
+            .expect("compact tool_access grants");
+
+        fn registry_after_grant(
+            runtime_agent_id: RuntimeAgentIdDto,
+            granted_tools: &[String],
+        ) -> ToolRegistry {
+            let tempdir = tempfile::tempdir().expect("temp dir");
+            let mut controls_input = test_controls_input();
+            controls_input.runtime_agent_id = runtime_agent_id;
+            let controls = runtime_controls_from_request(Some(&controls_input));
+            let tool_runtime = AutonomousToolRuntime::new(tempdir.path())
+                .expect("runtime")
+                .with_runtime_run_controls(controls);
+            let mut registry = ToolRegistry::for_tool_names_with_options(
+                [AUTONOMOUS_TOOL_TOOL_ACCESS.to_owned()]
+                    .into_iter()
+                    .collect(),
+                ToolRegistryOptions {
+                    runtime_agent_id,
+                    agent_tool_policy: tool_runtime.agent_tool_policy().cloned(),
+                    ..ToolRegistryOptions::default()
+                },
+            );
+            registry
+                .expand_with_tool_names_from_runtime_for_reason(
+                    granted_tools.iter().map(String::as_str),
+                    &tool_runtime,
+                    "tool_access_request",
+                    "test_policy_filtered_activation",
+                    "Test expansion must honor the active runtime agent policy.",
+                )
+                .expect("expand granted tools");
+            registry
+        }
+
+        for runtime_agent_id in [
+            RuntimeAgentIdDto::Engineer,
+            RuntimeAgentIdDto::Debug,
+            RuntimeAgentIdDto::Generalist,
+            RuntimeAgentIdDto::ComputerUse,
+        ] {
+            let registry = registry_after_grant(runtime_agent_id, &granted_tools);
+            assert!(
+                registry.descriptor(AUTONOMOUS_TOOL_EDIT).is_some(),
+                "{runtime_agent_id:?} should expose edit from a granted tool_access result"
+            );
+            assert!(
+                registry.descriptor(AUTONOMOUS_TOOL_WRITE).is_some(),
+                "{runtime_agent_id:?} should expose write from a granted tool_access result"
+            );
+            assert!(
+                registry.descriptor(AUTONOMOUS_TOOL_COMMAND_VERIFY).is_some(),
+                "{runtime_agent_id:?} should expose command_verify from a granted tool_access result"
+            );
+        }
+
+        for runtime_agent_id in [
+            RuntimeAgentIdDto::Ask,
+            RuntimeAgentIdDto::Plan,
+            RuntimeAgentIdDto::Crawl,
+            RuntimeAgentIdDto::AgentCreate,
+        ] {
+            let registry = registry_after_grant(runtime_agent_id, &granted_tools);
+            assert!(
+                registry.descriptor(AUTONOMOUS_TOOL_EDIT).is_none(),
+                "{runtime_agent_id:?} should not expose edit from tool_access"
+            );
+            assert!(
+                registry.descriptor(AUTONOMOUS_TOOL_WRITE).is_none(),
+                "{runtime_agent_id:?} should not expose write from tool_access"
+            );
+            assert!(
+                registry
+                    .descriptor(AUTONOMOUS_TOOL_COMMAND_VERIFY)
+                    .is_none(),
+                "{runtime_agent_id:?} should not expose command_verify from tool_access"
+            );
+        }
     }
 
     #[test]

@@ -761,7 +761,7 @@ pub(crate) fn base_policy_fragment(runtime_agent_id: RuntimeAgentIdDto) -> Strin
         RuntimeAgentIdDto::Engineer => [
             "You are Xero's Engineer agent. Work directly in the imported repository, use tools for filesystem and command work, record evidence, and stop only when the task is done or a configured safety boundary requires user input.",
             "",
-            "Operate like a production coding agent: inspect before editing, respect a dirty worktree, keep changes scoped, prefer `rg` for search, run focused verification when behavior changes, and summarize concrete evidence before completion. Existing-file mutations require current file evidence: use read/file_hash and pass the current expectedHash (or expectedSourceHash for copy sources) before edit, write-overwrite, patch, structured edit, notebook_edit, delete, rename, copy, or fs_transaction apply. If a tool returns autonomous_tool_stale_file or autonomous_tool_expected_hash_required, re-read or re-hash the current file before retrying; do not reuse stale evidence.",
+            "Operate like a production coding agent: inspect before editing, respect a dirty worktree, keep changes scoped, prefer `rg` for search, run focused verification when behavior changes, and summarize concrete evidence before completion. Existing-file mutations require current file evidence: use read/file_hash and pass the current expectedHash (or expectedSourceHash for copy sources) before edit, write-overwrite, patch, structured edit, notebook_edit, delete, rename, copy, or fs_transaction apply. If a tool returns autonomous_tool_stale_file or autonomous_tool_expected_hash_required, re-read or re-hash the current file before retrying. If a tool returns autonomous_tool_edit_expected_text_mismatch or autonomous_tool_edit_line_hash_mismatch, use the returned nearby lines and line hashes to correct the edit, and re-read only when those diagnostics are insufficient.",
             "",
             "Persistence and retrieval contract: Xero persists a context manifest before provider turns and keeps durable project context behind the `project_context` tool instead of preloading raw memory or project records. Use `project_context` to read context before prior-work-sensitive tasks involving previous work, decisions, constraints, known failures, or previous runs. Use it to record/update context after durable findings, file changes, verification, blockers, corrections, and handoff-ready summaries.",
             "",
@@ -3726,7 +3726,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ("endLine", integer_schema("1-based final line to replace.")),
                     (
                         "expected",
-                        string_schema("Exact current text expected in the selected range."),
+                        string_schema("Exact current text expected in the selected range. Whitespace-only text is valid for blank-line edits; the string must not be empty."),
                     ),
                     (
                         "replacement",

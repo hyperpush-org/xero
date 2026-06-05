@@ -193,11 +193,10 @@ impl AutonomousToolRuntime {
         request: AutonomousCommandRequest,
     ) -> CommandResult<PreparedCommandRequest> {
         let argv = normalize_command_argv(&request.argv)?;
-        let cwd_relative = request
-            .cwd
-            .as_deref()
-            .map(normalize_command_cwd)
-            .transpose()?;
+        let cwd_relative = match request.cwd.as_deref() {
+            Some(cwd) => normalize_command_cwd(cwd)?,
+            None => None,
+        };
         let cwd = match cwd_relative.as_ref() {
             Some(path) => self
                 .resolve_existing_directory(path)
@@ -1632,9 +1631,15 @@ fn normalize_command_argv(argv: &[String]) -> CommandResult<Vec<String>> {
         .collect())
 }
 
-fn normalize_command_cwd(value: &str) -> CommandResult<PathBuf> {
+fn normalize_command_cwd(value: &str) -> CommandResult<Option<PathBuf>> {
     validate_non_empty(value, "cwd")?;
-    normalize_relative_path(value, "cwd").map_err(map_cwd_policy_error)
+    let trimmed = value.trim();
+    if is_current_directory_path(trimmed) {
+        return Ok(None);
+    }
+    normalize_relative_path(trimmed, "cwd")
+        .map(Some)
+        .map_err(map_cwd_policy_error)
 }
 
 fn normalize_timeout_ms(timeout_ms: Option<u64>, max_timeout_ms: u64) -> CommandResult<u64> {
@@ -2728,6 +2733,26 @@ mod tests {
             .expect("verify policy");
 
         assert_eq!(verify_decision.action, AutonomousSafetyPolicyAction::Allow);
+
+        let root_cwd_verify_request = AutonomousToolRequest::Command(AutonomousCommandRequest {
+            argv: vec!["cargo".into(), "test".into()],
+            cwd: Some(".".into()),
+            timeout_ms: None,
+        });
+        let root_cwd_verify_decision = runtime
+            .evaluate_safety_policy(
+                AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                &json!({"argv": ["cargo", "test"], "cwd": "."}),
+                &root_cwd_verify_request,
+                false,
+                "input-hash",
+            )
+            .expect("verify policy with root cwd shorthand");
+
+        assert_eq!(
+            root_cwd_verify_decision.action,
+            AutonomousSafetyPolicyAction::Allow
+        );
     }
 
     #[test]

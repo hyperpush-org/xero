@@ -1761,6 +1761,17 @@ mod tests {
         )]))
     }
 
+    fn stale_schema_with_extra_review_state() -> SchemaRef {
+        let current = schema();
+        let mut fields = current
+            .fields()
+            .iter()
+            .map(|field| field.as_ref().clone())
+            .collect::<Vec<_>>();
+        fields.push(Field::new("review_state", DataType::Utf8, true));
+        Arc::new(Schema::new(fields))
+    }
+
     #[test]
     fn s36_stale_lance_schema_is_quarantined_before_listing_and_insert() {
         reset_connection_cache_for_tests();
@@ -1830,6 +1841,51 @@ mod tests {
             .expect("agent-memory optimize");
         assert_eq!(optimization.table_name, AGENT_MEMORIES_TABLE);
         assert!(optimization.after.schema_current);
+    }
+
+    #[test]
+    fn s36_stale_lance_schema_with_extra_columns_is_quarantined_before_insert() {
+        reset_connection_cache_for_tests();
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let database_path = tempdir.path().join("state.db");
+        let dataset_dir = dataset_dir_for_database_path(&database_path);
+
+        runtime()
+            .block_on(async {
+                let connection = connect_dataset(&dataset_dir).await?;
+                let stale_schema = stale_schema_with_extra_review_state();
+                let empty = RecordBatch::new_empty(stale_schema.clone());
+                let iter = RecordBatchIterator::new(
+                    std::iter::once(Ok::<_, arrow_schema::ArrowError>(empty)),
+                    stale_schema,
+                );
+                let reader: Box<dyn arrow_array::RecordBatchReader + Send + 'static> =
+                    Box::new(iter);
+                connection
+                    .create_table(AGENT_MEMORIES_TABLE, reader)
+                    .execute()
+                    .await
+                    .map_err(|error| map_lance_error("test_stale_lance_create_failed", error))?;
+                Ok::<_, CommandError>(())
+            })
+            .expect("create stale lance table");
+
+        let store = open_for_database_path(&database_path, "project-extra-column-reset");
+        let inserted = store
+            .insert(approved_project_row("memory-extra-column-quarantine"))
+            .expect("insert after extra-column schema quarantine");
+        assert_eq!(inserted.memory_id, "memory-extra-column-quarantine");
+
+        assert!(dataset_dir.join("agent_memories.lance").exists());
+        let quarantine_table_count = std::fs::read_dir(&dataset_dir)
+            .expect("read lance dataset")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| {
+                name.starts_with("agent_memories_quarantine_") && name.ends_with(".lance")
+            })
+            .count();
+        assert_eq!(quarantine_table_count, 1);
     }
 
     #[test]

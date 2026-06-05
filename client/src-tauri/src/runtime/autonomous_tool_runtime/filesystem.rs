@@ -1280,7 +1280,7 @@ impl AutonomousToolRuntime {
 
     pub fn edit(&self, request: AutonomousEditRequest) -> CommandResult<AutonomousToolResult> {
         validate_non_empty(&request.path, "path")?;
-        validate_non_empty(&request.expected, "expected")?;
+        validate_edit_expected_present(&request.expected)?;
         let relative_path = normalize_relative_path(&request.path, "path")?;
         let resolved_path = self.resolve_existing_path(&relative_path)?;
         let display_path = path_to_forward_slash(&relative_path);
@@ -1312,26 +1312,27 @@ impl AutonomousToolRuntime {
                 ),
             ));
         }
-        validate_optional_line_hash(
-            request.start_line_hash.as_deref(),
-            &existing,
-            request.start_line,
-            "startLineHash",
-            "autonomous_tool_edit_line_hash_mismatch",
-        )?;
-        validate_optional_line_hash(
-            request.end_line_hash.as_deref(),
-            &existing,
-            request.end_line,
-            "endLineHash",
-            "autonomous_tool_edit_line_hash_mismatch",
-        )?;
-
-        let (start_byte, end_byte) =
+        let (start_byte, mut end_byte) =
             line_byte_range(&existing, request.start_line, request.end_line)?;
-        let current = &existing[start_byte..end_byte];
+        let mut effective_end_line = request.end_line;
+        let mut current = &existing[start_byte..end_byte];
         let expected = normalize_replacement_line_endings(&request.expected, decoded.line_ending);
-        if current != expected
+        if current != expected {
+            if let Some((prefix_end_line, prefix_end_byte)) = guarded_edit_prefix_line_match(
+                &existing,
+                start_byte,
+                request.start_line,
+                request.end_line,
+                expected.as_str(),
+                request.expected_hash.as_deref(),
+            )? {
+                effective_end_line = prefix_end_line;
+                end_byte = prefix_end_byte;
+                current = &existing[start_byte..end_byte];
+            }
+        }
+        let exact_expected_match = current == expected;
+        if !exact_expected_match
             && !guarded_edit_expected_equivalent(
                 current,
                 expected.as_str(),
@@ -1345,6 +1346,22 @@ impl AutonomousToolRuntime {
                     edit_conflict_context(&existing, request.start_line, request.end_line)
                 ),
             ));
+        }
+        if request.expected_hash.is_none() || !exact_expected_match {
+            validate_optional_line_hash(
+                request.start_line_hash.as_deref(),
+                &existing,
+                request.start_line,
+                "startLineHash",
+                "autonomous_tool_edit_line_hash_mismatch",
+            )?;
+            validate_optional_line_hash(
+                request.end_line_hash.as_deref(),
+                &existing,
+                request.end_line,
+                "endLineHash",
+                "autonomous_tool_edit_line_hash_mismatch",
+            )?;
         }
 
         let replacement =
@@ -1378,13 +1395,13 @@ impl AutonomousToolRuntime {
             tool_name: AUTONOMOUS_TOOL_EDIT.into(),
             summary: format!(
                 "{verb} lines {}-{} in `{display_path}`.",
-                request.start_line, request.end_line
+                request.start_line, effective_end_line
             ),
             command_result: None,
             output: AutonomousToolOutput::Edit(AutonomousEditOutput {
                 path: display_path,
                 start_line: request.start_line,
-                end_line: request.end_line,
+                end_line: effective_end_line,
                 replacement_len: replacement.chars().count(),
                 applied: !request.preview,
                 preview: request.preview,
@@ -6483,6 +6500,42 @@ fn normalize_edit_expected_guard_text(text: &str) -> String {
         .join("\n")
 }
 
+fn guarded_edit_prefix_line_match(
+    existing: &str,
+    start_byte: usize,
+    start_line: usize,
+    requested_end_line: usize,
+    expected: &str,
+    expected_hash: Option<&str>,
+) -> CommandResult<Option<(usize, usize)>> {
+    if expected_hash.is_none() || expected.is_empty() {
+        return Ok(None);
+    }
+    let expected_line_count = count_lines(expected);
+    if expected_line_count == 0 {
+        return Ok(None);
+    }
+    let Some(prefix_end_line) = start_line.checked_add(expected_line_count - 1) else {
+        return Ok(None);
+    };
+    if prefix_end_line >= requested_end_line {
+        return Ok(None);
+    }
+
+    let expected_end_byte = start_byte.saturating_add(expected.len());
+    let (_, prefix_end_byte) = line_byte_range(existing, start_line, prefix_end_line)?;
+    if prefix_end_byte != expected_end_byte {
+        return Ok(None);
+    }
+    if existing
+        .get(start_byte..prefix_end_byte)
+        .is_some_and(|current_prefix| current_prefix == expected)
+    {
+        return Ok(Some((prefix_end_line, prefix_end_byte)));
+    }
+    Ok(None)
+}
+
 fn build_search_regex(query: &str, is_regex: bool, ignore_case: bool) -> CommandResult<Regex> {
     let pattern = if is_regex {
         query.to_string()
@@ -6646,6 +6699,17 @@ fn validate_optional_line_hash(
             format!("Xero refused the edit because {field} no longer matches line {line}."),
         ));
     }
+    Ok(())
+}
+
+fn validate_edit_expected_present(expected: &str) -> CommandResult<()> {
+    if expected.is_empty() {
+        return Err(CommandError::user_fixable(
+            "autonomous_tool_edit_expected_empty",
+            "Xero requires edit expected to include the exact current text to replace; for a blank line, pass its line ending such as \\n.",
+        ));
+    }
+
     Ok(())
 }
 
@@ -7378,6 +7442,137 @@ mod tests {
             })
             .expect_err("unguarded whitespace drift should still fail");
         assert_eq!(rejected.code, "autonomous_tool_edit_expected_text_mismatch");
+    }
+
+    #[test]
+    fn edit_with_hash_narrows_prefix_line_match_in_oversized_range() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        let path = root.join("component.tsx");
+        fs::write(&path, "one\ntwo\nthree\nfour\n").expect("component");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let read_output = read_output(runtime.read(read_request("component.tsx")));
+        let edit_output = edit_output(runtime.edit(AutonomousEditRequest {
+            path: "component.tsx".into(),
+            start_line: 2,
+            end_line: 4,
+            expected: "two\nthree\n".into(),
+            replacement: "TWO\nTHREE\n".into(),
+            expected_hash: read_output.sha256.clone(),
+            start_line_hash: None,
+            end_line_hash: None,
+            preview: false,
+        }));
+
+        assert_eq!(edit_output.start_line, 2);
+        assert_eq!(edit_output.end_line, 3);
+        assert_eq!(
+            fs::read_to_string(&path).expect("updated component"),
+            "one\nTWO\nTHREE\nfour\n",
+        );
+
+        fs::write(&path, "one\ntwo\nthree\nfour\n").expect("reset component");
+        let rejected = runtime
+            .edit(AutonomousEditRequest {
+                path: "component.tsx".into(),
+                start_line: 2,
+                end_line: 4,
+                expected: "two\nthree\n".into(),
+                replacement: "TWO\nTHREE\n".into(),
+                expected_hash: None,
+                start_line_hash: None,
+                end_line_hash: None,
+                preview: false,
+            })
+            .expect_err("unguarded oversized range should still fail");
+        assert_eq!(rejected.code, "autonomous_tool_edit_expected_text_mismatch");
+    }
+
+    #[test]
+    fn edit_with_full_file_hash_ignores_bad_optional_line_hash_for_exact_match() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        let path = root.join("style.ts");
+        fs::write(&path, "export const PRIMARY =\n  \"text-sm font-bold\";\n").expect("style");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let read_output = read_output(runtime.read(read_request("style.ts")));
+        let edit_output = edit_output(runtime.edit(AutonomousEditRequest {
+            path: "style.ts".into(),
+            start_line: 2,
+            end_line: 2,
+            expected: "  \"text-sm font-bold\";\n".into(),
+            replacement: "  \"text-xs font-bold\";\n".into(),
+            expected_hash: read_output.sha256.clone(),
+            start_line_hash: Some("0".repeat(64)),
+            end_line_hash: Some("0".repeat(64)),
+            preview: false,
+        }));
+
+        assert_eq!(edit_output.start_line, 2);
+        assert_eq!(edit_output.end_line, 2);
+        assert_eq!(
+            fs::read_to_string(&path).expect("updated style"),
+            "export const PRIMARY =\n  \"text-xs font-bold\";\n",
+        );
+
+        let rejected = runtime
+            .edit(AutonomousEditRequest {
+                path: "style.ts".into(),
+                start_line: 2,
+                end_line: 2,
+                expected: "  \"text-xs font-bold\";\n".into(),
+                replacement: "  \"text-sm font-bold\";\n".into(),
+                expected_hash: None,
+                start_line_hash: Some("0".repeat(64)),
+                end_line_hash: None,
+                preview: false,
+            })
+            .expect_err("line hash still protects unguarded edits");
+        assert_eq!(rejected.code, "autonomous_tool_edit_line_hash_mismatch");
+    }
+
+    #[test]
+    fn edit_accepts_blank_line_expected_text() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        let path = root.join("style.test.ts");
+        fs::write(&path, "one\n\ntwo\n").expect("test file");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let read_output = read_output(runtime.read(read_request("style.test.ts")));
+        edit_output(runtime.edit(AutonomousEditRequest {
+            path: "style.test.ts".into(),
+            start_line: 2,
+            end_line: 2,
+            expected: "\n".into(),
+            replacement: "\ninserted\n\n".into(),
+            expected_hash: read_output.sha256.clone(),
+            start_line_hash: None,
+            end_line_hash: None,
+            preview: false,
+        }));
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("updated test file"),
+            "one\n\ninserted\n\ntwo\n",
+        );
+
+        let rejected = runtime
+            .edit(AutonomousEditRequest {
+                path: "style.test.ts".into(),
+                start_line: 2,
+                end_line: 2,
+                expected: String::new(),
+                replacement: "nope\n".into(),
+                expected_hash: None,
+                start_line_hash: None,
+                end_line_hash: None,
+                preview: false,
+            })
+            .expect_err("empty expected is still invalid");
+        assert_eq!(rejected.code, "autonomous_tool_edit_expected_empty");
     }
 
     #[test]

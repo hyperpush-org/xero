@@ -279,9 +279,47 @@ function providerModelSupportsAttachmentModality(
 	modelId: string | null,
 	requiredModality: "image" | "file",
 ): boolean {
-	if (requiredModality !== "image") return false;
-	if (providerId !== "xai" || !modelId) return false;
-	return modelId === "grok-4.3" || modelId === "grok-4.3-latest";
+	if (!providerId || !modelId) return false;
+	if (
+		requiredModality === "image" &&
+		providerId === "xai" &&
+		(modelId === "grok-4.3" || modelId === "grok-4.3-latest")
+	) {
+		return true;
+	}
+	if (providerId !== "openai_codex" && providerId !== "openai_api") {
+		return false;
+	}
+	const modelName = modelId.split("/").pop() ?? modelId;
+	return (
+		isOpenAiGptAttachmentModel(modelName) &&
+		(requiredModality === "image" || requiredModality === "file")
+	);
+}
+
+function isOpenAiGptAttachmentModel(modelName: string): boolean {
+	const normalized = modelName.trim().toLowerCase();
+	if (normalized === "chat-latest") return true;
+	if (!normalized.startsWith("gpt-")) return false;
+	if (
+		normalized.startsWith("gpt-image") ||
+		normalized.startsWith("gpt-audio") ||
+		normalized.startsWith("gpt-realtime") ||
+		normalized.includes("search") ||
+		normalized.includes("transcribe") ||
+		normalized.includes("tts")
+	) {
+		return false;
+	}
+	return (
+		normalized === "gpt-5" ||
+		normalized.startsWith("gpt-5.") ||
+		normalized.startsWith("gpt-5-") ||
+		normalized === "gpt-4.1" ||
+		normalized.startsWith("gpt-4.1-") ||
+		normalized === "gpt-4o" ||
+		normalized.startsWith("gpt-4o-")
+	);
 }
 
 function attachmentModalityLabel(modality: "image" | "file"): string {

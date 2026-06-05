@@ -699,8 +699,8 @@ fn openai_codex_projection() -> Vec<ProviderModelRecord> {
                 (*model_id).into(),
                 display_name,
                 openai_codex_thinking_capability(model_id),
-                Vec::new(),
-                "unknown".into(),
+                openai_codex_input_modalities(model_id),
+                openai_codex_input_modalities_source(model_id).into(),
                 None,
                 None,
             )
@@ -1245,6 +1245,18 @@ fn openai_codex_thinking_capability(model_id: &str) -> ProviderModelThinkingCapa
     supported_thinking_capability(effort_options)
 }
 
+fn openai_codex_input_modalities(model_id: &str) -> Vec<String> {
+    openai_gpt_attachment_input_modalities(OPENAI_CODEX_PROVIDER_ID, model_id).unwrap_or_default()
+}
+
+fn openai_codex_input_modalities_source(model_id: &str) -> &'static str {
+    if openai_gpt_attachment_input_modalities(OPENAI_CODEX_PROVIDER_ID, model_id).is_some() {
+        "openai_static_gpt_multimodal"
+    } else {
+        "unknown"
+    }
+}
+
 fn openai_codex_supports_x_high_thinking(model_id: &str) -> bool {
     let model_id = model_id.trim().to_ascii_lowercase();
     ["gpt-5.2", "gpt-5.3", "gpt-5.4", "gpt-5.5"]
@@ -1309,6 +1321,87 @@ fn normalize_modality_source(source: String) -> String {
     } else {
         trimmed.into()
     }
+}
+
+fn openai_gpt_cached_models(
+    provider_id: &str,
+    models: &[ProviderModelRecord],
+) -> Vec<ProviderModelRecord> {
+    models
+        .iter()
+        .map(|model| {
+            let mut model = model.clone();
+            apply_openai_gpt_attachment_defaults(provider_id, &mut model);
+            model
+        })
+        .collect()
+}
+
+fn apply_openai_gpt_attachment_defaults(provider_id: &str, model: &mut ProviderModelRecord) {
+    let Some(default_modalities) =
+        openai_gpt_attachment_input_modalities(provider_id, &model.model_id)
+    else {
+        return;
+    };
+    let original = normalize_input_modalities(model.input_modalities.clone());
+    let mut modalities = original.clone();
+    for modality in default_modalities {
+        if !modalities.iter().any(|existing| existing == &modality) {
+            modalities.push(modality);
+        }
+    }
+    let normalized = normalize_input_modalities(modalities);
+    if normalized != original {
+        model.input_modalities = normalized;
+        model.input_modalities_source = "openai_static_gpt_multimodal".into();
+    }
+}
+
+fn openai_gpt_attachment_input_modalities(
+    provider_id: &str,
+    model_id: &str,
+) -> Option<Vec<String>> {
+    if !matches!(
+        provider_id,
+        OPENAI_API_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID
+    ) {
+        return None;
+    }
+    if !is_openai_gpt_attachment_model(model_id) {
+        return None;
+    }
+    Some(vec!["file".into(), "image".into(), "text".into()])
+}
+
+fn is_openai_gpt_attachment_model(model_id: &str) -> bool {
+    let model_id = model_id
+        .trim()
+        .rsplit('/')
+        .next()
+        .unwrap_or(model_id)
+        .to_ascii_lowercase();
+    if model_id == "chat-latest" {
+        return true;
+    }
+    if !model_id.starts_with("gpt-") {
+        return false;
+    }
+    if model_id.starts_with("gpt-image")
+        || model_id.starts_with("gpt-audio")
+        || model_id.starts_with("gpt-realtime")
+        || model_id.contains("search")
+        || model_id.contains("transcribe")
+        || model_id.contains("tts")
+    {
+        return false;
+    }
+    model_id == "gpt-5"
+        || model_id.starts_with("gpt-5.")
+        || model_id.starts_with("gpt-5-")
+        || model_id == "gpt-4.1"
+        || model_id.starts_with("gpt-4.1-")
+        || model_id == "gpt-4o"
+        || model_id.starts_with("gpt-4o-")
 }
 
 fn provider_capability_catalog_for_parts(
@@ -1472,7 +1565,7 @@ fn normalize_openai_compatible_models(
         .into_iter()
         .map(|model| {
             let thinking = openai_compatible_thinking_capability(&model);
-            provider_model_record(
+            let mut record = provider_model_record(
                 provider_id,
                 model.id,
                 model.display_name,
@@ -1481,7 +1574,9 @@ fn normalize_openai_compatible_models(
                 model.input_modalities_source,
                 model.context_window_tokens,
                 model.max_output_tokens,
-            )
+            );
+            apply_openai_gpt_attachment_defaults(provider_id, &mut record);
+            record
         })
         .collect::<Vec<_>>();
 
@@ -1504,7 +1599,7 @@ fn manual_provider_projection(profile: &ProviderCredentialProfile) -> Vec<Provid
 fn manual_openai_compatible_projection(
     profile: &ProviderCredentialProfile,
 ) -> Vec<ProviderModelRecord> {
-    vec![provider_model_record(
+    let mut record = provider_model_record(
         profile.provider_id.as_str(),
         profile.model_id.clone(),
         profile.model_id.clone(),
@@ -1513,7 +1608,9 @@ fn manual_openai_compatible_projection(
         "unknown".into(),
         None,
         None,
-    )]
+    );
+    apply_openai_gpt_attachment_defaults(profile.provider_id.as_str(), &mut record);
+    vec![record]
 }
 
 fn manual_anthropic_family_projection(
@@ -1666,6 +1763,11 @@ fn catalog_from_cached_row(
 ) -> ProviderModelCatalog {
     let models = if profile.provider_id == XAI_PROVIDER_ID {
         xai_cached_models(&cached.models)
+    } else if matches!(
+        profile.provider_id.as_str(),
+        OPENAI_API_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID
+    ) {
+        openai_gpt_cached_models(profile.provider_id.as_str(), &cached.models)
     } else {
         cached.models.clone()
     };
@@ -2246,6 +2348,8 @@ fn normalized_optional_string(value: Option<&str>) -> Option<String> {
 mod tests {
     use super::*;
 
+    use crate::auth::openai_compatible::OpenAiCompatibleDiscoveredThinkingCapability;
+
     #[test]
     fn openai_codex_projection_exposes_gsd_thinking_levels_for_openai_choices() {
         let models = openai_codex_projection();
@@ -2266,6 +2370,12 @@ mod tests {
         );
 
         for model in models {
+            assert_eq!(
+                model.input_modalities,
+                vec!["file", "image", "text"],
+                "{} should expose OpenAI GPT attachment input modalities",
+                model.model_id
+            );
             assert_eq!(
                 model.thinking.effort_options,
                 vec![
@@ -2319,6 +2429,11 @@ mod tests {
             .expect("gpt-5.5 model choice");
 
         assert_eq!(gpt_5_5.display_name, "GPT-5.5");
+        assert_eq!(gpt_5_5.input_modalities, vec!["file", "image", "text"]);
+        assert_eq!(
+            gpt_5_5.input_modalities_source,
+            "openai_static_gpt_multimodal"
+        );
         assert_eq!(
             gpt_5_5.thinking.effort_options,
             vec![
@@ -2388,6 +2503,84 @@ mod tests {
         assert_eq!(grok.input_modalities, vec!["image", "text"]);
         assert_eq!(grok.input_modalities_source, "xai_text_runtime_default");
         assert_eq!(latest.input_modalities, vec!["image", "text"]);
+    }
+
+    #[test]
+    fn openai_compatible_models_seed_gpt_attachment_modalities_when_omitted() {
+        let models = normalize_openai_compatible_models(
+            OPENAI_API_PROVIDER_ID,
+            vec![
+                OpenAiCompatibleDiscoveredModel {
+                    id: "gpt-5.5".into(),
+                    display_name: "GPT-5.5".into(),
+                    thinking: OpenAiCompatibleDiscoveredThinkingCapability {
+                        supported: false,
+                        effort_levels: Vec::new(),
+                        default_effort: None,
+                    },
+                    input_modalities: Vec::new(),
+                    input_modalities_source: "unknown".into(),
+                    context_window_tokens: None,
+                    max_output_tokens: None,
+                },
+                OpenAiCompatibleDiscoveredModel {
+                    id: "gpt-audio".into(),
+                    display_name: "GPT Audio".into(),
+                    thinking: OpenAiCompatibleDiscoveredThinkingCapability {
+                        supported: false,
+                        effort_levels: Vec::new(),
+                        default_effort: None,
+                    },
+                    input_modalities: Vec::new(),
+                    input_modalities_source: "unknown".into(),
+                    context_window_tokens: None,
+                    max_output_tokens: None,
+                },
+            ],
+        );
+
+        let gpt_5_5 = models
+            .iter()
+            .find(|model| model.model_id == "gpt-5.5")
+            .expect("gpt-5.5 model");
+        let gpt_audio = models
+            .iter()
+            .find(|model| model.model_id == "gpt-audio")
+            .expect("gpt-audio model");
+
+        assert_eq!(gpt_5_5.input_modalities, vec!["file", "image", "text"]);
+        assert_eq!(
+            gpt_5_5.input_modalities_source,
+            "openai_static_gpt_multimodal"
+        );
+        assert!(gpt_audio.input_modalities.is_empty());
+        assert_eq!(gpt_audio.input_modalities_source, "unknown");
+    }
+
+    #[test]
+    fn openai_cached_models_upgrade_legacy_empty_modalities_for_gpt() {
+        let models = openai_gpt_cached_models(
+            OPENAI_API_PROVIDER_ID,
+            &[ProviderModelRecord {
+                model_id: "openai/gpt-5.4".into(),
+                display_name: "GPT-5.4".into(),
+                thinking: unsupported_thinking_capability(),
+                input_modalities: Vec::new(),
+                input_modalities_source: "unknown".into(),
+                context_window_tokens: None,
+                max_output_tokens: None,
+                context_limit_source: None,
+                context_limit_confidence: None,
+                context_limit_fetched_at: None,
+            }],
+        );
+        let gpt = models
+            .iter()
+            .find(|model| model.model_id == "openai/gpt-5.4")
+            .expect("cached gpt model");
+
+        assert_eq!(gpt.input_modalities, vec!["file", "image", "text"]);
+        assert_eq!(gpt.input_modalities_source, "openai_static_gpt_multimodal");
     }
 
     #[test]

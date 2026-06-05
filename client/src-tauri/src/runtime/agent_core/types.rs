@@ -1609,7 +1609,7 @@ pub trait ProviderAdapter {
                 .join("\n")
         };
         let prompt = format!(
-            "Extract durable memory candidates from this Xero coding-agent transcript. Return only a JSON array. Each item must contain scope, kind, text, confidence, and sourceItemIds. scope must be project or session. kind must be project_fact, user_preference, decision, session_summary, or troubleshooting. Do not include secrets. Do not include duplicates of existing approved or candidate memories. If the transcript includes code rollback events, do not promote implementation details from reverted turns as durable facts unless the candidate explicitly includes rollback provenance.\n\nExisting memories:\n{existing}\n\nTranscript:\n{}",
+            "Extract durable memory candidates from this Xero coding-agent transcript. Return only a JSON array. Each item must contain scope, kind, text, confidence, and sourceItemIds. confidence must be an integer from 0 to 100. scope must be project or session. kind must be project_fact, user_preference, decision, session_summary, or troubleshooting. Do not include secrets. Do not include duplicates of existing approved or candidate memories. If the transcript includes code rollback events, do not promote implementation details from reverted turns as durable facts unless the candidate explicitly includes rollback provenance.\n\nExisting memories:\n{existing}\n\nTranscript:\n{}",
             request.transcript
         );
         let turn = ProviderTurnRequest {
@@ -1737,7 +1737,11 @@ pub struct ProviderMemoryCandidate {
     pub scope: String,
     pub kind: String,
     pub text: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_memory_confidence",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub confidence: Option<u8>,
     #[serde(default)]
     pub source_item_ids: Vec<String>,
@@ -1767,6 +1771,32 @@ fn parse_provider_memory_candidates(message: &str) -> CommandResult<Vec<Provider
             format!("Xero could not decode provider memory candidates as JSON: {error}"),
         )
     })
+}
+
+fn deserialize_optional_memory_confidence<'de, D>(deserializer: D) -> Result<Option<u8>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <Option<JsonValue> as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(value.as_ref().and_then(provider_memory_confidence_percent))
+}
+
+fn provider_memory_confidence_percent(value: &JsonValue) -> Option<u8> {
+    let raw = match value {
+        JsonValue::Number(number) => number.as_f64(),
+        JsonValue::String(text) => text.trim().parse::<f64>().ok(),
+        JsonValue::Null => None,
+        _ => None,
+    }?;
+    if !raw.is_finite() {
+        return None;
+    }
+    let percent = if (0.0..=1.0).contains(&raw) {
+        raw * 100.0
+    } else {
+        raw
+    };
+    Some(percent.round().clamp(0.0, 100.0) as u8)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2206,6 +2236,34 @@ fn json_string_vec(value: &JsonValue) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_memory_candidates_accept_fractional_confidence() {
+        let candidates = parse_provider_memory_candidates(
+            r#"
+            [
+              {
+                "scope": "session",
+                "kind": "session_summary",
+                "text": "Session removed the header keyboard shortcut affordance.",
+                "confidence": 0.92,
+                "sourceItemIds": ["tool:edit"]
+              },
+              {
+                "scope": "project",
+                "kind": "troubleshooting",
+                "text": "Use focused verification commands after header edits.",
+                "confidence": "85",
+                "sourceItemIds": []
+              }
+            ]
+            "#,
+        )
+        .expect("parse candidates");
+
+        assert_eq!(candidates[0].confidence, Some(92));
+        assert_eq!(candidates[1].confidence, Some(85));
+    }
 
     #[test]
     fn tool_registry_decodes_dynamic_mcp_tool_routes() {

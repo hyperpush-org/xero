@@ -619,13 +619,11 @@ pub fn drive_owned_agent_run(
                 None,
                 &now_timestamp(),
             )?;
-            capture_project_record_for_run(&request.repo_root, &snapshot)?;
-            capture_memory_candidates_for_run(
+            capture_completion_artifacts_best_effort(
                 &request.repo_root,
                 &snapshot,
                 provider.as_ref(),
-                "completion",
-            )?;
+            );
             Ok(snapshot)
         }
         Err(error) => finish_owned_agent_drive_error(
@@ -733,6 +731,12 @@ pub fn prepare_owned_agent_continuation_for_drive(
     }
 
     let provider = create_provider_adapter(request.provider_config.clone())?;
+
+    if let Some(prepared) =
+        maybe_requested_agent_handoff_before_continuation(request, provider.as_ref(), &before)?
+    {
+        return Ok(prepared);
+    }
 
     maybe_auto_compact_before_continuation(request, provider.as_ref(), &before)?;
     before =
@@ -912,6 +916,81 @@ fn ensure_context_budget_allows_continuation(
             snapshot.run.model_id
         ),
     ))
+}
+
+fn requested_controls_match_agent_run_identity(
+    request: &ContinueOwnedAgentRunRequest,
+    snapshot: &AgentRunSnapshotRecord,
+) -> bool {
+    let Some(controls) = request.controls.as_ref() else {
+        return true;
+    };
+    if controls.runtime_agent_id != snapshot.run.runtime_agent_id {
+        return false;
+    }
+
+    let requested_definition_id = controls
+        .agent_definition_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|definition_id| !definition_id.is_empty());
+    match requested_definition_id {
+        Some(definition_id) if definition_id != snapshot.run.agent_definition_id => false,
+        Some(_) => controls
+            .agent_definition_version
+            .map(|version| version == snapshot.run.agent_definition_version)
+            .unwrap_or(true),
+        None => {
+            snapshot.run.agent_definition_id
+                == project_store::default_agent_definition_id_for_runtime_agent(
+                    snapshot.run.runtime_agent_id,
+                )
+                && controls
+                    .agent_definition_version
+                    .map(|version| version == snapshot.run.agent_definition_version)
+                    .unwrap_or(true)
+        }
+    }
+}
+
+fn maybe_requested_agent_handoff_before_continuation(
+    request: &ContinueOwnedAgentRunRequest,
+    provider: &dyn ProviderAdapter,
+    snapshot: &AgentRunSnapshotRecord,
+) -> CommandResult<Option<PreparedOwnedAgentContinuation>> {
+    if requested_controls_match_agent_run_identity(request, snapshot) {
+        return Ok(None);
+    }
+
+    let active_compaction = project_store::load_active_agent_compaction(
+        &request.repo_root,
+        &snapshot.run.project_id,
+        &snapshot.run.agent_session_id,
+    )?;
+    append_event(
+        &request.repo_root,
+        &snapshot.run.project_id,
+        &snapshot.run.run_id,
+        AgentRunEventKind::PolicyDecision,
+        json!({
+            "kind": "requested_agent_handoff_preflight",
+            "action": "handoff_now",
+            "sourceRuntimeAgentId": snapshot.run.runtime_agent_id.as_str(),
+            "requestedRuntimeAgentId": request
+                .controls
+                .as_ref()
+                .map(|controls| controls.runtime_agent_id.as_str()),
+            "requestedAgentDefinitionId": request
+                .controls
+                .as_ref()
+                .and_then(|controls| controls.agent_definition_id.as_deref()),
+            "requestedAgentDefinitionVersion": request
+                .controls
+                .as_ref()
+                .and_then(|controls| controls.agent_definition_version),
+        }),
+    )?;
+    prepare_handoff_continuation(request, provider, snapshot, active_compaction.as_ref()).map(Some)
 }
 
 fn maybe_auto_compact_before_continuation(
@@ -2972,13 +3051,11 @@ pub fn drive_owned_agent_continuation(
                 None,
                 &now_timestamp(),
             )?;
-            capture_project_record_for_run(&request.repo_root, &snapshot)?;
-            capture_memory_candidates_for_run(
+            capture_completion_artifacts_best_effort(
                 &request.repo_root,
                 &snapshot,
                 provider.as_ref(),
-                "completion",
-            )?;
+            );
             Ok(snapshot)
         }
         Err(error) => finish_owned_agent_drive_error(
@@ -3461,6 +3538,33 @@ fn capture_pause_artifacts_best_effort(
             repo_root,
             snapshot,
             "pause",
+            "memory_candidate_capture",
+            &error,
+        );
+    }
+}
+
+fn capture_completion_artifacts_best_effort(
+    repo_root: &Path,
+    snapshot: &AgentRunSnapshotRecord,
+    provider: &dyn ProviderAdapter,
+) {
+    if let Err(error) = capture_project_record_for_run(repo_root, snapshot) {
+        record_nonfatal_artifact_capture_error(
+            repo_root,
+            snapshot,
+            "completion",
+            "project_record_capture",
+            &error,
+        );
+    }
+    if let Err(error) =
+        capture_memory_candidates_for_run(repo_root, snapshot, provider, "completion")
+    {
+        record_nonfatal_artifact_capture_error(
+            repo_root,
+            snapshot,
+            "completion",
             "memory_candidate_capture",
             &error,
         );
@@ -4886,6 +4990,98 @@ mod tests {
             &handoff_target(RuntimeAgentIdDto::Debug, "debug", "built_in"),
         )
         .is_err());
+    }
+
+    #[test]
+    fn accepted_routing_switch_hands_off_completed_ask_run_to_engineer() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "accepted-routing-switch-handoff";
+        let source_run_id = "ask-routing-source";
+        create_project_database(&repo_root, project_id);
+
+        let source = run_owned_agent_task(OwnedAgentRunRequest {
+            repo_root: repo_root.clone(),
+            project_id: project_id.into(),
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            run_id: source_run_id.into(),
+            prompt: "Remove the Command-K UI.".into(),
+            attachments: Vec::new(),
+            controls: Some(custom_controls(
+                RuntimeAgentIdDto::Ask,
+                "ask",
+                RuntimeRunApprovalModeDto::Suggest,
+            )),
+            tool_runtime: AutonomousToolRuntime::new(&repo_root).expect("runtime"),
+            provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
+        })
+        .expect("run ask source");
+        assert_eq!(source.run.status, AgentRunStatus::Completed);
+        assert_eq!(source.run.runtime_agent_id, RuntimeAgentIdDto::Ask);
+
+        let request = ContinueOwnedAgentRunRequest {
+            repo_root: repo_root.clone(),
+            project_id: project_id.into(),
+            run_id: source_run_id.into(),
+            prompt: [
+                "The user accepted the routing suggestion to switch to Engineer.",
+                "Continue the original request now in this same session.",
+                "Target agent: Engineer",
+                "Carry over: Remove the Command-K UI.",
+                "Routing reason: requires repository edits",
+            ]
+            .join("\n\n"),
+            attachments: Vec::new(),
+            controls: Some(custom_controls(
+                RuntimeAgentIdDto::Engineer,
+                "engineer",
+                RuntimeRunApprovalModeDto::Suggest,
+            )),
+            tool_runtime: AutonomousToolRuntime::new(&repo_root).expect("runtime"),
+            provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
+            answer_pending_actions: false,
+            auto_compact: None,
+            internal_resume: None,
+        };
+
+        let prepared = prepare_owned_agent_continuation_for_drive(&request)
+            .expect("prepare routed continuation");
+        let handoff = prepared.handoff.expect("accepted switch creates handoff");
+
+        assert_ne!(prepared.snapshot.run.run_id, source_run_id);
+        assert_eq!(handoff.source_run_id, source_run_id);
+        assert_eq!(handoff.target_run_id, prepared.snapshot.run.run_id);
+        assert_eq!(
+            prepared.snapshot.run.runtime_agent_id,
+            RuntimeAgentIdDto::Engineer
+        );
+        assert_eq!(prepared.snapshot.run.agent_definition_id, "engineer");
+        assert_eq!(prepared.drive_request.run_id, handoff.target_run_id);
+        assert_eq!(
+            prepared
+                .drive_request
+                .controls
+                .as_ref()
+                .expect("target controls")
+                .runtime_agent_id,
+            RuntimeAgentIdDto::Engineer
+        );
+
+        let source_after = project_store::load_agent_run(&repo_root, project_id, source_run_id)
+            .expect("load handed-off source");
+        assert_eq!(source_after.run.status, AgentRunStatus::HandedOff);
+        assert!(prepared
+            .snapshot
+            .run
+            .system_prompt
+            .contains("Xero's Engineer agent"));
+        assert!(prepared.snapshot.messages.iter().any(|message| {
+            message.role == AgentMessageRole::Developer
+                && message.content.contains("Xero durable handoff context")
+        }));
     }
 
     #[test]

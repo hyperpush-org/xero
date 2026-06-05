@@ -1193,6 +1193,82 @@ mod tests {
     }
 
     #[test]
+    fn openai_codex_authenticated_preflight_admits_gpt_5_5_attachments() {
+        let profile = ProviderCredentialProfile {
+            profile_id: "openai_codex-default".into(),
+            provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            runtime_kind: OPENAI_CODEX_PROVIDER_ID.into(),
+            label: "OpenAI Codex".into(),
+            model_id: "gpt-5.5".into(),
+            preset_id: None,
+            base_url: None,
+            api_version: None,
+            region: None,
+            project_id: None,
+            credential_link: Some(ProviderCredentialLink::OpenAiCodex {
+                account_id: "acct-1".into(),
+                session_id: "session-1".into(),
+                updated_at: "2026-05-05T15:57:13Z".into(),
+            }),
+            updated_at: "2026-05-05T15:57:13Z".into(),
+        };
+        let catalog = ProviderModelCatalog {
+            profile_id: profile.profile_id.clone(),
+            provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            configured_model_id: "gpt-5.5".into(),
+            source: ProviderModelCatalogSource::Live,
+            fetched_at: Some("2026-05-05T15:57:13Z".into()),
+            last_success_at: Some("2026-05-05T15:57:13Z".into()),
+            last_refresh_error: None,
+            models: vec![ProviderModelRecord {
+                model_id: "gpt-5.5".into(),
+                display_name: "GPT-5.5".into(),
+                thinking: ProviderModelThinkingCapability {
+                    supported: true,
+                    effort_options: vec![ProviderModelThinkingEffort::High],
+                    default_effort: Some(ProviderModelThinkingEffort::High),
+                },
+                input_modalities: vec!["file".into(), "image".into(), "text".into()],
+                input_modalities_source: "openai_codex_static_multimodal".into(),
+                context_window_tokens: Some(272_000),
+                max_output_tokens: Some(16_384),
+                context_limit_source: Some(SessionContextLimitSourceDto::BuiltInRegistry),
+                context_limit_confidence: Some(SessionContextLimitConfidenceDto::Medium),
+                context_limit_fetched_at: None,
+            }],
+        };
+        let mut required_features = ProviderPreflightRequiredFeatures::owned_agent_text_turn();
+        required_features.set_attachment_input_modalities(["file", "image"]);
+
+        let snapshot = openai_codex_authenticated_preflight_snapshot(
+            &profile,
+            "gpt-5.5",
+            required_features,
+            &catalog,
+            true,
+        );
+
+        assert_eq!(snapshot.source, ProviderPreflightSource::LiveProbe);
+        assert_eq!(
+            snapshot.status,
+            xero_agent_core::ProviderPreflightStatus::Passed
+        );
+        assert_eq!(
+            snapshot.capabilities.capabilities.attachments.image_input,
+            "supported"
+        );
+        assert_eq!(
+            snapshot
+                .capabilities
+                .capabilities
+                .attachments
+                .document_input,
+            "supported"
+        );
+        assert!(xero_agent_core::provider_preflight_blockers(&snapshot).is_empty());
+    }
+
+    #[test]
     fn openai_codex_preflight_blocks_without_auth_session() {
         let profile = ProviderCredentialProfile {
             profile_id: "openai_codex-default".into(),
