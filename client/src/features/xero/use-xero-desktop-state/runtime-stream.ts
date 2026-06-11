@@ -336,6 +336,22 @@ function aggregateRuntimeTranscriptDeltas(
   }
 
   const aggregated: RuntimeStreamChannelPayload[] = []
+  let pendingTranscriptTextChunks: string[] | null = null
+  const flushPendingTranscriptText = () => {
+    if (!pendingTranscriptTextChunks) {
+      return
+    }
+
+    const previous = aggregated.at(-1)
+    if (previous && !isRuntimeStreamPatch(previous) && previous.item.kind === 'transcript') {
+      previous.item = {
+        ...previous.item,
+        text: pendingTranscriptTextChunks.join(''),
+      }
+    }
+    pendingTranscriptTextChunks = null
+  }
+
   for (const event of events) {
     const previous = aggregated.at(-1)
     if (
@@ -344,21 +360,24 @@ function aggregateRuntimeTranscriptDeltas(
       !isRuntimeStreamPatch(event) &&
       canAggregateRuntimeTranscriptDelta(previous, event)
     ) {
+      pendingTranscriptTextChunks ??= [previous.item.text ?? '']
+      pendingTranscriptTextChunks.push(event.item.text ?? '')
       previous.item = {
         ...previous.item,
-        text: `${previous.item.text ?? ''}${event.item.text ?? ''}`,
         updatedSequence: runtimeStreamPayloadUpdateSequence(event),
         createdAt: event.item.createdAt,
       }
       continue
     }
 
+    flushPendingTranscriptText()
     aggregated.push(
       !isRuntimeStreamPatch(event) && event.item.kind === 'transcript'
         ? cloneRuntimeStreamEventForAggregation(event)
         : event,
     )
   }
+  flushPendingTranscriptText()
   return aggregated
 }
 
