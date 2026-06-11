@@ -129,6 +129,7 @@ function isSupersededProjectLoadError(error: unknown): boolean {
 }
 
 interface ProjectLoadRefs {
+  activeProjectIdRef: MutableRefObject<string | null>
   latestLoadRequestRef: MutableRefObject<number>
   projectDetailsRef: MutableRefObject<Record<string, ProjectDetailView>>
   runtimeSessionsRef: MutableRefObject<RuntimeSessionRecords>
@@ -533,7 +534,9 @@ export async function loadProjectState({
       runtimeRunPromise,
       autonomousRunPromise,
     ])
-    if (refs.latestLoadRequestRef.current !== requestId) {
+    const canApplySelectionResult =
+      source === 'selection' && refs.activeProjectIdRef.current === projectId
+    if (refs.latestLoadRequestRef.current !== requestId && !canApplySelectionResult) {
       return nextProject
     }
 
@@ -638,7 +641,9 @@ export async function loadProjectState({
 
     return finalizedProject
   } catch (error) {
-    if (refs.latestLoadRequestRef.current === requestId) {
+    const canApplySelectionError =
+      source === 'selection' && refs.activeProjectIdRef.current === projectId
+    if (refs.latestLoadRequestRef.current === requestId || canApplySelectionError) {
       const nextMessage = getDesktopErrorMessage(error)
       setters.setErrorMessage(nextMessage)
 

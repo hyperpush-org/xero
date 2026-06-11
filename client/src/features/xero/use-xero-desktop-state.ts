@@ -1186,6 +1186,7 @@ export function useXeroDesktopState(
   const [isLoading, setIsLoading] = useState(true)
   const [isProjectLoading, setIsProjectLoading] = useState(false)
   const [pendingProjectSelectionId, setPendingProjectSelectionId] = useState<string | null>(null)
+  const pendingProjectSelectionIdRef = useRef<string | null>(null)
   const [isImporting, setIsImporting] = useState(false)
   const [projectRemovalStatus, setProjectRemovalStatus] = useState<ProjectRemovalStatus>('idle')
   const [pendingProjectRemovalId, setPendingProjectRemovalId] = useState<string | null>(null)
@@ -2579,6 +2580,10 @@ export function useXeroDesktopState(
       }
 
       const requestPromise = (async () => {
+        if (pendingProjectSelectionIdRef.current === trimmedProjectId) {
+          return
+        }
+
         let project = projectDetailsRef.current[trimmedProjectId] ?? null
         if (!project || projectPreviewShellsRef.current.has(project)) {
           try {
@@ -2645,28 +2650,44 @@ export function useXeroDesktopState(
     }
 
     let cancelled = false
-    const projectIds = projects.map((project) => project.id)
+    const projectIds = projects
+      .map((project) => project.id)
+      .filter((projectId) => projectId !== activeProjectId)
 
-    void (async () => {
-      for (const projectId of projectIds) {
-        if (cancelled) {
-          return
+    const runHydration = () => {
+      void (async () => {
+        for (const projectId of projectIds) {
+          if (cancelled) {
+            return
+          }
+          await hydrateProjectRailRuntimeState(projectId)
         }
-        await hydrateProjectRailRuntimeState(projectId)
+      })()
+    }
+
+    if (typeof window === 'undefined') {
+      runHydration()
+      return () => {
+        cancelled = true
       }
-    })()
+    }
+
+    const scheduledHandle = scheduleDeferredTask(window as IdleWindow, runHydration, { timeoutMs: 1_500 })
 
     return () => {
       cancelled = true
+      cancelDeferredTask(window as IdleWindow, scheduledHandle)
     }
-  }, [hydrateProjectRailRuntimeState, isLoading, projects])
+  }, [activeProjectId, hydrateProjectRailRuntimeState, isLoading, projects])
 
   const prefetchProject = useCallback(
     (projectId: string) => {
       const trimmedProjectId = projectId.trim()
       if (
         !trimmedProjectId ||
+        !adapter.getProjectLoadBundle ||
         trimmedProjectId === activeProjectIdRef.current ||
+        trimmedProjectId === pendingProjectSelectionIdRef.current ||
         projectDetailsRef.current[trimmedProjectId] ||
         projectPrefetchInFlightRef.current[trimmedProjectId]
       ) {
@@ -2713,7 +2734,6 @@ export function useXeroDesktopState(
     },
     [adapter],
   )
-
   useEffect(() => {
     if (isLoading || projects.length < 2 || typeof window === 'undefined') {
       return
@@ -2950,6 +2970,7 @@ export function useXeroDesktopState(
         source,
         applyCachedProject: options.applyCachedProject,
         refs: {
+          activeProjectIdRef,
           latestLoadRequestRef,
           projectDetailsRef,
           runtimeSessionsRef,
@@ -3247,6 +3268,7 @@ export function useXeroDesktopState(
 
       const requestId = projectSelectionRequestRef.current + 1
       projectSelectionRequestRef.current = requestId
+      pendingProjectSelectionIdRef.current = projectId
       setPendingProjectSelectionId(projectId)
       if (projectId !== activeProjectIdRef.current) {
         clearRuntimeStreamCacheForProject(projectId)
@@ -3260,6 +3282,7 @@ export function useXeroDesktopState(
           await loadProject(projectId, 'selection')
         } finally {
           if (projectSelectionRequestRef.current === requestId) {
+            pendingProjectSelectionIdRef.current = null
             setPendingProjectSelectionId(null)
           }
         }
@@ -3292,6 +3315,7 @@ export function useXeroDesktopState(
         await loadProject(projectId, 'selection', { applyCachedProject: false })
       } finally {
         if (projectSelectionRequestRef.current === requestId) {
+          pendingProjectSelectionIdRef.current = null
           setPendingProjectSelectionId(null)
         }
       }
@@ -3544,53 +3568,43 @@ export function useXeroDesktopState(
     }
     pendingSpawnPaneIdsRef.current.delete(targetPaneId)
 
-    setActiveProject((project) => {
-      if (!project || project.id !== projectId) {
-        return project
-      }
-      const nextProject = applyAgentSessionToProject(project, createdSession)
-      activeProjectRef.current = nextProject
-      projectDetailsRef.current[projectId] = nextProject
-      return nextProject
-    })
-    setAgentWorkspaceLayouts((currentLayouts) => {
-      const project = activeProjectRef.current
-      if (!project || project.id !== projectId) {
-        return currentLayouts
-      }
+    const latestProject = activeProjectRef.current
+    if (!latestProject || latestProject.id !== projectId) {
+      return null
+    }
 
-      const layout = reconcileAgentWorkspaceLayout(project, currentLayouts[projectId])
-      if (!layout.paneSlots.some((slot) => slot.id === targetPaneId)) {
-        return currentLayouts
-      }
+    const layout = reconcileAgentWorkspaceLayout(
+      latestProject,
+      agentWorkspaceLayoutsRef.current[projectId],
+    )
+    if (!layout.paneSlots.some((slot) => slot.id === targetPaneId)) {
+      return null
+    }
 
-      const paneSlots = layout.paneSlots.map((slot) =>
-        slot.id === targetPaneId
-          ? { ...slot, agentSessionId: createdSession.agentSessionId }
-          : slot,
-      )
-      const nextLayout: AgentWorkspaceLayoutState = {
-        ...layout,
-        paneSlots,
-        focusedPaneId: targetPaneId,
-      }
-      const nextLayouts = {
-        ...currentLayouts,
-        [projectId]: nextLayout,
-      }
-      agentWorkspaceLayoutsRef.current = nextLayouts
-      return nextLayouts
-    })
+    const paneSlots = layout.paneSlots.map((slot) =>
+      slot.id === targetPaneId
+        ? { ...slot, agentSessionId: createdSession.agentSessionId }
+        : slot,
+    )
+    const nextLayout: AgentWorkspaceLayoutState = {
+      ...layout,
+      paneSlots,
+      focusedPaneId: targetPaneId,
+    }
+    const nextLayouts = {
+      ...agentWorkspaceLayoutsRef.current,
+      [projectId]: nextLayout,
+    }
+    const nextProject = applyAgentSessionToProject(latestProject, createdSession)
+
+    agentWorkspaceLayoutsRef.current = nextLayouts
+    activeProjectRef.current = nextProject
+    projectDetailsRef.current[projectId] = nextProject
+    setAgentWorkspaceLayouts(nextLayouts)
+    setActiveProject(nextProject)
     void hydrateAgentSessionRuntimeState(projectId, createdSession.agentSessionId).catch(() => undefined)
 
-    return {
-      ...pendingLayout,
-      paneSlots: pendingLayout.paneSlots.map((slot) =>
-        slot.id === targetPaneId
-          ? { ...slot, agentSessionId: createdSession.agentSessionId }
-          : slot,
-      ),
-    }
+    return nextLayout
   }, [adapter, hydrateAgentSessionRuntimeState])
 
   const closePane = useCallback((paneId: string) => {
