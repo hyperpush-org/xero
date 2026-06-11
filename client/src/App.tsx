@@ -179,6 +179,7 @@ import { SignInReminderToast } from '@/components/xero/sign-in-reminder-toast'
 import type { BrowserAgentContextRequest } from '@/components/xero/browser-tool-injection'
 import { DesktopControlBanner } from '@/components/xero/desktop-control-banner'
 import { checkAttachmentModelCompatibility } from '@/lib/agent-attachments'
+import { WORKFLOWS_ENABLED } from '@/src/features/xero/workflows-feature-flag'
 
 export interface XeroAppProps {
   adapter?: XeroDesktopAdapter
@@ -1987,7 +1988,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     return defaults
   }, [customAgentDefinitions, workflowAgentInspector.agents])
   const refreshWorkflowDefinitions = useCallback(async () => {
-    if (!activeProjectId || !resolvedAdapter.listWorkflowDefinitions) {
+    if (!WORKFLOWS_ENABLED || !activeProjectId || !resolvedAdapter.listWorkflowDefinitions) {
       setWorkflowDefinitions([])
       setWorkflowDefinitionsStatus('idle')
       setWorkflowDefinitionsError(null)
@@ -2006,7 +2007,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
   }, [activeProjectId, resolvedAdapter])
 
   const refreshWorkflowRuns = useCallback(async () => {
-    if (!activeProjectId || !resolvedAdapter.listWorkflowRuns) {
+    if (!WORKFLOWS_ENABLED || !activeProjectId || !resolvedAdapter.listWorkflowRuns) {
       setWorkflowRuns([])
       setWorkflowRunsStatus('idle')
       return
@@ -5097,25 +5098,39 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onCreateAgent={handleCreateAgent}
                 onCreateAgentFromTemplate={handleCreateAgentFromTemplate}
                 onEditAgentFromWorkflow={(ref) => handleStartAgentAuthoringFromRef('edit', ref)}
-                selectedWorkflowDefinition={selectedWorkflowDefinition}
-                selectedWorkflowRun={selectedWorkflowRun}
-                selectedWorkflowIsDraft={selectedWorkflowIsDraft}
-                selectedWorkflowIsTemplatePreview={selectedWorkflowTemplatePreviewId !== null}
-                workflowActionRunning={workflowActionRunning}
-                onCreateWorkflow={handleCreateWorkflow}
-                onCreateWorkflowWithAgentCreate={handleStartWorkflowAgentCreate}
-                onCreateWorkflowFromTemplate={handleCreateWorkflowFromTemplate}
-                onSaveWorkflowDefinition={handleSaveWorkflowDefinition}
-                onCancelWorkflowEditing={handleCancelWorkflowEditing}
-                onClearWorkflowSelection={handleClearWorkflowSelection}
-                onStartWorkflowDefinitionRun={handleStartWorkflowDefinitionRun}
-                onCancelWorkflowRun={handleCancelWorkflowRun}
-                onRetryWorkflowNodeRun={handleRetryWorkflowNodeRun}
-                onSkipWorkflowBranch={handleSkipWorkflowBranch}
-                onResumeWorkflowCheckpoint={handleResumeWorkflowCheckpoint}
-                onExplainWorkflowRunBlocker={handleExplainWorkflowRunBlocker}
-                onExportWorkflowRunBundle={handleExportWorkflowRunBundle}
-                onResumeWorkflowNextIncompletePhase={handleResumeWorkflowNextIncompletePhase}
+                selectedWorkflowDefinition={WORKFLOWS_ENABLED ? selectedWorkflowDefinition : null}
+                selectedWorkflowRun={WORKFLOWS_ENABLED ? selectedWorkflowRun : null}
+                selectedWorkflowIsDraft={WORKFLOWS_ENABLED ? selectedWorkflowIsDraft : false}
+                selectedWorkflowIsTemplatePreview={
+                  WORKFLOWS_ENABLED ? selectedWorkflowTemplatePreviewId !== null : false
+                }
+                workflowActionRunning={WORKFLOWS_ENABLED ? workflowActionRunning : false}
+                onCreateWorkflow={WORKFLOWS_ENABLED ? handleCreateWorkflow : undefined}
+                onCreateWorkflowWithAgentCreate={
+                  WORKFLOWS_ENABLED ? handleStartWorkflowAgentCreate : undefined
+                }
+                onCreateWorkflowFromTemplate={
+                  WORKFLOWS_ENABLED ? handleCreateWorkflowFromTemplate : undefined
+                }
+                onSaveWorkflowDefinition={WORKFLOWS_ENABLED ? handleSaveWorkflowDefinition : undefined}
+                onCancelWorkflowEditing={WORKFLOWS_ENABLED ? handleCancelWorkflowEditing : undefined}
+                onClearWorkflowSelection={WORKFLOWS_ENABLED ? handleClearWorkflowSelection : undefined}
+                onStartWorkflowDefinitionRun={
+                  WORKFLOWS_ENABLED ? handleStartWorkflowDefinitionRun : undefined
+                }
+                onCancelWorkflowRun={WORKFLOWS_ENABLED ? handleCancelWorkflowRun : undefined}
+                onRetryWorkflowNodeRun={WORKFLOWS_ENABLED ? handleRetryWorkflowNodeRun : undefined}
+                onSkipWorkflowBranch={WORKFLOWS_ENABLED ? handleSkipWorkflowBranch : undefined}
+                onResumeWorkflowCheckpoint={
+                  WORKFLOWS_ENABLED ? handleResumeWorkflowCheckpoint : undefined
+                }
+                onExplainWorkflowRunBlocker={
+                  WORKFLOWS_ENABLED ? handleExplainWorkflowRunBlocker : undefined
+                }
+                onExportWorkflowRunBundle={WORKFLOWS_ENABLED ? handleExportWorkflowRunBundle : undefined}
+                onResumeWorkflowNextIncompletePhase={
+                  WORKFLOWS_ENABLED ? handleResumeWorkflowNextIncompletePhase : undefined
+                }
                 templates={workflowAgentInspector.agents}
                 templatesLoading={workflowAgentInspector.agentsStatus === 'loading'}
                 templatesError={workflowAgentInspector.agentsError}
@@ -5169,7 +5184,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 agentDefaultModels={agentDefaultModels}
                 onOpenAgentManagement={handleOpenAgentManagement}
                 onCreateAgentByHand={handleStartAgentAuthoringCreate}
-                onStartWorkflowAgentCreate={handleStartWorkflowAgentCreate}
+                onStartWorkflowAgentCreate={
+                  WORKFLOWS_ENABLED ? handleStartWorkflowAgentCreate : undefined
+                }
                 onCreateSession={handleCreateAgentSession}
                 pendingInitialRuntimeAgent={pendingInitialRuntimeAgent}
                 onClearPendingInitialRuntimeAgent={handleClearPendingInitialRuntimeAgent}
@@ -5583,34 +5600,53 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 agents={workflowAgentInspector.agents}
                 agentsLoading={workflowAgentInspector.agentsStatus === 'loading'}
                 agentsError={workflowAgentInspector.agentsError}
-                workflowDefinitions={workflowDefinitions}
-                workflowRuns={workflowRuns}
+                workflowDefinitions={WORKFLOWS_ENABLED ? workflowDefinitions : []}
+                workflowRuns={WORKFLOWS_ENABLED ? workflowRuns : []}
                 workflowsLoading={
-                  workflowDefinitionsStatus === 'loading' || workflowRunsStatus === 'loading'
+                  WORKFLOWS_ENABLED &&
+                  (workflowDefinitionsStatus === 'loading' || workflowRunsStatus === 'loading')
                 }
-                workflowsError={workflowDefinitionsError}
+                workflowsError={WORKFLOWS_ENABLED ? workflowDefinitionsError : null}
                 selectedWorkflowId={
-                  selectedWorkflowIsDraft || selectedWorkflowTemplatePreviewId
+                  !WORKFLOWS_ENABLED || selectedWorkflowIsDraft || selectedWorkflowTemplatePreviewId
                     ? null
                     : selectedWorkflowDefinition?.id ?? null
                 }
-                selectedWorkflowTemplateId={selectedWorkflowTemplatePreviewId}
-                selectedWorkflowRunId={selectedWorkflowRun?.id ?? null}
-                onSelectWorkflow={handleSelectWorkflowDefinition}
-                onSelectWorkflowTemplate={handlePreviewWorkflowTemplate}
-                onSelectWorkflowRun={handleSelectWorkflowRun}
-                onCreateWorkflow={handleCreateWorkflow}
-                onCreateWorkflowWithAgentCreate={handleStartWorkflowAgentCreate}
-                onCreateWorkflowFromTemplate={handleCreateWorkflowFromTemplate}
-                onStartWorkflowRun={(workflowId) => {
-                  void handleStartWorkflowDefinitionRun(workflowId, { goal: '' })
-                }}
-                onCancelWorkflowRun={(runId) => {
-                  void handleCancelWorkflowRun(runId)
-                }}
-                onResumeWorkflowRun={(runId, nodeRunId, decision) => {
-                  void handleResumeWorkflowCheckpoint(runId, nodeRunId, decision, { decision })
-                }}
+                selectedWorkflowTemplateId={
+                  WORKFLOWS_ENABLED ? selectedWorkflowTemplatePreviewId : null
+                }
+                selectedWorkflowRunId={WORKFLOWS_ENABLED ? selectedWorkflowRun?.id ?? null : null}
+                onSelectWorkflow={WORKFLOWS_ENABLED ? handleSelectWorkflowDefinition : undefined}
+                onSelectWorkflowTemplate={WORKFLOWS_ENABLED ? handlePreviewWorkflowTemplate : undefined}
+                onSelectWorkflowRun={WORKFLOWS_ENABLED ? handleSelectWorkflowRun : undefined}
+                onCreateWorkflow={WORKFLOWS_ENABLED ? handleCreateWorkflow : undefined}
+                onCreateWorkflowWithAgentCreate={
+                  WORKFLOWS_ENABLED ? handleStartWorkflowAgentCreate : undefined
+                }
+                onCreateWorkflowFromTemplate={
+                  WORKFLOWS_ENABLED ? handleCreateWorkflowFromTemplate : undefined
+                }
+                onStartWorkflowRun={
+                  WORKFLOWS_ENABLED
+                    ? (workflowId) => {
+                        void handleStartWorkflowDefinitionRun(workflowId, { goal: '' })
+                      }
+                    : undefined
+                }
+                onCancelWorkflowRun={
+                  WORKFLOWS_ENABLED
+                    ? (runId) => {
+                        void handleCancelWorkflowRun(runId)
+                      }
+                    : undefined
+                }
+                onResumeWorkflowRun={
+                  WORKFLOWS_ENABLED
+                    ? (runId, nodeRunId, decision) => {
+                        void handleResumeWorkflowCheckpoint(runId, nodeRunId, decision, { decision })
+                      }
+                    : undefined
+                }
                 selectedAgentRef={workflowAgentInspector.selectedRef}
                 onSelectAgent={handleInspectWorkflowAgent}
                 onCreateAgent={handleCreateAgent}
@@ -5690,7 +5726,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 agentDefaultModels={agentDefaultModels}
                 onOpenAgentManagement={handleOpenAgentManagement}
                 onCreateAgentByHand={handleStartAgentAuthoringCreate}
-                onStartWorkflowAgentCreate={handleStartWorkflowAgentCreate}
+                onStartWorkflowAgentCreate={
+                  WORKFLOWS_ENABLED ? handleStartWorkflowAgentCreate : undefined
+                }
                 onOpenSettings={handleOpenAgentProviderSettings}
                 onOpenDiagnostics={handleOpenAgentDiagnostics}
                 onStartLogin={(options) => startOpenAiLogin(options)}

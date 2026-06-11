@@ -215,7 +215,7 @@ export interface AgentRuntimeProps {
   onCreateAgentByHand?: () => void
   /** Move to Workflow and begin a new canvas-backed Agent Create session. */
   onStartWorkflowAgentCreate?: () => void
-  /** True when Agent Create is paired with the visible workflow authoring canvas. */
+  /** True when Agent Create is paired with the visible definition-authoring canvas. */
   agentCreateCanvasIncluded?: boolean
   /** Visual density. Compact attaches the composer flush to bottom and moves secondary controls into a gear popover. */
   density?: 'comfortable' | 'compact'
@@ -3445,7 +3445,7 @@ export const AgentRuntime = memo(function AgentRuntime({
           !agentRuntimeBlocked &&
           runtimeSession?.isAuthenticated &&
           !renderableRuntimeRun?.isTerminal
-        ? 'Describe the agent or workflow...'
+        ? 'Describe the agent...'
       : controller.composerRuntimeAgentId === 'crawl' &&
           !agentRuntimeBlocked &&
           runtimeSession?.isAuthenticated &&

@@ -421,9 +421,9 @@ export const ALL_RUNTIME_AGENT_DESCRIPTORS = [
     label: 'Agent Create',
     shortLabel: 'Create',
     description:
-      'Interview the user, validate custom agent or Workflow definitions, and save approved definitions without mutating repositories.',
+      'Interview the user, validate custom agent definitions, and save approved definitions without mutating repositories.',
     taskPurpose:
-      'Gather intent, clarify scope, propose least-privilege agents or Workflow graphs, validate definitions, and persist approved custom definitions.',
+      'Gather intent, clarify scope, propose least-privilege agents, validate definitions, and persist approved custom definitions.',
     scope: 'built_in',
     lifecycleState: 'active',
     baseCapabilityProfile: 'agent_builder',

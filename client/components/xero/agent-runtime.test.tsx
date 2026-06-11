@@ -5259,13 +5259,14 @@ describe('AgentRuntime current UI', () => {
     )
 
     expect(
-      screen.getByPlaceholderText('Describe the agent or workflow...'),
+      screen.getByPlaceholderText('Describe the agent...'),
     ).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Shape a definition' })).toBeVisible()
     expect(screen.getByText(/Start from a description\./)).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: /Start on workflow canvas/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Start on canvas/i }))
     expect(onStartWorkflowAgentCreate).toHaveBeenCalledTimes(1)
     expect(screen.getByRole('button', { name: 'Create a coding helper' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Create a workflow' })).not.toBeInTheDocument()
     expect(screen.queryByText(/The canvas is already included\./)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Draft from this canvas' })).not.toBeInTheDocument()
     expect(screen.queryByText(/What can we build together/i)).not.toBeInTheDocument()
@@ -5289,7 +5290,7 @@ describe('AgentRuntime current UI', () => {
 
     expect(screen.getByText(/The canvas is already included\./)).toBeVisible()
     expect(screen.queryByText(/Start from a description\./)).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Start on workflow canvas/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Start on canvas/i })).not.toBeInTheDocument()
   })
 
   it('keeps model selectors available while a prompt is pending on an active run', async () => {

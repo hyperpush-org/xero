@@ -60,12 +60,6 @@ const AGENT_CREATE_SUGGESTIONS: Suggestion[] = [
 		prompt:
 			"Create a project agent that can make focused code changes, run scoped verification, and summarize the result.",
 	},
-	{
-		icon: Workflow,
-		label: "Create a workflow",
-		prompt:
-			"Create a Workflow that passes intake from a planning agent to an engineering agent and ends with a terminal success.",
-	},
 ];
 
 const COMPUTER_USE_SUGGESTIONS: Suggestion[] = [
@@ -121,8 +115,8 @@ export function EmptySessionState({
 		disabledDescription ??
 		(isAgentCreate
 			? agentCreateCanvasIncluded
-				? "The canvas is already included. Describe the agent or Workflow, then approve the saved definition when it is ready."
-				: "Start from a description. Agent Create will draft an agent or Workflow definition for review."
+				? "The canvas is already included. Describe the agent, then approve the saved definition when it is ready."
+				: "Start from a description. Agent Create will draft an agent definition for review."
 			: isComputerUse
 				? "Give a concrete instruction and Xero will use the available computer and project tools."
 				: null);
@@ -261,10 +255,10 @@ export function EmptySessionState({
 									</span>
 									<span className="flex min-w-0 flex-1 flex-col gap-0.5">
 										<span className="truncate text-[13px] font-medium text-foreground">
-											Start on workflow canvas
+											Start on canvas
 										</span>
 										<span className="truncate text-[11.5px] text-muted-foreground">
-											Open Workflow with the canvas included
+											Open the canvas with Agent Create included
 										</span>
 									</span>
 									<ChevronRight
