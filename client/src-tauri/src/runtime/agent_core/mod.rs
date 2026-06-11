@@ -27,6 +27,7 @@ mod synthetic_dispatch;
 mod tool_descriptors;
 mod tool_dispatch;
 mod types;
+mod wakeup_scheduler;
 
 pub use evals::{
     run_agent_definition_quality_eval_suite, run_agent_harness_eval_suite,
@@ -72,6 +73,10 @@ pub use supervisor::{
     AGENT_RUN_CANCELLED_CODE,
 };
 pub use types::*;
+pub use wakeup_scheduler::{
+    notify_agent_run_wakeup_inserted, set_agent_run_wakeup_inserted_handler,
+    AgentRunWakeupScheduler,
+};
 
 pub use consumed_artifacts::{consumed_artifacts_for, ConsumedArtifactEntry};
 pub use db_touchpoints::{
@@ -98,15 +103,18 @@ use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use crate::{
     auth::now_timestamp,
     commands::{
-        context_budget, default_runtime_agent_approval_mode, default_runtime_agent_id,
-        ensure_runtime_agent_available, estimate_tokens, evaluate_compaction_policy,
-        redact_session_context_text, resolve_context_limit, runtime_agent_allows_approval_mode,
+        context_budget_with_estimate, default_runtime_agent_approval_mode,
+        default_runtime_agent_id, ensure_runtime_agent_available, estimate_tokens,
+        evaluate_compaction_policy, heuristic_token_estimate, redact_session_context_text,
+        resolve_context_limit_with_provider_preflight, runtime_agent_allows_approval_mode,
         soul_prompt_fragment, AgentToolApplicationStyleDto,
         AgentToolApplicationStyleResolutionSourceDto, BrowserControlPreferenceDto, CommandError,
         CommandErrorClass, CommandResult, ResolvedAgentToolApplicationStyleDto, RuntimeAgentIdDto,
         RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto, RuntimeRunControlInputDto,
         RuntimeRunControlStateDto, SessionCompactionPolicyInput, SessionContextBudgetPressureDto,
-        SessionContextPolicyActionDto, SoulSettingsDto,
+        SessionContextEstimateConfidenceDto, SessionContextEstimateDto,
+        SessionContextEstimateSourceDto, SessionContextPolicyActionDto, SessionUsageSourceDto,
+        SoulSettingsDto,
     },
     db::project_store::{
         self, AgentEventRecord, AgentMessageRecord, AgentMessageRole, AgentRunEventKind,
@@ -131,12 +139,13 @@ use crate::{
             AUTONOMOUS_TOOL_COMMAND_SESSION, AUTONOMOUS_TOOL_COMMAND_VERIFY,
             AUTONOMOUS_TOOL_DESKTOP_CONTROL, AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
             AUTONOMOUS_TOOL_DESKTOP_STREAM, AUTONOMOUS_TOOL_EMULATOR,
-            AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT, AUTONOMOUS_TOOL_HARNESS_RUNNER,
-            AUTONOMOUS_TOOL_MCP_CALL_TOOL, AUTONOMOUS_TOOL_MCP_GET_PROMPT,
-            AUTONOMOUS_TOOL_MCP_LIST, AUTONOMOUS_TOOL_MCP_READ_RESOURCE,
-            AUTONOMOUS_TOOL_PROJECT_CONTEXT, AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
-            AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD, AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH,
-            AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH, AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE,
+            AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT, AUTONOMOUS_TOOL_EXPECTED_HASH_REQUIRED_CODE,
+            AUTONOMOUS_TOOL_HARNESS_RUNNER, AUTONOMOUS_TOOL_MCP_CALL_TOOL,
+            AUTONOMOUS_TOOL_MCP_GET_PROMPT, AUTONOMOUS_TOOL_MCP_LIST,
+            AUTONOMOUS_TOOL_MCP_READ_RESOURCE, AUTONOMOUS_TOOL_PROJECT_CONTEXT,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET, AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH, AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE, AUTONOMOUS_TOOL_REQUEST_SENSITIVE_INPUT,
             AUTONOMOUS_TOOL_RESULT_PAGE, AUTONOMOUS_TOOL_SOLANA_ALT,
             AUTONOMOUS_TOOL_SOLANA_AUDIT_COVERAGE, AUTONOMOUS_TOOL_SOLANA_AUDIT_EXTERNAL,
             AUTONOMOUS_TOOL_SOLANA_AUDIT_FUZZ, AUTONOMOUS_TOOL_SOLANA_AUDIT_STATIC,
@@ -149,16 +158,17 @@ use crate::{
             AUTONOMOUS_TOOL_SOLANA_REPLAY, AUTONOMOUS_TOOL_SOLANA_SECRETS,
             AUTONOMOUS_TOOL_SOLANA_SIMULATE, AUTONOMOUS_TOOL_SOLANA_SQUADS,
             AUTONOMOUS_TOOL_SOLANA_TX, AUTONOMOUS_TOOL_SOLANA_UPGRADE_CHECK,
-            AUTONOMOUS_TOOL_SOLANA_VERIFIED_BUILD, AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
+            AUTONOMOUS_TOOL_SOLANA_VERIFIED_BUILD, AUTONOMOUS_TOOL_STALE_FILE_ERROR_CODE,
+            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
             AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED, AUTONOMOUS_TOOL_WORKSPACE_INDEX,
         },
         redaction::{find_prohibited_persistence_content, redact_command_argv_for_persistence},
         AutonomousCommandOutputChunk, AutonomousDesktopToolOutput, AutonomousDesktopToolStatus,
         AutonomousDynamicToolRoute, AutonomousMacosAutomationAction,
         AutonomousMacosAutomationOutput, AutonomousMcpAction, AutonomousMcpRequest,
-        AutonomousProcessManagerAction, AutonomousSubagentExecutor, AutonomousSubagentTask,
-        AutonomousSystemDiagnosticsOutput, AutonomousTodoStatus, AutonomousToolOutput,
-        AutonomousToolRequest, AutonomousToolResult, AutonomousToolRuntime,
+        AutonomousProcessManagerAction, AutonomousRuntimeWaitOutput, AutonomousSubagentExecutor,
+        AutonomousSubagentTask, AutonomousSystemDiagnosticsOutput, AutonomousTodoStatus,
+        AutonomousToolOutput, AutonomousToolRequest, AutonomousToolResult, AutonomousToolRuntime,
         XeroAttachedSkillDiagnostic, XeroAttachedSkillRef, XeroAttachedSkillResolutionReport,
         XeroAttachedSkillResolutionRequest, XeroAttachedSkillResolutionSnapshot,
         XeroAttachedSkillResolutionStatus, XeroSkillToolContextPayload,
@@ -172,11 +182,12 @@ use crate::{
         AUTONOMOUS_TOOL_MCP, AUTONOMOUS_TOOL_MKDIR, AUTONOMOUS_TOOL_NOTEBOOK_EDIT,
         AUTONOMOUS_TOOL_PATCH, AUTONOMOUS_TOOL_POWERSHELL, AUTONOMOUS_TOOL_PROCESS_MANAGER,
         AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_READ_MANY, AUTONOMOUS_TOOL_RENAME,
-        AUTONOMOUS_TOOL_SEARCH, AUTONOMOUS_TOOL_SKILL, AUTONOMOUS_TOOL_STAT,
-        AUTONOMOUS_TOOL_SUBAGENT, AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS, AUTONOMOUS_TOOL_TODO,
-        AUTONOMOUS_TOOL_TOML_EDIT, AUTONOMOUS_TOOL_TOOL_ACCESS, AUTONOMOUS_TOOL_TOOL_SEARCH,
-        AUTONOMOUS_TOOL_WEB_FETCH, AUTONOMOUS_TOOL_WEB_SEARCH, AUTONOMOUS_TOOL_WORKFLOW_DEFINITION,
-        AUTONOMOUS_TOOL_WRITE, AUTONOMOUS_TOOL_YAML_EDIT, OPENAI_CODEX_PROVIDER_ID,
+        AUTONOMOUS_TOOL_RUNTIME_WAIT, AUTONOMOUS_TOOL_SEARCH, AUTONOMOUS_TOOL_SKILL,
+        AUTONOMOUS_TOOL_STAT, AUTONOMOUS_TOOL_SUBAGENT, AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS,
+        AUTONOMOUS_TOOL_TODO, AUTONOMOUS_TOOL_TOML_EDIT, AUTONOMOUS_TOOL_TOOL_ACCESS,
+        AUTONOMOUS_TOOL_TOOL_SEARCH, AUTONOMOUS_TOOL_WEB_FETCH, AUTONOMOUS_TOOL_WEB_SEARCH,
+        AUTONOMOUS_TOOL_WORKFLOW_DEFINITION, AUTONOMOUS_TOOL_WRITE, AUTONOMOUS_TOOL_YAML_EDIT,
+        OPENAI_CODEX_PROVIDER_ID,
     },
 };
 
@@ -190,4 +201,6 @@ const INTERRUPTED_TOOL_CALL_CODE: &str = "agent_tool_call_interrupted";
 const RERUNNABLE_APPROVED_TOOL_ERROR_CODES: &[&str] = &[
     "agent_file_write_requires_observation",
     "agent_file_changed_since_observed",
+    AUTONOMOUS_TOOL_STALE_FILE_ERROR_CODE,
+    AUTONOMOUS_TOOL_EXPECTED_HASH_REQUIRED_CODE,
 ];

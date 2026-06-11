@@ -11,6 +11,7 @@ import type { PlatformVariant } from "@/components/xero/shell"
 import { detectPlatform } from "@/components/xero/shell"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { ToolErrorLog } from "./development-section/tool-error-log"
 import { ToolHarness } from "./development-section/tool-harness"
 import { SectionHeader } from "./section-header"
 
@@ -101,6 +102,8 @@ export function DevelopmentSection({
           })}
         </div>
       </section>
+
+      <ToolErrorLog />
 
       <ToolHarness />
     </div>

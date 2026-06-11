@@ -23,7 +23,10 @@ function ScrollArea({
         {children}
       </ScrollAreaPrimitive.Viewport>
       <ScrollBar />
-      <ScrollAreaPrimitive.Corner />
+      <ScrollAreaPrimitive.Corner
+        data-slot="scroll-area-corner"
+        className="relative z-[var(--scrollbar-z-index)]"
+      />
     </ScrollAreaPrimitive.Root>
   )
 }
@@ -38,7 +41,7 @@ function ScrollBar({
       data-slot="scroll-area-scrollbar"
       orientation={orientation}
       className={cn(
-        'flex touch-none p-px transition-colors select-none',
+        'relative z-[var(--scrollbar-z-index)] flex touch-none p-px transition-colors select-none',
         orientation === 'vertical' &&
           'h-full w-2.5 border-l border-l-transparent',
         orientation === 'horizontal' &&
@@ -49,7 +52,7 @@ function ScrollBar({
     >
       <ScrollAreaPrimitive.ScrollAreaThumb
         data-slot="scroll-area-thumb"
-        className="bg-border relative flex-1 rounded-full"
+        className="relative z-[var(--scrollbar-z-index)] flex-1 rounded-full bg-border"
       />
     </ScrollAreaPrimitive.ScrollAreaScrollbar>
   )

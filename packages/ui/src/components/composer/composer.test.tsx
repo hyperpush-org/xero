@@ -4,6 +4,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Composer, type ComposerDictationLike, type ComposerProps } from "./composer";
+import { ComposerModelSelect } from "./composer-model-select";
 
 const inertDictation: ComposerDictationLike = {
 	ariaLabel: "Start dictation",
@@ -151,6 +152,33 @@ describe("Composer", () => {
 		expect(onThinkingChange).toHaveBeenCalledWith("high");
 	});
 
+	it("keeps the inline model and thinking selector bounded", () => {
+		renderComposer({
+			modelGroups: [
+				{
+					id: "models",
+					options: [{ id: "grok", label: "Grok 4.3" }],
+				},
+			],
+			selectedModelId: "grok",
+			thinkingOptions: [{ id: "medium", label: "Medium" }],
+			selectedThinkingId: "medium",
+			onThinkingChange: vi.fn(),
+		});
+
+		const selector = screen.getByRole("combobox", {
+			name: "Model and thinking selector",
+		});
+		const labelWrapper = selector.children.item(1);
+
+		expect(selector).toHaveClass("max-w-72");
+		expect(selector).not.toHaveClass("flex-1");
+		expect(selector).toHaveTextContent("Grok 4.3");
+		expect(selector).toHaveTextContent("Medium");
+		expect(labelWrapper).toHaveClass("flex-1");
+		expect(labelWrapper).not.toHaveClass("line-clamp-1");
+	});
+
 	it("toggles visible dictation from the composer shortcut and renders the voice meter", async () => {
 		const toggle = vi.fn(async () => undefined);
 		renderComposer({
@@ -203,6 +231,74 @@ describe("Composer", () => {
 			"max-h-[min(18rem,calc(var(--radix-dropdown-menu-content-available-height)_-_5rem))]",
 		);
 		expect(modelList).toHaveClass("overflow-y-auto");
+	});
+
+	it("routes wheel gestures to the model list inside the dropdown", () => {
+		renderComposer({
+			modelGroups: [
+				{
+					id: "models",
+					options: Array.from({ length: 40 }, (_, index) => ({
+						id: `model-${index}`,
+						label: `Model ${index}`,
+					})),
+				},
+			],
+			selectedModelId: "model-0",
+			thinkingOptions: [{ id: "low", label: "Low" }],
+			selectedThinkingId: "low",
+			onThinkingChange: vi.fn(),
+		});
+
+		fireEvent.pointerDown(
+			screen.getByRole("combobox", { name: "Model and thinking selector" }),
+			{ button: 0 },
+		);
+
+		const modelList = document.querySelector(
+			'[data-slot="command-list"]',
+		) as HTMLElement;
+		Object.defineProperty(modelList, "clientHeight", {
+			configurable: true,
+			value: 120,
+		});
+		Object.defineProperty(modelList, "scrollHeight", {
+			configurable: true,
+			value: 900,
+		});
+
+		fireEvent.wheel(modelList, { deltaY: 80 });
+
+		expect(modelList.scrollTop).toBe(80);
+	});
+
+	it("lets field model and thinking labels use the available trigger width", () => {
+		render(
+			<ComposerModelSelect
+				groups={[
+					{
+						id: "models",
+						options: [{ id: "grok", label: "Grok 4.3" }],
+					},
+				]}
+				value="grok"
+				onChange={vi.fn()}
+				thinkingOptions={[{ id: "low", label: "Low" }]}
+				selectedThinkingId="low"
+				onThinkingChange={vi.fn()}
+				variant="field"
+			/>,
+		);
+
+		const selector = screen.getByRole("combobox", {
+			name: "Model and thinking selector",
+		});
+		const label = selector.firstElementChild;
+
+		expect(selector).toHaveTextContent("Grok 4.3");
+		expect(selector).toHaveTextContent("Low");
+		expect(label).toHaveClass("flex-1");
+		expect(label).not.toHaveClass("line-clamp-1");
 	});
 
 	it("keeps the combined selector open after choosing a model so thinking can be adjusted", () => {
@@ -304,6 +400,125 @@ describe("Composer", () => {
 	it("renders the attach button when onAddFiles is provided", () => {
 		renderComposer({ onAddFiles: vi.fn() });
 		expect(screen.getByRole("button", { name: "Add files" })).toBeVisible();
+	});
+
+	it("warns immediately when the selected model cannot accept an attached image", async () => {
+		const onAddFiles = vi.fn();
+		renderComposer({
+			onAddFiles,
+			attachmentCompatibility: {
+				label: "Text model",
+				inputModalities: ["text"],
+			},
+		});
+
+		const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+		const file = new File(["pixels"], "sketch.png", { type: "image/png" });
+		fireEvent.change(input, { target: { files: [file] } });
+
+		await waitFor(() =>
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"Text model does not support image attachments",
+			),
+		);
+		expect(onAddFiles).not.toHaveBeenCalled();
+	});
+
+	it("adds files immediately when the selected model accepts the attachment kind", () => {
+		const onAddFiles = vi.fn();
+		renderComposer({
+			onAddFiles,
+			attachmentCompatibility: {
+				label: "Vision model",
+				inputModalities: ["text", "image"],
+			},
+		});
+
+		const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+		const file = new File(["pixels"], "sketch.png", { type: "image/png" });
+		fireEvent.change(input, { target: { files: [file] } });
+
+		expect(onAddFiles).toHaveBeenCalledWith([file]);
+		expect(screen.queryByRole("alert")).toBeNull();
+	});
+
+	it("blocks sending when a pending attachment is incompatible with the selected model", async () => {
+		const { onSubmit } = renderComposer({
+			initialDraft: "Describe this",
+			pendingAttachments: [
+				{
+					id: "attachment-1",
+					kind: "image",
+					originalName: "sketch.png",
+					mediaType: "image/png",
+					sizeBytes: 128,
+					status: "ready",
+				},
+			],
+			attachmentCompatibility: {
+				label: "Text model",
+				inputModalities: ["text"],
+			},
+		});
+
+		expect(screen.getByRole("alert")).toHaveTextContent(
+			'Text model does not support image attachments. Choose a compatible model or remove "sketch.png".',
+		);
+
+		const sendButton = screen.getByRole("button", { name: "Send message" });
+		expect(sendButton).toBeDisabled();
+		fireEvent.click(sendButton);
+
+		await waitFor(() => expect(onSubmit).not.toHaveBeenCalled());
+	});
+
+	it("opens pending image attachments in the shared image preview", () => {
+		const previewUrl = "data:image/png;base64,aGVsbG8=";
+		renderComposer({
+			pendingAttachments: [
+				{
+					id: "attachment-1",
+					kind: "image",
+					originalName: "browser-pen.png",
+					mediaType: "image/png",
+					sizeBytes: 512,
+					status: "ready",
+					previewUrl,
+				},
+			],
+		});
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Open image preview for browser-pen.png",
+			}),
+		);
+
+		expect(screen.getByRole("button", { name: "Close image preview" })).toBeVisible();
+		expect(screen.getByRole("button", { name: "Zoom in" })).toBeVisible();
+		expect(screen.getByRole("img", { name: "browser-pen.png" })).toHaveAttribute("src", previewUrl);
+		expect(screen.getByRole("link", { name: "Download browser-pen.png" })).toHaveAttribute("href", previewUrl);
+	});
+
+	it("renders removable metadata context cards with pending attachments", async () => {
+		const onRemoveContext = vi.fn();
+		renderComposer({
+			pendingContexts: [
+				{
+					id: "context-1",
+					kind: "element",
+					title: "Element context",
+					subtitle: "Hero.tsx:42",
+				},
+			],
+			onRemoveContext,
+		});
+
+		await waitFor(() => expect(screen.getByText("Element context")).toBeVisible());
+		expect(screen.getByText("Hero.tsx:42")).toBeVisible();
+
+		fireEvent.click(screen.getByRole("button", { name: "Remove Element context" }));
+		expect(onRemoveContext).toHaveBeenCalledWith("context-1");
 	});
 
 	it("renders a stop button that invokes onStop while a run is active", () => {

@@ -409,11 +409,9 @@ function remoteAgentRunEventToTurn(
 	}
 	if (
 		eventKind === "context_manifest_recorded" ||
-		eventKind === "retrieval_performed"
+		eventKind === "retrieval_performed" ||
+		eventKind === "memory_candidate_captured"
 	) {
-		return null;
-	}
-	if (eventKind === "memory_candidate_captured") {
 		return remoteContextEventToTurn(payload, runId, sequence, event, eventKind);
 	}
 	if (eventKind === "file_changed" && payload) {
@@ -641,6 +639,8 @@ function remoteActionRequiredToTurn(
 		shape: "plain_text",
 		options: null,
 		allowMultiple: false,
+		sensitiveFields: null,
+		intendedUse: null,
 		pendingDecision: null,
 		isResolved: false,
 	};
@@ -763,6 +763,8 @@ function mapAction(item: RuntimeStreamItemDto): ConversationTurn | null {
 		shape: item.answerShape,
 		options: item.options ?? null,
 		allowMultiple: item.allowMultiple ?? false,
+		sensitiveFields: item.sensitiveFields ?? null,
+		intendedUse: item.intendedUse ?? null,
 		pendingDecision: null,
 		isResolved: false,
 	};

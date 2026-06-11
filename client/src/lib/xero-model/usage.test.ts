@@ -8,6 +8,7 @@ function usageSummary(overrides: Partial<ProjectUsageSummaryDto> = {}): ProjectU
     totals: {
       runCount: 2,
       inputTokens: 10,
+      billableInputTokens: 10,
       outputTokens: 5,
       totalTokens: 15,
       cacheReadTokens: 0,
@@ -26,6 +27,7 @@ describe('summarizeProjectUsageSpend', () => {
         totals: {
           runCount: 2,
           inputTokens: 1,
+          billableInputTokens: 1,
           outputTokens: 1,
           totalTokens: 2,
           cacheReadTokens: 0,
@@ -38,6 +40,7 @@ describe('summarizeProjectUsageSpend', () => {
             modelId: 'claude-sonnet-4-6',
             runCount: 1,
             inputTokens: 100,
+            billableInputTokens: 75,
             outputTokens: 50,
             totalTokens: 175,
             cacheReadTokens: 20,
@@ -49,6 +52,7 @@ describe('summarizeProjectUsageSpend', () => {
             modelId: 'gpt-5.1',
             runCount: 1,
             inputTokens: 25,
+            billableInputTokens: 25,
             outputTokens: 10,
             totalTokens: 35,
             cacheReadTokens: 0,

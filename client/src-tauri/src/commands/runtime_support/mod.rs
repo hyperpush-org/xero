@@ -1,4 +1,5 @@
 mod autonomous;
+mod cursor;
 mod project;
 mod run;
 mod session;
@@ -6,6 +7,7 @@ mod session;
 #[allow(unused_imports)]
 pub(crate) use autonomous::{autonomous_run_state_from_snapshot, load_persisted_autonomous_run};
 pub(crate) use autonomous::{sync_autonomous_run_state, AutonomousSyncIntent};
+pub(crate) use cursor::{drive_cursor_runtime_prompt, is_cursor_runtime_provider};
 pub(crate) use project::{emit_project_updated, resolve_project_root};
 pub(crate) use run::{
     agent_provider_config_identity, apply_owned_runtime_run_pending_controls_with_status,
@@ -13,9 +15,10 @@ pub(crate) use run::{
     emit_runtime_run_updated_if_changed, ensure_owned_runtime_provider_turn_capabilities,
     fail_owned_runtime_run, generate_runtime_run_id, launch_or_reconnect_runtime_run,
     load_persisted_runtime_run, load_runtime_run_status, resolve_owned_agent_provider_config,
-    resolve_owned_runtime_profile_selection, runtime_run_dto_from_snapshot,
-    runtime_run_status_from_persisted, staged_attachment_dto_to_message_attachment,
-    stop_owned_runtime_run, update_owned_runtime_run_controls,
+    resolve_owned_runtime_profile_selection, runtime_control_input_from_active,
+    runtime_run_dto_from_snapshot, runtime_run_status_from_persisted,
+    staged_attachment_dto_to_message_attachment, stop_owned_runtime_run,
+    update_owned_runtime_run_controls,
 };
 #[allow(unused_imports)]
 pub(crate) use session::runtime_session_from_record;

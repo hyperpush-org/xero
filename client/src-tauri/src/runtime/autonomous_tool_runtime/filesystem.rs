@@ -19,16 +19,18 @@ use serde_json::{json, Value as JsonValue};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use super::{
+    expected_hash_required_error,
     repo_scope::{
         build_glob_matcher, normalize_glob_pattern, normalize_optional_relative_path,
         normalize_relative_path, path_to_forward_slash, scope_relative_match_path,
     },
-    AutonomousCopyOmissions, AutonomousCopyOperation, AutonomousCopyOutput, AutonomousCopyRequest,
-    AutonomousDeleteOutput, AutonomousDeleteRequest, AutonomousDirectoryDigestEntry,
-    AutonomousDirectoryDigestHashMode, AutonomousDirectoryDigestOmissions,
-    AutonomousDirectoryDigestOutput, AutonomousDirectoryDigestRequest, AutonomousEditOutput,
-    AutonomousEditRequest, AutonomousFindMode, AutonomousFindOmissions, AutonomousFindOutput,
-    AutonomousFindRequest, AutonomousFsTransactionAction, AutonomousFsTransactionOperation,
+    stale_file_error, AutonomousCopyOmissions, AutonomousCopyOperation, AutonomousCopyOutput,
+    AutonomousCopyRequest, AutonomousDeleteOutput, AutonomousDeleteRequest,
+    AutonomousDirectoryDigestEntry, AutonomousDirectoryDigestHashMode,
+    AutonomousDirectoryDigestOmissions, AutonomousDirectoryDigestOutput,
+    AutonomousDirectoryDigestRequest, AutonomousEditOutput, AutonomousEditRequest,
+    AutonomousFindMode, AutonomousFindOmissions, AutonomousFindOutput, AutonomousFindRequest,
+    AutonomousFsTransactionAction, AutonomousFsTransactionOperation,
     AutonomousFsTransactionOperationResult, AutonomousFsTransactionOutput,
     AutonomousFsTransactionRequest, AutonomousFsTransactionRollbackAttempt,
     AutonomousFsTransactionRollbackStatus, AutonomousFsTransactionValidationSummary,
@@ -98,6 +100,21 @@ const MAX_DIRECTORY_DIGEST_FILES: usize = 5_000;
 const DEFAULT_HASH_MAX_FILES: usize = 1_000;
 const MAX_HASH_FILES: usize = 5_000;
 const MAX_HASH_INLINE_FILES: usize = 50;
+const PACKAGE_MANAGER_LOCKFILE_NAMES: &[&str] = &[
+    "Cargo.lock",
+    "Gemfile.lock",
+    "Pipfile.lock",
+    "bun.lock",
+    "bun.lockb",
+    "composer.lock",
+    "deno.lock",
+    "npm-shrinkwrap.json",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "uv.lock",
+    "yarn.lock",
+];
 
 enum ReadManyPathResult {
     Read {
@@ -290,6 +307,10 @@ impl FsTransactionRollbackReport {
 }
 
 impl AutonomousToolRuntime {
+    fn requires_existing_file_hash_guard(&self, preview: bool) -> bool {
+        self.agent_run_context.is_some() && !preview
+    }
+
     pub fn read(&self, request: AutonomousReadRequest) -> CommandResult<AutonomousToolResult> {
         self.read_with_approval(request, false)
     }
@@ -1081,14 +1102,14 @@ impl AutonomousToolRuntime {
             None
         };
         let files = search_file_summaries(search_result.files);
-        let summary = if search_result.returned_matches == 0 {
+        let summary_base = if search_result.returned_matches == 0 {
             match scope_string.as_deref() {
-                Some(scope) => format!("Found 0 matches for `{}` under `{scope}`.", request.query),
-                None => format!("Found 0 matches for `{}` in the repository.", request.query),
+                Some(scope) => format!("Found 0 matches for `{}` under `{scope}`", request.query),
+                None => format!("Found 0 matches for `{}` in the repository", request.query),
             }
         } else if search_result.truncated {
             format!(
-                "Found {} match(es) for `{}` across {} file(s); page truncated at {} returned match(es).",
+                "Found {} match(es) for `{}` across {} file(s); page truncated at {} returned match(es)",
                 search_result.returned_matches,
                 request.query,
                 matched_files,
@@ -1096,10 +1117,14 @@ impl AutonomousToolRuntime {
             )
         } else {
             format!(
-                "Found {} match(es) for `{}` across {} file(s).",
+                "Found {} match(es) for `{}` across {} file(s)",
                 search_result.returned_matches, request.query, matched_files
             )
         };
+        let summary = format!(
+            "{summary_base}{}.",
+            search_omission_summary_suffix(&search_result.omissions)
+        );
 
         Ok(AutonomousToolResult {
             tool_name: AUTONOMOUS_TOOL_SEARCH.into(),
@@ -1274,9 +1299,11 @@ impl AutonomousToolRuntime {
 
     pub fn edit(&self, request: AutonomousEditRequest) -> CommandResult<AutonomousToolResult> {
         validate_non_empty(&request.path, "path")?;
-        validate_non_empty(&request.expected, "expected")?;
+        validate_edit_expected_present(&request.expected)?;
         let relative_path = normalize_relative_path(&request.path, "path")?;
         let resolved_path = self.resolve_existing_path(&relative_path)?;
+        let display_path = path_to_forward_slash(&relative_path);
+        validate_not_package_manager_lockfile_mutation(&display_path)?;
 
         if request.start_line == 0 || request.end_line == 0 || request.end_line < request.start_line
         {
@@ -1287,10 +1314,13 @@ impl AutonomousToolRuntime {
         }
 
         let decoded = self.read_decoded_text_file(&resolved_path)?;
-        validate_expected_hash_for_bytes(
+        let old_hash = validate_expected_hash_for_bytes(
+            "edit",
+            &display_path,
+            "expectedHash",
             request.expected_hash.as_deref(),
             &decoded.raw_bytes,
-            "autonomous_tool_edit_expected_hash_mismatch",
+            self.requires_existing_file_hash_guard(request.preview),
         )?;
         let existing = decoded.text;
         let total_lines = count_lines(&existing);
@@ -1302,36 +1332,60 @@ impl AutonomousToolRuntime {
                 ),
             ));
         }
-        validate_optional_line_hash(
-            request.start_line_hash.as_deref(),
-            &existing,
-            request.start_line,
-            "startLineHash",
-            "autonomous_tool_edit_line_hash_mismatch",
-        )?;
-        validate_optional_line_hash(
-            request.end_line_hash.as_deref(),
-            &existing,
-            request.end_line,
-            "endLineHash",
-            "autonomous_tool_edit_line_hash_mismatch",
-        )?;
-
-        let (start_byte, end_byte) =
+        let (start_byte, mut end_byte) =
             line_byte_range(&existing, request.start_line, request.end_line)?;
-        let current = &existing[start_byte..end_byte];
-        if current != request.expected {
+        let mut effective_end_line = request.end_line;
+        let mut current = &existing[start_byte..end_byte];
+        let expected = normalize_replacement_line_endings(&request.expected, decoded.line_ending);
+        if current != expected {
+            if let Some((prefix_end_line, prefix_end_byte)) = guarded_edit_prefix_line_match(
+                &existing,
+                start_byte,
+                request.start_line,
+                request.end_line,
+                expected.as_str(),
+                request.expected_hash.as_deref(),
+            )? {
+                effective_end_line = prefix_end_line;
+                end_byte = prefix_end_byte;
+                current = &existing[start_byte..end_byte];
+            }
+        }
+        let exact_expected_match = current == expected;
+        if !exact_expected_match
+            && !guarded_edit_expected_equivalent(
+                current,
+                expected.as_str(),
+                request.expected_hash.as_deref(),
+            )
+        {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_edit_expected_text_mismatch",
                 format!(
-                    "Xero refused to apply the edit because the requested line range no longer matches the expected text. Current nearby lines and line hashes:\n{}",
+                    "Xero refused to apply the edit because the expected text does not match the current requested line range. Current nearby lines and line hashes:\n{}",
                     edit_conflict_context(&existing, request.start_line, request.end_line)
                 ),
             ));
         }
+        if request.expected_hash.is_none() || !exact_expected_match {
+            validate_optional_line_hash(
+                request.start_line_hash.as_deref(),
+                &existing,
+                request.start_line,
+                "startLineHash",
+                "autonomous_tool_edit_line_hash_mismatch",
+            )?;
+            validate_optional_line_hash(
+                request.end_line_hash.as_deref(),
+                &existing,
+                request.end_line,
+                "endLineHash",
+                "autonomous_tool_edit_line_hash_mismatch",
+            )?;
+        }
 
         let replacement =
-            normalize_replacement_line_endings(&request.replacement, decoded.line_ending);
+            normalize_line_range_replacement(&request.replacement, current, decoded.line_ending);
         let mut updated = String::with_capacity(existing.len() - current.len() + replacement.len());
         updated.push_str(&existing[..start_byte]);
         updated.push_str(&replacement);
@@ -1350,8 +1404,6 @@ impl AutonomousToolRuntime {
             })?;
         }
 
-        let display_path = path_to_forward_slash(&relative_path);
-        let old_hash = sha256_hex(&decoded.raw_bytes);
         let new_hash = sha256_hex(&updated_bytes);
         let diff = compact_text_diff(&display_path, &existing, &updated);
         let verb = if request.preview {
@@ -1363,13 +1415,13 @@ impl AutonomousToolRuntime {
             tool_name: AUTONOMOUS_TOOL_EDIT.into(),
             summary: format!(
                 "{verb} lines {}-{} in `{display_path}`.",
-                request.start_line, request.end_line
+                request.start_line, effective_end_line
             ),
             command_result: None,
             output: AutonomousToolOutput::Edit(AutonomousEditOutput {
                 path: display_path,
                 start_line: request.start_line,
-                end_line: request.end_line,
+                end_line: effective_end_line,
                 replacement_len: replacement.chars().count(),
                 applied: !request.preview,
                 preview: request.preview,
@@ -1386,6 +1438,7 @@ impl AutonomousToolRuntime {
         validate_non_empty(&request.path, "path")?;
         let relative_path = normalize_relative_path(&request.path, "path")?;
         let display_path = path_to_forward_slash(&relative_path);
+        validate_not_package_manager_lockfile_mutation(&display_path)?;
         let target_path = self.repo_root.join(&relative_path);
         if fs::symlink_metadata(&target_path)
             .map(|metadata| metadata.file_type().is_symlink())
@@ -1450,14 +1503,18 @@ impl AutonomousToolRuntime {
         let created = existing_bytes.is_none();
         let new_bytes = request.content.as_bytes().to_vec();
         let new_hash = sha256_hex(&new_bytes);
-        let old_hash = existing_bytes.as_deref().map(sha256_hex);
-        if let Some(existing_bytes) = existing_bytes.as_deref() {
-            validate_expected_hash_for_bytes(
+        let old_hash = if let Some(existing_bytes) = existing_bytes.as_deref() {
+            Some(validate_expected_hash_for_bytes(
+                "write",
+                &display_path,
+                "expectedHash",
                 request.expected_hash.as_deref(),
                 existing_bytes,
-                "autonomous_tool_write_expected_hash_mismatch",
-            )?;
-        }
+                self.requires_existing_file_hash_guard(request.preview),
+            )?)
+        } else {
+            None
+        };
         let diff = if let Some(existing_bytes) = existing_bytes.as_ref() {
             let decoded = decode_text_bytes(existing_bytes.clone()).map_err(|_| {
                 CommandError::user_fixable(
@@ -1522,8 +1579,9 @@ impl AutonomousToolRuntime {
 
     pub fn patch(&self, request: AutonomousPatchRequest) -> CommandResult<AutonomousToolResult> {
         let preview = request.preview;
+        let require_hash = self.requires_existing_file_hash_guard(preview);
         let operations = normalize_patch_operations(request)?;
-        let planned_files = self.plan_patch_files(&operations)?;
+        let planned_files = self.plan_patch_files(&operations, require_hash)?;
 
         let rollback_status = if preview {
             patch_no_rollback_status()
@@ -1618,6 +1676,7 @@ impl AutonomousToolRuntime {
         let to_relative = normalize_relative_path(&request.to, "to")?;
         let from_display = path_to_forward_slash(&from_relative);
         let to_display = path_to_forward_slash(&to_relative);
+        validate_not_package_manager_lockfile_mutation(&to_display)?;
         let from_candidate = self.repo_root.join(&from_relative);
         if fs::symlink_metadata(&from_candidate)
             .map(|metadata| metadata.file_type().is_symlink())
@@ -1781,16 +1840,14 @@ impl AutonomousToolRuntime {
         plan: &mut CopyPlan,
     ) -> CommandResult<()> {
         let bytes = read_file_bytes(from, "autonomous_tool_copy_read_failed")?;
-        let source_hash = sha256_hex(&bytes);
-        if let Some(expected_hash) = request.expected_source_hash.as_deref() {
-            validate_sha256(expected_hash, "expectedSourceHash")?;
-            if expected_hash.trim() != source_hash {
-                return Err(CommandError::user_fixable(
-                    "autonomous_tool_copy_expected_source_hash_mismatch",
-                    "Xero refused to copy because expectedSourceHash no longer matches.",
-                ));
-            }
-        }
+        let source_hash = validate_expected_hash_for_bytes(
+            "copy",
+            from_display,
+            "expectedSourceHash",
+            request.expected_source_hash.as_deref(),
+            &bytes,
+            self.requires_existing_file_hash_guard(request.preview),
+        )?;
         plan.source_hash = Some(source_hash);
         let overwritten = if to.exists() {
             if !to.is_file() {
@@ -1809,14 +1866,14 @@ impl AutonomousToolRuntime {
                     };
                     let target_bytes =
                         read_file_bytes(to, "autonomous_tool_copy_target_read_failed")?;
-                    let target_hash = sha256_hex(&target_bytes);
-                    validate_sha256(expected_target_hash, "expectedTargetHash")?;
-                    if expected_target_hash.trim() != target_hash {
-                        return Err(CommandError::user_fixable(
-                            "autonomous_tool_copy_expected_target_hash_mismatch",
-                            "Xero refused to overwrite the copy target because expectedTargetHash no longer matches.",
-                        ));
-                    }
+                    let target_hash = validate_expected_hash_for_bytes(
+                        "copy overwrite",
+                        to_display,
+                        "expectedTargetHash",
+                        Some(expected_target_hash),
+                        &target_bytes,
+                        true,
+                    )?;
                     plan.target_hash = Some(target_hash);
                     true
                 }
@@ -1923,6 +1980,7 @@ impl AutonomousToolRuntime {
                     let child_to = to.join(entry.file_name());
                     let child_to_relative = self.repo_relative_path(&child_to)?;
                     let child_to_display = path_to_forward_slash(&child_to_relative);
+                    validate_not_package_manager_lockfile_mutation(&child_to_display)?;
                     self.plan_copy_tree(
                         &child_from,
                         &child_to,
@@ -1933,6 +1991,7 @@ impl AutonomousToolRuntime {
                 }
             }
             AutonomousStatKind::File => {
+                validate_not_package_manager_lockfile_mutation(to_display)?;
                 if to.exists() {
                     return Err(CommandError::user_fixable(
                         "autonomous_tool_copy_target_exists",
@@ -2204,7 +2263,11 @@ impl AutonomousToolRuntime {
         let preview_request = fs_transaction_request_with_preview(request.clone(), true);
         let preview_result = self.apply_fs_transaction_request(preview_request)?;
         if !transaction_preview {
-            validate_fs_transaction_apply_guards(operation, &preview_result.output)?;
+            validate_fs_transaction_apply_guards(
+                operation,
+                &preview_result.output,
+                self.agent_run_context.is_some(),
+            )?;
         }
         let changed_paths = fs_transaction_changed_paths_from_output(&preview_result.output);
         let backup_paths = self.fs_transaction_backup_paths_from_output(&preview_result.output)?;
@@ -2393,11 +2456,15 @@ impl AutonomousToolRuntime {
         let relative_path = normalize_relative_path(&request.path, "path")?;
         let resolved_path = self.resolve_existing_path(&relative_path)?;
         let display_path = path_to_forward_slash(&relative_path);
+        validate_not_package_manager_lockfile_mutation(&display_path)?;
         let decoded = self.read_decoded_text_file(&resolved_path)?;
-        validate_expected_hash_for_bytes(
+        let old_hash = validate_expected_hash_for_bytes(
+            "structured edit",
+            &display_path,
+            "expectedHash",
             request.expected_hash.as_deref(),
             &decoded.raw_bytes,
-            "autonomous_tool_structured_edit_expected_hash_mismatch",
+            self.requires_existing_file_hash_guard(request.preview),
         )?;
         let original_text = decoded.text;
         let mut document = parse_structured_document(&original_text, format)?;
@@ -2420,7 +2487,6 @@ impl AutonomousToolRuntime {
             })?;
         }
 
-        let old_hash = sha256_hex(&decoded.raw_bytes);
         let new_hash = sha256_hex(&updated_bytes);
         let diff = compact_text_diff(&display_path, &original_text, &updated);
         let verb = if request.preview {
@@ -2491,6 +2557,8 @@ impl AutonomousToolRuntime {
     pub fn delete(&self, request: AutonomousDeleteRequest) -> CommandResult<AutonomousToolResult> {
         validate_non_empty(&request.path, "path")?;
         let relative_path = normalize_relative_path(&request.path, "path")?;
+        let display_path = path_to_forward_slash(&relative_path);
+        validate_not_package_manager_lockfile_mutation(&display_path)?;
         let target_path = self.repo_root.join(&relative_path);
         if fs::symlink_metadata(&target_path)
             .map(|metadata| metadata.file_type().is_symlink())
@@ -2502,7 +2570,6 @@ impl AutonomousToolRuntime {
             ));
         }
         let resolved_path = self.resolve_existing_path(&relative_path)?;
-        let display_path = path_to_forward_slash(&relative_path);
         let metadata = fs::symlink_metadata(&resolved_path).map_err(|error| {
             CommandError::retryable(
                 "autonomous_tool_delete_stat_failed",
@@ -2528,9 +2595,12 @@ impl AutonomousToolRuntime {
         if path_kind == AutonomousStatKind::File {
             let existing = read_file_bytes(&resolved_path, "autonomous_tool_delete_read_failed")?;
             validate_expected_hash_for_bytes(
+                "delete",
+                &display_path,
+                "expectedHash",
                 request.expected_hash.as_deref(),
                 &existing,
-                "autonomous_tool_delete_expected_hash_mismatch",
+                self.requires_existing_file_hash_guard(request.preview),
             )?;
         } else if request.expected_hash.is_some() {
             return Err(CommandError::user_fixable(
@@ -2702,6 +2772,10 @@ impl AutonomousToolRuntime {
         validate_non_empty(&request.to_path, "toPath")?;
         let from_relative = normalize_relative_path(&request.from_path, "fromPath")?;
         let to_relative = normalize_relative_path(&request.to_path, "toPath")?;
+        let from_display = path_to_forward_slash(&from_relative);
+        let to_display = path_to_forward_slash(&to_relative);
+        validate_not_package_manager_lockfile_mutation(&from_display)?;
+        validate_not_package_manager_lockfile_mutation(&to_display)?;
         let from_candidate = self.repo_root.join(&from_relative);
         if fs::symlink_metadata(&from_candidate)
             .map(|metadata| metadata.file_type().is_symlink())
@@ -2737,12 +2811,14 @@ impl AutonomousToolRuntime {
         let source_bytes = stat_size(&from_metadata, source_kind);
         let source_hash = if source_kind == AutonomousStatKind::File {
             let existing = read_file_bytes(&from_resolved, "autonomous_tool_rename_read_failed")?;
-            validate_expected_hash_for_bytes(
+            Some(validate_expected_hash_for_bytes(
+                "rename",
+                &from_display,
+                "expectedHash",
                 request.expected_hash.as_deref(),
                 &existing,
-                "autonomous_tool_rename_expected_hash_mismatch",
-            )?;
-            Some(sha256_hex(&existing))
+                self.requires_existing_file_hash_guard(request.preview),
+            )?)
         } else {
             if request.expected_hash.is_some() {
                 return Err(CommandError::user_fixable(
@@ -2794,22 +2870,22 @@ impl AutonomousToolRuntime {
                             "Xero requires expectedTargetHash before overwriting a rename target.",
                         ));
                     };
-                    validate_sha256(expected_target_hash, "expectedTargetHash")?;
-                    if target_hash.as_deref() != Some(expected_target_hash.trim()) {
-                        return Err(CommandError::user_fixable(
-                            "autonomous_tool_rename_expected_target_hash_mismatch",
-                            "Xero refused to overwrite the rename target because expectedTargetHash no longer matches.",
-                        ));
-                    }
+                    let target_bytes =
+                        read_file_bytes(&to_resolved, "autonomous_tool_rename_target_read_failed")?;
+                    validate_expected_hash_for_bytes(
+                        "rename overwrite",
+                        &to_display,
+                        "expectedTargetHash",
+                        Some(expected_target_hash),
+                        &target_bytes,
+                        true,
+                    )?;
                     true
                 }
                 Some(false) | None => {
                     return Err(CommandError::user_fixable(
                         "autonomous_tool_rename_target_exists",
-                        format!(
-                            "Xero refused to rename because `{}` already exists.",
-                            path_to_forward_slash(&to_relative)
-                        ),
+                        format!("Xero refused to rename because `{to_display}` already exists."),
                     ));
                 }
             }
@@ -2846,8 +2922,6 @@ impl AutonomousToolRuntime {
             })?;
         }
 
-        let from_path = path_to_forward_slash(&from_relative);
-        let to_path = path_to_forward_slash(&to_relative);
         let verb = if request.preview {
             "Previewed rename"
         } else {
@@ -2855,11 +2929,11 @@ impl AutonomousToolRuntime {
         };
         Ok(AutonomousToolResult {
             tool_name: AUTONOMOUS_TOOL_RENAME.into(),
-            summary: format!("{verb} `{from_path}` to `{to_path}`."),
+            summary: format!("{verb} `{from_display}` to `{to_display}`."),
             command_result: None,
             output: AutonomousToolOutput::Rename(AutonomousRenameOutput {
-                from_path,
-                to_path,
+                from_path: from_display,
+                to_path: to_display,
                 applied: !request.preview,
                 preview: request.preview,
                 overwritten,
@@ -3777,7 +3851,7 @@ impl AutonomousToolRuntime {
             }
 
             result.scanned_files = result.scanned_files.saturating_add(1);
-            let decoded = match self.read_decoded_text_file(path) {
+            let decoded = match self.read_decoded_search_text_file(path) {
                 Ok(decoded) => decoded,
                 Err(error) if should_skip_search_file_error(&error) => {
                     record_search_file_omission(&mut result.omissions, &error);
@@ -4482,9 +4556,39 @@ impl AutonomousToolRuntime {
         })
     }
 
+    fn read_decoded_search_text_file(&self, path: &Path) -> CommandResult<DecodedText> {
+        let metadata = fs::metadata(path).map_err(|error| {
+            CommandError::retryable(
+                "autonomous_tool_read_metadata_failed",
+                format!("Xero could not inspect {}: {error}", path.display()),
+            )
+        })?;
+        if metadata.len() > MAX_BINARY_READ_BYTES {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_file_too_large",
+                format!(
+                    "Xero refused to search {} because it exceeds the {} byte search text limit.",
+                    path.display(),
+                    MAX_BINARY_READ_BYTES
+                ),
+            ));
+        }
+        let bytes = read_file_bytes(path, "autonomous_tool_read_failed")?;
+        decode_text_bytes(bytes).map_err(|_| {
+            CommandError::user_fixable(
+                "autonomous_tool_file_not_text",
+                format!(
+                    "Xero refused to search {} because it is not valid UTF-8 text.",
+                    path.display()
+                ),
+            )
+        })
+    }
+
     fn plan_patch_files(
         &self,
         operations: &[NormalizedPatchOperation],
+        require_hash: bool,
     ) -> CommandResult<Vec<PlannedPatchFile>> {
         let mut grouped = BTreeMap::<String, GroupedPatchOperations<'_>>::new();
         for operation in operations {
@@ -4499,6 +4603,7 @@ impl AutonomousToolRuntime {
 
         let mut planned_files = Vec::with_capacity(grouped.len());
         for (display_path, group) in grouped {
+            validate_not_package_manager_lockfile_mutation(&display_path)?;
             let resolved_path = self.resolve_existing_path(&group.relative_path)?;
             let decoded = self.read_decoded_text_file(&resolved_path)?;
             let original_text = decoded.text;
@@ -4514,7 +4619,7 @@ impl AutonomousToolRuntime {
                 .collect::<Vec<_>>();
 
             for operation in group.operations {
-                validate_patch_expected_hash(operation, &decoded.raw_bytes)?;
+                validate_patch_expected_hash(operation, &decoded.raw_bytes, require_hash)?;
                 let matches = updated.matches(operation.search.as_str()).count();
                 if matches == 0 {
                     return Err(patch_operation_error(
@@ -4777,7 +4882,42 @@ fn fs_transaction_request_with_preview(
 fn validate_fs_transaction_apply_guards(
     operation: &AutonomousFsTransactionOperation,
     output: &AutonomousToolOutput,
+    require_hashes: bool,
 ) -> CommandResult<()> {
+    if require_hashes {
+        match (&operation.action, output) {
+            (AutonomousFsTransactionAction::EditFile, AutonomousToolOutput::Edit(_))
+            | (AutonomousFsTransactionAction::EditFile, AutonomousToolOutput::Patch(_))
+            | (AutonomousFsTransactionAction::DeleteFile, AutonomousToolOutput::Delete(_))
+                if operation.expected_hash.is_none() =>
+            {
+                return Err(CommandError::user_fixable(
+                    "autonomous_tool_fs_transaction_expected_hash_required",
+                    "Xero requires expectedHash from a current file read/hash before applying this transaction file operation.",
+                ));
+            }
+            (AutonomousFsTransactionAction::Rename, AutonomousToolOutput::Rename(output))
+                if output.source_kind == AutonomousStatKind::File
+                    && operation.expected_hash.is_none() =>
+            {
+                return Err(CommandError::user_fixable(
+                    "autonomous_tool_fs_transaction_expected_hash_required",
+                    "Xero requires expectedHash from a current file read/hash before applying this transaction file operation.",
+                ));
+            }
+            (AutonomousFsTransactionAction::Copy, AutonomousToolOutput::Copy(output))
+                if output.source_kind == AutonomousStatKind::File
+                    && operation.expected_source_hash.is_none() =>
+            {
+                return Err(CommandError::user_fixable(
+                    "autonomous_tool_fs_transaction_expected_source_hash_required",
+                    "Xero requires expectedSourceHash from a current file read/hash before applying this transaction file copy.",
+                ));
+            }
+            _ => {}
+        }
+    }
+
     match (&operation.action, output) {
         (AutonomousFsTransactionAction::DeleteDirectory, AutonomousToolOutput::Delete(output))
             if output.recursive && operation.expected_digest.is_none() =>
@@ -6032,6 +6172,34 @@ fn search_file_summaries(
         .collect()
 }
 
+fn search_omission_summary_suffix(omissions: &AutonomousSearchOmissions) -> String {
+    let mut parts = Vec::new();
+    if omissions.binary_files > 0 {
+        parts.push(format!("{} binary file(s)", omissions.binary_files));
+    }
+    if omissions.oversized_files > 0 {
+        parts.push(format!("{} oversized file(s)", omissions.oversized_files));
+    }
+    if omissions.unreadable_files > 0 {
+        parts.push(format!("{} unreadable file(s)", omissions.unreadable_files));
+    }
+    if omissions.filtered_files > 0 {
+        parts.push(format!("{} filtered file(s)", omissions.filtered_files));
+    }
+    if omissions.ignored_directories > 0 {
+        parts.push(format!(
+            "{} ignored generated/vendor directories",
+            omissions.ignored_directories
+        ));
+    }
+
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("; omitted {}", parts.join(", "))
+    }
+}
+
 fn record_search_file_omission(omissions: &mut AutonomousSearchOmissions, error: &CommandError) {
     match error.code.as_str() {
         "autonomous_tool_file_not_text" => {
@@ -6397,6 +6565,85 @@ fn normalize_replacement_line_endings(
     }
 }
 
+fn normalize_line_range_replacement(
+    replacement: &str,
+    current: &str,
+    line_ending: AutonomousLineEnding,
+) -> String {
+    let mut normalized = normalize_replacement_line_endings(replacement, line_ending);
+    if normalized.is_empty() || trailing_line_ending(normalized.as_str()).is_some() {
+        return normalized;
+    }
+    if let Some(ending) = trailing_line_ending(current) {
+        normalized.push_str(ending);
+    }
+    normalized
+}
+
+fn trailing_line_ending(text: &str) -> Option<&'static str> {
+    if text.ends_with("\r\n") {
+        Some("\r\n")
+    } else if text.ends_with('\n') {
+        Some("\n")
+    } else {
+        None
+    }
+}
+
+fn guarded_edit_expected_equivalent(
+    current: &str,
+    expected: &str,
+    expected_hash: Option<&str>,
+) -> bool {
+    expected_hash.is_some()
+        && normalize_edit_expected_guard_text(current)
+            == normalize_edit_expected_guard_text(expected)
+}
+
+fn normalize_edit_expected_guard_text(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .lines()
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn guarded_edit_prefix_line_match(
+    existing: &str,
+    start_byte: usize,
+    start_line: usize,
+    requested_end_line: usize,
+    expected: &str,
+    expected_hash: Option<&str>,
+) -> CommandResult<Option<(usize, usize)>> {
+    if expected_hash.is_none() || expected.is_empty() {
+        return Ok(None);
+    }
+    let expected_line_count = count_lines(expected);
+    if expected_line_count == 0 {
+        return Ok(None);
+    }
+    let Some(prefix_end_line) = start_line.checked_add(expected_line_count - 1) else {
+        return Ok(None);
+    };
+    if prefix_end_line >= requested_end_line {
+        return Ok(None);
+    }
+
+    let expected_end_byte = start_byte.saturating_add(expected.len());
+    let (_, prefix_end_byte) = line_byte_range(existing, start_line, prefix_end_line)?;
+    if prefix_end_byte != expected_end_byte {
+        return Ok(None);
+    }
+    if existing
+        .get(start_byte..prefix_end_byte)
+        .is_some_and(|current_prefix| current_prefix == expected)
+    {
+        return Ok(Some((prefix_end_line, prefix_end_byte)));
+    }
+    Ok(None)
+}
+
 fn build_search_regex(query: &str, is_regex: bool, ignore_case: bool) -> CommandResult<Regex> {
     let pattern = if is_regex {
         query.to_string()
@@ -6563,6 +6810,37 @@ fn validate_optional_line_hash(
     Ok(())
 }
 
+fn validate_edit_expected_present(expected: &str) -> CommandResult<()> {
+    if expected.is_empty() {
+        return Err(CommandError::user_fixable(
+            "autonomous_tool_edit_expected_empty",
+            "Xero requires edit expected to include the exact current text to replace; for a blank line, pass its line ending such as \\n.",
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_not_package_manager_lockfile_mutation(display_path: &str) -> CommandResult<()> {
+    if package_manager_lockfile_name(display_path).is_none() {
+        return Ok(());
+    }
+
+    Err(CommandError::user_fixable(
+        "autonomous_tool_lockfile_direct_mutation_denied",
+        format!(
+            "Xero refused to mutate `{display_path}` directly because package-manager lockfiles are generated dependency state. Change the package manifest and run the appropriate package-manager command through command tooling so normal approval and lockfile generation apply."
+        ),
+    ))
+}
+
+fn package_manager_lockfile_name(display_path: &str) -> Option<&str> {
+    Path::new(display_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| PACKAGE_MANAGER_LOCKFILE_NAMES.contains(name))
+}
+
 fn line_content_without_ending(text: &str, line: usize) -> CommandResult<&str> {
     let (start, end) = line_byte_range(text, line, line)?;
     Ok(text[start..end]
@@ -6694,22 +6972,31 @@ fn required_patch_field(value: Option<String>, field: &'static str) -> CommandRe
 fn validate_patch_expected_hash(
     operation: &NormalizedPatchOperation,
     current_bytes: &[u8],
+    require_hash: bool,
 ) -> CommandResult<()> {
-    let Some(expected_hash) = operation.expected_hash.as_deref() else {
-        return Ok(());
-    };
-    validate_sha256(expected_hash, "expectedHash")?;
     let actual = sha256_hex(current_bytes);
-    if actual != expected_hash.trim() {
-        return Err(CommandError::user_fixable(
-            "autonomous_tool_patch_expected_hash_mismatch",
-            format!(
-                "Xero refused patch operation #{} for `{}` because expectedHash `{}` no longer matches the current file hash `{actual}`.",
-                operation.operation_index + 1,
-                operation.display_path,
-                expected_hash.trim()
-            ),
-        ));
+    match operation.expected_hash.as_deref() {
+        Some(expected_hash) => {
+            validate_sha256(expected_hash, "expectedHash")?;
+            if actual != expected_hash.trim() {
+                return Err(stale_file_error(
+                    "patch",
+                    &operation.display_path,
+                    "expectedHash",
+                    expected_hash,
+                    &actual,
+                ));
+            }
+        }
+        None if require_hash => {
+            return Err(expected_hash_required_error(
+                "patch",
+                &operation.display_path,
+                "expectedHash",
+                &actual,
+            ));
+        }
+        None => {}
     }
     Ok(())
 }
@@ -6808,22 +7095,38 @@ fn single_file_field<T>(
 }
 
 fn validate_expected_hash_for_bytes(
+    operation: &str,
+    display_path: &str,
+    hash_field: &'static str,
     expected_hash: Option<&str>,
     current_bytes: &[u8],
-    error_code: &'static str,
-) -> CommandResult<()> {
-    let Some(expected_hash) = expected_hash else {
-        return Ok(());
-    };
-    validate_sha256(expected_hash, "expectedHash")?;
+    require_hash: bool,
+) -> CommandResult<String> {
     let actual = sha256_hex(current_bytes);
-    if actual != expected_hash.trim() {
-        return Err(CommandError::user_fixable(
-            error_code,
-            "Xero refused the file operation because expectedHash no longer matches the current file contents.",
-        ));
+    match expected_hash {
+        Some(expected_hash) => {
+            validate_sha256(expected_hash, hash_field)?;
+            if actual != expected_hash.trim() {
+                return Err(stale_file_error(
+                    operation,
+                    display_path,
+                    hash_field,
+                    expected_hash,
+                    &actual,
+                ));
+            }
+        }
+        None if require_hash => {
+            return Err(expected_hash_required_error(
+                operation,
+                display_path,
+                hash_field,
+                &actual,
+            ));
+        }
+        None => {}
     }
-    Ok(())
+    Ok(actual)
 }
 
 fn validate_sha256(value: &str, field: &'static str) -> CommandResult<()> {
@@ -7017,6 +7320,63 @@ mod tests {
     }
 
     #[test]
+    fn search_reads_text_files_above_edit_limit() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let mut content = "prefix line\n".repeat(runtime.limits.max_text_file_bytes / 12 + 1);
+        content.push_str("lockfile-sized needle\n");
+        fs::write(root.join("pnpm-lock.yaml"), content).expect("large text file");
+
+        let (summary, output) = search_result(runtime.search(AutonomousSearchRequest {
+            query: "lockfile-sized needle".into(),
+            path: Some("pnpm-lock.yaml".into()),
+            regex: false,
+            ignore_case: false,
+            include_hidden: false,
+            include_ignored: false,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            context_lines: None,
+            max_results: None,
+            files_only: false,
+            cursor: None,
+        }));
+
+        assert_eq!(output.matches.len(), 1);
+        assert_eq!(output.matches[0].path, "pnpm-lock.yaml");
+        assert_eq!(output.omissions.oversized_files, 0);
+        assert!(summary.contains("Found 1 match(es)"));
+    }
+
+    #[test]
+    fn search_summary_mentions_omitted_files() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        fs::write(root.join("binary.bin"), [0xff, 0xfe, 0xfd]).expect("binary file");
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+
+        let (summary, output) = search_result(runtime.search(AutonomousSearchRequest {
+            query: "missing".into(),
+            path: None,
+            regex: false,
+            ignore_case: false,
+            include_hidden: false,
+            include_ignored: false,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            context_lines: None,
+            max_results: None,
+            files_only: false,
+            cursor: None,
+        }));
+
+        assert_eq!(output.matches.len(), 0);
+        assert_eq!(output.omissions.binary_files, 1);
+        assert!(summary.contains("omitted 1 binary file(s)"));
+    }
+
+    #[test]
     fn result_page_reads_only_project_app_data_tool_artifacts() {
         let tempdir = tempdir().expect("tempdir");
         let root = tempdir.path();
@@ -7193,7 +7553,7 @@ mod tests {
             path: "notes.txt".into(),
             start_line: 2,
             end_line: 2,
-            expected: "two\r\n".into(),
+            expected: "two\n".into(),
             replacement: "TWO\n".into(),
             expected_hash: read_output.sha256.clone(),
             start_line_hash: Some(line_two_hash.clone()),
@@ -7222,6 +7582,261 @@ mod tests {
             })
             .expect_err("line hash mismatch");
         assert_eq!(err.code, "autonomous_tool_edit_line_hash_mismatch");
+    }
+
+    #[test]
+    fn edit_preserves_line_boundary_when_replacement_omits_final_newline() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        let path = root.join("imports.tsx");
+        fs::write(
+            &path,
+            "import type { ReactNode } from \"react\";\nimport { X } from \"lucide-react\";\n",
+        )
+        .expect("imports");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let initial_read = read_output(runtime.read(read_request("imports.tsx")));
+        let edit_result = edit_output(runtime.edit(AutonomousEditRequest {
+            path: "imports.tsx".into(),
+            start_line: 1,
+            end_line: 1,
+            expected: "import type { ReactNode } from \"react\";".into(),
+            replacement: "import type { CSSProperties, ReactNode } from \"react\";".into(),
+            expected_hash: initial_read.sha256.clone(),
+            start_line_hash: None,
+            end_line_hash: None,
+            preview: false,
+        }));
+
+        assert_eq!(edit_result.start_line, 1);
+        assert_eq!(edit_result.end_line, 1);
+        assert_eq!(
+            fs::read_to_string(&path).expect("updated imports"),
+            "import type { CSSProperties, ReactNode } from \"react\";\nimport { X } from \"lucide-react\";\n",
+        );
+
+        let updated_read = read_output(runtime.read(read_request("imports.tsx")));
+        edit_output(runtime.edit(AutonomousEditRequest {
+            path: "imports.tsx".into(),
+            start_line: 2,
+            end_line: 2,
+            expected: "import { X } from \"lucide-react\";\n".into(),
+            replacement: String::new(),
+            expected_hash: updated_read.sha256.clone(),
+            start_line_hash: None,
+            end_line_hash: None,
+            preview: false,
+        }));
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("deleted import"),
+            "import type { CSSProperties, ReactNode } from \"react\";\n",
+        );
+    }
+
+    #[test]
+    fn edit_preserves_native_line_boundary_when_replacement_omits_final_newline() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        let path = root.join("notes.txt");
+        fs::write(&path, "one\r\ntwo\r\n").expect("notes");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let read_output = read_output(runtime.read(read_request("notes.txt")));
+        let edit_output = edit_output(runtime.edit(AutonomousEditRequest {
+            path: "notes.txt".into(),
+            start_line: 1,
+            end_line: 1,
+            expected: "one".into(),
+            replacement: "ONE".into(),
+            expected_hash: read_output.sha256.clone(),
+            start_line_hash: None,
+            end_line_hash: None,
+            preview: false,
+        }));
+
+        assert_eq!(edit_output.line_ending, Some(AutonomousLineEnding::Crlf));
+        assert_eq!(
+            fs::read_to_string(&path).expect("updated notes"),
+            "ONE\r\ntwo\r\n",
+        );
+    }
+
+    #[test]
+    fn edit_allows_guarded_expected_text_whitespace_drift() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        let path = root.join("component.tsx");
+        fs::write(&path, "function App() {\n  return <Logo />\n}\n").expect("component");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let read_output = read_output(runtime.read(read_request("component.tsx")));
+
+        let edit_output = edit_output(runtime.edit(AutonomousEditRequest {
+            path: "component.tsx".into(),
+            start_line: 2,
+            end_line: 2,
+            expected: "return <Logo />\n".into(),
+            replacement: "  return <BrandLogo />\n".into(),
+            expected_hash: read_output.sha256.clone(),
+            start_line_hash: None,
+            end_line_hash: None,
+            preview: false,
+        }));
+
+        assert_ne!(edit_output.old_hash, edit_output.new_hash);
+        assert_eq!(
+            fs::read_to_string(&path).expect("updated component"),
+            "function App() {\n  return <BrandLogo />\n}\n",
+        );
+
+        fs::write(&path, "function App() {\n  return <Logo />\n}\n").expect("reset");
+        let rejected = runtime
+            .edit(AutonomousEditRequest {
+                path: "component.tsx".into(),
+                start_line: 2,
+                end_line: 2,
+                expected: "return <Logo />\n".into(),
+                replacement: "  return <BrandLogo />\n".into(),
+                expected_hash: None,
+                start_line_hash: None,
+                end_line_hash: None,
+                preview: false,
+            })
+            .expect_err("unguarded whitespace drift should still fail");
+        assert_eq!(rejected.code, "autonomous_tool_edit_expected_text_mismatch");
+    }
+
+    #[test]
+    fn edit_with_hash_narrows_prefix_line_match_in_oversized_range() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        let path = root.join("component.tsx");
+        fs::write(&path, "one\ntwo\nthree\nfour\n").expect("component");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let read_output = read_output(runtime.read(read_request("component.tsx")));
+        let edit_output = edit_output(runtime.edit(AutonomousEditRequest {
+            path: "component.tsx".into(),
+            start_line: 2,
+            end_line: 4,
+            expected: "two\nthree\n".into(),
+            replacement: "TWO\nTHREE\n".into(),
+            expected_hash: read_output.sha256.clone(),
+            start_line_hash: None,
+            end_line_hash: None,
+            preview: false,
+        }));
+
+        assert_eq!(edit_output.start_line, 2);
+        assert_eq!(edit_output.end_line, 3);
+        assert_eq!(
+            fs::read_to_string(&path).expect("updated component"),
+            "one\nTWO\nTHREE\nfour\n",
+        );
+
+        fs::write(&path, "one\ntwo\nthree\nfour\n").expect("reset component");
+        let rejected = runtime
+            .edit(AutonomousEditRequest {
+                path: "component.tsx".into(),
+                start_line: 2,
+                end_line: 4,
+                expected: "two\nthree\n".into(),
+                replacement: "TWO\nTHREE\n".into(),
+                expected_hash: None,
+                start_line_hash: None,
+                end_line_hash: None,
+                preview: false,
+            })
+            .expect_err("unguarded oversized range should still fail");
+        assert_eq!(rejected.code, "autonomous_tool_edit_expected_text_mismatch");
+    }
+
+    #[test]
+    fn edit_with_full_file_hash_ignores_bad_optional_line_hash_for_exact_match() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        let path = root.join("style.ts");
+        fs::write(&path, "export const PRIMARY =\n  \"text-sm font-bold\";\n").expect("style");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let read_output = read_output(runtime.read(read_request("style.ts")));
+        let edit_output = edit_output(runtime.edit(AutonomousEditRequest {
+            path: "style.ts".into(),
+            start_line: 2,
+            end_line: 2,
+            expected: "  \"text-sm font-bold\";\n".into(),
+            replacement: "  \"text-xs font-bold\";\n".into(),
+            expected_hash: read_output.sha256.clone(),
+            start_line_hash: Some("0".repeat(64)),
+            end_line_hash: Some("0".repeat(64)),
+            preview: false,
+        }));
+
+        assert_eq!(edit_output.start_line, 2);
+        assert_eq!(edit_output.end_line, 2);
+        assert_eq!(
+            fs::read_to_string(&path).expect("updated style"),
+            "export const PRIMARY =\n  \"text-xs font-bold\";\n",
+        );
+
+        let rejected = runtime
+            .edit(AutonomousEditRequest {
+                path: "style.ts".into(),
+                start_line: 2,
+                end_line: 2,
+                expected: "  \"text-xs font-bold\";\n".into(),
+                replacement: "  \"text-sm font-bold\";\n".into(),
+                expected_hash: None,
+                start_line_hash: Some("0".repeat(64)),
+                end_line_hash: None,
+                preview: false,
+            })
+            .expect_err("line hash still protects unguarded edits");
+        assert_eq!(rejected.code, "autonomous_tool_edit_line_hash_mismatch");
+    }
+
+    #[test]
+    fn edit_accepts_blank_line_expected_text() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        let path = root.join("style.test.ts");
+        fs::write(&path, "one\n\ntwo\n").expect("test file");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let read_output = read_output(runtime.read(read_request("style.test.ts")));
+        edit_output(runtime.edit(AutonomousEditRequest {
+            path: "style.test.ts".into(),
+            start_line: 2,
+            end_line: 2,
+            expected: "\n".into(),
+            replacement: "\ninserted\n\n".into(),
+            expected_hash: read_output.sha256.clone(),
+            start_line_hash: None,
+            end_line_hash: None,
+            preview: false,
+        }));
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("updated test file"),
+            "one\n\ninserted\n\ntwo\n",
+        );
+
+        let rejected = runtime
+            .edit(AutonomousEditRequest {
+                path: "style.test.ts".into(),
+                start_line: 2,
+                end_line: 2,
+                expected: String::new(),
+                replacement: "nope\n".into(),
+                expected_hash: None,
+                start_line_hash: None,
+                end_line_hash: None,
+                preview: false,
+            })
+            .expect_err("empty expected is still invalid");
+        assert_eq!(rejected.code, "autonomous_tool_edit_expected_empty");
     }
 
     #[test]
@@ -7365,6 +7980,173 @@ mod tests {
         assert!(err.message.contains("notes.txt"));
     }
 
+    #[test]
+    fn filesystem_mutations_reject_package_manager_lockfiles() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        fs::write(root.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").expect("pnpm lock");
+        fs::write(root.join("manifest.txt"), "workspace dependency\n").expect("manifest");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let edit_error = runtime
+            .edit(AutonomousEditRequest {
+                path: "pnpm-lock.yaml".into(),
+                start_line: 1,
+                end_line: 1,
+                expected: "lockfileVersion: '9.0'\n".into(),
+                replacement: "lockfileVersion: '9.0'\n\nimporters: {}\n".into(),
+                expected_hash: None,
+                start_line_hash: None,
+                end_line_hash: None,
+                preview: false,
+            })
+            .expect_err("lockfile edit should be denied");
+        assert_eq!(
+            edit_error.code,
+            "autonomous_tool_lockfile_direct_mutation_denied"
+        );
+        assert!(edit_error.message.contains("package-manager lockfiles"));
+
+        let write_error = runtime
+            .write(AutonomousWriteRequest {
+                path: "package-lock.json".into(),
+                content: "{}\n".into(),
+                expected_hash: None,
+                create_only: true,
+                overwrite: Some(false),
+                preview: false,
+            })
+            .expect_err("lockfile write should be denied");
+        assert_eq!(
+            write_error.code,
+            "autonomous_tool_lockfile_direct_mutation_denied"
+        );
+
+        let patch_error = runtime
+            .patch(AutonomousPatchRequest {
+                path: Some("pnpm-lock.yaml".into()),
+                search: Some("lockfileVersion".into()),
+                replace: Some("lockfile_version".into()),
+                replace_all: false,
+                expected_hash: None,
+                preview: false,
+                operations: Vec::new(),
+            })
+            .expect_err("lockfile patch should be denied");
+        assert_eq!(
+            patch_error.code,
+            "autonomous_tool_lockfile_direct_mutation_denied"
+        );
+
+        let yaml_error = runtime
+            .structured_edit(
+                AutonomousStructuredEditRequest {
+                    path: "pnpm-lock.yaml".into(),
+                    operations: vec![super::super::AutonomousStructuredEditOperation {
+                        action: AutonomousStructuredEditAction::Set,
+                        pointer: "/lockfileVersion".into(),
+                        value: Some(JsonValue::String("9.0".into())),
+                    }],
+                    expected_hash: None,
+                    formatting_mode: AutonomousStructuredEditFormattingMode::Normalize,
+                    preview: false,
+                },
+                AutonomousStructuredEditFormat::Yaml,
+                "yaml_edit",
+            )
+            .expect_err("lockfile yaml edit should be denied");
+        assert_eq!(
+            yaml_error.code,
+            "autonomous_tool_lockfile_direct_mutation_denied"
+        );
+
+        let delete_error = runtime
+            .delete(AutonomousDeleteRequest {
+                path: "pnpm-lock.yaml".into(),
+                recursive: false,
+                expected_hash: None,
+                expected_digest: None,
+                preview: false,
+            })
+            .expect_err("lockfile delete should be denied");
+        assert_eq!(
+            delete_error.code,
+            "autonomous_tool_lockfile_direct_mutation_denied"
+        );
+
+        let rename_error = runtime
+            .rename(AutonomousRenameRequest {
+                from_path: "manifest.txt".into(),
+                to_path: "yarn.lock".into(),
+                expected_hash: None,
+                expected_target_hash: None,
+                overwrite: None,
+                preview: false,
+            })
+            .expect_err("rename into lockfile should be denied");
+        assert_eq!(
+            rename_error.code,
+            "autonomous_tool_lockfile_direct_mutation_denied"
+        );
+
+        let copy_error = runtime
+            .copy(AutonomousCopyRequest {
+                from: "manifest.txt".into(),
+                to: "bun.lock".into(),
+                recursive: false,
+                expected_source_hash: None,
+                expected_source_digest: None,
+                overwrite: None,
+                expected_target_hash: None,
+                preview: false,
+            })
+            .expect_err("copy into lockfile should be denied");
+        assert_eq!(
+            copy_error.code,
+            "autonomous_tool_lockfile_direct_mutation_denied"
+        );
+    }
+
+    #[test]
+    fn fs_transaction_reports_lockfile_mutation_as_validation_error() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        fs::write(root.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").expect("pnpm lock");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+        let result = runtime
+            .fs_transaction(AutonomousFsTransactionRequest {
+                operations: vec![AutonomousFsTransactionOperation {
+                    id: Some("manual-lockfile-edit".into()),
+                    action: AutonomousFsTransactionAction::EditFile,
+                    path: Some("pnpm-lock.yaml".into()),
+                    start_line: Some(1),
+                    end_line: Some(1),
+                    expected: Some("lockfileVersion: '9.0'\n".into()),
+                    replacement: Some("lockfileVersion: '9.0'\n\nimporters: {}\n".into()),
+                    ..AutonomousFsTransactionOperation::default()
+                }],
+                preview: false,
+                stop_on_first_error: true,
+            })
+            .expect("fs_transaction returns structured validation output");
+        let AutonomousToolOutput::FsTransaction(output) = result.output else {
+            panic!("expected fs_transaction output");
+        };
+
+        assert!(!output.applied);
+        assert!(!output.validation.ok);
+        assert_eq!(output.validation.validated_operations, 0);
+        assert_eq!(output.validation.errors.len(), 1);
+        assert_eq!(
+            output.validation.errors[0]
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("autonomous_tool_lockfile_direct_mutation_denied")
+        );
+    }
+
     fn read_request(path: &str) -> AutonomousReadRequest {
         AutonomousReadRequest {
             path: path.into(),
@@ -7391,6 +8173,18 @@ mod tests {
     fn search_output(result: CommandResult<AutonomousToolResult>) -> AutonomousSearchOutput {
         match result.expect("search").output {
             AutonomousToolOutput::Search(output) => output,
+            output => panic!("unexpected output: {output:?}"),
+        }
+    }
+
+    fn search_result(
+        result: CommandResult<AutonomousToolResult>,
+    ) -> (String, AutonomousSearchOutput) {
+        let AutonomousToolResult {
+            summary, output, ..
+        } = result.expect("search");
+        match output {
+            AutonomousToolOutput::Search(output) => (summary, output),
             output => panic!("unexpected output: {output:?}"),
         }
     }

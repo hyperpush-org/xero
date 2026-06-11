@@ -7,6 +7,10 @@ import { cn } from "@/lib/utils"
 import { createFrameCoalescer } from "@/lib/frame-governance"
 import { FloatingRightSidebarFrame } from "@/components/xero/floating-right-sidebar-frame"
 import {
+  FloatingRightSidebarHeader,
+  FloatingRightSidebarHeaderButton,
+} from "@/components/xero/floating-right-sidebar-header"
+import {
   formatMicrosUsd,
   formatTokenCount,
   type ProjectUsageModelBreakdownDto,
@@ -184,39 +188,28 @@ export function UsageStatsSidebar(props: UsageStatsSidebarProps) {
       />
 
       <div className="flex min-h-0 flex-1 flex-col">
-        <header className="flex items-center justify-between gap-2 border-b border-border/60 px-2 py-1">
-          <div className="min-w-0">
-            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
-              Project usage
-            </p>
-          </div>
-          <div className="flex items-center gap-1">
-            {onRefresh && projectId ? (
-              <button
-                type="button"
-                onClick={handleRefresh}
-                aria-label="Refresh usage"
-                disabled={isRefreshing}
-                className={cn(
-                  "inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors",
-                  "hover:bg-foreground/10 hover:text-foreground",
-                  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                  isRefreshing && "opacity-60",
-                )}
+        <FloatingRightSidebarHeader
+          title="Project usage"
+          actions={
+            <>
+              {onRefresh && projectId ? (
+                <FloatingRightSidebarHeaderButton
+                  onClick={handleRefresh}
+                  aria-label="Refresh usage"
+                  disabled={isRefreshing}
+                >
+                  <RefreshCw className={cn("h-3.5 w-3.5", isRefreshing && "animate-spin")} />
+                </FloatingRightSidebarHeaderButton>
+              ) : null}
+              <FloatingRightSidebarHeaderButton
+                onClick={onClose}
+                aria-label="Close usage panel"
               >
-                <RefreshCw className={cn("h-3.5 w-3.5", isRefreshing && "animate-spin")} />
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close usage panel"
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        </header>
+                <X className="h-3.5 w-3.5" />
+              </FloatingRightSidebarHeaderButton>
+            </>
+          }
+        />
 
         <div className="flex-1 overflow-y-auto">
           {!projectId ? (

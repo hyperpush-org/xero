@@ -70,7 +70,6 @@ import type {
   UpsertProviderCredentialRequestDto,
   VerificationRecordView,
   WriteProjectFileResponseDto,
-  XaiDeviceCodeLoginDto,
 } from '@/src/lib/xero-model'
 import type {
   ComposerModelOptionView,
@@ -100,6 +99,15 @@ export type AutonomousRunActionKind = 'start' | 'cancel' | 'inspect'
 export type AutonomousRunActionStatus = 'idle' | 'running'
 export type RuntimeRunActionKind = 'start' | 'update_controls' | 'stop'
 export type RuntimeRunActionStatus = 'idle' | 'running'
+
+export interface CompletedAgentSessionNotificationView {
+  projectId: string
+  projectName: string
+  agentSessionId: string
+  sessionTitle: string
+  runId: string
+  completedAt: string
+}
 
 export interface OperatorActionErrorView {
   code: string
@@ -170,6 +178,7 @@ export interface AgentProviderModelView {
   availability: AgentProviderModelAvailability
   availabilityLabel: string
   thinkingSupported: boolean
+  inputModalities?: string[]
   thinkingEffortOptions: ProviderModelThinkingEffortDto[]
   defaultThinkingEffort: ProviderModelThinkingEffortDto | null
   contextWindowTokens?: number | null
@@ -355,6 +364,7 @@ export interface UseXeroDesktopStateResult {
   projects: ProjectListItem[]
   activeProject: ProjectDetailView | null
   activeProjectId: string | null
+  runningAgentProjectIds: ReadonlySet<string>
   pendingProjectSelectionId: string | null
   repositoryStatus: RepositoryStatusView | null
   workflowView: WorkflowPaneView | null
@@ -409,7 +419,8 @@ export interface UseXeroDesktopStateResult {
   runtimeRunActionStatus: RuntimeRunActionStatus
   pendingRuntimeRunAction: RuntimeRunActionKind | null
   runtimeRunActionError: OperatorActionErrorView | null
-  activeProjectUnreadCompletedSessionCount: number
+  unreadCompletedSessionCount: number
+  unreadCompletedSessionNotifications: CompletedAgentSessionNotificationView[]
   selectProject: (projectId: string) => Promise<void>
   prefetchProject: (projectId: string) => void
   importProject: (path?: string) => Promise<boolean>
@@ -473,12 +484,6 @@ export interface UseXeroDesktopStateResult {
       manualInput?: string | null
     },
   ) => Promise<ProviderAuthSessionView | null>
-  startXaiDeviceCodeLogin: (
-    request: { providerId: 'xai' },
-  ) => Promise<XaiDeviceCodeLoginDto>
-  pollXaiDeviceCodeLogin: (
-    request: { providerId: 'xai'; flowId: string },
-  ) => Promise<XaiDeviceCodeLoginDto>
   refreshProviderModelCatalog: (
     profileId: string,
     options?: { force?: boolean },
@@ -521,7 +526,10 @@ export interface UseXeroDesktopStateResult {
     options?: { atIndex?: number },
   ) => 'opened' | 'focused' | 'rejected-max' | 'noop'
   setSplitterRatios: (arrangementKey: string, ratios: number[]) => void
-  acknowledgeCompletedAgentSessions: (agentSessionIds: string[]) => void
+  acknowledgeCompletedAgentSessions: (
+    agentSessionIds: string[],
+    options?: { projectId?: string | null },
+  ) => void
   usageSummaries: Record<string, ProjectUsageSummaryDto>
   activeUsageSummary: ProjectUsageSummaryDto | null
   activeUsageSummaryLoadError: string | null

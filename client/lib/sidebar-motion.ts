@@ -4,7 +4,7 @@ import { useReducedMotion, type Transition } from 'motion/react'
 const SIDEBAR_REVEAL_EASE: [number, number, number, number] = [0.22, 1, 0.36, 1]
 export const SIDEBAR_REVEAL_EASE_CSS = 'cubic-bezier(0.22, 1, 0.36, 1)'
 
-const SIDEBAR_WIDTH_DURATION_MS = 160
+export const SIDEBAR_WIDTH_DURATION_MS = 160
 const SIDEBAR_REVEAL_DURATION_MS = 160
 const SIDEBAR_LAYOUT_DURATION_MS = 160
 

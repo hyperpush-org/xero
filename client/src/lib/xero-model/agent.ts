@@ -53,6 +53,7 @@ export const agentCheckpointKindSchema = z.enum([
   'plan',
   'validation',
   'verification',
+  'scheduled_wait',
   'completion',
   'failure',
   'recovery',
@@ -431,10 +432,19 @@ export const cancelAgentRunRequestSchema = z
   })
   .strict()
 
+export const rejectAgentActionRequestSchema = z
+  .object({
+    runId: z.string().trim().min(1),
+    actionId: z.string().trim().min(1),
+    response: z.string().trim().min(1).nullable().optional(),
+  })
+  .strict()
+
 export const resumeAgentRunRequestSchema = z
   .object({
     runId: z.string().trim().min(1),
     response: z.string().trim().min(1),
+    actionId: z.string().trim().min(1).nullable().optional(),
     autoCompact: agentAutoCompactPreferenceSchema.nullable().optional(),
   })
   .strict()
@@ -522,6 +532,7 @@ export type StartAgentTaskRequestDto = z.infer<typeof startAgentTaskRequestSchem
 export type AgentAutoCompactPreferenceDto = z.infer<typeof agentAutoCompactPreferenceSchema>
 export type SendAgentMessageRequestDto = z.infer<typeof sendAgentMessageRequestSchema>
 export type CancelAgentRunRequestDto = z.infer<typeof cancelAgentRunRequestSchema>
+export type RejectAgentActionRequestDto = z.infer<typeof rejectAgentActionRequestSchema>
 export type ResumeAgentRunRequestDto = z.infer<typeof resumeAgentRunRequestSchema>
 export type GetAgentRunRequestDto = z.infer<typeof getAgentRunRequestSchema>
 export type ExportAgentTraceRequestDto = z.infer<typeof exportAgentTraceRequestSchema>
@@ -539,9 +550,19 @@ export interface AgentRunView extends AgentRunDto {
   lastErrorCode: string | null
   lastErrorMessage: string | null
   latestEvent: AgentRunEventDto | null
+  scheduledWakeups: AgentRunScheduledWakeupView[]
+  waitingUntil: string | null
   isActive: boolean
   isTerminal: boolean
   isFailed: boolean
+  isWaiting: boolean
+}
+
+export interface AgentRunScheduledWakeupView {
+  wakeId: string
+  kind: string | null
+  dueAt: string | null
+  deadlineAt: string | null
 }
 
 export function getAgentRunStatusLabel(status: AgentRunStatusDto): string {
@@ -565,26 +586,72 @@ export function getAgentRunStatusLabel(status: AgentRunStatusDto): string {
   }
 }
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function textField(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null
+}
+
+function getLatestScheduledWaitWakeups(run: AgentRunDto): AgentRunScheduledWakeupView[] {
+  if (run.status !== 'paused') {
+    return []
+  }
+
+  for (let index = run.events.length - 1; index >= 0; index -= 1) {
+    const event = run.events[index]
+    if (event.eventKind !== 'run_paused' || !isJsonObject(event.payload)) {
+      continue
+    }
+    const state = textField(event.payload.state)
+    const stopReason = textField(event.payload.stopReason)
+    if (state !== 'scheduled_wait' && stopReason !== 'scheduled_wait') {
+      continue
+    }
+    const scheduledWakeups = Array.isArray(event.payload.scheduledWakeups)
+      ? event.payload.scheduledWakeups
+      : []
+
+    return scheduledWakeups
+      .filter(isJsonObject)
+      .map((wakeup) => ({
+        wakeId: textField(wakeup.wakeId) ?? 'pending',
+        kind: textField(wakeup.kind),
+        dueAt: textField(wakeup.dueAt),
+        deadlineAt: textField(wakeup.deadlineAt),
+      }))
+  }
+
+  return []
+}
+
 export function mapAgentRun(run: AgentRunDto): AgentRunView {
   const latestEvent = run.events.length > 0 ? run.events[run.events.length - 1] : null
   const lastErrorCode = normalizeOptionalText(run.lastErrorCode)
   const lastErrorMessage = normalizeOptionalText(run.lastError?.message)
+  const scheduledWakeups = getLatestScheduledWaitWakeups(run)
+  const isWaiting = run.status === 'paused' && scheduledWakeups.length > 0
 
   return {
     ...run,
     runtimeAgentLabel: getRuntimeAgentLabel(run.runtimeAgentId),
     providerLabel: normalizeText(run.providerId, 'provider-unavailable'),
     modelLabel: normalizeText(run.modelId, 'model-unavailable'),
-    statusLabel: getAgentRunStatusLabel(run.status),
+    statusLabel: isWaiting ? 'Waiting' : getAgentRunStatusLabel(run.status),
     lastErrorCode,
     lastErrorMessage,
     latestEvent,
-    isActive: run.status === 'starting' || run.status === 'running' || run.status === 'cancelling',
+    scheduledWakeups,
+    waitingUntil: scheduledWakeups[0]?.dueAt ?? null,
+    isActive:
+      isWaiting || run.status === 'starting' || run.status === 'running' || run.status === 'cancelling',
     isTerminal:
       run.status === 'cancelled' ||
       run.status === 'handed_off' ||
       run.status === 'completed' ||
       run.status === 'failed',
     isFailed: run.status === 'failed',
+    isWaiting,
   }
 }

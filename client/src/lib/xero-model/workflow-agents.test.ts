@@ -101,14 +101,21 @@ const templateDefinition = {
   dbTouchpoints: { reads: [], writes: [], encouraged: [] },
   consumes: [],
   projectDataPolicy: { recordKinds: ['project_fact'] },
-  memoryCandidatePolicy: { memoryKinds: ['project_fact'], reviewRequired: true },
+  memoryCandidatePolicy: { memoryKinds: ['project_fact'] },
   retrievalDefaults: {
     enabled: true,
     recordKinds: ['project_fact'],
     memoryKinds: ['project_fact'],
     limit: 6,
   },
-  handoffPolicy: { enabled: true, preserveDefinitionVersion: true },
+  handoffPolicy: {
+    enabled: true,
+    routingMode: 'same_agent',
+    allowedTargets: [],
+    preserveDefinitionVersion: true,
+    carrySummary: true,
+    includeDurableContext: true,
+  },
 } as const
 
 const attachedRustSkill = {
@@ -301,17 +308,6 @@ describe('workflow agent model contracts', () => {
           runtimeEffect: 'Bounds first-turn working-set retrieval.',
           reviewRequired: false,
         },
-        {
-          id: 'memory.reviewRequired',
-          kind: 'memory',
-          label: 'Memory Review Required',
-          description: 'Whether memory candidates need approval.',
-          snapshotPath: 'memoryCandidatePolicy.reviewRequired',
-          valueKind: 'boolean',
-          defaultValue: true,
-          runtimeEffect: 'Keeps memory writes in review until explicitly approved.',
-          reviewRequired: true,
-        },
       ],
       templates: [
         {
@@ -377,7 +373,7 @@ describe('workflow agent model contracts', () => {
       'skill-source:v1:global:bundled:xero:rust-best-practices',
     )
     expect(catalog.profileAvailability[0]?.requiredProfile).toBe('engineering')
-    expect(catalog.policyControls.map((control) => control.id)).toContain(
+    expect(catalog.policyControls.map((control) => control.id)).not.toContain(
       'memory.reviewRequired',
     )
     expect(catalog.policyControls[0]?.snapshotPath).toBe('retrievalDefaults.limit')
@@ -820,7 +816,7 @@ describe('workflow agent model contracts', () => {
           contractVersion: 1,
           packId: 'project_context',
           label: 'Project Context',
-          summary: 'Read durable project context and approved memory.',
+          summary: 'Read durable project context and enabled memory.',
           policyProfile: 'runtime_state',
           toolGroups: ['project_context'],
           tools: ['project_context_search'],
@@ -829,9 +825,9 @@ describe('workflow agent model contracts', () => {
           deniedEffectClasses: ['write'],
           reviewRequirements: [
             {
-              requirementId: 'memory_review',
-              label: 'Memory Review',
-              description: 'Approved memory only.',
+              requirementId: 'memory_eligibility',
+              label: 'Memory Eligibility',
+              description: 'Enabled memory only.',
               required: true,
             },
           ],

@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use rusqlite_migration::{Migrations, M};
 
-pub const GLOBAL_DATABASE_SCHEMA_VERSION: i64 = 13;
+pub const GLOBAL_DATABASE_SCHEMA_VERSION: i64 = 15;
 
 /// Migrations for the global SQLite database (`xero.db`).
 ///
@@ -27,10 +27,28 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(ADRENALINE_MODE_SETTINGS_SQL),
             M::up(CLOSED_LID_MODE_SETTINGS_SQL),
             M::up(BUILTIN_AGENT_DEFAULT_MODELS_SQL),
+            M::up(AUTONOMOUS_WEB_SETTINGS_SQL),
+            M::up(MODEL_PRICING_CATALOG_CACHE_SQL),
         ])
     });
     &MIGRATIONS
 }
+
+const MODEL_PRICING_CATALOG_CACHE_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS model_pricing_catalog_cache (
+        cache_key TEXT PRIMARY KEY CHECK (cache_key <> ''),
+        payload TEXT NOT NULL CHECK (payload <> '' AND json_valid(payload)),
+        fetched_at TEXT NOT NULL CHECK (fetched_at <> '')
+    ) STRICT;
+"#;
+
+const AUTONOMOUS_WEB_SETTINGS_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS autonomous_web_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        payload TEXT NOT NULL CHECK (payload <> '' AND json_valid(payload)),
+        updated_at TEXT NOT NULL
+    ) STRICT;
+"#;
 
 const BUILTIN_AGENT_DEFAULT_MODELS_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS builtin_agent_default_models (
@@ -179,6 +197,12 @@ const INITIAL_SCHEMA_SQL: &str = r#"
     CREATE INDEX IF NOT EXISTS idx_provider_credentials_kind
         ON provider_credentials(kind);
 
+    CREATE TABLE IF NOT EXISTS autonomous_web_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        payload TEXT NOT NULL CHECK (payload <> '' AND json_valid(payload)),
+        updated_at TEXT NOT NULL
+    ) STRICT;
+
     CREATE TABLE IF NOT EXISTS openai_codex_sessions (
         account_id TEXT PRIMARY KEY,
         provider_id TEXT NOT NULL,
@@ -245,6 +269,12 @@ const INITIAL_SCHEMA_SQL: &str = r#"
         payload TEXT NOT NULL,
         fetched_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS model_pricing_catalog_cache (
+        cache_key TEXT PRIMARY KEY CHECK (cache_key <> ''),
+        payload TEXT NOT NULL CHECK (payload <> '' AND json_valid(payload)),
+        fetched_at TEXT NOT NULL CHECK (fetched_at <> '')
+    ) STRICT;
 
     CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,

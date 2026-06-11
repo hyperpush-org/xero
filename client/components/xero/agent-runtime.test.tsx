@@ -22,6 +22,10 @@ if (!HTMLElement.prototype.releasePointerCapture) {
   HTMLElement.prototype.releasePointerCapture = () => {}
 }
 
+vi.mock('@tauri-apps/api/core', () => ({
+  convertFileSrc: (path: string) => `asset://localhost/${encodeURIComponent(path)}`,
+}))
+
 function makeResizeContentRect(width: number, height = 640): DOMRectReadOnly {
   return {
     x: 0,
@@ -91,10 +95,122 @@ function installResizeObserverMock(width: number): () => void {
   }
 }
 
+function installManualResizeObserverMock(): {
+  restore: () => void
+  trigger: () => void
+} {
+  const previousWindowResizeObserver = window.ResizeObserver
+  const previousGlobalResizeObserver = globalThis.ResizeObserver
+  const instances: Array<{ trigger: () => void }> = []
+
+  class MockResizeObserver implements ResizeObserver {
+    constructor(private readonly callback: ResizeObserverCallback) {
+      instances.push(this)
+    }
+
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+
+    trigger(): void {
+      this.callback([], this)
+    }
+  }
+
+  Object.defineProperty(window, 'ResizeObserver', {
+    configurable: true,
+    writable: true,
+    value: MockResizeObserver,
+  })
+  Object.defineProperty(globalThis, 'ResizeObserver', {
+    configurable: true,
+    writable: true,
+    value: MockResizeObserver,
+  })
+
+  return {
+    restore: () => {
+      Object.defineProperty(window, 'ResizeObserver', {
+        configurable: true,
+        writable: true,
+        value: previousWindowResizeObserver,
+      })
+      Object.defineProperty(globalThis, 'ResizeObserver', {
+        configurable: true,
+        writable: true,
+        value: previousGlobalResizeObserver,
+      })
+    },
+    trigger: () => {
+      for (const instance of instances) {
+        instance.trigger()
+      }
+    },
+  }
+}
+
+function installManualMutationObserverMock(): {
+  restore: () => void
+  trigger: () => void
+} {
+  const previousWindowMutationObserver = window.MutationObserver
+  const previousGlobalMutationObserver = globalThis.MutationObserver
+  const instances: Array<{ trigger: () => void }> = []
+
+  class MockMutationObserver implements MutationObserver {
+    constructor(private readonly callback: MutationCallback) {
+      instances.push(this)
+    }
+
+    observe(): void {}
+    disconnect(): void {}
+    takeRecords(): MutationRecord[] {
+      return []
+    }
+
+    trigger(): void {
+      this.callback([], this)
+    }
+  }
+
+  Object.defineProperty(window, 'MutationObserver', {
+    configurable: true,
+    writable: true,
+    value: MockMutationObserver,
+  })
+  Object.defineProperty(globalThis, 'MutationObserver', {
+    configurable: true,
+    writable: true,
+    value: MockMutationObserver,
+  })
+
+  return {
+    restore: () => {
+      Object.defineProperty(window, 'MutationObserver', {
+        configurable: true,
+        writable: true,
+        value: previousWindowMutationObserver,
+      })
+      Object.defineProperty(globalThis, 'MutationObserver', {
+        configurable: true,
+        writable: true,
+        value: previousGlobalMutationObserver,
+      })
+    },
+    trigger: () => {
+      for (const instance of instances) {
+        instance.trigger()
+      }
+    },
+  }
+}
+
 import {
   AgentRuntime,
+  getFollowUpAnchorScrollPlan,
   type AgentRuntimeDesktopAdapter,
   isRuntimeConversationNearBottom,
+  shouldReleaseFollowUpAnchorForTurns,
 } from '@/components/xero/agent-runtime'
 import type { SpeechDictationAdapter } from '@/components/xero/agent-runtime/use-speech-dictation'
 import type { AgentPaneView } from '@/src/features/xero/use-xero-desktop-state'
@@ -104,6 +220,7 @@ import type {
   ProjectDetailView,
   RuntimeRunView,
   RuntimeStreamActivityItemView,
+  RuntimeStreamMediaAttachmentDto,
   RuntimeSessionView,
   RuntimeStreamToolItemView,
 } from '@/src/lib/xero-model'
@@ -291,12 +408,14 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
       summary: 'Owned agent runtime started.',
       createdAt: '2026-04-15T20:00:01Z',
     },
+    waitingSummary: null,
     checkpointCount: 1,
     hasCheckpoints: true,
     isActive: true,
     isTerminal: false,
     isStale: false,
     isFailed: false,
+    isWaiting: false,
     ...overrides,
   }
 
@@ -508,6 +627,16 @@ function makeDictationStatus(overrides: Partial<DictationStatusDto> = {}): Dicta
 function createDictationAdapter(options: {
   engine?: DictationEngineDto
   status?: DictationStatusDto
+  start?: (
+    handler: (event: DictationEventDto) => void,
+    session: {
+      response: {
+        sessionId: string
+        engine: DictationEngineDto
+        locale: string
+      }
+    },
+  ) => Promise<void>
   stop?: () => Promise<void>
   cancel?: () => Promise<void>
 } = {}) {
@@ -528,6 +657,10 @@ function createDictationAdapter(options: {
     speechDictationStatus: vi.fn(async () => options.status ?? makeDictationStatus()),
     speechDictationStart: vi.fn(async (_request, handler) => {
       eventHandler = handler
+      if (options.start) {
+        await options.start(handler, session)
+        return session
+      }
       handler({
         kind: 'started',
         sessionId: session.response.sessionId,
@@ -556,6 +689,7 @@ function createDictationAdapter(options: {
 }
 
 function makeTranscriptItem(options: {
+  mediaAttachments?: RuntimeStreamMediaAttachmentDto[]
   sequence: number
   role?: 'user' | 'assistant'
   runId?: string
@@ -568,7 +702,7 @@ function makeTranscriptItem(options: {
     runId,
     sequence: options.sequence,
     createdAt: `2026-04-29T00:48:${String(options.sequence).padStart(2, '0')}Z`,
-    mediaAttachments: [],
+    mediaAttachments: options.mediaAttachments ?? [],
     role: options.role ?? 'assistant',
     text: options.text,
   }
@@ -784,6 +918,139 @@ describe('AgentRuntime current UI', () => {
         clientHeight: 420,
       }),
     ).toBe(true)
+  })
+
+  it('routes owned-agent action approvals through resumeAgentRun', async () => {
+    const resumeAgentRun = vi.fn(async () => ({}))
+    const resolveOperatorAction = vi.fn()
+
+    renderRuntimeStreamItems(
+      [
+        {
+          id: 'action_required:run-owned:tool-call-command',
+          kind: 'action_required',
+          runId: 'run-owned',
+          sequence: 1,
+          createdAt: '2026-06-05T03:40:29Z',
+          mediaAttachments: [],
+          actionId: 'tool-call-command',
+          boundaryId: null,
+          actionType: 'safety_boundary',
+          title: 'Action required',
+          detail: 'Xero requires command timeout_ms to be between 1 and 60000.',
+          answerShape: 'plain_text',
+          options: null,
+          allowMultiple: null,
+          sensitiveFields: null,
+          intendedUse: null,
+        },
+      ],
+      {
+        desktopAdapter: {
+          isDesktopRuntime: () => false,
+          resumeAgentRun,
+        } as unknown as AgentRuntimeDesktopAdapter,
+        onResolveOperatorAction: resolveOperatorAction,
+      },
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+
+    await waitFor(() => {
+      expect(resumeAgentRun).toHaveBeenCalledWith('run-owned', 'Approved.', {
+        actionId: 'tool-call-command',
+      })
+    })
+    expect(resolveOperatorAction).not.toHaveBeenCalled()
+  })
+
+  it('surfaces owned-agent action failures inline and in the composer', async () => {
+    const resumeAgentRun = vi.fn(async () => {
+      throw new Error('Action row is no longer pending.')
+    })
+
+    renderRuntimeStreamItems(
+      [
+        {
+          id: 'action_required:run-owned:tool-call-command',
+          kind: 'action_required',
+          runId: 'run-owned',
+          sequence: 1,
+          createdAt: '2026-06-05T03:40:29Z',
+          mediaAttachments: [],
+          actionId: 'tool-call-command',
+          boundaryId: null,
+          actionType: 'safety_boundary',
+          title: 'Action required',
+          detail: 'Review the command before continuing.',
+          answerShape: 'plain_text',
+          options: null,
+          allowMultiple: null,
+          sensitiveFields: null,
+          intendedUse: null,
+        },
+      ],
+      {
+        desktopAdapter: {
+          isDesktopRuntime: () => false,
+          resumeAgentRun,
+        } as unknown as AgentRuntimeDesktopAdapter,
+      },
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+
+    await waitFor(() => {
+      expect(resumeAgentRun).toHaveBeenCalledWith('run-owned', 'Approved.', {
+        actionId: 'tool-call-command',
+      })
+    })
+    expect(await screen.findAllByText('Action row is no longer pending.')).not.toHaveLength(0)
+    expect(screen.getByText('Action failed')).toBeInTheDocument()
+  })
+
+  it('routes owned-agent action rejections through rejectAgentAction', async () => {
+    const rejectAgentAction = vi.fn(async () => ({}))
+    const resolveOperatorAction = vi.fn()
+
+    renderRuntimeStreamItems(
+      [
+        {
+          id: 'action_required:run-owned:tool-call-command',
+          kind: 'action_required',
+          runId: 'run-owned',
+          sequence: 1,
+          createdAt: '2026-06-05T03:40:29Z',
+          mediaAttachments: [],
+          actionId: 'tool-call-command',
+          boundaryId: null,
+          actionType: 'command_approval',
+          title: 'Command requires review',
+          detail: 'pnpm test',
+          answerShape: 'plain_text',
+          options: null,
+          allowMultiple: null,
+          sensitiveFields: null,
+          intendedUse: null,
+        },
+      ],
+      {
+        desktopAdapter: {
+          isDesktopRuntime: () => false,
+          rejectAgentAction,
+        } as unknown as AgentRuntimeDesktopAdapter,
+        onResolveOperatorAction: resolveOperatorAction,
+      },
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reject' }))
+
+    await waitFor(() => {
+      expect(rejectAgentAction).toHaveBeenCalledWith('run-owned', 'tool-call-command', {
+        response: null,
+      })
+    })
+    expect(resolveOperatorAction).not.toHaveBeenCalled()
   })
 
   it('hides the autonomous ledger and remote-escalation debug panels', () => {
@@ -1002,6 +1269,58 @@ describe('AgentRuntime current UI', () => {
     await waitFor(() => expect(input).toHaveValue(''))
   })
 
+  it('dedupes saved run failures already shown as inline stream failures', () => {
+    const editMismatchMessage = [
+      'Xero refused to apply the edit because the requested line range no longer matches the expected text. Current nearby lines and line hashes:',
+      'line 7: sha256=f384a560ae4d5337eccc7844047383cd9b8afad74c35d65301676e6773de3fe9 text=  return (',
+      'line 8: sha256=51b63f46864891fca6e8af4f5c5f78d77fbcda83dcecbafee76869668ee14b6a text=    <div className={`flex items-center gap-2 ${className}`}>',
+      'line 18: sha256=e42f34a1ebe32187b57c9999dcb58c0cb0399939f8f0a26886acb8f8857c8589 text=        <span className="font-display text-lg font-bold tracking-tight text-foreground">',
+    ].join('\n')
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun({
+            status: 'failed',
+            statusLabel: 'Agent failed',
+            runtimeLabel: 'OpenAI Codex · Agent failed',
+            isActive: false,
+            isTerminal: true,
+            isFailed: true,
+            stoppedAt: '2026-04-29T00:48:02Z',
+            lastErrorCode: 'autonomous_tool_edit_expected_text_mismatch',
+            lastError: {
+              code: 'autonomous_tool_edit_expected_text_mismatch',
+              message: editMismatchMessage,
+            },
+          }),
+          runtimeStreamStatus: 'error',
+          runtimeStreamStatusLabel: 'Stream failed',
+          runtimeStreamItems: [
+            {
+              id: 'failure:run-1:4',
+              kind: 'failure',
+              runId: 'run-1',
+              sequence: 4,
+              createdAt: '2026-04-29T00:48:04Z',
+              mediaAttachments: [],
+              code: 'autonomous_tool_edit_expected_text_mismatch',
+              message: editMismatchMessage,
+              retryable: false,
+            },
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Edit could not be applied')).toBeVisible()
+    expect(screen.getByText(/The edit tool could not apply the patch/)).toBeVisible()
+    expect(screen.getByText('code: autonomous_tool_edit_expected_text_mismatch')).toBeVisible()
+    expect(screen.queryByText('Latest saved run failed')).not.toBeInTheDocument()
+    expect(screen.queryByText(/line 18: sha256/)).not.toBeInTheDocument()
+  })
+
   it('shows a handoff notice when the runtime stream completion reports a same-type handoff', () => {
     render(
       <AgentRuntime
@@ -1067,6 +1386,7 @@ describe('AgentRuntime current UI', () => {
     expect(
       screen.getByText(/handed this conversation off to a new same-type run/i),
     ).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Copy visible conversation' })).not.toBeInTheDocument()
     expect(screen.queryByText('Latest saved run failed')).not.toBeInTheDocument()
   })
 
@@ -1136,6 +1456,71 @@ describe('AgentRuntime current UI', () => {
     expect(firstReplyIdx).toBeGreaterThan(firstPromptIdx)
     expect(noticeIdx).toBeGreaterThan(firstReplyIdx)
     expect(continuationIdx).toBeGreaterThan(noticeIdx)
+  })
+
+  it('copies the visible terminal conversation across handoff history', async () => {
+    const writeText = installClipboardWriteMock()
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun({
+            runId: 'run-2',
+            status: 'stopped',
+            statusLabel: 'Stopped',
+            isActive: false,
+            isTerminal: true,
+            stoppedAt: '2026-06-02T19:00:00Z',
+          }),
+          runtimeStreamStatus: 'complete',
+          runtimeStreamStatusLabel: 'Complete',
+          runtimeStreamItems: [
+            {
+              id: 'transcript:run-2:1',
+              kind: 'transcript',
+              runId: 'run-2',
+              sequence: 1,
+              createdAt: '2026-04-29T00:48:10Z',
+              mediaAttachments: [],
+              role: 'assistant',
+              text: 'Continuing in a fresh run.',
+            },
+          ],
+        })}
+        historicalConversationTurns={[
+          {
+            id: 'history:run-1:1',
+            kind: 'message',
+            role: 'user',
+            sequence: 1,
+            text: 'First-run prompt',
+          },
+          {
+            id: 'history:run-1:2',
+            kind: 'message',
+            role: 'assistant',
+            sequence: 2,
+            text: 'First-run reply',
+          },
+          {
+            id: 'handoff_notice:run-1->run-2',
+            kind: 'handoff_notice',
+            sequence: 3,
+            sourceRunId: 'run-1',
+            targetRunId: 'run-2',
+          },
+        ]}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy visible conversation' }))
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1))
+    const copied = writeText.mock.calls[0]?.[0] ?? ''
+    expect(copied).toContain('You:\nFirst-run prompt')
+    expect(copied).toContain('Agent:\nFirst-run reply')
+    expect(copied).toContain('Run continued in a fresh session')
+    expect(copied).toContain('Agent:\nContinuing in a fresh run.')
   })
 
   it('dedupes replayed raw live fragments when historical messages already cover that run', () => {
@@ -1393,6 +1778,76 @@ describe('AgentRuntime current UI', () => {
         expectedWorkspaceEpoch: 7,
       }),
     )
+  })
+
+  it('computes only the bottom room needed to anchor a follow-up prompt', () => {
+    const initial = getFollowUpAnchorScrollPlan({
+      anchorTop: 1_240,
+      viewportHeight: 420,
+      scrollHeight: 1_280,
+      currentSpacerHeight: 0,
+      topOffset: 28,
+    })
+
+    expect(initial).toEqual({
+      scrollTop: 1_212,
+      spacerHeight: 352,
+    })
+
+    const partiallyFilled = getFollowUpAnchorScrollPlan({
+      anchorTop: 1_240,
+      viewportHeight: 420,
+      scrollHeight: 1_280 + initial.spacerHeight + 260,
+      currentSpacerHeight: initial.spacerHeight,
+      topOffset: 28,
+    })
+    expect(partiallyFilled.spacerHeight).toBe(92)
+
+    const filled = getFollowUpAnchorScrollPlan({
+      anchorTop: 1_240,
+      viewportHeight: 420,
+      scrollHeight: 1_280 + initial.spacerHeight + 500,
+      currentSpacerHeight: initial.spacerHeight,
+      topOffset: 28,
+    })
+    expect(filled.spacerHeight).toBe(0)
+  })
+
+  it('releases a follow-up anchor once agent output appears after the prompt', () => {
+    expect(
+      shouldReleaseFollowUpAnchorForTurns({
+        anchorTurnId: 'pending-prompt:1',
+        turns: [
+          { id: 'old-user', kind: 'message', role: 'user', sequence: 1, text: 'Start', attachments: [] },
+          { id: 'old-agent', kind: 'message', role: 'assistant', sequence: 2, text: 'Done', attachments: [] },
+          { id: 'pending-prompt:1', kind: 'message', role: 'user', sequence: 3, text: 'Follow up', attachments: [] },
+        ],
+      }),
+    ).toBe(false)
+
+    expect(
+      shouldReleaseFollowUpAnchorForTurns({
+        anchorTurnId: 'pending-prompt:1',
+        turns: [
+          { id: 'old-user', kind: 'message', role: 'user', sequence: 1, text: 'Start', attachments: [] },
+          { id: 'old-agent', kind: 'message', role: 'assistant', sequence: 2, text: 'Done', attachments: [] },
+          { id: 'pending-prompt:1', kind: 'message', role: 'user', sequence: 3, text: 'Follow up', attachments: [] },
+          { id: 'thinking:1', kind: 'thinking', sequence: 4, text: 'Reading context.' },
+        ],
+      }),
+    ).toBe(true)
+
+    expect(
+      shouldReleaseFollowUpAnchorForTurns({
+        anchorTurnId: 'pending-prompt:1',
+        queuedAnchorText: 'Follow up',
+        turns: [
+          { id: 'old-agent', kind: 'message', role: 'assistant', sequence: 1, text: 'Done', attachments: [] },
+          { id: 'transcript:run-2:1', kind: 'message', role: 'user', sequence: 2, text: 'Follow up', attachments: [] },
+          { id: 'transcript:run-2:2', kind: 'message', role: 'assistant', sequence: 3, text: 'Answer', attachments: [] },
+        ],
+      }),
+    ).toBe(true)
   })
 
   it('calls the whole-change undo command from the changed file entry menu', async () => {
@@ -1877,7 +2332,7 @@ describe('AgentRuntime current UI', () => {
     expect(screen.queryByText('Affected paths')).not.toBeInTheDocument()
   })
 
-  it('copies user prompts and agent responses without a conversation copy action', async () => {
+  it('copies user prompts individually and copies the visible thread from the bottom response', async () => {
     const writeText = installClipboardWriteMock()
     renderRuntimeStreamItems([
       makeTranscriptItem({ sequence: 2, role: 'user', text: 'Please inspect the renderer.' }),
@@ -1891,10 +2346,747 @@ describe('AgentRuntime current UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Copy your prompt' }))
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith('Please inspect the renderer.'))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Copy agent response' }))
-    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith('The renderer is selectable now.'))
+    fireEvent.click(screen.getByRole('button', { name: 'Copy visible conversation' }))
+    await waitFor(() =>
+      expect(writeText).toHaveBeenLastCalledWith(
+        [
+          'You:\nPlease inspect the renderer.',
+          'Thoughts:\nChecking the transcript controls.',
+          'Agent:\nThe renderer is selectable now.',
+        ].join('\n\n'),
+      ),
+    )
 
-    expect(screen.queryByRole('button', { name: 'Copy visible conversation' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Copy agent response' })).not.toBeInTheDocument()
+  })
+
+  it('heals routing markers emitted inside reasoning activity', () => {
+    renderRuntimeStreamItems([
+      makeTranscriptItem({ sequence: 2, role: 'user', text: 'What is this project about?' }),
+      makeReasoningItem({
+        sequence: 3,
+        text: [
+          'The question is: "What is this project about?"',
+          '<xero-routing-suggestion target="ask" reason="Question-only project overview request" summary="User wants a high-level description of what the repository/project is about."/>',
+          'This request is a pure documentation-style question with no implementation, debugging, or planning scope.',
+        ].join('\n\n'),
+      }),
+    ])
+
+    expect(screen.queryByText(/xero-routing-suggestion/)).not.toBeInTheDocument()
+    expect(screen.getByText(/The question is:/)).toBeVisible()
+    expect(screen.getByText(/This request is a pure documentation-style question/)).toBeVisible()
+    expect(screen.getByText('This task may be better suited for the Ask agent')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Switch to Ask' })).toBeVisible()
+  })
+
+  it('dedupes equivalent routing markers from reasoning and assistant text', () => {
+    renderRuntimeStreamItems([
+      makeTranscriptItem({ sequence: 2, role: 'user', text: 'What is this project about?' }),
+      makeReasoningItem({
+        sequence: 3,
+        text: [
+          'The question is: "What is this project about?"',
+          '<xero-routing-suggestion target="ask" reason="Question about project overview" summary="User seeks a high-level description of the project"/>',
+          'This project appears to be a software development initiative.',
+        ].join('\n\n'),
+      }),
+      makeTranscriptItem({
+        sequence: 4,
+        role: 'assistant',
+        text: [
+          '<xero-routing-suggestion target="ask" reason="Question-only explanation request for project overview" summary="User wants a high-level description of what this project is about."/>',
+          'This request is a straightforward question seeking an explanation of the project.',
+        ].join('\n\n'),
+      }),
+    ])
+
+    expect(screen.queryByText(/xero-routing-suggestion/)).not.toBeInTheDocument()
+    expect(screen.getAllByText('This task may be better suited for the Ask agent')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Switch to Ask' })).toBeVisible()
+    expect(screen.getByText(/This request is a straightforward question/)).toBeVisible()
+  })
+
+  it('heals malformed routing markers emitted in assistant text', () => {
+    renderRuntimeStreamItems([
+      makeTranscriptItem({ sequence: 2, role: 'user', text: 'What is this project about?' }),
+      makeTranscriptItem({
+        sequence: 3,
+        role: 'assistant',
+        text: [
+          '<xero-routing-suggestion target=\'ask\' reason=\'Question-only project overview request\' summary=\'User wants a high-level description.\'>',
+          'Switching to Ask will give a more direct answer.',
+        ].join('\n\n'),
+      }),
+    ])
+
+    expect(screen.queryByText(/xero-routing-suggestion/)).not.toBeInTheDocument()
+    expect(screen.getByText('Switching to Ask will give a more direct answer.')).toBeVisible()
+    expect(screen.getByText('This task may be better suited for the Ask agent')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Switch to Ask' })).toBeVisible()
+    const routingSuggestionItem = screen.getByText('This task may be better suited for the Ask agent').closest('li')
+    expect(routingSuggestionItem).toHaveClass('mt-1')
+    expect(routingSuggestionItem).not.toHaveClass('-mt-5')
+    expect(screen.queryByRole('button', { name: 'Copy agent response' })).not.toBeInTheDocument()
+  })
+
+  it('labels the routing decline action with the active agent', () => {
+    renderRuntimeStreamItems([
+      makeTranscriptItem({ sequence: 2, role: 'user', text: 'Replace the header logo.' }),
+      makeTranscriptItem({
+        sequence: 3,
+        role: 'assistant',
+        text: [
+          'This needs an edit, so Engineer would handle it better.',
+          '<xero-routing-suggestion target="engineer" reason="Request needs a code edit" summary="Update the header logo implementation."/>',
+        ].join('\n\n'),
+      }),
+    ])
+
+    expect(screen.getByText('This task may be better suited for the Engineer agent')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Switch to Engineer' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Continue with Ask' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Continue with Agent' })).not.toBeInTheDocument()
+  })
+
+  it('does not render a stale resolved duplicate routing suggestion before the user chooses', () => {
+    const staleContinuationPrompt = [
+      'The user chose to stay with the current Agent instead of switching to Engineer.',
+      'Continue the original request now. Do not stop at another routing recommendation for this same request.',
+      'Carry over: Update the header logo implementation.',
+      'Routing reason: Request needs a code edit',
+    ].join('\n\n')
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun({
+            status: 'stopped',
+            statusLabel: 'Stopped',
+            isActive: false,
+            isTerminal: true,
+            stoppedAt: '2026-06-02T19:00:00Z',
+          }),
+          runtimeStreamStatus: 'complete',
+          runtimeStreamStatusLabel: 'Complete',
+          selectedPrompt: {
+            text: staleContinuationPrompt,
+            queuedAt: '2026-06-02T19:00:01Z',
+            hasQueuedPrompt: true,
+          },
+          runtimeStreamItems: [
+            makeTranscriptItem({ sequence: 2, role: 'user', text: 'Replace the header logo.' }),
+            makeTranscriptItem({
+              sequence: 3,
+              role: 'assistant',
+              text: [
+                'This needs an edit, so Engineer would handle it better.',
+                '<xero-routing-suggestion target="engineer" reason="Request needs a code edit" summary="Update the header logo implementation."/>',
+              ].join('\n\n'),
+            }),
+          ],
+        })}
+        historicalConversationTurns={[
+          {
+            id: 'routing_suggestion:history:run-1:3',
+            kind: 'routing_suggestion',
+            sequence: 3.5,
+            targetKind: 'built_in',
+            targetAgentId: 'engineer',
+            targetAgentDefinitionId: null,
+            targetAgentDefinitionVersion: null,
+            targetLabel: null,
+            reason: 'Request needs a code edit',
+            summary: 'Update the header logo implementation.',
+            isResolved: true,
+            acceptedTarget: null,
+            acceptedTargetAgentDefinitionId: null,
+            acceptedTargetLabel: null,
+            routingResolutionMode: 'manual',
+          },
+        ]}
+      />,
+    )
+
+    expect(screen.getAllByText('This task may be better suited for the Engineer agent')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Switch to Engineer' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Continue with Ask' })).toBeVisible()
+    expect(screen.queryByText('Continued with Ask.')).not.toBeInTheDocument()
+  })
+
+  it('copies visible routing choice context from the bottom response', async () => {
+    const writeText = installClipboardWriteMock()
+    renderRuntimeStreamItems([
+      makeTranscriptItem({ sequence: 2, role: 'user', text: 'What is this project about?' }),
+      makeTranscriptItem({
+        sequence: 3,
+        role: 'assistant',
+        text: [
+          '<xero-routing-suggestion target="ask" reason="Question-only project overview request" summary="User wants a high-level description."/>',
+          'Switching to Ask will give a more direct answer.',
+        ].join('\n\n'),
+      }),
+      makeTranscriptItem({
+        sequence: 4,
+        role: 'assistant',
+        text: 'Xero is a Tauri desktop application for running autonomous agents.',
+      }),
+    ])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy visible conversation' }))
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1))
+    const copied = writeText.mock.calls[0]?.[0] ?? ''
+    expect(copied).toContain('You:\nWhat is this project about?')
+    expect(copied).toContain('Agent:\nSwitching to Ask will give a more direct answer.')
+    expect(copied).toContain('Routing suggestion:\nThis task may be better suited for the Ask agent.')
+    expect(copied).toContain('Agent:\nXero is a Tauri desktop application for running autonomous agents.')
+    expect(screen.queryByRole('button', { name: 'Copy agent response' })).not.toBeInTheDocument()
+  })
+
+  it('continues the current agent when a completed-run routing suggestion is declined', async () => {
+    const onStartRuntimeRun = vi.fn<NonNullable<ComponentProps<typeof AgentRuntime>['onStartRuntimeRun']>>(
+      async () => makeRuntimeRun({ runId: 'run-2' }),
+    )
+    const routingSummary =
+      "Provide a high-level description of the Xero project's purpose, structure, and key components."
+    const runtimeStreamItems = [
+      makeTranscriptItem({
+        sequence: 2,
+        role: 'user',
+        text: 'Wait 10 seconds then look at this project and tell me what its about',
+      }),
+      makeTranscriptItem({
+        sequence: 3,
+        role: 'assistant',
+        text: [
+          'The request is an explanatory overview, so Ask would handle it better.',
+          `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
+        ].join('\n\n'),
+      }),
+    ]
+    const baseAgent = makeAgent({
+      runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+      runtimeRun: makeRuntimeRun({
+        status: 'stopped',
+        statusLabel: 'Stopped',
+        isActive: false,
+        isTerminal: true,
+        stoppedAt: '2026-06-02T19:00:00Z',
+      }),
+      runtimeStreamStatus: 'complete',
+      runtimeStreamStatusLabel: 'Complete',
+      runtimeStreamItems,
+    })
+
+    const { rerender } = render(
+      <AgentRuntime
+        agent={baseAgent}
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    expect(
+      screen.queryByText('Request is for an explanatory overview of the project with no code changes or debugging needed'),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText(routingSummary)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continue with Ask' }))
+
+    await waitFor(() => expect(onStartRuntimeRun).toHaveBeenCalledTimes(1))
+    const request = onStartRuntimeRun.mock.calls[0]?.[0]
+    expect(request?.prompt).toContain('The user chose to stay with the current Agent')
+    expect(request?.prompt).toContain('instead of switching to Ask')
+    expect(request?.prompt).toContain('Do not stop at another routing recommendation')
+    expect(request?.prompt).toContain(routingSummary)
+    await waitFor(() => expect(screen.getByText('Continued with Ask.')).toBeVisible())
+    expect(screen.queryByText(/The user chose to stay with the current Agent/)).not.toBeInTheDocument()
+
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          ...baseAgent,
+          runtimeRun: makeRuntimeRun({ runId: 'run-2' }),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          selectedPrompt: {
+            text: request?.prompt ?? null,
+            queuedAt: '2026-06-02T19:00:01Z',
+            hasQueuedPrompt: true,
+          },
+          runtimeStreamItems: [
+            ...runtimeStreamItems,
+            makeTranscriptItem({
+              runId: 'run-2',
+              sequence: 1,
+              role: 'user',
+              text: request?.prompt ?? '',
+            }),
+          ],
+        })}
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    expect(screen.queryByText(/The user chose to stay with the current Agent/)).not.toBeInTheDocument()
+  })
+
+  it('switches agents and continues in the same session when a completed-run routing suggestion is accepted', async () => {
+    const onStartRuntimeRun = vi.fn<NonNullable<ComponentProps<typeof AgentRuntime>['onStartRuntimeRun']>>(
+      async () => makeRuntimeRun({ runId: 'run-2' }),
+    )
+    const routingSummary =
+      "Provide a high-level description of the Xero project's purpose, structure, and key components."
+    const runtimeStreamItems = [
+      makeTranscriptItem({
+        sequence: 2,
+        role: 'user',
+        text: 'Wait 10 seconds then look at this project and tell me what its about',
+      }),
+      makeTranscriptItem({
+        sequence: 3,
+        role: 'assistant',
+        text: [
+          'The request is an explanatory overview, so Ask would handle it better.',
+          `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
+        ].join('\n\n'),
+      }),
+    ]
+    const baseAgent = makeAgent({
+      runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+      runtimeRun: makeRuntimeRun({
+        status: 'stopped',
+        statusLabel: 'Stopped',
+        isActive: false,
+        isTerminal: true,
+        stoppedAt: '2026-06-02T19:00:00Z',
+      }),
+      runtimeStreamStatus: 'complete',
+      runtimeStreamStatusLabel: 'Complete',
+      runtimeStreamItems,
+    })
+
+    const { rerender } = render(
+      <AgentRuntime
+        agent={baseAgent}
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to Ask' }))
+
+    await waitFor(() => expect(onStartRuntimeRun).toHaveBeenCalledTimes(1))
+    const request = onStartRuntimeRun.mock.calls[0]?.[0]
+    expect(request?.controls).toEqual(expect.objectContaining({ runtimeAgentId: 'ask' }))
+    expect(request?.prompt).toContain('The user accepted the routing suggestion to switch to Ask')
+    expect(request?.prompt).toContain('Continue the original request now in this same session.')
+    expect(request?.prompt).toContain(routingSummary)
+    await waitFor(() => expect(screen.getByText('Switched to Ask and continued.')).toBeVisible())
+    expect(screen.queryByText(/The user accepted the routing suggestion/)).not.toBeInTheDocument()
+
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          ...baseAgent,
+          runtimeRun: makeRuntimeRun({ runId: 'run-2' }),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          selectedPrompt: {
+            text: request?.prompt ?? null,
+            queuedAt: '2026-06-02T19:00:01Z',
+            hasQueuedPrompt: true,
+          },
+          runtimeStreamItems: [
+            ...runtimeStreamItems,
+            makeTranscriptItem({
+              runId: 'run-2',
+              sequence: 1,
+              role: 'user',
+              text: request?.prompt ?? '',
+            }),
+          ],
+        })}
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    expect(screen.queryByText(/The user accepted the routing suggestion/)).not.toBeInTheDocument()
+  })
+
+  it('queues a manual routing choice while the owned-agent run is still active', async () => {
+    const onStartRuntimeRun = vi.fn<NonNullable<ComponentProps<typeof AgentRuntime>['onStartRuntimeRun']>>(
+      async () => makeRuntimeRun({ runId: 'run-2' }),
+    )
+    const onUpdateRuntimeRunControls = vi.fn<
+      NonNullable<ComponentProps<typeof AgentRuntime>['onUpdateRuntimeRunControls']>
+    >(async () => makeRuntimeRun())
+    const routingSummary =
+      "Provide a high-level description of the Xero project's purpose, structure, and key components."
+    const runtimeStreamItems = [
+      makeTranscriptItem({
+        sequence: 2,
+        role: 'user',
+        text: 'Tell me about this project',
+      }),
+      makeTranscriptItem({
+        sequence: 3,
+        role: 'assistant',
+        text: [
+          'The request is an explanatory overview, so Ask would handle it better.',
+          `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
+        ].join('\n\n'),
+      }),
+    ]
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems,
+        })}
+        onStartRuntimeRun={onStartRuntimeRun}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+      />,
+    )
+
+    const switchButton = screen.getByRole('button', { name: 'Switch to Ask' })
+    const continueButton = screen.getByRole('button', { name: 'Continue with Ask' })
+    expect(switchButton).toBeEnabled()
+    expect(continueButton).toBeEnabled()
+
+    fireEvent.click(switchButton)
+
+    await waitFor(() => expect(onUpdateRuntimeRunControls).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByText('Switched to Ask and continued.')).toBeVisible())
+    expect(onStartRuntimeRun).not.toHaveBeenCalled()
+    const request = onUpdateRuntimeRunControls.mock.calls[0]?.[0]
+    expect(request?.controls).toEqual(expect.objectContaining({ runtimeAgentId: 'ask' }))
+    expect(request?.prompt).toContain('The user accepted the routing suggestion to switch to Ask')
+    expect(request?.prompt).toContain(routingSummary)
+    expect(screen.queryByText(/The user accepted the routing suggestion/)).not.toBeInTheDocument()
+  })
+
+  it('lets a routing choice replace a previously queued internal routing continuation', async () => {
+    const onStartRuntimeRun = vi.fn<NonNullable<ComponentProps<typeof AgentRuntime>['onStartRuntimeRun']>>(
+      async () => makeRuntimeRun({ runId: 'run-2' }),
+    )
+    const routingSummary =
+      "Provide a high-level description of the Xero project's purpose, structure, and key components."
+    const staleContinuationPrompt = [
+      'The user chose to stay with the current Agent instead of switching to Editor.',
+      'Continue the original request now. Do not stop at another routing recommendation for this same request.',
+      `Carry over: ${routingSummary}`,
+      'Routing reason: Request is for an explanatory overview of the project with no code changes or debugging needed',
+    ].join('\n\n')
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun({
+            status: 'stopped',
+            statusLabel: 'Stopped',
+            isActive: false,
+            isTerminal: true,
+            stoppedAt: '2026-06-02T19:00:00Z',
+          }),
+          runtimeStreamStatus: 'complete',
+          runtimeStreamStatusLabel: 'Complete',
+          selectedPrompt: {
+            text: staleContinuationPrompt,
+            queuedAt: '2026-06-02T19:00:01Z',
+            hasQueuedPrompt: true,
+          },
+          runtimeStreamItems: [
+            makeTranscriptItem({
+              sequence: 2,
+              role: 'user',
+              text: 'Tell me about this project',
+            }),
+            makeTranscriptItem({
+              sequence: 3,
+              role: 'assistant',
+              text: [
+                'The request is an explanatory overview, so Ask would handle it better.',
+                `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
+              ].join('\n\n'),
+            }),
+          ],
+        })}
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    const switchButton = screen.getByRole('button', { name: 'Switch to Ask' })
+    expect(switchButton).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Continue with Ask' })).toBeEnabled()
+
+    fireEvent.click(switchButton)
+
+    await waitFor(() => expect(onStartRuntimeRun).toHaveBeenCalledTimes(1))
+    const request = onStartRuntimeRun.mock.calls[0]?.[0]
+    expect(request?.controls).toEqual(expect.objectContaining({ runtimeAgentId: 'ask' }))
+    expect(request?.prompt).toContain('The user accepted the routing suggestion to switch to Ask')
+    expect(request?.prompt).toContain(routingSummary)
+    await waitFor(() => expect(screen.getByText('Switched to Ask and continued.')).toBeVisible())
+    expect(screen.queryByText(/The user chose to stay with the current Agent/)).not.toBeInTheDocument()
+  })
+
+  it('keeps a queued internal routing choice resolved after reload', () => {
+    const routingSummary =
+      "Provide a high-level description of the Xero project's purpose, structure, and key components."
+    const queuedContinuationPrompt = [
+      'The user chose to stay with the current Agent instead of switching to Ask.',
+      'Continue the original request now. Do not stop at another routing recommendation for this same request.',
+      `Carry over: ${routingSummary}`,
+      'Routing reason: Request is for an explanatory overview of the project with no code changes or debugging needed',
+    ].join('\n\n')
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun({
+            status: 'running',
+            statusLabel: 'Agent running',
+            isActive: true,
+            isTerminal: false,
+          }),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          selectedPrompt: {
+            text: queuedContinuationPrompt,
+            queuedAt: '2026-06-02T19:00:01Z',
+            hasQueuedPrompt: true,
+          },
+          runtimeStreamItems: [
+            makeTranscriptItem({
+              sequence: 2,
+              role: 'user',
+              text: 'Tell me about this project',
+            }),
+            makeTranscriptItem({
+              sequence: 3,
+              role: 'assistant',
+              text: [
+                'The request is an explanatory overview, so Ask would handle it better.',
+                `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
+              ].join('\n\n'),
+            }),
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Continued with Ask.')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Switch to Ask' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Continue with Ask' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/The user chose to stay with the current Agent/)).not.toBeInTheDocument()
+  })
+
+  it('does not automatically choose a routing suggestion while auto-switching is disabled', async () => {
+    const onStartRuntimeRun = vi.fn<NonNullable<ComponentProps<typeof AgentRuntime>['onStartRuntimeRun']>>(
+      async () => makeRuntimeRun({ runId: 'run-2' }),
+    )
+    const onUpdateRuntimeRunControls = vi.fn<
+      NonNullable<ComponentProps<typeof AgentRuntime>['onUpdateRuntimeRunControls']>
+    >(async () => makeRuntimeRun())
+    const routingSummary =
+      "Provide a high-level description of the Xero project's purpose, structure, and key components."
+
+    renderRuntimeStreamItems(
+      [
+        makeTranscriptItem({
+          sequence: 2,
+          role: 'user',
+          text: 'Tell me about this project',
+        }),
+        makeTranscriptItem({
+          sequence: 3,
+          role: 'assistant',
+          text: [
+            'The request is an explanatory overview, so Ask would handle it better.',
+            `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
+          ].join('\n\n'),
+        }),
+      ],
+      {
+        onStartRuntimeRun,
+        onUpdateRuntimeRunControls,
+      },
+    )
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(onUpdateRuntimeRunControls).not.toHaveBeenCalled()
+    expect(onStartRuntimeRun).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Switch to Ask' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Continue with Ask' })).toBeEnabled()
+  })
+
+  it('automatically switches agents and records the routing action when enabled', async () => {
+    const onStartRuntimeRun = vi.fn<NonNullable<ComponentProps<typeof AgentRuntime>['onStartRuntimeRun']>>(
+      async () => makeRuntimeRun({ runId: 'run-2' }),
+    )
+    const routingSummary =
+      "Provide a high-level description of the Xero project's purpose, structure, and key components."
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun({
+            status: 'stopped',
+            statusLabel: 'Stopped',
+            isActive: false,
+            isTerminal: true,
+            stoppedAt: '2026-06-02T19:00:00Z',
+          }),
+          runtimeStreamStatus: 'complete',
+          runtimeStreamStatusLabel: 'Complete',
+          runtimeStreamItems: [
+            makeTranscriptItem({
+              sequence: 2,
+              role: 'user',
+              text: 'Wait 10 seconds then look at this project and tell me what its about',
+            }),
+            makeTranscriptItem({
+              sequence: 3,
+              role: 'assistant',
+              text: [
+                'The request is an explanatory overview, so Ask would handle it better.',
+                `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
+              ].join('\n\n'),
+            }),
+          ],
+        })}
+        agentRoutingAutoSwitchEnabled
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    await waitFor(() => expect(onStartRuntimeRun).toHaveBeenCalledTimes(1))
+    const request = onStartRuntimeRun.mock.calls[0]?.[0]
+    expect(request?.controls).toEqual(expect.objectContaining({ runtimeAgentId: 'ask' }))
+    expect(request?.prompt).toContain('The user accepted the routing suggestion to switch to Ask')
+    expect(request?.prompt).toContain('Continue the original request now in this same session.')
+    expect(request?.prompt).toContain(routingSummary)
+    await waitFor(() => expect(screen.getByText('Auto-switched to Ask and continued.')).toBeVisible())
+  })
+
+  it('keeps a declined routing suggestion resolved after the session transcript reloads', () => {
+    const routingSummary =
+      "Provide a high-level description of the Xero project's purpose, structure, and key components."
+    const continuationPrompt = [
+      'The user chose to stay with the current Agent instead of switching to Ask.',
+      'Continue the original request now. Do not stop at another routing recommendation for this same request.',
+      `Carry over: ${routingSummary}`,
+      'Routing reason: Request is for an explanatory overview of the project with no code changes or debugging needed',
+    ].join('\n\n')
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun({ runId: 'run-2' }),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [
+            makeTranscriptItem({
+              sequence: 1,
+              role: 'user',
+              text: 'Tell me about this project',
+            }),
+            makeTranscriptItem({
+              sequence: 2,
+              role: 'assistant',
+              text: [
+                'The request is an explanatory overview, so Ask would handle it better.',
+                `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
+              ].join('\n\n'),
+            }),
+            makeTranscriptItem({
+              runId: 'run-2',
+              sequence: 1,
+              role: 'user',
+              text: continuationPrompt,
+            }),
+            makeTranscriptItem({
+              runId: 'run-2',
+              sequence: 2,
+              role: 'assistant',
+              text: 'The project is a desktop agent development platform.',
+            }),
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Continued with Ask.')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Switch to Ask' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Continue with Ask' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/The user chose to stay with the current Agent/)).not.toBeInTheDocument()
+  })
+
+  it('keeps an accepted routing suggestion resolved after the session transcript reloads', () => {
+    const routingSummary =
+      "Provide a high-level description of the Xero project's purpose, structure, and key components."
+    const continuationPrompt = [
+      'The user accepted the routing suggestion to switch to Ask.',
+      'Continue the original request now in this same session.',
+      'Target agent: Ask',
+      `Carry over: ${routingSummary}`,
+      'Routing reason: Request is for an explanatory overview of the project with no code changes or debugging needed',
+    ].join('\n\n')
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun({ runId: 'run-2' }),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [
+            makeTranscriptItem({
+              sequence: 1,
+              role: 'user',
+              text: 'Tell me about this project',
+            }),
+            makeTranscriptItem({
+              sequence: 2,
+              role: 'assistant',
+              text: [
+                'The request is an explanatory overview, so Ask would handle it better.',
+                `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
+              ].join('\n\n'),
+            }),
+            makeTranscriptItem({
+              runId: 'run-2',
+              sequence: 1,
+              role: 'user',
+              text: continuationPrompt,
+            }),
+            makeTranscriptItem({
+              runId: 'run-2',
+              sequence: 2,
+              role: 'assistant',
+              text: 'The project is a desktop agent development platform.',
+            }),
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Switched to Ask and continued.')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Switch to Ask' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Continue with Ask' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/The user accepted the routing suggestion/)).not.toBeInTheDocument()
   })
 
   it('shows an agent thinking row immediately while a submitted prompt is starting', () => {
@@ -1911,6 +3103,28 @@ describe('AgentRuntime current UI', () => {
 
     expect(screen.getByRole('status', { name: 'Agent is thinking' })).toBeVisible()
     expect(screen.queryByText(/What can we build together/i)).not.toBeInTheDocument()
+  })
+
+  it('does not show the agent thinking row when an active run has a stale stream', () => {
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'stale',
+          runtimeStreamStatusLabel: 'Stream stale',
+          runtimeStreamError: {
+            code: 'runtime_stream_subscribe_timeout',
+            message: 'Xero could not connect the live runtime stream in time. Retry the stream to reconnect.',
+            retryable: true,
+            observedAt: '2026-06-02T18:00:00Z',
+          },
+        })}
+      />,
+    )
+
+    expect(screen.queryByRole('status', { name: 'Agent is thinking' })).not.toBeInTheDocument()
+    expect(screen.getByText(/could not connect the live runtime stream/i)).toBeVisible()
   })
 
   it('renders a submitted prompt immediately while the runtime update is still in flight', async () => {
@@ -2091,6 +3305,90 @@ describe('AgentRuntime current UI', () => {
     expect(within(conversation).getByText(submittedPrompt)).toBe(promptRow)
   })
 
+  it('renders browser tool context as an attached card while deduping the echoed prompt', async () => {
+    const submittedPrompt = 'Where is this component located in the repo'
+    const hiddenContext = [
+      'Browser element inspection context:',
+      'Page: Local App',
+      'Selected element (for locating code; no screenshot):',
+      '- Source: /app/src/Hero.tsx:42',
+      '- Element: <header>',
+      '- Selector: header',
+      'Use these identifiers to find the implementation before editing.',
+    ].join('\n')
+    const onUpdateRuntimeRunControls = vi.fn(async () => makeRuntimeRun())
+    const baseAgent = {
+      runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+      runtimeRun: makeRuntimeRun(),
+      runtimeStreamStatus: 'live' as const,
+      runtimeStreamStatusLabel: 'Live stream',
+      runtimeStreamItems: [],
+    }
+
+    const { rerender } = render(
+      <AgentRuntime
+        agent={makeAgent(baseAgent)}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+        pendingComposerInsert={{
+          id: 'browser-context-deduped',
+          prompt: submittedPrompt,
+          hiddenPrompt: hiddenContext,
+          contextCard: {
+            kind: 'element',
+            title: 'Element context',
+            subtitle: 'Hero.tsx:42',
+          },
+        }}
+      />,
+    )
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('Agent input')).toHaveValue(submittedPrompt),
+    )
+    fireEvent.keyDown(screen.getByLabelText('Agent input'), { key: 'Enter' })
+
+    await waitFor(() =>
+      expect(onUpdateRuntimeRunControls).toHaveBeenCalledWith({
+        prompt: `${submittedPrompt}\n\n${hiddenContext}`,
+      }),
+    )
+
+    const conversation = screen.getByRole('list', { name: 'Agent conversation turns' })
+    expect(within(conversation).getAllByText(submittedPrompt)).toHaveLength(1)
+
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          ...baseAgent,
+          runtimeStreamItems: [
+            {
+              ...makeTranscriptItem({
+                sequence: 2,
+                role: 'user',
+                text: `${submittedPrompt}\n\n${hiddenContext}`,
+              }),
+              createdAt: new Date(Date.now() + 1_000).toISOString(),
+            },
+          ],
+        })}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+      />,
+    )
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    const updatedConversation = screen.getByRole('list', { name: 'Agent conversation turns' })
+    expect(within(updatedConversation).getAllByText(submittedPrompt)).toHaveLength(1)
+    expect(
+      within(updatedConversation).getByRole('note', { name: /element context attached to prompt/i }),
+    ).toBeVisible()
+    expect(within(updatedConversation).getByText('Element context')).toBeVisible()
+    expect(within(updatedConversation).getByText('Local App')).toBeVisible()
+    expect(within(updatedConversation).getByText('- Source: /app/src/Hero.tsx:42')).toBeVisible()
+    expect(within(updatedConversation).queryByText('Browser element inspection context:')).not.toBeInTheDocument()
+  })
+
   it('keeps the first submitted prompt row mounted when the started run echoes it', async () => {
     const submittedPrompt = 'Kick off the first run.'
     const onStartRuntimeRun = vi.fn(() => new Promise<RuntimeRunView>(() => undefined))
@@ -2168,6 +3466,182 @@ describe('AgentRuntime current UI', () => {
     expect(within(conversation).getByText(submittedPrompt)).toBe(promptRow)
   })
 
+  it('keeps same-session conversation turns visible while a switched-agent run rebinds', () => {
+    const baseAgent = {
+      runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+      runtimeRun: makeRuntimeRun({
+        status: 'stopped',
+        statusLabel: 'Stopped',
+        isActive: false,
+        isTerminal: true,
+        stoppedAt: '2026-06-02T19:00:00Z',
+      }),
+      runtimeStreamStatus: 'complete' as const,
+      runtimeStreamStatusLabel: 'Complete',
+      runtimeStreamItems: [
+        makeTranscriptItem({
+          sequence: 1,
+          role: 'user',
+          text: 'Replace the header logo.',
+        }),
+        makeTranscriptItem({
+          sequence: 2,
+          role: 'assistant',
+          text: 'This task may be better suited for Engineer.',
+        }),
+      ],
+    }
+
+    const { rerender } = render(
+      <AgentRuntime
+        agent={makeAgent(baseAgent)}
+      />,
+    )
+
+    expect(screen.getByText('Replace the header logo.')).toBeVisible()
+    expect(screen.getByText('This task may be better suited for Engineer.')).toBeVisible()
+
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          ...baseAgent,
+          runtimeRun: makeRuntimeRun({
+            runId: 'run-2',
+            status: 'running',
+            statusLabel: 'Agent running',
+            isActive: true,
+            isTerminal: false,
+          }),
+          runtimeStreamStatus: 'idle',
+          runtimeStreamStatusLabel: 'No live stream',
+          runtimeStreamItems: [],
+          selectedRuntimeAgentId: 'engineer',
+          selectedRuntimeAgentLabel: 'Engineer',
+        })}
+        historicalConversationTurnsLoading
+      />,
+    )
+
+    expect(screen.getByText('Replace the header logo.')).toBeVisible()
+    expect(screen.getByText('This task may be better suited for Engineer.')).toBeVisible()
+  })
+
+  it('anchors a follow-up prompt at the top when it starts a fresh run', async () => {
+    const submittedPrompt = 'How do the pieces connect?'
+    const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
+    scrollIntoView.mockClear()
+    const originalRequestAnimationFrame = Object.getOwnPropertyDescriptor(window, 'requestAnimationFrame')
+    Object.defineProperty(window, 'requestAnimationFrame', {
+      configurable: true,
+      writable: true,
+      value: (callback: FrameRequestCallback) => {
+        callback(0)
+        return 1
+      },
+    })
+
+    const previousRun = makeRuntimeRun({
+      status: 'stopped',
+      statusLabel: 'Stopped',
+      isActive: false,
+      isTerminal: true,
+      stoppedAt: '2026-04-29T00:55:00Z',
+    })
+    const initialItems: NonNullable<AgentPaneView['runtimeStreamItems']> = [
+      makeTranscriptItem({ sequence: 1, role: 'user', text: 'Summarize the architecture.' }),
+      makeTranscriptItem({ sequence: 2, text: 'The client and cloud surfaces share project state.' }),
+    ]
+    const onStartRuntimeRun = vi.fn(async () => makeRuntimeRun({ runId: 'run-2' }))
+    const baseAgent = {
+      runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+      runtimeRun: previousRun,
+      runtimeStreamStatus: 'complete' as const,
+      runtimeStreamStatusLabel: 'Complete',
+      runtimeStreamItems: initialItems,
+    }
+
+    try {
+      const { rerender } = render(
+        <AgentRuntime
+          agent={makeAgent(baseAgent)}
+          onStartRuntimeRun={onStartRuntimeRun}
+        />,
+      )
+
+      const viewport = screen.getByLabelText('Agent conversation viewport')
+      setScrollMetrics(viewport, {
+        scrollTop: 760,
+        scrollHeight: 1_600,
+        clientHeight: 420,
+      })
+      scrollIntoView.mockClear()
+
+      fireEvent.change(screen.getByLabelText('Agent input'), {
+        target: { value: submittedPrompt },
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+      await waitFor(() =>
+        expect(onStartRuntimeRun).toHaveBeenCalledWith(expect.objectContaining({
+          controls: expect.any(Object),
+          prompt: submittedPrompt,
+        })),
+      )
+      const promptTurn = screen
+        .getByText(submittedPrompt)
+        .closest('[data-conversation-turn-id]')
+      expect(promptTurn).toHaveAttribute('data-conversation-turn-role', 'user')
+      expect(promptTurn?.getAttribute('data-conversation-turn-id')).toMatch(/^pending-prompt:/)
+      expect(scrollIntoView).not.toHaveBeenCalledWith(expect.objectContaining({ block: 'end' }))
+
+      scrollIntoView.mockClear()
+      rerender(
+        <AgentRuntime
+          agent={makeAgent({
+            ...baseAgent,
+            runtimeRun: makeRuntimeRun({ runId: 'run-2' }),
+            runtimeStreamStatus: 'live',
+            runtimeStreamStatusLabel: 'Live stream',
+            selectedPrompt: {
+              text: submittedPrompt,
+              queuedAt: '2026-04-29T00:56:00Z',
+              hasQueuedPrompt: true,
+            },
+            runtimeStreamItems: [
+              ...initialItems,
+              {
+                ...makeTranscriptItem({
+                  runId: 'run-2',
+                  sequence: 1,
+                  role: 'user',
+                  text: submittedPrompt,
+                }),
+                createdAt: '2026-04-29T00:56:01Z',
+              },
+              makeTranscriptItem({
+                runId: 'run-2',
+                sequence: 2,
+                text: 'They connect through the desktop runtime bridge.',
+              }),
+            ],
+          })}
+          onStartRuntimeRun={onStartRuntimeRun}
+        />,
+      )
+      await act(async () => {
+        await Promise.resolve()
+      })
+
+      expect(screen.getByText('They connect through the desktop runtime bridge.')).toBeVisible()
+    } finally {
+      if (originalRequestAnimationFrame) {
+        Object.defineProperty(window, 'requestAnimationFrame', originalRequestAnimationFrame)
+      } else {
+        Reflect.deleteProperty(window, 'requestAnimationFrame')
+      }
+    }
+  })
+
   it('pauses auto-follow when the user scrolls away and resumes from the latest button', () => {
     const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
     const initialItems: NonNullable<AgentPaneView['runtimeStreamItems']> = [
@@ -2226,11 +3700,241 @@ describe('AgentRuntime current UI', () => {
     expect(screen.queryByRole('button', { name: 'Jump to latest' })).not.toBeInTheDocument()
   })
 
-  it('does not auto-follow to the tail when mounting a restored terminal conversation', () => {
+  it('hides the latest button when resized tool content no longer overflows', () => {
+    const resizeObserver = installManualResizeObserverMock()
+    const originalRequestAnimationFrame = Object.getOwnPropertyDescriptor(window, 'requestAnimationFrame')
+    const originalCancelAnimationFrame = Object.getOwnPropertyDescriptor(window, 'cancelAnimationFrame')
+    Object.defineProperty(window, 'requestAnimationFrame', {
+      configurable: true,
+      writable: true,
+      value: (callback: FrameRequestCallback) => {
+        callback(0)
+        return 1
+      },
+    })
+    Object.defineProperty(window, 'cancelAnimationFrame', {
+      configurable: true,
+      writable: true,
+      value: () => undefined,
+    })
+
+    try {
+      render(
+        <AgentRuntime
+          agent={makeAgent({
+            runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+            runtimeRun: makeRuntimeRun(),
+            runtimeStreamStatus: 'complete',
+            runtimeStreamStatusLabel: 'Complete',
+            runtimeStreamItems: [
+              makeTranscriptItem({ sequence: 2, role: 'user', text: 'Inspect several files.' }),
+              ...Array.from({ length: 6 }, (_, index) =>
+                makeToolItem({
+                  sequence: index + 3,
+                  toolCallId: `call-read-${index}`,
+                  toolName: 'read',
+                  toolState: 'succeeded',
+                  detail: `Read tool ${index}.`,
+                  toolSummary: {
+                    kind: 'file',
+                    path: `client/src/tool-${index}.ts`,
+                    scope: null,
+                    lineCount: 12,
+                    matchCount: null,
+                    truncated: false,
+                  },
+                  toolResultPreview: `tool ${index} output preview`,
+                }),
+              ),
+              makeTranscriptItem({ sequence: 20, role: 'assistant', text: 'Done.' }),
+            ],
+          })}
+        />,
+      )
+
+      const viewport = screen.getByLabelText('Agent conversation viewport')
+      setScrollMetrics(viewport, {
+        scrollTop: 0,
+        scrollHeight: 1_000,
+        clientHeight: 360,
+      })
+      fireEvent.scroll(viewport)
+
+      expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeVisible()
+
+      setScrollMetrics(viewport, {
+        scrollTop: 0,
+        scrollHeight: 320,
+        clientHeight: 360,
+      })
+      act(() => {
+        resizeObserver.trigger()
+      })
+
+      expect(screen.queryByRole('button', { name: 'Jump to latest' })).not.toBeInTheDocument()
+    } finally {
+      resizeObserver.restore()
+      if (originalRequestAnimationFrame) {
+        Object.defineProperty(window, 'requestAnimationFrame', originalRequestAnimationFrame)
+      } else {
+        Reflect.deleteProperty(window, 'requestAnimationFrame')
+      }
+      if (originalCancelAnimationFrame) {
+        Object.defineProperty(window, 'cancelAnimationFrame', originalCancelAnimationFrame)
+      } else {
+        Reflect.deleteProperty(window, 'cancelAnimationFrame')
+      }
+    }
+  })
+
+  it('hides the latest button after collapsed tool content finishes animating out', () => {
+    vi.useFakeTimers()
+    const mutationObserver = installManualMutationObserverMock()
+    const originalRequestAnimationFrame = Object.getOwnPropertyDescriptor(window, 'requestAnimationFrame')
+    const originalCancelAnimationFrame = Object.getOwnPropertyDescriptor(window, 'cancelAnimationFrame')
+    Object.defineProperty(window, 'requestAnimationFrame', {
+      configurable: true,
+      writable: true,
+      value: (callback: FrameRequestCallback) =>
+        window.setTimeout(() => callback(performance.now()), 0),
+    })
+    Object.defineProperty(window, 'cancelAnimationFrame', {
+      configurable: true,
+      writable: true,
+      value: (handle: number) => window.clearTimeout(handle),
+    })
+    let unmount: (() => void) | null = null
+
+    try {
+      const rendered = render(
+        <AgentRuntime
+          agent={makeAgent({
+            runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+            runtimeRun: makeRuntimeRun(),
+            runtimeStreamStatus: 'complete',
+            runtimeStreamStatusLabel: 'Complete',
+            runtimeStreamItems: [
+              makeTranscriptItem({ sequence: 2, role: 'user', text: 'Inspect several files.' }),
+              ...Array.from({ length: 6 }, (_, index) =>
+                makeToolItem({
+                  sequence: index + 3,
+                  toolCallId: `call-read-${index}`,
+                  toolName: 'read',
+                  toolState: 'succeeded',
+                  detail: `Read tool ${index}.`,
+                  toolSummary: {
+                    kind: 'file',
+                    path: `client/src/tool-${index}.ts`,
+                    scope: null,
+                    lineCount: 12,
+                    matchCount: null,
+                    truncated: false,
+                  },
+                  toolResultPreview: `tool ${index} output preview`,
+                }),
+              ),
+              makeTranscriptItem({ sequence: 20, role: 'assistant', text: 'Done.' }),
+            ],
+          })}
+        />,
+      )
+      unmount = rendered.unmount
+
+      const viewport = screen.getByLabelText('Agent conversation viewport')
+      setScrollMetrics(viewport, {
+        scrollTop: 0,
+        scrollHeight: 1_000,
+        clientHeight: 360,
+      })
+      fireEvent.scroll(viewport)
+
+      expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeVisible()
+
+      act(() => {
+        mutationObserver.trigger()
+        vi.advanceTimersByTime(1)
+      })
+      expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeVisible()
+
+      setScrollMetrics(viewport, {
+        scrollTop: 0,
+        scrollHeight: 320,
+        clientHeight: 360,
+      })
+      act(() => {
+        vi.advanceTimersByTime(360)
+      })
+
+      expect(screen.queryByRole('button', { name: 'Jump to latest' })).not.toBeInTheDocument()
+    } finally {
+      unmount?.()
+      mutationObserver.restore()
+      if (originalRequestAnimationFrame) {
+        Object.defineProperty(window, 'requestAnimationFrame', originalRequestAnimationFrame)
+      } else {
+        Reflect.deleteProperty(window, 'requestAnimationFrame')
+      }
+      if (originalCancelAnimationFrame) {
+        Object.defineProperty(window, 'cancelAnimationFrame', originalCancelAnimationFrame)
+      } else {
+        Reflect.deleteProperty(window, 'cancelAnimationFrame')
+      }
+      vi.useRealTimers()
+    }
+  })
+
+  it('auto-follows to the tail when mounting a restored terminal conversation', () => {
     const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
     scrollIntoView.mockClear()
+    const originalRequestAnimationFrame = Object.getOwnPropertyDescriptor(window, 'requestAnimationFrame')
+    Object.defineProperty(window, 'requestAnimationFrame', {
+      configurable: true,
+      writable: true,
+      value: (callback: FrameRequestCallback) => {
+        callback(0)
+        return 1
+      },
+    })
 
-    render(
+    try {
+      render(
+        <AgentRuntime
+          agent={makeAgent({
+            runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+            runtimeRun: makeRuntimeRun({
+              status: 'stopped',
+              statusLabel: 'Stopped',
+              isActive: false,
+              isTerminal: true,
+              stoppedAt: '2026-04-29T00:49:00Z',
+            }),
+            runtimeStreamStatus: 'complete',
+            runtimeStreamStatusLabel: 'Complete',
+            runtimeStreamItems: [
+              makeTranscriptItem({ sequence: 1, role: 'user', text: 'What is this project about?' }),
+              makeTranscriptItem({ sequence: 2, text: 'This project is Xero.' }),
+            ],
+          })}
+        />,
+      )
+
+      expect(screen.getByText('This project is Xero.')).toBeVisible()
+      expect(scrollIntoView).toHaveBeenCalledWith({
+        block: 'end',
+        inline: 'nearest',
+        behavior: 'auto',
+      })
+    } finally {
+      if (originalRequestAnimationFrame) {
+        Object.defineProperty(window, 'requestAnimationFrame', originalRequestAnimationFrame)
+      } else {
+        Reflect.deleteProperty(window, 'requestAnimationFrame')
+      }
+    }
+  })
+
+  it('remounts the conversation surface when switching selected sessions', () => {
+    const { rerender } = render(
       <AgentRuntime
         agent={makeAgent({
           runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
@@ -2244,18 +3948,58 @@ describe('AgentRuntime current UI', () => {
           runtimeStreamStatus: 'complete',
           runtimeStreamStatusLabel: 'Complete',
           runtimeStreamItems: [
-            makeTranscriptItem({ sequence: 1, role: 'user', text: 'What is this project about?' }),
-            makeTranscriptItem({ sequence: 2, text: 'This project is Xero.' }),
+            makeTranscriptItem({ sequence: 1, role: 'user', text: 'Summarize this session.' }),
+            makeTranscriptItem({ sequence: 2, text: 'This is the first session.' }),
           ],
         })}
       />,
     )
 
-    expect(screen.getByText('This project is Xero.')).toBeVisible()
-    expect(scrollIntoView).not.toHaveBeenCalled()
+    const initialSurface = screen
+      .getByText('This is the first session.')
+      .closest('.agent-session-surface-enter')
+    expect(initialSurface).not.toBeNull()
+
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          project: makeProject({
+            selectedAgentSessionId: 'agent-session-other',
+          }),
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun({
+            agentSessionId: 'agent-session-other',
+            runId: 'run-2',
+            status: 'stopped',
+            statusLabel: 'Stopped',
+            isActive: false,
+            isTerminal: true,
+            stoppedAt: '2026-04-29T00:50:00Z',
+          }),
+          runtimeStreamStatus: 'complete',
+          runtimeStreamStatusLabel: 'Complete',
+          runtimeStreamItems: [
+            makeTranscriptItem({
+              runId: 'run-2',
+              sequence: 1,
+              role: 'user',
+              text: 'Summarize the next session.',
+            }),
+            makeTranscriptItem({ runId: 'run-2', sequence: 2, text: 'This is the next session.' }),
+          ],
+        })}
+      />,
+    )
+
+    const nextSurface = screen
+      .getByText('This is the next session.')
+      .closest('.agent-session-surface-enter')
+    expect(nextSurface).not.toBeNull()
+    expect(nextSurface).not.toBe(initialSurface)
+    expect(screen.queryByText('This is the first session.')).not.toBeInTheDocument()
   })
 
-  it('resets restored conversation scroll when switching projects', () => {
+  it('scrolls restored conversations to latest when switching projects', () => {
     const { rerender } = render(
       <AgentRuntime
         agent={makeAgent({
@@ -2286,6 +4030,10 @@ describe('AgentRuntime current UI', () => {
     fireEvent.scroll(viewport)
 
     expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeVisible()
+    const initialSurface = screen
+      .getByText('This project is Xero.')
+      .closest('.agent-session-surface-enter')
+    expect(initialSurface).not.toBeNull()
 
     rerender(
       <AgentRuntime
@@ -2337,8 +4085,14 @@ describe('AgentRuntime current UI', () => {
     )
 
     expect(screen.getByText('Fresh project overview.')).toBeVisible()
+    const nextSurface = screen
+      .getByText('Fresh project overview.')
+      .closest('.agent-session-surface-enter')
+    expect(nextSurface).not.toBeNull()
+    expect(nextSurface).not.toBe(initialSurface)
     expect(screen.queryByText('This project is Xero.')).not.toBeInTheDocument()
-    expect(viewport.scrollTop).toBe(0)
+    expect(viewport.scrollTop).toBe(1_200)
+    expect(screen.queryByRole('button', { name: 'Jump to latest' })).not.toBeInTheDocument()
   })
 
   it('pauses auto-follow immediately when the user wheels upward during streaming', () => {
@@ -2471,6 +4225,61 @@ describe('AgentRuntime current UI', () => {
     expect(screen.getByText('The build is failing because the generated type is stale.')).toBeVisible()
   })
 
+  it('inserts replayed thoughts and tools before an overlapping historical final response', () => {
+    const historicalConversationTurns: NonNullable<
+      ComponentProps<typeof AgentRuntime>['historicalConversationTurns']
+    > = [
+      {
+        id: 'transcript:run-1:2',
+        kind: 'message',
+        role: 'user',
+        sequence: 2,
+        text: 'What is this project about?',
+        attachments: [],
+      },
+      {
+        id: 'transcript:run-1:20',
+        kind: 'message',
+        role: 'assistant',
+        sequence: 20,
+        text: 'Xero is a desktop agent workbench.',
+        attachments: [],
+      },
+    ]
+
+    renderRuntimeStreamItems(
+      [
+        makeTranscriptItem({ sequence: 2, role: 'user', text: 'What is this project about?' }),
+        makeReasoningItem({ sequence: 3, text: 'I should inspect the repository first.' }),
+        makeToolItem({
+          sequence: 4,
+          toolCallId: 'call-read-readme',
+          toolName: 'read',
+          toolState: 'succeeded',
+          detail: 'Read README.md.',
+        }),
+        makeTranscriptItem({ sequence: 20, text: 'Xero is a desktop agent workbench.' }),
+      ],
+      {
+        historicalConversationTurns,
+        toolCallGroupingPreference: 'separate',
+      },
+    )
+
+    const conversationText =
+      screen.getByRole('list', { name: 'Agent conversation turns' }).textContent ?? ''
+    const promptIndex = conversationText.indexOf('What is this project about?')
+    const thoughtsIndex = conversationText.indexOf('I should inspect the repository first.')
+    const toolIndex = conversationText.indexOf('Read README.md.')
+    const finalIndex = conversationText.indexOf('Xero is a desktop agent workbench.')
+
+    expect(screen.getAllByText('Xero is a desktop agent workbench.')).toHaveLength(1)
+    expect(promptIndex).toBeGreaterThanOrEqual(0)
+    expect(thoughtsIndex).toBeGreaterThan(promptIndex)
+    expect(toolIndex).toBeGreaterThan(thoughtsIndex)
+    expect(finalIndex).toBeGreaterThan(toolIndex)
+  })
+
   it('does not combine separate reasoning summaries before a tool burst', () => {
     const toolBurst = Array.from({ length: 16 }, (_, index) =>
       makeToolItem({
@@ -2557,6 +4366,69 @@ describe('AgentRuntime current UI', () => {
 
     expect(screen.getAllByText('project context')[0]).toBeVisible()
     expect(screen.getByText('Loaded project context 0.')).toBeVisible()
+  })
+
+  it('keeps a grouped tool row mounted as more adjacent tools arrive', () => {
+    const firstItems = [
+      makeTranscriptItem({ sequence: 2, role: 'user', text: 'Inspect several files.' }),
+      makeToolItem({
+        sequence: 3,
+        toolCallId: 'call-read-0',
+        toolName: 'read',
+        toolState: 'succeeded',
+        detail: 'Read tool 0.',
+      }),
+      makeToolItem({
+        sequence: 4,
+        toolCallId: 'call-read-1',
+        toolName: 'read',
+        toolState: 'succeeded',
+        detail: 'Read tool 1.',
+      }),
+    ]
+    const nextItems = [
+      ...firstItems,
+      makeToolItem({
+        sequence: 5,
+        toolCallId: 'call-read-2',
+        toolName: 'read',
+        toolState: 'succeeded',
+        detail: 'Read tool 2.',
+      }),
+    ]
+
+    const { rerender } = render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: firstItems,
+        })}
+      />,
+    )
+    const groupedButton = screen.getByRole('button', {
+      name: /show grouped tool details for 2 tool calls/i,
+    })
+
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: nextItems,
+        })}
+      />,
+    )
+
+    expect(
+      screen.getByRole('button', {
+        name: /show grouped tool details for 3 tool calls/i,
+      }),
+    ).toBe(groupedButton)
   })
 
   it('shows adjacent tool calls individually when grouping is disabled', () => {
@@ -2743,7 +4615,7 @@ describe('AgentRuntime current UI', () => {
     expect(screen.getByText('Read 80 line(s) from `client/components/xero/agent-runtime.tsx`.')).toBeVisible()
     expect(screen.queryByText('Tool activity recorded.')).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /show tool details for read agent-runtime\.tsx/i }))
+    fireEvent.click(screen.getByRole('button', { name: /show compact tool details for read agent-runtime\.tsx/i }))
 
     expect(screen.queryByText('Input')).not.toBeInTheDocument()
     expect(screen.queryByText('Result')).not.toBeInTheDocument()
@@ -2825,7 +4697,7 @@ describe('AgentRuntime current UI', () => {
       }),
     ])
 
-    fireEvent.click(screen.getByRole('button', { name: /show tool details/i }))
+    fireEvent.click(screen.getByRole('button', { name: /show compact tool details/i }))
 
     const output = screen.getByText((content) =>
       content.includes('first assertion passed') && content.includes('second assertion passed'),
@@ -2899,6 +4771,76 @@ describe('AgentRuntime current UI', () => {
 
     expect(screen.getByText('read package.json')).toBeVisible()
     expect(screen.getByText('find')).toBeVisible()
+  })
+
+  it('collapses completed tool calls even when earlier calls are still running', () => {
+    renderRuntimeStreamItems([
+      makeToolItem({
+        sequence: 2,
+        toolCallId: 'call-read-complete',
+        toolName: 'read',
+        toolState: 'succeeded',
+        detail: 'Read package.json.',
+        toolSummary: {
+          kind: 'file',
+          path: 'package.json',
+          scope: null,
+          lineCount: 12,
+          matchCount: null,
+          truncated: false,
+        },
+      }),
+      makeToolItem({
+        sequence: 3,
+        toolCallId: 'call-find-complete',
+        toolName: 'find',
+        toolState: 'succeeded',
+        detail: 'Found matching files.',
+      }),
+      makeToolItem({
+        sequence: 4,
+        toolCallId: 'call-read-running',
+        toolName: 'read',
+        toolState: 'running',
+        detail: 'path: client/components/xero/agent-runtime.tsx, startLine: 1, lineCount: 80',
+      }),
+      makeToolItem({
+        sequence: 5,
+        toolCallId: 'call-command-running',
+        toolName: 'command',
+        toolState: 'running',
+        detail: 'argv: pnpm test',
+      }),
+      makeToolItem({
+        sequence: 6,
+        toolCallId: 'call-read-later-complete',
+        toolName: 'read',
+        toolState: 'succeeded',
+        detail: 'Read final file.',
+        toolSummary: {
+          kind: 'file',
+          path: 'client/src/final.ts',
+          scope: null,
+          lineCount: 8,
+          matchCount: null,
+          truncated: false,
+        },
+        toolResultPreview: 'export const finalValue = true',
+      }),
+    ])
+
+    expect(screen.getByText('2 tool calls')).toBeVisible()
+    expect(screen.getByText('read agent-runtime.tsx')).toBeVisible()
+    expect(screen.getByText('run pnpm test')).toBeVisible()
+    expect(screen.queryByText('export const finalValue = true')).not.toBeInTheDocument()
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /show compact tool details for read final\.ts/i,
+      }),
+    )
+
+    expect(screen.getByText('export const finalValue = true')).toBeVisible()
   })
 
   it('renders long tool bursts without evicting the surrounding transcript turns', () => {
@@ -3317,13 +5259,14 @@ describe('AgentRuntime current UI', () => {
     )
 
     expect(
-      screen.getByPlaceholderText('Describe the agent or workflow...'),
+      screen.getByPlaceholderText('Describe the agent...'),
     ).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Shape a definition' })).toBeVisible()
     expect(screen.getByText(/Start from a description\./)).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: /Start on workflow canvas/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Start on canvas/i }))
     expect(onStartWorkflowAgentCreate).toHaveBeenCalledTimes(1)
     expect(screen.getByRole('button', { name: 'Create a coding helper' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Create a workflow' })).not.toBeInTheDocument()
     expect(screen.queryByText(/The canvas is already included\./)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Draft from this canvas' })).not.toBeInTheDocument()
     expect(screen.queryByText(/What can we build together/i)).not.toBeInTheDocument()
@@ -3347,7 +5290,7 @@ describe('AgentRuntime current UI', () => {
 
     expect(screen.getByText(/The canvas is already included\./)).toBeVisible()
     expect(screen.queryByText(/Start from a description\./)).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Start on workflow canvas/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Start on canvas/i })).not.toBeInTheDocument()
   })
 
   it('keeps model selectors available while a prompt is pending on an active run', async () => {
@@ -3873,6 +5816,42 @@ describe('AgentRuntime current UI', () => {
     expect(dictation.adapter.speechDictationStart).not.toHaveBeenCalled()
   })
 
+  it('shows dictation startup feedback before the native session finishes starting', async () => {
+    let resolveStart: (() => void) | null = null
+    const dictation = createDictationAdapter({
+      start: async () => {
+        await new Promise<void>((resolve) => {
+          resolveStart = resolve
+        })
+      },
+    })
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun(),
+        })}
+        desktopAdapter={dictation.adapter}
+        onUpdateRuntimeRunControls={vi.fn(async () => makeRuntimeRun())}
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Start dictation' }))
+
+    await waitFor(() => expect(dictation.adapter.speechDictationStart).toHaveBeenCalledTimes(1))
+    const startingButton = screen.getByRole('button', { name: 'Starting dictation' })
+    expect(startingButton).toBeDisabled()
+    expect(startingButton).toHaveAttribute('aria-pressed', 'true')
+    expect(document.querySelector('.composer-dictation-waveform')).not.toBeNull()
+
+    await act(async () => {
+      resolveStart?.()
+    })
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop dictation' })).toBeVisible())
+  })
+
   it('keeps Enter-to-send behavior unchanged when dictation support is available', async () => {
     const dictation = createDictationAdapter()
     const onUpdateRuntimeRunControls = vi.fn(async () => makeRuntimeRun())
@@ -3928,6 +5907,10 @@ describe('AgentRuntime current UI', () => {
         agent={makeAgent({
           runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
           runtimeRun: makeRuntimeRun(),
+          selectedModelSelectionKey: 'openai_codex:openai_codex',
+          composerModelOptions: [
+            makeComposerModelOption({ inputModalities: ['text', 'image'] }),
+          ],
         })}
         desktopAdapter={{
           ...dictation.adapter,
@@ -3938,6 +5921,11 @@ describe('AgentRuntime current UI', () => {
           id: 'browser-context-1',
           prompt: 'Tighten the hero spacing.',
           hiddenPrompt: 'Browser sketch context:\nPage: Local App\nDrawing: 1 stroke on the attached browser screenshot.',
+          contextCard: {
+            kind: 'sketch',
+            title: 'Browser sketch context',
+            subtitle: '1 stroke on browser screenshot',
+          },
           image: {
             bytes: imageBytes,
             mediaType: 'image/png',
@@ -3951,6 +5939,9 @@ describe('AgentRuntime current UI', () => {
     await waitFor(() =>
       expect(screen.getByLabelText('Agent input')).toHaveValue('Tighten the hero spacing.'),
     )
+    await waitFor(() => expect(screen.getByText('browser-pen.png')).toBeVisible())
+    expect(screen.queryByText('Browser sketch context')).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
     expect(onUpdateRuntimeRunControls).not.toHaveBeenCalled()
     expect(onPendingComposerInsertConsumed).toHaveBeenCalledWith('browser-context-1')
     await waitFor(() =>
@@ -3963,7 +5954,9 @@ describe('AgentRuntime current UI', () => {
       }),
     )
 
-    fireEvent.keyDown(screen.getByLabelText('Agent input'), { key: 'Enter' })
+    const sendButton = screen.getByRole('button', { name: 'Send message' })
+    await waitFor(() => expect(sendButton).toBeEnabled())
+    fireEvent.click(sendButton)
 
     await waitFor(() =>
       expect(onUpdateRuntimeRunControls).toHaveBeenCalledWith({
@@ -3978,6 +5971,118 @@ describe('AgentRuntime current UI', () => {
             sizeBytes: imageBytes.byteLength,
           },
         ],
+      }),
+    )
+
+    const conversation = screen.getByRole('list', { name: 'Agent conversation turns' })
+    const sketchCard = within(conversation).getByRole('note', {
+      name: /browser sketch context attached to prompt/i,
+    })
+    expect(within(sketchCard).getByText('Browser sketch context')).toBeVisible()
+    expect(within(sketchCard).getByRole('img', { name: 'browser-pen.png' })).toHaveAttribute(
+      'src',
+      'asset://localhost/%2Ftmp%2Fbrowser-context.png',
+    )
+  })
+
+  it('renders browser sketch image attachments inside the sent context card', async () => {
+    const hiddenContext = [
+      'Browser sketch context (capture 1):',
+      'App: Web app - 127.0.0.1:5173',
+      'Page: Local App (local dev server /)',
+      'User note: Tighten the hero spacing.',
+      'Attached image: attached image 1, browser-pen.png (paired with this capture; images are ordered by capture number).',
+      'Viewport: 800x600 CSS px, DPR 2',
+      'Drawing: 1 stroke on the attached browser screenshot.',
+    ].join('\n')
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamItems: [
+            makeTranscriptItem({
+              sequence: 2,
+              role: 'user',
+              text: `Tighten the hero spacing.\n\n${hiddenContext}`,
+              mediaAttachments: [
+                {
+                  id: 'browser-pen-media',
+                  kind: 'image',
+                  mediaType: 'image/png',
+                  title: 'browser-pen.png',
+                  alt: 'Browser pen sketch',
+                  sizeBytes: 68,
+                  width: 1,
+                  height: 1,
+                  source: {
+                    kind: 'data_url',
+                    dataUrl:
+                      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
+                  },
+                  renderUrl: null,
+                },
+              ],
+            }),
+          ],
+        })}
+      />,
+    )
+
+    const conversation = screen.getByRole('list', { name: 'Agent conversation turns' })
+    const sketchCard = within(conversation).getByRole('note', {
+      name: /browser sketch context attached to prompt/i,
+    })
+    expect(within(sketchCard).getByText('Browser sketch context')).toBeVisible()
+    expect(within(sketchCard).getByText(/App: Web app/)).toBeVisible()
+    expect(within(sketchCard).getByRole('img', { name: 'Browser pen sketch' })).toBeVisible()
+    expect(
+      within(conversation).getAllByRole('button', {
+        name: /open image preview for browser-pen\.png/i,
+      }),
+    ).toHaveLength(1)
+  })
+
+  it('shows removable browser element metadata context in the composer', async () => {
+    const dictation = createDictationAdapter()
+    const onUpdateRuntimeRunControls = vi.fn(async () => makeRuntimeRun())
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun(),
+        })}
+        desktopAdapter={dictation.adapter}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+        pendingComposerInsert={{
+          id: 'browser-context-2',
+          prompt: 'Make this CTA clearer.',
+          hiddenPrompt:
+            'Browser element inspection context:\nPage: Local App\nSelected element (for locating code; no screenshot):\n- Source: /app/src/Hero.tsx:42',
+          contextCard: {
+            kind: 'element',
+            title: 'Element context',
+            subtitle: 'Hero.tsx:42',
+          },
+        }}
+      />,
+    )
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('Agent input')).toHaveValue('Make this CTA clearer.'),
+    )
+    await waitFor(() => expect(screen.getByText('Element context')).toBeVisible())
+    expect(screen.getByText('Hero.tsx:42')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Element context' }))
+    await waitFor(() => expect(screen.queryByText('Element context')).toBeNull())
+    fireEvent.keyDown(screen.getByLabelText('Agent input'), { key: 'Enter' })
+
+    await waitFor(() =>
+      expect(onUpdateRuntimeRunControls).toHaveBeenCalledWith({
+        prompt: 'Make this CTA clearer.',
       }),
     )
   })
@@ -4027,6 +6132,90 @@ describe('AgentRuntime current UI', () => {
       sequence: 3,
     })
     expect(input).toHaveValue('Review the logs carefully before sending')
+  })
+
+  it('replaces partial text when the final transcript repeats the same utterance', async () => {
+    const dictation = createDictationAdapter()
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun(),
+        })}
+        desktopAdapter={dictation.adapter}
+        onUpdateRuntimeRunControls={vi.fn(async () => makeRuntimeRun())}
+      />,
+    )
+
+    const input = screen.getByLabelText('Agent input')
+    fireEvent.change(input, { target: { value: 'Log' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Start dictation' }))
+
+    await waitFor(() => expect(dictation.adapter.speechDictationStart).toHaveBeenCalledTimes(1))
+
+    dictation.emit({
+      kind: 'partial',
+      sessionId: 'dictation-session-1',
+      text: 'The logo',
+      sequence: 1,
+    })
+    expect(input).toHaveValue('Log The logo')
+
+    dictation.emit({
+      kind: 'final',
+      sessionId: 'dictation-session-1',
+      text: 'The logo is broken',
+      sequence: 2,
+    })
+    expect(input).toHaveValue('Log The logo is broken')
+
+    dictation.emit({
+      kind: 'final',
+      sessionId: 'dictation-session-1',
+      text: 'The logo is broken',
+      sequence: 3,
+    })
+    expect(input).toHaveValue('Log The logo is broken')
+  })
+
+  it('replaces cumulative dictated finals instead of appending repeated transcripts', async () => {
+    const dictation = createDictationAdapter()
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun(),
+        })}
+        desktopAdapter={dictation.adapter}
+        onUpdateRuntimeRunControls={vi.fn(async () => makeRuntimeRun())}
+      />,
+    )
+
+    const input = screen.getByLabelText('Agent input')
+    fireEvent.click(await screen.findByRole('button', { name: 'Start dictation' }))
+
+    await waitFor(() => expect(dictation.adapter.speechDictationStart).toHaveBeenCalledTimes(1))
+
+    dictation.emit({
+      kind: 'final',
+      sessionId: 'dictation-session-1',
+      text: 'The logo is broken',
+      sequence: 1,
+    })
+    expect(input).toHaveValue('The logo is broken')
+
+    dictation.emit({
+      kind: 'final',
+      sessionId: 'dictation-session-1',
+      text: 'The logo is broken. Also should be using a reasonable component globally for all the apps',
+      sequence: 2,
+    })
+
+    expect(input).toHaveValue(
+      'The logo is broken. Also should be using a reasonable component globally for all the apps',
+    )
   })
 
   it('starts native Windows SDK dictation from the shared composer control', async () => {
@@ -4272,6 +6461,63 @@ describe('AgentRuntime current UI', () => {
       expect(screen.queryByRole('button', { name: 'Close pane' })).not.toBeInTheDocument()
     })
 
+    it('keeps the full new session label above the compact pane breakpoint', async () => {
+      const restoreResizeObserver = installResizeObserverMock(540)
+      try {
+        render(
+          <AgentRuntime
+            agent={makeAgent({ runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }) })}
+            paneCount={1}
+            paneNumber={1}
+            onCreateSession={vi.fn()}
+          />,
+        )
+
+        const newSessionButton = screen.getByRole('button', { name: 'New session' })
+        const header = newSessionButton.parentElement?.parentElement as HTMLElement
+
+        await waitFor(() => {
+          expect(within(newSessionButton).getByText('New Session')).toBeVisible()
+        })
+        expect(within(header).getByText('Xero')).toBeVisible()
+        expect(within(header).getByText('New Chat')).toBeVisible()
+        expect(newSessionButton).not.toHaveClass('w-[30px]')
+      } finally {
+        restoreResizeObserver()
+      }
+    })
+
+    it('collapses the new session action to a plus icon at compact pane width', async () => {
+      const restoreResizeObserver = installResizeObserverMock(470)
+      const onCreateSession = vi.fn()
+      try {
+        render(
+          <AgentRuntime
+            agent={makeAgent({ runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }) })}
+            paneCount={1}
+            paneNumber={1}
+            onCreateSession={onCreateSession}
+          />,
+        )
+
+        const newSessionButton = screen.getByRole('button', { name: 'New session' })
+        const header = newSessionButton.parentElement?.parentElement as HTMLElement
+
+        await waitFor(() => {
+          expect(within(newSessionButton).queryByText('New Session')).not.toBeInTheDocument()
+        })
+        expect(within(header).queryByText('Xero')).not.toBeInTheDocument()
+        expect(within(header).getByText('New Chat')).toBeVisible()
+        expect(newSessionButton).toHaveClass('w-[30px]')
+        expect(newSessionButton.querySelector('svg')).not.toBeNull()
+
+        fireEvent.click(newSessionButton)
+        expect(onCreateSession).toHaveBeenCalledTimes(1)
+      } finally {
+        restoreResizeObserver()
+      }
+    })
+
     it('shows the close button and pane number chip when multiple panes are open', () => {
       const onClose = vi.fn()
       render(
@@ -4492,6 +6738,22 @@ describe('AgentRuntime current UI', () => {
       expect(spawnBtn).toBeDisabled()
     })
 
+    it('keeps the floating agent header aligned to the pane edge', () => {
+      render(
+        <AgentRuntime
+          agent={makeAgent({ runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }) })}
+          paneCount={1}
+          paneNumber={1}
+        />,
+      )
+
+      const viewport = screen.getByLabelText('Agent conversation viewport')
+      const headerOverlay = viewport.parentElement?.previousElementSibling
+
+      expect(headerOverlay?.className).toContain('inset-x-0')
+      expect(headerOverlay?.className).not.toContain('right-[var(--scrollbar-overlay-gutter)]')
+    })
+
     it('renders the dense inline composer variant when density is compact', () => {
       render(
         <AgentRuntime
@@ -4587,6 +6849,7 @@ describe('AgentRuntime current UI', () => {
     })
 
     it('uses the shared Computer Use sidebar header in sidebar mode', () => {
+      const onClearSidebarChat = vi.fn()
       const onCloseSidebar = vi.fn()
 
       render(
@@ -4597,6 +6860,7 @@ describe('AgentRuntime current UI', () => {
           })}
           density="comfortable"
           inSidebar
+          onClearSidebarChat={onClearSidebarChat}
           onCloseSidebar={onCloseSidebar}
           paneCount={1}
           paneNumber={1}
@@ -4604,11 +6868,22 @@ describe('AgentRuntime current UI', () => {
       )
 
       const closeButton = screen.getByRole('button', { name: 'Close Computer Use' })
-      const header = closeButton.parentElement
-      expect(header?.className).toContain('h-10')
-      expect(header?.className).toContain('translate-y-1')
+      const actions = closeButton.parentElement
+      const header = actions?.parentElement
+      expect(header?.className).toContain('min-h-12')
+      expect(header?.className).toContain('py-2')
+      expect(header?.className).not.toContain('translate-y-1')
       expect(header?.textContent).toContain('Computer Use')
       expect(screen.queryByRole('button', { name: 'Close agent dock' })).not.toBeInTheDocument()
+      const fade = header?.parentElement?.lastElementChild
+      expect(fade?.className).toContain('h-2')
+      expect(fade?.className).not.toContain('h-7')
+
+      const clearButton = screen.getByRole('button', { name: 'Clear Computer Use chat' })
+      expect(clearButton.parentElement).toBe(actions)
+      expect(clearButton.querySelector('svg')?.getAttribute('class')).toContain('h-3.5')
+      fireEvent.click(clearButton)
+      expect(onClearSidebarChat).toHaveBeenCalledTimes(1)
 
       fireEvent.click(closeButton)
       expect(onCloseSidebar).toHaveBeenCalledTimes(1)
@@ -4649,6 +6924,35 @@ describe('AgentRuntime current UI', () => {
         expect(viewport.className).toContain('pt-14')
         expect(viewport.className).not.toContain('pt-20')
         expect(screen.getByText('take a screenshot')).toBeVisible()
+      } finally {
+        restoreResizeObserver()
+      }
+    })
+
+    it('shows a loading state while Computer Use persisted history is loading', () => {
+      const restoreResizeObserver = installResizeObserverMock(560)
+      try {
+        render(
+          <AgentRuntime
+            agent={makeAgent({
+              project: makeComputerUseProject(),
+              runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+              runtimeStreamStatus: 'idle',
+            })}
+            density="comfortable"
+            historicalConversationTurnsLoading
+            inSidebar
+            paneCount={1}
+            paneNumber={1}
+          />,
+        )
+
+        expect(
+          screen.getByRole('status', { name: 'Loading Computer Use chat' }),
+        ).toBeVisible()
+        expect(
+          screen.queryByText('Give a concrete instruction and Xero will use the available computer and project tools.'),
+        ).not.toBeInTheDocument()
       } finally {
         restoreResizeObserver()
       }
@@ -4739,13 +7043,77 @@ describe('AgentRuntime current UI', () => {
 
         expect(screen.getByRole('button', { name: 'Close image preview' })).toBeVisible()
         expect(screen.getByRole('button', { name: 'Zoom in' })).toBeVisible()
-        expect(screen.getByRole('link', { name: 'Download macOS screenshot' })).toHaveAttribute(
+        const downloadLink = screen.getByRole('link', { name: 'Download macOS screenshot' })
+        expect(downloadLink).toHaveAttribute(
           'href',
           'project-asset://preview/macos-screenshot',
         )
+        expect(downloadLink).toHaveAttribute('target', '_blank')
+        expect(downloadLink.getAttribute('rel')).toContain('noopener')
+
+        const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+        try {
+          fireEvent.click(downloadLink)
+          expect(openSpy).toHaveBeenCalledWith(
+            'project-asset://preview/macos-screenshot',
+            '_blank',
+            'noopener,noreferrer',
+          )
+        } finally {
+          openSpy.mockRestore()
+        }
       } finally {
         restoreResizeObserver()
       }
+    })
+
+    it('dedupes historical Computer Use output items against the live stream', () => {
+      render(
+        <AgentRuntime
+          agent={makeAgent({
+            project: makeComputerUseProject(),
+            runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+            runtimeRun: makeRuntimeRun({ runId: 'run-1' }),
+            runtimeStreamStatus: 'complete',
+            runtimeStreamStatusLabel: 'Complete',
+            runtimeStreamItems: [
+              makeToolItem({
+                id: 'tool:run-1:2',
+                runId: 'run-1',
+                sequence: 2,
+                toolCallId: 'call-macos-screenshot',
+                toolName: 'macos_automation',
+                toolState: 'succeeded',
+                detail: 'Captured macOS screenshot.',
+                toolResultPreview: 'Captured macOS screenshot.',
+              }),
+            ],
+          })}
+          density="comfortable"
+          inSidebar
+          historicalConversationTurns={[
+            {
+              id: 'tool:run-1:call-macos-screenshot:2',
+              kind: 'action',
+              sequence: 2,
+              toolCallId: 'call-macos-screenshot',
+              toolName: 'macos_automation',
+              title: 'macos automation',
+              detail: 'Captured macOS screenshot.',
+              detailRows: [],
+              state: 'succeeded',
+            },
+          ]}
+          paneCount={1}
+          paneNumber={1}
+        />,
+      )
+
+      const conversation = screen.getByRole('list', { name: 'Agent conversation turns' })
+      const items = within(conversation).getAllByRole('listitem')
+      expect(
+        items.filter((item) => item.textContent?.includes('Captured macOS screenshot.') ?? false),
+      ).toHaveLength(1)
     })
 
     it('switches sidebar panes to condensed below the sidebar compact breakpoint', async () => {

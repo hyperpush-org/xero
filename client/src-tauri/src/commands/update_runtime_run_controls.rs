@@ -1,4 +1,8 @@
-use std::{path::Path, thread};
+use std::{
+    path::Path,
+    thread,
+    time::{Duration, Instant},
+};
 
 use tauri::{AppHandle, Runtime, State};
 
@@ -20,12 +24,16 @@ use super::agent_task::auto_compact_preference;
 use super::agent_tooling_settings::resolve_agent_tool_application_style;
 use super::runtime_support::{
     agent_provider_config_identity, apply_owned_runtime_run_pending_controls_with_status,
-    bind_owned_runtime_run_to_agent_handoff, emit_runtime_run_updated_if_changed,
-    ensure_owned_runtime_provider_turn_capabilities, fail_owned_runtime_run,
-    launch_or_reconnect_runtime_run, load_persisted_runtime_run,
-    resolve_owned_agent_provider_config, resolve_owned_runtime_profile_selection,
-    resolve_project_root, runtime_run_dto_from_snapshot, update_owned_runtime_run_controls,
+    bind_owned_runtime_run_to_agent_handoff, drive_cursor_runtime_prompt,
+    emit_runtime_run_updated_if_changed, ensure_owned_runtime_provider_turn_capabilities,
+    fail_owned_runtime_run, is_cursor_runtime_provider, launch_or_reconnect_runtime_run,
+    load_persisted_runtime_run, resolve_owned_agent_provider_config,
+    resolve_owned_runtime_profile_selection, resolve_project_root, runtime_run_dto_from_snapshot,
+    update_owned_runtime_run_controls,
 };
+
+const QUEUED_PROMPT_DRIVE_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const QUEUED_PROMPT_DRIVE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 #[tauri::command]
 pub async fn update_runtime_run_controls<R: Runtime + 'static>(
@@ -124,13 +132,13 @@ pub(crate) fn update_runtime_run_controls_blocking<R: Runtime + 'static>(
     if let Some(prompt) = normalized_prompt(request.prompt.as_deref()) {
         let agent_core = DesktopAgentCoreRuntime::new(state.agent_run_supervisor().clone());
         if agent_core.is_active(&after.run.run_id)? {
-            return Err(CommandError::user_fixable(
-                "agent_run_already_active",
-                format!(
-                    "Xero is already driving owned-agent run `{}`. Wait for it to finish or cancel it before sending another message.",
-                    after.run.run_id
-                ),
-            ));
+            spawn_owned_runtime_prompt_drive_when_idle(
+                app.clone(),
+                state.clone(),
+                repo_root.clone(),
+                after.clone(),
+            );
+            return Ok(runtime_run_dto_from_snapshot(&after));
         }
         mark_existing_agent_run_accepted(&repo_root, &after)?;
         spawn_owned_runtime_prompt_drive(
@@ -145,6 +153,93 @@ pub(crate) fn update_runtime_run_controls_blocking<R: Runtime + 'static>(
     }
 
     Ok(runtime_run_dto_from_snapshot(&after))
+}
+
+fn queued_attachments_as_staged(
+    attachments: &[project_store::RuntimeRunQueuedAttachmentRecord],
+) -> Vec<crate::commands::StagedAgentAttachmentDto> {
+    attachments
+        .iter()
+        .map(|attachment| crate::commands::StagedAgentAttachmentDto {
+            kind: attachment.kind.clone(),
+            absolute_path: attachment.absolute_path.clone(),
+            media_type: attachment.media_type.clone(),
+            original_name: attachment.original_name.clone(),
+            size_bytes: attachment.size_bytes,
+            width: attachment.width,
+            height: attachment.height,
+        })
+        .collect()
+}
+
+fn spawn_owned_runtime_prompt_drive_when_idle<R: Runtime + 'static>(
+    app: AppHandle<R>,
+    state: DesktopState,
+    repo_root: std::path::PathBuf,
+    snapshot: RuntimeRunSnapshotRecord,
+) {
+    thread::spawn(move || {
+        let agent_core = DesktopAgentCoreRuntime::new(state.agent_run_supervisor().clone());
+        let started_at = Instant::now();
+        loop {
+            match agent_core.is_active(&snapshot.run.run_id) {
+                Ok(false) => break,
+                Ok(true) if started_at.elapsed() < QUEUED_PROMPT_DRIVE_TIMEOUT => {
+                    thread::sleep(QUEUED_PROMPT_DRIVE_POLL_INTERVAL);
+                }
+                Ok(true) => return,
+                Err(_) => return,
+            }
+        }
+
+        let latest = match load_persisted_runtime_run(
+            &repo_root,
+            &snapshot.run.project_id,
+            &snapshot.run.agent_session_id,
+        ) {
+            Ok(Some(latest)) if latest.run.run_id == snapshot.run.run_id => latest,
+            _ => return,
+        };
+        let Some(pending) = latest.controls.pending.as_ref() else {
+            return;
+        };
+        let Some(prompt) = normalized_prompt(pending.queued_prompt.as_deref()) else {
+            return;
+        };
+        let attachments = queued_attachments_as_staged(&pending.queued_attachments);
+        let auto_compact = match derive_auto_compact_preference(&latest) {
+            Ok(auto_compact) => auto_compact,
+            Err(error) => {
+                let _ = fail_owned_runtime_run(
+                    &app,
+                    &repo_root,
+                    &latest,
+                    &error,
+                    "Owned agent task failed.",
+                );
+                return;
+            }
+        };
+        if let Err(error) = mark_existing_agent_run_accepted(&repo_root, &latest) {
+            let _ = fail_owned_runtime_run(
+                &app,
+                &repo_root,
+                &latest,
+                &error,
+                "Owned agent task failed.",
+            );
+            return;
+        }
+        spawn_owned_runtime_prompt_drive(
+            app,
+            state,
+            repo_root,
+            latest,
+            prompt,
+            attachments,
+            auto_compact,
+        );
+    });
 }
 
 fn mark_existing_agent_run_accepted(
@@ -266,6 +361,11 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
         ));
     }
 
+    if is_cursor_runtime_provider(&snapshot.run.provider_id) {
+        drive_cursor_runtime_prompt(app, state, repo_root, snapshot, prompt, attachments)?;
+        return Ok(None);
+    }
+
     let controls = Some(runtime_run_controls_as_input(snapshot));
     let provider_config = resolve_owned_agent_provider_config(app, state, controls.as_ref())?;
     let (provider_id, model_id) = agent_provider_config_identity(&provider_config);
@@ -287,8 +387,13 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
     )?;
     let tool_application_policy =
         resolve_agent_tool_application_style(app, state, &provider_id, &model_id)?;
-    let tool_runtime = AutonomousToolRuntime::for_project(app, state, &snapshot.run.project_id)?
-        .with_tool_application_policy(tool_application_policy);
+    let tool_runtime = AutonomousToolRuntime::for_project_with_provider_config(
+        app,
+        state,
+        &snapshot.run.project_id,
+        Some(&provider_config),
+    )?
+    .with_tool_application_policy(tool_application_policy);
     match project_store::load_agent_run(repo_root, &snapshot.run.project_id, &snapshot.run.run_id) {
         Ok(agent_snapshot) => {
             let answer_pending_actions = agent_snapshot
@@ -309,7 +414,9 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
                 provider_config,
                 provider_preflight: Some(provider_preflight.clone()),
                 answer_pending_actions,
+                answer_pending_action_id: None,
                 auto_compact,
+                internal_resume: None,
             };
             let prepared =
                 agent_core.continue_run(continuation, DesktopRunDriveMode::CreateOnly)?;
@@ -391,6 +498,7 @@ fn runtime_run_controls_as_input(
         return crate::commands::RuntimeRunControlInputDto {
             runtime_agent_id: pending.runtime_agent_id,
             agent_definition_id: pending.agent_definition_id.clone(),
+            agent_definition_version: pending.agent_definition_version,
             provider_profile_id: pending.provider_profile_id.clone(),
             model_id: pending.model_id.clone(),
             thinking_effort: pending.thinking_effort.clone(),
@@ -403,6 +511,7 @@ fn runtime_run_controls_as_input(
     crate::commands::RuntimeRunControlInputDto {
         runtime_agent_id: snapshot.controls.active.runtime_agent_id,
         agent_definition_id: snapshot.controls.active.agent_definition_id.clone(),
+        agent_definition_version: snapshot.controls.active.agent_definition_version,
         provider_profile_id: snapshot.controls.active.provider_profile_id.clone(),
         model_id: snapshot.controls.active.model_id.clone(),
         thinking_effort: snapshot.controls.active.thinking_effort.clone(),

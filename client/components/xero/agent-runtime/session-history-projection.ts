@@ -1,6 +1,5 @@
 import type {
   RunTranscriptSummaryDto,
-  RuntimeAgentIdDto,
   SessionTranscriptDto,
   SessionTranscriptItemDto,
 } from '@/src/lib/xero-model'
@@ -10,6 +9,10 @@ import {
   promoteActionMediaIntoFollowingAssistantMessages,
   runtimeMediaAttachmentsToConversation,
 } from '@xero/ui/components/transcript/runtime-media'
+import {
+  parseRoutingMarker,
+  stripRoutingMarkers,
+} from './routing-suggestion-marker'
 
 const HANDED_OFF_RUN_STATUS = 'handed_off'
 const MAX_HISTORICAL_CONVERSATION_TURNS = 80
@@ -217,30 +220,31 @@ function toMediaToolTurn(item: SessionTranscriptItemDto): Extract<ConversationTu
   }
 }
 
-const ROUTING_MARKER_REGEX = /<xero-routing-suggestion\s+([^/>]*?)\/>/i
-
 function extractRoutingSuggestion(
   messageTurn: Extract<ConversationTurn, { kind: 'message' }>,
 ): Extract<ConversationTurn, { kind: 'routing_suggestion' }> | null {
   if (messageTurn.role !== 'assistant') return null
-  const match = messageTurn.text.match(ROUTING_MARKER_REGEX)
-  if (!match) return null
-  const attrs = match[1]
-  const target = /target\s*=\s*"([^"]*)"/i.exec(attrs)?.[1]?.toLowerCase().trim()
-  if (target !== 'plan' && target !== 'engineer' && target !== 'debug') {
-    return null
+  const parsed = parseRoutingMarker(messageTurn.text)
+  const cleanText = stripRoutingMarkers(messageTurn.text)
+  if (cleanText !== messageTurn.text) {
+    messageTurn.text = cleanText
   }
-  const reason = /reason\s*=\s*"([^"]*)"/i.exec(attrs)?.[1]?.trim() ?? ''
-  const summary = /summary\s*=\s*"([^"]*)"/i.exec(attrs)?.[1]?.trim() ?? ''
-  messageTurn.text = messageTurn.text.replace(match[0], '').replace(/\n{3,}/g, '\n\n').trim()
+  if (!parsed) return null
   return {
     id: `routing_suggestion:${messageTurn.id}`,
     kind: 'routing_suggestion',
     sequence: messageTurn.sequence + 0.5,
-    targetAgentId: target as RuntimeAgentIdDto,
-    reason,
-    summary,
+    targetKind: parsed.targetKind,
+    targetAgentId: parsed.targetAgentId,
+    targetAgentDefinitionId: parsed.targetAgentDefinitionId,
+    targetAgentDefinitionVersion: parsed.targetAgentDefinitionVersion,
+    targetLabel: parsed.targetLabel,
+    reason: parsed.reason,
+    summary: parsed.summary,
     isResolved: true,
     acceptedTarget: null,
+    acceptedTargetAgentDefinitionId: null,
+    acceptedTargetLabel: null,
+    routingResolutionMode: null,
   }
 }

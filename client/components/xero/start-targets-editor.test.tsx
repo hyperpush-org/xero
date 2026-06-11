@@ -150,7 +150,7 @@ describe('StartTargetsEditor', () => {
     expect(screen.getByRole('switch', { name: 'Target 2 browser supported' })).not.toBeChecked()
   })
 
-  it('shows the AI model and sends the selected model/provider route', async () => {
+  it('shows the AI model and sends the selected model/provider route and thinking level', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined)
     const onSuggest = vi.fn().mockResolvedValue({
       targets: [{ name: 'web', command: 'pnpm dev' }],
@@ -172,7 +172,10 @@ describe('StartTargetsEditor', () => {
       />,
     )
 
-    expect(screen.getByText('xAI / Grok · Grok 4.3')).toBeInTheDocument()
+    expect(screen.getByText('AI model')).toBeInTheDocument()
+    expect(
+      screen.getByRole('combobox', { name: 'AI suggestion model' }),
+    ).toHaveTextContent('Grok 4.3')
 
     ensurePointerCaptureApi()
     fireEvent.pointerDown(screen.getByRole('combobox', { name: 'AI suggestion model' }), {
@@ -181,6 +184,9 @@ describe('StartTargetsEditor', () => {
       pointerType: 'mouse',
     })
     fireEvent.click(await screen.findByRole('option', { name: 'GPT-5.4' }))
+    const thinkingItem = screen.getByRole('menuitem', { name: /Thinking/i })
+    fireEvent.keyDown(thinkingItem, { key: 'ArrowRight' })
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'High' }))
 
     fireEvent.click(screen.getByRole('button', { name: /Suggest with AI/i }))
 
@@ -190,8 +196,42 @@ describe('StartTargetsEditor', () => {
       providerId: 'openai_codex',
       providerProfileId: 'openai_codex-default',
       runtimeAgentId: 'ask',
-      thinkingEffort: 'medium',
+      thinkingEffort: 'high',
     })
+  })
+
+  it('can hide the AI model selector while still using the resolved fallback request', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined)
+    const onSuggest = vi.fn().mockResolvedValue({
+      targets: [{ name: 'web', command: 'pnpm dev' }],
+    })
+    const fallbackRequest = {
+      modelId: 'grok-4.3-latest',
+      providerId: 'xai',
+      providerProfileId: 'xai-default',
+      runtimeAgentId: 'ask',
+      thinkingEffort: 'low',
+    } as const
+
+    render(
+      <StartTargetsEditor
+        initialTargets={[]}
+        onSave={onSave}
+        resolveSuggestRequest={() => fallbackRequest}
+        onSuggest={onSuggest}
+        modelOptions={[...modelOptions]}
+        showModelSelector={false}
+      />,
+    )
+
+    expect(screen.queryByText('AI model')).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('combobox', { name: 'AI suggestion model' }),
+    ).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Suggest with AI/i }))
+
+    await waitFor(() => expect(onSuggest).toHaveBeenCalledWith(fallbackRequest))
   })
 
   it('asks before replacing user-entered rows with AI suggestion', async () => {

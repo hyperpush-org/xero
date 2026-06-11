@@ -229,6 +229,54 @@ pub(crate) fn runtime_run_persists_active_and_pending_control_snapshots_with_que
     assert_eq!(recovered.controls, control_state);
 }
 
+pub(crate) fn runtime_run_control_prompt_allows_dev_urls_and_product_token_copy() {
+    let prompt = "Fix the logo at http://localhost:3001 and compare the white token wordmark against http://127.0.0.1:1420.";
+    let control_state = project_store::build_runtime_run_control_state(
+        "openai_codex",
+        Some(xero_desktop_lib::commands::ProviderModelThinkingEffortDto::Medium),
+        xero_desktop_lib::commands::RuntimeRunApprovalModeDto::Suggest,
+        "2099-04-15T19:00:00Z",
+        Some(prompt),
+    )
+    .expect("dev URLs and product token copy should be valid prompt text");
+
+    assert_eq!(
+        control_state
+            .pending
+            .as_ref()
+            .and_then(|pending| pending.queued_prompt.as_deref()),
+        Some(prompt)
+    );
+}
+
+pub(crate) fn runtime_run_control_prompt_rejects_credential_shaped_values() {
+    let bearer_error = project_store::build_runtime_run_control_state(
+        "openai_codex",
+        Some(xero_desktop_lib::commands::ProviderModelThinkingEffortDto::Medium),
+        xero_desktop_lib::commands::RuntimeRunApprovalModeDto::Suggest,
+        "2099-04-15T19:00:00Z",
+        Some("Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456"),
+    )
+    .expect_err("bearer credentials should be rejected from queued prompt text");
+    assert_eq!(bearer_error.code, "runtime_run_request_invalid");
+    assert!(bearer_error
+        .message
+        .contains("OAuth or API credential material"));
+
+    let api_key_error = project_store::build_runtime_run_control_state(
+        "openai_codex",
+        Some(xero_desktop_lib::commands::ProviderModelThinkingEffortDto::Medium),
+        xero_desktop_lib::commands::RuntimeRunApprovalModeDto::Suggest,
+        "2099-04-15T19:00:00Z",
+        Some("OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456"),
+    )
+    .expect_err("API key-shaped prompt text should be rejected");
+    assert_eq!(api_key_error.code, "runtime_run_request_invalid");
+    assert!(api_key_error
+        .message
+        .contains("OAuth or API credential material"));
+}
+
 pub(crate) fn runtime_run_persistence_isolates_runs_by_agent_session() {
     let root = tempfile::tempdir().expect("temp dir");
     let project_id = "project-sessions";

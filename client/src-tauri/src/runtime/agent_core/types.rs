@@ -26,7 +26,17 @@ pub struct ContinueOwnedAgentRunRequest {
     pub provider_config: AgentProviderConfig,
     pub provider_preflight: Option<xero_agent_core::ProviderPreflightSnapshot>,
     pub answer_pending_actions: bool,
+    pub answer_pending_action_id: Option<String>,
     pub auto_compact: Option<AgentAutoCompactPreference>,
+    pub internal_resume: Option<AgentRunInternalResume>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentRunInternalResume {
+    pub wake_id: String,
+    pub reason: String,
+    pub payload: JsonValue,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -139,6 +149,7 @@ pub struct ToolRegistryOptions {
     pub runtime_agent_id: RuntimeAgentIdDto,
     pub agent_tool_policy: Option<AutonomousAgentToolPolicy>,
     pub tool_application_policy: ResolvedAgentToolApplicationStyleDto,
+    pub stage_allowed_tools: Option<BTreeSet<String>>,
 }
 
 impl Default for ToolRegistryOptions {
@@ -149,6 +160,7 @@ impl Default for ToolRegistryOptions {
             runtime_agent_id: RuntimeAgentIdDto::Ask,
             agent_tool_policy: None,
             tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
+            stage_allowed_tools: None,
         }
     }
 }
@@ -331,13 +343,7 @@ impl ToolRegistry {
                 options.skill_tool_enabled || descriptor.name != AUTONOMOUS_TOOL_SKILL
             })
             .filter(|descriptor| tool_available_on_current_host(&descriptor.name))
-            .filter(|descriptor| {
-                tool_allowed_for_runtime_agent_with_policy(
-                    options.runtime_agent_id,
-                    &descriptor.name,
-                    options.agent_tool_policy.as_ref(),
-                )
-            })
+            .filter(|descriptor| tool_allowed_by_registry_options(&options, &descriptor.name))
             .collect::<Vec<_>>();
         sort_descriptors_for_tool_application_style(
             &mut descriptors,
@@ -420,11 +426,7 @@ impl ToolRegistry {
                 tool_names.contains(descriptor.name.as_str())
                     && (options.skill_tool_enabled || descriptor.name != AUTONOMOUS_TOOL_SKILL)
                     && tool_available_on_current_host(&descriptor.name)
-                    && tool_allowed_for_runtime_agent_with_policy(
-                        options.runtime_agent_id,
-                        &descriptor.name,
-                        options.agent_tool_policy.as_ref(),
-                    )
+                    && tool_allowed_by_registry_options(&options, &descriptor.name)
             })
             .collect::<Vec<_>>();
         sort_descriptors_for_tool_application_style(
@@ -473,13 +475,7 @@ impl ToolRegistry {
                 options.skill_tool_enabled || descriptor.name != AUTONOMOUS_TOOL_SKILL
             })
             .filter(|descriptor| tool_available_on_current_host(&descriptor.name))
-            .filter(|descriptor| {
-                tool_allowed_for_runtime_agent_with_policy(
-                    options.runtime_agent_id,
-                    &descriptor.name,
-                    options.agent_tool_policy.as_ref(),
-                )
-            })
+            .filter(|descriptor| tool_allowed_by_registry_options(&options, &descriptor.name))
             .filter(|descriptor| {
                 options
                     .agent_tool_policy
@@ -670,11 +666,7 @@ impl ToolRegistry {
             if let Some(descriptor) = builtin_descriptors.get(tool_name) {
                 if (self.options.skill_tool_enabled || descriptor.name != AUTONOMOUS_TOOL_SKILL)
                     && tool_available_on_current_host(&descriptor.name)
-                    && tool_allowed_for_runtime_agent_with_policy(
-                        self.options.runtime_agent_id,
-                        &descriptor.name,
-                        self.options.agent_tool_policy.as_ref(),
-                    )
+                    && tool_allowed_by_registry_options(&self.options, &descriptor.name)
                 {
                     descriptors_by_name.insert(descriptor.name.clone(), descriptor.clone());
                 }
@@ -687,6 +679,7 @@ impl ToolRegistry {
                     .as_ref()
                     .map(|policy| policy.allows_tool(tool_name))
                     .unwrap_or(true)
+                && tool_allowed_by_registry_stage(&self.options, tool_name)
             {
                 if let Some(dynamic) = tool_runtime.dynamic_tool_descriptor(tool_name)? {
                     if self
@@ -745,6 +738,12 @@ impl ToolRegistry {
                     ),
                 ));
             }
+            if known_tool && !tool_allowed_by_registry_stage(&self.options, &tool_call.tool_name) {
+                return Err(CommandError::policy_denied(format!(
+                    "Tool `{}` is not available in the current custom workflow stage.",
+                    tool_call.tool_name
+                )));
+            }
             if known_tool
                 && !tool_allowed_for_runtime_agent_with_policy(
                     self.options.runtime_agent_id,
@@ -766,11 +765,7 @@ impl ToolRegistry {
             ));
         }
 
-        if !tool_allowed_for_runtime_agent_with_policy(
-            self.options.runtime_agent_id,
-            &tool_call.tool_name,
-            self.options.agent_tool_policy.as_ref(),
-        ) {
+        if !tool_allowed_by_registry_options(&self.options, &tool_call.tool_name) {
             return Err(agent_tool_boundary_violation(
                 self.options.runtime_agent_id,
                 &tool_call.tool_name,
@@ -854,6 +849,22 @@ impl ToolRegistry {
     pub(crate) fn tool_application_policy(&self) -> &ResolvedAgentToolApplicationStyleDto {
         &self.options.tool_application_policy
     }
+}
+
+fn tool_allowed_by_registry_options(options: &ToolRegistryOptions, tool_name: &str) -> bool {
+    tool_allowed_for_runtime_agent_with_policy(
+        options.runtime_agent_id,
+        tool_name,
+        options.agent_tool_policy.as_ref(),
+    ) && tool_allowed_by_registry_stage(options, tool_name)
+}
+
+fn tool_allowed_by_registry_stage(options: &ToolRegistryOptions, tool_name: &str) -> bool {
+    options
+        .stage_allowed_tools
+        .as_ref()
+        .map(|allowed_tools| allowed_tools.contains(tool_name))
+        .unwrap_or(true)
 }
 
 fn sort_descriptors_for_tool_application_style(
@@ -1270,7 +1281,7 @@ fn decode_command_wrapper(
         CommandWrapperKind::Verify if !command_verify_allowed(&command.argv) => {
             Err(action_tool_invalid_input(
                 AUTONOMOUS_TOOL_COMMAND_VERIFY,
-                "command_verify only accepts verification commands such as cargo test/check/clippy/fmt/build or package-manager test/lint/typecheck/build scripts.",
+                "command_verify only accepts verification commands such as cargo test/check/clippy/fmt/build or package-manager test/lint/typecheck/type-check/build scripts.",
             ))
         }
         _ => Ok(request),
@@ -1401,7 +1412,7 @@ fn command_verify_allowed(argv: &[String]) -> bool {
         "npm" | "pnpm" | "yarn" | "bun" => argv.iter().skip(1).any(|argument| {
             matches!(
                 argument.as_str(),
-                "test" | "tests" | "lint" | "typecheck" | "check" | "build"
+                "test" | "tests" | "lint" | "typecheck" | "type-check" | "check" | "build"
             )
         }),
         _ => false,
@@ -1513,6 +1524,34 @@ pub trait ProviderAdapter {
         emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
     ) -> CommandResult<ProviderTurnOutcome>;
 
+    fn estimate_context_tokens(
+        &self,
+        request: &ProviderTurnRequest,
+    ) -> CommandResult<SessionContextEstimateDto> {
+        let internal_shape = json!({
+            "providerId": self.provider_id(),
+            "modelId": self.model_id(),
+            "systemPrompt": request.system_prompt,
+            "messages": request.messages,
+            "tools": request.tools,
+            "turnIndex": request.turn_index,
+        });
+        let serialized = serde_json::to_string(&internal_shape).map_err(|error| {
+            CommandError::system_fault(
+                "agent_context_estimate_serialize_failed",
+                format!(
+                    "Xero could not serialize the internal provider turn shape for `{}/{}`: {error}",
+                    self.provider_id(),
+                    self.model_id()
+                ),
+            )
+        })?;
+        Ok(heuristic_token_estimate(
+            &serialized,
+            "internal_provider_turn_request",
+        ))
+    }
+
     fn compact_transcript(
         &self,
         request: &ProviderCompactionRequest,
@@ -1572,7 +1611,7 @@ pub trait ProviderAdapter {
                 .join("\n")
         };
         let prompt = format!(
-            "Extract durable memory candidates from this Xero coding-agent transcript. Return only a JSON array. Each item must contain scope, kind, text, confidence, and sourceItemIds. scope must be project or session. kind must be project_fact, user_preference, decision, session_summary, or troubleshooting. Do not include secrets. Do not include duplicates of existing approved or candidate memories. If the transcript includes code rollback events, do not promote implementation details from reverted turns as durable facts unless the candidate explicitly includes rollback provenance.\n\nExisting memories:\n{existing}\n\nTranscript:\n{}",
+            "Extract durable memory candidates from this Xero coding-agent transcript. Return only a JSON array. Each item must contain scope, kind, text, confidence, and sourceItemIds. confidence must be an integer from 0 to 100. scope must be project or session. kind must be project_fact, user_preference, decision, session_summary, or troubleshooting. Do not include secrets. Do not include duplicates of existing approved or candidate memories. If the transcript includes code rollback events, do not promote implementation details from reverted turns as durable facts unless the candidate explicitly includes rollback provenance.\n\nExisting memories:\n{existing}\n\nTranscript:\n{}",
             request.transcript
         );
         let turn = ProviderTurnRequest {
@@ -1650,7 +1689,11 @@ pub enum ProviderMessage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderUsage {
+    /// Raw input tokens occupying provider context for the request.
     pub input_tokens: u64,
+    /// Input tokens charged at the provider's normal input rate.
+    #[serde(default)]
+    pub billable_input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
     #[serde(default)]
@@ -1696,7 +1739,11 @@ pub struct ProviderMemoryCandidate {
     pub scope: String,
     pub kind: String,
     pub text: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_memory_confidence",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub confidence: Option<u8>,
     #[serde(default)]
     pub source_item_ids: Vec<String>,
@@ -1726,6 +1773,32 @@ fn parse_provider_memory_candidates(message: &str) -> CommandResult<Vec<Provider
             format!("Xero could not decode provider memory candidates as JSON: {error}"),
         )
     })
+}
+
+fn deserialize_optional_memory_confidence<'de, D>(deserializer: D) -> Result<Option<u8>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <Option<JsonValue> as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(value.as_ref().and_then(provider_memory_confidence_percent))
+}
+
+fn provider_memory_confidence_percent(value: &JsonValue) -> Option<u8> {
+    let raw = match value {
+        JsonValue::Number(number) => number.as_f64(),
+        JsonValue::String(text) => text.trim().parse::<f64>().ok(),
+        JsonValue::Null => None,
+        _ => None,
+    }?;
+    if !raw.is_finite() {
+        return None;
+    }
+    let percent = if (0.0..=1.0).contains(&raw) {
+        raw * 100.0
+    } else {
+        raw
+    };
+    Some(percent.round().clamp(0.0, 100.0) as u8)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1898,6 +1971,9 @@ impl ProviderAdapter for FakeProviderAdapter {
             summary,
             usage: Some(ProviderUsage {
                 input_tokens: request
+                    .max_summary_tokens
+                    .min(estimate_tokens(&request.transcript)),
+                billable_input_tokens: request
                     .max_summary_tokens
                     .min(estimate_tokens(&request.transcript)),
                 output_tokens: estimate_tokens(&sanitized),
@@ -2164,6 +2240,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn provider_memory_candidates_accept_fractional_confidence() {
+        let candidates = parse_provider_memory_candidates(
+            r#"
+            [
+              {
+                "scope": "session",
+                "kind": "session_summary",
+                "text": "Session removed the header keyboard shortcut affordance.",
+                "confidence": 0.92,
+                "sourceItemIds": ["tool:edit"]
+              },
+              {
+                "scope": "project",
+                "kind": "troubleshooting",
+                "text": "Use focused verification commands after header edits.",
+                "confidence": "85",
+                "sourceItemIds": []
+              }
+            ]
+            "#,
+        )
+        .expect("parse candidates");
+
+        assert_eq!(candidates[0].confidence, Some(92));
+        assert_eq!(candidates[1].confidence, Some(85));
+    }
+
+    #[test]
     fn tool_registry_decodes_dynamic_mcp_tool_routes() {
         let tool_name = "mcp__workspace__playwright_click__0123456789".to_string();
         let registry = ToolRegistry::from_descriptors_with_dynamic_routes(
@@ -2208,6 +2312,33 @@ mod tests {
             }
             other => panic!("unexpected request: {other:?}"),
         }
+    }
+
+    #[test]
+    fn tool_registry_filters_descriptors_by_current_stage_allowlist() {
+        let registry = ToolRegistry::for_tool_names_with_options(
+            [
+                AUTONOMOUS_TOOL_READ.to_owned(),
+                AUTONOMOUS_TOOL_LIST_TREE.to_owned(),
+                AUTONOMOUS_TOOL_TOOL_ACCESS.to_owned(),
+            ]
+            .into_iter()
+            .collect(),
+            ToolRegistryOptions {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                stage_allowed_tools: Some(
+                    [AUTONOMOUS_TOOL_READ.to_owned()]
+                        .into_iter()
+                        .collect::<BTreeSet<_>>(),
+                ),
+                ..ToolRegistryOptions::default()
+            },
+        );
+
+        let names = registry.descriptor_names();
+        assert!(names.contains(AUTONOMOUS_TOOL_READ));
+        assert!(!names.contains(AUTONOMOUS_TOOL_LIST_TREE));
+        assert!(!names.contains(AUTONOMOUS_TOOL_TOOL_ACCESS));
     }
 
     #[test]
@@ -2424,6 +2555,34 @@ mod tests {
             })
             .expect_err("command_verify must be narrower than general commands");
         assert_eq!(verify_error.code, "agent_action_tool_input_invalid");
+
+        registry
+            .decode_call(&AgentToolCall {
+                tool_call_id: "call-verify-type-check".into(),
+                tool_name: AUTONOMOUS_TOOL_COMMAND_VERIFY.into(),
+                input: json!({ "argv": ["pnpm", "--filter", "client", "type-check"] }),
+            })
+            .expect("command_verify accepts scoped type-check scripts");
+
+        registry
+            .decode_call(&AgentToolCall {
+                tool_call_id: "call-verify-run-type-check".into(),
+                tool_name: AUTONOMOUS_TOOL_COMMAND_VERIFY.into(),
+                input: json!({ "argv": ["pnpm", "run", "type-check"] }),
+            })
+            .expect("command_verify accepts run type-check scripts");
+
+        let type_check_variant_error = registry
+            .decode_call(&AgentToolCall {
+                tool_call_id: "call-verify-type-check-ci".into(),
+                tool_name: AUTONOMOUS_TOOL_COMMAND_VERIFY.into(),
+                input: json!({ "argv": ["pnpm", "run", "type-check:ci"] }),
+            })
+            .expect_err("command_verify rejects non-allowlisted type-check variants");
+        assert_eq!(
+            type_check_variant_error.code,
+            "agent_action_tool_input_invalid"
+        );
 
         registry
             .decode_call(&AgentToolCall {

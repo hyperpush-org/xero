@@ -8,8 +8,14 @@ pub const BROWSER_TAB_UPDATED_EVENT: &str = "browser:tab_updated";
 pub const BROWSER_DIALOG_EVENT: &str = "browser:dialog";
 pub const BROWSER_DOWNLOAD_EVENT: &str = "browser:download";
 pub const BROWSER_RESIZE_DRAG_EVENT: &str = "browser:resize_drag";
+pub const BROWSER_OCCLUSION_WHEEL_EVENT: &str = "browser:occlusion_wheel";
+pub const BROWSER_OCCLUSION_CLICK_EVENT: &str = "browser:occlusion_click";
+pub const BROWSER_DEV_SERVER_UNAVAILABLE_EVENT: &str = "browser:dev_server_unavailable";
 pub const BROWSER_TOOL_CONTEXT_EVENT: &str = "browser:tool_context";
 pub const BROWSER_TOOL_CLOSED_EVENT: &str = "browser:tool_closed";
+pub const BROWSER_TOOL_STATE_EVENT: &str = "browser:tool_state";
+pub const BROWSER_TOOL_NOTE_EVENT: &str = "browser:tool_note";
+pub const BROWSER_TOOL_DICTATION_TOGGLE_EVENT: &str = "browser:tool_dictation_toggle";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -46,6 +52,13 @@ pub struct BrowserTabUpdatedPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct BrowserDevServerUnavailablePayload {
+    pub tab_id: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct BrowserDialogPayload {
     pub tab_id: String,
     pub kind: String,
@@ -74,6 +87,22 @@ pub struct BrowserResizeDragPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct BrowserOcclusionClickPayload {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserOcclusionWheelPayload {
+    pub x: f64,
+    pub y: f64,
+    pub delta_x: f64,
+    pub delta_y: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct BrowserToolContextPayload {
     pub tab_id: String,
     pub context: serde_json::Value,
@@ -84,6 +113,32 @@ pub struct BrowserToolContextPayload {
 pub struct BrowserToolClosedPayload {
     pub tab_id: String,
     pub mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserToolStatePayload {
+    pub tab_id: String,
+    pub mode: Option<String>,
+    pub stroke_count: u64,
+    pub has_drawing: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserToolNotePayload {
+    pub tab_id: String,
+    pub mode: Option<String>,
+    pub note: String,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserToolDictationTogglePayload {
+    pub tab_id: String,
+    pub mode: Option<String>,
+    pub note: String,
 }
 
 pub fn emit<R: Runtime, T: Serialize + Clone>(app: &AppHandle<R>, event: &str, payload: &T) {

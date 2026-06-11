@@ -2110,19 +2110,59 @@ fn decode_runtime_run_control_state(
 }
 
 pub(crate) fn find_prohibited_runtime_control_prompt_content(value: &str) -> Option<&'static str> {
+    // Queued prompts are user-authored task text, so keep this detector to
+    // high-confidence credential shapes. Broader persistence redaction still
+    // rejects internal OAuth redirect URL data in diagnostics and snapshots.
     let normalized = value.to_ascii_lowercase();
     if normalized.contains("access_token")
         || normalized.contains("refresh_token")
-        || normalized.contains("bearer ")
-        || normalized.contains("sk-")
-        || normalized.contains("authorization_url")
-        || normalized.contains("redirect_uri")
-        || normalized.contains("localhost:")
-        || normalized.contains("127.0.0.1:")
+        || contains_bearer_credential_material(value)
+        || contains_sk_api_key_material(value)
     {
         return Some("OAuth or API credential material");
     }
     None
+}
+
+fn contains_bearer_credential_material(value: &str) -> bool {
+    let mut previous_was_bearer = false;
+    for word in value.split_whitespace() {
+        let token = trim_secret_token_punctuation(word);
+        if previous_was_bearer && is_secret_like_token(token, 16) {
+            return true;
+        }
+        previous_was_bearer = token.eq_ignore_ascii_case("bearer");
+    }
+    false
+}
+
+fn contains_sk_api_key_material(value: &str) -> bool {
+    value
+        .split(|character: char| character.is_whitespace() || is_secret_token_separator(character))
+        .any(|token| {
+            let lower = token.to_ascii_lowercase();
+            lower
+                .strip_prefix("sk-")
+                .is_some_and(|suffix| is_secret_like_token(suffix, 16))
+        })
+}
+
+fn trim_secret_token_punctuation(value: &str) -> &str {
+    value.trim_matches(is_secret_token_separator)
+}
+
+fn is_secret_token_separator(character: char) -> bool {
+    matches!(
+        character,
+        '"' | '\'' | '`' | ',' | ';' | ':' | '=' | '(' | ')' | '[' | ']' | '{' | '}'
+    )
+}
+
+fn is_secret_like_token(value: &str, min_len: usize) -> bool {
+    value.chars().count() >= min_len
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
 }
 
 pub(crate) fn normalize_runtime_checkpoint_summary(summary: &str) -> String {

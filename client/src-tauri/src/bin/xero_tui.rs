@@ -273,7 +273,7 @@ fn handle_memory_command(state_dir: &Path, args: &[String]) -> Result<JsonValue,
                 .unwrap_or(0);
             configure_project_store_paths(state_dir);
             let repo_root = project_root(state_dir, &project_id)?;
-            let queue = project_store::load_agent_memory_review_queue(
+            let queue = project_store::load_agent_memory_items(
                 &repo_root,
                 &project_id,
                 agent_session_id.as_deref(),
@@ -281,26 +281,21 @@ fn handle_memory_command(state_dir: &Path, args: &[String]) -> Result<JsonValue,
                 offset,
             )?;
             Ok(json!({
-                "kind": "memoryReviewQueue",
+                "kind": "memoryItems",
                 "projectId": project_id,
                 "queue": queue,
                 "backend": "desktop_project_store",
                 "uiDeferred": false
             }))
         }
-        "approve" | "reject" | "disable" => {
+        "enable" | "disable" => {
             let project_id = required_option(&args[1..], "--project-id", "projectId")?;
             let memory_id = positional_or_option(&args[1..], "--memory-id", "memoryId")?;
             configure_project_store_paths(state_dir);
             let repo_root = project_root(state_dir, &project_id)?;
-            let review_state = match command {
-                "approve" => Some(project_store::AgentMemoryReviewState::Approved),
-                "reject" => Some(project_store::AgentMemoryReviewState::Rejected),
-                _ => None,
-            };
             let enabled = match command {
-                "approve" => Some(true),
-                "disable" | "reject" => Some(false),
+                "enable" => Some(true),
+                "disable" => Some(false),
                 _ => None,
             };
             let updated = project_store::update_agent_memory(
@@ -308,13 +303,12 @@ fn handle_memory_command(state_dir: &Path, args: &[String]) -> Result<JsonValue,
                 &project_store::AgentMemoryUpdateRecord {
                     project_id: project_id.clone(),
                     memory_id: memory_id.clone(),
-                    review_state,
                     enabled,
                     diagnostic: None,
                 },
             )?;
             Ok(json!({
-                "kind": "memoryReviewMutation",
+                "kind": "memoryMutation",
                 "projectId": project_id,
                 "memoryId": memory_id,
                 "memory": memory_summary_json(updated),
@@ -329,7 +323,7 @@ fn handle_memory_command(state_dir: &Path, args: &[String]) -> Result<JsonValue,
             let repo_root = project_root(state_dir, &project_id)?;
             project_store::delete_agent_memory(&repo_root, &project_id, &memory_id)?;
             Ok(json!({
-                "kind": "memoryReviewDelete",
+                "kind": "memoryDelete",
                 "projectId": project_id,
                 "memoryId": memory_id,
                 "backend": "desktop_project_store",
@@ -1241,6 +1235,7 @@ fn handle_agent_exec_command(state_dir: &Path, args: &[String]) -> Result<JsonVa
             controls: Some(RuntimeRunControlInputDto {
                 runtime_agent_id,
                 agent_definition_id,
+                agent_definition_version: None,
                 provider_profile_id: Some(provider_profile_id),
                 model_id,
                 thinking_effort,
@@ -2506,7 +2501,6 @@ fn memory_summary_json(memory: project_store::AgentMemoryRecord) -> JsonValue {
         "memoryId": memory.memory_id,
         "scope": agent_memory_scope_label(&memory.scope),
         "kind": agent_memory_kind_label(&memory.kind),
-        "reviewState": agent_memory_review_state_label(&memory.review_state),
         "enabled": memory.enabled,
         "confidence": memory.confidence,
         "textPreview": text_preview(&memory.text),
@@ -2565,14 +2559,6 @@ fn agent_memory_kind_label(value: &project_store::AgentMemoryKind) -> &'static s
         project_store::AgentMemoryKind::Decision => "decision",
         project_store::AgentMemoryKind::SessionSummary => "session_summary",
         project_store::AgentMemoryKind::Troubleshooting => "troubleshooting",
-    }
-}
-
-fn agent_memory_review_state_label(value: &project_store::AgentMemoryReviewState) -> &'static str {
-    match value {
-        project_store::AgentMemoryReviewState::Candidate => "candidate",
-        project_store::AgentMemoryReviewState::Approved => "approved",
-        project_store::AgentMemoryReviewState::Rejected => "rejected",
     }
 }
 

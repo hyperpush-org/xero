@@ -14,6 +14,16 @@ fn runtime_run_persists_active_and_pending_control_snapshots_with_queued_prompt(
 }
 
 #[test]
+fn runtime_run_control_prompt_allows_dev_urls_and_product_token_copy() {
+    runtime_rows::runtime_run_control_prompt_allows_dev_urls_and_product_token_copy();
+}
+
+#[test]
+fn runtime_run_control_prompt_rejects_credential_shaped_values() {
+    runtime_rows::runtime_run_control_prompt_rejects_credential_shaped_values();
+}
+
+#[test]
 fn runtime_run_persistence_isolates_runs_by_agent_session() {
     runtime_rows::runtime_run_persistence_isolates_runs_by_agent_session();
 }

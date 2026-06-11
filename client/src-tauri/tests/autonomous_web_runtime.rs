@@ -6,9 +6,10 @@ use std::{
 use serde_json::json;
 use xero_desktop_lib::runtime::{
     AutonomousWebConfig, AutonomousWebFetchContentKind, AutonomousWebFetchRequest,
-    AutonomousWebRuntime, AutonomousWebRuntimeLimits, AutonomousWebSearchProviderConfig,
-    AutonomousWebSearchRequest, AutonomousWebTransport, AutonomousWebTransportError,
-    AutonomousWebTransportRequest, AutonomousWebTransportResponse,
+    AutonomousWebHttpMethod, AutonomousWebManagedSearchConfig, AutonomousWebManagedSearchKind,
+    AutonomousWebRuntime, AutonomousWebSearchMode, AutonomousWebSearchProviderConfig,
+    AutonomousWebSearchProviderKind, AutonomousWebSearchRequest, AutonomousWebTransport,
+    AutonomousWebTransportError, AutonomousWebTransportRequest, AutonomousWebTransportResponse,
 };
 
 #[derive(Clone, Default)]
@@ -57,7 +58,7 @@ fn search_runtime(transport: &FixtureTransport) -> AutonomousWebRuntime {
             search_provider: Some(AutonomousWebSearchProviderConfig::new(
                 "https://search.example/api/search",
             )),
-            limits: AutonomousWebRuntimeLimits::default(),
+            ..Default::default()
         },
         Arc::new(transport.clone()),
     )
@@ -67,10 +68,37 @@ fn fetch_runtime(transport: &FixtureTransport) -> AutonomousWebRuntime {
     AutonomousWebRuntime::with_transport(
         AutonomousWebConfig {
             search_provider: None,
-            limits: AutonomousWebRuntimeLimits::default(),
+            ..Default::default()
         },
         Arc::new(transport.clone()),
     )
+}
+
+fn provider_config(kind: AutonomousWebSearchProviderKind) -> AutonomousWebSearchProviderConfig {
+    AutonomousWebSearchProviderConfig {
+        profile_id: format!("profile-{}", kind.as_str()),
+        kind,
+        display_name: format!("{kind:?}"),
+        endpoint: match kind {
+            AutonomousWebSearchProviderKind::CustomEndpoint => {
+                Some("https://search.example/custom".into())
+            }
+            AutonomousWebSearchProviderKind::SearxngJson => {
+                Some("https://searx.example/search".into())
+            }
+            _ => None,
+        },
+        base_url: None,
+        api_key: Some("test-key".into()),
+        google_cse_cx: (kind == AutonomousWebSearchProviderKind::GoogleCse)
+            .then_some("cx-test".into()),
+        result_limit: Some(2),
+        timeout_ms: Some(1_500),
+        region: Some("us".into()),
+        language: Some("en".into()),
+        freshness: None,
+        safe_search: Some(true),
+    }
 }
 
 #[test]
@@ -123,6 +151,131 @@ fn web_search_returns_bounded_results_and_captures_truncation() {
     assert_eq!(output.results[0].url, "https://example.com/rust");
     assert_eq!(output.results[0].snippet.as_deref(), Some("Alpha & beta"));
     assert!(output.truncated);
+}
+
+#[test]
+fn web_search_supports_all_configured_provider_kinds() {
+    let provider_kinds = [
+        AutonomousWebSearchProviderKind::CustomEndpoint,
+        AutonomousWebSearchProviderKind::BraveSearch,
+        AutonomousWebSearchProviderKind::TavilySearch,
+        AutonomousWebSearchProviderKind::ExaSearch,
+        AutonomousWebSearchProviderKind::FirecrawlSearch,
+        AutonomousWebSearchProviderKind::YouSearch,
+        AutonomousWebSearchProviderKind::LinkupSearch,
+        AutonomousWebSearchProviderKind::KagiSearch,
+        AutonomousWebSearchProviderKind::SearxngJson,
+        AutonomousWebSearchProviderKind::SerpapiGoogle,
+        AutonomousWebSearchProviderKind::SearchapiGoogle,
+        AutonomousWebSearchProviderKind::GoogleCse,
+    ];
+
+    for kind in provider_kinds {
+        let transport = FixtureTransport::default();
+        transport.push_response(Ok(AutonomousWebTransportResponse {
+            status: 200,
+            final_url: "https://search.example/provider".into(),
+            content_type: Some("application/json".into()),
+            body: serde_json::to_vec(&json!({
+                "results": [{
+                    "title": "Provider result",
+                    "url": "https://example.com/provider",
+                    "snippet": "Provider snippet"
+                }]
+            }))
+            .expect("serialize provider fixture"),
+            body_truncated: false,
+        }));
+        let runtime = AutonomousWebRuntime::with_transport(
+            AutonomousWebConfig {
+                search_mode: AutonomousWebSearchMode::ConfiguredProviderOnly,
+                search_provider: Some(provider_config(kind)),
+                ..Default::default()
+            },
+            Arc::new(transport.clone()),
+        );
+
+        let output = runtime
+            .search(AutonomousWebSearchRequest {
+                query: "provider check".into(),
+                result_count: Some(1),
+                timeout_ms: Some(1_500),
+            })
+            .unwrap_or_else(|error| panic!("{kind:?} should search successfully: {error:?}"));
+
+        assert_eq!(output.results.len(), 1, "{kind:?}");
+        let expected_source = format!("configured_provider:profile-{}", kind.as_str());
+        assert_eq!(output.source.as_deref(), Some(expected_source.as_str()));
+        let requests = transport.take_requests();
+        assert_eq!(requests.len(), 1, "{kind:?}");
+        let expected_method = match kind {
+            AutonomousWebSearchProviderKind::TavilySearch
+            | AutonomousWebSearchProviderKind::ExaSearch
+            | AutonomousWebSearchProviderKind::FirecrawlSearch
+            | AutonomousWebSearchProviderKind::LinkupSearch => AutonomousWebHttpMethod::Post,
+            _ => AutonomousWebHttpMethod::Get,
+        };
+        assert_eq!(requests[0].method, expected_method, "{kind:?}");
+    }
+}
+
+#[test]
+fn web_search_auto_falls_back_from_provider_managed_to_configured_provider() {
+    let transport = FixtureTransport::default();
+    transport.push_response(Ok(AutonomousWebTransportResponse {
+        status: 503,
+        final_url: "https://api.openai.example/v1/responses".into(),
+        content_type: Some("application/json".into()),
+        body: br#"{"error":{"message":"unavailable"}}"#.to_vec(),
+        body_truncated: false,
+    }));
+    transport.push_response(Ok(AutonomousWebTransportResponse {
+        status: 200,
+        final_url: "https://search.example/custom?q=rust&limit=1".into(),
+        content_type: Some("application/json".into()),
+        body: br#"{"results":[{"title":"Fallback","url":"https://example.com/fallback","snippet":"ok"}]}"#.to_vec(),
+        body_truncated: false,
+    }));
+
+    let runtime = AutonomousWebRuntime::with_transport(
+        AutonomousWebConfig {
+            search_mode: AutonomousWebSearchMode::Auto,
+            managed_search: Some(AutonomousWebManagedSearchConfig {
+                kind: AutonomousWebManagedSearchKind::OpenAiNativeWebSearch,
+                provider_id: "openai_api".into(),
+                model_id: "gpt-4.1".into(),
+                base_url: "https://api.openai.example/v1".into(),
+                api_key: "llm-key".into(),
+                account_id: None,
+                session_id: None,
+                api_version: None,
+                timeout_ms: Some(1_500),
+            }),
+            search_provider: Some(provider_config(
+                AutonomousWebSearchProviderKind::CustomEndpoint,
+            )),
+            ..Default::default()
+        },
+        Arc::new(transport.clone()),
+    );
+
+    let output = runtime
+        .search(AutonomousWebSearchRequest {
+            query: "rust".into(),
+            result_count: Some(1),
+            timeout_ms: Some(1_500),
+        })
+        .expect("configured fallback should succeed");
+
+    assert_eq!(output.results[0].title, "Fallback");
+    assert_eq!(
+        output.source.as_deref(),
+        Some("configured_provider:profile-custom_endpoint")
+    );
+    let requests = transport.take_requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method, AutonomousWebHttpMethod::Post);
+    assert_eq!(requests[1].method, AutonomousWebHttpMethod::Get);
 }
 
 #[test]

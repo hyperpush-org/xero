@@ -393,6 +393,156 @@ defmodule XeroWeb.RemoteChannelTest do
     end)
   end
 
+  test "expired web Computer Use commands are rejected before relay forwarding", %{conn: conn} do
+    with_github_env(fn ->
+      desktop = desktop_login!(conn)
+      web = web_login!(conn)
+
+      {:ok, desktop_socket} =
+        connect(XeroWeb.RemoteDesktopSocket, %{"token" => desktop["desktop_jwt"]})
+
+      {:ok, _desktop_reply, desktop_socket} =
+        subscribe_and_join(desktop_socket, "desktop:#{desktop["desktop_device_id"]}", %{})
+
+      {:ok, _desktop_session_reply, _desktop_session} =
+        subscribe_and_join(
+          desktop_socket,
+          "session:#{desktop["desktop_device_id"]}:session-1",
+          %{}
+        )
+
+      {:ok, web_socket} =
+        connect(XeroWeb.RemoteWebSocket, %{"token" => web["web_jwt"]})
+
+      join_task =
+        Task.async(fn ->
+          subscribe_and_join(web_socket, "session:#{desktop["desktop_device_id"]}:session-1", %{
+            "join_ref" => "join-expired-command"
+          })
+        end)
+
+      assert_push "session_join_requested", %{
+        auth_topic: auth_topic,
+        join_ref: "join-expired-command"
+      }
+
+      ref =
+        push(desktop_socket, "session_authorized", %{
+          "join_ref" => "join-expired-command",
+          "auth_topic" => auth_topic,
+          "authorized" => true,
+          "run_id" => "run-1"
+        })
+
+      assert_reply ref, :ok
+      {:ok, web_session_reply, web_session} = Task.await(join_task)
+
+      expired_ref =
+        push(web_session, "frame", %{
+          "kind" => "computer_use_manual_control_input",
+          "clientCommandId" => "cmd-expired",
+          "expiresAt" => System.system_time(:millisecond) - 1,
+          "payload" => %{
+            "runId" => "run-1",
+            "streamToken" => web_session_reply.stream_token,
+            "manualControlId" => "manual-web-1",
+            "action" => "mouse_click",
+            "x" => 10,
+            "y" => 10
+          }
+        })
+
+      assert_reply expired_ref, :error, %{reason: "stale_command"}
+
+      assert_push "computer_use_command_outcome", %{
+        kind: "computer_use_manual_control_input",
+        clientCommandId: "cmd-expired",
+        outcome: "stale",
+        reason: "stale_command"
+      }
+
+      refute_push "frame", %{payload: %{"clientCommandId" => "cmd-expired"}}, 50
+    end)
+  end
+
+  test "oversized web Computer Use commands are rejected before relay forwarding", %{conn: conn} do
+    with_github_env(fn ->
+      desktop = desktop_login!(conn)
+      web = web_login!(conn)
+
+      {:ok, desktop_socket} =
+        connect(XeroWeb.RemoteDesktopSocket, %{"token" => desktop["desktop_jwt"]})
+
+      {:ok, _desktop_reply, desktop_socket} =
+        subscribe_and_join(desktop_socket, "desktop:#{desktop["desktop_device_id"]}", %{})
+
+      {:ok, _desktop_session_reply, _desktop_session} =
+        subscribe_and_join(
+          desktop_socket,
+          "session:#{desktop["desktop_device_id"]}:session-1",
+          %{}
+        )
+
+      {:ok, web_socket} =
+        connect(XeroWeb.RemoteWebSocket, %{"token" => web["web_jwt"]})
+
+      join_task =
+        Task.async(fn ->
+          subscribe_and_join(web_socket, "session:#{desktop["desktop_device_id"]}:session-1", %{
+            "join_ref" => "join-oversized-command"
+          })
+        end)
+
+      assert_push "session_join_requested", %{
+        auth_topic: auth_topic,
+        join_ref: "join-oversized-command"
+      }
+
+      ref =
+        push(desktop_socket, "session_authorized", %{
+          "join_ref" => "join-oversized-command",
+          "auth_topic" => auth_topic,
+          "authorized" => true,
+          "run_id" => "run-1"
+        })
+
+      assert_reply ref, :ok
+      {:ok, web_session_reply, web_session} = Task.await(join_task)
+
+      oversized_ref =
+        push(web_session, "frame", %{
+          "kind" => "computer_use_manual_control_input",
+          "clientCommandId" => "cmd-oversized",
+          "expiresAt" => System.system_time(:millisecond) + 8_000,
+          "payload" => %{
+            "runId" => "run-1",
+            "streamToken" => web_session_reply.stream_token,
+            "manualControlId" => "manual-web-1",
+            "action" => "type_text",
+            "text" => String.duplicate("a", 530_000)
+          }
+        })
+
+      assert_reply oversized_ref, :error, %{
+        reason: "command_payload_too_large",
+        maxBytes: max_bytes,
+        sizeBytes: size_bytes
+      }
+
+      assert max_bytes == 512 * 1024
+      assert size_bytes > max_bytes
+
+      assert_push "computer_use_command_outcome", %{
+        kind: "computer_use_manual_control_input",
+        clientCommandId: "cmd-oversized",
+        outcome: "rejected",
+        reason: "command_payload_too_large"
+      }
+
+      refute_push "frame", %{payload: %{"clientCommandId" => "cmd-oversized"}}, 50
+    end)
+  end
+
   test "computer-use stream e2e exchanges WebRTC signaling without a run id", %{conn: conn} do
     with_github_env(fn ->
       desktop = desktop_login!(conn)

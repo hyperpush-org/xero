@@ -120,6 +120,77 @@ export interface EndpointHealth {
   consecutiveFailures: number
 }
 
+export type SolanaProviderKind =
+  | "solana_public"
+  | "helius"
+  | "quick_node"
+  | "alchemy"
+  | "triton"
+  | "chainstack"
+  | "localnet"
+  | "custom"
+
+export type SecretPlacement =
+  | "none"
+  | "query_parameter"
+  | "header"
+  | "embedded_url"
+
+export interface ProviderRateLimit {
+  requestsPerSecond?: number | null
+  requestsPerMonth?: number | null
+  notes?: string | null
+}
+
+export interface ProviderProfileView {
+  id: string
+  cluster: ClusterKind
+  label: string
+  provider: SolanaProviderKind
+  rpcUrl: string
+  websocketUrl?: string | null
+  secretPlacement: SecretPlacement
+  secretName?: string | null
+  hasSecret: boolean
+  priority: number
+  enabled: boolean
+  allowPublicFallback: boolean
+  rateLimit?: ProviderRateLimit | null
+  managed: boolean
+  selected: boolean
+}
+
+export interface ProviderProfileUpsert {
+  id: string
+  cluster: ClusterKind
+  label: string
+  provider: SolanaProviderKind
+  rpcUrl: string
+  websocketUrl?: string | null
+  secretPlacement: SecretPlacement
+  secretName?: string | null
+  apiKey?: string | null
+  priority?: number
+  enabled?: boolean
+  allowPublicFallback?: boolean
+  rateLimit?: ProviderRateLimit | null
+}
+
+export interface ProviderInventoryEntry {
+  provider: SolanaProviderKind
+  label: string
+  supportsQueryToken: boolean
+  supportsHeaderToken: boolean
+  supportsWebsocket: boolean
+  notes: string
+}
+
+export interface ProviderProfilesResponse {
+  profiles: ProviderProfileView[]
+  selectedProfileIds: Partial<Record<ClusterKind, string>>
+  inventory: ProviderInventoryEntry[]
+}
+
 export interface SnapshotMeta {
   id: string
   label: string

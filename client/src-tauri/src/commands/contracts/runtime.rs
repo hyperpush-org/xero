@@ -572,6 +572,8 @@ pub struct RuntimeRunControlInputDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_definition_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_definition_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_profile_id: Option<String>,
     pub model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -947,42 +949,6 @@ pub struct CompleteOAuthCallbackRequestDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StartXaiDeviceCodeLoginRequestDto {
-    pub provider_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PollXaiDeviceCodeLoginRequestDto {
-    pub provider_id: String,
-    pub flow_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct XaiDeviceCodeLoginDto {
-    pub provider_id: String,
-    pub flow_id: String,
-    pub user_code: String,
-    pub verification_uri: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub verification_uri_complete: Option<String>,
-    pub interval_seconds: u64,
-    pub expires_at: i64,
-    pub phase: RuntimeAuthPhase,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub account_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_error_code: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<RuntimeDiagnosticDto>,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderModelCatalogSourceDto {
     Live,
@@ -1035,6 +1001,8 @@ pub struct ProviderModelDto {
     pub model_id: String,
     pub display_name: String,
     pub thinking: ProviderModelThinkingCapabilityDto,
+    pub input_modalities: Vec<String>,
+    pub input_modalities_source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1366,6 +1334,7 @@ mod tests {
         let input = RuntimeRunControlInputDto {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
             agent_definition_id: None,
+            agent_definition_version: None,
             provider_profile_id: None,
             model_id: "test-model".into(),
             thinking_effort: None,
@@ -1554,6 +1523,7 @@ pub enum RuntimeActionAnswerShape {
     LongText,
     Number,
     Date,
+    SensitiveFields,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1563,6 +1533,18 @@ pub struct RuntimeActionRequiredOptionDto {
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeSensitiveInputFieldDto {
+    pub key: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1682,6 +1664,10 @@ pub struct RuntimeStreamItemDto {
     pub options: Option<Vec<RuntimeActionRequiredOptionDto>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_multiple: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensitive_fields: Option<Vec<RuntimeSensitiveInputFieldDto>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intended_use: Option<String>,
     pub title: Option<String>,
     pub detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -348,6 +348,14 @@ export function buildSnapshotFromGraph(
       encouraged: dbEncouraged,
     },
     consumes,
+    handoffPolicy: {
+      enabled: advanced.handoffEnabled,
+      routingMode: advanced.handoffRoutingMode,
+      allowedTargets: advanced.handoffAllowedTargets.map((target) => ({ ...target })),
+      preserveDefinitionVersion: advanced.handoffPreserveDefinitionVersion,
+      carrySummary: advanced.handoffCarrySummary,
+      includeDurableContext: advanced.handoffIncludeDurableContext,
+    },
   }
 
   if (workflowStructure) {

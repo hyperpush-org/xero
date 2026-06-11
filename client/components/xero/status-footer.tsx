@@ -10,6 +10,7 @@ import {
   GitCommit,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { formatTokenCount, formatMicrosUsd } from "@/src/lib/xero-model/usage"
 
 export interface FooterSpendData {
@@ -35,6 +36,8 @@ export interface StatusFooterProps {
   } | null
   spend?: FooterSpendData | null
   notifications?: number
+  notificationsActive?: boolean
+  onNotificationsClick?: () => void
   /** Whether the spend section is currently active (sidebar open). */
   spendActive?: boolean
   onSpendClick?: () => void
@@ -50,6 +53,8 @@ export function StatusFooter({
   git = null,
   spend = null,
   notifications = 0,
+  notificationsActive = false,
+  onNotificationsClick,
   spendActive = false,
   onSpendClick,
 }: StatusFooterProps) {
@@ -87,6 +92,9 @@ export function StatusFooter({
   const spendAriaLabel = hasSpendData
     ? `Project spend: ${tokensLabel} tokens, ${costLabel}`
     : "Project spend: no usage recorded yet"
+  const spendTooltip = hasSpendData ? "View project usage breakdown" : "No usage recorded yet"
+  const notificationsTooltip =
+    notifications > 0 ? "View unread session responses" : "No unread session responses"
 
   return (
     <footer
@@ -135,32 +143,54 @@ export function StatusFooter({
 
       {/* Right: spend · notifications -------------------------------------- */}
       <div className="flex shrink-0 items-center gap-3">
-        <button
-          type="button"
-          onClick={onSpendClick}
-          aria-label={spendAriaLabel}
-          aria-pressed={spendActive}
-          title={hasSpendData ? "View project usage breakdown" : "No usage recorded yet"}
-          className={cn(
-            "flex items-center gap-1.5 rounded px-1.5 py-0.5 -my-0.5 transition-colors",
-            "hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-            spendActive && "bg-foreground/10 text-foreground",
-            !onSpendClick && "cursor-default",
-          )}
-        >
-          <Coins className="h-3 w-3" />
-          <span>{tokensLabel} tok</span>
-          <span className="text-muted-foreground/60">·</span>
-          <DollarSign className="h-3 w-3" />
-          <span className="font-medium text-foreground/80">{costLabel}</span>
-        </button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={onSpendClick}
+              aria-label={spendAriaLabel}
+              aria-pressed={spendActive}
+              title={spendTooltip}
+              className={cn(
+                "flex items-center gap-1.5 rounded px-1.5 py-0.5 -my-0.5 transition-colors",
+                "hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                spendActive && "bg-foreground/10 text-foreground",
+                !onSpendClick && "cursor-default",
+              )}
+            >
+              <Coins className="h-3 w-3" />
+              <span>{tokensLabel} tok</span>
+              <span className="text-muted-foreground/60">·</span>
+              <DollarSign className="h-3 w-3" />
+              <span className="font-medium text-foreground/80">{costLabel}</span>
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top" sideOffset={8}>{spendTooltip}</TooltipContent>
+        </Tooltip>
 
         <Divider />
 
-        <span className="flex items-center gap-1.5" aria-label={`${notifications} unread notifications`}>
-          <Bell className="h-3 w-3" />
-          <span>{notifications}</span>
-        </span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={onNotificationsClick}
+              aria-label={`${notifications} unread notifications`}
+              aria-pressed={notificationsActive}
+              title={notificationsTooltip}
+              className={cn(
+                "flex items-center gap-1.5 rounded px-1.5 py-0.5 -my-0.5 transition-colors",
+                "hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                notificationsActive && "bg-foreground/10 text-foreground",
+                !onNotificationsClick && "cursor-default",
+              )}
+            >
+              <Bell className="h-3 w-3" />
+              <span>{notifications}</span>
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top" sideOffset={8}>{notificationsTooltip}</TooltipContent>
+        </Tooltip>
       </div>
     </footer>
   )

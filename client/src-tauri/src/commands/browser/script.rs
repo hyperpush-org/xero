@@ -2,11 +2,65 @@ pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
 ;(function () {
   if (window.__xeroBridge__ && window.__xeroBridge__.__installed) return;
 
+  const bridgeState = (() => {
+    const existing = window.__xeroBridgeState__;
+    if (existing && existing.protocolVersion === 'xero.in_app_browser_bridge.v1') return existing;
+    const state = {
+      protocolVersion: 'xero.in_app_browser_bridge.v1',
+      sequence: 0,
+      navigationGeneration: 1,
+      mutationGeneration: 0,
+      errors: [],
+      inFlightFetch: 0,
+      inFlightXhr: 0,
+      lastNetworkStartedAt: 0,
+      lastNetworkFinishedAt: Date.now(),
+      lastMutationAt: Date.now(),
+      lastPaintAt: Date.now(),
+    };
+    Object.defineProperty(window, '__xeroBridgeState__', {
+      value: state,
+      writable: false,
+      configurable: false,
+      enumerable: false,
+    });
+    return state;
+  })();
+
+  const rememberError = (kind, value) => {
+    try {
+      const text = value && (value.stack || value.message)
+        ? String(value.stack || value.message)
+        : String(value == null ? '' : value);
+      bridgeState.errors.push({
+        kind: String(kind || 'error'),
+        message: text.slice(0, 2000),
+        at: Date.now(),
+      });
+      if (bridgeState.errors.length > 20) bridgeState.errors.shift();
+    } catch (_error) {
+      // swallow
+    }
+  };
+
+  window.addEventListener('error', (event) => {
+    rememberError('error', event.error || event.message);
+  });
+  window.addEventListener('unhandledrejection', (event) => {
+    rememberError('unhandledrejection', event.reason);
+  });
+
   const invoke = (name, args) => {
     try {
       const tauri = window.__TAURI_INTERNALS__;
       if (tauri && typeof tauri.invoke === 'function') {
-        return tauri.invoke(name, args);
+        const result = tauri.invoke(name, args);
+        if (result && typeof result.catch === 'function') {
+          result.catch(() => {
+            // bridge IPC is best-effort for arbitrary remote pages
+          });
+        }
+        return result;
       }
     } catch (_error) {
       // swallow — bridge is best-effort
@@ -38,9 +92,17 @@ pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
   };
 
   const emit = (kind, payload) => {
+    bridgeState.sequence += 1;
     invoke('browser_internal_event', {
       kind: String(kind || ''),
-      payload: safeStringify(payload),
+      payload: safeStringify(Object.assign({
+        protocolVersion: bridgeState.protocolVersion,
+        sequence: bridgeState.sequence,
+        navigationGeneration: bridgeState.navigationGeneration,
+        mutationGeneration: bridgeState.mutationGeneration,
+        inFlightFetch: bridgeState.inFlightFetch,
+        inFlightXhr: bridgeState.inFlightXhr,
+      }, payload || {})),
     });
   };
 
@@ -71,12 +133,14 @@ pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
     enumerable: false,
   });
 
-  const emitPage = () => {
+  const emitPage = (navigationChanged) => {
     try {
+      if (navigationChanged) bridgeState.navigationGeneration += 1;
       emit('page', {
         url: location.href,
         title: document.title,
         readyState: document.readyState,
+        lastPaintAt: bridgeState.lastPaintAt,
       });
     } catch (_error) {
       // swallow
@@ -84,20 +148,20 @@ pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
   };
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', emitPage, { once: true });
+    document.addEventListener('DOMContentLoaded', () => emitPage(false), { once: true });
   } else {
-    emitPage();
+    emitPage(false);
   }
-  window.addEventListener('load', emitPage);
-  window.addEventListener('hashchange', emitPage);
-  window.addEventListener('popstate', emitPage);
+  window.addEventListener('load', () => emitPage(false));
+  window.addEventListener('hashchange', () => emitPage(true));
+  window.addEventListener('popstate', () => emitPage(true));
 
   const wrapHistory = (name) => {
     const original = history[name];
     if (typeof original !== 'function' || original.__xero_wrapped__) return;
     const wrapped = function () {
       const result = original.apply(this, arguments);
-      try { emitPage(); } catch (_e) { /* swallow */ }
+      try { emitPage(true); } catch (_e) { /* swallow */ }
       return result;
     };
     wrapped.__xero_wrapped__ = true;
@@ -129,6 +193,28 @@ pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
   };
   ['log', 'info', 'warn', 'error', 'debug'].forEach(forwardConsole);
 
+  try {
+    const observer = new MutationObserver(() => {
+      bridgeState.mutationGeneration += 1;
+      bridgeState.lastMutationAt = Date.now();
+    });
+    observer.observe(document.documentElement || document, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      characterData: true,
+    });
+    bridgeState.mutationObserver = observer;
+  } catch (_error) {
+    // swallow
+  }
+
+  const paintTick = () => {
+    bridgeState.lastPaintAt = Date.now();
+    requestAnimationFrame(paintTick);
+  };
+  try { requestAnimationFrame(paintTick); } catch (_error) { /* swallow */ }
+
   const sanitizeNetworkUrl = (value) => {
     try {
       const url = new URL(String(value || ''), location.href);
@@ -137,6 +223,27 @@ pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
       return url.href;
     } catch (_error) {
       return String(value || '').slice(0, 2048);
+    }
+  };
+
+  const requestUrlForNetworkInstrumentation = (input) => {
+    try {
+      if (typeof input === 'string') return input;
+      if (input && typeof input.url === 'string') return input.url;
+    } catch (_error) {
+      // swallow
+    }
+    return '';
+  };
+
+  const isTauriIpcFetch = (input) => {
+    try {
+      const raw = requestUrlForNetworkInstrumentation(input);
+      if (!raw) return false;
+      const url = new URL(raw, location.href);
+      return url.protocol === 'ipc:' || url.hostname === 'ipc.localhost';
+    } catch (_error) {
+      return false;
     }
   };
 
@@ -151,37 +258,52 @@ pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
   if (typeof window.fetch === 'function' && !window.fetch.__xero_wrapped__) {
     const originalFetch = window.fetch;
     const wrappedFetch = async function () {
+      if (isTauriIpcFetch(arguments[0])) {
+        return originalFetch.apply(this, arguments);
+      }
       const started = Date.now();
       const input = arguments[0];
       const init = arguments[1] || {};
-      const url =
-        typeof input === 'string'
-          ? input
-          : input && input.url
-            ? input.url
-            : '';
+      const url = requestUrlForNetworkInstrumentation(input);
       const method =
         (init && init.method) ||
         (input && input.method) ||
         'GET';
+      bridgeState.inFlightFetch += 1;
+      bridgeState.lastNetworkStartedAt = started;
+      emitNetwork({
+        phase: 'start',
+        type: 'fetch',
+        url: sanitizeNetworkUrl(url),
+        method,
+        inFlight: bridgeState.inFlightFetch + bridgeState.inFlightXhr,
+      });
       try {
         const response = await originalFetch.apply(this, arguments);
+        bridgeState.inFlightFetch = Math.max(0, bridgeState.inFlightFetch - 1);
+        bridgeState.lastNetworkFinishedAt = Date.now();
         emitNetwork({
+          phase: 'finish',
           type: 'fetch',
           url: sanitizeNetworkUrl(url),
           method,
           status: response && response.status,
           ok: response && response.ok,
           durationMs: Date.now() - started,
+          inFlight: bridgeState.inFlightFetch + bridgeState.inFlightXhr,
         });
         return response;
       } catch (error) {
+        bridgeState.inFlightFetch = Math.max(0, bridgeState.inFlightFetch - 1);
+        bridgeState.lastNetworkFinishedAt = Date.now();
         emitNetwork({
+          phase: 'finish',
           type: 'fetch',
           url: sanitizeNetworkUrl(url),
           method,
           error: (error && (error.message || error.stack)) || String(error),
           durationMs: Date.now() - started,
+          inFlight: bridgeState.inFlightFetch + bridgeState.inFlightXhr,
         });
         throw error;
       }
@@ -206,26 +328,48 @@ pub const BROWSER_BRIDGE_INIT_SCRIPT: &str = r#"
         const xhr = this;
         const started = Date.now();
         const info = xhr.__xeroRequestInfo || {};
+        let completed = false;
         const emitDone = () => {
+          if (completed) return;
+          completed = true;
+          bridgeState.inFlightXhr = Math.max(0, bridgeState.inFlightXhr - 1);
+          bridgeState.lastNetworkFinishedAt = Date.now();
           emitNetwork({
+            phase: 'finish',
             type: 'xhr',
             url: info.url || '',
             method: info.method || 'GET',
             status: xhr.status || null,
             ok: xhr.status >= 200 && xhr.status < 400,
             durationMs: Date.now() - started,
+            inFlight: bridgeState.inFlightFetch + bridgeState.inFlightXhr,
           });
         };
         const emitFailed = () => {
+          if (completed) return;
+          completed = true;
+          bridgeState.inFlightXhr = Math.max(0, bridgeState.inFlightXhr - 1);
+          bridgeState.lastNetworkFinishedAt = Date.now();
           emitNetwork({
+            phase: 'finish',
             type: 'xhr',
             url: info.url || '',
             method: info.method || 'GET',
             error: 'request failed',
             durationMs: Date.now() - started,
+            inFlight: bridgeState.inFlightFetch + bridgeState.inFlightXhr,
           });
         };
         try {
+          bridgeState.inFlightXhr += 1;
+          bridgeState.lastNetworkStartedAt = started;
+          emitNetwork({
+            phase: 'start',
+            type: 'xhr',
+            url: info.url || '',
+            method: info.method || 'GET',
+            inFlight: bridgeState.inFlightFetch + bridgeState.inFlightXhr,
+          });
           xhr.addEventListener('loadend', emitDone, { once: true });
           xhr.addEventListener('error', emitFailed, { once: true });
         } catch (_error) {

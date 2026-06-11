@@ -63,6 +63,7 @@ export interface ComposerModelOptionView {
   modelId: string
   displayName: string
   thinking: ProviderModelDto['thinking']
+  inputModalities?: ProviderModelDto['inputModalities']
   thinkingEffortOptions: ProviderModelThinkingEffortDto[]
   defaultThinkingEffort: ProviderModelThinkingEffortDto | null
   contextWindowTokens?: number | null
@@ -243,6 +244,7 @@ export function buildComposerModelOptions(
         modelId,
         displayName: displayNameForProviderModel(credential.providerId, model),
         thinking: model.thinking,
+        inputModalities: model.inputModalities,
         thinkingEffortOptions,
         defaultThinkingEffort: defaultThinkingEffortFor(model, thinkingEffortOptions),
         contextWindowTokens: model.contextWindowTokens ?? null,

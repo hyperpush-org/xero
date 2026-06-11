@@ -5,7 +5,6 @@ import { ArrowLeft, ArrowRight } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { StepIndicator } from "./step-indicator"
 import { WelcomeStep } from "./steps/welcome-step"
-import { LocalEnvironmentStep } from "./steps/local-environment-step"
 import { ProvidersStep } from "./steps/providers-step"
 import { ProjectStep } from "./steps/project-step"
 import { EnvironmentAccessStep } from "./steps/environment-access-step"
@@ -22,7 +21,6 @@ import {
   type RuntimeProviderIdDto,
   type RuntimeSessionView,
   type UpsertProviderCredentialRequestDto,
-  type XaiDeviceCodeLoginDto,
 } from "@/src/lib/xero-model"
 import type {
   EnvironmentDiscoveryStatusDto,
@@ -42,27 +40,16 @@ const BASE_STEP_ORDER: Array<{ id: OnboardingStepId; showIndicator: boolean }> =
 
 /**
  * Pure helper exported for unit tests. Computes the active step order given
- * the current launch mode and whether environment-access decisions are
- * required.
+ * whether environment-access decisions are required.
  */
 export function computeStepOrder(
-  launchMode: string | null | undefined,
   hasEnvironmentPermissionRequests: boolean,
 ): Array<{ id: OnboardingStepId; showIndicator: boolean }> {
-  const withLocalEnv =
-    launchMode === "local-source"
-      ? BASE_STEP_ORDER.flatMap((step) =>
-          step.id === "providers"
-            ? [{ id: "local-environment" as const, showIndicator: true }, step]
-            : [step],
-        )
-      : BASE_STEP_ORDER
-
   if (!hasEnvironmentPermissionRequests) {
-    return withLocalEnv
+    return BASE_STEP_ORDER
   }
 
-  return withLocalEnv.flatMap((step) =>
+  return BASE_STEP_ORDER.flatMap((step) =>
     step.id === "confirm"
       ? [{ id: "environment-access" as const, showIndicator: true }, step]
       : [step],
@@ -136,11 +123,6 @@ export interface OnboardingFlowProps {
     id: string
     status: EnvironmentPermissionDecisionStatusDto
   }>) => Promise<EnvironmentDiscoveryStatusDto | null>
-  /**
-   * "local-source" when the app was launched via `pnpm start` from a source
-   * checkout; null otherwise. Toggles the local-environment onboarding step.
-   */
-  launchMode?: string | null
   onImportProject: () => Promise<void>
   onRefreshProviderCredentials?: (options?: {
     force?: boolean
@@ -155,11 +137,6 @@ export interface OnboardingFlowProps {
     providerId: RuntimeProviderIdDto
     originator?: string | null
   }) => Promise<ProviderAuthSessionView | null>
-  onStartXaiDeviceCodeLogin?: (request: { providerId: "xai" }) => Promise<XaiDeviceCodeLoginDto>
-  onPollXaiDeviceCodeLogin?: (request: {
-    providerId: "xai"
-    flowId: string
-  }) => Promise<XaiDeviceCodeLoginDto>
   onComplete: () => void
   onDismiss: () => void
 }
@@ -177,14 +154,11 @@ export function OnboardingFlow({
   projectErrorMessage,
   environmentPermissionRequests = [],
   onResolveEnvironmentPermissions,
-  launchMode = null,
   onImportProject,
   onRefreshProviderCredentials,
   onUpsertProviderCredential,
   onDeleteProviderCredential,
   onStartOAuthLogin,
-  onStartXaiDeviceCodeLogin,
-  onPollXaiDeviceCodeLogin,
   onComplete,
   onDismiss,
 }: OnboardingFlowProps) {
@@ -208,8 +182,8 @@ export function OnboardingFlow({
   }, [environmentPermissionRequests.length])
 
   const stepOrder = useMemo(
-    () => computeStepOrder(launchMode, hasEnvironmentPermissionStep),
-    [hasEnvironmentPermissionStep, launchMode],
+    () => computeStepOrder(hasEnvironmentPermissionStep),
+    [hasEnvironmentPermissionStep],
   )
   const indicatorSteps = useMemo(
     () => stepOrder.filter((step) => step.showIndicator),
@@ -325,7 +299,6 @@ export function OnboardingFlow({
     : isEnvironmentAccess
       ? () => void saveEnvironmentAccessAndContinue()
       : next
-  const showStepSkip = !isConfirm && !isBeta
   const primaryDisabled =
     (isEnvironmentAccess && hasRequiredEnvironmentPermissionPending) ||
     environmentPermissionSaveStatus === "saving"
@@ -350,119 +323,98 @@ export function OnboardingFlow({
       </header>
 
       <main className="relative z-10 flex-1 overflow-y-auto">
-        <div className="flex min-h-full items-center justify-center px-8 py-10">
-          <div
-            key={currentStep.id}
-            className={`w-full ${currentStep.id === "providers" ? "max-w-xl" : "max-w-md"} animate-in fade-in-0 motion-enter ${
-              directionRef.current === 1 ? "slide-in-from-right-4" : "slide-in-from-left-4"
-            }`}
-          >
-            {currentStep.id === "welcome" ? (
-              <WelcomeStep onContinue={next} onSkipAll={onDismiss} />
-            ) : null}
-            {currentStep.id === "local-environment" ? (
-              <LocalEnvironmentStep />
-            ) : null}
-            {currentStep.id === "providers" ? (
-              <ProvidersStep
-                providerCredentials={providerCredentials}
-                providerCredentialsLoadStatus={providerCredentialsLoadStatus}
-                providerCredentialsLoadError={providerCredentialsLoadError}
-                providerCredentialsSaveStatus={providerCredentialsSaveStatus}
-                providerCredentialsSaveError={providerCredentialsSaveError}
-                runtimeSession={runtimeSession}
-                onRefreshProviderCredentials={onRefreshProviderCredentials}
-                onUpsertProviderCredential={onUpsertProviderCredential}
-                onDeleteProviderCredential={onDeleteProviderCredential}
-                onStartOAuthLogin={onStartOAuthLogin}
-                onStartXaiDeviceCodeLogin={onStartXaiDeviceCodeLogin}
-                onPollXaiDeviceCodeLogin={onPollXaiDeviceCodeLogin}
-              />
-            ) : null}
-            {currentStep.id === "project" ? (
-              <ProjectStep
-                project={project}
-                isImporting={isImporting}
-                isProjectLoading={isProjectLoading}
-                errorMessage={projectErrorMessage}
-                onImportProject={() => void onImportProject()}
-              />
-            ) : null}
-            {currentStep.id === "environment-access" ? (
-              <EnvironmentAccessStep
-                permissionRequests={environmentPermissionRequests}
-                decisions={environmentPermissionDecisions}
-                disabled={environmentPermissionSaveStatus === "saving"}
-                onDecisionChange={setEnvironmentPermissionDecision}
-              />
-            ) : null}
-            {currentStep.id === "environment-access" && environmentPermissionSaveError ? (
-              <p className="mt-3 text-[11.5px] leading-relaxed text-destructive">
-                {environmentPermissionSaveError}
-              </p>
-            ) : null}
-            {currentStep.id === "confirm" ? (
-              <ConfirmationStep
-                providerValue={providerReview.value}
-                providerReady={providerReview.ready}
-                projectName={project?.name ?? null}
-              />
-            ) : null}
-            {currentStep.id === "beta" ? <BetaStep /> : null}
-          </div>
-        </div>
-      </main>
-
-      {showFooter ? (
-        <footer className="relative z-10 shrink-0">
-          <div
-            className={`mx-auto flex w-full ${
-              currentStep.id === "providers" ? "max-w-xl" : "max-w-md"
-            } items-center justify-between gap-2 px-8 pb-6`}
-          >
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={back}
-              disabled={stepIndex <= 1}
-              className="h-8 gap-1.5 px-2 text-[12px] text-muted-foreground hover:text-foreground"
+        <div className="flex min-h-full flex-col">
+          <div className="flex flex-1 items-center justify-center px-8 py-10">
+            <div
+              key={currentStep.id}
+              className={`w-full ${currentStep.id === "providers" ? "max-w-xl" : "max-w-md"} animate-in fade-in-0 motion-enter ${
+                directionRef.current === 1 ? "slide-in-from-right-4" : "slide-in-from-left-4"
+              }`}
             >
-              <ArrowLeft className="h-3.5 w-3.5" />
-              Back
-            </Button>
+              {currentStep.id === "welcome" ? (
+                <WelcomeStep onContinue={next} onSkipAll={onDismiss} />
+              ) : null}
+              {currentStep.id === "providers" ? (
+                <ProvidersStep
+                  providerCredentials={providerCredentials}
+                  providerCredentialsLoadStatus={providerCredentialsLoadStatus}
+                  providerCredentialsLoadError={providerCredentialsLoadError}
+                  providerCredentialsSaveStatus={providerCredentialsSaveStatus}
+                  providerCredentialsSaveError={providerCredentialsSaveError}
+                  runtimeSession={runtimeSession}
+                  onRefreshProviderCredentials={onRefreshProviderCredentials}
+                  onUpsertProviderCredential={onUpsertProviderCredential}
+                  onDeleteProviderCredential={onDeleteProviderCredential}
+                  onStartOAuthLogin={onStartOAuthLogin}
+                />
+              ) : null}
+              {currentStep.id === "project" ? (
+                <ProjectStep
+                  project={project}
+                  isImporting={isImporting}
+                  isProjectLoading={isProjectLoading}
+                  errorMessage={projectErrorMessage}
+                  onImportProject={() => void onImportProject()}
+                />
+              ) : null}
+              {currentStep.id === "environment-access" ? (
+                <EnvironmentAccessStep
+                  permissionRequests={environmentPermissionRequests}
+                  decisions={environmentPermissionDecisions}
+                  disabled={environmentPermissionSaveStatus === "saving"}
+                  onDecisionChange={setEnvironmentPermissionDecision}
+                />
+              ) : null}
+              {currentStep.id === "environment-access" && environmentPermissionSaveError ? (
+                <p className="mt-3 text-[11.5px] leading-relaxed text-destructive">
+                  {environmentPermissionSaveError}
+                </p>
+              ) : null}
+              {currentStep.id === "confirm" ? (
+                <ConfirmationStep
+                  providerValue={providerReview.value}
+                  providerReady={providerReview.ready}
+                  projectName={project?.name ?? null}
+                />
+              ) : null}
+              {currentStep.id === "beta" ? <BetaStep /> : null}
+            </div>
+          </div>
 
-            <div className="flex items-center gap-1">
-              {showStepSkip ? (
+          {showFooter ? (
+            <footer className="relative z-10 shrink-0">
+              <div
+                className={`mx-auto flex w-full ${
+                  currentStep.id === "providers" ? "max-w-xl" : "max-w-md"
+                } items-center justify-between gap-2 px-8 pb-6`}
+              >
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={
-                    isEnvironmentAccess
-                      ? () => void saveEnvironmentAccessAndContinue()
-                      : next
-                  }
-                  disabled={
-                    (isEnvironmentAccess && hasRequiredEnvironmentPermissionPending) ||
-                    environmentPermissionSaveStatus === "saving"
-                  }
-                  className="h-8 text-[12px] text-muted-foreground hover:text-foreground"
+                  onClick={back}
+                  disabled={stepIndex <= 1}
+                  className="h-8 gap-1.5 px-2 text-[12px] text-muted-foreground hover:text-foreground"
                 >
-                  Skip
+                  <ArrowLeft className="h-3.5 w-3.5" />
+                  Back
                 </Button>
-              ) : null}
-              <Button
-                size="sm"
-                onClick={handlePrimary}
-                disabled={primaryDisabled}
-                className="group h-8 gap-1.5 bg-primary px-3 text-[12px] font-medium hover:bg-primary/90"
-              >
-                {primaryLabel}
-                <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
-              </Button>
-            </div>
-          </div>
-        </footer>
-      ) : null}
+
+                <div className="flex items-center gap-1">
+                  <Button
+                    size="sm"
+                    onClick={handlePrimary}
+                    disabled={primaryDisabled}
+                    className="group h-8 gap-1.5 bg-primary px-3 text-[12px] font-medium hover:bg-primary/90"
+                  >
+                    {primaryLabel}
+                    <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
+                  </Button>
+                </div>
+              </div>
+            </footer>
+          ) : null}
+        </div>
+      </main>
     </div>
   )
 }

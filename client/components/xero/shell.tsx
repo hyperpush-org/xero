@@ -649,86 +649,104 @@ export function XeroShell({
   )
 
   const hasVcsLineChanges = vcsAdditions > 0 || vcsDeletions > 0
+  const vcsTooltip =
+    vcsChangeCount > 0
+      ? `${vcsChangeCount} file${vcsChangeCount === 1 ? "" : "s"} changed · +${vcsAdditions} −${vcsDeletions}`
+      : "Source control"
   const VcsBtn = (
-    <button
-      aria-label={vcsOpen ? "Close source control" : "Open source control"}
-      aria-pressed={vcsOpen}
-      className={cn(
-        "flex items-center gap-1.5 rounded-md px-1.5 py-[3px] transition-colors",
-        vcsOpen
-          ? "bg-primary/15 text-primary"
-          : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
-      )}
-      onFocus={() => queueSurfacePreload("vcs")}
-      onClick={onToggleVcs}
-      onPointerEnter={() => queueSurfacePreload("vcs")}
-      title={
-        vcsChangeCount > 0
-          ? `${vcsChangeCount} file${vcsChangeCount === 1 ? "" : "s"} changed · +${vcsAdditions} −${vcsDeletions}`
-          : "Source control"
-      }
-      type="button"
-    >
-      <GitCompareArrows className="size-[15px]" />
-      {hasVcsLineChanges ? (
-        <span
-          aria-hidden="true"
-          className="flex items-center gap-1 font-mono text-[10.5px] font-semibold leading-none tabular-nums"
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          aria-label={vcsOpen ? "Close source control" : "Open source control"}
+          aria-pressed={vcsOpen}
+          className={cn(
+            "flex items-center gap-1.5 rounded-md px-1.5 py-[3px] transition-colors",
+            vcsOpen
+              ? "bg-primary/15 text-primary"
+              : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
+          )}
+          onFocus={() => queueSurfacePreload("vcs")}
+          onClick={onToggleVcs}
+          onPointerEnter={() => queueSurfacePreload("vcs")}
+          title={vcsTooltip}
+          type="button"
         >
-          <span className="text-success">+{formatVcsCount(vcsAdditions)}</span>
-          <span className="text-destructive">−{formatVcsCount(vcsDeletions)}</span>
-        </span>
-      ) : vcsChangeCount > 0 ? (
-        <span
-          aria-hidden="true"
-          className="rounded-full bg-warning/90 px-1 py-px font-mono text-[9px] font-semibold leading-none tabular-nums text-black"
-        >
-          {vcsChangeCount > 99 ? "99+" : vcsChangeCount}
-        </span>
-      ) : null}
-    </button>
+          <GitCompareArrows className="size-[15px]" />
+          {hasVcsLineChanges ? (
+            <span
+              aria-hidden="true"
+              className="flex items-center gap-1 font-mono text-[10.5px] font-semibold leading-none tabular-nums"
+            >
+              <span className="text-success">+{formatVcsCount(vcsAdditions)}</span>
+              <span className="text-destructive">−{formatVcsCount(vcsDeletions)}</span>
+            </span>
+          ) : vcsChangeCount > 0 ? (
+            <span
+              aria-hidden="true"
+              className="rounded-full bg-warning/90 px-1 py-px font-mono text-[9px] font-semibold leading-none tabular-nums text-black"
+            >
+              {vcsChangeCount > 99 ? "99+" : vcsChangeCount}
+            </span>
+          ) : null}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={8}>{vcsTooltip}</TooltipContent>
+    </Tooltip>
   )
 
   const WorkflowsBtn = (
-    <button
-      aria-label={workflowsOpen ? "Close workflows" : "Open workflows"}
-      aria-pressed={workflowsOpen}
-      className={cn(
-        "rounded-md p-[5px] transition-colors",
-        workflowsOpen
-          ? "bg-primary/15 text-primary"
-          : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
-      )}
-      onFocus={() => queueSurfacePreload("workflows")}
-      onClick={onToggleWorkflows}
-      onPointerEnter={() => queueSurfacePreload("workflows")}
-      title="Workflows"
-      type="button"
-    >
-      <WorkflowIcon className="size-[15px]" />
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          aria-label={workflowsOpen ? "Close workflows" : "Open workflows"}
+          aria-pressed={workflowsOpen}
+          className={cn(
+            "rounded-md p-[5px] transition-colors",
+            workflowsOpen
+              ? "bg-primary/15 text-primary"
+              : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
+          )}
+          onFocus={() => queueSurfacePreload("workflows")}
+          onClick={onToggleWorkflows}
+          onPointerEnter={() => queueSurfacePreload("workflows")}
+          title="Workflows"
+          type="button"
+        >
+          <WorkflowIcon className="size-[15px]" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={8}>Workflows</TooltipContent>
+    </Tooltip>
   )
 
+  const agentDockTooltip = agentDockDisabled ? "Already in Agent view" : "Agent"
   const AgentDockBtn = (
-    <button
-      aria-label={agentDockOpen ? "Close agent dock" : "Open agent dock"}
-      aria-pressed={agentDockOpen}
-      className={cn(
-        "rounded-md p-[5px] transition-colors",
-        agentDockDisabled && "cursor-not-allowed opacity-40",
-        agentDockOpen
-          ? "bg-primary/15 text-primary"
-          : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
-      )}
-      disabled={agentDockDisabled}
-      onClick={onToggleAgentDock}
-      onFocus={() => queueSurfacePreload("agent-dock")}
-      onPointerEnter={() => queueSurfacePreload("agent-dock")}
-      title={agentDockDisabled ? "Already in Agent view" : "Agent"}
-      type="button"
-    >
-      <Bot className="size-4" />
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className={cn("inline-flex", agentDockDisabled && "cursor-not-allowed")}>
+          <button
+            aria-label={agentDockOpen ? "Close agent dock" : "Open agent dock"}
+            aria-pressed={agentDockOpen}
+            className={cn(
+              "rounded-md p-[5px] transition-colors",
+              agentDockDisabled && "pointer-events-none opacity-40",
+              agentDockOpen
+                ? "bg-primary/15 text-primary"
+                : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
+            )}
+            disabled={agentDockDisabled}
+            onClick={onToggleAgentDock}
+            onFocus={() => queueSurfacePreload("agent-dock")}
+            onPointerEnter={() => queueSurfacePreload("agent-dock")}
+            title={agentDockTooltip}
+            type="button"
+          >
+            <Bot className="size-4" />
+          </button>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={8}>{agentDockTooltip}</TooltipContent>
+    </Tooltip>
   )
 
   const ComputerUseBtn = onToggleComputerUse ? (
@@ -940,6 +958,8 @@ export function XeroShell({
           git={footer?.git}
           spend={footer?.spend}
           notifications={footer?.notifications}
+          notificationsActive={footer?.notificationsActive}
+          onNotificationsClick={footer?.onNotificationsClick}
           spendActive={footer?.spendActive}
           onSpendClick={footer?.onSpendClick}
         />

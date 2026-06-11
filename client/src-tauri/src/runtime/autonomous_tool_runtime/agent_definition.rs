@@ -918,6 +918,7 @@ impl AutonomousToolRuntime {
             runtime_agent_id,
             agent_tool_policy: agent_tool_policy.clone(),
             tool_application_policy: self.tool_application_policy().clone(),
+            stage_allowed_tools: None,
         });
         let registry_tool_names = tool_registry
             .descriptors()
@@ -2036,10 +2037,7 @@ fn normalize_definition_snapshot(
     );
     snapshot.insert(
         "handoffPolicy".into(),
-        object
-            .get("handoffPolicy")
-            .cloned()
-            .unwrap_or_else(default_handoff_policy),
+        normalize_handoff_policy(object.get("handoffPolicy")),
     );
     snapshot.insert("examplePrompts".into(), example_prompts);
     snapshot.insert("refusalEscalationCases".into(), refusal_escalation_cases);
@@ -3396,16 +3394,31 @@ fn validate_workflow_check(
         }
         "tool_succeeded" => {
             let known_tools = tool_access_all_known_tools();
-            if let Some(tool_name) =
-                required_workflow_text(object, "toolName", &format!("{path}.toolName"), diagnostics)
-            {
-                if !known_tools.contains(tool_name.as_str()) {
-                    diagnostics.push(diagnostic(
-                        "agent_definition_workflow_tool_unknown",
-                        format!("Workflow check references unknown tool `{tool_name}`."),
-                        format!("{path}.toolName"),
-                    ));
-                }
+            let mut saw_tool = false;
+            if let Some(tool_name) = workflow_text(object, "toolName") {
+                saw_tool = true;
+                validate_workflow_tool_name(
+                    &tool_name,
+                    &known_tools,
+                    &format!("{path}.toolName"),
+                    diagnostics,
+                );
+            }
+            if let Some(tool_names) = object.get("toolNames") {
+                validate_workflow_tool_names(
+                    tool_names,
+                    &known_tools,
+                    &format!("{path}.toolNames"),
+                    diagnostics,
+                    &mut saw_tool,
+                );
+            }
+            if !saw_tool {
+                diagnostics.push(diagnostic(
+                    "agent_definition_workflow_text_required",
+                    "Workflow check requires non-empty text field `toolName` or non-empty string array `toolNames`.",
+                    format!("{path}.toolName"),
+                ));
             }
             validate_workflow_positive_count(object, path, diagnostics);
         }
@@ -3418,6 +3431,72 @@ fn validate_workflow_check(
             },
             format!("{path}.kind"),
         )),
+    }
+}
+
+fn workflow_text(object: &JsonMap<String, JsonValue>, field: &str) -> Option<String> {
+    object
+        .get(field)
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn validate_workflow_tool_name(
+    tool_name: &str,
+    known_tools: &std::collections::BTreeSet<&'static str>,
+    path: &str,
+    diagnostics: &mut Vec<AutonomousAgentDefinitionValidationDiagnostic>,
+) {
+    if !known_tools.contains(tool_name) {
+        diagnostics.push(diagnostic(
+            "agent_definition_workflow_tool_unknown",
+            format!("Workflow check references unknown tool `{tool_name}`."),
+            path,
+        ));
+    }
+}
+
+fn validate_workflow_tool_names(
+    value: &JsonValue,
+    known_tools: &std::collections::BTreeSet<&'static str>,
+    path: &str,
+    diagnostics: &mut Vec<AutonomousAgentDefinitionValidationDiagnostic>,
+    saw_tool: &mut bool,
+) {
+    let Some(items) = value.as_array() else {
+        diagnostics.push(diagnostic(
+            "agent_definition_workflow_tool_names_invalid",
+            "Workflow toolNames must be a non-empty string array.",
+            path,
+        ));
+        return;
+    };
+    if items.is_empty() {
+        diagnostics.push(diagnostic(
+            "agent_definition_workflow_tool_names_invalid",
+            "Workflow toolNames must be a non-empty string array.",
+            path,
+        ));
+        return;
+    }
+    for (index, item) in items.iter().enumerate() {
+        let item_path = format!("{path}[{index}]");
+        let Some(tool_name) = item
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            diagnostics.push(diagnostic(
+                "agent_definition_workflow_tool_names_invalid",
+                "Workflow toolNames entries must be non-empty strings.",
+                item_path,
+            ));
+            continue;
+        };
+        *saw_tool = true;
+        validate_workflow_tool_name(tool_name, known_tools, &item_path, diagnostics);
     }
 }
 
@@ -3568,7 +3647,12 @@ fn validate_handoff_policy(
         ));
         return;
     };
-    for field in ["enabled", "preserveDefinitionVersion"] {
+    for field in [
+        "enabled",
+        "preserveDefinitionVersion",
+        "carrySummary",
+        "includeDurableContext",
+    ] {
         if object.get(field).and_then(JsonValue::as_bool).is_none() {
             diagnostics.push(diagnostic(
                 "agent_definition_handoff_policy_field_invalid",
@@ -3577,6 +3661,141 @@ fn validate_handoff_policy(
             ));
         }
     }
+    let routing_mode = object.get("routingMode").and_then(JsonValue::as_str);
+    if !matches!(routing_mode, Some("same_agent" | "suggest")) {
+        diagnostics.push(diagnostic(
+            "agent_definition_handoff_policy_field_invalid",
+            "handoffPolicy.routingMode must be `same_agent` or `suggest`.",
+            "handoffPolicy.routingMode",
+        ));
+    }
+    let Some(targets) = object.get("allowedTargets").and_then(JsonValue::as_array) else {
+        diagnostics.push(diagnostic(
+            "agent_definition_handoff_policy_field_invalid",
+            "handoffPolicy.allowedTargets must be an array.",
+            "handoffPolicy.allowedTargets",
+        ));
+        return;
+    };
+    if object.get("enabled").and_then(JsonValue::as_bool) == Some(true)
+        && routing_mode == Some("suggest")
+        && targets.is_empty()
+    {
+        diagnostics.push(diagnostic(
+            "agent_definition_handoff_policy_target_required",
+            "Custom agent routing suggestions require at least one allowed target.",
+            "handoffPolicy.allowedTargets",
+        ));
+    }
+    let mut seen_targets = BTreeSet::new();
+    for (index, target) in targets.iter().enumerate() {
+        let path = format!("handoffPolicy.allowedTargets[{index}]");
+        let Some(target_object) = target.as_object() else {
+            diagnostics.push(diagnostic(
+                "agent_definition_handoff_policy_target_invalid",
+                "Handoff target must be an object.",
+                path,
+            ));
+            continue;
+        };
+        match target_object.get("kind").and_then(JsonValue::as_str) {
+            Some("built_in") => {
+                let Some(runtime_agent_id) = target_object
+                    .get("runtimeAgentId")
+                    .and_then(JsonValue::as_str)
+                    .and_then(parse_handoff_runtime_agent_id)
+                else {
+                    diagnostics.push(diagnostic(
+                        "agent_definition_handoff_policy_target_invalid",
+                        "Built-in handoff target must include a known runtimeAgentId.",
+                        format!("{path}.runtimeAgentId"),
+                    ));
+                    continue;
+                };
+                if !custom_agent_builtin_handoff_target_allowed(runtime_agent_id) {
+                    diagnostics.push(diagnostic(
+                        "agent_definition_handoff_policy_target_forbidden",
+                        "Custom agent handoff targets can include Ask, Engineer, Debug, or Generalist; Plan and excluded runtime agents are not configurable targets.",
+                        format!("{path}.runtimeAgentId"),
+                    ));
+                }
+                let key = format!("built_in:{}", runtime_agent_id.as_str());
+                if !seen_targets.insert(key) {
+                    diagnostics.push(diagnostic(
+                        "agent_definition_handoff_policy_target_duplicate",
+                        "Custom agent handoff targets must be unique.",
+                        path,
+                    ));
+                }
+            }
+            Some("custom") => {
+                let definition_id = target_object
+                    .get("definitionId")
+                    .and_then(JsonValue::as_str)
+                    .map(str::trim)
+                    .unwrap_or_default();
+                if definition_id.is_empty() {
+                    diagnostics.push(diagnostic(
+                        "agent_definition_handoff_policy_target_invalid",
+                        "Custom handoff target must include definitionId.",
+                        format!("{path}.definitionId"),
+                    ));
+                    continue;
+                }
+                if let Some(version) = target_object.get("version") {
+                    if !version.is_null() && version.as_u64().filter(|value| *value > 0).is_none() {
+                        diagnostics.push(diagnostic(
+                            "agent_definition_handoff_policy_target_invalid",
+                            "Custom handoff target version must be a positive integer when present.",
+                            format!("{path}.version"),
+                        ));
+                    }
+                }
+                let version_key = target_object
+                    .get("version")
+                    .and_then(JsonValue::as_u64)
+                    .map(|version| version.to_string())
+                    .unwrap_or_else(|| "current".into());
+                let key = format!("custom:{definition_id}:{version_key}");
+                if !seen_targets.insert(key) {
+                    diagnostics.push(diagnostic(
+                        "agent_definition_handoff_policy_target_duplicate",
+                        "Custom agent handoff targets must be unique.",
+                        path,
+                    ));
+                }
+            }
+            _ => diagnostics.push(diagnostic(
+                "agent_definition_handoff_policy_target_invalid",
+                "Handoff target kind must be `built_in` or `custom`.",
+                format!("{path}.kind"),
+            )),
+        }
+    }
+}
+
+fn parse_handoff_runtime_agent_id(value: &str) -> Option<RuntimeAgentIdDto> {
+    match value {
+        "ask" => Some(RuntimeAgentIdDto::Ask),
+        "computer_use" => Some(RuntimeAgentIdDto::ComputerUse),
+        "plan" => Some(RuntimeAgentIdDto::Plan),
+        "engineer" => Some(RuntimeAgentIdDto::Engineer),
+        "debug" => Some(RuntimeAgentIdDto::Debug),
+        "crawl" => Some(RuntimeAgentIdDto::Crawl),
+        "agent_create" => Some(RuntimeAgentIdDto::AgentCreate),
+        "generalist" => Some(RuntimeAgentIdDto::Generalist),
+        _ => None,
+    }
+}
+
+fn custom_agent_builtin_handoff_target_allowed(runtime_agent_id: RuntimeAgentIdDto) -> bool {
+    matches!(
+        runtime_agent_id,
+        RuntimeAgentIdDto::Ask
+            | RuntimeAgentIdDto::Engineer
+            | RuntimeAgentIdDto::Debug
+            | RuntimeAgentIdDto::Generalist
+    )
 }
 
 fn validate_instruction_hierarchy(
@@ -4303,8 +4522,44 @@ fn default_retrieval_defaults() -> JsonValue {
 fn default_handoff_policy() -> JsonValue {
     json!({
         "enabled": true,
-        "preserveDefinitionVersion": true
+        "routingMode": "same_agent",
+        "allowedTargets": [],
+        "preserveDefinitionVersion": true,
+        "carrySummary": true,
+        "includeDurableContext": true
     })
+}
+
+fn normalize_handoff_policy(value: Option<&JsonValue>) -> JsonValue {
+    let mut normalized = default_handoff_policy()
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let Some(object) = value.and_then(JsonValue::as_object) else {
+        return JsonValue::Object(normalized);
+    };
+
+    for field in [
+        "enabled",
+        "preserveDefinitionVersion",
+        "carrySummary",
+        "includeDurableContext",
+    ] {
+        if let Some(value) = object.get(field).and_then(JsonValue::as_bool) {
+            normalized.insert(field.into(), JsonValue::Bool(value));
+        }
+    }
+    if let Some(mode) = object
+        .get("routingMode")
+        .and_then(JsonValue::as_str)
+        .filter(|mode| matches!(*mode, "same_agent" | "suggest"))
+    {
+        normalized.insert("routingMode".into(), JsonValue::String(mode.into()));
+    }
+    if let Some(targets) = object.get("allowedTargets").and_then(JsonValue::as_array) {
+        normalized.insert("allowedTargets".into(), JsonValue::Array(targets.clone()));
+    }
+    JsonValue::Object(normalized)
 }
 
 fn merge_clone_snapshot(
@@ -4398,6 +4653,7 @@ mod tests {
         let controls = runtime_controls_from_request(Some(&RuntimeRunControlInputDto {
             runtime_agent_id: RuntimeAgentIdDto::AgentCreate,
             agent_definition_id: None,
+            agent_definition_version: None,
             provider_profile_id: Some(FAKE_PROVIDER_ID.into()),
             model_id: OPENAI_CODEX_PROVIDER_ID.into(),
             thinking_effort: None,
@@ -4529,7 +4785,11 @@ mod tests {
             },
             "handoffPolicy": {
                 "enabled": true,
-                "preserveDefinitionVersion": true
+                "routingMode": "same_agent",
+                "allowedTargets": [],
+                "preserveDefinitionVersion": true,
+                "carrySummary": true,
+                "includeDurableContext": true
             },
             "examplePrompts": [
                 "Draft release notes for the current milestone.",
@@ -6212,7 +6472,7 @@ mod tests {
                     "title": "Draft",
                     "allowedTools": ["read"],
                     "requiredChecks": [
-                        {"kind": "tool_succeeded", "toolName": "read", "minCount": 1}
+                        {"kind": "tool_succeeded", "toolNames": ["read", "search"], "minCount": 1}
                     ]
                 }
             ]
@@ -6228,8 +6488,8 @@ mod tests {
 
         definition["workflowStructure"]["phases"][0]["branches"][0]["targetPhaseId"] =
             json!("missing");
-        definition["workflowStructure"]["phases"][1]["requiredChecks"][0]["toolName"] =
-            json!("not_a_tool");
+        definition["workflowStructure"]["phases"][1]["requiredChecks"][0]["toolNames"] =
+            json!(["read", "not_a_tool"]);
         let report = validate_definition_snapshot(&definition);
         assert_eq!(
             report.status,

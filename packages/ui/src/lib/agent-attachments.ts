@@ -4,6 +4,33 @@ export type AgentAttachmentClassification =
 	| { kind: AgentAttachmentKind; mediaType: string }
 	| { kind: null; reason: "unsupported" | "too_large" | "empty" };
 
+export interface AgentAttachmentCompatibilityProfile {
+	modelLabel?: string | null;
+	label?: string | null;
+	displayName?: string | null;
+	providerId?: string | null;
+	modelId?: string | null;
+	inputModalities?: readonly string[] | null;
+	attachmentStatus?: string | null;
+	supportedTypes?: readonly string[] | null;
+	capabilities?: {
+		capabilities?: {
+			attachments?: {
+				status?: string | null;
+				supportedTypes?: readonly string[] | null;
+			} | null;
+		} | null;
+	} | null;
+}
+
+export type AgentAttachmentCompatibilityResult =
+	| { supported: true }
+	| {
+			supported: false;
+			requiredModality: "image" | "file";
+			message: string;
+	  };
+
 export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 export const MAX_TOTAL_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 
@@ -102,6 +129,201 @@ export function classifyAttachment(file: {
 		return { kind: "text", mediaType: lower };
 	}
 	return { kind: null, reason: "unsupported" };
+}
+
+export function requiredAttachmentInputModality(
+	kind: AgentAttachmentKind,
+): "image" | "file" | null {
+	switch (kind) {
+		case "image":
+			return "image";
+		case "document":
+			return "file";
+		case "text":
+			return null;
+	}
+}
+
+export function checkAttachmentModelCompatibility(
+	attachment: { kind: AgentAttachmentKind; mediaType?: string | null },
+	profile: AgentAttachmentCompatibilityProfile | null | undefined,
+): AgentAttachmentCompatibilityResult {
+	const requiredModality = requiredAttachmentInputModality(attachment.kind);
+	if (requiredModality === null) {
+		return { supported: true };
+	}
+
+	const normalizedProfile = normalizeAttachmentCompatibilityProfile(profile);
+	if (!normalizedProfile) {
+		return {
+			supported: false,
+			requiredModality,
+			message: `The selected model's support for ${attachmentModalityLabel(requiredModality)} attachments is unknown.`,
+		};
+	}
+
+	const mediaType = normalizeMediaType(attachment.mediaType ?? "");
+	const supportedValues = [
+		...normalizedProfile.inputModalities,
+		...normalizedProfile.supportedTypes,
+	].map(normalizeCapabilityValue);
+	const hasRequiredModality = supportedValues.some((value) =>
+		attachmentCapabilityMatches(value, requiredModality, mediaType),
+	) || providerModelSupportsAttachmentModality(
+		normalizedProfile.providerId,
+		normalizedProfile.modelId,
+		requiredModality,
+	);
+
+	if (hasRequiredModality) {
+		return { supported: true };
+	}
+
+	return {
+		supported: false,
+		requiredModality,
+		message: `${normalizedProfile.modelLabel} does not support ${attachmentModalityLabel(requiredModality)} attachments.`,
+	};
+}
+
+export function attachmentCompatibilityRejectionMessage(
+	file: { name: string },
+	classification: Extract<AgentAttachmentClassification, { kind: AgentAttachmentKind }>,
+	profile: AgentAttachmentCompatibilityProfile | null | undefined,
+): string | null {
+	const compatibility = checkAttachmentModelCompatibility(
+		{ kind: classification.kind, mediaType: classification.mediaType },
+		profile,
+	);
+	if (compatibility.supported) {
+		return null;
+	}
+	return `Skipped "${file.name}" — ${compatibility.message} Choose a compatible model or remove this file.`;
+}
+
+function normalizeAttachmentCompatibilityProfile(
+	profile: AgentAttachmentCompatibilityProfile | null | undefined,
+): {
+	modelLabel: string;
+	providerId: string | null;
+	modelId: string | null;
+	inputModalities: readonly string[];
+	supportedTypes: readonly string[];
+} | null {
+	if (!profile) return null;
+	const attachments = profile.capabilities?.capabilities?.attachments ?? null;
+	const inputModalities = normalizeCapabilityList(profile.inputModalities);
+	const supportedTypes = normalizeCapabilityList(
+		profile.supportedTypes ?? attachments?.supportedTypes ?? null,
+	);
+	return {
+		modelLabel: selectedModelLabel(profile),
+		providerId: normalizeOptionalIdentifier(profile.providerId),
+		modelId: normalizeOptionalIdentifier(profile.modelId),
+		inputModalities,
+		supportedTypes,
+	};
+}
+
+function normalizeCapabilityList(
+	values: readonly string[] | null | undefined,
+): readonly string[] {
+	if (!values) return [];
+	return values
+		.map((value) => value.trim())
+		.filter((value) => value.length > 0);
+}
+
+function selectedModelLabel(profile: AgentAttachmentCompatibilityProfile): string {
+	const label =
+		profile.modelLabel ??
+		profile.displayName ??
+		profile.label ??
+		profile.modelId ??
+		null;
+	const trimmed = label?.trim() ?? "";
+	return trimmed.length > 0 ? trimmed : "The selected model";
+}
+
+function normalizeCapabilityValue(value: string): string {
+	return value.trim().toLowerCase().replace(/-/g, "_");
+}
+
+function normalizeOptionalIdentifier(value: string | null | undefined): string | null {
+	const normalized = value?.trim().toLowerCase() ?? "";
+	return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeMediaType(value: string): string {
+	return value.split(";")[0]?.trim().toLowerCase() ?? "";
+}
+
+function attachmentCapabilityMatches(
+	value: string,
+	requiredModality: "image" | "file",
+	mediaType: string,
+): boolean {
+	if (value === requiredModality) return true;
+	if (mediaType && value === mediaType) return true;
+	if (requiredModality === "image") {
+		return (
+			value === "image/*" ||
+			(mediaType.startsWith("image/") && value.startsWith("image/"))
+		);
+	}
+	return value === "document" || value === "pdf" || value === "application/pdf";
+}
+
+function providerModelSupportsAttachmentModality(
+	providerId: string | null,
+	modelId: string | null,
+	requiredModality: "image" | "file",
+): boolean {
+	if (!providerId || !modelId) return false;
+	if (
+		requiredModality === "image" &&
+		providerId === "xai" &&
+		(modelId === "grok-4.3" || modelId === "grok-4.3-latest")
+	) {
+		return true;
+	}
+	if (providerId !== "openai_codex" && providerId !== "openai_api") {
+		return false;
+	}
+	const modelName = modelId.split("/").pop() ?? modelId;
+	return (
+		isOpenAiGptAttachmentModel(modelName) &&
+		(requiredModality === "image" || requiredModality === "file")
+	);
+}
+
+function isOpenAiGptAttachmentModel(modelName: string): boolean {
+	const normalized = modelName.trim().toLowerCase();
+	if (normalized === "chat-latest") return true;
+	if (!normalized.startsWith("gpt-")) return false;
+	if (
+		normalized.startsWith("gpt-image") ||
+		normalized.startsWith("gpt-audio") ||
+		normalized.startsWith("gpt-realtime") ||
+		normalized.includes("search") ||
+		normalized.includes("transcribe") ||
+		normalized.includes("tts")
+	) {
+		return false;
+	}
+	return (
+		normalized === "gpt-5" ||
+		normalized.startsWith("gpt-5.") ||
+		normalized.startsWith("gpt-5-") ||
+		normalized === "gpt-4.1" ||
+		normalized.startsWith("gpt-4.1-") ||
+		normalized === "gpt-4o" ||
+		normalized.startsWith("gpt-4o-")
+	);
+}
+
+function attachmentModalityLabel(modality: "image" | "file"): string {
+	return modality === "image" ? "image" : "file";
 }
 
 function resolveMediaType(

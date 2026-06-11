@@ -30,6 +30,55 @@ pub fn load_repository_diff(
     scope: RepositoryDiffScope,
     registry_path: &Path,
 ) -> CommandResult<RepositoryDiffResponseDto> {
+    load_repository_diff_with_options(
+        expected_project_id,
+        scope,
+        &RepositoryDiffRenderOptions::default(),
+        registry_path,
+    )
+}
+
+pub fn load_repository_diff_with_patch_budget(
+    expected_project_id: &str,
+    scope: RepositoryDiffScope,
+    max_patch_bytes: usize,
+    registry_path: &Path,
+) -> CommandResult<RepositoryDiffResponseDto> {
+    load_repository_diff_with_options(
+        expected_project_id,
+        scope,
+        &RepositoryDiffRenderOptions {
+            max_patch_bytes,
+            pathspecs: Vec::new(),
+        },
+        registry_path,
+    )
+}
+
+pub fn load_repository_diff_for_paths(
+    expected_project_id: &str,
+    scope: RepositoryDiffScope,
+    paths: &[String],
+    max_patch_bytes: usize,
+    registry_path: &Path,
+) -> CommandResult<RepositoryDiffResponseDto> {
+    load_repository_diff_with_options(
+        expected_project_id,
+        scope,
+        &RepositoryDiffRenderOptions {
+            max_patch_bytes,
+            pathspecs: normalized_pathspecs(paths),
+        },
+        registry_path,
+    )
+}
+
+fn load_repository_diff_with_options(
+    expected_project_id: &str,
+    scope: RepositoryDiffScope,
+    options: &RepositoryDiffRenderOptions,
+    registry_path: &Path,
+) -> CommandResult<RepositoryDiffResponseDto> {
     let candidates = status::lookup_registry_candidates(expected_project_id, registry_path)?;
     let mut first_error: Option<CommandError> = None;
 
@@ -52,7 +101,7 @@ pub fn load_repository_diff(
                     ));
                 }
 
-                return Ok(load_repository_diff_from_handle(&repository, scope)?.response);
+                return Ok(load_repository_diff_from_handle(&repository, scope, options)?.response);
             }
             Err(error) => {
                 if first_error.is_none() {
@@ -70,14 +119,32 @@ pub fn load_repository_diff_from_root(
     scope: RepositoryDiffScope,
 ) -> CommandResult<RepositoryDiffProjection> {
     let repository = repository::open_repository_root(root_path)?;
-    load_repository_diff_from_handle(&repository, scope)
+    load_repository_diff_from_handle(&repository, scope, &RepositoryDiffRenderOptions::default())
+}
+
+pub fn load_repository_diff_for_paths_from_root(
+    root_path: &Path,
+    scope: RepositoryDiffScope,
+    paths: &[String],
+    max_patch_bytes: usize,
+) -> CommandResult<RepositoryDiffProjection> {
+    let repository = repository::open_repository_root(root_path)?;
+    load_repository_diff_from_handle(
+        &repository,
+        scope,
+        &RepositoryDiffRenderOptions {
+            max_patch_bytes,
+            pathspecs: normalized_pathspecs(paths),
+        },
+    )
 }
 
 fn load_repository_diff_from_handle(
     repository: &repository::RepositoryHandle,
     scope: RepositoryDiffScope,
+    options: &RepositoryDiffRenderOptions,
 ) -> CommandResult<RepositoryDiffProjection> {
-    let rendered = render_patch(&repository.repository, scope)?;
+    let rendered = render_patch(&repository.repository, scope, options)?;
     let base_revision = match scope {
         RepositoryDiffScope::Unstaged => None,
         RepositoryDiffScope::Staged | RepositoryDiffScope::Worktree => repository.head_sha.clone(),
@@ -116,18 +183,36 @@ struct RenderedPatch {
     changed_files: usize,
 }
 
+struct RepositoryDiffRenderOptions {
+    max_patch_bytes: usize,
+    pathspecs: Vec<String>,
+}
+
+impl Default for RepositoryDiffRenderOptions {
+    fn default() -> Self {
+        Self {
+            max_patch_bytes: MAX_PATCH_BYTES,
+            pathspecs: Vec::new(),
+        }
+    }
+}
+
 fn render_patch(
     repository: &git2::Repository,
     scope: RepositoryDiffScope,
+    options: &RepositoryDiffRenderOptions,
 ) -> CommandResult<RenderedPatch> {
     let mut diff_options = DiffOptions::new();
     diff_options
         .include_untracked(true)
         .recurse_untracked_dirs(true)
-        .show_untracked_content(true)
+        .show_untracked_content(false)
         .include_typechange(true)
         .include_typechange_trees(true)
         .ignore_submodules(true);
+    for pathspec in &options.pathspecs {
+        diff_options.pathspec(pathspec);
+    }
 
     let head_tree = repository
         .head()
@@ -170,6 +255,7 @@ fn render_patch(
     let mut truncated = false;
     let mut bytes_written = 0usize;
     let mut current_file_index: Option<usize> = None;
+    let max_patch_bytes = options.max_patch_bytes;
 
     let print_result = diff.print(DiffFormat::Patch, |delta, hunk, line| {
         let file_key = repository_diff_file_key(&delta);
@@ -195,14 +281,14 @@ fn render_patch(
 
         let rendered_line = render_diff_line(&line);
 
-        if bytes_written >= MAX_PATCH_BYTES {
+        if bytes_written >= max_patch_bytes {
             truncated = true;
             mark_file_truncated(&mut files[file_index]);
             return false;
         }
 
         let content_bytes = rendered_line.len();
-        let remaining = MAX_PATCH_BYTES - bytes_written;
+        let remaining = max_patch_bytes - bytes_written;
 
         if content_bytes > remaining {
             let end = char_boundary_before(&rendered_line, remaining);
@@ -407,6 +493,14 @@ fn char_boundary_before(text: &str, max_bytes: usize) -> usize {
     end
 }
 
+fn normalized_pathspecs(paths: &[String]) -> Vec<String> {
+    paths
+        .iter()
+        .map(|path| path.trim().replace('\\', "/"))
+        .filter(|path| !path.is_empty())
+        .collect()
+}
+
 fn scope_label(scope: RepositoryDiffScope) -> &'static str {
     match scope {
         RepositoryDiffScope::Staged => "staged",
@@ -477,6 +571,56 @@ mod tests {
         assert_eq!(staged.files.len(), 1);
         assert_eq!(staged.files[0].display_path, "new.txt");
         assert_eq!(staged.files[0].status, ChangeKind::Added);
+    }
+
+    #[test]
+    fn unstaged_diff_lists_untracked_paths_without_eager_content() {
+        let (temp_dir, _repository) = repository_with_committed_file("file.txt", "alpha\n");
+        fs::write(
+            temp_dir.path().join("untracked.txt"),
+            "expensive untracked body\n",
+        )
+        .unwrap();
+
+        let response =
+            load_repository_diff_from_root(temp_dir.path(), RepositoryDiffScope::Unstaged)
+                .unwrap()
+                .response;
+
+        let untracked = response
+            .files
+            .iter()
+            .find(|file| file.display_path == "untracked.txt")
+            .expect("untracked file entry");
+        assert_eq!(untracked.status, ChangeKind::Added);
+        assert!(!response.patch.contains("expensive untracked body"));
+        assert!(!untracked.patch.contains("expensive untracked body"));
+    }
+
+    #[test]
+    fn staged_diff_for_paths_reads_selected_file_without_global_prefix() {
+        let (temp_dir, repository) = repository_with_committed_file("first.txt", "alpha\n");
+        fs::write(temp_dir.path().join("first.txt"), "alpha\nfirst change\n").unwrap();
+        fs::write(temp_dir.path().join("second.txt"), "second change\n").unwrap();
+        stage_path(&repository, "first.txt");
+        stage_path(&repository, "second.txt");
+
+        let response = load_repository_diff_for_paths_from_root(
+            temp_dir.path(),
+            RepositoryDiffScope::Staged,
+            &["second.txt".to_owned()],
+            4096,
+        )
+        .unwrap()
+        .response;
+
+        assert_eq!(response.files.len(), 1);
+        assert_eq!(response.files[0].display_path, "second.txt");
+        assert!(response
+            .patch
+            .contains("diff --git a/second.txt b/second.txt"));
+        assert!(response.patch.contains("+second change"));
+        assert!(!response.patch.contains("first change"));
     }
 
     fn repository_with_committed_file(path: &str, content: &str) -> (TempDir, Repository) {

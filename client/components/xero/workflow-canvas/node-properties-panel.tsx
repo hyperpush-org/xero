@@ -56,7 +56,9 @@ import {
   type CustomAgentWorkflowPhaseDto,
 } from '@/src/lib/xero-model/agent-definition'
 import {
+  getRuntimeAgentLabel,
   getRuntimeRunApprovalModeLabel,
+  type RuntimeAgentIdDto,
   type RuntimeRunApprovalModeDto,
 } from '@/src/lib/xero-model/runtime'
 import type {
@@ -97,6 +99,12 @@ const EDITABLE_PROFILES: AgentDefinitionBaseCapabilityProfileDto[] = [
   'agent_builder',
 ]
 const APPROVAL_MODES: RuntimeRunApprovalModeDto[] = ['suggest', 'auto_edit', 'yolo']
+const HANDOFF_BUILT_IN_TARGETS: RuntimeAgentIdDto[] = [
+  'ask',
+  'engineer',
+  'debug',
+  'generalist',
+]
 const TOOL_GROUP_OPTIONS = [
   'core',
   'harness_runner',
@@ -600,6 +608,25 @@ function AgentHeaderEditor({ nodeId, data }: { nodeId: string; data: AgentHeader
     updateAdvanced({ allowedToolGroups: Array.from(set) })
   }
 
+  const handoffBuiltInTargetSet = new Set(
+    advanced.handoffAllowedTargets
+      .filter((target) => target.kind === 'built_in')
+      .map((target) => target.runtimeAgentId),
+  )
+  const customHandoffTargetCount = advanced.handoffAllowedTargets.filter(
+    (target) => target.kind === 'custom',
+  ).length
+  const toggleHandoffBuiltInTarget = (runtimeAgentId: RuntimeAgentIdDto, next: boolean) => {
+    const withoutTarget = advanced.handoffAllowedTargets.filter(
+      (target) => !(target.kind === 'built_in' && target.runtimeAgentId === runtimeAgentId),
+    )
+    updateAdvanced({
+      handoffAllowedTargets: next
+        ? [...withoutTarget, { kind: 'built_in', runtimeAgentId }]
+        : withoutTarget,
+    })
+  }
+
   const formatReasons = (sources: readonly string[]): string => {
     const display = sources
       .filter((src) => !src.startsWith('db:'))
@@ -789,6 +816,72 @@ function AgentHeaderEditor({ nodeId, data }: { nodeId: string; data: AgentHeader
               />
             )
           })}
+        </div>
+      </div>
+
+      <div className="space-y-2.5">
+        <div className="flex items-center justify-between">
+          <SectionHeading label="Handoff" />
+          {customHandoffTargetCount > 0 ? (
+            <Badge variant="secondary" className="h-5 rounded px-1.5 text-[9px]">
+              {customHandoffTargetCount} custom
+            </Badge>
+          ) : null}
+        </div>
+        <div className="flex flex-col gap-1">
+          <CheckboxToggle
+            label="Enabled"
+            checked={advanced.handoffEnabled}
+            onChange={(next) => updateAdvanced({ handoffEnabled: next })}
+          />
+        </div>
+        <FieldGroup label="Mode">
+          <PanelSelect
+            value={advanced.handoffRoutingMode}
+            onChange={(value) => {
+              if (value === 'same_agent' || value === 'suggest') {
+                updateAdvanced({ handoffRoutingMode: value })
+              }
+            }}
+            options={[
+              { value: 'same_agent', label: 'Same agent' },
+              { value: 'suggest', label: 'Route suggestions' },
+            ]}
+          />
+        </FieldGroup>
+        {advanced.handoffRoutingMode === 'suggest' ? (
+          <div className="space-y-1">
+            <Label className="text-[9px] font-medium uppercase tracking-[0.12em] text-muted-foreground/80">
+              Built-in targets
+            </Label>
+            <div className="flex flex-col gap-1">
+              {HANDOFF_BUILT_IN_TARGETS.map((runtimeAgentId) => (
+                <CheckboxToggle
+                  key={runtimeAgentId}
+                  label={getRuntimeAgentLabel(runtimeAgentId)}
+                  checked={handoffBuiltInTargetSet.has(runtimeAgentId)}
+                  onChange={(next) => toggleHandoffBuiltInTarget(runtimeAgentId, next)}
+                />
+              ))}
+            </div>
+          </div>
+        ) : null}
+        <div className="flex flex-col gap-1">
+          <CheckboxToggle
+            label="Preserve pinned version"
+            checked={advanced.handoffPreserveDefinitionVersion}
+            onChange={(next) => updateAdvanced({ handoffPreserveDefinitionVersion: next })}
+          />
+          <CheckboxToggle
+            label="Carry summary"
+            checked={advanced.handoffCarrySummary}
+            onChange={(next) => updateAdvanced({ handoffCarrySummary: next })}
+          />
+          <CheckboxToggle
+            label="Carry durable context"
+            checked={advanced.handoffIncludeDurableContext}
+            onChange={(next) => updateAdvanced({ handoffIncludeDurableContext: next })}
+          />
         </div>
       </div>
 

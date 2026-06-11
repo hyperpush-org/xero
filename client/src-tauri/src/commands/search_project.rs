@@ -1,4 +1,8 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    io::{BufRead, BufReader},
+    path::Path,
+};
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use ignore::WalkBuilder;
@@ -73,6 +77,10 @@ pub async fn search_project<R: Runtime>(
         "project-search:visible",
         "project search",
         move |cancellation| {
+            let _perf = crate::perf::PerfSpan::new("project_search")
+                .field("projectId", project_id.clone())
+                .field("maxResults", cap.to_string())
+                .field("maxFiles", file_cap.to_string());
             search_project_at_root(
                 SearchProjectJob {
                     project_root,
@@ -161,17 +169,20 @@ fn search_project_at_root(
             }
         }
 
-        let Ok(contents) = fs::read_to_string(abs_path) else {
-            // Non-UTF-8 / binary — skip silently.
+        let Ok(file) = fs::File::open(abs_path) else {
             continue;
         };
-        cancellation.check_cancelled("project search")?;
+        let reader = BufReader::new(file);
 
         let mut matches_in_file: Vec<SearchMatchDto> = Vec::new();
-        for (line_idx, line) in contents.lines().enumerate() {
+        for (line_idx, line) in reader.lines().enumerate() {
             if line_idx % 128 == 0 {
                 cancellation.check_cancelled("project search")?;
             }
+            let Ok(line) = line else {
+                // Non-UTF-8 / binary — skip silently.
+                continue 'walk;
+            };
             if total_matches >= cap {
                 truncated = true;
                 if !matches_in_file.is_empty() {
@@ -184,13 +195,13 @@ fn search_project_at_root(
                 break 'walk;
             }
 
-            for m in pattern.find_iter(line) {
+            for m in pattern.find_iter(&line) {
                 if total_matches >= cap {
                     truncated = true;
                     break;
                 }
-                let column = utf8_char_col(line, m.start());
-                let (prefix, matched, suffix) = build_preview(line, m.start(), m.end());
+                let column = utf8_char_col(&line, m.start());
+                let (prefix, matched, suffix) = build_preview(&line, m.start(), m.end());
                 matches_in_file.push(SearchMatchDto {
                     line: (line_idx as u32) + 1,
                     column,
@@ -267,6 +278,8 @@ pub async fn replace_in_project<R: Runtime>(
     drop(app);
 
     jobs.run_blocking_project_lane(project_id, "file", "project replace", move || {
+        let _perf = crate::perf::PerfSpan::new("project_replace")
+            .field("projectId", request.project_id.clone());
         replace_in_project_at_root(project_root, request, pattern, include, exclude)
     })
     .await
@@ -691,6 +704,46 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["/visible.txt"]
         );
+    }
+
+    #[test]
+    fn project_search_streams_text_and_skips_invalid_utf8_files() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        fs::write(
+            temp_dir.path().join("large.txt"),
+            (0..10_000)
+                .map(|index| {
+                    if index == 9_999 {
+                        "needle at the end".to_owned()
+                    } else {
+                        format!("line {index}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .expect("large text");
+        fs::write(temp_dir.path().join("binary.bin"), [0xff, 0xfe, b'n', b'e']).expect("binary");
+        let pattern = build_pattern("needle", true, false, false).expect("pattern");
+
+        let response = search_project_at_root(
+            SearchProjectJob {
+                project_root: temp_dir.path().to_path_buf(),
+                project_id: "project-1".into(),
+                pattern,
+                include: None,
+                exclude: None,
+                cap: 100,
+                file_cap: 10,
+                cursor: None,
+            },
+            BackendCancellationToken::default(),
+        )
+        .expect("search");
+
+        assert_eq!(response.total_matches, 1);
+        assert_eq!(response.files[0].path, "/large.txt");
+        assert_eq!(response.files[0].matches[0].line, 10_000);
     }
 
     #[test]

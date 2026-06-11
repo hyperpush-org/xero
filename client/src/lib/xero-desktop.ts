@@ -151,6 +151,7 @@ import {
   getAgentRunRequestSchema,
   listAgentRunsRequestSchema,
   listAgentRunsResponseSchema,
+  rejectAgentActionRequestSchema,
   resumeAgentRunRequestSchema,
   sendAgentMessageRequestSchema,
   startAgentTaskRequestSchema,
@@ -163,6 +164,7 @@ import {
   type ExportAgentTraceRequestDto,
   type GetAgentRunRequestDto,
   type ListAgentRunsResponseDto,
+  type RejectAgentActionRequestDto,
   type ResumeAgentRunRequestDto,
   type SendAgentMessageRequestDto,
   type StartAgentTaskRequestDto,
@@ -391,19 +393,13 @@ import {
 import {
   completeOAuthCallbackRequestSchema,
   deleteProviderCredentialRequestSchema,
-  pollXaiDeviceCodeLoginRequestSchema,
   providerCredentialsSnapshotSchema,
   startOAuthLoginRequestSchema,
-  startXaiDeviceCodeLoginRequestSchema,
   upsertProviderCredentialRequestSchema,
-  xaiDeviceCodeLoginSchema,
   type CompleteOAuthCallbackRequestDto,
-  type PollXaiDeviceCodeLoginRequestDto,
   type ProviderCredentialsSnapshotDto,
   type StartOAuthLoginRequestDto,
-  type StartXaiDeviceCodeLoginRequestDto,
   type UpsertProviderCredentialRequestDto,
-  type XaiDeviceCodeLoginDto,
 } from '@/src/lib/xero-model/provider-credentials'
 import {
   createPreflightProviderProfileRequest,
@@ -468,6 +464,28 @@ import {
   type UpsertSoulSettingsRequestDto,
 } from '@/src/lib/xero-model/soul'
 import {
+  autonomousWebSearchSettingsSchema,
+  checkAutonomousWebSearchProviderRequestSchema,
+  deleteAutonomousWebSearchProviderRequestSchema,
+  setActiveAutonomousWebSearchProviderRequestSchema,
+  upsertAutonomousWebSearchProviderRequestSchema,
+  upsertAutonomousWebSearchSettingsRequestSchema,
+  type AutonomousWebSearchSettingsDto,
+  type CheckAutonomousWebSearchProviderRequestDto,
+  type DeleteAutonomousWebSearchProviderRequestDto,
+  type SetActiveAutonomousWebSearchProviderRequestDto,
+  type UpsertAutonomousWebSearchProviderRequestDto,
+  type UpsertAutonomousWebSearchSettingsRequestDto,
+} from '@/src/lib/xero-model/autonomous-web-search'
+import {
+  developerToolErrorLogClearResponseSchema,
+  developerToolErrorLogListRequestSchema,
+  developerToolErrorLogListResponseSchema,
+  type DeveloperToolErrorLogClearResponseDto,
+  type DeveloperToolErrorLogListRequestDto,
+  type DeveloperToolErrorLogListResponseDto,
+} from '@/src/lib/xero-model/developer-tool-error-log'
+import {
   compactSessionHistoryRequestSchema,
   compactSessionHistoryResponseSchema,
   agentSessionBranchResponseSchema,
@@ -475,12 +493,12 @@ import {
   correctSessionMemoryRequestSchema,
   correctSessionMemoryResponseSchema,
   deleteSessionMemoryRequestSchema,
-  extractSessionMemoryCandidatesRequestSchema,
-  extractSessionMemoryCandidatesResponseSchema,
+  extractSessionMemoriesRequestSchema,
+  extractSessionMemoriesResponseSchema,
   exportSessionTranscriptRequestSchema,
   getSessionContextSnapshotRequestSchema,
-  getSessionMemoryReviewQueueRequestSchema,
-  getSessionMemoryReviewQueueResponseSchema,
+  getSessionMemoryItemsRequestSchema,
+  getSessionMemoryItemsResponseSchema,
   getSessionTranscriptRequestSchema,
   listSessionMemoriesRequestSchema,
   listSessionMemoriesResponseSchema,
@@ -500,11 +518,11 @@ import {
   type CorrectSessionMemoryRequestDto,
   type CorrectSessionMemoryResponseDto,
   type DeleteSessionMemoryRequestDto,
-  type ExtractSessionMemoryCandidatesRequestDto,
-  type ExtractSessionMemoryCandidatesResponseDto,
+  type ExtractSessionMemoriesRequestDto,
+  type ExtractSessionMemoriesResponseDto,
   type GetSessionContextSnapshotRequestDto,
-  type GetSessionMemoryReviewQueueRequestDto,
-  type GetSessionMemoryReviewQueueResponseDto,
+  type GetSessionMemoryItemsRequestDto,
+  type GetSessionMemoryItemsResponseDto,
   type GetSessionTranscriptRequestDto,
   type ListSessionMemoriesRequestDto,
   type ListSessionMemoriesResponseDto,
@@ -627,6 +645,11 @@ const COMMANDS = {
   terminalWrite: 'terminal_write',
   terminalResize: 'terminal_resize',
   terminalClose: 'terminal_close',
+  terminalReadTranscript: 'terminal_read_transcript',
+  terminalClearTranscript: 'terminal_clear_transcript',
+  terminalSuggest: 'terminal_suggest',
+  terminalRecordCommand: 'terminal_record_command',
+  terminalIgnoreSuggestion: 'terminal_ignore_suggestion',
   getProjectSnapshot: 'get_project_snapshot',
   getProjectUsageSummary: 'get_project_usage_summary',
   getRepositoryStatus: 'get_repository_status',
@@ -667,6 +690,7 @@ const COMMANDS = {
   deleteProjectContextRecord: 'delete_project_context_record',
   supersedeProjectContextRecord: 'supersede_project_context_record',
   ensureGlobalComputerUseSession: 'ensure_global_computer_use_session',
+  resetGlobalComputerUseSession: 'reset_global_computer_use_session',
   createAgentSession: 'create_agent_session',
   listAgentDefinitions: 'list_agent_definitions',
   archiveAgentDefinition: 'archive_agent_definition',
@@ -714,6 +738,7 @@ const COMMANDS = {
   startAgentTask: 'start_agent_task',
   sendAgentMessage: 'send_agent_message',
   cancelAgentRun: 'cancel_agent_run',
+  rejectAgentAction: 'reject_agent_action',
   resumeAgentRun: 'resume_agent_run',
   getAgentRun: 'get_agent_run',
   exportAgentTrace: 'export_agent_trace',
@@ -728,8 +753,8 @@ const COMMANDS = {
   branchAgentSession: 'branch_agent_session',
   rewindAgentSession: 'rewind_agent_session',
   listSessionMemories: 'list_session_memories',
-  extractSessionMemoryCandidates: 'extract_session_memory_candidates',
-  getSessionMemoryReviewQueue: 'get_session_memory_review_queue',
+  extractSessionMemories: 'extract_session_memories',
+  getSessionMemoryItems: 'get_session_memory_review_queue',
   updateSessionMemory: 'update_session_memory',
   correctSessionMemory: 'correct_session_memory',
   deleteSessionMemory: 'delete_session_memory',
@@ -760,8 +785,6 @@ const COMMANDS = {
   deleteProviderCredential: 'delete_provider_credential',
   startOAuthLogin: 'start_oauth_login',
   completeOAuthCallback: 'complete_oauth_callback',
-  startXaiDeviceCodeLogin: 'start_xai_device_code_login',
-  pollXaiDeviceCodeLogin: 'poll_xai_device_code_login',
   startOpenAiLogin: 'start_openai_login',
   submitOpenAiCallback: 'submit_openai_callback',
   startAutonomousRun: 'start_autonomous_run',
@@ -792,6 +815,14 @@ const COMMANDS = {
   soulUpdateSettings: 'soul_update_settings',
   agentToolingSettings: 'agent_tooling_settings',
   agentToolingUpdateSettings: 'agent_tooling_update_settings',
+  developerToolErrorLogList: 'developer_tool_error_log_list',
+  developerToolErrorLogClear: 'developer_tool_error_log_clear',
+  autonomousWebSearchSettings: 'autonomous_web_search_settings',
+  autonomousWebSearchUpdateSettings: 'autonomous_web_search_update_settings',
+  autonomousWebSearchUpsertProvider: 'autonomous_web_search_upsert_provider',
+  autonomousWebSearchDeleteProvider: 'autonomous_web_search_delete_provider',
+  autonomousWebSearchSetActiveProvider: 'autonomous_web_search_set_active_provider',
+  autonomousWebSearchCheckProvider: 'autonomous_web_search_check_provider',
   browserShow: 'browser_show',
   browserResize: 'browser_resize',
   browserHide: 'browser_hide',
@@ -876,6 +907,33 @@ const openTerminalResponseSchema = z.object({
 })
 export type OpenTerminalResponseDto = z.infer<typeof openTerminalResponseSchema>
 
+const terminalTranscriptResponseSchema = z.object({
+  projectId: z.string().min(1),
+  clientTerminalId: z.string().min(1),
+  content: z.string(),
+})
+export type TerminalTranscriptResponseDto = z.infer<typeof terminalTranscriptResponseSchema>
+
+const terminalSuggestionCandidateSchema = z.object({
+  replacement: z.string(),
+  display: z.string(),
+  description: z.string().nullable().optional(),
+  source: z.enum(["history", "shell_history", "path", "command", "next_command", "ai"]),
+  confidence: z.number(),
+  replacementRange: z.object({
+    start: z.number().int().nonnegative(),
+    end: z.number().int().nonnegative(),
+  }),
+})
+const terminalSuggestResponseSchema = z.object({
+  requestId: z.number().int().nonnegative(),
+  candidates: z.array(terminalSuggestionCandidateSchema),
+  deterministicExhausted: z.boolean(),
+  aiAttempted: z.boolean(),
+})
+export type TerminalSuggestionCandidateDto = z.infer<typeof terminalSuggestionCandidateSchema>
+export type TerminalSuggestResponseDto = z.infer<typeof terminalSuggestResponseSchema>
+
 const suggestedStartTargetSchema = z.object({
   name: z.string(),
   command: z.string(),
@@ -919,10 +977,54 @@ export interface UpdateProjectStartTargetsRequestDto {
   targets: StartTargetInputDto[]
 }
 
+type ProviderModelThinkingEffortValue =
+  | 'none'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'x_high'
+
+export interface TerminalSuggestRequestDto {
+  projectId: string
+  terminalId?: string | null
+  buffer: string
+  cursor: number
+  cwd?: string | null
+  shell?: string | null
+  recentBlockContext?: string | null
+  requestId: number
+  enableAi?: boolean
+  providerId?: string | null
+  modelId?: string | null
+  providerProfileId?: string | null
+  runtimeAgentId?: RuntimeAgentIdDto | null
+  thinkingEffort?: ProviderModelThinkingEffortValue | null
+}
+
+export interface TerminalRecordCommandRequestDto {
+  projectId: string
+  command: string
+  cwd?: string | null
+  shell?: string | null
+}
+
+export interface TerminalIgnoreSuggestionRequestDto {
+  projectId: string
+  display: string
+}
+
 export interface OpenTerminalRequestDto {
   projectId?: string | null
+  clientTerminalId?: string | null
   cols?: number
   rows?: number
+  suppressTranscriptUntilInput?: boolean
+}
+
+export interface TerminalTranscriptRequestDto {
+  projectId: string
+  clientTerminalId: string
 }
 
 export interface SuggestProjectStartTargetsRequestDto {
@@ -931,14 +1033,7 @@ export interface SuggestProjectStartTargetsRequestDto {
   providerId?: string | null
   providerProfileId?: string | null
   runtimeAgentId?: RuntimeAgentIdDto | null
-  thinkingEffort?:
-    | 'none'
-    | 'minimal'
-    | 'low'
-    | 'medium'
-    | 'high'
-    | 'x_high'
-    | null
+  thinkingEffort?: ProviderModelThinkingEffortValue | null
 }
 
 const commandErrorSchema = z.object({
@@ -1131,6 +1226,13 @@ export interface XeroDesktopAdapter {
   terminalWrite?(terminalId: string, data: string): Promise<void>
   terminalResize?(terminalId: string, cols: number, rows: number): Promise<void>
   terminalClose?(terminalId: string): Promise<void>
+  terminalReadTranscript?(
+    request: TerminalTranscriptRequestDto,
+  ): Promise<TerminalTranscriptResponseDto>
+  terminalClearTranscript?(request: TerminalTranscriptRequestDto): Promise<void>
+  terminalSuggest?(request: TerminalSuggestRequestDto): Promise<TerminalSuggestResponseDto>
+  terminalRecordCommand?(request: TerminalRecordCommandRequestDto): Promise<void>
+  terminalIgnoreSuggestion?(request: TerminalIgnoreSuggestionRequestDto): Promise<void>
   getProjectUsageSummary(projectId: string): Promise<ProjectUsageSummaryDto>
   getRepositoryStatus(projectId: string): Promise<RepositoryStatusResponseDto>
   getRepositoryDiff(projectId: string, scope: RepositoryDiffScope): Promise<RepositoryDiffResponseDto>
@@ -1185,6 +1287,7 @@ export interface XeroDesktopAdapter {
     request: SupersedeProjectContextRecordRequestDto,
   ): Promise<SupersedeProjectContextRecordResponseDto>
   ensureGlobalComputerUseSession?(): Promise<GlobalComputerUseSessionDto>
+  resetGlobalComputerUseSession?(): Promise<GlobalComputerUseSessionDto>
   createAgentSession(request: CreateAgentSessionRequestDto): Promise<AgentSessionDto>
   listAgentDefinitions(
     request: ListAgentDefinitionsRequestDto,
@@ -1303,10 +1406,18 @@ export interface XeroDesktopAdapter {
     options?: { autoCompact?: SendAgentMessageRequestDto['autoCompact'] },
   ): Promise<AgentRunDto>
   cancelAgentRun?(runId: string): Promise<AgentRunDto>
+  rejectAgentAction?(
+    runId: string,
+    actionId: string,
+    options?: { response?: RejectAgentActionRequestDto['response'] },
+  ): Promise<AgentRunDto>
   resumeAgentRun?(
     runId: string,
     response: string,
-    options?: { autoCompact?: ResumeAgentRunRequestDto['autoCompact'] },
+    options?: {
+      actionId?: ResumeAgentRunRequestDto['actionId']
+      autoCompact?: ResumeAgentRunRequestDto['autoCompact']
+    },
   ): Promise<AgentRunDto>
   getAgentRun?(runId: string): Promise<AgentRunDto>
   exportAgentTrace?(runId: string, options?: { includeSupportBundle?: boolean }): Promise<AgentTraceExportDto>
@@ -1330,12 +1441,12 @@ export interface XeroDesktopAdapter {
   listSessionMemories?(
     request: ListSessionMemoriesRequestDto,
   ): Promise<ListSessionMemoriesResponseDto>
-  extractSessionMemoryCandidates?(
-    request: ExtractSessionMemoryCandidatesRequestDto,
-  ): Promise<ExtractSessionMemoryCandidatesResponseDto>
-  getSessionMemoryReviewQueue?(
-    request: GetSessionMemoryReviewQueueRequestDto,
-  ): Promise<GetSessionMemoryReviewQueueResponseDto>
+  extractSessionMemories?(
+    request: ExtractSessionMemoriesRequestDto,
+  ): Promise<ExtractSessionMemoriesResponseDto>
+  getSessionMemoryItems?(
+    request: GetSessionMemoryItemsRequestDto,
+  ): Promise<GetSessionMemoryItemsResponseDto>
   updateSessionMemory?(request: UpdateSessionMemoryRequestDto): Promise<SessionMemoryRecordDto>
   correctSessionMemory?(
     request: CorrectSessionMemoryRequestDto,
@@ -1402,8 +1513,6 @@ export interface XeroDesktopAdapter {
   deleteProviderCredential(providerId: string): Promise<ProviderCredentialsSnapshotDto>
   startOAuthLogin(request: StartOAuthLoginRequestDto): Promise<ProviderAuthSessionDto>
   completeOAuthCallback(request: CompleteOAuthCallbackRequestDto): Promise<ProviderAuthSessionDto>
-  startXaiDeviceCodeLogin(request: StartXaiDeviceCodeLoginRequestDto): Promise<XaiDeviceCodeLoginDto>
-  pollXaiDeviceCodeLogin(request: PollXaiDeviceCodeLoginRequestDto): Promise<XaiDeviceCodeLoginDto>
   resolveOperatorAction(
     projectId: string,
     actionId: string,
@@ -1469,6 +1578,26 @@ export interface XeroDesktopAdapter {
   agentToolingUpdateSettings?(
     request: UpsertAgentToolingSettingsRequestDto,
   ): Promise<AgentToolingSettingsDto>
+  developerToolErrorLogList?(
+    request?: DeveloperToolErrorLogListRequestDto,
+  ): Promise<DeveloperToolErrorLogListResponseDto>
+  developerToolErrorLogClear?(): Promise<DeveloperToolErrorLogClearResponseDto>
+  autonomousWebSearchSettings?(): Promise<AutonomousWebSearchSettingsDto>
+  autonomousWebSearchUpdateSettings?(
+    request: UpsertAutonomousWebSearchSettingsRequestDto,
+  ): Promise<AutonomousWebSearchSettingsDto>
+  autonomousWebSearchUpsertProvider?(
+    request: UpsertAutonomousWebSearchProviderRequestDto,
+  ): Promise<AutonomousWebSearchSettingsDto>
+  autonomousWebSearchDeleteProvider?(
+    request: DeleteAutonomousWebSearchProviderRequestDto,
+  ): Promise<AutonomousWebSearchSettingsDto>
+  autonomousWebSearchSetActiveProvider?(
+    request: SetActiveAutonomousWebSearchProviderRequestDto,
+  ): Promise<AutonomousWebSearchSettingsDto>
+  autonomousWebSearchCheckProvider?(
+    request: CheckAutonomousWebSearchProviderRequestDto,
+  ): Promise<AutonomousWebSearchSettingsDto>
   browserEval(js: string, options?: { timeoutMs?: number }): Promise<unknown>
   browserCurrentUrl(): Promise<string | null>
   browserScreenshot(): Promise<string>
@@ -1623,6 +1752,24 @@ function normalizeError(error: unknown, context: string): XeroDesktopError {
       message: error.message,
       cause: error,
     })
+  }
+
+  if (typeof error === 'string' && error.trim().length > 0) {
+    return new XeroDesktopError({
+      message: `${context} failed: ${error}`,
+      cause: error,
+    })
+  }
+
+  if (error && typeof error === 'object') {
+    const candidate = error as { message?: unknown; code?: unknown }
+    if (typeof candidate.message === 'string' && candidate.message.trim().length > 0) {
+      return new XeroDesktopError({
+        code: typeof candidate.code === 'string' ? candidate.code : undefined,
+        message: candidate.message,
+        cause: error,
+      })
+    }
   }
 
   return new XeroDesktopError({
@@ -2388,8 +2535,10 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     return invokeTyped(COMMANDS.terminalOpen, openTerminalResponseSchema, {
       request: {
         projectId: request.projectId ?? null,
+        clientTerminalId: request.clientTerminalId ?? null,
         cols: request.cols ?? null,
         rows: request.rows ?? null,
+        suppressTranscriptUntilInput: request.suppressTranscriptUntilInput === true,
       },
     })
   },
@@ -2408,6 +2557,65 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
 
   async terminalClose(terminalId) {
     await invokeRaw(COMMANDS.terminalClose, { request: { terminalId } })
+  },
+
+  terminalReadTranscript(request) {
+    return invokeTyped(COMMANDS.terminalReadTranscript, terminalTranscriptResponseSchema, {
+      request: {
+        projectId: request.projectId,
+        clientTerminalId: request.clientTerminalId,
+      },
+    })
+  },
+
+  async terminalClearTranscript(request) {
+    await invokeRaw(COMMANDS.terminalClearTranscript, {
+      request: {
+        projectId: request.projectId,
+        clientTerminalId: request.clientTerminalId,
+      },
+    })
+  },
+
+  terminalSuggest(request) {
+    return invokeTyped(COMMANDS.terminalSuggest, terminalSuggestResponseSchema, {
+      request: {
+        projectId: request.projectId,
+        terminalId: request.terminalId ?? null,
+        buffer: request.buffer,
+        cursor: request.cursor,
+        cwd: request.cwd ?? null,
+        shell: request.shell ?? null,
+        recentBlockContext: request.recentBlockContext ?? null,
+        requestId: request.requestId,
+        enableAi: request.enableAi === true,
+        providerId: request.providerId ?? null,
+        modelId: request.modelId ?? null,
+        providerProfileId: request.providerProfileId ?? null,
+        runtimeAgentId: request.runtimeAgentId ?? null,
+        thinkingEffort: request.thinkingEffort ?? null,
+      },
+    })
+  },
+
+  async terminalRecordCommand(request) {
+    await invokeRaw(COMMANDS.terminalRecordCommand, {
+      request: {
+        projectId: request.projectId,
+        command: request.command,
+        cwd: request.cwd ?? null,
+        shell: request.shell ?? null,
+      },
+    })
+  },
+
+  async terminalIgnoreSuggestion(request) {
+    await invokeRaw(COMMANDS.terminalIgnoreSuggestion, {
+      request: {
+        projectId: request.projectId,
+        display: request.display,
+      },
+    })
   },
 
   suggestProjectStartTargets(request) {
@@ -2681,6 +2889,14 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
   ensureGlobalComputerUseSession() {
     return invokeTyped(
       COMMANDS.ensureGlobalComputerUseSession,
+      globalComputerUseSessionSchema,
+      {},
+    )
+  },
+
+  resetGlobalComputerUseSession() {
+    return invokeTyped(
+      COMMANDS.resetGlobalComputerUseSession,
       globalComputerUseSessionSchema,
       {},
     )
@@ -3091,10 +3307,22 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     })
   },
 
+  rejectAgentAction(runId, actionId, options) {
+    const request: RejectAgentActionRequestDto = rejectAgentActionRequestSchema.parse({
+      runId,
+      actionId,
+      response: options?.response ?? null,
+    })
+    return invokeTyped(COMMANDS.rejectAgentAction, agentRunSchema, {
+      request,
+    })
+  },
+
   resumeAgentRun(runId, response, options) {
     const request: ResumeAgentRunRequestDto = resumeAgentRunRequestSchema.parse({
       runId,
       response,
+      actionId: options?.actionId ?? null,
       autoCompact: options?.autoCompact ?? null,
     })
     return invokeTyped(COMMANDS.resumeAgentRun, agentRunSchema, {
@@ -3198,18 +3426,18 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     })
   },
 
-  extractSessionMemoryCandidates(request) {
-    const parsed = extractSessionMemoryCandidatesRequestSchema.parse(request)
-    return invokeTyped(COMMANDS.extractSessionMemoryCandidates, extractSessionMemoryCandidatesResponseSchema, {
+  extractSessionMemories(request) {
+    const parsed = extractSessionMemoriesRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.extractSessionMemories, extractSessionMemoriesResponseSchema, {
       request: parsed,
     })
   },
 
-  getSessionMemoryReviewQueue(request) {
-    const parsed = getSessionMemoryReviewQueueRequestSchema.parse(request)
+  getSessionMemoryItems(request) {
+    const parsed = getSessionMemoryItemsRequestSchema.parse(request)
     return invokeTyped(
-      COMMANDS.getSessionMemoryReviewQueue,
-      getSessionMemoryReviewQueueResponseSchema,
+      COMMANDS.getSessionMemoryItems,
+      getSessionMemoryItemsResponseSchema,
       { request: parsed },
     )
   },
@@ -3558,20 +3786,6 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     })
   },
 
-  startXaiDeviceCodeLogin(request) {
-    const parsed = startXaiDeviceCodeLoginRequestSchema.parse(request)
-    return invokeTyped(COMMANDS.startXaiDeviceCodeLogin, xaiDeviceCodeLoginSchema, {
-      request: parsed,
-    })
-  },
-
-  pollXaiDeviceCodeLogin(request) {
-    const parsed = pollXaiDeviceCodeLoginRequestSchema.parse(request)
-    return invokeTyped(COMMANDS.pollXaiDeviceCodeLogin, xaiDeviceCodeLoginSchema, {
-      request: parsed,
-    })
-  },
-
   resolveOperatorAction(projectId, actionId, decision, options) {
     const request = resolveOperatorActionRequestSchema.parse({
       projectId,
@@ -3749,6 +3963,59 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
   agentToolingUpdateSettings(request) {
     const parsedRequest = upsertAgentToolingSettingsRequestSchema.parse(request)
     return invokeTyped(COMMANDS.agentToolingUpdateSettings, agentToolingSettingsSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  developerToolErrorLogList(request = {}) {
+    const parsedRequest = developerToolErrorLogListRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.developerToolErrorLogList, developerToolErrorLogListResponseSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  developerToolErrorLogClear() {
+    return invokeTyped(
+      COMMANDS.developerToolErrorLogClear,
+      developerToolErrorLogClearResponseSchema,
+    )
+  },
+
+  autonomousWebSearchSettings() {
+    return invokeTyped(COMMANDS.autonomousWebSearchSettings, autonomousWebSearchSettingsSchema)
+  },
+
+  autonomousWebSearchUpdateSettings(request) {
+    const parsedRequest = upsertAutonomousWebSearchSettingsRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.autonomousWebSearchUpdateSettings, autonomousWebSearchSettingsSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  autonomousWebSearchUpsertProvider(request) {
+    const parsedRequest = upsertAutonomousWebSearchProviderRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.autonomousWebSearchUpsertProvider, autonomousWebSearchSettingsSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  autonomousWebSearchDeleteProvider(request) {
+    const parsedRequest = deleteAutonomousWebSearchProviderRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.autonomousWebSearchDeleteProvider, autonomousWebSearchSettingsSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  autonomousWebSearchSetActiveProvider(request) {
+    const parsedRequest = setActiveAutonomousWebSearchProviderRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.autonomousWebSearchSetActiveProvider, autonomousWebSearchSettingsSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  autonomousWebSearchCheckProvider(request) {
+    const parsedRequest = checkAutonomousWebSearchProviderRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.autonomousWebSearchCheckProvider, autonomousWebSearchSettingsSchema, {
       request: parsedRequest,
     })
   },

@@ -76,6 +76,7 @@ export const sessionUsageTotalsSchema = z
     providerId: z.string().trim().min(1),
     modelId: z.string().trim().min(1),
     inputTokens: z.number().int().nonnegative(),
+    billableInputTokens: z.number().int().nonnegative(),
     outputTokens: z.number().int().nonnegative(),
     totalTokens: z.number().int().nonnegative(),
     estimatedCostMicros: z.number().int().nonnegative(),
@@ -334,6 +335,22 @@ export const sessionContextLimitSourceSchema = z.enum([
   'unknown',
 ])
 export const sessionContextLimitConfidenceSchema = z.enum(['high', 'medium', 'low', 'unknown'])
+export const sessionContextEstimateSourceSchema = z.enum([
+  'provider_count_api',
+  'local_tokenizer',
+  'provider_reported_usage',
+  'heuristic',
+])
+export const sessionContextEstimateConfidenceSchema = z.enum(['high', 'medium', 'low', 'unknown'])
+export const sessionContextEstimateSchema = z
+  .object({
+    tokens: z.number().int().nonnegative(),
+    source: sessionContextEstimateSourceSchema,
+    confidence: sessionContextEstimateConfidenceSchema,
+    countedShape: z.string().trim().min(1),
+    diagnostics: z.array(z.string().trim().min(1)).default([]),
+  })
+  .strict()
 export const sessionContextLimitResolutionSchema = z
   .object({
     providerId: z.string(),
@@ -361,6 +378,7 @@ export const sessionContextBudgetSchema = z
     pressurePercent: z.number().int().nonnegative().nullable().optional(),
     estimatedTokens: z.number().int().nonnegative(),
     estimationSource: sessionUsageSourceSchema,
+    estimate: sessionContextEstimateSchema.optional(),
     pressure: sessionContextBudgetPressureSchema,
     knownProviderBudget: z.boolean(),
     limitSource: sessionContextLimitSourceSchema,
@@ -667,7 +685,14 @@ export const sessionMemoryKindSchema = z.enum([
   'session_summary',
   'troubleshooting',
 ])
-export const sessionMemoryReviewStateSchema = z.enum(['candidate', 'approved', 'rejected'])
+export const agentMemoryFreshnessStateSchema = z.enum([
+  'current',
+  'source_unknown',
+  'stale',
+  'source_missing',
+  'superseded',
+  'blocked',
+])
 export const sessionMemoryRecordSchema = z
   .object({
     contractVersion: z.literal(XERO_SESSION_CONTEXT_CONTRACT_VERSION),
@@ -677,11 +702,21 @@ export const sessionMemoryRecordSchema = z
     scope: sessionMemoryScopeSchema,
     kind: sessionMemoryKindSchema,
     text: z.string().trim().min(1),
-    reviewState: sessionMemoryReviewStateSchema,
     enabled: z.boolean(),
     confidence: z.number().int().min(0).max(100).nullable().optional(),
     sourceRunId: nonEmptyOptionalTextSchema,
     sourceItemIds: z.array(z.string().trim().min(1)),
+    reinforcementCount: z.number().int().positive(),
+    lastReinforcedAt: isoTimestampSchema.nullable().optional(),
+    reinforcementSources: z.array(
+      z
+        .object({
+          observedAt: isoTimestampSchema,
+          sourceRunId: nonEmptyOptionalTextSchema,
+          sourceItemIds: z.array(z.string().trim().min(1)),
+        })
+        .strict(),
+    ),
     createdAt: isoTimestampSchema,
     updatedAt: isoTimestampSchema,
     diagnostic: z
@@ -694,6 +729,27 @@ export const sessionMemoryRecordSchema = z
       .nullable()
       .optional(),
     redaction: sessionContextRedactionSchema,
+    freshnessState: agentMemoryFreshnessStateSchema,
+    freshnessCheckedAt: isoTimestampSchema.nullable().optional(),
+    staleReason: nonEmptyOptionalTextSchema,
+    supersedesId: nonEmptyOptionalTextSchema,
+    supersededById: nonEmptyOptionalTextSchema,
+    invalidatedAt: isoTimestampSchema.nullable().optional(),
+    factKey: nonEmptyOptionalTextSchema,
+    retrievable: z.boolean(),
+    retrievabilityReason: z.enum([
+      'disabled',
+      'superseded',
+      'invalidated',
+      'stale',
+      'source_missing',
+      'blocked',
+      'retrievable',
+    ]),
+    promotionStatus: z.string().trim().min(1),
+    provenance: z.record(z.string(), z.unknown()),
+    retrievalImpact: z.record(z.string(), z.unknown()),
+    conflict: z.record(z.string(), z.unknown()),
   })
   .strict()
   .superRefine((memory, ctx) => {
@@ -711,11 +767,11 @@ export const sessionMemoryRecordSchema = z
         message: 'Session memory must include a session id.',
       })
     }
-    if (memory.reviewState !== 'approved' && memory.enabled) {
+    if (memory.retrievable !== (memory.retrievabilityReason === 'retrievable')) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['enabled'],
-        message: 'Only approved memory can be enabled.',
+        path: ['retrievabilityReason'],
+        message: 'Memory retrievability must match its reason.',
       })
     }
   })
@@ -725,7 +781,6 @@ export const listSessionMemoriesRequestSchema = z
     projectId: z.string().trim().min(1),
     agentSessionId: nonEmptyOptionalTextSchema,
     includeDisabled: z.boolean().optional(),
-    includeRejected: z.boolean().optional(),
   })
   .strict()
 
@@ -758,7 +813,7 @@ export const listSessionMemoriesResponseSchema = z
     })
   })
 
-export const getSessionMemoryReviewQueueRequestSchema = z
+export const getSessionMemoryItemsRequestSchema = z
   .object({
     projectId: z.string().trim().min(1),
     agentSessionId: nonEmptyOptionalTextSchema,
@@ -767,7 +822,7 @@ export const getSessionMemoryReviewQueueRequestSchema = z
   })
   .strict()
 
-export const extractSessionMemoryCandidatesRequestSchema = z
+export const extractSessionMemoriesRequestSchema = z
   .object({
     projectId: z.string().trim().min(1),
     agentSessionId: z.string().trim().min(1),
@@ -783,21 +838,11 @@ export const sessionMemoryDiagnosticSchema = z
   })
   .strict()
 
-export const agentMemoryFreshnessStateSchema = z.enum([
-  'current',
-  'source_unknown',
-  'stale',
-  'source_missing',
-  'superseded',
-  'blocked',
-])
-
-export const agentMemoryReviewQueueItemSchema = z
+export const agentMemoryItemSchema = z
   .object({
     memoryId: z.string().trim().min(1),
     scope: sessionMemoryScopeSchema,
     kind: sessionMemoryKindSchema,
-    reviewState: sessionMemoryReviewStateSchema,
     enabled: z.boolean(),
     confidence: z.number().int().min(0).max(100).nullable().optional(),
     textPreview: z.string().nullable(),
@@ -816,6 +861,23 @@ export const agentMemoryReviewQueueItemSchema = z
           .optional(),
       })
       .strict(),
+    reinforcement: z
+      .object({
+        count: z.number().int().positive(),
+        lastReinforcedAt: isoTimestampSchema.nullable().optional(),
+        sources: z.array(
+          z
+            .object({
+              observedAt: isoTimestampSchema,
+              sourceRunId: nonEmptyOptionalTextSchema,
+              sourceItemIds: z.array(z.string().trim().min(1)),
+            })
+            .strict(),
+        ),
+        latestSourceRunId: nonEmptyOptionalTextSchema,
+        latestSourceItemIds: z.array(z.string().trim().min(1)),
+      })
+      .strict(),
     freshness: z
       .object({
         state: agentMemoryFreshnessStateSchema,
@@ -831,7 +893,6 @@ export const agentMemoryReviewQueueItemSchema = z
       .object({
         eligible: z.boolean(),
         reason: z.enum([
-          'pending_or_rejected_review',
           'disabled',
           'superseded',
           'invalidated',
@@ -851,8 +912,7 @@ export const agentMemoryReviewQueueItemSchema = z
       .strict(),
     availableActions: z
       .object({
-        canApprove: z.boolean(),
-        canReject: z.boolean(),
+        canEnable: z.boolean(),
         canDisable: z.boolean(),
         canDelete: z.boolean(),
         canEditByCorrection: z.boolean(),
@@ -874,26 +934,26 @@ export const agentMemoryReviewQueueItemSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['textPreview'],
-        message: 'Unredacted memory review items must include a preview.',
+        message: 'Unredacted memory items must include a preview.',
       })
     }
-    if (item.redaction.textPreviewRedacted && item.availableActions.canApprove) {
+    if (item.redaction.textPreviewRedacted && item.availableActions.canEnable) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['availableActions', 'canApprove'],
-        message: 'Redacted memory review items cannot be approved directly.',
+        path: ['availableActions', 'canEnable'],
+        message: 'Redacted memory items cannot be enabled directly.',
       })
     }
     if (item.retrieval.eligible !== (item.retrieval.reason === 'retrievable')) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['retrieval', 'reason'],
-        message: 'Memory review retrieval eligibility must match its reason.',
+        message: 'Memory retrieval eligibility must match its reason.',
       })
     }
   })
 
-export const getSessionMemoryReviewQueueResponseSchema = z
+export const getSessionMemoryItemsResponseSchema = z
   .object({
     schema: z.literal('xero.agent_memory_review_queue.v1'),
     projectId: z.string().trim().min(1),
@@ -903,18 +963,15 @@ export const getSessionMemoryReviewQueueResponseSchema = z
     total: z.number().int().nonnegative(),
     counts: z
       .object({
-        candidate: z.number().int().nonnegative(),
-        approved: z.number().int().nonnegative(),
-        rejected: z.number().int().nonnegative(),
+        enabled: z.number().int().nonnegative(),
         disabled: z.number().int().nonnegative(),
-        retrievableApproved: z.number().int().nonnegative(),
+        retrievable: z.number().int().nonnegative(),
       })
       .strict(),
-    items: z.array(agentMemoryReviewQueueItemSchema),
+    items: z.array(agentMemoryItemSchema),
     actions: z
       .object({
-        approve: z.string().trim().min(1),
-        reject: z.string().trim().min(1),
+        enable: z.string().trim().min(1),
         disable: z.string().trim().min(1),
         delete: z.string().trim().min(1),
         edit: z.string().trim().min(1),
@@ -930,29 +987,29 @@ export const getSessionMemoryReviewQueueResponseSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['items'],
-        message: 'Memory review queue items must not exceed the requested limit.',
+        message: 'Memory items must not exceed the requested limit.',
       })
     }
-    if (queue.counts.retrievableApproved > queue.counts.approved) {
+    if (queue.counts.retrievable > queue.counts.enabled) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['counts', 'retrievableApproved'],
-        message: 'Retrievable approved memory count cannot exceed approved memory count.',
+        path: ['counts', 'retrievable'],
+        message: 'Retrievable memory count cannot exceed enabled memory count.',
       })
     }
-    const reviewStateTotal = queue.counts.candidate + queue.counts.approved + queue.counts.rejected
-    if (reviewStateTotal !== queue.total) {
+    const enabledStateTotal = queue.counts.enabled + queue.counts.disabled
+    if (enabledStateTotal !== queue.total) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['total'],
-        message: 'Memory review total must match review-state counts.',
+        message: 'Memory total must match enabled and disabled counts.',
       })
     }
     if (queue.offset > queue.total) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['offset'],
-        message: 'Memory review offset cannot exceed total count.',
+        message: 'Memory offset cannot exceed total count.',
       })
     }
     const expectedHasMore = queue.offset + queue.items.length < queue.total
@@ -960,7 +1017,7 @@ export const getSessionMemoryReviewQueueResponseSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['hasMore'],
-        message: 'Memory review pagination hasMore must match offset, item count, and total.',
+        message: 'Memory pagination hasMore must match offset, item count, and total.',
       })
     }
     const expectedNextOffset = expectedHasMore ? queue.offset + queue.items.length : null
@@ -968,51 +1025,35 @@ export const getSessionMemoryReviewQueueResponseSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['nextOffset'],
-        message: 'Memory review nextOffset must point to the next page start.',
+        message: 'Memory nextOffset must point to the next page start.',
       })
     }
     const memoryIds = new Set<string>()
     const returnedCounts = {
-      candidate: 0,
-      approved: 0,
-      rejected: 0,
+      enabled: 0,
       disabled: 0,
-      retrievableApproved: 0,
+      retrievable: 0,
     }
     queue.items.forEach((item, index) => {
       if (memoryIds.has(item.memoryId)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['items', index, 'memoryId'],
-          message: 'Memory review queue item ids must be unique.',
+          message: 'Memory item ids must be unique.',
         })
       }
       memoryIds.add(item.memoryId)
-      returnedCounts[item.reviewState] += 1
+      if (item.enabled) returnedCounts.enabled += 1
       if (!item.enabled) returnedCounts.disabled += 1
-      if (item.reviewState === 'approved' && item.retrieval.eligible) {
-        returnedCounts.retrievableApproved += 1
+      if (item.enabled && item.retrieval.eligible) {
+        returnedCounts.retrievable += 1
       }
     })
-    if (returnedCounts.candidate > queue.counts.candidate) {
+    if (returnedCounts.enabled > queue.counts.enabled) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['counts', 'candidate'],
-        message: 'Returned candidate memory items cannot exceed candidate count.',
-      })
-    }
-    if (returnedCounts.approved > queue.counts.approved) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['counts', 'approved'],
-        message: 'Returned approved memory items cannot exceed approved count.',
-      })
-    }
-    if (returnedCounts.rejected > queue.counts.rejected) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['counts', 'rejected'],
-        message: 'Returned rejected memory items cannot exceed rejected count.',
+        path: ['counts', 'enabled'],
+        message: 'Returned enabled memory items cannot exceed enabled count.',
       })
     }
     if (returnedCounts.disabled > queue.counts.disabled) {
@@ -1022,23 +1063,23 @@ export const getSessionMemoryReviewQueueResponseSchema = z
         message: 'Returned disabled memory items cannot exceed disabled count.',
       })
     }
-    if (returnedCounts.retrievableApproved > queue.counts.retrievableApproved) {
+    if (returnedCounts.retrievable > queue.counts.retrievable) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['counts', 'retrievableApproved'],
-        message: 'Returned retrievable approved memory items cannot exceed retrievable count.',
+        path: ['counts', 'retrievable'],
+        message: 'Returned retrievable memory items cannot exceed retrievable count.',
       })
     }
   })
 
-export const extractSessionMemoryCandidatesResponseSchema = z
+export const extractSessionMemoriesResponseSchema = z
   .object({
     projectId: z.string().trim().min(1),
     agentSessionId: z.string().trim().min(1),
     memories: z.array(sessionMemoryRecordSchema),
     createdCount: z.number().int().nonnegative(),
-    skippedDuplicateCount: z.number().int().nonnegative(),
-    rejectedCount: z.number().int().nonnegative(),
+    reinforcedDuplicateCount: z.number().int().nonnegative(),
+    skippedCount: z.number().int().nonnegative(),
     diagnostics: z.array(sessionMemoryDiagnosticSchema),
   })
   .strict()
@@ -1048,14 +1089,14 @@ export const extractSessionMemoryCandidatesResponseSchema = z
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['memories', index, 'projectId'],
-          message: 'Extracted memory candidates must match the response project.',
+          message: 'Extracted memories must match the response project.',
         })
       }
       if (memory.scope === 'session' && (memory.agentSessionId ?? null) !== response.agentSessionId) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['memories', index, 'agentSessionId'],
-          message: 'Extracted memory candidates must match the response agent session.',
+          message: 'Extracted memories must match the response agent session.',
         })
       }
     })
@@ -1065,7 +1106,6 @@ export const updateSessionMemoryRequestSchema = z
   .object({
     projectId: z.string().trim().min(1),
     memoryId: z.string().trim().min(1),
-    reviewState: sessionMemoryReviewStateSchema.nullable().optional(),
     enabled: z.boolean().nullable().optional(),
   })
   .strict()
@@ -1137,11 +1177,11 @@ export const correctSessionMemoryResponseSchema = z
         message: 'Corrected memory must cite the memory it corrects.',
       })
     }
-    if (response.correctedMemory.reviewState !== 'approved' || !response.correctedMemory.enabled) {
+    if (!response.correctedMemory.enabled) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['correctedMemory'],
-        message: 'Corrected memory must be approved and enabled for retrieval.',
+        message: 'Corrected memory must be enabled for retrieval.',
       })
     }
   })
@@ -1245,6 +1285,9 @@ export type SessionContextDispositionDto = z.infer<typeof sessionContextDisposit
 export type SessionContextBudgetPressureDto = z.infer<typeof sessionContextBudgetPressureSchema>
 export type SessionContextLimitSourceDto = z.infer<typeof sessionContextLimitSourceSchema>
 export type SessionContextLimitConfidenceDto = z.infer<typeof sessionContextLimitConfidenceSchema>
+export type SessionContextEstimateSourceDto = z.infer<typeof sessionContextEstimateSourceSchema>
+export type SessionContextEstimateConfidenceDto = z.infer<typeof sessionContextEstimateConfidenceSchema>
+export type SessionContextEstimateDto = z.infer<typeof sessionContextEstimateSchema>
 export type SessionContextLimitResolutionDto = z.infer<typeof sessionContextLimitResolutionSchema>
 export type SessionContextBudgetDto = z.infer<typeof sessionContextBudgetSchema>
 export type SessionContextContributorDto = z.infer<typeof sessionContextContributorSchema>
@@ -1262,17 +1305,16 @@ export type SessionCompactionRecordDto = z.infer<typeof sessionCompactionRecordS
 export type CompactSessionHistoryResponseDto = z.infer<typeof compactSessionHistoryResponseSchema>
 export type SessionMemoryScopeDto = z.infer<typeof sessionMemoryScopeSchema>
 export type SessionMemoryKindDto = z.infer<typeof sessionMemoryKindSchema>
-export type SessionMemoryReviewStateDto = z.infer<typeof sessionMemoryReviewStateSchema>
 export type SessionMemoryRecordDto = z.infer<typeof sessionMemoryRecordSchema>
 export type ListSessionMemoriesRequestDto = z.infer<typeof listSessionMemoriesRequestSchema>
 export type ListSessionMemoriesResponseDto = z.infer<typeof listSessionMemoriesResponseSchema>
-export type GetSessionMemoryReviewQueueRequestDto = z.infer<typeof getSessionMemoryReviewQueueRequestSchema>
+export type GetSessionMemoryItemsRequestDto = z.infer<typeof getSessionMemoryItemsRequestSchema>
 export type AgentMemoryFreshnessStateDto = z.infer<typeof agentMemoryFreshnessStateSchema>
-export type AgentMemoryReviewQueueItemDto = z.infer<typeof agentMemoryReviewQueueItemSchema>
-export type GetSessionMemoryReviewQueueResponseDto = z.infer<typeof getSessionMemoryReviewQueueResponseSchema>
+export type AgentMemoryItemDto = z.infer<typeof agentMemoryItemSchema>
+export type GetSessionMemoryItemsResponseDto = z.infer<typeof getSessionMemoryItemsResponseSchema>
 export type SessionMemoryDiagnosticDto = z.infer<typeof sessionMemoryDiagnosticSchema>
-export type ExtractSessionMemoryCandidatesRequestDto = z.infer<typeof extractSessionMemoryCandidatesRequestSchema>
-export type ExtractSessionMemoryCandidatesResponseDto = z.infer<typeof extractSessionMemoryCandidatesResponseSchema>
+export type ExtractSessionMemoriesRequestDto = z.infer<typeof extractSessionMemoriesRequestSchema>
+export type ExtractSessionMemoriesResponseDto = z.infer<typeof extractSessionMemoriesResponseSchema>
 export type UpdateSessionMemoryRequestDto = z.infer<typeof updateSessionMemoryRequestSchema>
 export type CorrectSessionMemoryRequestDto = z.infer<typeof correctSessionMemoryRequestSchema>
 export type CorrectSessionMemoryResponseDto = z.infer<typeof correctSessionMemoryResponseSchema>

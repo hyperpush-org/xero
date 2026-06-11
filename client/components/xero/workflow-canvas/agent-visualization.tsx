@@ -1503,6 +1503,12 @@ function AgentVisualizationInner({
             subagentAllowed: false,
             commandAllowed: false,
             destructiveWriteAllowed: false,
+            handoffEnabled: true,
+            handoffRoutingMode: 'same_agent',
+            handoffAllowedTargets: [],
+            handoffPreserveDefinitionVersion: true,
+            handoffCarrySummary: true,
+            handoffIncludeDurableContext: true,
           } satisfies AgentHeaderAdvancedFields),
   )
   const [editingSaving, setEditingSaving] = useState(false)

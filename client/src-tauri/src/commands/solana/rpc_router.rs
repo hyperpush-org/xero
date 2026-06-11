@@ -22,6 +22,7 @@ use serde_json::json;
 use crate::commands::{CommandError, CommandResult};
 
 use super::cluster::ClusterKind;
+use super::provider_profiles::redact_url;
 
 const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_millis(3_500);
 const DEFAULT_USER_AGENT: &str = "xero-solana-workbench/0.1";
@@ -84,7 +85,7 @@ impl EndpointState {
         EndpointHealth {
             cluster,
             id: self.spec.id.clone(),
-            url: self.spec.url.clone(),
+            url: redact_url(&self.spec.url),
             label: self.spec.label.clone(),
             healthy: self.healthy,
             latency_ms: self.last_latency.map(|d| d.as_millis() as u64),

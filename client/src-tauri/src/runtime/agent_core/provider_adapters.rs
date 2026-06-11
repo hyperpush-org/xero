@@ -1,7 +1,8 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io::{BufRead, BufReader, Write},
     process::{Command, Stdio},
+    sync::{Mutex, OnceLock},
     time::Duration,
 };
 
@@ -12,6 +13,7 @@ use reqwest::header::{
 };
 use serde::Deserialize;
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
+use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 use url::Url;
 
@@ -21,7 +23,11 @@ use super::{
     ProviderTurnOutcome, ProviderTurnRequest, ProviderUsage,
 };
 use crate::{
-    commands::{CommandError, CommandResult, ProviderModelThinkingEffortDto},
+    commands::{
+        heuristic_token_estimate, CommandError, CommandResult, ProviderModelThinkingEffortDto,
+        SessionContextEstimateConfidenceDto, SessionContextEstimateDto,
+        SessionContextEstimateSourceDto,
+    },
     runtime::{
         is_supported_xai_text_model_id,
         process_tree::{
@@ -227,6 +233,24 @@ impl ProviderAdapter for OpenAiCodexResponsesAdapter {
         })?;
         parse_openai_responses_sse(self.provider_id(), response, emit)
     }
+
+    fn estimate_context_tokens(
+        &self,
+        request: &ProviderTurnRequest,
+    ) -> CommandResult<SessionContextEstimateDto> {
+        let body = openai_codex_responses_request_body(
+            self.provider_id(),
+            &self.config.model_id,
+            request,
+            self.config.session_id.as_deref(),
+        )?;
+        estimate_provider_wire_context_tokens(
+            self.provider_id(),
+            &self.config.model_id,
+            "openai_codex_responses_wire_request",
+            body,
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -270,6 +294,20 @@ impl ProviderAdapter for OpenAiResponsesAdapter {
                 .json(&body)
         })?;
         parse_openai_responses_sse(self.provider_id(), response, emit)
+    }
+
+    fn estimate_context_tokens(
+        &self,
+        request: &ProviderTurnRequest,
+    ) -> CommandResult<SessionContextEstimateDto> {
+        let body =
+            openai_responses_request_body(self.provider_id(), &self.config.model_id, request)?;
+        estimate_provider_wire_context_tokens(
+            self.provider_id(),
+            &self.config.model_id,
+            "openai_responses_wire_request",
+            body,
+        )
     }
 }
 
@@ -322,6 +360,19 @@ impl ProviderAdapter for XaiResponsesAdapter {
                 .json(&body)
         })?;
         parse_openai_responses_sse(self.provider_id(), response, emit)
+    }
+
+    fn estimate_context_tokens(
+        &self,
+        request: &ProviderTurnRequest,
+    ) -> CommandResult<SessionContextEstimateDto> {
+        let body = xai_responses_request_body(self.provider_id(), &self.config.model_id, request)?;
+        estimate_provider_wire_context_tokens(
+            self.provider_id(),
+            &self.config.model_id,
+            "xai_responses_wire_request",
+            body,
+        )
     }
 }
 
@@ -377,6 +428,19 @@ impl ProviderAdapter for OpenAiCompatibleAdapter {
         })?;
         parse_openai_chat_sse(self.provider_id(), response, emit)
     }
+
+    fn estimate_context_tokens(
+        &self,
+        request: &ProviderTurnRequest,
+    ) -> CommandResult<SessionContextEstimateDto> {
+        let body = openai_chat_request_body(self.provider_id(), &self.config.model_id, request)?;
+        estimate_provider_wire_context_tokens(
+            self.provider_id(),
+            &self.config.model_id,
+            "openai_chat_completions_wire_request",
+            body,
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -426,6 +490,13 @@ impl ProviderAdapter for AnthropicAdapter {
                 .json(&body)
         })?;
         parse_anthropic_sse(self.provider_id(), response, emit)
+    }
+
+    fn estimate_context_tokens(
+        &self,
+        request: &ProviderTurnRequest,
+    ) -> CommandResult<SessionContextEstimateDto> {
+        estimate_anthropic_context_tokens(&self.config, &self.client, request)
     }
 }
 
@@ -536,6 +607,19 @@ impl ProviderAdapter for BedrockCliAdapter {
         })?;
         parse_anthropic_json_response(BEDROCK_PROVIDER_ID, &response_text, emit)
     }
+
+    fn estimate_context_tokens(
+        &self,
+        request: &ProviderTurnRequest,
+    ) -> CommandResult<SessionContextEstimateDto> {
+        let body = anthropic_request_body(None, BEDROCK_ANTHROPIC_VERSION, request, false)?;
+        estimate_provider_wire_context_tokens(
+            BEDROCK_PROVIDER_ID,
+            &self.config.model_id,
+            "bedrock_anthropic_wire_request",
+            body,
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -584,6 +668,19 @@ impl ProviderAdapter for VertexAnthropicAdapter {
             )
         })?;
         parse_anthropic_json_response(VERTEX_PROVIDER_ID, &text, emit)
+    }
+
+    fn estimate_context_tokens(
+        &self,
+        request: &ProviderTurnRequest,
+    ) -> CommandResult<SessionContextEstimateDto> {
+        let body = anthropic_request_body(None, VERTEX_ANTHROPIC_VERSION, request, false)?;
+        estimate_provider_wire_context_tokens(
+            VERTEX_PROVIDER_ID,
+            &self.config.model_id,
+            "vertex_anthropic_wire_request",
+            body,
+        )
     }
 }
 
@@ -643,6 +740,10 @@ fn openai_codex_responses_url(base_url: &str) -> CommandResult<Url> {
 
 fn anthropic_messages_url(base_url: &str) -> CommandResult<Url> {
     provider_url(base_url, "v1/messages", None)
+}
+
+fn anthropic_count_tokens_url(base_url: &str) -> CommandResult<Url> {
+    provider_url(base_url, "v1/messages/count_tokens", None)
 }
 
 fn openai_compatible_chat_url(base_url: &str, api_version: Option<&str>) -> CommandResult<Url> {
@@ -717,7 +818,6 @@ fn openai_chat_request_body(
     model_id: &str,
     request: &ProviderTurnRequest,
 ) -> CommandResult<JsonValue> {
-    ensure_openai_request_has_no_attachments(provider_id, request)?;
     let mut body = JsonMap::new();
     body.insert("model".into(), json!(model_id));
     body.insert(
@@ -764,6 +864,168 @@ fn provider_supports_openai_stream_options(provider_id: &str) -> bool {
     )
 }
 
+fn estimate_provider_wire_context_tokens(
+    provider_id: &str,
+    model_id: &str,
+    counted_shape: &'static str,
+    body: JsonValue,
+) -> CommandResult<SessionContextEstimateDto> {
+    let mut sanitization = ProviderWireEstimateSanitization::default();
+    let sanitized_body = sanitize_provider_wire_request_for_estimate(body, &mut sanitization);
+    let serialized = serde_json::to_string(&sanitized_body).map_err(|error| {
+        CommandError::system_fault(
+            "agent_context_provider_wire_estimate_serialize_failed",
+            format!(
+                "Xero could not serialize the `{counted_shape}` provider request body for `{provider_id}/{model_id}`: {error}"
+            ),
+        )
+    })?;
+    let mut estimate = heuristic_token_estimate(&serialized, counted_shape);
+    estimate.tokens = estimate
+        .tokens
+        .saturating_add(sanitization.image_data_url_estimated_tokens);
+    estimate.diagnostics = vec![format!(
+        "Estimated tokens from the provider-specific wire request body for `{provider_id}/{model_id}`; tokenizer fallback remains conservative."
+    )];
+    if sanitization.image_data_url_count > 0 {
+        estimate.diagnostics.push(format!(
+            "Omitted {} inline image data URL payload(s), {} encoded byte(s), from text-token estimation and added {} estimated image token(s) instead.",
+            sanitization.image_data_url_count,
+            sanitization.image_data_url_encoded_bytes,
+            sanitization.image_data_url_estimated_tokens
+        ));
+    }
+    Ok(estimate)
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct ProviderWireEstimateSanitization {
+    image_data_url_count: u64,
+    image_data_url_encoded_bytes: u64,
+    image_data_url_estimated_tokens: u64,
+}
+
+fn sanitize_provider_wire_request_for_estimate(
+    value: JsonValue,
+    sanitization: &mut ProviderWireEstimateSanitization,
+) -> JsonValue {
+    match value {
+        JsonValue::Array(items) => JsonValue::Array(
+            items
+                .into_iter()
+                .map(|item| sanitize_provider_wire_request_for_estimate(item, sanitization))
+                .collect(),
+        ),
+        JsonValue::Object(object) => JsonValue::Object(
+            object
+                .into_iter()
+                .map(|(key, value)| {
+                    (
+                        key,
+                        sanitize_provider_wire_request_for_estimate(value, sanitization),
+                    )
+                })
+                .collect(),
+        ),
+        JsonValue::String(value) => {
+            sanitize_provider_wire_string_for_estimate(&value, sanitization)
+                .map(JsonValue::String)
+                .unwrap_or(JsonValue::String(value))
+        }
+        other => other,
+    }
+}
+
+fn sanitize_provider_wire_string_for_estimate(
+    value: &str,
+    sanitization: &mut ProviderWireEstimateSanitization,
+) -> Option<String> {
+    let (media_type, encoded_payload) = image_data_url_payload(value)?;
+    let encoded_bytes = encoded_payload.len() as u64;
+    let decoded_bytes = estimated_base64_decoded_bytes(encoded_payload);
+    let estimated_tokens = estimate_inline_image_tokens(decoded_bytes);
+    sanitization.image_data_url_count = sanitization.image_data_url_count.saturating_add(1);
+    sanitization.image_data_url_encoded_bytes = sanitization
+        .image_data_url_encoded_bytes
+        .saturating_add(encoded_bytes);
+    sanitization.image_data_url_estimated_tokens = sanitization
+        .image_data_url_estimated_tokens
+        .saturating_add(estimated_tokens);
+    Some(format!(
+        "data:{media_type};base64,<omitted {encoded_bytes} encoded image bytes; estimated_image_tokens={estimated_tokens}>"
+    ))
+}
+
+fn image_data_url_payload(value: &str) -> Option<(&str, &str)> {
+    let lower = value.to_ascii_lowercase();
+    if !lower.starts_with("data:image/") {
+        return None;
+    }
+    let marker = ";base64,";
+    let marker_index = lower.find(marker)?;
+    let media_type = &value["data:".len()..marker_index];
+    let payload_start = marker_index + marker.len();
+    Some((media_type, &value[payload_start..]))
+}
+
+fn estimated_base64_decoded_bytes(encoded_payload: &str) -> u64 {
+    let trimmed = encoded_payload.trim_end_matches('=');
+    trimmed.len().saturating_mul(3).saturating_add(3) as u64 / 4
+}
+
+fn estimate_inline_image_tokens(decoded_bytes: u64) -> u64 {
+    if decoded_bytes == 0 {
+        return 0;
+    }
+    decoded_bytes
+        .saturating_add(511)
+        .saturating_div(512)
+        .clamp(256, 4_096)
+}
+
+fn provider_count_cache() -> &'static Mutex<HashMap<String, SessionContextEstimateDto>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, SessionContextEstimateDto>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn provider_count_cache_key(
+    provider_id: &str,
+    model_id: &str,
+    counted_shape: &str,
+    body: &JsonValue,
+) -> CommandResult<String> {
+    let serialized = serde_json::to_string(body).map_err(|error| {
+        CommandError::system_fault(
+            "agent_context_provider_count_cache_key_failed",
+            format!(
+                "Xero could not serialize the `{counted_shape}` count request for `{provider_id}/{model_id}`: {error}"
+            ),
+        )
+    })?;
+    let mut hasher = Sha256::new();
+    hasher.update(provider_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(model_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(counted_shape.as_bytes());
+    hasher.update([0]);
+    hasher.update(serialized.as_bytes());
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn cached_provider_count_estimate(cache_key: &str) -> Option<SessionContextEstimateDto> {
+    provider_count_cache()
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(cache_key).cloned())
+}
+
+fn store_provider_count_estimate(cache_key: String, estimate: SessionContextEstimateDto) {
+    if let Ok(mut cache) = provider_count_cache().lock() {
+        cache.insert(cache_key, estimate);
+    }
+}
+
 fn openai_chat_messages(
     provider_id: &str,
     request: &ProviderTurnRequest,
@@ -774,8 +1036,14 @@ fn openai_chat_messages(
     })];
     for message in &request.messages {
         match message {
-            ProviderMessage::User { content, .. } => {
-                messages.push(json!({ "role": "user", "content": content }));
+            ProviderMessage::User {
+                content,
+                attachments,
+            } => {
+                messages.push(json!({
+                    "role": "user",
+                    "content": openai_chat_user_content(content, attachments)?,
+                }));
             }
             ProviderMessage::Assistant {
                 content,
@@ -822,6 +1090,52 @@ fn openai_chat_messages(
         }
     }
     Ok(messages)
+}
+
+fn openai_chat_user_content(
+    content: &str,
+    attachments: &[MessageAttachment],
+) -> CommandResult<JsonValue> {
+    if attachments.is_empty() {
+        return Ok(json!(content));
+    }
+
+    let mut blocks = Vec::with_capacity(attachments.len() + 1);
+    if !content.trim().is_empty() {
+        blocks.push(json!({ "type": "text", "text": content }));
+    }
+    for attachment in attachments {
+        match attachment.kind {
+            MessageAttachmentKind::Image => {
+                blocks.push(json!({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": attachment_data_url(attachment)?,
+                        "detail": "auto",
+                    },
+                }));
+            }
+            MessageAttachmentKind::Document => {
+                blocks.push(json!({
+                    "type": "file",
+                    "file": {
+                        "filename": attachment.original_name,
+                        "file_data": attachment_data_url(attachment)?,
+                    },
+                }));
+            }
+            MessageAttachmentKind::Text => {
+                blocks.push(json!({
+                    "type": "text",
+                    "text": inline_text_attachment(attachment)?,
+                }));
+            }
+        }
+    }
+    if blocks.is_empty() {
+        blocks.push(json!({ "type": "text", "text": "" }));
+    }
+    Ok(JsonValue::Array(blocks))
 }
 
 fn provider_replays_openai_reasoning_content(provider_id: &str) -> bool {
@@ -877,7 +1191,6 @@ fn openai_responses_request_body(
     model_id: &str,
     request: &ProviderTurnRequest,
 ) -> CommandResult<JsonValue> {
-    ensure_openai_request_has_no_attachments(provider_id, request)?;
     let mut body = JsonMap::new();
     body.insert("model".into(), json!(model_id));
     body.insert("instructions".into(), json!(request.system_prompt));
@@ -904,11 +1217,10 @@ fn openai_responses_request_body(
 }
 
 fn xai_responses_request_body(
-    provider_id: &str,
+    _provider_id: &str,
     model_id: &str,
     request: &ProviderTurnRequest,
 ) -> CommandResult<JsonValue> {
-    ensure_openai_request_has_no_attachments(provider_id, request)?;
     let mut body = JsonMap::new();
     body.insert("model".into(), json!(model_id));
     body.insert("instructions".into(), json!(request.system_prompt));
@@ -944,7 +1256,6 @@ fn openai_codex_responses_request_body(
     request: &ProviderTurnRequest,
     prompt_cache_key: Option<&str>,
 ) -> CommandResult<JsonValue> {
-    ensure_openai_request_has_no_attachments(provider_id, request)?;
     let mut body = JsonMap::new();
     body.insert("model".into(), json!(model_id));
     body.insert("store".into(), json!(false));
@@ -991,32 +1302,92 @@ fn openai_codex_responses_request_body(
     Ok(JsonValue::Object(body))
 }
 
-fn ensure_openai_request_has_no_attachments(
-    provider_id: &str,
-    request: &ProviderTurnRequest,
-) -> CommandResult<()> {
-    let attachment = request.messages.iter().find_map(|message| match message {
-        ProviderMessage::User { attachments, .. } => attachments.first(),
-        ProviderMessage::Assistant { .. } | ProviderMessage::Tool { .. } => None,
-    });
-    if let Some(attachment) = attachment {
-        return Err(CommandError::user_fixable(
-            "provider_attachment_unsupported",
+fn attachment_data_url(attachment: &MessageAttachment) -> CommandResult<String> {
+    let bytes = std::fs::read(&attachment.absolute_path).map_err(|error| {
+        CommandError::system_fault(
+            "agent_attachment_read_failed",
             format!(
-                "Xero cannot send attachment `{}` to provider `{provider_id}` because this owned OpenAI-style adapter does not serialize attachments yet.",
+                "Xero could not read attachment `{}` from disk: {error}",
                 attachment.original_name
             ),
-        ));
+        )
+    })?;
+    Ok(format!(
+        "data:{};base64,{}",
+        attachment.media_type,
+        BASE64_STANDARD.encode(bytes)
+    ))
+}
+
+fn inline_text_attachment(attachment: &MessageAttachment) -> CommandResult<String> {
+    let text = std::fs::read_to_string(&attachment.absolute_path).map_err(|error| {
+        CommandError::system_fault(
+            "agent_attachment_read_failed",
+            format!(
+                "Xero could not read attached text file `{}` from disk: {error}",
+                attachment.original_name
+            ),
+        )
+    })?;
+    Ok(format!(
+        "<attached_file name=\"{}\">\n{}\n</attached_file>",
+        attachment.original_name, text
+    ))
+}
+
+fn openai_response_user_content(
+    content: &str,
+    attachments: &[MessageAttachment],
+) -> CommandResult<JsonValue> {
+    if attachments.is_empty() {
+        return Ok(json!(content));
     }
-    Ok(())
+
+    let mut blocks = Vec::with_capacity(attachments.len() + 1);
+    for attachment in attachments {
+        match attachment.kind {
+            MessageAttachmentKind::Image => {
+                blocks.push(json!({
+                    "type": "input_image",
+                    "image_url": attachment_data_url(attachment)?,
+                    "detail": "auto",
+                }));
+            }
+            MessageAttachmentKind::Document => {
+                blocks.push(json!({
+                    "type": "input_file",
+                    "filename": attachment.original_name,
+                    "file_data": attachment_data_url(attachment)?,
+                }));
+            }
+            MessageAttachmentKind::Text => {
+                blocks.push(json!({
+                    "type": "input_text",
+                    "text": inline_text_attachment(attachment)?,
+                }));
+            }
+        }
+    }
+    if !content.trim().is_empty() {
+        blocks.push(json!({ "type": "input_text", "text": content }));
+    } else if blocks.is_empty() {
+        blocks.push(json!({ "type": "input_text", "text": "" }));
+    }
+    Ok(JsonValue::Array(blocks))
 }
 
 fn openai_response_input(request: &ProviderTurnRequest) -> CommandResult<Vec<JsonValue>> {
     let mut input = Vec::new();
     for message in &request.messages {
         match message {
-            ProviderMessage::User { content, .. } => {
-                input.push(json!({ "role": "user", "content": content }));
+            ProviderMessage::User {
+                content,
+                attachments,
+            } => {
+                input.push(json!({
+                    "role": "user",
+                    "content": openai_response_user_content(content, attachments)?,
+                }));
             }
             ProviderMessage::Assistant {
                 content,
@@ -1055,10 +1426,13 @@ fn openai_codex_response_input(request: &ProviderTurnRequest) -> CommandResult<V
     let mut input = Vec::new();
     for (index, message) in request.messages.iter().enumerate() {
         match message {
-            ProviderMessage::User { content, .. } => {
+            ProviderMessage::User {
+                content,
+                attachments,
+            } => {
                 input.push(json!({
                     "role": "user",
-                    "content": [{ "type": "input_text", "text": content }],
+                    "content": openai_codex_user_content(content, attachments)?,
                 }));
             }
             ProviderMessage::Assistant {
@@ -1102,6 +1476,16 @@ fn openai_codex_response_input(request: &ProviderTurnRequest) -> CommandResult<V
         }
     }
     Ok(input)
+}
+
+fn openai_codex_user_content(
+    content: &str,
+    attachments: &[MessageAttachment],
+) -> CommandResult<JsonValue> {
+    if attachments.is_empty() {
+        return Ok(json!([{ "type": "input_text", "text": content }]));
+    }
+    openai_response_user_content(content, attachments)
 }
 
 fn openai_response_tool(tool: &AgentToolDescriptor) -> JsonValue {
@@ -1154,9 +1538,64 @@ fn openai_codex_response_tool(tool: &AgentToolDescriptor) -> JsonValue {
         "type": "function",
         "name": tool.name,
         "description": tool.description,
-        "parameters": tool.input_schema,
+        "parameters": openai_codex_sanitize_tool_schema(tool.input_schema.clone()),
         "strict": JsonValue::Null,
     })
+}
+
+fn openai_codex_sanitize_tool_schema(value: JsonValue) -> JsonValue {
+    let JsonValue::Object(mut root) = value else {
+        return json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {},
+        });
+    };
+
+    root.insert("type".into(), json!("object"));
+    root.remove("enum");
+    root.remove("not");
+
+    let mut merged_disjunction = false;
+    for key in ["oneOf", "anyOf", "allOf"] {
+        let Some(JsonValue::Array(branches)) = root.remove(key) else {
+            continue;
+        };
+        merged_disjunction = true;
+        for branch in branches {
+            merge_openai_codex_tool_schema_branch(&mut root, branch);
+        }
+    }
+    if merged_disjunction {
+        root.remove("required");
+    }
+
+    JsonValue::Object(root)
+}
+
+fn merge_openai_codex_tool_schema_branch(root: &mut JsonMap<String, JsonValue>, branch: JsonValue) {
+    let JsonValue::Object(branch) = branch else {
+        return;
+    };
+
+    if let Some(JsonValue::Object(branch_properties)) = branch.get("properties") {
+        let root_properties = root
+            .entry("properties")
+            .or_insert_with(|| JsonValue::Object(JsonMap::new()));
+        if let JsonValue::Object(root_properties) = root_properties {
+            for (key, value) in branch_properties {
+                root_properties
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
+            }
+        }
+    }
+
+    if !root.contains_key("additionalProperties") {
+        if let Some(additional_properties) = branch.get("additionalProperties") {
+            root.insert("additionalProperties".into(), additional_properties.clone());
+        }
+    }
 }
 
 fn openai_codex_request_headers(
@@ -1352,6 +1791,131 @@ fn anthropic_request_body(
         body.insert("anthropic_version".into(), json!(anthropic_version));
     }
     Ok(JsonValue::Object(body))
+}
+
+fn anthropic_count_tokens_body(
+    model_id: &str,
+    anthropic_version: &str,
+    request: &ProviderTurnRequest,
+) -> CommandResult<JsonValue> {
+    let mut body = anthropic_request_body(Some(model_id), anthropic_version, request, false)?;
+    if let JsonValue::Object(object) = &mut body {
+        object.remove("stream");
+        object.remove("max_tokens");
+    }
+    Ok(body)
+}
+
+fn estimate_anthropic_context_tokens(
+    config: &AnthropicProviderConfig,
+    client: &Client,
+    request: &ProviderTurnRequest,
+) -> CommandResult<SessionContextEstimateDto> {
+    let counted_shape = "anthropic_messages_count_tokens";
+    let count_body =
+        anthropic_count_tokens_body(&config.model_id, &config.anthropic_version, request)?;
+    let fallback_body = count_body.clone();
+    let cache_key = provider_count_cache_key(
+        &config.provider_id,
+        &config.model_id,
+        counted_shape,
+        &count_body,
+    )?;
+    if let Some(estimate) = cached_provider_count_estimate(&cache_key) {
+        return Ok(estimate);
+    }
+
+    let url = anthropic_count_tokens_url(&config.base_url)?;
+    let response = send_provider_json_request(&config.provider_id, || {
+        client
+            .post(url.clone())
+            .header("x-api-key", &config.api_key)
+            .header("anthropic-version", &config.anthropic_version)
+            .json(&count_body)
+    });
+    let estimate = match response {
+        Ok(response) => {
+            let text = response.text().map_err(|error| {
+                CommandError::retryable(
+                    "anthropic_count_tokens_response_read_failed",
+                    format!(
+                        "Xero could not read the Anthropic token-count response for `{}`: {error}",
+                        config.model_id
+                    ),
+                )
+            });
+            match text.and_then(|text| {
+                serde_json::from_str::<JsonValue>(&text).map_err(|error| {
+                    CommandError::retryable(
+                        "anthropic_count_tokens_response_decode_failed",
+                        format!(
+                            "Xero could not decode the Anthropic token-count response for `{}`: {error}",
+                            config.model_id
+                        ),
+                    )
+                })
+            }) {
+                Ok(value) => {
+                    if let Some(tokens) = value
+                        .get("input_tokens")
+                        .and_then(JsonValue::as_u64)
+                        .filter(|tokens| *tokens > 0)
+                    {
+                        SessionContextEstimateDto {
+                            tokens,
+                            source: SessionContextEstimateSourceDto::ProviderCountApi,
+                            confidence: SessionContextEstimateConfidenceDto::High,
+                            counted_shape: counted_shape.into(),
+                            diagnostics: vec![format!(
+                                "Counted with Anthropic `messages/count_tokens` for `{}`.",
+                                config.model_id
+                            )],
+                        }
+                    } else {
+                        let mut fallback = estimate_provider_wire_context_tokens(
+                            &config.provider_id,
+                            &config.model_id,
+                            "anthropic_messages_wire_request",
+                            fallback_body.clone(),
+                        )?;
+                        fallback.diagnostics.push(
+                            "Anthropic token-count response did not include `input_tokens`; fell back to local wire-shape estimate."
+                                .into(),
+                        );
+                        fallback
+                    }
+                }
+                Err(error) => {
+                    let mut fallback = estimate_provider_wire_context_tokens(
+                        &config.provider_id,
+                        &config.model_id,
+                        "anthropic_messages_wire_request",
+                        fallback_body.clone(),
+                    )?;
+                    fallback.diagnostics.push(format!(
+                        "Anthropic token-count API response was unavailable: {}",
+                        error.message
+                    ));
+                    fallback
+                }
+            }
+        }
+        Err(error) => {
+            let mut fallback = estimate_provider_wire_context_tokens(
+                &config.provider_id,
+                &config.model_id,
+                "anthropic_messages_wire_request",
+                fallback_body,
+            )?;
+            fallback.diagnostics.push(format!(
+                "Anthropic token-count API was unavailable: {}",
+                error.message
+            ));
+            fallback
+        }
+    };
+    store_provider_count_estimate(cache_key, estimate.clone());
+    Ok(estimate)
 }
 
 fn anthropic_messages(request: &ProviderTurnRequest) -> CommandResult<Vec<JsonValue>> {
@@ -1931,15 +2495,13 @@ fn openai_provider_usage(
         .saturating_sub(cache_read_tokens)
         .saturating_sub(cache_creation_tokens);
     ProviderUsage {
-        input_tokens: billable_input_tokens,
+        input_tokens,
+        billable_input_tokens,
         output_tokens,
         total_tokens: if total_tokens > 0 {
             total_tokens
         } else {
-            billable_input_tokens
-                .saturating_add(output_tokens)
-                .saturating_add(cache_read_tokens)
-                .saturating_add(cache_creation_tokens)
+            input_tokens.saturating_add(output_tokens)
         },
         cache_read_tokens,
         cache_creation_tokens,
@@ -2124,11 +2686,12 @@ fn parse_anthropic_sse(
             _ => {}
         }
     }
-    usage.total_tokens = usage
+    usage.billable_input_tokens = usage.input_tokens;
+    usage.input_tokens = usage
         .input_tokens
-        .saturating_add(usage.output_tokens)
         .saturating_add(usage.cache_read_tokens)
         .saturating_add(usage.cache_creation_tokens);
+    usage.total_tokens = usage.input_tokens.saturating_add(usage.output_tokens);
     let usage = (usage.total_tokens > 0).then_some(usage);
     if let Some(usage) = usage.as_ref() {
         emit(ProviderStreamEvent::Usage(usage.clone()))?;
@@ -2212,7 +2775,10 @@ fn parse_anthropic_json_response(
             .and_then(JsonValue::as_u64)
             .unwrap_or_default();
         ProviderUsage {
-            input_tokens,
+            input_tokens: input_tokens
+                .saturating_add(cache_read_tokens)
+                .saturating_add(cache_creation_tokens),
+            billable_input_tokens: input_tokens,
             output_tokens,
             total_tokens: input_tokens
                 .saturating_add(output_tokens)
@@ -2761,6 +3327,73 @@ mod tests {
     }
 
     #[test]
+    fn provider_context_estimate_uses_adapter_wire_request_shape() {
+        let adapter = OpenAiCompatibleAdapter::new(OpenAiCompatibleProviderConfig {
+            provider_id: OPENROUTER_PROVIDER_ID.into(),
+            model_id: "openai/gpt-4.1-mini".into(),
+            base_url: "https://openrouter.ai/api/v1".into(),
+            api_key: Some("test-key".into()),
+            api_version: None,
+            timeout_ms: 1_000,
+        })
+        .expect("adapter");
+
+        let estimate = adapter
+            .estimate_context_tokens(&test_request())
+            .expect("estimate");
+
+        assert!(estimate.tokens > 0);
+        assert_eq!(estimate.source, SessionContextEstimateSourceDto::Heuristic);
+        assert_eq!(
+            estimate.confidence,
+            SessionContextEstimateConfidenceDto::Low
+        );
+        assert_eq!(
+            estimate.counted_shape,
+            "openai_chat_completions_wire_request"
+        );
+    }
+
+    #[test]
+    fn provider_wire_estimate_omits_inline_image_base64_payloads() {
+        let image_payload = "A".repeat(600_000);
+        let body = json!({
+            "model": "gpt-5.5",
+            "input": [{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_image",
+                        "image_url": format!("data:image/png;base64,{image_payload}"),
+                        "detail": "auto"
+                    },
+                    {
+                        "type": "input_text",
+                        "text": "Use this screenshot to inspect the mobile menu."
+                    }
+                ]
+            }]
+        });
+
+        let estimate = estimate_provider_wire_context_tokens(
+            OPENAI_CODEX_PROVIDER_ID,
+            "gpt-5.5",
+            "openai_codex_responses_wire_request",
+            body,
+        )
+        .expect("estimate provider wire context");
+
+        assert!(
+            estimate.tokens < 10_000,
+            "image base64 transport bytes should not dominate prompt estimate: {estimate:?}"
+        );
+        assert!(estimate.diagnostics.iter().any(|diagnostic| {
+            diagnostic.contains("Omitted 1 inline image data URL payload")
+                && diagnostic.contains("600000 encoded byte")
+        }));
+    }
+
+    #[test]
     fn deepseek_body_uses_thinking_effort_and_replays_reasoning_content() {
         let mut request = test_request();
         request.controls.active.thinking_effort = Some(ProviderModelThinkingEffortDto::XHigh);
@@ -2809,45 +3442,235 @@ mod tests {
     }
 
     #[test]
-    fn openai_style_adapters_fail_closed_when_user_attachments_are_present() {
+    fn openai_compatible_chat_body_serializes_openrouter_attachments() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let image_path = dir.path().join("snap.png");
+        std::fs::write(&image_path, b"\x89PNG\r\n\x1a\nfake-image-bytes")
+            .expect("write image fixture");
+        let pdf_path = dir.path().join("notes.pdf");
+        std::fs::write(&pdf_path, b"%PDF-1.4 fake-pdf-bytes").expect("write pdf fixture");
+        let text_path = dir.path().join("note.md");
+        std::fs::write(&text_path, b"# heading\nbody").expect("write text fixture");
+
         let mut request = test_request();
         request.messages = vec![ProviderMessage::User {
-            content: "read the attachment".into(),
+            content: "read the attachments".into(),
+            attachments: vec![
+                MessageAttachment {
+                    kind: MessageAttachmentKind::Image,
+                    absolute_path: image_path,
+                    media_type: "image/png".into(),
+                    original_name: "snap.png".into(),
+                    size_bytes: 10,
+                    width: None,
+                    height: None,
+                },
+                MessageAttachment {
+                    kind: MessageAttachmentKind::Document,
+                    absolute_path: pdf_path,
+                    media_type: "application/pdf".into(),
+                    original_name: "notes.pdf".into(),
+                    size_bytes: 20,
+                    width: None,
+                    height: None,
+                },
+                MessageAttachment {
+                    kind: MessageAttachmentKind::Text,
+                    absolute_path: text_path,
+                    media_type: "text/markdown".into(),
+                    original_name: "note.md".into(),
+                    size_bytes: 12,
+                    width: None,
+                    height: None,
+                },
+            ],
+        }];
+
+        let body = openai_chat_request_body(OPENROUTER_PROVIDER_ID, "x-ai/grok-4.3", &request)
+            .expect("openrouter chat body");
+        let content = body["messages"][1]["content"]
+            .as_array()
+            .expect("multipart chat content");
+
+        assert!(content.iter().any(|block| {
+            block["type"] == "image_url" && block["image_url"]["detail"] == "auto"
+        }));
+        assert!(content.iter().any(|block| block["type"] == "file"));
+        assert!(content.iter().any(|block| block["type"] == "text"
+            && block["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("note.md"))));
+    }
+
+    #[test]
+    fn openai_responses_body_serializes_image_file_and_text_attachments() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let image_path = dir.path().join("snap.png");
+        std::fs::write(&image_path, b"\x89PNG\r\n\x1a\nfake-image-bytes")
+            .expect("write image fixture");
+        let pdf_path = dir.path().join("notes.pdf");
+        std::fs::write(&pdf_path, b"%PDF-1.4 fake-pdf-bytes").expect("write pdf fixture");
+        let text_path = dir.path().join("note.md");
+        std::fs::write(&text_path, b"# heading\nbody").expect("write text fixture");
+
+        let mut request = test_request();
+        request.messages = vec![ProviderMessage::User {
+            content: "read the attachments".into(),
+            attachments: vec![
+                MessageAttachment {
+                    kind: MessageAttachmentKind::Image,
+                    absolute_path: image_path,
+                    media_type: "image/png".into(),
+                    original_name: "snap.png".into(),
+                    size_bytes: 10,
+                    width: None,
+                    height: None,
+                },
+                MessageAttachment {
+                    kind: MessageAttachmentKind::Document,
+                    absolute_path: pdf_path,
+                    media_type: "application/pdf".into(),
+                    original_name: "notes.pdf".into(),
+                    size_bytes: 20,
+                    width: None,
+                    height: None,
+                },
+                MessageAttachment {
+                    kind: MessageAttachmentKind::Text,
+                    absolute_path: text_path,
+                    media_type: "text/markdown".into(),
+                    original_name: "note.md".into(),
+                    size_bytes: 12,
+                    width: None,
+                    height: None,
+                },
+            ],
+        }];
+
+        let body = openai_responses_request_body(OPENAI_API_PROVIDER_ID, "gpt-5.4", &request)
+            .expect("responses body");
+        let content = body["input"][0]["content"]
+            .as_array()
+            .expect("multipart responses content");
+
+        assert!(content
+            .iter()
+            .any(|block| { block["type"] == "input_image" && block["detail"] == "auto" }));
+        assert!(content.iter().any(|block| block["type"] == "input_file"));
+        assert!(content.iter().any(|block| block["type"] == "input_text"
+            && block["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("note.md"))));
+    }
+
+    #[test]
+    fn xai_responses_body_serializes_image_attachments() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let image_path = dir.path().join("snap.png");
+        std::fs::write(&image_path, b"\x89PNG\r\n\x1a\nfake-image-bytes")
+            .expect("write image fixture");
+
+        let mut request = test_request();
+        request.messages = vec![ProviderMessage::User {
+            content: "where is this in the code?".into(),
             attachments: vec![MessageAttachment {
-                kind: MessageAttachmentKind::Text,
-                absolute_path: std::path::PathBuf::from("/tmp/note.md"),
-                media_type: "text/markdown".into(),
-                original_name: "note.md".into(),
-                size_bytes: 12,
-                width: None,
-                height: None,
+                kind: MessageAttachmentKind::Image,
+                absolute_path: image_path,
+                media_type: "image/png".into(),
+                original_name: "browser-sketch.png".into(),
+                size_bytes: 10,
+                width: Some(800),
+                height: Some(600),
             }],
         }];
 
-        let chat_error = openai_chat_request_body(OPENAI_API_PROVIDER_ID, "gpt-4.1", &request)
-            .expect_err("chat adapter should deny attachments");
-        assert_eq!(chat_error.code, "provider_attachment_unsupported");
+        let body = xai_responses_request_body(XAI_PROVIDER_ID, "grok-4.3", &request)
+            .expect("xAI responses body");
+        let content = body["input"][0]["content"]
+            .as_array()
+            .expect("xAI multipart content");
 
-        let responses_error =
-            openai_responses_request_body(OPENAI_API_PROVIDER_ID, "gpt-5.4", &request)
-                .expect_err("responses adapter should deny attachments");
-        assert_eq!(responses_error.code, "provider_attachment_unsupported");
+        assert!(content.iter().any(|block| {
+            block["type"] == "input_image"
+                && block["detail"] == "auto"
+                && block["image_url"]
+                    .as_str()
+                    .is_some_and(|url| url.starts_with("data:image/png;base64,"))
+        }));
+    }
 
-        let codex_error = openai_codex_responses_request_body(
+    #[test]
+    fn openai_codex_responses_body_serializes_image_file_and_text_attachments() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let image_path = dir.path().join("snap.png");
+        std::fs::write(&image_path, b"\x89PNG\r\n\x1a\nfake-image-bytes")
+            .expect("write image fixture");
+        let pdf_path = dir.path().join("notes.pdf");
+        std::fs::write(&pdf_path, b"%PDF-1.4 fake-pdf-bytes").expect("write pdf fixture");
+        let text_path = dir.path().join("note.md");
+        std::fs::write(&text_path, b"# heading\nbody").expect("write text fixture");
+
+        let mut request = test_request();
+        request.messages = vec![ProviderMessage::User {
+            content: "read the attachments".into(),
+            attachments: vec![
+                MessageAttachment {
+                    kind: MessageAttachmentKind::Image,
+                    absolute_path: image_path,
+                    media_type: "image/png".into(),
+                    original_name: "snap.png".into(),
+                    size_bytes: 10,
+                    width: None,
+                    height: None,
+                },
+                MessageAttachment {
+                    kind: MessageAttachmentKind::Document,
+                    absolute_path: pdf_path,
+                    media_type: "application/pdf".into(),
+                    original_name: "notes.pdf".into(),
+                    size_bytes: 20,
+                    width: None,
+                    height: None,
+                },
+                MessageAttachment {
+                    kind: MessageAttachmentKind::Text,
+                    absolute_path: text_path,
+                    media_type: "text/markdown".into(),
+                    original_name: "note.md".into(),
+                    size_bytes: 12,
+                    width: None,
+                    height: None,
+                },
+            ],
+        }];
+
+        let body = openai_codex_responses_request_body(
             OPENAI_CODEX_PROVIDER_ID,
-            "gpt-5.4",
+            "gpt-5.5",
             &request,
             None,
         )
-        .expect_err("codex responses adapter should deny attachments");
-        assert_eq!(codex_error.code, "provider_attachment_unsupported");
+        .expect("codex responses body");
+        let content = body["input"][0]["content"]
+            .as_array()
+            .expect("multipart codex responses content");
+
+        assert!(content
+            .iter()
+            .any(|block| { block["type"] == "input_image" && block["detail"] == "auto" }));
+        assert!(content.iter().any(|block| block["type"] == "input_file"));
+        assert!(content.iter().any(|block| block["type"] == "input_text"
+            && block["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("note.md"))));
     }
 
     #[test]
     fn openai_usage_maps_cached_input_to_cache_read_bucket() {
         let usage = openai_provider_usage(1_000, 200, 1_200, 300, 0, None);
 
-        assert_eq!(usage.input_tokens, 700);
+        assert_eq!(usage.input_tokens, 1_000);
+        assert_eq!(usage.billable_input_tokens, 700);
         assert_eq!(usage.output_tokens, 200);
         assert_eq!(usage.cache_read_tokens, 300);
         assert_eq!(usage.total_tokens, 1_200);
@@ -2858,7 +3681,8 @@ mod tests {
             "output_tokens": 200,
             "input_tokens_details": { "cached_tokens": 300 }
         }));
-        assert_eq!(response_usage.input_tokens, 700);
+        assert_eq!(response_usage.input_tokens, 1_000);
+        assert_eq!(response_usage.billable_input_tokens, 700);
         assert_eq!(response_usage.cache_read_tokens, 300);
         assert_eq!(response_usage.total_tokens, 1_200);
     }
@@ -2886,7 +3710,8 @@ mod tests {
             openai_reported_cost_micros(OPENROUTER_PROVIDER_ID, &usage),
         );
 
-        assert_eq!(mapped.input_tokens, 600);
+        assert_eq!(mapped.input_tokens, 1_000);
+        assert_eq!(mapped.billable_input_tokens, 600);
         assert_eq!(mapped.cache_read_tokens, 300);
         assert_eq!(mapped.cache_creation_tokens, 100);
         assert_eq!(mapped.total_tokens, 1_200);
@@ -3083,7 +3908,13 @@ mod tests {
 
         assert_eq!(body["tools"][0]["name"], AUTONOMOUS_TOOL_PATCH);
         assert_eq!(body["tools"][0]["parameters"]["type"], "object");
-        assert!(body["tools"][0]["parameters"]["oneOf"].is_array());
+        assert!(body["tools"][0]["parameters"].get("oneOf").is_none());
+        assert!(body["tools"][0]["parameters"].get("anyOf").is_none());
+        assert!(body["tools"][0]["parameters"].get("allOf").is_none());
+        assert!(body["tools"][0]["parameters"].get("enum").is_none());
+        assert!(body["tools"][0]["parameters"].get("not").is_none());
+        assert!(body["tools"][0]["parameters"]["properties"]["path"].is_object());
+        assert!(body["tools"][0]["parameters"]["properties"]["operations"].is_object());
     }
 
     #[test]

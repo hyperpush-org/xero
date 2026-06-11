@@ -16,11 +16,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use arrow_array::builder::{
-    BooleanBuilder, FixedSizeListBuilder, Float32Builder, Int32Builder, StringBuilder, UInt8Builder,
+    BooleanBuilder, FixedSizeListBuilder, Float32Builder, Int32Builder, StringBuilder,
+    UInt32Builder, UInt8Builder,
 };
 use arrow_array::{
     Array, ArrayRef, BooleanArray, FixedSizeListArray, Int32Array, RecordBatch,
-    RecordBatchIterator, StringArray, UInt8Array,
+    RecordBatchIterator, StringArray, UInt32Array, UInt8Array,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use futures::TryStreamExt;
@@ -34,9 +35,7 @@ use crate::commands::CommandError;
 
 use super::agent_core::AgentRunDiagnosticRecord;
 use super::agent_embeddings::AGENT_RETRIEVAL_EMBEDDING_DIM;
-use super::agent_memory::{
-    AgentMemoryKind, AgentMemoryRecord, AgentMemoryReviewState, AgentMemoryScope,
-};
+use super::agent_memory::{AgentMemoryKind, AgentMemoryRecord, AgentMemoryScope};
 use super::{lance_health, FreshnessUpdate, SupersessionUpdate};
 
 /// Reserved fixed dimension for opt-in semantic embeddings. Picked to match the
@@ -54,11 +53,11 @@ const AGENT_MEMORY_EMBEDDING_INDEX: &str = "agent_memories_embedding_cosine_idx"
 
 /// Subdirectory under each per-project app-data dir that hosts Lance datasets.
 pub const PROJECT_LANCE_SUBDIR: &str = "lance";
+const MAX_REINFORCEMENT_SOURCES: usize = 25;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct AgentMemoryListFilterOwned {
     pub include_disabled: bool,
-    pub include_rejected: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -68,7 +67,6 @@ pub struct AgentMemoryUpdate {
     #[allow(dead_code)]
     pub project_id: String,
     pub memory_id: String,
-    pub review_state: Option<AgentMemoryReviewState>,
     pub enabled: Option<bool>,
     pub diagnostic: Option<AgentRunDiagnosticRecord>,
 }
@@ -89,11 +87,13 @@ pub fn schema() -> SchemaRef {
         Field::new("memory_kind", DataType::Utf8, false),
         Field::new("text", DataType::Utf8, false),
         Field::new("text_hash", DataType::Utf8, false),
-        Field::new("review_state", DataType::Utf8, false),
         Field::new("enabled", DataType::Boolean, false),
         Field::new("confidence", DataType::UInt8, true),
         Field::new("source_run_id", DataType::Utf8, true),
         Field::new("source_item_ids_json", DataType::Utf8, false),
+        Field::new("reinforcement_count", DataType::UInt32, false),
+        Field::new("last_reinforced_at", DataType::Utf8, true),
+        Field::new("reinforcement_sources_json", DataType::Utf8, false),
         Field::new("diagnostic_json", DataType::Utf8, true),
         Field::new("freshness_state", DataType::Utf8, false),
         Field::new("freshness_checked_at", DataType::Utf8, true),
@@ -129,11 +129,13 @@ pub struct AgentMemoryRow {
     pub kind: AgentMemoryKind,
     pub text: String,
     pub text_hash: String,
-    pub review_state: AgentMemoryReviewState,
     pub enabled: bool,
     pub confidence: Option<u8>,
     pub source_run_id: Option<String>,
     pub source_item_ids: Vec<String>,
+    pub reinforcement_count: u32,
+    pub last_reinforced_at: Option<String>,
+    pub reinforcement_sources_json: String,
     pub diagnostic: Option<AgentRunDiagnosticRecord>,
     pub freshness_state: String,
     pub freshness_checked_at: Option<String>,
@@ -162,11 +164,13 @@ impl AgentMemoryRow {
             kind: self.kind,
             text: self.text,
             text_hash: self.text_hash,
-            review_state: self.review_state,
             enabled: self.enabled,
             confidence: self.confidence,
             source_run_id: self.source_run_id,
             source_item_ids: self.source_item_ids,
+            reinforcement_count: self.reinforcement_count,
+            last_reinforced_at: self.last_reinforced_at,
+            reinforcement_sources_json: self.reinforcement_sources_json,
             diagnostic: self.diagnostic,
             freshness_state: self.freshness_state,
             freshness_checked_at: self.freshness_checked_at,
@@ -381,11 +385,13 @@ fn build_batch(rows: &[AgentMemoryRow]) -> Result<RecordBatch, CommandError> {
     let mut memory_kind = StringBuilder::new();
     let mut text = StringBuilder::new();
     let mut text_hash = StringBuilder::new();
-    let mut review_state = StringBuilder::new();
     let mut enabled = BooleanBuilder::new();
     let mut confidence = UInt8Builder::new();
     let mut source_run_id = StringBuilder::new();
     let mut source_item_ids_json = StringBuilder::new();
+    let mut reinforcement_count = UInt32Builder::new();
+    let mut last_reinforced_at = StringBuilder::new();
+    let mut reinforcement_sources_json = StringBuilder::new();
     let mut diagnostic_json = StringBuilder::new();
     let mut freshness_state = StringBuilder::new();
     let mut freshness_checked_at = StringBuilder::new();
@@ -413,7 +419,6 @@ fn build_batch(rows: &[AgentMemoryRow]) -> Result<RecordBatch, CommandError> {
         memory_kind.append_value(kind_sql_value(&row.kind));
         text.append_value(&row.text);
         text_hash.append_value(&row.text_hash);
-        review_state.append_value(review_state_sql_value(&row.review_state));
         enabled.append_value(row.enabled);
         match row.confidence {
             Some(value) => confidence.append_value(value),
@@ -433,6 +438,9 @@ fn build_batch(rows: &[AgentMemoryRow]) -> Result<RecordBatch, CommandError> {
             )
         })?;
         source_item_ids_json.append_value(&items_json);
+        reinforcement_count.append_value(row.reinforcement_count.max(1));
+        append_optional(&mut last_reinforced_at, row.last_reinforced_at.as_deref());
+        reinforcement_sources_json.append_value(&row.reinforcement_sources_json);
         match &row.diagnostic {
             Some(diagnostic) => {
                 let json = serde_json::to_string(&serde_json::json!({
@@ -487,11 +495,13 @@ fn build_batch(rows: &[AgentMemoryRow]) -> Result<RecordBatch, CommandError> {
         Arc::new(memory_kind.finish()),
         Arc::new(text.finish()),
         Arc::new(text_hash.finish()),
-        Arc::new(review_state.finish()),
         Arc::new(enabled.finish()),
         Arc::new(confidence.finish()),
         Arc::new(source_run_id.finish()),
         Arc::new(source_item_ids_json.finish()),
+        Arc::new(reinforcement_count.finish()),
+        Arc::new(last_reinforced_at.finish()),
+        Arc::new(reinforcement_sources_json.finish()),
         Arc::new(diagnostic_json.finish()),
         Arc::new(freshness_state.finish()),
         Arc::new(freshness_checked_at.finish()),
@@ -573,11 +583,13 @@ fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<AgentMemoryRow>, CommandErro
     let memory_kind_arr = column_str(batch, "memory_kind")?;
     let text_arr = column_str(batch, "text")?;
     let text_hash_arr = column_str(batch, "text_hash")?;
-    let review_state_arr = column_str(batch, "review_state")?;
     let enabled_arr = column_bool(batch, "enabled")?;
     let confidence_arr = column_u8(batch, "confidence")?;
     let source_run_id_arr = column_str(batch, "source_run_id")?;
     let source_item_ids_json_arr = column_str(batch, "source_item_ids_json")?;
+    let reinforcement_count_arr = column_u32(batch, "reinforcement_count")?;
+    let last_reinforced_at_arr = column_str(batch, "last_reinforced_at")?;
+    let reinforcement_sources_json_arr = column_str(batch, "reinforcement_sources_json")?;
     let diagnostic_json_arr = column_str(batch, "diagnostic_json")?;
     let freshness_state_arr = column_str(batch, "freshness_state")?;
     let freshness_checked_at_arr = column_str(batch, "freshness_checked_at")?;
@@ -599,8 +611,6 @@ fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<AgentMemoryRow>, CommandErro
         let memory_id = require_str(memory_id_arr, index, "memory_id")?;
         let scope = parse_scope(require_str(scope_kind_arr, index, "scope_kind")?);
         let kind = parse_kind(require_str(memory_kind_arr, index, "memory_kind")?);
-        let review_state =
-            parse_review_state(require_str(review_state_arr, index, "review_state")?);
         let source_item_ids = decode_source_item_ids(require_str(
             source_item_ids_json_arr,
             index,
@@ -619,7 +629,6 @@ fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<AgentMemoryRow>, CommandErro
             kind,
             text: require_str(text_arr, index, "text")?.to_string(),
             text_hash: require_str(text_hash_arr, index, "text_hash")?.to_string(),
-            review_state,
             enabled: enabled_arr.value(index),
             confidence: if confidence_arr.is_null(index) {
                 None
@@ -628,6 +637,14 @@ fn batch_to_rows(batch: &RecordBatch) -> Result<Vec<AgentMemoryRow>, CommandErro
             },
             source_run_id: optional_str(source_run_id_arr, index),
             source_item_ids,
+            reinforcement_count: reinforcement_count_arr.value(index).max(1),
+            last_reinforced_at: optional_str(last_reinforced_at_arr, index),
+            reinforcement_sources_json: require_str(
+                reinforcement_sources_json_arr,
+                index,
+                "reinforcement_sources_json",
+            )?
+            .to_string(),
             diagnostic,
             freshness_state: require_str(freshness_state_arr, index, "freshness_state")?
                 .to_string(),
@@ -676,6 +693,13 @@ fn column_u8<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a UInt8Array, C
     batch
         .column_by_name(name)
         .and_then(|array| array.as_any().downcast_ref::<UInt8Array>())
+        .ok_or_else(|| missing_column(name))
+}
+
+fn column_u32<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a UInt32Array, CommandError> {
+    batch
+        .column_by_name(name)
+        .and_then(|array| array.as_any().downcast_ref::<UInt32Array>())
         .ok_or_else(|| missing_column(name))
 }
 
@@ -818,22 +842,6 @@ fn parse_kind(value: &str) -> AgentMemoryKind {
     }
 }
 
-fn review_state_sql_value(review_state: &AgentMemoryReviewState) -> &'static str {
-    match review_state {
-        AgentMemoryReviewState::Candidate => "candidate",
-        AgentMemoryReviewState::Approved => "approved",
-        AgentMemoryReviewState::Rejected => "rejected",
-    }
-}
-
-fn parse_review_state(value: &str) -> AgentMemoryReviewState {
-    match value {
-        "approved" => AgentMemoryReviewState::Approved,
-        "rejected" => AgentMemoryReviewState::Rejected,
-        _ => AgentMemoryReviewState::Candidate,
-    }
-}
-
 /// Project-scoped store handle returned by [`open_for_database_path`]. Holds
 /// the dataset path so call sites can compose subsequent ops without
 /// re-resolving the filesystem layout.
@@ -899,8 +907,22 @@ impl ProjectMemoryStore {
         let project_id = self.project_id.clone();
         let result = runtime().block_on(async move {
             let rows = scan_all(&dataset).await?;
-            if let Some(existing) = rows.iter().find(|existing| same_dedup_key(existing, &row)) {
+            if let Some(existing) = rows
+                .iter()
+                .find(|existing| existing.memory_id == row.memory_id)
+            {
                 return Ok::<AgentMemoryRow, CommandError>(existing.clone());
+            }
+            if let Some(existing) = rows.iter().find(|existing| same_dedup_key(existing, &row)) {
+                let mut reinforced = existing.clone();
+                reinforce_row(
+                    &mut reinforced,
+                    row.source_run_id.as_deref(),
+                    &row.source_item_ids,
+                    &row.created_at,
+                );
+                replace_row(&dataset, existing, reinforced.clone()).await?;
+                return Ok::<AgentMemoryRow, CommandError>(reinforced);
             }
             let connection = ensure_connection(&dataset).await?;
             let table = open_or_create_table(&connection, &dataset).await?;
@@ -1037,10 +1059,6 @@ impl ProjectMemoryStore {
                     scope_sql_value(&row.scope) == scope_value
                         && kind_sql_value(&row.kind) == kind_value
                         && row.text_hash == text_hash
-                        && matches!(
-                            row.review_state,
-                            AgentMemoryReviewState::Candidate | AgentMemoryReviewState::Approved
-                        )
                         && row.agent_session_id.as_deref() == agent_session_id.as_deref()
                 })
                 .collect::<Vec<_>>();
@@ -1054,6 +1072,30 @@ impl ProjectMemoryStore {
                 .next()
                 .map(|row| stamp_project(row, &project_id))
                 .map(AgentMemoryRow::into_record))
+        })
+    }
+
+    pub fn reinforce(
+        &self,
+        memory_id: &str,
+        source_run_id: Option<&str>,
+        source_item_ids: &[String],
+        now: &str,
+    ) -> Result<AgentMemoryRecord, CommandError> {
+        let dataset = self.dataset_dir.clone();
+        let project_id = self.project_id.clone();
+        let memory_id = memory_id.to_string();
+        let source_run_id = source_run_id.map(str::to_owned);
+        let source_item_ids = source_item_ids.to_vec();
+        let now = now.to_string();
+        runtime().block_on(async move {
+            let previous = fetch_row(&dataset, &memory_id)
+                .await?
+                .ok_or_else(|| missing_memory_error(&project_id, &memory_id))?;
+            let mut row = previous.clone();
+            reinforce_row(&mut row, source_run_id.as_deref(), &source_item_ids, &now);
+            replace_row(&dataset, &previous, row.clone()).await?;
+            Ok(stamp_project(row, &project_id).into_record())
         })
     }
 
@@ -1084,14 +1126,8 @@ impl ProjectMemoryStore {
                 .await?
                 .ok_or_else(|| missing_memory_error(&project_id, &update.memory_id))?;
             let mut row = previous.clone();
-            if let Some(state) = update.review_state {
-                row.review_state = state;
-            }
             if let Some(enabled) = update.enabled {
                 row.enabled = enabled;
-            }
-            if row.review_state != AgentMemoryReviewState::Approved {
-                row.enabled = false;
             }
             if let Some(diagnostic) = update.diagnostic {
                 row.diagnostic = Some(diagnostic);
@@ -1279,16 +1315,10 @@ async fn maintain_embedding_index(
 }
 
 fn same_dedup_key(left: &AgentMemoryRow, right: &AgentMemoryRow) -> bool {
-    if left.memory_id == right.memory_id {
-        return true;
-    }
     left.scope == right.scope
         && left.kind == right.kind
         && left.agent_session_id == right.agent_session_id
         && left.text_hash == right.text_hash
-        && left.source_run_id == right.source_run_id
-        && left.source_item_ids == right.source_item_ids
-        && !matches!(left.review_state, AgentMemoryReviewState::Rejected)
 }
 
 fn ordering_for_list(rows: &mut [AgentMemoryRow]) {
@@ -1349,13 +1379,11 @@ fn filter_rows(
             if !scope_ok {
                 return false;
             }
-            let enabled_ok = filter.include_disabled
-                || row.enabled
-                || row.review_state == AgentMemoryReviewState::Candidate;
+            let enabled_ok = filter.include_disabled || row.enabled;
             if !enabled_ok {
                 return false;
             }
-            filter.include_rejected || row.review_state != AgentMemoryReviewState::Rejected
+            true
         })
         .collect()
 }
@@ -1366,8 +1394,7 @@ fn filter_approved(
 ) -> Vec<AgentMemoryRow> {
     rows.into_iter()
         .filter(|row| {
-            row.review_state == AgentMemoryReviewState::Approved
-                && row.enabled
+            row.enabled
                 && match row.scope {
                     AgentMemoryScope::Project => true,
                     AgentMemoryScope::Session => match (&row.agent_session_id, agent_session_id) {
@@ -1504,6 +1531,47 @@ fn quote_string_literal(value: &str) -> String {
     out
 }
 
+fn reinforce_row(
+    row: &mut AgentMemoryRow,
+    source_run_id: Option<&str>,
+    source_item_ids: &[String],
+    observed_at: &str,
+) {
+    row.reinforcement_count = row.reinforcement_count.max(1).saturating_add(1);
+    row.last_reinforced_at = Some(observed_at.to_string());
+    row.reinforcement_sources_json = append_reinforcement_source(
+        &row.reinforcement_sources_json,
+        source_run_id,
+        source_item_ids,
+        observed_at,
+    );
+    row.updated_at = observed_at.to_string();
+}
+
+fn append_reinforcement_source(
+    sources_json: &str,
+    source_run_id: Option<&str>,
+    source_item_ids: &[String],
+    observed_at: &str,
+) -> String {
+    let mut sources =
+        serde_json::from_str::<Vec<serde_json::Value>>(sources_json).unwrap_or_else(|_| Vec::new());
+    sources.push(serde_json::json!({
+        "observedAt": observed_at,
+        "sourceRunId": source_run_id,
+        "sourceItemIds": source_item_ids,
+    }));
+    if sources.len() > MAX_REINFORCEMENT_SOURCES {
+        sources = sources
+            .into_iter()
+            .rev()
+            .take(MAX_REINFORCEMENT_SOURCES)
+            .collect::<Vec<_>>();
+        sources.reverse();
+    }
+    serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into())
+}
+
 fn missing_memory_error(project_id: &str, memory_id: &str) -> CommandError {
     CommandError::user_fixable(
         "agent_memory_not_found",
@@ -1528,11 +1596,18 @@ mod tests {
             kind: AgentMemoryKind::Decision,
             text: format!("Memory body for {memory_id}"),
             text_hash: "0".repeat(64),
-            review_state: AgentMemoryReviewState::Candidate,
             enabled: false,
             confidence: Some(50),
             source_run_id: Some("run-1".into()),
             source_item_ids: vec!["message:1".into()],
+            reinforcement_count: 1,
+            last_reinforced_at: None,
+            reinforcement_sources_json: serde_json::json!([{
+                "observedAt": "2026-04-26T00:00:00Z",
+                "sourceRunId": "run-1",
+                "sourceItemIds": ["message:1"]
+            }])
+            .to_string(),
             diagnostic: None,
             freshness_state: "source_unknown".into(),
             freshness_checked_at: None,
@@ -1635,7 +1710,6 @@ mod tests {
 
     fn approved_project_row(memory_id: &str) -> AgentMemoryRow {
         AgentMemoryRow {
-            review_state: AgentMemoryReviewState::Approved,
             enabled: true,
             ..sample_row(memory_id, AgentMemoryScope::Project)
         }
@@ -1644,7 +1718,7 @@ mod tests {
     fn embedded_approved_memory_row(index: usize) -> AgentMemoryRow {
         let memory_id = format!("s34-memory-{index:03}");
         let mut row = approved_project_row(&memory_id);
-        row.text = format!("S34 approved memory {index} release blocker context");
+        row.text = format!("S34 enabled memory {index} release blocker context");
         row.text_hash = format!("{:064x}", index + 1);
         row.created_at = format!("2026-04-26T00:{:02}:00Z", index % 60);
         row.updated_at = row.created_at.clone();
@@ -1685,6 +1759,17 @@ mod tests {
             DataType::Utf8,
             false,
         )]))
+    }
+
+    fn stale_schema_with_extra_review_state() -> SchemaRef {
+        let current = schema();
+        let mut fields = current
+            .fields()
+            .iter()
+            .map(|field| field.as_ref().clone())
+            .collect::<Vec<_>>();
+        fields.push(Field::new("review_state", DataType::Utf8, true));
+        Arc::new(Schema::new(fields))
     }
 
     #[test]
@@ -1759,6 +1844,51 @@ mod tests {
     }
 
     #[test]
+    fn s36_stale_lance_schema_with_extra_columns_is_quarantined_before_insert() {
+        reset_connection_cache_for_tests();
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let database_path = tempdir.path().join("state.db");
+        let dataset_dir = dataset_dir_for_database_path(&database_path);
+
+        runtime()
+            .block_on(async {
+                let connection = connect_dataset(&dataset_dir).await?;
+                let stale_schema = stale_schema_with_extra_review_state();
+                let empty = RecordBatch::new_empty(stale_schema.clone());
+                let iter = RecordBatchIterator::new(
+                    std::iter::once(Ok::<_, arrow_schema::ArrowError>(empty)),
+                    stale_schema,
+                );
+                let reader: Box<dyn arrow_array::RecordBatchReader + Send + 'static> =
+                    Box::new(iter);
+                connection
+                    .create_table(AGENT_MEMORIES_TABLE, reader)
+                    .execute()
+                    .await
+                    .map_err(|error| map_lance_error("test_stale_lance_create_failed", error))?;
+                Ok::<_, CommandError>(())
+            })
+            .expect("create stale lance table");
+
+        let store = open_for_database_path(&database_path, "project-extra-column-reset");
+        let inserted = store
+            .insert(approved_project_row("memory-extra-column-quarantine"))
+            .expect("insert after extra-column schema quarantine");
+        assert_eq!(inserted.memory_id, "memory-extra-column-quarantine");
+
+        assert!(dataset_dir.join("agent_memories.lance").exists());
+        let quarantine_table_count = std::fs::read_dir(&dataset_dir)
+            .expect("read lance dataset")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| {
+                name.starts_with("agent_memories_quarantine_") && name.ends_with(".lance")
+            })
+            .count();
+        assert_eq!(quarantine_table_count, 1);
+    }
+
+    #[test]
     fn s37_agent_memory_health_reports_freshness_counts_before_and_after_maintenance() {
         reset_connection_cache_for_tests();
         let tempdir = tempfile::tempdir().expect("temp dir");
@@ -1811,9 +1941,7 @@ mod tests {
             .vector_search_rows(
                 &query.vector,
                 24,
-                Some(
-                    "review_state = 'approved' AND enabled = true AND scope_kind = 'project' AND memory_kind = 'decision'",
-                ),
+                Some("enabled = true AND scope_kind = 'project' AND memory_kind = 'decision'"),
             )
             .expect("bounded memory vector search");
 
@@ -1823,8 +1951,7 @@ mod tests {
         );
         assert!(results.len() <= 24);
         assert!(results.iter().all(|row| {
-            row.review_state == AgentMemoryReviewState::Approved
-                && row.enabled
+            row.enabled
                 && row.scope == AgentMemoryScope::Project
                 && row.kind == AgentMemoryKind::Decision
         }));
@@ -1871,15 +1998,12 @@ mod tests {
                 AgentMemoryUpdate {
                     project_id: "project-rt".into(),
                     memory_id: "memory-1".into(),
-                    review_state: Some(AgentMemoryReviewState::Rejected),
-                    enabled: None,
+                    enabled: Some(false),
                     diagnostic: None,
                 },
                 "2026-04-26T00:01:00Z".into(),
             )
             .expect("update");
-        assert_eq!(updated.review_state, AgentMemoryReviewState::Rejected);
-        // Rejection forces enabled=false even if the caller did not pass it.
         assert!(!updated.enabled);
 
         let removed = store.delete("memory-1").expect("delete");
@@ -1993,13 +2117,11 @@ mod tests {
 
         let mut session_a = sample_row("memory-sa", AgentMemoryScope::Session);
         session_a.agent_session_id = Some("session-a".into());
-        session_a.review_state = AgentMemoryReviewState::Approved;
         session_a.enabled = true;
         store.insert(session_a).expect("insert session a");
 
         let mut session_b = sample_row("memory-sb", AgentMemoryScope::Session);
         session_b.agent_session_id = Some("session-b".into());
-        session_b.review_state = AgentMemoryReviewState::Approved;
         session_b.enabled = true;
         store.insert(session_b).expect("insert session b");
 
@@ -2022,11 +2144,9 @@ mod tests {
     fn filter_rows_respects_session_scope_match() {
         let mut session_row = sample_row("session-mem", AgentMemoryScope::Session);
         session_row.agent_session_id = Some("session-a".into());
-        session_row.review_state = AgentMemoryReviewState::Approved;
         session_row.enabled = true;
 
         let mut project_row = sample_row("project-mem", AgentMemoryScope::Project);
-        project_row.review_state = AgentMemoryReviewState::Approved;
         project_row.enabled = true;
 
         let rows = vec![session_row.clone(), project_row.clone()];

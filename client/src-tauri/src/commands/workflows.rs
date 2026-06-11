@@ -31,12 +31,18 @@ use crate::{
 };
 
 #[tauri::command]
-pub fn validate_workflow_definition(
+pub fn validate_workflow_definition<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
     request: CreateWorkflowDefinitionRequestDto,
 ) -> CommandResult<WorkflowValidationReportDto> {
-    Ok(workflow_orchestrator::validate_workflow_definition(
-        &request.definition,
-    ))
+    let repo_root = resolve_project_root(&app, state.inner(), &request.definition.project_id)?;
+    Ok(
+        workflow_orchestrator::validate_workflow_definition_with_registry(
+            &repo_root,
+            &request.definition,
+        ),
+    )
 }
 
 #[tauri::command]
@@ -45,7 +51,11 @@ pub fn create_workflow_definition<R: Runtime>(
     state: State<'_, DesktopState>,
     request: CreateWorkflowDefinitionRequestDto,
 ) -> CommandResult<WorkflowDefinitionResponseDto> {
-    let report = workflow_orchestrator::validate_workflow_definition(&request.definition);
+    let repo_root = resolve_project_root(&app, state.inner(), &request.definition.project_id)?;
+    let report = workflow_orchestrator::validate_workflow_definition_with_registry(
+        &repo_root,
+        &request.definition,
+    );
     if matches!(
         report.status,
         crate::commands::contracts::workflows::WorkflowValidationStatusDto::Invalid
@@ -55,7 +65,6 @@ pub fn create_workflow_definition<R: Runtime>(
             "Xero refused to save the Workflow because the graph has validation errors.",
         ));
     }
-    let repo_root = resolve_project_root(&app, state.inner(), &request.definition.project_id)?;
     let definition = project_store::create_workflow_definition(&repo_root, &request.definition)?;
     Ok(WorkflowDefinitionResponseDto { definition })
 }
@@ -67,7 +76,11 @@ pub fn update_workflow_definition<R: Runtime>(
     request: UpdateWorkflowDefinitionRequestDto,
 ) -> CommandResult<WorkflowDefinitionResponseDto> {
     validate_non_empty(&request.workflow_id, "workflowId")?;
-    let report = workflow_orchestrator::validate_workflow_definition(&request.definition);
+    let repo_root = resolve_project_root(&app, state.inner(), &request.definition.project_id)?;
+    let report = workflow_orchestrator::validate_workflow_definition_with_registry(
+        &repo_root,
+        &request.definition,
+    );
     if matches!(
         report.status,
         crate::commands::contracts::workflows::WorkflowValidationStatusDto::Invalid
@@ -77,7 +90,6 @@ pub fn update_workflow_definition<R: Runtime>(
             "Xero refused to save the Workflow because the graph has validation errors.",
         ));
     }
-    let repo_root = resolve_project_root(&app, state.inner(), &request.definition.project_id)?;
     let definition = project_store::update_workflow_definition(
         &repo_root,
         &request.workflow_id,

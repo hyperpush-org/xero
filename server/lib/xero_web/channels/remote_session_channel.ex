@@ -9,6 +9,7 @@ defmodule XeroWeb.RemoteSessionChannel do
 
   @stream_token_salt "computer-use-stream:v1"
   @stream_token_max_age_seconds 600
+  @computer_use_command_max_bytes 512 * 1024
   @stream_token_command_kinds ~w(
     computer_use_stream_request
     computer_use_stream_offer
@@ -95,64 +96,18 @@ defmodule XeroWeb.RemoteSessionChannel do
   def handle_in("frame", payload, socket) when is_map(payload) do
     case validate_frame_authorization(socket, payload) do
       :ok ->
-        case rate_limit_frame(socket, payload) do
+        case validate_command_freshness(payload) do
           :ok ->
-            case authorize_remote_control_frame(socket, payload) do
+            case validate_command_payload_size(payload) do
               :ok ->
-                direction = direction(socket.assigns.device_kind)
-                bytes = payload_size(payload)
+                forward_authorized_frame(socket, payload)
 
-                :telemetry.execute(
-                  [:xero, :remote, :frame, :forwarded],
-                  %{bytes: bytes, count: 1},
-                  %{
-                    direction: direction,
-                    session_id: socket.assigns.session_id,
-                    desktop_device_id: socket.assigns.desktop_device_id
-                  }
-                )
-
-                emit_computer_use_command_telemetry(:forwarded, socket, payload, bytes, nil)
-                outcome = command_outcome(socket, payload, "accepted", nil, nil)
-                push_computer_use_command_outcome(socket, outcome)
-
-                broadcast_from!(
-                  socket,
-                  "frame",
-                  socket
-                  |> frame_payload(direction, payload)
-                  |> target_remote_control_owner(socket, payload)
-                )
-
-                after_forward_remote_control_frame(socket, payload)
-
-                {:reply, {:ok, maybe_command_reply(outcome)}, socket}
-
-              {:error, reason} ->
-                reject_remote_control_frame(socket, payload, reason)
+              {:error, size_limit} ->
+                reject_sized_command_frame(socket, payload, size_limit)
             end
 
-          {:error, rate_limit} ->
-            emit_computer_use_command_telemetry(
-              :rejected,
-              socket,
-              payload,
-              payload_size(payload),
-              "rate_limited"
-            )
-
-            outcome = command_outcome(socket, payload, "rate_limited", "rate_limited", rate_limit)
-            push_computer_use_command_outcome(socket, outcome)
-
-            {:reply,
-             {:error,
-              %{
-                reason: "rate_limited",
-                retry_after_ms: rate_limit.retry_after_ms,
-                retryAfterMs: rate_limit.retry_after_ms,
-                rateLimit: rate_limit,
-                command: outcome
-              }}, socket}
+          {:error, reason} ->
+            reject_stale_command_frame(socket, payload, reason)
         end
 
       {:error, reason} ->
@@ -173,6 +128,107 @@ defmodule XeroWeb.RemoteSessionChannel do
 
   def handle_in("frame", _payload, socket) do
     {:reply, {:error, %{reason: "invalid_payload"}}, socket}
+  end
+
+  defp forward_authorized_frame(socket, payload) do
+    case rate_limit_frame(socket, payload) do
+      :ok ->
+        case authorize_remote_control_frame(socket, payload) do
+          :ok ->
+            direction = direction(socket.assigns.device_kind)
+            bytes = payload_size(payload)
+
+            :telemetry.execute(
+              [:xero, :remote, :frame, :forwarded],
+              %{bytes: bytes, count: 1},
+              %{
+                direction: direction,
+                session_id: socket.assigns.session_id,
+                desktop_device_id: socket.assigns.desktop_device_id
+              }
+            )
+
+            emit_computer_use_command_telemetry(:forwarded, socket, payload, bytes, nil)
+            outcome = command_outcome(socket, payload, "accepted", nil, nil)
+            push_computer_use_command_outcome(socket, outcome)
+
+            broadcast_from!(
+              socket,
+              "frame",
+              socket
+              |> frame_payload(direction, payload)
+              |> target_remote_control_owner(socket, payload)
+            )
+
+            after_forward_remote_control_frame(socket, payload)
+
+            {:reply, {:ok, maybe_command_reply(outcome)}, socket}
+
+          {:error, reason} ->
+            reject_remote_control_frame(socket, payload, reason)
+        end
+
+      {:error, rate_limit} ->
+        emit_computer_use_command_telemetry(
+          :rejected,
+          socket,
+          payload,
+          payload_size(payload),
+          "rate_limited"
+        )
+
+        outcome = command_outcome(socket, payload, "rate_limited", "rate_limited", rate_limit)
+        push_computer_use_command_outcome(socket, outcome)
+
+        {:reply,
+         {:error,
+          %{
+            reason: "rate_limited",
+            retry_after_ms: rate_limit.retry_after_ms,
+            retryAfterMs: rate_limit.retry_after_ms,
+            rateLimit: rate_limit,
+            command: outcome
+          }}, socket}
+    end
+  end
+
+  defp reject_stale_command_frame(socket, payload, reason) do
+    emit_computer_use_command_telemetry(
+      :rejected,
+      socket,
+      payload,
+      payload_size(payload),
+      reason
+    )
+
+    outcome = command_outcome(socket, payload, "stale", reason, nil)
+    push_computer_use_command_outcome(socket, outcome)
+
+    {:reply, {:error, %{reason: reason, command: maybe_command_reply(outcome)}}, socket}
+  end
+
+  defp reject_sized_command_frame(socket, payload, size_limit) do
+    emit_computer_use_command_telemetry(
+      :rejected,
+      socket,
+      payload,
+      size_limit.size_bytes,
+      size_limit.reason
+    )
+
+    outcome = command_outcome(socket, payload, "rejected", size_limit.reason, nil)
+    push_computer_use_command_outcome(socket, outcome)
+
+    {:reply,
+     {:error,
+      %{
+        reason: size_limit.reason,
+        maxBytes: size_limit.max_bytes,
+        max_bytes: size_limit.max_bytes,
+        sizeBytes: size_limit.size_bytes,
+        size_bytes: size_limit.size_bytes,
+        command: maybe_command_reply(outcome)
+      }}, socket}
   end
 
   @impl true
@@ -565,6 +621,51 @@ defmodule XeroWeb.RemoteSessionChannel do
   end
 
   defp validate_frame_authorization(_socket, _payload), do: :ok
+
+  defp validate_command_freshness(%{"kind" => kind, "expiresAt" => expires_at})
+       when kind in @stream_token_command_kinds do
+    if command_expired?(expires_at), do: {:error, "stale_command"}, else: :ok
+  end
+
+  defp validate_command_freshness(%{"kind" => kind, "expires_at" => expires_at})
+       when kind in @stream_token_command_kinds do
+    if command_expired?(expires_at), do: {:error, "stale_command"}, else: :ok
+  end
+
+  defp validate_command_freshness(%{"kind" => kind}) when kind in @stream_token_command_kinds,
+    do: :ok
+
+  defp validate_command_freshness(_payload), do: :ok
+
+  defp command_expired?(expires_at) when is_integer(expires_at),
+    do: expires_at <= System.system_time(:millisecond)
+
+  defp command_expired?(expires_at) when is_binary(expires_at) do
+    case Integer.parse(expires_at) do
+      {millis, ""} -> command_expired?(millis)
+      _ -> true
+    end
+  end
+
+  defp command_expired?(_expires_at), do: true
+
+  defp validate_command_payload_size(%{"kind" => kind} = payload)
+       when kind in @stream_token_command_kinds do
+    size_bytes = payload_size(payload)
+
+    if size_bytes <= @computer_use_command_max_bytes do
+      :ok
+    else
+      {:error,
+       %{
+         reason: "command_payload_too_large",
+         size_bytes: size_bytes,
+         max_bytes: @computer_use_command_max_bytes
+       }}
+    end
+  end
+
+  defp validate_command_payload_size(_payload), do: :ok
 
   defp stream_token_from_payload(%{"payload" => payload}) when is_map(payload) do
     Map.get(payload, "streamToken") || Map.get(payload, "stream_token")

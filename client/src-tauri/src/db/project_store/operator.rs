@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use rusqlite::{params, Connection, Error as SqlError, ErrorCode};
+use serde_json::Value as JsonValue;
 
 use crate::{
     commands::{
@@ -101,6 +102,64 @@ pub fn upsert_pending_operator_approval(
     detail: &str,
     created_at: &str,
 ) -> Result<OperatorApprovalDto, CommandError> {
+    let action_id = derive_operator_action_id(session_id, flow_id, action_type)?;
+    upsert_pending_operator_approval_for_action_id(
+        repo_root,
+        project_id,
+        session_id,
+        flow_id,
+        action_type,
+        &action_id,
+        title,
+        detail,
+        created_at,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn upsert_pending_operator_approval_with_action_id(
+    repo_root: &Path,
+    project_id: &str,
+    session_id: &str,
+    flow_id: Option<&str>,
+    action_type: &str,
+    action_id: &str,
+    title: &str,
+    detail: &str,
+    created_at: &str,
+) -> Result<OperatorApprovalDto, CommandError> {
+    let action_id = action_id.trim();
+    if action_id.is_empty() {
+        return Err(CommandError::system_fault(
+            "runtime_action_request_invalid",
+            "Xero could not persist the runtime approval because the action-required item was missing a stable action id.",
+        ));
+    }
+    upsert_pending_operator_approval_for_action_id(
+        repo_root,
+        project_id,
+        session_id,
+        flow_id,
+        action_type,
+        action_id,
+        title,
+        detail,
+        created_at,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn upsert_pending_operator_approval_for_action_id(
+    repo_root: &Path,
+    project_id: &str,
+    session_id: &str,
+    flow_id: Option<&str>,
+    action_type: &str,
+    action_id: &str,
+    title: &str,
+    detail: &str,
+    created_at: &str,
+) -> Result<OperatorApprovalDto, CommandError> {
     let database_path = database_path_for_repo(repo_root);
     let connection = open_project_database(repo_root, &database_path)?;
     read_project_row(&connection, &database_path, repo_root, project_id)?;
@@ -114,10 +173,8 @@ pub fn upsert_pending_operator_approval(
         )
     })?;
 
-    let action_id = derive_operator_action_id(session_id, flow_id, action_type)?;
-
     let existing =
-        read_operator_approval_by_action_id(&transaction, &database_path, project_id, &action_id)?;
+        read_operator_approval_by_action_id(&transaction, &database_path, project_id, action_id)?;
     match existing {
         None => {
             transaction
@@ -206,7 +263,7 @@ pub fn upsert_pending_operator_approval(
                 return Err(CommandError::retryable(
                     "runtime_action_sync_conflict",
                     format!(
-                        "Xero received a retained runtime action for already-resolved operator request `{action_id}`. Reopen or refresh the selected project before retrying."
+                            "Xero received a retained runtime action for already-resolved operator request `{action_id}`. Reopen or refresh the selected project before retrying."
                     ),
                 ));
             }
@@ -222,7 +279,7 @@ pub fn upsert_pending_operator_approval(
         )
     })?;
 
-    read_operator_approval_by_action_id(&connection, &database_path, project_id, &action_id)?
+    read_operator_approval_by_action_id(&connection, &database_path, project_id, action_id)?
         .ok_or_else(|| {
             CommandError::system_fault(
                 "operator_approval_missing_after_persist",
@@ -276,15 +333,40 @@ pub fn resolve_operator_action(
     }
 
     let decision_note = decision_note.map(str::trim).filter(|note| !note.is_empty());
+    let mut sensitive_input_values = None;
+    let decision_note = if existing.action_type == "sensitive_input_request" {
+        match (decision.clone(), decision_note) {
+            (OperatorApprovalDecision::Approved, Some(note)) => {
+                let redacted = redacted_sensitive_input_decision_note(action_id, note)?;
+                sensitive_input_values = Some(redacted.values);
+                Some(redacted.decision_note)
+            }
+            (OperatorApprovalDecision::Approved, None) => {
+                return Err(CommandError::user_fixable(
+                    "sensitive_input_values_required",
+                    format!(
+                        "Sensitive input request `{action_id}` requires approved field values or an explicit rejection."
+                    ),
+                ));
+            }
+            (OperatorApprovalDecision::Rejected, note) => note.map(str::to_string),
+        }
+    } else {
+        decision_note.map(str::to_string)
+    };
+    let decision_note = decision_note.as_deref();
 
-    if let Some(secret_hint) = decision_note.and_then(find_prohibited_transition_diagnostic_content)
-    {
-        return Err(CommandError::user_fixable(
-            "operator_action_decision_payload_invalid",
-            format!(
-                "Operator decision payload for `{action_id}` must not include {secret_hint}. Remove secret-bearing transcript/tool/auth material before retrying."
-            ),
-        ));
+    if existing.action_type != "sensitive_input_request" {
+        if let Some(secret_hint) =
+            decision_note.and_then(find_prohibited_transition_diagnostic_content)
+        {
+            return Err(CommandError::user_fixable(
+                "operator_action_decision_payload_invalid",
+                format!(
+                    "Operator decision payload for `{action_id}` must not include {secret_hint}. Remove secret-bearing transcript/tool/auth material before retrying."
+                ),
+            ));
+        }
     }
 
     let answer_required = matches!(decision, OperatorApprovalDecision::Approved)
@@ -387,6 +469,10 @@ pub fn resolve_operator_action(
         )
     })?;
 
+    if let Some(values) = sensitive_input_values {
+        crate::runtime::autonomous_tool_runtime::store_sensitive_input_approval(action_id, values);
+    }
+
     let approval_request =
         read_operator_approval_by_action_id(&connection, &database_path, project_id, action_id)?
             .ok_or_else(|| {
@@ -417,6 +503,62 @@ pub fn resolve_operator_action(
     Ok(ResolveOperatorActionRecord {
         approval_request,
         verification_record,
+    })
+}
+
+#[derive(Debug)]
+struct RedactedSensitiveInputDecision {
+    decision_note: String,
+    values: JsonValue,
+}
+
+fn redacted_sensitive_input_decision_note(
+    action_id: &str,
+    note: &str,
+) -> Result<RedactedSensitiveInputDecision, CommandError> {
+    let value = serde_json::from_str::<JsonValue>(note).map_err(|error| {
+        CommandError::user_fixable(
+            "sensitive_input_payload_invalid",
+            format!(
+                "Sensitive input request `{action_id}` expected a JSON object of field values: {error}"
+            ),
+        )
+    })?;
+    let object = value.as_object().ok_or_else(|| {
+        CommandError::user_fixable(
+            "sensitive_input_payload_invalid",
+            format!(
+                "Sensitive input request `{action_id}` expected a JSON object of field values."
+            ),
+        )
+    })?;
+    let mut provided_fields = object
+        .iter()
+        .filter_map(|(key, value)| {
+            let present = value
+                .as_str()
+                .map(|text| !text.trim().is_empty())
+                .unwrap_or(!value.is_null());
+            present.then(|| key.clone())
+        })
+        .collect::<Vec<_>>();
+    provided_fields.sort();
+    let decision_note = serde_json::to_string(&serde_json::json!({
+        "schema": "xero.sensitive_input_result.v1",
+        "redacted": true,
+        "providedFields": provided_fields,
+        "providedCount": provided_fields.len(),
+    }))
+    .map_err(|error| {
+        CommandError::system_fault(
+            "sensitive_input_payload_redaction_failed",
+            format!("Xero could not serialize redacted sensitive input metadata: {error}"),
+        )
+    })?;
+
+    Ok(RedactedSensitiveInputDecision {
+        decision_note,
+        values: value,
     })
 }
 
@@ -1584,5 +1726,36 @@ pub(crate) fn map_project_query_error(
                 database_path.display()
             ),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sensitive_input_decision_note_redacts_values() {
+        let redacted = redacted_sensitive_input_decision_note(
+            "sensitive-action",
+            r#"{"api_key":"sk-live-secret","optional_note":"","webhook_secret":"whsec-value"}"#,
+        )
+        .expect("redacted metadata");
+
+        assert_eq!(redacted.values["api_key"], "sk-live-secret");
+        assert_eq!(redacted.values["webhook_secret"], "whsec-value");
+        assert!(!redacted.decision_note.contains("sk-live-secret"));
+        assert!(!redacted.decision_note.contains("whsec-value"));
+        assert!(redacted.decision_note.contains("api_key"));
+        assert!(redacted.decision_note.contains("webhook_secret"));
+        assert!(!redacted.decision_note.contains("optional_note"));
+        assert!(redacted.decision_note.contains("\"redacted\":true"));
+    }
+
+    #[test]
+    fn sensitive_input_decision_note_requires_json_object() {
+        let error = redacted_sensitive_input_decision_note("sensitive-action", r#"["secret"]"#)
+            .expect_err("array payload should fail");
+
+        assert_eq!(error.code, "sensitive_input_payload_invalid");
     }
 }

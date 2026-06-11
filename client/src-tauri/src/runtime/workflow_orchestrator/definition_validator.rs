@@ -1,11 +1,24 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use serde_json::Value as JsonValue;
 
-use crate::commands::contracts::workflows::{
-    WorkflowConditionDto, WorkflowDefinitionDto, WorkflowEdgeDto, WorkflowEdgeTypeDto,
-    WorkflowInputBindingDto, WorkflowNodeDto, WorkflowValidationDiagnosticDto,
-    WorkflowValidationReportDto, WorkflowValidationSeverityDto, WorkflowValidationStatusDto,
+use crate::{
+    commands::{
+        contracts::{
+            workflow_agents::AgentRefDto,
+            workflows::{
+                WorkflowConditionDto, WorkflowDefinitionDto, WorkflowEdgeDto, WorkflowEdgeTypeDto,
+                WorkflowInputBindingDto, WorkflowNodeDto, WorkflowValidationDiagnosticDto,
+                WorkflowValidationReportDto, WorkflowValidationSeverityDto,
+                WorkflowValidationStatusDto,
+            },
+        },
+        runtime_agent_descriptor,
+    },
+    db::project_store,
 };
 
 pub fn validate_workflow_definition(
@@ -450,6 +463,123 @@ pub fn validate_workflow_definition(
     }
 
     diagnostics.extend(detect_unbounded_cycles(definition, &outgoing_edges));
+    report_from_diagnostics(diagnostics)
+}
+
+pub fn validate_workflow_definition_with_registry(
+    repo_root: &Path,
+    definition: &WorkflowDefinitionDto,
+) -> WorkflowValidationReportDto {
+    let mut report = validate_workflow_definition(definition);
+    for (index, node) in definition.nodes.iter().enumerate() {
+        let WorkflowNodeDto::Agent { agent_ref, .. } = node else {
+            continue;
+        };
+        validate_agent_ref(repo_root, index, agent_ref, &mut report.diagnostics);
+    }
+    report_from_diagnostics(report.diagnostics)
+}
+
+fn validate_agent_ref(
+    repo_root: &Path,
+    node_index: usize,
+    agent_ref: &AgentRefDto,
+    diagnostics: &mut Vec<WorkflowValidationDiagnosticDto>,
+) {
+    match agent_ref {
+        AgentRefDto::BuiltIn {
+            runtime_agent_id,
+            version,
+        } => {
+            let descriptor = runtime_agent_descriptor(*runtime_agent_id);
+            if *version == 0 {
+                diagnostics.push(error(
+                    "agent_ref_builtin_version_required",
+                    agent_ref_version_path(node_index),
+                    "Built-in agent refs must declare a supported version.",
+                ));
+            } else if *version != descriptor.version {
+                diagnostics.push(error(
+                    "agent_ref_builtin_version_unsupported",
+                    agent_ref_version_path(node_index),
+                    format!(
+                        "Built-in agent `{}` supports version {}, but the Workflow requested version {}.",
+                        runtime_agent_id.as_str(),
+                        descriptor.version,
+                        version
+                    ),
+                ));
+            }
+        }
+        AgentRefDto::Custom {
+            definition_id,
+            version,
+        } => {
+            if definition_id.trim().is_empty() {
+                diagnostics.push(error(
+                    "agent_ref_custom_definition_required",
+                    agent_ref_definition_id_path(node_index),
+                    "Custom agent refs must declare definitionId.",
+                ));
+                return;
+            }
+            if *version == 0 {
+                diagnostics.push(error(
+                    "agent_ref_custom_version_required",
+                    agent_ref_version_path(node_index),
+                    "Custom agent refs must declare a requested version.",
+                ));
+                return;
+            }
+            if let Err(err) = project_store::resolve_agent_definition_version_for_run(
+                repo_root,
+                Some(definition_id),
+                Some(*version),
+                crate::commands::default_runtime_agent_id(),
+            ) {
+                let (code, path) = match err.code.as_str() {
+                    "agent_definition_not_found" => (
+                        "agent_ref_custom_definition_missing",
+                        agent_ref_definition_id_path(node_index),
+                    ),
+                    "agent_definition_inactive" => (
+                        "agent_ref_custom_definition_inactive",
+                        agent_ref_definition_id_path(node_index),
+                    ),
+                    "agent_definition_version_required" => (
+                        "agent_ref_custom_version_required",
+                        agent_ref_version_path(node_index),
+                    ),
+                    "agent_definition_version_missing" => (
+                        "agent_ref_custom_version_missing",
+                        agent_ref_version_path(node_index),
+                    ),
+                    "agent_definition_activation_preflight_failed" => (
+                        "agent_ref_custom_activation_preflight_failed",
+                        agent_ref_version_path(node_index),
+                    ),
+                    _ => (
+                        "agent_ref_custom_unavailable",
+                        agent_ref_definition_id_path(node_index),
+                    ),
+                };
+                diagnostics.push(error(code, path, err.message));
+            }
+        }
+    }
+}
+
+fn agent_ref_definition_id_path(node_index: usize) -> String {
+    format!("nodes[{node_index}].agentRef.definitionId")
+}
+
+fn agent_ref_version_path(node_index: usize) -> String {
+    format!("nodes[{node_index}].agentRef.version")
+}
+
+fn report_from_diagnostics(
+    diagnostics: Vec<WorkflowValidationDiagnosticDto>,
+) -> WorkflowValidationReportDto {
     WorkflowValidationReportDto {
         status: if diagnostics
             .iter()
@@ -864,7 +994,15 @@ mod tests {
             WorkflowValidationStatusDto,
         },
     };
+    use crate::db::{
+        configure_connection, database_path_for_project_in_app_data,
+        migrations::migrations,
+        project_store::{self, NewAgentDefinitionRecord},
+    };
+    use rusqlite::{params, Connection};
     use serde_json::json;
+    use std::{fs, path::PathBuf};
+    use tempfile::TempDir;
 
     fn linear_definition() -> WorkflowDefinitionDto {
         WorkflowDefinitionDto {
@@ -958,9 +1096,280 @@ mod tests {
         }
     }
 
+    fn repo_with_database(project_id: &str) -> (TempDir, PathBuf) {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let app_data_dir = repo_root.parent().expect("repo parent").join("app-data");
+        let database_path = database_path_for_project_in_app_data(&app_data_dir, project_id);
+        fs::create_dir_all(database_path.parent().expect("database parent"))
+            .expect("create database dir");
+        let mut connection = Connection::open(&database_path).expect("open project database");
+        configure_connection(&connection).expect("configure project database");
+        migrations()
+            .to_latest(&mut connection)
+            .expect("migrate project database");
+        connection
+            .execute(
+                "INSERT INTO projects (id, name, description, milestone) VALUES (?1, 'Project', '', '')",
+                params![project_id],
+            )
+            .expect("insert project");
+        connection
+            .execute(
+                r#"
+                INSERT INTO repositories (id, project_id, root_path, display_name, branch, head_sha, is_git_repo)
+                VALUES ('repo-1', ?1, ?2, 'Project', 'main', 'abc123', 1)
+                "#,
+                params![project_id, repo_root.to_string_lossy().as_ref()],
+            )
+            .expect("insert repository");
+        crate::db::register_project_database_path_for_tests(&repo_root, database_path);
+        (tempdir, repo_root)
+    }
+
+    fn valid_custom_definition(definition_id: &str, version: u32) -> NewAgentDefinitionRecord {
+        NewAgentDefinitionRecord {
+            definition_id: definition_id.into(),
+            version,
+            display_name: "Project Researcher".into(),
+            short_label: "Research".into(),
+            description: "Answer project questions using observe-only context.".into(),
+            scope: "project_custom".into(),
+            lifecycle_state: "active".into(),
+            base_capability_profile: "observe_only".into(),
+            snapshot: json!({
+                "schema": "xero.agent_definition.v1",
+                "schemaVersion": 3,
+                "id": definition_id,
+                "version": version,
+                "displayName": "Project Researcher",
+                "shortLabel": "Research",
+                "description": "Answer project questions using observe-only context.",
+                "taskPurpose": "Answer project questions using observe-only context.",
+                "scope": "project_custom",
+                "lifecycleState": "active",
+                "baseCapabilityProfile": "observe_only",
+                "defaultApprovalMode": "suggest",
+                "allowedApprovalModes": ["suggest"],
+                "toolPolicy": {
+                    "allowedEffectClasses": ["observe"],
+                    "allowedTools": ["project_context_search"],
+                    "deniedTools": [],
+                    "allowedToolGroups": ["project_context"],
+                    "deniedToolGroups": []
+                },
+                "workflowContract": "Use reviewed project context to answer the user's question.",
+                "finalResponseContract": "Return a concise answer with uncertainty called out.",
+                "prompts": [{
+                    "id": "project-researcher-intent",
+                    "label": "Project Researcher Intent",
+                    "role": "developer",
+                    "source": "test",
+                    "body": "Answer project questions using only observe-only context."
+                }],
+                "tools": [],
+                "output": {
+                    "contract": "answer",
+                    "label": "Answer",
+                    "description": "Answer the user's project question.",
+                    "sections": [{
+                        "id": "answer",
+                        "label": "Answer",
+                        "description": "Direct answer.",
+                        "emphasis": "core",
+                        "producedByTools": ["project_context_search"]
+                    }]
+                },
+                "dbTouchpoints": {
+                    "reads": [{
+                        "table": "project_records",
+                        "kind": "read",
+                        "purpose": "Retrieve reviewed project context.",
+                        "triggers": [],
+                        "columns": ["text"]
+                    }],
+                    "writes": [],
+                    "encouraged": []
+                },
+                "consumes": [],
+                "projectDataPolicy": {
+                    "recordKinds": ["artifact", "context_note"],
+                    "structuredSchemas": [],
+                    "unstructuredScopes": ["project"]
+                },
+                "memoryCandidatePolicy": {
+                    "memoryKinds": ["project_fact"],
+                    "reviewRequired": true
+                },
+                "retrievalDefaults": {
+                    "enabled": true,
+                    "limit": 4,
+                    "recordKinds": ["artifact", "context_note"],
+                    "memoryKinds": ["project_fact"]
+                },
+                "handoffPolicy": {
+                    "enabled": true,
+                    "routingMode": "same_agent",
+                    "allowedTargets": [],
+                    "preserveDefinitionVersion": true,
+                    "carrySummary": true,
+                    "includeDurableContext": true
+                },
+                "attachedSkills": []
+            }),
+            validation_report: Some(json!({
+                "status": "valid",
+                "source": "workflow_validator_test"
+            })),
+            created_at: "2026-05-01T12:00:00Z".into(),
+            updated_at: "2026-05-01T12:00:00Z".into(),
+        }
+    }
+
+    fn insert_custom_definition(repo_root: &std::path::Path, record: NewAgentDefinitionRecord) {
+        project_store::insert_agent_definition(repo_root, &record).expect("insert custom agent");
+    }
+
+    fn set_second_agent_ref(definition: &mut WorkflowDefinitionDto, agent_ref: AgentRefDto) {
+        let WorkflowNodeDto::Agent {
+            agent_ref: existing,
+            ..
+        } = &mut definition.nodes[1]
+        else {
+            panic!("expected agent node");
+        };
+        *existing = agent_ref;
+    }
+
+    fn diagnostic_codes(report: &WorkflowValidationReportDto) -> Vec<&str> {
+        report
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect()
+    }
+
     #[test]
     fn validator_accepts_linear_custom_agent_workflow() {
         let report = validate_workflow_definition(&linear_definition());
+
+        assert_eq!(report.status, WorkflowValidationStatusDto::Valid);
+    }
+
+    #[test]
+    fn registry_validator_rejects_missing_custom_agent() {
+        let (_tempdir, repo_root) = repo_with_database("project-1");
+
+        let report = validate_workflow_definition_with_registry(&repo_root, &linear_definition());
+
+        assert_eq!(report.status, WorkflowValidationStatusDto::Invalid);
+        assert!(diagnostic_codes(&report).contains(&"agent_ref_custom_definition_missing"));
+        assert_eq!(report.diagnostics[0].path, "nodes[1].agentRef.definitionId");
+    }
+
+    #[test]
+    fn registry_validator_rejects_inactive_custom_agent() {
+        let (_tempdir, repo_root) = repo_with_database("project-1");
+        let mut record = valid_custom_definition("custom-work", 1);
+        record.lifecycle_state = "archived".into();
+        record.snapshot["lifecycleState"] = json!("archived");
+        insert_custom_definition(&repo_root, record);
+
+        let report = validate_workflow_definition_with_registry(&repo_root, &linear_definition());
+
+        assert_eq!(report.status, WorkflowValidationStatusDto::Invalid);
+        assert!(diagnostic_codes(&report).contains(&"agent_ref_custom_definition_inactive"));
+    }
+
+    #[test]
+    fn registry_validator_rejects_missing_custom_version() {
+        let (_tempdir, repo_root) = repo_with_database("project-1");
+        insert_custom_definition(&repo_root, valid_custom_definition("custom-work", 2));
+
+        let report = validate_workflow_definition_with_registry(&repo_root, &linear_definition());
+
+        assert_eq!(report.status, WorkflowValidationStatusDto::Invalid);
+        assert!(diagnostic_codes(&report).contains(&"agent_ref_custom_version_missing"));
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.path == "nodes[1].agentRef.version"));
+    }
+
+    #[test]
+    fn registry_validator_accepts_stale_but_existing_pinned_custom_version() {
+        let (_tempdir, repo_root) = repo_with_database("project-1");
+        insert_custom_definition(&repo_root, valid_custom_definition("custom-work", 1));
+        insert_custom_definition(&repo_root, valid_custom_definition("custom-work", 2));
+
+        let report = validate_workflow_definition_with_registry(&repo_root, &linear_definition());
+
+        assert_eq!(report.status, WorkflowValidationStatusDto::Valid);
+    }
+
+    #[test]
+    fn registry_validator_accepts_valid_pinned_custom_version() {
+        let (_tempdir, repo_root) = repo_with_database("project-1");
+        insert_custom_definition(&repo_root, valid_custom_definition("custom-work", 1));
+
+        let report = validate_workflow_definition_with_registry(&repo_root, &linear_definition());
+
+        assert_eq!(report.status, WorkflowValidationStatusDto::Valid);
+    }
+
+    #[test]
+    fn registry_validator_rejects_activation_invalid_custom_version() {
+        let (_tempdir, repo_root) = repo_with_database("project-1");
+        let mut record = valid_custom_definition("custom-work", 1);
+        record.validation_report = Some(json!({
+            "status": "invalid",
+            "diagnostics": [{
+                "severity": "error",
+                "code": "test_invalid",
+                "path": "toolPolicy",
+                "message": "invalid for test"
+            }]
+        }));
+        insert_custom_definition(&repo_root, record);
+
+        let report = validate_workflow_definition_with_registry(&repo_root, &linear_definition());
+
+        assert_eq!(report.status, WorkflowValidationStatusDto::Invalid);
+        assert!(diagnostic_codes(&report).contains(&"agent_ref_custom_activation_preflight_failed"));
+    }
+
+    #[test]
+    fn registry_validator_rejects_invalid_builtin_version() {
+        let (_tempdir, repo_root) = repo_with_database("project-1");
+        let mut definition = linear_definition();
+        set_second_agent_ref(
+            &mut definition,
+            AgentRefDto::BuiltIn {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                version: 999,
+            },
+        );
+
+        let report = validate_workflow_definition_with_registry(&repo_root, &definition);
+
+        assert_eq!(report.status, WorkflowValidationStatusDto::Invalid);
+        assert!(diagnostic_codes(&report).contains(&"agent_ref_builtin_version_unsupported"));
+    }
+
+    #[test]
+    fn registry_validator_accepts_valid_builtin_refs() {
+        let (_tempdir, repo_root) = repo_with_database("project-1");
+        let mut definition = linear_definition();
+        set_second_agent_ref(
+            &mut definition,
+            AgentRefDto::BuiltIn {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                version: 2,
+            },
+        );
+
+        let report = validate_workflow_definition_with_registry(&repo_root, &definition);
 
         assert_eq!(report.status, WorkflowValidationStatusDto::Valid);
     }

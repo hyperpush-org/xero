@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { WorkflowCanvasEmptyState } from '@/components/xero/workflow-canvas-empty-state'
@@ -51,24 +51,21 @@ describe('WorkflowCanvasEmptyState', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('opens the shared starting-point dialog before creating a workflow', () => {
+  it('shows workflow creation as coming soon without invoking handlers', () => {
     const onCreateWorkflow = vi.fn()
 
     render(<WorkflowCanvasEmptyState onCreateWorkflow={onCreateWorkflow} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create workflow' }))
+    expect(screen.getByRole('heading', { name: 'Start with an agent' })).toBeInTheDocument()
+    expect(screen.getByText('Workflows coming soon')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Create workflow/i })).toBeDisabled()
+    expect(screen.queryByRole('heading', { name: 'Create workflow' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Create workflow/i }))
     expect(onCreateWorkflow).not.toHaveBeenCalled()
-    expect(screen.getByRole('heading', { name: 'Create workflow' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Blank workflow/ })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /From template/ })).toBeNull()
-
-    fireEvent.click(screen.getByRole('button', { name: /Blank workflow/ }))
-
-    expect(onCreateWorkflow).toHaveBeenCalledTimes(1)
-    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('routes workflow template selection through the shared create dialog', () => {
+  it('keeps workflow template creation disabled while workflows are coming soon', () => {
     const onCreateWorkflowFromTemplate = vi.fn()
 
     render(
@@ -78,17 +75,13 @@ describe('WorkflowCanvasEmptyState', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create workflow' }))
-    fireEvent.click(screen.getByRole('button', { name: /From template/ }))
-
-    expect(screen.getByText(/Templates open as editable workflow drafts/i)).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: /GSD Auto/ }))
-    expect(onCreateWorkflowFromTemplate).toHaveBeenCalledWith('gsd_auto')
+    fireEvent.click(screen.getByRole('button', { name: /Create workflow/i }))
+    expect(onCreateWorkflowFromTemplate).not.toHaveBeenCalled()
+    expect(screen.queryByText(/Templates open as editable workflow drafts/i)).not.toBeInTheDocument()
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('routes workflow Agent Create selection through the shared create dialog', () => {
+  it('keeps workflow Agent Create disabled while workflows are coming soon', () => {
     const onCreateWorkflowWithAgentCreate = vi.fn()
 
     render(
@@ -98,10 +91,9 @@ describe('WorkflowCanvasEmptyState', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create workflow' }))
-    fireEvent.click(screen.getByRole('button', { name: /Use Agent Create/ }))
-
-    expect(onCreateWorkflowWithAgentCreate).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: /Create workflow/i }))
+    expect(onCreateWorkflowWithAgentCreate).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: /Use Agent Create/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
@@ -215,31 +207,17 @@ describe('WorkflowCanvasEmptyState', () => {
     expect(screen.queryByText(/Templates open on the canvas/i)).toBeNull()
   })
 
-  it('animates the run-existing-workflow action out when browsing workflows is unavailable', () => {
-    vi.useFakeTimers()
-    try {
-      const { container, rerender } = render(
-        <WorkflowCanvasEmptyState onCreateAgent={vi.fn()} onBrowseWorkflows={vi.fn()} />,
-      )
+  it('keeps run-existing-workflow visible as coming soon when browsing is unavailable', () => {
+    const onBrowseWorkflows = vi.fn()
+    render(
+      <WorkflowCanvasEmptyState onCreateAgent={vi.fn()} onBrowseWorkflows={onBrowseWorkflows} />,
+    )
 
-      expect(screen.getByRole('button', { name: /Run an existing workflow/i })).toBeInTheDocument()
+    const runWorkflow = screen.getByRole('button', { name: /Run an existing workflow/i })
+    expect(runWorkflow).toBeDisabled()
+    expect(runWorkflow).toHaveTextContent('Coming soon')
 
-      rerender(<WorkflowCanvasEmptyState onCreateAgent={vi.fn()} />)
-
-      const exitingRow = container.querySelector(
-        '[data-state="exiting"] button[aria-disabled="true"]',
-      )
-      expect(exitingRow).toHaveTextContent('Run an existing workflow')
-      expect(screen.queryByRole('button', { name: /Run an existing workflow/i })).toBeNull()
-
-      act(() => {
-        vi.advanceTimersByTime(180)
-      })
-
-      expect(container.querySelector('[data-state="exiting"]')).toBeNull()
-      expect(screen.queryByText('Run an existing workflow')).toBeNull()
-    } finally {
-      vi.useRealTimers()
-    }
+    fireEvent.click(runWorkflow)
+    expect(onBrowseWorkflows).not.toHaveBeenCalled()
   })
 })

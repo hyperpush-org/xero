@@ -7,11 +7,43 @@ const stylesPath = resolve(
 	dirname(fileURLToPath(import.meta.url)),
 	"styles.css",
 );
+const sharedStylesPath = resolve(
+	dirname(fileURLToPath(import.meta.url)),
+	"../../packages/ui/src/styles.css",
+);
 
 describe("cloud stylesheet", () => {
 	it("scans shared UI component classes for Tailwind utilities", () => {
 		const styles = readFileSync(stylesPath, "utf8");
 
 		expect(styles).toContain('@source "../../packages/ui/src";');
+	});
+
+	it("keeps Computer Use toolbar working state contained", () => {
+		const styles = readFileSync(stylesPath, "utf8");
+		const workingRule =
+			styles.match(/\.desktop-control-toolbar-working\s*\{[^}]*\}/)?.[0] ?? "";
+
+		expect(styles).toContain(".desktop-control-toolbar-working");
+		expect(workingRule).toContain("contain: paint");
+		expect(workingRule).not.toContain("position:");
+		expect(styles).not.toContain(".desktop-control-toolbar-working::after");
+		expect(styles).not.toContain("desktop-control-toolbar-border-sweep");
+	});
+
+	it("keeps shared scrollbars above elevated app chrome", () => {
+		const styles = readFileSync(sharedStylesPath, "utf8");
+
+		expect(styles).toContain("--scrollbar-overlay-gutter: 12px;");
+		expect(styles).toContain("--scrollbar-z-index: 2147483647;");
+		expect(styles).toMatch(
+			/::-webkit-scrollbar\s*\{[^}]*z-index:\s*var\(--scrollbar-z-index\)/,
+		);
+		expect(styles).toMatch(
+			/::-webkit-scrollbar-thumb\s*\{[^}]*z-index:\s*var\(--scrollbar-z-index\)/,
+		);
+		expect(styles).toMatch(
+			/::-webkit-scrollbar-corner\s*\{[^}]*z-index:\s*var\(--scrollbar-z-index\)/,
+		);
 	});
 });

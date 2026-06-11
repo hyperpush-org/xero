@@ -116,6 +116,9 @@ pub(crate) fn table_schema_supports_expected(
     table_schema: &Schema,
     expected_schema: &Schema,
 ) -> bool {
+    if table_schema.fields().len() != expected_schema.fields().len() {
+        return false;
+    }
     expected_schema.fields().iter().all(|expected| {
         let Ok(actual) = table_schema.field_with_name(expected.name()) else {
             return false;

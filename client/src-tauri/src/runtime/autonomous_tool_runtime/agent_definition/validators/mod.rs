@@ -110,7 +110,14 @@ fn minimal_definition() -> JsonValue {
         "projectDataPolicy": {"recordKinds": ["project_fact"], "structuredSchemas": ["xero.project_record.v1"]},
         "memoryCandidatePolicy": {"memoryKinds": ["project_fact"], "reviewRequired": true},
         "retrievalDefaults": {"enabled": true, "recordKinds": ["project_fact"], "memoryKinds": ["project_fact"], "limit": 6},
-        "handoffPolicy": {"enabled": true, "preserveDefinitionVersion": true},
+        "handoffPolicy": {
+            "enabled": true,
+            "routingMode": "same_agent",
+            "allowedTargets": [],
+            "preserveDefinitionVersion": true,
+            "carrySummary": true,
+            "includeDurableContext": true
+        },
         "examplePrompts": ["Draft release notes.", "Summarize fixes.", "List release risks."],
         "refusalEscalationCases": ["Refuse edits.", "Escalate missing context.", "Refuse invented claims."],
         "attachedSkills": []

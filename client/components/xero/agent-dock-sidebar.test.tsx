@@ -7,11 +7,16 @@ import { createXeroHighChurnStore } from '@/src/features/xero/use-xero-desktop-s
 import type { AgentSessionView } from '@/src/lib/xero-model'
 
 interface CapturedRuntimeProps {
+  active?: boolean
   density?: 'comfortable' | 'compact'
   inSidebar?: boolean
   sidebarSessions?: readonly AgentSessionView[]
   onCloseSidebar?: () => void
   onSelectSidebarSession?: (id: string) => void
+  onClearSidebarChat?: () => void
+  sidebarChatClearDisabled?: boolean
+  sidebarChatClearPending?: boolean
+  sidebarChatClearTitle?: string
   onCreateSession?: () => void
   isCreatingSession?: boolean
   agentCreateCanvasIncluded?: boolean
@@ -21,11 +26,16 @@ interface CapturedRuntimeProps {
 vi.mock('@/components/xero/agent-runtime/live-agent-runtime', () => ({
   LiveAgentRuntimeView: ({
     agent,
+    active,
     density,
     inSidebar,
     sidebarSessions,
     onCloseSidebar,
     onSelectSidebarSession,
+    onClearSidebarChat,
+    sidebarChatClearDisabled,
+    sidebarChatClearPending,
+    sidebarChatClearTitle,
     onCreateSession,
     isCreatingSession,
     agentCreateCanvasIncluded,
@@ -34,6 +44,7 @@ vi.mock('@/components/xero/agent-runtime/live-agent-runtime', () => ({
     if (!agent) return null
     return (
       <div data-testid="live-agent-runtime">
+        <div data-testid="live-agent-runtime-active">{active ? 'true' : 'false'}</div>
         <div data-testid="live-agent-runtime-density">{density}</div>
         <div data-testid="live-agent-runtime-in-sidebar">{inSidebar ? 'true' : 'false'}</div>
         <div data-testid="live-agent-runtime-session-count">{sidebarSessions?.length ?? 0}</div>
@@ -45,6 +56,14 @@ vi.mock('@/components/xero/agent-runtime/live-agent-runtime', () => ({
         </button>
         <button type="button" onClick={() => onCloseSidebar?.()}>
           mock-close
+        </button>
+        <button
+          type="button"
+          disabled={sidebarChatClearDisabled || sidebarChatClearPending}
+          title={sidebarChatClearTitle}
+          onClick={() => onClearSidebarChat?.()}
+        >
+          mock-clear-chat
         </button>
         <button
           type="button"
@@ -121,6 +140,15 @@ const dummyAgent = {
   },
 } as unknown as ComponentProps<typeof AgentDockSidebar>['agent']
 
+function setViewportWidth(width: number) {
+  Object.defineProperty(window, 'innerWidth', {
+    configurable: true,
+    writable: true,
+    value: width,
+  })
+  window.dispatchEvent(new Event('resize'))
+}
+
 function renderDock(
   overrides: Partial<ComponentProps<typeof AgentDockSidebar>> = {},
 ) {
@@ -142,14 +170,24 @@ function renderDock(
 
 describe('AgentDockSidebar', () => {
   afterEach(() => {
+    setViewportWidth(1024)
     window.localStorage.clear()
   })
 
   it('renders the live agent runtime in sidebar mode when open with an agent', () => {
     renderDock()
     expect(screen.getByTestId('live-agent-runtime')).toBeInTheDocument()
+    expect(screen.getByTestId('live-agent-runtime-active')).toHaveTextContent('true')
     expect(screen.getByTestId('live-agent-runtime-in-sidebar')).toHaveTextContent('true')
     expect(screen.getByTestId('live-agent-runtime-session-count')).toHaveTextContent('2')
+  })
+
+  it('prerenders the agent runtime while closed during surface prewarm', () => {
+    renderDock({ open: false, prewarm: true })
+
+    expect(screen.getByTestId('live-agent-runtime')).toBeInTheDocument()
+    expect(screen.getByTestId('live-agent-runtime-active')).toHaveTextContent('false')
+    expect(screen.queryByText('No active session')).not.toBeInTheDocument()
   })
 
   it('keeps the runtime comfortable until the sidebar is below the compact breakpoint', () => {
@@ -168,6 +206,20 @@ describe('AgentDockSidebar', () => {
     expect(screen.getByTestId('live-agent-runtime-density')).toHaveTextContent('compact')
   })
 
+  it('uses a fixed full-width sheet on mobile viewports', () => {
+    setViewportWidth(390)
+
+    renderDock()
+
+    const aside = screen.getByLabelText('Agent dock')
+    expect(aside).toHaveClass('fixed')
+    expect(aside).toHaveClass('right-0')
+    expect(aside).toHaveClass('max-w-[100dvw]')
+    expect(aside).toHaveStyle({ maxWidth: '100dvw' })
+    expect(screen.getByRole('separator', { name: 'Resize agent dock', hidden: true })).toHaveClass('hidden')
+    expect(screen.getByTestId('live-agent-runtime-density')).toHaveTextContent('compact')
+  })
+
   it('shows the empty state when no agent is available', () => {
     renderDock({ agent: null })
     expect(screen.queryByTestId('live-agent-runtime')).not.toBeInTheDocument()
@@ -182,6 +234,20 @@ describe('AgentDockSidebar', () => {
     fireEvent.click(screen.getByRole('button', { name: 'mock-create-session' }))
 
     expect(onCreateSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('forwards the Computer Use clear chat action into the agent runtime header', () => {
+    const onClearSidebarChat = vi.fn()
+    renderDock({
+      onClearSidebarChat,
+      sidebarChatClearTitle: 'Clear this sidebar chat',
+    })
+
+    const clearButton = screen.getByRole('button', { name: 'mock-clear-chat' })
+    expect(clearButton).toHaveAttribute('title', 'Clear this sidebar chat')
+    fireEvent.click(clearButton)
+
+    expect(onClearSidebarChat).toHaveBeenCalledTimes(1)
   })
 
   it('forwards the Agent Create canvas context into the agent runtime', () => {

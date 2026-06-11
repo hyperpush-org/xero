@@ -6314,6 +6314,12 @@ fn capture_desktop_screenshot(
     repo_root: &Path,
     request: &AutonomousDesktopObserveRequest,
 ) -> CommandResult<AutonomousDesktopScreenshot> {
+    let _perf = crate::perf::PerfSpan::new("desktop_screenshot")
+        .field(
+            "displayId",
+            request.display_id.clone().unwrap_or_else(|| "auto".into()),
+        )
+        .field("region", request.region.is_some().to_string());
     if let Ok(payload) = sidecar_json_result(
         DesktopSidecarOperation::Screenshot,
         serde_json::to_value(sidecar_screenshot_request(request)).map_err(|error| {

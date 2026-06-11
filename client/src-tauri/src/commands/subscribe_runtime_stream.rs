@@ -20,12 +20,12 @@ use crate::{
         CommandResult, CommandToolResultSummaryDto, FileToolResultSummaryDto,
         GitToolResultScopeDto, GitToolResultSummaryDto, McpCapabilityKindDto,
         McpCapabilityToolResultSummaryDto, ProjectAssetState, RuntimeActionAnswerShape,
-        RuntimeActionRequiredOptionDto, RuntimeStreamIssueDto, RuntimeStreamItemDto,
-        RuntimeStreamItemKind, RuntimeStreamPatchDto, RuntimeStreamPlanItemDto,
-        RuntimeStreamPlanItemStatus, RuntimeStreamTranscriptRole, RuntimeStreamViewSnapshotDto,
-        RuntimeStreamViewStatusDto, RuntimeToolCallState, SubscribeRuntimeStreamRequestDto,
-        SubscribeRuntimeStreamResponseDto, ToolResultSummaryDto, WebToolResultContentKindDto,
-        WebToolResultSummaryDto,
+        RuntimeActionRequiredOptionDto, RuntimeSensitiveInputFieldDto, RuntimeStreamIssueDto,
+        RuntimeStreamItemDto, RuntimeStreamItemKind, RuntimeStreamPatchDto,
+        RuntimeStreamPlanItemDto, RuntimeStreamPlanItemStatus, RuntimeStreamTranscriptRole,
+        RuntimeStreamViewSnapshotDto, RuntimeStreamViewStatusDto, RuntimeToolCallState,
+        SubscribeRuntimeStreamRequestDto, SubscribeRuntimeStreamResponseDto, ToolResultSummaryDto,
+        WebToolResultContentKindDto, WebToolResultSummaryDto,
     },
     db::project_store::{
         self, AgentEventRecord, AgentRunEventKind, AgentRunStatus, RuntimeRunSnapshotRecord,
@@ -49,6 +49,9 @@ const RUNTIME_STREAM_IPC_MAX_BYTES: usize = 96 * 1024;
 const RUNTIME_STREAM_IPC_PATCH_PREVIEW_CHARS: usize = 4_000;
 const RUNTIME_STREAM_IPC_TIGHT_PREVIEW_CHARS: usize = 1_000;
 const RUNTIME_STREAM_IPC_TEXT_CHARS: usize = 2_000;
+const RUNTIME_WAIT_SCHEDULED_CODE: &str = "owned_agent_runtime_wait_scheduled";
+const RUNTIME_WAIT_TOOL_NAME: &str = "runtime_wait";
+const SCHEDULED_WAIT_STATE: &str = "scheduled_wait";
 
 #[derive(Debug, Clone)]
 struct RuntimeStreamProjectionContext {
@@ -251,7 +254,7 @@ fn runtime_item_reopens_terminal_stream(item: &RuntimeStreamItemDto) -> bool {
         | RuntimeStreamItemKind::ActionRequired
         | RuntimeStreamItemKind::Plan
         | RuntimeStreamItemKind::SubagentLifecycle => true,
-        RuntimeStreamItemKind::Activity => is_reasoning_activity_item(item),
+        RuntimeStreamItemKind::Activity => false,
         RuntimeStreamItemKind::Complete | RuntimeStreamItemKind::Failure => false,
     }
 }
@@ -454,6 +457,13 @@ fn merge_timeline_tool_item(
     merged_item.sequence = existing_item.sequence;
     merged_item.created_at = existing_item.created_at.clone();
     merged_item.updated_sequence = Some(updated_sequence);
+    if merged_item.tool_name.as_deref() == Some("project_context") {
+        merged_item.detail = merge_project_context_tool_detail(
+            existing_item.detail.as_deref(),
+            merged_item.detail.as_deref(),
+        );
+        merged_item.text = merged_item.detail.clone();
+    }
 
     current_items
         .iter()
@@ -466,6 +476,29 @@ fn merge_timeline_tool_item(
             }
         })
         .collect()
+}
+
+fn merge_project_context_tool_detail(
+    started_detail: Option<&str>,
+    completed_detail: Option<&str>,
+) -> Option<String> {
+    let started = started_detail
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let completed = completed_detail
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match (started, completed) {
+        (Some(started), Some(completed)) if completed.contains(started) => {
+            Some(completed.to_owned())
+        }
+        (Some(started), Some(completed)) => {
+            Some(truncate_chars(&format!("{started} · {completed}"), 320))
+        }
+        (Some(started), None) => Some(started.to_owned()),
+        (None, Some(completed)) => Some(completed.to_owned()),
+        (None, None) => None,
+    }
 }
 
 fn reasoning_activity_text(item: &RuntimeStreamItemDto) -> &str {
@@ -755,20 +788,27 @@ fn replay_owned_agent_events(
     replay_limit: Option<u16>,
     asset_state: &ProjectAssetState,
 ) -> CommandResult<(i64, bool)> {
+    let _perf = crate::perf::PerfSpan::new("runtime_stream_replay")
+        .field("projectId", project_id.to_owned())
+        .field("runId", run_id.to_owned())
+        .field(
+            "afterSequence",
+            after_sequence
+                .map(|sequence| sequence.to_string())
+                .unwrap_or_else(|| "none".into()),
+        )
+        .field(
+            "replayLimit",
+            replay_limit
+                .map(|limit| limit.to_string())
+                .unwrap_or_else(|| "default".into()),
+        );
     let started = Instant::now();
     let run = match project_store::load_agent_run_record(repo_root, project_id, run_id) {
         Ok(run) => run,
         Err(error) if error.code == "agent_run_not_found" => return Ok((0, false)),
         Err(error) => return Err(error),
     };
-    let terminal = matches!(
-        run.status,
-        AgentRunStatus::Paused
-            | AgentRunStatus::Cancelled
-            | AgentRunStatus::HandedOff
-            | AgentRunStatus::Completed
-            | AgentRunStatus::Failed
-    );
     let incremental_replay_limit = replay_limit
         .map(usize::from)
         .unwrap_or(INCREMENTAL_RUNTIME_STREAM_REPLAY_LIMIT);
@@ -782,6 +822,13 @@ fn replay_owned_agent_events(
         after_sequence,
         replay_limit,
         incremental_replay_limit,
+    )?;
+    let terminal = owned_agent_run_status_ends_runtime_stream(
+        repo_root,
+        project_id,
+        run_id,
+        &run.status,
+        &events,
     )?;
     let replayed_count = events.len();
     let replay_projection = project_owned_agent_replay_events(
@@ -828,6 +875,15 @@ fn project_owned_agent_replay_events(
     after_event_id: i64,
     asset_state: &ProjectAssetState,
 ) -> OwnedAgentReplayProjectionResult {
+    let _perf = crate::perf::PerfSpan::new("runtime_stream_replay_projection")
+        .field("projectId", project_id.to_owned())
+        .field("eventCount", events.len().to_string())
+        .field(
+            "afterSequence",
+            after_sequence
+                .map(|sequence| sequence.to_string())
+                .unwrap_or_else(|| "none".into()),
+        );
     let mut last_event_id = after_event_id;
     let mut projected_count = 0;
     let mut last_deliverable_item: Option<RuntimeStreamItemDto> = None;
@@ -928,12 +984,7 @@ fn stream_live_owned_agent_events(
         if event.project_id != project_id || event.run_id != run_id || event.id <= last_event_id {
             continue;
         }
-        let terminal = matches!(
-            event.event_kind,
-            AgentRunEventKind::RunPaused
-                | AgentRunEventKind::RunCompleted
-                | AgentRunEventKind::RunFailed
-        );
+        let terminal = owned_agent_event_ends_live_stream(&event);
         last_event_id = event.id;
         if let Some(item) = owned_agent_event_runtime_item_with_media(
             &repo_root,
@@ -954,6 +1005,70 @@ fn stream_live_owned_agent_events(
             break;
         }
     }
+}
+
+fn owned_agent_run_status_ends_runtime_stream(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    status: &AgentRunStatus,
+    replayed_events: &[AgentEventRecord],
+) -> CommandResult<bool> {
+    match status {
+        AgentRunStatus::Paused => Ok(!owned_agent_latest_pause_is_scheduled_wait(
+            repo_root,
+            project_id,
+            run_id,
+            replayed_events,
+        )?),
+        AgentRunStatus::Cancelled
+        | AgentRunStatus::HandedOff
+        | AgentRunStatus::Completed
+        | AgentRunStatus::Failed => Ok(true),
+        AgentRunStatus::Starting | AgentRunStatus::Running | AgentRunStatus::Cancelling => {
+            Ok(false)
+        }
+    }
+}
+
+fn owned_agent_latest_pause_is_scheduled_wait(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    replayed_events: &[AgentEventRecord],
+) -> CommandResult<bool> {
+    if let Some(scheduled_wait) = latest_run_pause_is_scheduled_wait(replayed_events) {
+        return Ok(scheduled_wait);
+    }
+
+    let latest_events = project_store::read_latest_agent_events(repo_root, project_id, run_id, 20)?;
+    Ok(latest_run_pause_is_scheduled_wait(&latest_events).unwrap_or(false))
+}
+
+fn latest_run_pause_is_scheduled_wait(events: &[AgentEventRecord]) -> Option<bool> {
+    events
+        .iter()
+        .rev()
+        .find(|event| event.event_kind == AgentRunEventKind::RunPaused)
+        .map(owned_agent_event_payload_is_scheduled_wait)
+}
+
+fn owned_agent_event_ends_live_stream(event: &AgentEventRecord) -> bool {
+    match event.event_kind {
+        AgentRunEventKind::RunCompleted | AgentRunEventKind::RunFailed => true,
+        AgentRunEventKind::RunPaused => !owned_agent_event_payload_is_scheduled_wait(event),
+        _ => false,
+    }
+}
+
+fn owned_agent_event_payload_is_scheduled_wait(event: &AgentEventRecord) -> bool {
+    payload_json_is_scheduled_wait(&event.payload_json)
+}
+
+fn payload_json_is_scheduled_wait(payload_json: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(payload_json)
+        .map(|payload| payload_is_scheduled_wait(&payload))
+        .unwrap_or(false)
 }
 
 fn send_runtime_stream_replay_payloads(
@@ -1191,6 +1306,14 @@ fn owned_agent_event_runtime_item_with_media(
         return Some(item);
     };
 
+    let _perf = crate::perf::PerfSpan::new("runtime_stream_media_extraction")
+        .field("projectId", project_id.to_owned())
+        .field("runId", item.run_id.clone())
+        .field("eventId", item.sequence.to_string())
+        .field(
+            "toolName",
+            item.tool_name.clone().unwrap_or_else(|| "unknown".into()),
+        );
     let media_attachments = extract_runtime_media_attachments(RuntimeMediaExtractionRequest {
         repo_root,
         project_id,
@@ -1256,6 +1379,8 @@ fn owned_agent_event_runtime_item(
         answer_shape: None,
         options: None,
         allow_multiple: None,
+        sensitive_fields: None,
+        intended_use: None,
         title: None,
         detail: None,
         plan_id: None,
@@ -1297,9 +1422,16 @@ fn owned_agent_event_runtime_item(
             item.text = item.detail.clone();
         }
         AgentRunEventKind::MessageDelta => {
-            item.kind = RuntimeStreamItemKind::Transcript;
-            item.text = payload_verbatim_string(&payload, "text");
-            item.transcript_role = payload_transcript_role(&payload);
+            if payload.get("internalResume").is_some() {
+                item.kind = RuntimeStreamItemKind::Activity;
+                item.code = Some("owned_agent_internal_resume".into());
+                item.title = Some("Internal resume".into());
+                item.detail = Some("Scheduled wakeup resumed the agent run.".into());
+            } else {
+                item.kind = RuntimeStreamItemKind::Transcript;
+                item.text = payload_verbatim_string(&payload, "text");
+                item.transcript_role = payload_transcript_role(&payload);
+            }
         }
         AgentRunEventKind::ReasoningSummary => {
             item.kind = RuntimeStreamItemKind::Activity;
@@ -1350,11 +1482,22 @@ fn owned_agent_event_runtime_item(
             item.tool_call_id = payload_string(&payload, "toolCallId");
             item.tool_name = payload_string(&payload, "toolName");
             let ok = payload_bool(&payload, "ok").unwrap_or(false);
-            item.tool_state = Some(if ok {
+            let scheduled_runtime_wait = ok && tool_completed_is_scheduled_runtime_wait(&payload);
+            let pending_command_review = ok && tool_completed_is_pending_command_review(&payload);
+            item.tool_state = Some(if scheduled_runtime_wait {
+                RuntimeToolCallState::Running
+            } else if pending_command_review {
+                RuntimeToolCallState::Pending
+            } else if ok {
                 RuntimeToolCallState::Succeeded
             } else {
                 RuntimeToolCallState::Failed
             });
+            if scheduled_runtime_wait {
+                item.code = Some(RUNTIME_WAIT_SCHEDULED_CODE.into());
+            } else if pending_command_review {
+                item.code = Some("owned_agent_command_review_pending".into());
+            }
             item.detail = payload_string(&payload, "summary")
                 .or_else(|| payload_string(&payload, "message"))
                 .or_else(|| {
@@ -1362,9 +1505,17 @@ fn owned_agent_event_runtime_item(
                         .as_ref()
                         .map(|name| format!("Completed `{name}`."))
                 });
+            if pending_command_review {
+                item.detail = pending_command_review_detail(&payload).or(item.detail);
+            }
             item.text = item.detail.clone();
-            if ok {
+            if ok && !scheduled_runtime_wait && !pending_command_review {
                 if let Some(output) = payload.get("output") {
+                    if item.tool_name.as_deref() == Some("project_context") {
+                        item.detail =
+                            project_context_completed_tool_detail(output, item.detail.as_deref());
+                        item.text = item.detail.clone();
+                    }
                     let model_visible_result =
                         model_visible_tool_result_from_completed_payload(&payload);
                     let model_visible_output = model_visible_result
@@ -1377,7 +1528,7 @@ fn owned_agent_event_runtime_item(
                         .or_else(|| tool_result_preview_from_output(output));
                 }
             }
-            item.code = payload_string(&payload, "code");
+            item.code = payload_string(&payload, "code").or(item.code);
             item.message = payload_string(&payload, "message");
         }
         AgentRunEventKind::FileChanged => {
@@ -1432,12 +1583,19 @@ fn owned_agent_event_runtime_item(
             item.tool_name = payload_string(&payload, "toolName");
             if item.tool_call_id.is_some() {
                 item.kind = RuntimeStreamItemKind::Tool;
+                let pending_command_review = command_output_is_pending_command_review(&payload);
                 item.tool_state = Some(if payload_bool(&payload, "partial").unwrap_or(false) {
                     RuntimeToolCallState::Running
+                } else if pending_command_review {
+                    RuntimeToolCallState::Pending
                 } else if payload_bool(&payload, "spawned").unwrap_or(false)
                     && payload.get("exitCode").is_some()
                 {
-                    RuntimeToolCallState::Succeeded
+                    match payload.get("exitCode").and_then(serde_json::Value::as_i64) {
+                        Some(0) => RuntimeToolCallState::Succeeded,
+                        Some(_) => RuntimeToolCallState::Failed,
+                        None => RuntimeToolCallState::Running,
+                    }
                 } else {
                     RuntimeToolCallState::Running
                 });
@@ -1545,10 +1703,10 @@ fn owned_agent_event_runtime_item(
         AgentRunEventKind::ContextManifestRecorded => {
             item.kind = RuntimeStreamItemKind::Activity;
             item.code = Some("owned_agent_context_manifest_recorded".into());
-            item.title = Some("Project context".into());
+            item.title = Some("Runtime context manifest".into());
             item.detail = context_event_tool_detail(
                 &payload,
-                "context_manifest",
+                "runtime_context_manifest",
                 "Context manifest recorded.",
             );
             item.text = item.detail.clone();
@@ -1556,10 +1714,10 @@ fn owned_agent_event_runtime_item(
         AgentRunEventKind::RetrievalPerformed => {
             item.kind = RuntimeStreamItemKind::Activity;
             item.code = Some("owned_agent_retrieval_performed".into());
-            item.title = Some("Project context".into());
+            item.title = Some("Runtime durable context retrieval".into());
             item.detail = context_event_tool_detail(
                 &payload,
-                "retrieval",
+                "runtime_durable_context_retrieval",
                 "Durable context retrieval performed.",
             );
             item.text = item.detail.clone();
@@ -1605,9 +1763,27 @@ fn owned_agent_event_runtime_item(
             item.text = item.detail.clone();
         }
         AgentRunEventKind::ActionRequired | AgentRunEventKind::ApprovalRequired => {
+            let action_id = payload_string(&payload, "actionId");
+            if action_id.is_none() {
+                item.kind = RuntimeStreamItemKind::Activity;
+                item.code = payload_string(&payload, "code")
+                    .or_else(|| Some("owned_agent_action_missing_id".into()));
+                item.title = Some("Action unavailable".into());
+                item.message = payload_string(&payload, "message")
+                    .or_else(|| payload_string(&payload, "reason"))
+                    .or_else(|| payload_string(&payload, "detail"))
+                    .or_else(|| {
+                        Some(
+                            "Xero received an owned-agent action event without a durable action id."
+                                .into(),
+                        )
+                    });
+                item.detail = item.message.clone();
+                item.text = item.detail.clone();
+                return Some(item);
+            }
             item.kind = RuntimeStreamItemKind::ActionRequired;
-            item.action_id = payload_string(&payload, "actionId")
-                .or_else(|| Some(format!("owned-agent-action-{event_id}")));
+            item.action_id = action_id;
             item.boundary_id = Some("owned_agent".into());
             item.action_type =
                 payload_string(&payload, "actionType").or_else(|| Some("operator_review".into()));
@@ -1626,6 +1802,8 @@ fn owned_agent_event_runtime_item(
             item.allow_multiple = payload
                 .get("allowMultiple")
                 .and_then(serde_json::Value::as_bool);
+            item.sensitive_fields = sensitive_input_fields_from_payload(&payload);
+            item.intended_use = payload_string(&payload, "intendedUse");
             item.text = item.detail.clone();
         }
         AgentRunEventKind::ToolPermissionGrant => {
@@ -1654,11 +1832,23 @@ fn owned_agent_event_runtime_item(
         }
         AgentRunEventKind::RunPaused => {
             item.kind = RuntimeStreamItemKind::Activity;
-            item.code =
-                payload_string(&payload, "code").or_else(|| Some("owned_agent_paused".into()));
-            item.title = Some("Run paused".into());
-            item.detail = payload_string(&payload, "message")
-                .or_else(|| Some("Owned agent run paused.".into()));
+            if payload_is_scheduled_wait(&payload) {
+                item.code = payload_string(&payload, "code")
+                    .or_else(|| Some("owned_agent_scheduled_wait".into()));
+                item.title = Some("Agent waiting".into());
+                item.detail = payload_string(&payload, "message")
+                    .or_else(|| {
+                        scheduled_wait_due_at(&payload)
+                            .map(|due_at| format!("Waiting until {due_at} before continuing."))
+                    })
+                    .or_else(|| Some("Waiting for a scheduled wakeup before continuing.".into()));
+            } else {
+                item.code =
+                    payload_string(&payload, "code").or_else(|| Some("owned_agent_paused".into()));
+                item.title = Some("Run paused".into());
+                item.detail = payload_string(&payload, "message")
+                    .or_else(|| Some("Owned agent run paused.".into()));
+            }
             item.text = item.detail.clone();
         }
         AgentRunEventKind::RunCompleted => {
@@ -1668,13 +1858,20 @@ fn owned_agent_event_runtime_item(
             item.text = item.detail.clone();
         }
         AgentRunEventKind::RunFailed => {
-            item.kind = RuntimeStreamItemKind::Failure;
-            item.code =
-                payload_string(&payload, "code").or_else(|| Some("owned_agent_failed".into()));
-            item.message = payload_string(&payload, "message")
-                .or_else(|| Some("Owned agent run failed.".into()));
-            item.retryable = payload_bool(&payload, "retryable").or(Some(false));
-            item.text = item.message.clone();
+            let code = payload_string(&payload, "code");
+            if code.as_deref() == Some("agent_run_cancelled") {
+                item.kind = RuntimeStreamItemKind::Complete;
+                item.detail = payload_string(&payload, "message")
+                    .or_else(|| Some("Owned agent run was cancelled.".into()));
+                item.text = item.detail.clone();
+            } else {
+                item.kind = RuntimeStreamItemKind::Failure;
+                item.code = code.or_else(|| Some("owned_agent_failed".into()));
+                item.message = payload_string(&payload, "message")
+                    .or_else(|| Some("Owned agent run failed.".into()));
+                item.retryable = payload_bool(&payload, "retryable").or(Some(false));
+                item.text = item.message.clone();
+            }
         }
     }
 
@@ -1685,7 +1882,10 @@ fn should_emit_owned_runtime_item(
     requested: &[RuntimeStreamItemKind],
     kind: &RuntimeStreamItemKind,
 ) -> bool {
-    kind == &RuntimeStreamItemKind::Failure || requested.contains(kind)
+    matches!(
+        kind,
+        RuntimeStreamItemKind::Complete | RuntimeStreamItemKind::Failure
+    ) || requested.contains(kind)
 }
 
 fn tool_started_detail(tool_name: Option<&str>, input: &serde_json::Value) -> Option<String> {
@@ -1730,6 +1930,15 @@ fn tool_started_detail(tool_name: Option<&str>, input: &serde_json::Value) -> Op
             push_value_part(&mut parts, "url", input, "url");
             push_value_part(&mut parts, "maxChars", input, "maxChars");
         }
+        "project_context" => {
+            push_value_part(&mut parts, "action", input, "action");
+            push_value_part(&mut parts, "query", input, "query");
+            push_value_part(&mut parts, "memoryId", input, "memoryId");
+            push_value_part(&mut parts, "memoryIds", input, "memoryIds");
+            push_value_part(&mut parts, "recordId", input, "recordId");
+            push_value_part(&mut parts, "recordIds", input, "recordIds");
+            push_value_part(&mut parts, "limit", input, "limit");
+        }
         _ => push_generic_input_parts(&mut parts, input),
     }
 
@@ -1747,6 +1956,8 @@ fn push_generic_input_parts(parts: &mut Vec<String>, input: &serde_json::Value) 
         ("toPath", "toPath"),
         ("pattern", "pattern"),
         ("query", "query"),
+        ("memoryId", "memoryId"),
+        ("recordId", "recordId"),
         ("url", "url"),
         ("scope", "scope"),
         ("cwd", "cwd"),
@@ -1837,6 +2048,42 @@ fn context_event_tool_result_preview(payload: &serde_json::Value) -> Option<Stri
     serde_json::to_string_pretty(payload)
         .ok()
         .and_then(truncate_result_preview)
+}
+
+fn project_context_completed_tool_detail(
+    output: &serde_json::Value,
+    fallback: Option<&str>,
+) -> Option<String> {
+    let output = normalized_tool_output(output);
+    if payload_string(output, "kind").as_deref() != Some("project_context") {
+        return fallback.map(ToOwned::to_owned);
+    }
+
+    let mut parts = Vec::new();
+    push_value_part(&mut parts, "action", output, "action");
+    push_value_part(&mut parts, "queryId", output, "queryId");
+    push_value_part(&mut parts, "resultCount", output, "resultCount");
+
+    if let Some(memory) = output.get("memory").filter(|value| value.is_object()) {
+        push_value_part(&mut parts, "memoryId", memory, "memoryId");
+        push_value_part(&mut parts, "memoryKind", memory, "memoryKind");
+    }
+    if let Some(record) = output.get("record").filter(|value| value.is_object()) {
+        push_value_part(&mut parts, "recordId", record, "recordId");
+        if let Some(content_json) = record.get("contentJson") {
+            push_value_part(&mut parts, "memoryId", content_json, "supersedesMemoryId");
+            push_value_part(&mut parts, "recordId", content_json, "supersedesRecordId");
+        }
+    }
+    if let Some(candidate) = output
+        .get("candidateRecord")
+        .filter(|value| value.is_object())
+    {
+        push_value_part(&mut parts, "candidateId", candidate, "recordId");
+    }
+
+    let detail = render_tool_detail_parts(parts);
+    merge_project_context_tool_detail(detail.as_deref(), fallback)
 }
 
 fn model_visible_tool_result_from_completed_payload(payload: &serde_json::Value) -> Option<String> {
@@ -2437,6 +2684,103 @@ fn payload_string(payload: &serde_json::Value, key: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn payload_is_scheduled_wait(payload: &serde_json::Value) -> bool {
+    payload_string(payload, "state").as_deref() == Some(SCHEDULED_WAIT_STATE)
+        || payload_string(payload, "stopReason").as_deref() == Some(SCHEDULED_WAIT_STATE)
+}
+
+fn tool_completed_is_scheduled_runtime_wait(payload: &serde_json::Value) -> bool {
+    payload_string(payload, "toolName").as_deref() == Some(RUNTIME_WAIT_TOOL_NAME)
+        && runtime_wait_output_is_scheduled(payload)
+}
+
+fn tool_completed_is_pending_command_review(payload: &serde_json::Value) -> bool {
+    let Some(output) = payload.get("output").map(normalized_tool_output) else {
+        return false;
+    };
+    match payload_string(output, "kind").as_deref() {
+        Some("command" | "command_session") => {
+            payload_bool(output, "spawned") == Some(false)
+                && output.get("exitCode").is_none()
+                && output_policy_requires_review(output)
+        }
+        Some("process_manager") => {
+            payload_bool(output, "spawned") == Some(false) && output_policy_requires_review(output)
+        }
+        _ => false,
+    }
+}
+
+fn command_output_is_pending_command_review(payload: &serde_json::Value) -> bool {
+    payload_bool(payload, "partial") != Some(true)
+        && payload_bool(payload, "spawned") == Some(false)
+        && payload.get("exitCode").is_none()
+        && output_policy_requires_review(payload)
+}
+
+fn output_policy_requires_review(output: &serde_json::Value) -> bool {
+    let Some(policy) = output.get("policy") else {
+        return false;
+    };
+    payload_bool(policy, "approvalRequired") == Some(true)
+        || payload_string(policy, "outcome").as_deref() == Some("escalated")
+        || payload_string(policy, "action").as_deref() == Some("require_approval")
+        || payload_string(policy, "decision").as_deref() == Some("require_approval")
+        || payload_string(policy, "code")
+            .as_deref()
+            .is_some_and(|code| code.contains("approval") || code.contains("escalated"))
+}
+
+fn pending_command_review_detail(payload: &serde_json::Value) -> Option<String> {
+    let output = payload.get("output").map(normalized_tool_output)?;
+    let argv = output
+        .get("argv")
+        .and_then(serde_json::Value::as_array)
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|command| !command.trim().is_empty())
+        .or_else(|| {
+            output
+                .get("processes")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|processes| processes.first())
+                .and_then(|process| process.get("command"))
+                .and_then(|command| command.get("argv"))
+                .and_then(serde_json::Value::as_array)
+                .map(|parts| {
+                    parts
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+        })
+        .unwrap_or_else(|| "command".into());
+    Some(format!("Command needs review before it can run: {argv}."))
+}
+
+fn runtime_wait_output_is_scheduled(value: &serde_json::Value) -> bool {
+    payload_string(value, "status").as_deref() == Some("scheduled")
+        || payload_string(value, "waitState").as_deref() == Some("scheduled_not_elapsed")
+        || value
+            .get("output")
+            .map(runtime_wait_output_is_scheduled)
+            .unwrap_or(false)
+}
+
+fn scheduled_wait_due_at(payload: &serde_json::Value) -> Option<String> {
+    payload
+        .get("scheduledWakeups")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|wakeups| wakeups.first())
+        .and_then(|wakeup| payload_string(wakeup, "dueAt"))
+}
+
 fn code_change_group_id_from_payload(payload: &serde_json::Value) -> Option<String> {
     payload_string(payload, "codeChangeGroupId")
 }
@@ -2527,6 +2871,7 @@ fn runtime_action_answer_shape_from_str(value: &str) -> Option<RuntimeActionAnsw
         "long_text" => Some(RuntimeActionAnswerShape::LongText),
         "number" => Some(RuntimeActionAnswerShape::Number),
         "date" => Some(RuntimeActionAnswerShape::Date),
+        "sensitive_fields" => Some(RuntimeActionAnswerShape::SensitiveFields),
         _ => None,
     }
 }
@@ -2543,6 +2888,28 @@ fn action_required_options_from_payload(
             id,
             label,
             description: payload_string(option, "description"),
+        });
+    }
+    (!projected.is_empty()).then_some(projected)
+}
+
+fn sensitive_input_fields_from_payload(
+    payload: &serde_json::Value,
+) -> Option<Vec<RuntimeSensitiveInputFieldDto>> {
+    let fields = payload.get("sensitiveFields")?.as_array()?;
+    let mut projected = Vec::with_capacity(fields.len());
+    for field in fields {
+        let key = payload_string(field, "key")?;
+        let label = payload_string(field, "label").unwrap_or_else(|| key.clone());
+        projected.push(RuntimeSensitiveInputFieldDto {
+            key,
+            label,
+            description: payload_string(field, "description"),
+            required: field
+                .get("required")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true),
+            validation_hint: payload_string(field, "validationHint"),
         });
     }
     (!projected.is_empty()).then_some(projected)
@@ -2594,6 +2961,9 @@ fn command_output_summary(payload: &serde_json::Value) -> String {
     }
     if payload_bool(payload, "timedOut").unwrap_or(false) {
         return format!("Command timed out: {argv}.");
+    }
+    if command_output_is_pending_command_review(payload) {
+        return format!("Command needs review before it can run: {argv}.");
     }
     match payload.get("exitCode").and_then(|value| value.as_i64()) {
         Some(code) => format!("Command exited with status {code}: {argv}."),
@@ -2662,6 +3032,69 @@ mod tests {
                 RuntimeStreamItemKind::Failure,
             ],
         }
+    }
+
+    #[test]
+    fn scheduled_wait_pause_keeps_owned_runtime_stream_live() {
+        let scheduled_wait = event(
+            AgentRunEventKind::RunPaused,
+            r#"{"state":"scheduled_wait","stopReason":"scheduled_wait","scheduledWakeups":[{"wakeId":"wake-1","dueAt":"2026-04-24T12:00:15Z"}]}"#,
+        );
+        let manual_pause = event(
+            AgentRunEventKind::RunPaused,
+            r#"{"state":"paused","stopReason":"waiting_for_approval"}"#,
+        );
+        let completed = event(
+            AgentRunEventKind::RunCompleted,
+            r#"{"summary":"Owned agent run completed."}"#,
+        );
+
+        assert!(!owned_agent_event_ends_live_stream(&scheduled_wait));
+        assert!(owned_agent_event_ends_live_stream(&manual_pause));
+        assert!(owned_agent_event_ends_live_stream(&completed));
+        assert!(!owned_agent_run_status_ends_runtime_stream(
+            std::path::Path::new("."),
+            "project-1",
+            "run-1",
+            &AgentRunStatus::Paused,
+            &[scheduled_wait.clone()],
+        )
+        .expect("scheduled wait status terminal check"));
+        assert!(owned_agent_run_status_ends_runtime_stream(
+            std::path::Path::new("."),
+            "project-1",
+            "run-1",
+            &AgentRunStatus::Paused,
+            &[manual_pause],
+        )
+        .expect("manual pause status terminal check"));
+
+        let item = owned_agent_event_runtime_item(scheduled_wait, "owned-agent:run-1", None)
+            .expect("scheduled-wait item");
+        assert_eq!(item.kind, RuntimeStreamItemKind::Activity);
+        assert_eq!(item.code.as_deref(), Some("owned_agent_scheduled_wait"));
+        assert_eq!(item.title.as_deref(), Some("Agent waiting"));
+        assert_eq!(
+            item.detail.as_deref(),
+            Some("Waiting until 2026-04-24T12:00:15Z before continuing.")
+        );
+    }
+
+    #[test]
+    fn internal_resume_message_delta_replays_as_hidden_activity() {
+        let item = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::MessageDelta,
+                r#"{"role":"developer","text":"internal wakeup details","internalResume":{"wakeId":"wake-1","reason":"scheduled_wakeup","payload":{}}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("internal resume item");
+
+        assert_eq!(item.kind, RuntimeStreamItemKind::Activity);
+        assert_eq!(item.code.as_deref(), Some("owned_agent_internal_resume"));
+        assert_eq!(item.text, None);
     }
 
     fn seed_replay_project(root: &tempfile::TempDir) -> std::path::PathBuf {
@@ -3013,10 +3446,149 @@ mod tests {
             None,
         )
         .expect("fallback action item");
+        assert_eq!(fallback_action.kind, RuntimeStreamItemKind::Activity);
+        assert_eq!(
+            fallback_action.code.as_deref(),
+            Some("owned_agent_action_missing_id")
+        );
+        assert_eq!(fallback_action.title.as_deref(), Some("Action unavailable"));
+        assert!(fallback_action.action_id.is_none());
         assert_eq!(
             fallback_action.detail.as_deref(),
-            Some("Owned agent requires operator input before continuing.")
+            Some("Xero received an owned-agent action event without a durable action id.")
         );
+    }
+
+    #[test]
+    fn owned_agent_command_review_completion_projects_as_pending_tool() {
+        let payload = serde_json::json!({
+            "toolCallId": "call-command-review",
+            "toolName": "command",
+            "ok": true,
+            "summary": "Command awaiting review.",
+            "output": {
+                "kind": "command",
+                "argv": ["pnpm", "test"],
+                "spawned": false,
+                "policy": {
+                    "outcome": "escalated",
+                    "code": "policy_escalated_approval_mode"
+                }
+            }
+        });
+        let tool = owned_agent_event_runtime_item(
+            event(AgentRunEventKind::ToolCompleted, &payload.to_string()),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("command review item");
+
+        assert_eq!(tool.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(tool.tool_call_id.as_deref(), Some("call-command-review"));
+        assert_eq!(tool.tool_name.as_deref(), Some("command"));
+        assert_eq!(tool.tool_state, Some(RuntimeToolCallState::Pending));
+        assert_eq!(
+            tool.code.as_deref(),
+            Some("owned_agent_command_review_pending")
+        );
+        assert_eq!(
+            tool.detail.as_deref(),
+            Some("Command needs review before it can run: pnpm test.")
+        );
+        assert!(tool.tool_summary.is_none());
+        assert!(tool.tool_result_preview.is_none());
+    }
+
+    #[test]
+    fn owned_agent_invalid_action_tool_input_projects_as_failed_tool_diagnostic() {
+        let tool = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ToolCompleted,
+                r#"{"toolCallId":"call-action","toolName":"action_required","ok":false,"code":"agent_action_tool_input_invalid","message":"Invalid action_required input."}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("invalid action tool item");
+
+        assert_eq!(tool.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(tool.tool_call_id.as_deref(), Some("call-action"));
+        assert_eq!(tool.tool_name.as_deref(), Some("action_required"));
+        assert_eq!(tool.tool_state, Some(RuntimeToolCallState::Failed));
+        assert_eq!(
+            tool.code.as_deref(),
+            Some("agent_action_tool_input_invalid")
+        );
+        assert_eq!(
+            tool.message.as_deref(),
+            Some("Invalid action_required input.")
+        );
+        assert!(tool.action_id.is_none());
+    }
+
+    #[test]
+    fn cancelled_owned_agent_run_projects_as_activity_not_failure() {
+        let item = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::RunFailed,
+                r#"{"code":"agent_run_cancelled","message":"Owned agent run was cancelled.","state":"blocked","stopReason":"cancelled"}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("cancelled run item");
+
+        assert_eq!(item.kind, RuntimeStreamItemKind::Activity);
+        assert_eq!(item.code.as_deref(), Some("owned_agent_cancelled"));
+        assert_eq!(item.title.as_deref(), Some("Run cancelled"));
+        assert!(item.message.is_none());
+        assert!(item.retryable.is_none());
+
+        let mut projection = RuntimeStreamProjection::new(projection_context());
+        projection.apply_item(item);
+        assert_eq!(projection.status, RuntimeStreamViewStatusDto::Live);
+        assert!(projection.failure.is_none());
+        assert!(projection.last_issue.is_none());
+    }
+
+    #[test]
+    fn scheduled_runtime_wait_completion_projects_as_running_tool() {
+        let payload = serde_json::json!({
+            "toolCallId": "call-runtime-wait",
+            "toolName": "runtime_wait",
+            "ok": true,
+            "summary": "Scheduled owned-agent wakeup `wake-1` for 2026-06-02T22:08:27Z.",
+            "output": {
+                "ok": true,
+                "output": {
+                    "dueAt": "2026-06-02T22:08:27Z",
+                    "kind": "sleep",
+                    "status": "scheduled",
+                    "waitState": "scheduled_not_elapsed",
+                    "wakeId": "wake-1"
+                },
+                "toolCallId": "call-runtime-wait",
+                "toolName": "runtime_wait"
+            }
+        });
+
+        let tool = owned_agent_event_runtime_item(
+            event(AgentRunEventKind::ToolCompleted, &payload.to_string()),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("runtime wait tool item");
+
+        assert_eq!(tool.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(tool.tool_call_id.as_deref(), Some("call-runtime-wait"));
+        assert_eq!(tool.tool_name.as_deref(), Some("runtime_wait"));
+        assert_eq!(tool.tool_state, Some(RuntimeToolCallState::Running));
+        assert_eq!(
+            tool.code.as_deref(),
+            Some("owned_agent_runtime_wait_scheduled")
+        );
+        assert!(tool.tool_summary.is_none());
+        assert!(tool.tool_result_preview.is_none());
     }
 
     #[test]
@@ -3039,6 +3611,55 @@ mod tests {
         assert_eq!(
             output.tool_result_preview.as_deref(),
             Some("stdout:\nrunning test 1")
+        );
+    }
+
+    #[test]
+    fn owned_agent_command_output_projection_tracks_review_and_exit_states() {
+        let pending = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::CommandOutput,
+                r#"{"toolCallId":"call-command-review","toolName":"command","argv":["pnpm","install"],"spawned":false,"policy":{"approvalRequired":true}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("pending command output item");
+        assert_eq!(pending.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(pending.tool_state, Some(RuntimeToolCallState::Pending));
+        assert_eq!(
+            pending.detail.as_deref(),
+            Some("Command needs review before it can run: pnpm install.")
+        );
+
+        let succeeded = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::CommandOutput,
+                r#"{"toolCallId":"call-command-success","toolName":"command","argv":["pnpm","test"],"spawned":true,"exitCode":0}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("successful command output item");
+        assert_eq!(succeeded.tool_state, Some(RuntimeToolCallState::Succeeded));
+        assert_eq!(
+            succeeded.detail.as_deref(),
+            Some("Command exited with status 0: pnpm test.")
+        );
+
+        let failed = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::CommandOutput,
+                r#"{"toolCallId":"call-command-failed","toolName":"command","argv":["pnpm","test"],"spawned":true,"exitCode":1}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("failed command output item");
+        assert_eq!(failed.tool_state, Some(RuntimeToolCallState::Failed));
+        assert_eq!(
+            failed.detail.as_deref(),
+            Some("Command exited with status 1: pnpm test.")
         );
     }
 
@@ -3265,6 +3886,65 @@ mod tests {
             RuntimeStreamViewStatusDto::Live
         );
         assert!(reopened_patch.snapshot.completion.is_none());
+    }
+
+    #[test]
+    fn runtime_stream_projection_keeps_cancelled_run_terminal_after_late_reasoning() {
+        let mut projection = RuntimeStreamProjection::new(projection_context());
+
+        let cancelled = owned_agent_event_runtime_item(
+            event_with_id(
+                1,
+                AgentRunEventKind::RunFailed,
+                r#"{"code":"agent_run_cancelled","message":"Owned agent run was cancelled.","state":"blocked","stopReason":"cancelled"}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("cancelled run item");
+        let cancelled_patch = projection.apply_item(cancelled);
+
+        assert_eq!(
+            cancelled_patch.snapshot.status,
+            RuntimeStreamViewStatusDto::Complete
+        );
+        assert_eq!(
+            cancelled_patch
+                .snapshot
+                .completion
+                .as_ref()
+                .map(|item| item.detail.as_deref()),
+            Some(Some("Owned agent run was cancelled."))
+        );
+
+        let late_reasoning = owned_agent_event_runtime_item(
+            event_with_id(
+                2,
+                AgentRunEventKind::ReasoningSummary,
+                r#"{"summary":"Considering next steps"}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("late reasoning item");
+        let reasoning_patch = projection.apply_item(late_reasoning);
+
+        assert_eq!(
+            reasoning_patch.snapshot.status,
+            RuntimeStreamViewStatusDto::Complete
+        );
+        assert_eq!(
+            reasoning_patch
+                .snapshot
+                .completion
+                .as_ref()
+                .map(|item| item.sequence),
+            Some(1)
+        );
+        assert!(reasoning_patch.snapshot.items.iter().any(|item| {
+            item.code.as_deref() == Some(OWNED_AGENT_REASONING_ACTIVITY_CODE)
+                && item.text.as_deref() == Some("Considering next steps")
+        }));
     }
 
     #[test]
@@ -3594,6 +4274,109 @@ mod tests {
     }
 
     #[test]
+    fn owned_agent_tool_completed_projection_keeps_memory_operations_tool_like() {
+        let memory_get = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ToolCompleted,
+                r#"{"toolCallId":"call-memory-get","toolName":"project_context","ok":true,"summary":"project_context read approved memory `memory-1`.","output":{"kind":"project_context","action":"get_memory","message":"project_context read approved memory `memory-1`.","queryId":"query-memory-1","resultCount":1,"memory":{"memoryId":"memory-1","scope":"project","memoryKind":"user_preference","text":"Prefer concise UI activity labels.","redactionState":"clean","trust":{},"citation":"agent_memories:memory-1","createdAt":"2026-05-01T00:00:00Z","updatedAt":"2026-05-01T00:00:00Z"}}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("memory get tool item");
+
+        assert_eq!(memory_get.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(memory_get.tool_name.as_deref(), Some("project_context"));
+        assert_eq!(memory_get.tool_state, Some(RuntimeToolCallState::Succeeded));
+        assert!(memory_get
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("action: get_memory")));
+        assert!(memory_get
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("memoryId: memory-1")));
+        let memory_preview = serde_json::from_str::<serde_json::Value>(
+            memory_get
+                .tool_result_preview
+                .as_deref()
+                .expect("memory get preview"),
+        )
+        .expect("decode memory get preview");
+        assert_eq!(
+            memory_preview["output"]["memory"]["memoryId"],
+            serde_json::json!("memory-1")
+        );
+
+        let memory_update = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ToolCompleted,
+                r#"{"toolCallId":"call-memory-update","toolName":"project_context","ok":true,"summary":"project_context updated durable context `record-1`.","output":{"kind":"project_context","action":"update_context","message":"project_context updated durable context `record-1`.","resultCount":1,"record":{"recordId":"record-1","sourceKind":"runtime","recordKind":"context_note","title":"Correction for memory `memory-1`","summary":"Supersedes approved memory `memory-1`.","text":"Prefer concise UI activity labels.","contentJson":{"supersedesMemoryId":"memory-1"},"importance":"normal","tags":[],"sourceItemIds":["agent_memories:memory-1"],"relatedPaths":[],"runtimeAgentId":"engineer","runId":"run-1","redactionState":"clean","visibility":"retrieval","trust":{},"citation":"project_context_records:record-1","createdAt":"2026-05-01T00:00:00Z","updatedAt":"2026-05-01T00:00:00Z"}}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("memory update tool item");
+
+        assert_eq!(memory_update.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(memory_update.tool_name.as_deref(), Some("project_context"));
+        assert!(memory_update
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("action: update_context")));
+        assert!(memory_update
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("memoryId: memory-1")));
+    }
+
+    #[test]
+    fn owned_agent_projection_preserves_started_memory_detail_after_completion() {
+        let mut projection = RuntimeStreamProjection::new(projection_context());
+        let started = owned_agent_event_runtime_item(
+            event_with_id(
+                1,
+                AgentRunEventKind::ToolStarted,
+                r#"{"toolCallId":"call-memory-refresh","toolName":"project_context","input":{"action":"refresh_freshness","memoryId":"memory-1"}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("memory refresh started item");
+        projection.apply_item(started);
+
+        let completed = owned_agent_event_runtime_item(
+            event_with_id(
+                2,
+                AgentRunEventKind::ToolCompleted,
+                r#"{"toolCallId":"call-memory-refresh","toolName":"project_context","ok":true,"summary":"project_context refreshed freshness for 1 durable context row(s).","output":{"kind":"project_context","action":"refresh_freshness","message":"project_context refreshed freshness for 1 durable context row(s).","resultCount":1}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("memory refresh completed item");
+        let patch = projection.apply_item(completed);
+        let tool = patch
+            .snapshot
+            .items
+            .iter()
+            .find(|item| item.tool_call_id.as_deref() == Some("call-memory-refresh"))
+            .expect("merged memory refresh tool item");
+
+        assert_eq!(tool.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(tool.sequence, 1);
+        assert_eq!(tool.updated_sequence, Some(2));
+        assert!(tool
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("action: refresh_freshness")));
+        assert!(tool
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("memoryId: memory-1")));
+    }
+
+    #[test]
     fn owned_agent_tool_completed_projection_previews_project_context_manifest_summary() {
         let context = owned_agent_event_runtime_item(
             event(
@@ -3654,7 +4437,7 @@ mod tests {
     }
 
     #[test]
-    fn owned_agent_manifest_and_retrieval_events_project_as_runtime_diagnostics() {
+    fn owned_agent_context_setup_events_project_as_runtime_activity() {
         let retrieval = owned_agent_event_runtime_item(
             event(
                 AgentRunEventKind::RetrievalPerformed,
@@ -3670,16 +4453,19 @@ mod tests {
             retrieval.code.as_deref(),
             Some("owned_agent_retrieval_performed")
         );
-        assert_eq!(retrieval.title.as_deref(), Some("Project context"));
+        assert_eq!(
+            retrieval.title.as_deref(),
+            Some("Runtime durable context retrieval")
+        );
+        assert_eq!(retrieval.tool_name, None);
+        assert_eq!(retrieval.tool_call_id, None);
+        assert_eq!(retrieval.tool_state, None);
         assert_eq!(
             retrieval.detail.as_deref(),
             Some(
-                "action: retrieval, queryId: query-1, resultCount: 2 · Retrieved durable context from LanceDB."
+                "action: runtime_durable_context_retrieval, queryId: query-1, resultCount: 2 · Retrieved durable context from LanceDB."
             )
         );
-        assert!(retrieval.tool_name.is_none());
-        assert!(retrieval.tool_call_id.is_none());
-        assert!(retrieval.tool_state.is_none());
         assert!(retrieval.tool_result_preview.is_none());
 
         let manifest = owned_agent_event_runtime_item(
@@ -3696,13 +4482,15 @@ mod tests {
             manifest.code.as_deref(),
             Some("owned_agent_context_manifest_recorded")
         );
-        assert_eq!(manifest.title.as_deref(), Some("Project context"));
-        assert!(manifest.tool_name.is_none());
-        assert!(manifest.tool_call_id.is_none());
+        assert_eq!(manifest.title.as_deref(), Some("Runtime context manifest"));
+        assert_eq!(manifest.tool_name, None);
+        assert_eq!(manifest.tool_call_id, None);
+        assert_eq!(manifest.tool_state, None);
+        assert!(manifest.tool_result_preview.is_none());
         assert!(manifest
             .detail
             .as_deref()
-            .is_some_and(|detail| detail.contains("action: context_manifest")));
+            .is_some_and(|detail| detail.contains("action: runtime_context_manifest")));
 
         let memory = owned_agent_event_runtime_item(
             event(

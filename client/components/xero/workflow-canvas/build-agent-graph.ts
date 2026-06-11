@@ -18,6 +18,8 @@ import type {
   WorkflowAgentDetailDto,
 } from '@/src/lib/xero-model/workflow-agents'
 import type {
+  CustomAgentHandoffRoutingModeDto,
+  CustomAgentHandoffTargetRefDto,
   CustomAgentWorkflowBranchConditionDto,
   CustomAgentWorkflowGateDto,
   CustomAgentWorkflowPhaseDto,
@@ -78,6 +80,12 @@ export interface AgentHeaderAdvancedFields {
   subagentAllowed: boolean
   commandAllowed: boolean
   destructiveWriteAllowed: boolean
+  handoffEnabled: boolean
+  handoffRoutingMode: CustomAgentHandoffRoutingModeDto
+  handoffAllowedTargets: CustomAgentHandoffTargetRefDto[]
+  handoffPreserveDefinitionVersion: boolean
+  handoffCarrySummary: boolean
+  handoffIncludeDurableContext: boolean
 }
 
 export interface AgentHeaderNodeData extends Record<string, unknown> {
@@ -1377,6 +1385,12 @@ function defaultAdvancedFor(detail: WorkflowAgentDetailDto): AgentHeaderAdvanced
     subagentAllowed: false,
     commandAllowed: false,
     destructiveWriteAllowed: false,
+    handoffEnabled: true,
+    handoffRoutingMode: 'same_agent',
+    handoffAllowedTargets: [],
+    handoffPreserveDefinitionVersion: true,
+    handoffCarrySummary: true,
+    handoffIncludeDurableContext: true,
   }
 }
 
@@ -1406,6 +1420,15 @@ export function deriveAdvancedFromDetail(
     base.subagentAllowed = policy.subagentAllowed
     base.commandAllowed = policy.commandAllowed
     base.destructiveWriteAllowed = policy.destructiveWriteAllowed
+  }
+  const handoffPolicy = detail.handoffPolicy
+  if (handoffPolicy) {
+    base.handoffEnabled = handoffPolicy.enabled
+    base.handoffRoutingMode = handoffPolicy.routingMode
+    base.handoffAllowedTargets = handoffPolicy.allowedTargets.map((target) => ({ ...target }))
+    base.handoffPreserveDefinitionVersion = handoffPolicy.preserveDefinitionVersion
+    base.handoffCarrySummary = handoffPolicy.carrySummary
+    base.handoffIncludeDurableContext = handoffPolicy.includeDurableContext
   }
   return base
 }

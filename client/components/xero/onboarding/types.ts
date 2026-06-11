@@ -1,6 +1,5 @@
 export type OnboardingStepId =
   | "welcome"
-  | "local-environment"
   | "providers"
   | "project"
   | "environment-access"

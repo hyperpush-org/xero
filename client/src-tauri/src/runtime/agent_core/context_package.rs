@@ -39,6 +39,14 @@ pub(crate) struct ProviderContextPackageInput<'a> {
     pub provider_preflight: Option<&'a xero_agent_core::ProviderPreflightSnapshot>,
 }
 
+fn required_attachment_input_modality(attachment: &MessageAttachment) -> Option<&'static str> {
+    match attachment.kind {
+        MessageAttachmentKind::Image => Some("image"),
+        MessageAttachmentKind::Document => Some("file"),
+        MessageAttachmentKind::Text => None,
+    }
+}
+
 pub(crate) fn assemble_provider_context_package(
     input: ProviderContextPackageInput<'_>,
     skill_contexts: Vec<XeroSkillToolContextPayload>,
@@ -52,8 +60,20 @@ pub(crate) fn assemble_provider_context_package(
         input.messages,
         input.agent_definition_snapshot,
     );
-    let retrieval_decision =
-        pre_provider_retrieval_decision(&input, &first_turn_context_policy, &retrieval_query_text);
+    let handoff_lineage = project_store::get_agent_handoff_lineage_by_target_run(
+        input.repo_root,
+        input.project_id,
+        input.run_id,
+    )?;
+    let handoff_reused_retrieval = handoff_lineage
+        .as_ref()
+        .and_then(handoff_reused_retrieval_from_lineage);
+    let retrieval_decision = pre_provider_retrieval_decision(
+        &input,
+        &first_turn_context_policy,
+        &retrieval_query_text,
+        handoff_reused_retrieval.as_ref(),
+    );
     let retrieved_project_context = if retrieval_decision.should_retrieve() {
         Some(retrieve_project_context(
             &input,
@@ -77,14 +97,13 @@ pub(crate) fn assemble_provider_context_package(
         input.run_id,
         &created_at,
     )?;
-    let handoff_lineage = project_store::get_agent_handoff_lineage_by_target_run(
-        input.repo_root,
-        input.project_id,
-        input.run_id,
-    )?;
     let active_coordination_summary =
         active_coordination_prompt_summary(&active_coordination_context);
-    let context_limit = resolve_context_limit(input.provider_id, input.model_id);
+    let context_limit = resolve_context_limit_with_provider_preflight(
+        input.provider_id,
+        input.model_id,
+        input.provider_preflight,
+    );
     let budget_tokens = context_limit.effective_input_budget_tokens;
     let relevant_paths = prompt_relevant_paths_from_provider_messages(input.messages);
     let runtime_metadata = provider_context_runtime_metadata(&input, &created_at);
@@ -176,6 +195,15 @@ pub(crate) fn assemble_provider_context_package(
     let estimated_tokens = included.iter().fold(0_u64, |total, contributor| {
         total.saturating_add(contributor.estimated_tokens)
     });
+    let context_estimate = SessionContextEstimateDto {
+        tokens: estimated_tokens,
+        source: SessionContextEstimateSourceDto::Heuristic,
+        confidence: SessionContextEstimateConfidenceDto::Low,
+        counted_shape: "context_manifest_contributors".into(),
+        diagnostics: vec![
+            "Context package estimate is the sum of admitted contributor estimates; provider request-shape estimates are used by continuation gates.".into(),
+        ],
+    };
     let active_compaction = project_store::load_active_agent_compaction(
         input.repo_root,
         input.project_id,
@@ -200,6 +228,11 @@ pub(crate) fn assemble_provider_context_package(
     let retrieval_query_ids = retrieved_project_context
         .as_ref()
         .map(|context| vec![context.query.query_id.clone()])
+        .or_else(|| {
+            handoff_reused_retrieval
+                .as_ref()
+                .map(|retrieval| retrieval.query_ids.clone())
+        })
         .unwrap_or_default();
     let retrieval_result_ids = retrieved_project_context
         .as_ref()
@@ -209,6 +242,11 @@ pub(crate) fn assemble_provider_context_package(
                 .iter()
                 .map(|result| result.result_id.clone())
                 .collect::<Vec<_>>()
+        })
+        .or_else(|| {
+            handoff_reused_retrieval
+                .as_ref()
+                .map(|retrieval| retrieval.result_ids.clone())
         })
         .unwrap_or_default();
     let freshness_diagnostics = retrieved_project_context
@@ -232,10 +270,20 @@ pub(crate) fn assemble_provider_context_package(
         "method": retrieved_project_context
             .as_ref()
             .map(|context| context.method.clone())
+            .or_else(|| {
+                handoff_reused_retrieval
+                    .as_ref()
+                    .map(|_| "reused_handoff_durable_context".into())
+            })
             .unwrap_or_else(|| "skipped_by_runtime_policy".into()),
         "diagnostic": retrieved_project_context
             .as_ref()
             .and_then(|context| context.diagnostic.clone())
+            .or_else(|| {
+                handoff_reused_retrieval
+                    .as_ref()
+                    .map(HandoffReusedRetrieval::diagnostic_json)
+            })
             .unwrap_or_else(|| skipped_retrieval_diagnostic(&retrieval_decision)),
         "freshnessDiagnostics": freshness_diagnostics,
         "staleContextRowsAvailable": stale_context_rows_available,
@@ -250,6 +298,11 @@ pub(crate) fn assemble_provider_context_package(
         "resultCount": retrieved_project_context
             .as_ref()
             .map(|context| context.results.len())
+            .or_else(|| {
+                handoff_reused_retrieval
+                    .as_ref()
+                    .map(|retrieval| retrieval.result_count)
+            })
             .unwrap_or_default(),
         "results": retrieved_project_context
             .as_ref()
@@ -306,10 +359,17 @@ pub(crate) fn assemble_provider_context_package(
     };
     let mut required_provider_features =
         xero_agent_core::ProviderPreflightRequiredFeatures::owned_agent_text_turn();
-    required_provider_features.attachments = input.messages.iter().any(|message| match message {
-        ProviderMessage::User { attachments, .. } => !attachments.is_empty(),
-        ProviderMessage::Assistant { .. } | ProviderMessage::Tool { .. } => false,
-    });
+    required_provider_features.set_attachment_input_modalities(input.messages.iter().flat_map(
+        |message| {
+            match message {
+                ProviderMessage::User { attachments, .. } => attachments
+                    .iter()
+                    .filter_map(required_attachment_input_modality)
+                    .collect::<Vec<_>>(),
+                ProviderMessage::Assistant { .. } | ProviderMessage::Tool { .. } => Vec::new(),
+            }
+        },
+    ));
     let provider_preflight = input.provider_preflight.cloned().unwrap_or_else(|| {
         crate::provider_preflight::static_provider_preflight_snapshot(
             input.provider_id,
@@ -399,6 +459,7 @@ pub(crate) fn assemble_provider_context_package(
     manifest_fields.insert("limitConfidence".into(), json!(context_limit.confidence));
     manifest_fields.insert("limitDiagnostic".into(), json!(context_limit.diagnostic));
     manifest_fields.insert("limitFetchedAt".into(), json!(context_limit.fetched_at));
+    manifest_fields.insert("estimate".into(), json!(context_estimate));
     manifest_fields.insert("providerPreflight".into(), json!(provider_preflight));
     manifest_fields.insert(
         "admittedProviderPreflightHash".into(),
@@ -566,6 +627,7 @@ fn pre_provider_retrieval_decision(
     input: &ProviderContextPackageInput<'_>,
     policy: &FirstTurnContextPolicy,
     query_text: &str,
+    handoff_reused_retrieval: Option<&HandoffReusedRetrieval>,
 ) -> PreProviderRetrievalDecision {
     if !policy.auto_retrieval_enabled {
         return PreProviderRetrievalDecision::skip("agent_definition_retrieval_disabled");
@@ -576,11 +638,11 @@ fn pre_provider_retrieval_decision(
     if consumed_artifact_retrieval_query_text(input.agent_definition_snapshot).is_some() {
         return PreProviderRetrievalDecision::retrieve("custom_agent_consumed_artifacts");
     }
+    if handoff_reused_retrieval.is_some() {
+        return PreProviderRetrievalDecision::skip("handoff_reuses_source_retrieval");
+    }
     if query_has_prior_work_signal(query_text) {
         return PreProviderRetrievalDecision::retrieve("prior_work_sensitive_prompt");
-    }
-    if query_has_project_surface_signal(query_text) {
-        return PreProviderRetrievalDecision::retrieve("project_context_sensitive_prompt");
     }
     PreProviderRetrievalDecision::skip("no_project_context_signal")
 }
@@ -608,6 +670,80 @@ fn skipped_retrieval_freshness_diagnostics(decision: &PreProviderRetrievalDecisi
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HandoffReusedRetrieval {
+    source_context_hash: String,
+    target_run_id: Option<String>,
+    query_ids: Vec<String>,
+    result_ids: Vec<String>,
+    result_count: usize,
+    selection_policy: Option<String>,
+}
+
+impl HandoffReusedRetrieval {
+    fn diagnostic_json(&self) -> JsonValue {
+        json!({
+            "schema": "xero.reused_handoff_durable_context.v1",
+            "status": "reused",
+            "sourceContextHash": &self.source_context_hash,
+            "targetRunId": self.target_run_id.as_deref(),
+            "queryIds": &self.query_ids,
+            "resultIds": &self.result_ids,
+            "resultCount": self.result_count,
+            "selectionPolicy": self.selection_policy.as_deref(),
+            "guidance": "Target provider turn reused durable context evidence already gathered for the handoff; call project_context_get before relying on exact carried details.",
+        })
+    }
+}
+
+fn handoff_reused_retrieval_from_lineage(
+    lineage: &project_store::AgentHandoffLineageRecord,
+) -> Option<HandoffReusedRetrieval> {
+    let retrieval = lineage.bundle.get("durableContextRetrieval")?;
+    let query_ids = json_string_array(retrieval.get("queryIds"))?;
+    if query_ids.is_empty() {
+        return None;
+    }
+    let result_ids = json_string_array(retrieval.get("resultIds")).unwrap_or_default();
+    let result_count = retrieval
+        .get("resultCount")
+        .and_then(JsonValue::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(result_ids.len());
+    Some(HandoffReusedRetrieval {
+        source_context_hash: retrieval
+            .get("sourceContextHash")
+            .and_then(JsonValue::as_str)
+            .unwrap_or(lineage.source_context_hash.as_str())
+            .to_string(),
+        target_run_id: retrieval
+            .get("targetRunId")
+            .and_then(JsonValue::as_str)
+            .map(str::to_string)
+            .or_else(|| lineage.target_run_id.clone()),
+        query_ids,
+        result_ids,
+        result_count,
+        selection_policy: retrieval
+            .get("selectionPolicy")
+            .and_then(JsonValue::as_str)
+            .map(str::to_string),
+    })
+}
+
+fn json_string_array(value: Option<&JsonValue>) -> Option<Vec<String>> {
+    Some(
+        value?
+            .as_array()?
+            .iter()
+            .filter_map(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
 fn query_has_prior_work_signal(query_text: &str) -> bool {
     let lowered = query_text.to_ascii_lowercase();
     text_contains_any(
@@ -631,73 +767,6 @@ fn query_has_prior_work_signal(query_text: &str) -> bool {
             "durable context",
             "project context",
             "approved memory",
-        ],
-    )
-}
-
-fn query_has_project_surface_signal(query_text: &str) -> bool {
-    let lowered = query_text.to_ascii_lowercase();
-    text_contains_any(
-        &lowered,
-        &[
-            "this repo",
-            "the repo",
-            "repository",
-            "codebase",
-            "workspace",
-            "this project",
-            "the project",
-            "this app",
-            "the app",
-            "tauri app",
-            "agent runtime",
-            "runtime stream",
-            "context manifest",
-            "context package",
-            "project record",
-            "project records",
-            "durable project",
-            "lancedb",
-            "cargo test",
-            "cargo build",
-            "pnpm test",
-            "pnpm build",
-            "failing test",
-            "test failure",
-            "build failure",
-            "stack trace",
-            "regression",
-            "schema issue",
-            "migration",
-            "tool call",
-            "tool calls",
-            "stage",
-            "stages",
-        ],
-    ) || query_mentions_source_path(&lowered)
-}
-
-fn query_mentions_source_path(lowered_query_text: &str) -> bool {
-    text_contains_any(
-        lowered_query_text,
-        &[
-            "agents.md",
-            "package.json",
-            "cargo.toml",
-            "tauri.conf",
-            "client/",
-            "server/",
-            "src/",
-            "docs/",
-            ".rs",
-            ".ts",
-            ".tsx",
-            ".js",
-            ".jsx",
-            ".json",
-            ".toml",
-            ".sql",
-            ".md",
         ],
     )
 }
@@ -943,19 +1012,16 @@ fn agent_memory_kind_policy_label(kind: &project_store::AgentMemoryKind) -> &'st
 }
 
 fn provider_context_runtime_metadata(
-    input: &ProviderContextPackageInput<'_>,
+    _input: &ProviderContextPackageInput<'_>,
     fallback_timestamp: &str,
 ) -> RuntimeHostMetadata {
-    let timestamp = project_store::load_agent_run(input.repo_root, input.project_id, input.run_id)
-        .map(|snapshot| snapshot.run.started_at)
-        .unwrap_or_else(|_| fallback_timestamp.to_string());
     let mut metadata = runtime_host_metadata();
-    metadata.date_utc = timestamp
+    metadata.date_utc = fallback_timestamp
         .split_once('T')
         .map(|(date, _)| date)
-        .unwrap_or(timestamp.as_str())
+        .unwrap_or(fallback_timestamp)
         .to_owned();
-    metadata.timestamp_utc = timestamp;
+    metadata.timestamp_utc = fallback_timestamp.to_owned();
     metadata
 }
 
@@ -2346,6 +2412,11 @@ fn handoff_lineage_manifest_json(lineage: &project_store::AgentHandoffLineageRec
                 .map(|records| records.len())
                 .unwrap_or(0),
         },
+        "durableContextRetrieval": lineage
+            .bundle
+            .get("durableContextRetrieval")
+            .cloned()
+            .unwrap_or(JsonValue::Null),
     })
 }
 
@@ -2716,6 +2787,41 @@ mod tests {
         .expect("seed agent run");
     }
 
+    #[test]
+    fn provider_context_runtime_metadata_uses_current_date_not_run_start_date() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let (project_id, repo_root) = seed_project(&root);
+        seed_run(&repo_root, &project_id);
+        let messages = Vec::new();
+        let input = ProviderContextPackageInput {
+            repo_root: &repo_root,
+            project_id: &project_id,
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID,
+            run_id: "run-context-package",
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: "engineer",
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+            agent_definition_snapshot: None,
+            provider_id: OPENAI_CODEX_PROVIDER_ID,
+            model_id: OPENAI_CODEX_PROVIDER_ID,
+            turn_index: 0,
+            browser_control_preference: BrowserControlPreferenceDto::Default,
+            tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
+            soul_settings: None,
+            tools: &[],
+            tool_exposure_plan: None,
+            messages: &messages,
+            owned_process_summary: None,
+            provider_preflight: None,
+        };
+
+        let metadata = provider_context_runtime_metadata(&input, "2026-06-01T09:30:00Z");
+
+        assert_eq!(metadata.timestamp_utc, "2026-06-01T09:30:00Z");
+        assert_eq!(metadata.date_utc, "2026-06-01");
+        assert_ne!(metadata.date_utc, "2026-05-01");
+    }
+
     fn seed_retrievable_context(repo_root: &Path, project_id: &str) {
         let context_package_path = repo_root.join("client/src-tauri/src/runtime/agent_core");
         fs::create_dir_all(&context_package_path).expect("context package source dir");
@@ -2764,7 +2870,6 @@ mod tests {
                 scope: project_store::AgentMemoryScope::Project,
                 kind: project_store::AgentMemoryKind::ProjectFact,
                 text: "Phase 3 approved memory is injected for every runtime agent.".into(),
-                review_state: project_store::AgentMemoryReviewState::Approved,
                 enabled: true,
                 confidence: Some(95),
                 source_run_id: Some("run-context-package".into()),
@@ -2883,7 +2988,7 @@ mod tests {
         seed_run(&repo_root, &project_id);
         seed_retrievable_context(&repo_root, &project_id);
         let messages = vec![ProviderMessage::User {
-            content: "Use phase3 context package project records.".into(),
+            content: "Use prior phase3 context package project records.".into(),
             attachments: Vec::new(),
         }];
         let input = ProviderContextPackageInput {
@@ -3028,6 +3133,179 @@ mod tests {
         assert!(!package
             .system_prompt
             .contains("Source-cited working set for this turn"));
+    }
+
+    #[test]
+    fn provider_context_package_skips_durable_retrieval_for_broad_project_overview_prompt() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let (project_id, repo_root) = seed_project(&root);
+        seed_run(&repo_root, &project_id);
+        seed_retrievable_context(&repo_root, &project_id);
+        let messages = vec![ProviderMessage::User {
+            content: "What is this project about?".into(),
+            attachments: Vec::new(),
+        }];
+        let input = ProviderContextPackageInput {
+            repo_root: &repo_root,
+            project_id: &project_id,
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID,
+            run_id: "run-context-package",
+            runtime_agent_id: RuntimeAgentIdDto::Ask,
+            agent_definition_id: "ask",
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+            agent_definition_snapshot: None,
+            provider_id: OPENAI_CODEX_PROVIDER_ID,
+            model_id: OPENAI_CODEX_PROVIDER_ID,
+            turn_index: 0,
+            browser_control_preference: BrowserControlPreferenceDto::Default,
+            tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
+            soul_settings: None,
+            tools: &[],
+            tool_exposure_plan: None,
+            messages: &messages,
+            owned_process_summary: None,
+            provider_preflight: None,
+        };
+
+        let package =
+            assemble_provider_context_package(input, Vec::new(), Vec::new()).expect("package");
+
+        assert!(!package.pre_provider_retrieval_performed);
+        assert!(package.manifest.retrieval_query_ids.is_empty());
+        assert!(package.manifest.retrieval_result_ids.is_empty());
+        assert_eq!(
+            package.manifest.manifest["retrieval"]["preProviderRetrieval"]["reasonCode"],
+            json!("no_project_context_signal")
+        );
+        assert_eq!(
+            package.manifest.manifest["workingSet"]["deliveryModel"],
+            json!("none")
+        );
+    }
+
+    #[test]
+    fn provider_context_package_reuses_handoff_retrieval_ids_for_target_turn() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let (project_id, repo_root) = seed_project(&root);
+        seed_run(&repo_root, &project_id);
+        project_store::insert_agent_run(
+            &repo_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: Some("engineer".into()),
+                agent_definition_version: Some(project_store::BUILTIN_AGENT_DEFINITION_VERSION),
+                project_id: project_id.clone(),
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: "run-context-package-source".into(),
+                provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                prompt: "Prior handoff source run.".into(),
+                system_prompt: "system".into(),
+                now: "2026-05-01T11:00:00Z".into(),
+            },
+        )
+        .expect("seed source run");
+        let source_context_hash = "b".repeat(64);
+        project_store::insert_agent_handoff_lineage(
+            &repo_root,
+            &project_store::NewAgentHandoffLineageRecord {
+                handoff_id: "handoff-context-package-reuse".into(),
+                project_id: project_id.clone(),
+                source_agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                source_run_id: "run-context-package-source".into(),
+                source_runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                source_agent_definition_id: "engineer".into(),
+                source_agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+                target_agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+                target_run_id: Some("run-context-package".into()),
+                target_runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                target_agent_definition_id: "engineer".into(),
+                target_agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+                provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                source_context_hash: source_context_hash.clone(),
+                status: project_store::AgentHandoffLineageStatus::Completed,
+                idempotency_key: "handoff-context-package-reuse-key".into(),
+                handoff_record_id: Some("handoff-record-context-package-reuse".into()),
+                bundle: json!({
+                    "schema": "xero.agent_handoff.bundle.v1",
+                    "sourceContextHash": source_context_hash,
+                    "durableContextRetrieval": {
+                        "schema": "xero.agent_handoff.durable_context_retrieval.v1",
+                        "sourceContextHash": "b".repeat(64),
+                        "targetRunId": "run-context-package",
+                        "queryIds": ["source-query-reused"],
+                        "resultIds": ["source-result-reused"],
+                        "resultCount": 1,
+                        "selectionPolicy": "reused_source_provider_turn_retrieval"
+                    },
+                    "workingSetSummary": {},
+                    "sourceCitedContinuityRecords": []
+                }),
+                diagnostic: None,
+                created_at: "2026-05-01T11:01:00Z".into(),
+                updated_at: "2026-05-01T11:01:00Z".into(),
+                completed_at: Some("2026-05-01T11:01:00Z".into()),
+            },
+        )
+        .expect("seed handoff lineage");
+        let messages = vec![ProviderMessage::User {
+            content: "Continue prior work from the handoff.".into(),
+            attachments: Vec::new(),
+        }];
+        let input = ProviderContextPackageInput {
+            repo_root: &repo_root,
+            project_id: &project_id,
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID,
+            run_id: "run-context-package",
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: "engineer",
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+            agent_definition_snapshot: None,
+            provider_id: OPENAI_CODEX_PROVIDER_ID,
+            model_id: OPENAI_CODEX_PROVIDER_ID,
+            turn_index: 0,
+            browser_control_preference: BrowserControlPreferenceDto::Default,
+            tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
+            soul_settings: None,
+            tools: &[],
+            tool_exposure_plan: None,
+            messages: &messages,
+            owned_process_summary: None,
+            provider_preflight: None,
+        };
+
+        let package =
+            assemble_provider_context_package(input, Vec::new(), Vec::new()).expect("package");
+
+        assert!(!package.pre_provider_retrieval_performed);
+        assert_eq!(
+            package.manifest.retrieval_query_ids,
+            vec!["source-query-reused".to_string()]
+        );
+        assert_eq!(
+            package.manifest.retrieval_result_ids,
+            vec!["source-result-reused".to_string()]
+        );
+        assert_eq!(
+            package.manifest.manifest["retrieval"]["method"],
+            json!("reused_handoff_durable_context")
+        );
+        assert_eq!(
+            package.manifest.manifest["retrieval"]["preProviderRetrieval"]["reasonCode"],
+            json!("handoff_reuses_source_retrieval")
+        );
+        assert_eq!(
+            package.manifest.manifest["handoff"]["durableContextRetrieval"]["queryIds"],
+            json!(["source-query-reused"])
+        );
+        let target_queries = project_store::list_agent_retrieval_queries_for_run(
+            &repo_root,
+            &project_id,
+            "run-context-package",
+        )
+        .expect("list target retrieval queries");
+        assert!(target_queries.is_empty());
     }
 
     #[test]

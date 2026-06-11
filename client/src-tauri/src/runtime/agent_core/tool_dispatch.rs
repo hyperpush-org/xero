@@ -14,7 +14,7 @@ use xero_agent_core::{
     ToolRegistryResult, ToolRegistryV2, ToolRollback, ToolSandbox, ToolSandboxResult,
 };
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct AgentToolBatchDispatchOptions {
     approved_existing_write_call_ids: BTreeSet<String>,
     operator_approved_call_ids: BTreeSet<String>,
@@ -38,6 +38,20 @@ pub(crate) struct AgentToolBatchDispatchResult {
     pub(crate) results: Vec<AgentToolResult>,
     pub(crate) failure: Option<CommandError>,
 }
+
+const AUTONOMOUS_TOOL_EDIT_EXPECTED_TEXT_MISMATCH_CODE: &str =
+    "autonomous_tool_edit_expected_text_mismatch";
+const AUTONOMOUS_TOOL_EDIT_LINE_HASH_MISMATCH_CODE: &str =
+    "autonomous_tool_edit_line_hash_mismatch";
+const AUTONOMOUS_TOOL_EDIT_EXPECTED_EMPTY_CODE: &str = "autonomous_tool_edit_expected_empty";
+
+const MODEL_RECOVERABLE_TOOL_ERROR_CODES: &[&str] = &[
+    AUTONOMOUS_TOOL_STALE_FILE_ERROR_CODE,
+    AUTONOMOUS_TOOL_EXPECTED_HASH_REQUIRED_CODE,
+    AUTONOMOUS_TOOL_EDIT_EXPECTED_TEXT_MISMATCH_CODE,
+    AUTONOMOUS_TOOL_EDIT_LINE_HASH_MISMATCH_CODE,
+    AUTONOMOUS_TOOL_EDIT_EXPECTED_EMPTY_CODE,
+];
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn dispatch_tool_call_with_write_approval(
@@ -257,6 +271,14 @@ fn dispatch_tool_batch_with_options(
         )?;
     }
 
+    let run_record = project_store::load_agent_run_record(repo_root, project_id, run_id)?;
+    let failure_log_context = AgentToolFailureLogContext::from_run_record(
+        &run_record,
+        turn_index,
+        &options.approved_existing_write_call_ids,
+        &options.operator_approved_call_ids,
+    );
+
     for tool_call in &tool_calls {
         if tool_registry.descriptor(&tool_call.tool_name).is_some() {
             continue;
@@ -274,16 +296,25 @@ fn dispatch_tool_batch_with_options(
         };
         let _ =
             record_policy_decode_failure_event(repo_root, project_id, run_id, tool_call, &error);
+        let dispatch = json!({
+            "registryVersion": "tool_registry_v2",
+            "preflight": "legacy_registry_descriptor_missing",
+        });
+        log_preflight_tool_failure(
+            project_id,
+            run_id,
+            tool_call,
+            &error,
+            dispatch.clone(),
+            &failure_log_context,
+        );
         finish_failed_tool_call_with_dispatch(
             repo_root,
             project_id,
             run_id,
             tool_call,
             &error,
-            Some(json!({
-                "registryVersion": "tool_registry_v2",
-                "preflight": "legacy_registry_descriptor_missing",
-            })),
+            Some(dispatch),
         )?;
         return Ok(AgentToolBatchDispatchResult {
             results: Vec::new(),
@@ -291,7 +322,6 @@ fn dispatch_tool_batch_with_options(
         });
     }
 
-    let run_record = project_store::load_agent_run_record(repo_root, project_id, run_id)?;
     let shared = Arc::new(AutonomousToolHandlerShared {
         legacy_registry: tool_registry.clone(),
         tool_runtime: tool_runtime.clone(),
@@ -332,8 +362,20 @@ fn dispatch_tool_batch_with_options(
                 input: tool_call.input.clone(),
             })
             .collect::<Vec<_>>();
+        let original_calls = tool_calls
+            .iter()
+            .map(|tool_call| (tool_call.tool_call_id.clone(), tool_call.clone()))
+            .collect::<BTreeMap<_, _>>();
         let report = registry_v2.dispatch_batch(&calls, &config);
-        persist_tool_batch_report(repo_root, project_id, run_id, report, &budget)
+        persist_tool_batch_report(
+            repo_root,
+            project_id,
+            run_id,
+            report,
+            &budget,
+            &original_calls,
+            &failure_log_context,
+        )
     })();
 
     restore_workspace_guard(&shared, workspace_guard)?;
@@ -1484,12 +1526,71 @@ fn tool_dispatch_budget(_tool_runtime: &AutonomousToolRuntime) -> ToolBudget {
     }
 }
 
+#[derive(Debug, Clone)]
+struct AgentToolFailureLogContext {
+    app_data_dir: Option<PathBuf>,
+    agent_session_id: String,
+    turn_index: usize,
+    provider_id: String,
+    model_id: String,
+    runtime_agent_id: String,
+    approved_existing_write_call_ids: BTreeSet<String>,
+    operator_approved_call_ids: BTreeSet<String>,
+}
+
+impl AgentToolFailureLogContext {
+    fn from_run_record(
+        run_record: &project_store::AgentRunRecord,
+        turn_index: usize,
+        approved_existing_write_call_ids: &BTreeSet<String>,
+        operator_approved_call_ids: &BTreeSet<String>,
+    ) -> Self {
+        Self {
+            app_data_dir: crate::db::configured_app_data_dir(),
+            agent_session_id: run_record.agent_session_id.clone(),
+            turn_index,
+            provider_id: run_record.provider_id.clone(),
+            model_id: run_record.model_id.clone(),
+            runtime_agent_id: run_record.runtime_agent_id.as_str().to_owned(),
+            approved_existing_write_call_ids: approved_existing_write_call_ids.clone(),
+            operator_approved_call_ids: operator_approved_call_ids.clone(),
+        }
+    }
+
+    fn context_json(&self, tool_call_id: &str) -> JsonValue {
+        let operator_approved = self.operator_approved_call_ids.contains(tool_call_id);
+        let approved_existing_write = self.approved_existing_write_call_ids.contains(tool_call_id);
+        let approval_state = if operator_approved {
+            "operator_approved"
+        } else if approved_existing_write {
+            "approved_existing_write"
+        } else {
+            "not_approved"
+        };
+
+        json!({
+            "providerId": self.provider_id,
+            "modelId": self.model_id,
+            "runtimeAgentId": self.runtime_agent_id,
+            "operatorApproved": operator_approved,
+            "approvedExistingWrite": approved_existing_write,
+            "approvalState": approval_state,
+            "turnIndex": self.turn_index,
+            "launchMode": std::env::var("XERO_LAUNCH_MODE").ok(),
+            "hostOs": std::env::consts::OS,
+            "appVersion": env!("CARGO_PKG_VERSION"),
+        })
+    }
+}
+
 fn persist_tool_batch_report(
     repo_root: &Path,
     project_id: &str,
     run_id: &str,
     report: ToolBatchDispatchReport,
     budget: &ToolBudget,
+    original_calls: &BTreeMap<String, AgentToolCall>,
+    failure_log_context: &AgentToolFailureLogContext,
 ) -> CommandResult<AgentToolBatchDispatchResult> {
     let mut results = Vec::new();
     let mut failure = None;
@@ -1512,7 +1613,7 @@ fn persist_tool_batch_report(
                     )?);
                 }
                 ToolDispatchOutcome::Failed(failed) => {
-                    let error = persist_tool_dispatch_failure(
+                    let (error, result) = persist_tool_dispatch_failure(
                         repo_root,
                         project_id,
                         run_id,
@@ -1521,8 +1622,11 @@ fn persist_tool_batch_report(
                         group_elapsed_ms,
                         timeout_error.as_ref(),
                         budget,
+                        original_calls,
+                        failure_log_context,
                     )?;
-                    if failure.is_none() {
+                    results.push(result);
+                    if failure.is_none() && !model_can_recover_from_tool_error(&error) {
                         failure = Some(error);
                     }
                 }
@@ -1546,7 +1650,8 @@ fn persist_tool_dispatch_success(
     timeout_error: Option<&ToolExecutionError>,
     budget: &ToolBudget,
 ) -> CommandResult<AgentToolResult> {
-    let result_json = serde_json::to_string(&success.output).map_err(|error| {
+    let persisted_output = redacted_sensitive_tool_result_json_for_persistence(&success.output)?;
+    let result_json = serde_json::to_string(&persisted_output).map_err(|error| {
         CommandError::system_fault(
             "agent_tool_result_serialize_failed",
             format!("Xero could not persist owned-agent tool output: {error}"),
@@ -1577,7 +1682,7 @@ fn persist_tool_dispatch_success(
             "toolName": success.tool_name.clone(),
             "ok": true,
             "summary": success.summary.clone(),
-            "output": success.output.clone(),
+            "output": persisted_output.clone(),
             "dispatch": dispatch,
     });
     if let Some(object) = payload.as_object_mut() {
@@ -1600,7 +1705,7 @@ fn persist_tool_dispatch_success(
         run_id,
         &success.tool_call_id,
         &success.tool_name,
-        &success.output,
+        &persisted_output,
     )?;
 
     Ok(AgentToolResult {
@@ -1619,6 +1724,37 @@ fn persist_tool_dispatch_success(
         }),
         parent_assistant_message_id: None,
     })
+}
+
+pub(crate) fn redacted_sensitive_tool_result_json_for_persistence(
+    output: &JsonValue,
+) -> CommandResult<JsonValue> {
+    let Ok(mut result) = serde_json::from_value::<AutonomousToolResult>(output.clone()) else {
+        return Ok(output.clone());
+    };
+    result.output = redacted_sensitive_tool_output_for_persistence(&result.output);
+    serde_json::to_value(result).map_err(|error| {
+        CommandError::system_fault(
+            "agent_tool_result_serialize_failed",
+            format!("Xero could not serialize redacted owned-agent tool output: {error}"),
+        )
+    })
+}
+
+fn redacted_sensitive_tool_output_for_persistence(
+    output: &AutonomousToolOutput,
+) -> AutonomousToolOutput {
+    match output {
+        AutonomousToolOutput::SensitiveInput(output) => {
+            let mut redacted = output.clone();
+            redacted.redacted = true;
+            for field in &mut redacted.fields {
+                field.value = "[redacted]".into();
+            }
+            AutonomousToolOutput::SensitiveInput(redacted)
+        }
+        other => other.clone(),
+    }
 }
 
 fn record_command_output_event_from_dispatch_success(
@@ -1677,7 +1813,9 @@ fn persist_tool_dispatch_failure(
     group_elapsed_ms: u128,
     timeout_error: Option<&ToolExecutionError>,
     budget: &ToolBudget,
-) -> CommandResult<CommandError> {
+    original_calls: &BTreeMap<String, AgentToolCall>,
+    failure_log_context: &AgentToolFailureLogContext,
+) -> CommandResult<(CommandError, AgentToolResult)> {
     let command_error = tool_execution_error_ref_to_command_error(&failure.error);
     let dispatch = dispatch_failure_metadata_json(
         &failure,
@@ -1686,19 +1824,140 @@ fn persist_tool_dispatch_failure(
         timeout_error,
         budget,
     );
+    let original_call = original_calls
+        .get(&failure.tool_call_id)
+        .cloned()
+        .unwrap_or_else(|| AgentToolCall {
+            tool_call_id: failure.tool_call_id.clone(),
+            tool_name: failure.tool_name.clone(),
+            input: json!({}),
+        });
+    log_dispatch_tool_failure(
+        project_id,
+        run_id,
+        &original_call,
+        &failure,
+        &command_error,
+        dispatch.clone(),
+        failure_log_context,
+    );
     finish_failed_tool_call_with_dispatch(
         repo_root,
         project_id,
         run_id,
-        &AgentToolCall {
-            tool_call_id: failure.tool_call_id.clone(),
-            tool_name: failure.tool_name.clone(),
-            input: json!({}),
-        },
+        &original_call,
         &command_error,
-        Some(dispatch),
+        Some(dispatch.clone()),
     )?;
-    Ok(command_error)
+    let result = failed_agent_tool_result_from_dispatch_failure(failure, dispatch);
+    Ok((command_error, result))
+}
+
+fn failed_agent_tool_result_from_dispatch_failure(
+    failure: ToolDispatchFailure,
+    dispatch: JsonValue,
+) -> AgentToolResult {
+    AgentToolResult {
+        tool_call_id: failure.tool_call_id,
+        tool_name: failure.tool_name,
+        ok: false,
+        summary: failure.error.message.clone(),
+        output: json!({
+            "error": {
+                "category": failure.error.category,
+                "code": failure.error.code,
+                "message": failure.error.message,
+                "modelMessage": failure.error.model_message,
+                "retryable": failure.error.retryable,
+            },
+            "dispatch": dispatch,
+        }),
+        persistence: None,
+        parent_assistant_message_id: None,
+    }
+}
+
+fn log_preflight_tool_failure(
+    project_id: &str,
+    run_id: &str,
+    tool_call: &AgentToolCall,
+    error: &CommandError,
+    dispatch: JsonValue,
+    context: &AgentToolFailureLogContext,
+) {
+    crate::developer_tool_error_log::log_tool_call_failure_best_effort(
+        context.app_data_dir.as_deref(),
+        crate::developer_tool_error_log::ToolCallErrorLogEntryDraft {
+            source: "tool_registry_v2_preflight".into(),
+            project_id: Some(project_id.into()),
+            agent_session_id: Some(context.agent_session_id.clone()),
+            run_id: Some(run_id.into()),
+            turn_index: Some(context.turn_index.try_into().unwrap_or(i64::MAX)),
+            tool_call_id: tool_call.tool_call_id.clone(),
+            tool_name: tool_call.tool_name.clone(),
+            input: tool_call.input.clone(),
+            error_code: error.code.clone(),
+            error_class: command_error_class_label(&error.class),
+            error_category: None,
+            error_message: error.message.clone(),
+            model_message: None,
+            retryable: error.retryable,
+            dispatch,
+            context: context.context_json(&tool_call.tool_call_id),
+        },
+    );
+}
+
+fn log_dispatch_tool_failure(
+    project_id: &str,
+    run_id: &str,
+    tool_call: &AgentToolCall,
+    failure: &ToolDispatchFailure,
+    command_error: &CommandError,
+    dispatch: JsonValue,
+    context: &AgentToolFailureLogContext,
+) {
+    crate::developer_tool_error_log::log_tool_call_failure_best_effort(
+        context.app_data_dir.as_deref(),
+        crate::developer_tool_error_log::ToolCallErrorLogEntryDraft {
+            source: "tool_registry_v2_dispatch".into(),
+            project_id: Some(project_id.into()),
+            agent_session_id: Some(context.agent_session_id.clone()),
+            run_id: Some(run_id.into()),
+            turn_index: Some(context.turn_index.try_into().unwrap_or(i64::MAX)),
+            tool_call_id: tool_call.tool_call_id.clone(),
+            tool_name: tool_call.tool_name.clone(),
+            input: tool_call.input.clone(),
+            error_code: command_error.code.clone(),
+            error_class: command_error_class_label(&command_error.class),
+            error_category: Some(serde_label(&failure.error.category)),
+            error_message: command_error.message.clone(),
+            model_message: optional_non_empty(failure.error.model_message.clone()),
+            retryable: command_error.retryable,
+            dispatch,
+            context: context.context_json(&tool_call.tool_call_id),
+        },
+    );
+}
+
+fn command_error_class_label(class: &CommandErrorClass) -> String {
+    serde_label(class)
+}
+
+fn serde_label<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| "unknown".into())
+}
+
+fn optional_non_empty(value: String) -> Option<String> {
+    let value = value.trim().to_owned();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 fn dispatch_success_metadata_json(
@@ -1815,6 +2074,7 @@ fn dispatch_failure_metadata_json(
         "typedErrorCategory": failure.error.category,
         "modelMessage": failure.error.model_message,
         "retryable": failure.error.retryable,
+        "telemetry": &failure.error.telemetry_attributes,
         "doomLoopSignal": failure.doom_loop_signal,
         "rollbackPayload": failure.rollback_payload,
         "rollbackError": failure.rollback_error.as_ref().map(tool_execution_error_json),
@@ -1847,6 +2107,33 @@ fn tool_execution_error_json(error: &ToolExecutionError) -> JsonValue {
     })
 }
 
+fn model_can_recover_from_tool_error(error: &CommandError) -> bool {
+    model_can_recover_from_tool_error_code(&error.code)
+}
+
+fn model_can_recover_from_tool_error_code(code: &str) -> bool {
+    MODEL_RECOVERABLE_TOOL_ERROR_CODES.contains(&code)
+}
+
+fn model_recovery_message_for_tool_error_code(code: &str) -> Option<&'static str> {
+    match code {
+        AUTONOMOUS_TOOL_STALE_FILE_ERROR_CODE => Some(
+            "Re-read or re-hash the current file, then retry the tool call with the current expected hash.",
+        ),
+        AUTONOMOUS_TOOL_EXPECTED_HASH_REQUIRED_CODE => Some(
+            "Read or hash the current file, then retry the tool call with the required expected hash field.",
+        ),
+        AUTONOMOUS_TOOL_EDIT_EXPECTED_TEXT_MISMATCH_CODE
+        | AUTONOMOUS_TOOL_EDIT_LINE_HASH_MISMATCH_CODE => Some(
+            "Use the current nearby lines and line hashes returned by the tool, or re-read only if context is insufficient, then retry the edit with corrected startLine/endLine, expected text, and line/hash evidence.",
+        ),
+        AUTONOMOUS_TOOL_EDIT_EXPECTED_EMPTY_CODE => Some(
+            "Retry the edit with the exact current text in expected; for a blank line, use its line ending such as \\n.",
+        ),
+        _ => None,
+    }
+}
+
 fn command_error_to_tool_execution_error(error: CommandError) -> ToolExecutionError {
     let (category, model_message) = match error.class {
         CommandErrorClass::PolicyDenied => (
@@ -1866,11 +2153,14 @@ fn command_error_to_tool_execution_error(error: CommandError) -> ToolExecutionEr
             "The tool input was invalid or unavailable in the active runtime.",
         ),
     };
+    let retryable = error.retryable || model_can_recover_from_tool_error_code(&error.code);
+    let model_message =
+        model_recovery_message_for_tool_error_code(&error.code).unwrap_or(model_message);
     ToolExecutionError::new(
         category,
         error.code,
         error.message,
-        error.retryable,
+        retryable,
         model_message,
     )
 }
@@ -2099,7 +2389,7 @@ fn finish_failed_tool_call_with_dispatch(
     )?;
 
     if error.class == CommandErrorClass::PolicyDenied {
-        record_action_request(
+        let action = record_action_request(
             repo_root,
             project_id,
             run_id,
@@ -2114,10 +2404,15 @@ fn finish_failed_tool_call_with_dispatch(
             run_id,
             AgentRunEventKind::ActionRequired,
             json!({
+                "actionId": action.action_id,
+                "actionType": action.action_type,
+                "title": action.title,
+                "detail": action.detail,
                 "toolCallId": tool_call.tool_call_id.clone(),
                 "toolName": tool_call.tool_name.clone(),
                 "code": error.code.clone(),
                 "message": error.message.clone(),
+                "answerShape": "plain_text",
             }),
         )?;
     }
@@ -2146,7 +2441,11 @@ fn finish_failed_tool_call_with_dispatch(
 mod tests {
     use super::*;
 
-    use std::{fs, path::Path};
+    use std::{
+        env, fs,
+        path::Path,
+        sync::{LazyLock, Mutex},
+    };
 
     use rusqlite::{params, Connection};
 
@@ -2159,6 +2458,216 @@ mod tests {
         assert_eq!(windows_host_admin_workspace_root(r"D:\Tools"), r"D:\");
         assert_eq!(windows_host_admin_workspace_root("e:/Work"), r"E:\");
         assert_eq!(windows_host_admin_workspace_root("relative"), r"C:\");
+    }
+
+    #[test]
+    fn failed_dispatch_failure_result_is_model_visible() {
+        let result = failed_agent_tool_result_from_dispatch_failure(
+            ToolDispatchFailure {
+                tool_call_id: "call-browser-observe".into(),
+                tool_name: AUTONOMOUS_TOOL_BROWSER_OBSERVE.into(),
+                error: ToolExecutionError::unavailable(
+                    "browser_not_open",
+                    "The in-app browser is not currently open.",
+                ),
+                doom_loop_signal: None,
+                rollback_payload: None,
+                rollback_error: None,
+                pre_hook_payload: json!({}),
+                post_hook_payload: json!({}),
+                elapsed_ms: 17,
+                sandbox_metadata: None,
+            },
+            json!({ "groupMode": "parallel_read_only" }),
+        );
+
+        assert_eq!(result.tool_call_id, "call-browser-observe");
+        assert_eq!(result.tool_name, AUTONOMOUS_TOOL_BROWSER_OBSERVE);
+        assert!(!result.ok);
+        assert_eq!(result.summary, "The in-app browser is not currently open.");
+        assert_eq!(result.output["error"]["code"], json!("browser_not_open"));
+        assert_eq!(
+            result.output["dispatch"]["groupMode"],
+            json!("parallel_read_only")
+        );
+    }
+
+    #[test]
+    fn model_recoverable_edit_guard_failure_does_not_fail_batch() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "project-recoverable-edit-failure";
+        let run_id = "run-recoverable-edit-failure";
+        create_project_database(&repo_root, project_id);
+        let session = project_store::create_agent_session(
+            &repo_root,
+            &project_store::AgentSessionCreateRecord {
+                project_id: project_id.into(),
+                title: "Recoverable edit failure".into(),
+                summary: String::new(),
+                selected: true,
+                session_kind: project_store::AgentSessionKind::Standard,
+            },
+        )
+        .expect("create agent session");
+        project_store::insert_agent_run(
+            &repo_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: None,
+                agent_definition_version: None,
+                project_id: project_id.into(),
+                agent_session_id: session.agent_session_id,
+                run_id: run_id.into(),
+                provider_id: "test-provider".into(),
+                model_id: "test-model".into(),
+                prompt: "Remove the command K UI.".into(),
+                system_prompt: "Engineer test prompt.".into(),
+                now: "2026-06-05T00:00:00Z".into(),
+            },
+        )
+        .expect("insert run");
+
+        let tool_call = AgentToolCall {
+            tool_call_id: "call-edit".into(),
+            tool_name: AUTONOMOUS_TOOL_EDIT.into(),
+            input: json!({
+                "path": "src/app.tsx",
+                "startLine": 96,
+                "endLine": 104,
+                "expected": "<input />\n<kbd>Cmd+K</kbd>\n",
+                "replacement": "",
+                "expectedHash": "abc123",
+            }),
+        };
+        record_started_tool_call(&repo_root, project_id, run_id, &tool_call, false)
+            .expect("record started tool call");
+
+        let tool_error = command_error_to_tool_execution_error(CommandError::user_fixable(
+            AUTONOMOUS_TOOL_EDIT_EXPECTED_TEXT_MISMATCH_CODE,
+            "Xero refused to apply the edit because the expected text does not match.",
+        ));
+        assert!(tool_error.retryable);
+        assert!(tool_error
+            .model_message
+            .contains("re-read only if context is insufficient"));
+
+        let report = ToolBatchDispatchReport {
+            groups: vec![xero_agent_core::ToolGroupDispatchReport {
+                mode: ToolGroupExecutionMode::SequentialMutating,
+                elapsed_ms: 12,
+                outcomes: vec![ToolDispatchOutcome::Failed(ToolDispatchFailure {
+                    tool_call_id: tool_call.tool_call_id.clone(),
+                    tool_name: tool_call.tool_name.clone(),
+                    error: tool_error,
+                    doom_loop_signal: None,
+                    rollback_payload: None,
+                    rollback_error: None,
+                    pre_hook_payload: json!({}),
+                    post_hook_payload: json!({}),
+                    elapsed_ms: 11,
+                    sandbox_metadata: None,
+                })],
+                timeout_error: None,
+            }],
+        };
+        let budget = ToolBudget::default();
+        let original_calls = BTreeMap::from([(tool_call.tool_call_id.clone(), tool_call.clone())]);
+        let run_record = project_store::load_agent_run_record(&repo_root, project_id, run_id)
+            .expect("load run record");
+        let failure_log_context = AgentToolFailureLogContext::from_run_record(
+            &run_record,
+            2,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        );
+
+        let batch = persist_tool_batch_report(
+            &repo_root,
+            project_id,
+            run_id,
+            report,
+            &budget,
+            &original_calls,
+            &failure_log_context,
+        )
+        .expect("persist recoverable failure");
+
+        assert!(batch.failure.is_none());
+        assert_eq!(batch.results.len(), 1);
+        let result = &batch.results[0];
+        assert!(!result.ok);
+        assert_eq!(
+            result.output["error"]["code"],
+            json!(AUTONOMOUS_TOOL_EDIT_EXPECTED_TEXT_MISMATCH_CODE)
+        );
+        assert_eq!(result.output["error"]["retryable"], json!(true));
+        assert!(result.output["error"]["modelMessage"]
+            .as_str()
+            .expect("model message")
+            .contains("re-read only if context is insufficient"));
+
+        let snapshot =
+            project_store::load_agent_run(&repo_root, project_id, run_id).expect("load run");
+        let persisted_call = snapshot
+            .tool_calls
+            .iter()
+            .find(|call| call.tool_call_id == "call-edit")
+            .expect("persisted tool call");
+        assert_eq!(persisted_call.state, AgentToolCallState::Failed);
+        assert_eq!(
+            persisted_call
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some(AUTONOMOUS_TOOL_EDIT_EXPECTED_TEXT_MISMATCH_CODE)
+        );
+    }
+
+    #[test]
+    fn empty_edit_expected_is_model_recoverable() {
+        let tool_error = command_error_to_tool_execution_error(CommandError::user_fixable(
+            AUTONOMOUS_TOOL_EDIT_EXPECTED_EMPTY_CODE,
+            "Xero requires edit expected to include the exact current text to replace.",
+        ));
+
+        assert!(tool_error.retryable);
+        assert_eq!(tool_error.code, AUTONOMOUS_TOOL_EDIT_EXPECTED_EMPTY_CODE);
+        assert!(tool_error.model_message.contains("blank line"));
+    }
+
+    #[test]
+    fn sensitive_tool_result_json_is_redacted_for_persistence() {
+        let raw = json!({
+            "toolName": AUTONOMOUS_TOOL_REQUEST_SENSITIVE_INPUT,
+            "summary": "Received 1 sensitive field(s): 1 required, 0 optional.",
+            "commandResult": null,
+            "output": {
+                "kind": "sensitive_input",
+                "actionId": "sensitive-input-1234",
+                "status": "approved",
+                "purpose": "Configure a provider token for this run.",
+                "intendedUse": "Write the token into the requested environment file.",
+                "allowPartial": false,
+                "fields": [{
+                    "key": "api_key",
+                    "label": "API key",
+                    "required": true,
+                    "value": "sk-live-secret"
+                }],
+                "redacted": false,
+                "summary": "Received 1 sensitive field(s): 1 required, 0 optional."
+            }
+        });
+
+        let redacted = redacted_sensitive_tool_result_json_for_persistence(&raw)
+            .expect("redacted sensitive result");
+
+        assert_eq!(raw["output"]["fields"][0]["value"], "sk-live-secret");
+        assert_eq!(redacted["output"]["fields"][0]["value"], "[redacted]");
+        assert_eq!(redacted["output"]["redacted"], true);
+        assert!(!redacted.to_string().contains("sk-live-secret"));
     }
 
     #[test]
@@ -2194,6 +2703,168 @@ mod tests {
         assert_eq!(availability["affectedPaths"], json!(["src/app.ts"]));
         assert_eq!(availability["fileChangeCount"], json!(1));
         assert_eq!(availability["textHunkCount"], json!(2));
+    }
+
+    #[test]
+    fn developer_tool_error_log_records_preflight_and_dispatch_failures() {
+        let _launch_mode = LocalSourceLaunchModeGuard::new();
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let app_data_dir = tempdir.path().join("app-data");
+        fs::create_dir_all(&app_data_dir).expect("create app data");
+        crate::db::configure_project_database_paths(&app_data_dir.join("xero.db"));
+
+        let context = AgentToolFailureLogContext {
+            app_data_dir: Some(app_data_dir.clone()),
+            agent_session_id: "session-1".into(),
+            turn_index: 7,
+            provider_id: "openai_codex".into(),
+            model_id: "gpt-5".into(),
+            runtime_agent_id: "engineer".into(),
+            approved_existing_write_call_ids: BTreeSet::new(),
+            operator_approved_call_ids: BTreeSet::from(["call-sandbox".into()]),
+        };
+        let preflight_call = AgentToolCall {
+            tool_call_id: "call-preflight".into(),
+            tool_name: "missing_tool".into(),
+            input: json!({ "api_key": "sk-live-secret", "path": "src/main.rs" }),
+        };
+        let preflight_error = CommandError::user_fixable(
+            "agent_tool_call_unknown",
+            "The owned-agent model requested unregistered tool `missing_tool`.",
+        );
+        log_preflight_tool_failure(
+            "project-1",
+            "run-1",
+            &preflight_call,
+            &preflight_error,
+            json!({ "registryVersion": "tool_registry_v2", "preflight": "legacy_registry_descriptor_missing" }),
+            &context,
+        );
+
+        for (tool_call_id, tool_name, error) in [
+            (
+                "call-sandbox",
+                "write",
+                ToolExecutionError::sandbox_denied(
+                    "agent_sandbox_path_denied",
+                    "Sandbox denied the write.",
+                ),
+            ),
+            (
+                "call-policy",
+                "command",
+                ToolExecutionError::policy_denied(
+                    "agent_policy_denied",
+                    "Policy denied the command.",
+                ),
+            ),
+            (
+                "call-handler",
+                "read",
+                ToolExecutionError::retryable("agent_tool_handler_failed", "The handler failed."),
+            ),
+        ] {
+            let dispatch_call = AgentToolCall {
+                tool_call_id: tool_call_id.into(),
+                tool_name: tool_name.into(),
+                input: json!({ "path": "src/main.rs", "content": "hello" }),
+            };
+            let failure = ToolDispatchFailure {
+                tool_call_id: dispatch_call.tool_call_id.clone(),
+                tool_name: dispatch_call.tool_name.clone(),
+                error,
+                doom_loop_signal: None,
+                rollback_payload: Some(json!({ "rolledBack": false })),
+                rollback_error: None,
+                pre_hook_payload: json!({}),
+                post_hook_payload: json!({}),
+                elapsed_ms: 12,
+                sandbox_metadata: None,
+            };
+            let command_error = tool_execution_error_ref_to_command_error(&failure.error);
+            log_dispatch_tool_failure(
+                "project-1",
+                "run-1",
+                &dispatch_call,
+                &failure,
+                &command_error,
+                json!({ "registryVersion": "tool_registry_v2", "groupMode": "sequential_mutating" }),
+                &context,
+            );
+        }
+
+        let response = crate::developer_tool_error_log::list_tool_call_error_log_entries(
+            &app_data_dir,
+            crate::developer_tool_error_log::DeveloperToolErrorLogListRequestDto::default(),
+        )
+        .expect("list dev tool errors");
+
+        assert_eq!(response.total_count, 4);
+        let preflight = response
+            .entries
+            .iter()
+            .find(|entry| entry.tool_call_id == "call-preflight")
+            .expect("preflight entry");
+        assert_eq!(preflight.source, "tool_registry_v2_preflight");
+        assert_eq!(preflight.input_json["api_key"], json!("[REDACTED]"));
+        assert_eq!(preflight.agent_session_id.as_deref(), Some("session-1"));
+        assert_eq!(preflight.turn_index, Some(7));
+
+        let dispatch = response
+            .entries
+            .iter()
+            .find(|entry| entry.tool_call_id == "call-sandbox")
+            .expect("sandbox dispatch entry");
+        assert_eq!(dispatch.source, "tool_registry_v2_dispatch");
+        assert_eq!(dispatch.error_category.as_deref(), Some("sandbox_denied"));
+        assert_eq!(dispatch.context_json["operatorApproved"], json!(true));
+
+        let policy = response
+            .entries
+            .iter()
+            .find(|entry| entry.tool_call_id == "call-policy")
+            .expect("policy dispatch entry");
+        assert_eq!(policy.error_category.as_deref(), Some("policy_denied"));
+
+        let handler = response
+            .entries
+            .iter()
+            .find(|entry| entry.tool_call_id == "call-handler")
+            .expect("handler dispatch entry");
+        assert_eq!(
+            handler.error_category.as_deref(),
+            Some("retryable_provider_tool_failure")
+        );
+        assert!(handler.retryable);
+    }
+
+    static LAUNCH_MODE_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    struct LocalSourceLaunchModeGuard {
+        previous: Option<std::ffi::OsString>,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl LocalSourceLaunchModeGuard {
+        fn new() -> Self {
+            let guard = LAUNCH_MODE_ENV_LOCK.lock().expect("launch mode env lock");
+            let previous = env::var_os("XERO_LAUNCH_MODE");
+            env::set_var("XERO_LAUNCH_MODE", "local-source");
+            Self {
+                previous,
+                _guard: guard,
+            }
+        }
+    }
+
+    impl Drop for LocalSourceLaunchModeGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                env::set_var("XERO_LAUNCH_MODE", previous);
+            } else {
+                env::remove_var("XERO_LAUNCH_MODE");
+            }
+        }
     }
 
     fn create_project_database(repo_root: &Path, project_id: &str) {

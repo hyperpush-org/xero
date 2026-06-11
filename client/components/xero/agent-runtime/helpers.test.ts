@@ -301,6 +301,62 @@ describe('agent-runtime helpers', () => {
         }),
       ),
     ).toBe('project context retrieval')
+
+    expect(
+      getToolCardTitle(
+        makeToolItem({
+          toolName: 'project_context',
+          detail: 'project_context inspected diagnostic context package manifest `manifest-1`.',
+        }),
+      ),
+    ).toBe('context package inspection')
+  })
+
+  it('labels project-context memory operations as memory tool actions', () => {
+    expect(
+      getToolCardTitle(
+        makeToolItem({
+          toolName: 'project_context',
+          detail: 'action: search_approved_memory, query: lancedb memory, resultCount: 1',
+        }),
+      ),
+    ).toBe('search memory lancedb memory')
+
+    expect(
+      getToolCardTitle(
+        makeToolItem({
+          toolName: 'project_context',
+          detail: 'action: get_memory, queryId: query-1, resultCount: 1, memoryId: memory-1',
+        }),
+      ),
+    ).toBe('fetch memory memory-1')
+
+    expect(
+      getToolCardTitle(
+        makeToolItem({
+          toolName: 'project_context',
+          detail: 'action: update_context, recordId: record-1, memoryId: memory-1 · project_context updated durable context `record-1`.',
+        }),
+      ),
+    ).toBe('update memory memory-1')
+
+    expect(
+      getToolCardTitle(
+        makeToolItem({
+          toolName: 'project_context',
+          detail: 'action: refresh_freshness, memoryId: memory-1 · project_context refreshed freshness for 1 durable context row(s).',
+        }),
+      ),
+    ).toBe('refresh memory memory-1')
+
+    expect(
+      getToolCardTitle(
+        makeToolItem({
+          toolName: 'project_context',
+          detail: 'action: delete_memory, memoryId: memory-1',
+        }),
+      ),
+    ).toBe('delete memory memory-1')
   })
 
   it('uses generic blocked copy when no credentials are configured for the chosen provider', () => {

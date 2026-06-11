@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'vitest'
 import {
+  buildCursorUserMessage,
   buildCursorAgentCreateOptions,
   findCursorAutoCatalogAlias,
   normalizeCursorModelCatalog,
@@ -106,6 +107,54 @@ test('Cursor model catalog normalization discovers Auto aliases', () => {
 
   assert.equal(catalog.length, 1)
   assert.equal(findCursorAutoCatalogAlias(catalog), 'auto')
+})
+
+test('Cursor user messages forward staged image attachments through SDK images', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xero-cursor-image-'))
+  const imagePath = path.join(tempDir, 'sketch.png')
+  fs.writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+
+  const message = buildCursorUserMessage('Where is this in the code?', [
+    {
+      kind: 'image',
+      absolutePath: imagePath,
+      mediaType: 'image/png',
+      originalName: 'sketch.png',
+      sizeBytes: 4,
+      width: 12,
+      height: 8,
+    },
+  ])
+
+  assert.deepEqual(message, {
+    text: 'Where is this in the code?',
+    images: [
+      {
+        data: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64'),
+        mimeType: 'image/png',
+        dimension: { width: 12, height: 8 },
+      },
+    ],
+  })
+})
+
+test('Cursor user messages reject non-image attachments before SDK send', () => {
+  assert.throws(
+    () =>
+      buildCursorUserMessage('Read this', [
+        {
+          kind: 'document',
+          absolutePath: '/tmp/spec.pdf',
+          mediaType: 'application/pdf',
+          originalName: 'spec.pdf',
+          sizeBytes: 10,
+        },
+      ]),
+    (error) => {
+      assert.equal(error.xeroCode, 'cursor_attachment_unsupported')
+      return true
+    },
+  )
 })
 
 test('fixture mode streams normalized JSONL without Cursor auth', () => {

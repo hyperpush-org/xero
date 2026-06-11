@@ -247,6 +247,7 @@ function registerDefaultSolanaResponses() {
   registerInvoke("solana_secrets_patterns", () => [])
   registerInvoke("solana_cluster_drift_tracked_programs", () => [])
   registerInvoke("solana_doc_catalog", () => [])
+  registerInvoke("solana_rpc_health", () => [])
   registerInvoke("solana_subscribe_ready", () => undefined)
 }
 
@@ -467,5 +468,15 @@ describe("SolanaWorkbenchSidebar", () => {
     await new Promise((resolve) => setTimeout(resolve, 25))
 
     expect(personaListCalls).toBe(1)
+  })
+
+  it("keeps RPC provider configuration out of the sidebar", async () => {
+    render(<SolanaWorkbenchSidebar open />)
+
+    fireEvent.click(await screen.findByRole("tab", { name: "RPC" }))
+
+    expect(await screen.findByText("RPC endpoints")).toBeVisible()
+    expect(screen.queryByText("Provider profiles")).not.toBeInTheDocument()
+    expect(screen.queryByPlaceholderText("helius-devnet")).not.toBeInTheDocument()
   })
 })

@@ -286,9 +286,20 @@ pub struct CancelAgentRunRequestDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RejectAgentActionRequestDto {
+    pub run_id: String,
+    pub action_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResumeAgentRunRequestDto {
     pub run_id: String,
     pub response: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_compact: Option<AgentAutoCompactPreferenceDto>,
 }

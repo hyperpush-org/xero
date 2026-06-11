@@ -9,6 +9,7 @@ import {
 
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
+import { WORKFLOWS_ENABLED } from '@/src/features/xero/workflows-feature-flag'
 import type {
   AgentRefDto,
   WorkflowAgentSummaryDto,
@@ -60,14 +61,20 @@ export function WorkflowCanvasEmptyState({
   const canStartBlankAgent = Boolean(onCreateAgent)
   const canPickAgentTemplate = Boolean(onCreateAgentFromTemplate)
   const canCreateAgent = canStartBlankAgent || canPickAgentTemplate
-  const canStartBlankWorkflow = Boolean(onCreateWorkflow)
-  const canUseAgentCreateForWorkflow = Boolean(onCreateWorkflowWithAgentCreate)
-  const canPickWorkflowTemplate = Boolean(onCreateWorkflowFromTemplate)
+  const canStartBlankWorkflow = WORKFLOWS_ENABLED && Boolean(onCreateWorkflow)
+  const canUseAgentCreateForWorkflow =
+    WORKFLOWS_ENABLED && Boolean(onCreateWorkflowWithAgentCreate)
+  const canPickWorkflowTemplate = WORKFLOWS_ENABLED && Boolean(onCreateWorkflowFromTemplate)
   const canCreateWorkflow =
     canStartBlankWorkflow || canUseAgentCreateForWorkflow || canPickWorkflowTemplate
-  const canBrowseWorkflows = Boolean(onBrowseWorkflows)
-  const [browseWorkflowsMounted, setBrowseWorkflowsMounted] = useState(canBrowseWorkflows)
-  const [browseWorkflowsVisible, setBrowseWorkflowsVisible] = useState(canBrowseWorkflows)
+  const canBrowseWorkflows = WORKFLOWS_ENABLED && Boolean(onBrowseWorkflows)
+  const shouldShowBrowseWorkflowAction = WORKFLOWS_ENABLED ? canBrowseWorkflows : true
+  const [browseWorkflowsMounted, setBrowseWorkflowsMounted] = useState(
+    shouldShowBrowseWorkflowAction,
+  )
+  const [browseWorkflowsVisible, setBrowseWorkflowsVisible] = useState(
+    shouldShowBrowseWorkflowAction,
+  )
 
   const visibleTemplates = useMemo(
     () =>
@@ -128,7 +135,7 @@ export function WorkflowCanvasEmptyState({
   }
 
   useEffect(() => {
-    if (canBrowseWorkflows) {
+    if (shouldShowBrowseWorkflowAction) {
       setBrowseWorkflowsMounted(true)
 
       if (
@@ -151,7 +158,7 @@ export function WorkflowCanvasEmptyState({
       setBrowseWorkflowsMounted(false)
     }, 180)
     return () => window.clearTimeout(timeout)
-  }, [browseWorkflowsMounted, canBrowseWorkflows])
+  }, [browseWorkflowsMounted, shouldShowBrowseWorkflowAction])
 
   const actions: Action[] = [
     { icon: Bot, label: 'Create agent', onSelect: canCreateAgent ? openCreateAgentDialog : undefined },
@@ -183,10 +190,28 @@ export function WorkflowCanvasEmptyState({
         <BrandGlyph />
 
         <h2 className="mt-5 text-2xl font-semibold tracking-tight text-foreground sm:text-[26px]">
-          Start with a <span className="text-primary">workflow</span>
+          {WORKFLOWS_ENABLED ? (
+            <>
+              Start with a <span className="text-primary">workflow</span>
+            </>
+          ) : (
+            <>
+              Start with an <span className="text-primary">agent</span>
+            </>
+          )}
         </h2>
+        {!WORKFLOWS_ENABLED ? (
+          <Badge
+            variant="outline"
+            className="mt-3 text-[9.5px] font-semibold uppercase tracking-[0.12em] text-muted-foreground"
+          >
+            Workflows coming soon
+          </Badge>
+        ) : null}
         <p className="mt-3 max-w-md text-[13px] leading-relaxed text-muted-foreground">
-          Compose agents into a workflow on the canvas, or define a new agent to use as a building block.
+          {WORKFLOWS_ENABLED
+            ? 'Compose agents into a workflow on the canvas, or define a new agent to use as a building block.'
+            : 'Create or inspect agents on the canvas. Multi-agent workflows will return here when they are ready.'}
         </p>
 
         <ul className="relative mt-8 flex w-full max-w-md flex-col divide-y divide-border/60 overflow-hidden rounded-xl border border-border/70 bg-card/80 shadow-sm">

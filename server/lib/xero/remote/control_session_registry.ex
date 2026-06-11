@@ -3,6 +3,8 @@ defmodule Xero.Remote.ControlSessionRegistry do
 
   use GenServer
 
+  @default_owner_idle_timeout_ms :timer.minutes(5)
+
   defstruct sessions: %{}, monitors: %{}
 
   def start_link(opts \\ []) do
@@ -46,14 +48,17 @@ defmodule Xero.Remote.ControlSessionRegistry do
         state
       ) do
     key = key(desktop_device_id, session_id)
+    now_ms = monotonic_ms()
+    state = prune_inactive_owner(state, key, now_ms)
     state = prune_dead_owner(state, key)
 
     case Map.get(state.sessions, key) do
       nil ->
-        {entry, state} = put_owner(state, key, owner_id, web_device_id, owner_pid)
+        {entry, state} = put_owner(state, key, owner_id, web_device_id, owner_pid, now_ms)
         {:reply, {:ok, public_entry(entry)}, state}
 
       %{owner_id: ^owner_id} = entry ->
+        {entry, state} = touch_owner(state, key, entry, now_ms)
         {entry, state} = track_owner_pid(state, key, entry, owner_pid)
         {:reply, {:ok, public_entry(entry)}, state}
 
@@ -64,6 +69,7 @@ defmodule Xero.Remote.ControlSessionRegistry do
 
   def handle_call({:release_pid, desktop_device_id, session_id, owner_pid}, _from, state) do
     key = key(desktop_device_id, session_id)
+    state = prune_inactive_owner(state, key, monotonic_ms())
     state = prune_dead_owner(state, key)
 
     case Map.get(state.sessions, key) do
@@ -80,6 +86,7 @@ defmodule Xero.Remote.ControlSessionRegistry do
 
   def handle_call({:release, desktop_device_id, session_id, owner_id, owner_pid}, _from, state) do
     key = key(desktop_device_id, session_id)
+    state = prune_inactive_owner(state, key, monotonic_ms())
     state = prune_dead_owner(state, key)
 
     case Map.get(state.sessions, key) do
@@ -97,6 +104,7 @@ defmodule Xero.Remote.ControlSessionRegistry do
 
   def handle_call({:active_owner, desktop_device_id, session_id}, _from, state) do
     key = key(desktop_device_id, session_id)
+    state = prune_inactive_owner(state, key, monotonic_ms())
     state = prune_dead_owner(state, key)
     owner = state.sessions |> Map.get(key) |> public_entry()
     {:reply, owner, state}
@@ -138,15 +146,21 @@ defmodule Xero.Remote.ControlSessionRegistry do
     end
   end
 
-  defp put_owner(state, key, owner_id, web_device_id, owner_pid) do
+  defp put_owner(state, key, owner_id, web_device_id, owner_pid, now_ms) do
     entry = %{
       owner_id: owner_id,
       owner_pids: %{},
       web_device_id: web_device_id,
-      started_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+      started_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
+      last_seen_ms: now_ms
     }
 
     track_owner_pid(state, key, entry, owner_pid)
+  end
+
+  defp touch_owner(state, key, entry, now_ms) do
+    entry = Map.put(entry, :last_seen_ms, now_ms)
+    {entry, %{state | sessions: Map.put(state.sessions, key, entry)}}
   end
 
   defp delete_owner(state, key) do
@@ -194,6 +208,31 @@ defmodule Xero.Remote.ControlSessionRegistry do
         state
     end
   end
+
+  defp prune_inactive_owner(state, key, now_ms) do
+    case Map.get(state.sessions, key) do
+      %{last_seen_ms: last_seen_ms} when is_integer(last_seen_ms) ->
+        if now_ms - last_seen_ms >= owner_idle_timeout_ms() do
+          delete_owner(state, key)
+        else
+          state
+        end
+
+      %{owner_pids: _owner_pids} ->
+        delete_owner(state, key)
+
+      _ ->
+        state
+    end
+  end
+
+  defp owner_idle_timeout_ms do
+    :xero
+    |> Application.get_env(__MODULE__, [])
+    |> Keyword.get(:owner_idle_timeout_ms, @default_owner_idle_timeout_ms)
+  end
+
+  defp monotonic_ms, do: System.monotonic_time(:millisecond)
 
   defp owner_pid_alive?(owner_pid) when is_pid(owner_pid), do: Process.alive?(owner_pid)
   defp owner_pid_alive?(_owner_pid), do: false

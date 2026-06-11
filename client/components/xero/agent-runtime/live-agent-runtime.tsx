@@ -1,6 +1,6 @@
 "use client"
 
-import { lazy, memo, Suspense, useEffect, useMemo, useState } from 'react'
+import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { AgentRuntimeDesktopAdapter, AgentRuntimeProps } from '@/components/xero/agent-runtime'
 import type { ConversationTurn } from '@xero/ui/components/transcript/conversation-section'
@@ -84,21 +84,22 @@ export function useAgentViewWithLiveRuntimeStream(
 /**
  * Fetches the persisted session transcript for the given pane and projects it
  * into the historical `ConversationTurn[]` that the conversation pane renders
- * ahead of the live runtime stream. Returns `null` while the request is
- * in-flight on first load (so the UI falls back to the live stream alone).
+ * ahead of the live runtime stream.
  *
  * Refetches whenever the (project, session, run) triple changes — the
  * runId-flip case is the same-type handoff path where the source run becomes
  * historical and we want it to re-appear in the conversation under a new
  * `handoff_notice` row.
  */
-export function useHistoricalConversationTurns(
+export function useHistoricalConversationTurnsState(
   agent: AgentPaneView | null,
   desktopAdapter: AgentRuntimeDesktopAdapter | undefined,
-): ConversationTurn[] | null {
+): { loading: boolean; turns: ConversationTurn[] | null } {
   const projectId = agent?.project.id ?? null
   const agentSessionId = agent?.project.selectedAgentSessionId ?? null
+  const sessionRevision = agent?.project.selectedAgentSession?.updatedAt ?? null
   const runtimeRun = agent?.runtimeRun ?? null
+  const runtimeRunIsTerminal = Boolean(runtimeRun?.isTerminal)
   const activeRunId = runtimeRun && !runtimeRun.isTerminal ? runtimeRun.runId : null
   const getSessionTranscript = desktopAdapter?.getSessionTranscript
   const [turnsByKey, setTurnsByKey] = useState<{
@@ -110,9 +111,10 @@ export function useHistoricalConversationTurns(
   const shouldDeferTranscriptFetch = Boolean(
     agent?.runtimeRunActionStatus === 'running' ||
       agent?.selectedPrompt?.hasQueuedPrompt ||
-      streamStatus === 'subscribing' ||
-      streamStatus === 'replaying' ||
-      streamStatus === 'live',
+      (!runtimeRunIsTerminal &&
+        (streamStatus === 'subscribing' ||
+          streamStatus === 'replaying' ||
+          streamStatus === 'live')),
   )
 
   // Keying on (project, session, run) covers the same-type handoff case: when
@@ -122,11 +124,19 @@ export function useHistoricalConversationTurns(
     ? `${projectId}::${agentSessionId}`
     : null
   const fetchKey = sessionKey
-    ? `${sessionKey}::${activeRunId ?? ''}`
+    ? `${sessionKey}::${activeRunId ?? ''}::${sessionRevision ?? ''}`
     : null
+  const canFetchTranscript = Boolean(
+    sessionKey &&
+      fetchKey &&
+      projectId &&
+      agentSessionId &&
+      getSessionTranscript &&
+      !shouldDeferTranscriptFetch,
+  )
 
   useEffect(() => {
-    if (!sessionKey || !fetchKey || !projectId || !agentSessionId || !getSessionTranscript || shouldDeferTranscriptFetch) {
+    if (!canFetchTranscript || !sessionKey || !fetchKey || !projectId || !agentSessionId || !getSessionTranscript) {
       return
     }
 
@@ -154,9 +164,11 @@ export function useHistoricalConversationTurns(
   }, [
     activeRunId,
     agentSessionId,
+    canFetchTranscript,
     fetchKey,
     getSessionTranscript,
     projectId,
+    sessionRevision,
     sessionKey,
     shouldDeferTranscriptFetch,
   ])
@@ -172,14 +184,41 @@ export function useHistoricalConversationTurns(
     turnsByKey.sessionKey !== sessionKey ||
     turnsByKey.fetchKey !== fetchKey
   ) {
-    return null
+    return { loading: canFetchTranscript, turns: null }
   }
-  return turnsByKey.turns
+  return { loading: false, turns: turnsByKey.turns }
+}
+
+export function useHistoricalConversationTurns(
+  agent: AgentPaneView | null,
+  desktopAdapter: AgentRuntimeDesktopAdapter | undefined,
+): ConversationTurn[] | null {
+  return useHistoricalConversationTurnsState(agent, desktopAdapter).turns
 }
 
 interface LiveAgentRuntimeViewProps extends Omit<AgentRuntimeProps, 'agent'> {
   agent: AgentPaneView | null
   highChurnStore: XeroHighChurnStore
+}
+
+interface StableAgentRuntimeSnapshot {
+  identity: string
+  agent: AgentPaneView
+  historicalTurns: ConversationTurn[] | null
+}
+
+function getAgentRuntimeIdentity(agent: AgentPaneView | null): string | null {
+  if (!agent) return null
+  return `${agent.project.id}:${agent.project.selectedAgentSessionId ?? 'none'}`
+}
+
+function isAgentRuntimeProjectShell(agent: AgentPaneView | null): boolean {
+  return Boolean(
+    agent &&
+      !agent.repositoryPath &&
+      !agent.project.repository &&
+      !agent.project.selectedAgentSessionId,
+  )
 }
 
 export const LiveAgentRuntimeView = memo(function LiveAgentRuntimeView({
@@ -188,8 +227,55 @@ export const LiveAgentRuntimeView = memo(function LiveAgentRuntimeView({
   ...props
 }: LiveAgentRuntimeViewProps) {
   const liveAgent = useAgentViewWithLiveRuntimeStream(agent, highChurnStore)
-  const historicalConversationTurns = useHistoricalConversationTurns(liveAgent, props.desktopAdapter)
-  if (!liveAgent) {
+  const historicalConversationState = useHistoricalConversationTurnsState(liveAgent, props.desktopAdapter)
+  const liveAgentIdentity = getAgentRuntimeIdentity(liveAgent)
+  const incomingLooksLikeProjectShell = isAgentRuntimeProjectShell(liveAgent)
+  const lastReadySnapshotRef = useRef<StableAgentRuntimeSnapshot | null>(null)
+
+  useEffect(() => {
+    if (
+      !liveAgent ||
+      !liveAgentIdentity ||
+      historicalConversationState.loading ||
+      incomingLooksLikeProjectShell
+    ) {
+      return
+    }
+
+    lastReadySnapshotRef.current = {
+      identity: liveAgentIdentity,
+      agent: liveAgent,
+      historicalTurns: historicalConversationState.turns,
+    }
+  }, [
+    historicalConversationState.loading,
+    historicalConversationState.turns,
+    incomingLooksLikeProjectShell,
+    liveAgent,
+    liveAgentIdentity,
+  ])
+
+  const lastReadySnapshot = lastReadySnapshotRef.current
+  const shouldHoldPreviousRuntime =
+    Boolean(
+      liveAgentIdentity &&
+        lastReadySnapshot &&
+        lastReadySnapshot.identity !== liveAgentIdentity,
+    ) && (
+      historicalConversationState.loading ||
+      incomingLooksLikeProjectShell
+    )
+  const renderedAgent = shouldHoldPreviousRuntime
+    ? lastReadySnapshot?.agent ?? liveAgent
+    : liveAgent
+  const renderedHistoricalTurns = shouldHoldPreviousRuntime
+    ? lastReadySnapshot?.historicalTurns ?? null
+    : historicalConversationState.turns
+  const renderedHistoricalLoading = shouldHoldPreviousRuntime
+    ? false
+    : historicalConversationState.loading
+
+  if (!renderedAgent) {
     return null
   }
 
@@ -197,8 +283,9 @@ export const LiveAgentRuntimeView = memo(function LiveAgentRuntimeView({
     <Suspense fallback={<AgentRuntimeLoadingShell />}>
       <LazyAgentRuntime
         {...props}
-        agent={liveAgent}
-        historicalConversationTurns={historicalConversationTurns ?? undefined}
+        agent={renderedAgent}
+        historicalConversationTurns={renderedHistoricalTurns ?? undefined}
+        historicalConversationTurnsLoading={renderedHistoricalLoading}
       />
     </Suspense>
   )

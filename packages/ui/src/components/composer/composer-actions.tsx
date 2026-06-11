@@ -74,24 +74,28 @@ export function ComposerMicButton({
 	dictation,
 }: ComposerMicButtonProps) {
 	const iconSize = actionIconSize(density);
+	const isActive =
+		dictation.isListening ||
+		dictation.phase === "requesting" ||
+		dictation.phase === "stopping";
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>
 				<Button
 					type="button"
-					variant={dictation.isListening ? "outline" : "ghost"}
+					variant={isActive ? "outline" : "ghost"}
 					size="icon-sm"
 					className={cn(
 						actionSizeClass(density),
 						"relative rounded-md px-0 text-muted-foreground/70 hover:text-foreground",
-						dictation.isListening
+						isActive
 							? "border-destructive/35 bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive"
 							: null,
 						className,
 					)}
 					disabled={dictation.isToggleDisabled}
 					aria-label={dictation.ariaLabel}
-					aria-pressed={dictation.isListening}
+					aria-pressed={isActive}
 					onClick={() => void dictation.toggle()}
 				>
 					{dictation.phase === "requesting" || dictation.phase === "stopping" ? (
@@ -253,4 +257,3 @@ export function ComposerAutoCompactToggle({
 		</Tooltip>
 	);
 }
-

@@ -2,7 +2,10 @@ import { z } from 'zod'
 
 import { capabilityPermissionExplanationSchema } from './agent-reports'
 import { isoTimestampSchema } from '@xero/ui/model/shared'
-import { runtimeRunThinkingEffortSchema } from '@xero/ui/model/runtime'
+import {
+  runtimeAgentIdSchema,
+  runtimeRunThinkingEffortSchema,
+} from '@xero/ui/model/runtime'
 import {
   skillSourceKindSchema,
   skillSourceScopeSchema,
@@ -457,12 +460,84 @@ export const customAgentRetrievalPolicySchema = z
     )
   })
 
+export const customAgentHandoffRoutingModeSchema = z.enum(['same_agent', 'suggest'])
+export type CustomAgentHandoffRoutingModeDto = z.infer<
+  typeof customAgentHandoffRoutingModeSchema
+>
+
+export const customAgentHandoffTargetRefSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('built_in'),
+      runtimeAgentId: runtimeAgentIdSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('custom'),
+      definitionId: nonEmptyTextSchema,
+      version: z.number().int().positive().nullable().optional(),
+    })
+    .strict(),
+])
+export type CustomAgentHandoffTargetRefDto = z.infer<
+  typeof customAgentHandoffTargetRefSchema
+>
+
+const customAgentDisallowedBuiltInHandoffTargets = new Set([
+  'plan',
+  'computer_use',
+  'crawl',
+  'agent_create',
+])
+
+function handoffTargetRefKey(target: CustomAgentHandoffTargetRefDto): string {
+  if (target.kind === 'built_in') {
+    return `built_in:${target.runtimeAgentId}`
+  }
+  return `custom:${target.definitionId}:${target.version ?? 'current'}`
+}
+
 export const customAgentHandoffPolicySchema = z
   .object({
     enabled: z.boolean(),
-    preserveDefinitionVersion: z.boolean().optional(),
+    routingMode: customAgentHandoffRoutingModeSchema,
+    allowedTargets: z.array(customAgentHandoffTargetRefSchema),
+    preserveDefinitionVersion: z.boolean(),
+    carrySummary: z.boolean(),
+    includeDurableContext: z.boolean(),
   })
   .strict()
+  .superRefine((policy, ctx) => {
+    const keys = policy.allowedTargets.map(handoffTargetRefKey)
+    addDuplicateStringIssues(
+      ctx,
+      ['allowedTargets'],
+      keys,
+      'Custom agent handoff targets must be unique.',
+    )
+    policy.allowedTargets.forEach((target, index) => {
+      if (
+        target.kind === 'built_in' &&
+        customAgentDisallowedBuiltInHandoffTargets.has(target.runtimeAgentId)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['allowedTargets', index, 'runtimeAgentId'],
+          message:
+            'Custom agent handoff targets can include Ask, Engineer, Debug, or Generalist; Plan and excluded runtime agents are not configurable targets.',
+        })
+      }
+    })
+    if (policy.enabled && policy.routingMode === 'suggest' && policy.allowedTargets.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['allowedTargets'],
+        message: 'Custom agent routing suggestions require at least one allowed target.',
+      })
+    }
+  })
+export type CustomAgentHandoffPolicyDto = z.infer<typeof customAgentHandoffPolicySchema>
 
 export const customAgentWorkflowGateSchema = z.discriminatedUnion('kind', [
   z

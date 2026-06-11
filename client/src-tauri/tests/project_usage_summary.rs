@@ -134,6 +134,7 @@ fn seed_usage(
             provider_id: provider_id.into(),
             model_id: model_id.into(),
             input_tokens: input,
+            billable_input_tokens: input + cache_read + cache_write,
             output_tokens: output,
             total_tokens: input + output + cache_read + cache_write,
             cache_read_tokens: cache_read,

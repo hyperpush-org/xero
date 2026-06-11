@@ -1134,6 +1134,7 @@ fn tool_runtime_executes_priority_one_agent_surface_tools() {
         .notebook_edit(AutonomousNotebookEditRequest {
             path: "work.ipynb".into(),
             cell_index: 0,
+            expected_hash: None,
             expected_source: Some("print('old')\n".into()),
             replacement_source: "print('new')\n".into(),
         })
@@ -2629,6 +2630,22 @@ fn tool_runtime_write_supports_preview_and_hash_guarded_overwrite() {
         other => panic!("unexpected hash output: {other:?}"),
     };
 
+    let owned_runtime = runtime
+        .clone()
+        .with_agent_run_context("project-1", "session-1", "run-1");
+    let missing_hash = owned_runtime
+        .write(AutonomousWriteRequest {
+            path: "tracked.txt".into(),
+            content: "beta\n".into(),
+            expected_hash: None,
+            create_only: false,
+            overwrite: Some(true),
+            preview: false,
+        })
+        .expect_err("owned-agent overwrites require expectedHash");
+    assert_eq!(missing_hash.code, "autonomous_tool_expected_hash_required");
+    assert!(missing_hash.message.contains("currentHash"));
+
     let preview = runtime
         .write(AutonomousWriteRequest {
             path: "tracked.txt".into(),
@@ -2692,7 +2709,9 @@ fn tool_runtime_write_supports_preview_and_hash_guarded_overwrite() {
             preview: false,
         })
         .expect_err("stale hash should block replacement");
-    assert_eq!(stale.code, "autonomous_tool_write_expected_hash_mismatch");
+    assert_eq!(stale.code, "autonomous_tool_stale_file");
+    assert!(stale.message.contains("currentHash"));
+    assert!(stale.message.contains("re-read current file evidence"));
 
     let create_only = runtime
         .write(AutonomousWriteRequest {
@@ -2728,6 +2747,138 @@ fn tool_runtime_write_supports_preview_and_hash_guarded_overwrite() {
         other => panic!("unexpected write create preview output: {other:?}"),
     }
     assert!(!repo_root.join("notes").join("new.txt").exists());
+}
+
+#[test]
+fn owned_agent_file_mutations_require_current_hash_evidence() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let repo_root = tempdir.path();
+    fs::write(repo_root.join("src.txt"), "one\ntwo\n").expect("seed text");
+    fs::write(repo_root.join("config.json"), "{\"name\":\"old\"}\n").expect("seed json");
+    fs::write(
+        repo_root.join("work.ipynb"),
+        r#"{"cells":[{"cell_type":"code","source":["print('old')\n"]}]}"#,
+    )
+    .expect("seed notebook");
+    let runtime = AutonomousToolRuntime::new(repo_root)
+        .expect("runtime")
+        .with_agent_run_context("project-1", "session-1", "run-1");
+
+    let hash_file = |path: &str| match runtime
+        .hash(AutonomousHashRequest {
+            path: path.into(),
+            recursive: false,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            max_files: None,
+            manifest: false,
+        })
+        .expect("hash file")
+        .output
+    {
+        AutonomousToolOutput::Hash(output) => output.sha256,
+        other => panic!("unexpected hash output: {other:?}"),
+    };
+
+    let edit_missing = runtime
+        .edit(AutonomousEditRequest {
+            path: "src.txt".into(),
+            start_line: 1,
+            end_line: 1,
+            expected: "one\n".into(),
+            replacement: "uno\n".into(),
+            expected_hash: None,
+            start_line_hash: None,
+            end_line_hash: None,
+            preview: false,
+        })
+        .expect_err("edit requires hash");
+    assert_eq!(edit_missing.code, "autonomous_tool_expected_hash_required");
+
+    let patch_missing = runtime
+        .patch(AutonomousPatchRequest {
+            path: Some("src.txt".into()),
+            search: Some("two".into()),
+            replace: Some("dos".into()),
+            replace_all: false,
+            expected_hash: None,
+            preview: false,
+            operations: Vec::new(),
+        })
+        .expect_err("patch requires hash");
+    assert_eq!(patch_missing.code, "autonomous_tool_expected_hash_required");
+
+    let structured_missing = runtime
+        .structured_edit(
+            AutonomousStructuredEditRequest {
+                path: "config.json".into(),
+                operations: vec![AutonomousStructuredEditOperation {
+                    action: AutonomousStructuredEditAction::Set,
+                    pointer: "/name".into(),
+                    value: Some(serde_json::json!("new")),
+                }],
+                expected_hash: None,
+                formatting_mode: Default::default(),
+                preview: false,
+            },
+            AutonomousStructuredEditFormat::Json,
+            "json_edit",
+        )
+        .expect_err("structured edit requires hash");
+    assert_eq!(
+        structured_missing.code,
+        "autonomous_tool_expected_hash_required"
+    );
+
+    let notebook_missing = runtime
+        .notebook_edit(AutonomousNotebookEditRequest {
+            path: "work.ipynb".into(),
+            cell_index: 0,
+            expected_hash: None,
+            expected_source: Some("print('old')\n".into()),
+            replacement_source: "print('new')\n".into(),
+        })
+        .expect_err("notebook edit requires hash");
+    assert_eq!(
+        notebook_missing.code,
+        "autonomous_tool_expected_hash_required"
+    );
+
+    let stale_hash = hash_file("src.txt");
+    fs::write(repo_root.join("src.txt"), "changed\ntwo\n").expect("simulate external edit");
+    let transaction = runtime
+        .fs_transaction(AutonomousFsTransactionRequest {
+            operations: vec![AutonomousFsTransactionOperation {
+                action: AutonomousFsTransactionAction::EditFile,
+                path: Some("src.txt".into()),
+                start_line: Some(1),
+                end_line: Some(1),
+                expected: Some("changed\n".into()),
+                replacement: Some("done\n".into()),
+                expected_hash: Some(stale_hash),
+                ..Default::default()
+            }],
+            preview: false,
+            stop_on_first_error: true,
+        })
+        .expect("transaction reports validation error");
+    match transaction.output {
+        AutonomousToolOutput::FsTransaction(output) => {
+            assert!(!output.applied);
+            assert!(!output.validation.ok);
+            let error = output.validation.errors[0]
+                .error
+                .as_ref()
+                .expect("validation error");
+            assert_eq!(error.code, "autonomous_tool_stale_file");
+            assert!(!output.rollback_status.attempted);
+        }
+        other => panic!("unexpected transaction output: {other:?}"),
+    }
+    assert_eq!(
+        fs::read_to_string(repo_root.join("src.txt")).expect("read after transaction"),
+        "changed\ntwo\n"
+    );
 }
 
 #[test]
@@ -3626,7 +3777,7 @@ fn tool_runtime_executes_web_search_and_fetch_with_backend_owned_config() {
         search_provider: Some(AutonomousWebSearchProviderConfig::new(format!(
             "{search_base_url}/search"
         ))),
-        limits: Default::default(),
+        ..Default::default()
     });
     let app = build_mock_app(state);
     let (project_id, _repo_root) = seed_project(&root, &app);

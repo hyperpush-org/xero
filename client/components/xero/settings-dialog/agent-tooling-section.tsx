@@ -46,6 +46,8 @@ interface AgentToolingSectionProps {
   adapter?: AgentToolingSettingsAdapter
   toolCallGroupingPreference?: ToolCallGroupingPreference
   onToolCallGroupingPreferenceChange?: (preference: ToolCallGroupingPreference) => Promise<void> | void
+  agentRoutingAutoSwitchEnabled?: boolean
+  onAgentRoutingAutoSwitchChange?: (enabled: boolean) => Promise<void> | void
 }
 
 interface StyleOption {
@@ -96,11 +98,15 @@ export function AgentToolingSection({
   adapter,
   toolCallGroupingPreference = "grouped",
   onToolCallGroupingPreferenceChange,
+  agentRoutingAutoSwitchEnabled = false,
+  onAgentRoutingAutoSwitchChange,
 }: AgentToolingSectionProps) {
   const [settings, setSettings] = useState<AgentToolingSettingsDto>(FALLBACK_SETTINGS)
   const [loadState, setLoadState] = useState<LoadState>("idle")
   const [saveState, setSaveState] = useState<SaveState>("idle")
   const [groupingSaveState, setGroupingSaveState] = useState<SaveState>("idle")
+  const [routingAutoSwitchSaveState, setRoutingAutoSwitchSaveState] =
+    useState<SaveState>("idle")
   const [error, setError] = useState<string | null>(null)
   const [pendingOverrideKey, setPendingOverrideKey] = useState<string | null>(null)
   const [credentials, setCredentials] = useState<ProviderCredentialsSnapshotDto | null>(null)
@@ -168,6 +174,7 @@ export function AgentToolingSection({
 
   const isBusy = loadState === "loading" || saveState === "saving"
   const isGroupingSaving = groupingSaveState === "saving"
+  const isRoutingAutoSwitchSaving = routingAutoSwitchSaveState === "saving"
 
   const submit = useCallback(
     async (
@@ -253,6 +260,23 @@ export function AgentToolingSection({
     [onToolCallGroupingPreferenceChange, toolCallGroupingPreference],
   )
 
+  const updateAgentRoutingAutoSwitchPreference = useCallback(
+    async (checked: boolean) => {
+      if (!onAgentRoutingAutoSwitchChange || checked === agentRoutingAutoSwitchEnabled) return
+
+      setRoutingAutoSwitchSaveState("saving")
+      setError(null)
+      try {
+        await onAgentRoutingAutoSwitchChange(checked)
+      } catch (saveError) {
+        setError(getErrorMessage(saveError, "Xero could not save agent routing settings."))
+      } finally {
+        setRoutingAutoSwitchSaveState("idle")
+      }
+    },
+    [agentRoutingAutoSwitchEnabled, onAgentRoutingAutoSwitchChange],
+  )
+
   const sortedOverrides = useMemo(
     () =>
       [...settings.modelOverrides].sort((left, right) => {
@@ -304,12 +328,20 @@ export function AgentToolingSection({
             </Alert>
           ) : null}
 
-          {onToolCallGroupingPreferenceChange ? (
-            <ToolCallGroupingPanel
-              value={toolCallGroupingPreference}
-              disabled={isGroupingSaving}
-              saving={isGroupingSaving}
-              onChange={updateToolCallGroupingPreference}
+          {onToolCallGroupingPreferenceChange || onAgentRoutingAutoSwitchChange ? (
+            <ConversationDisplayPanel
+              toolCallGroupingValue={toolCallGroupingPreference}
+              toolCallGroupingDisabled={isGroupingSaving}
+              toolCallGroupingSaving={isGroupingSaving}
+              onToolCallGroupingChange={
+                onToolCallGroupingPreferenceChange ? updateToolCallGroupingPreference : undefined
+              }
+              agentRoutingAutoSwitchEnabled={agentRoutingAutoSwitchEnabled}
+              agentRoutingAutoSwitchDisabled={isRoutingAutoSwitchSaving}
+              agentRoutingAutoSwitchSaving={isRoutingAutoSwitchSaving}
+              onAgentRoutingAutoSwitchChange={
+                onAgentRoutingAutoSwitchChange ? updateAgentRoutingAutoSwitchPreference : undefined
+              }
             />
           ) : null}
 
@@ -335,51 +367,90 @@ export function AgentToolingSection({
   )
 }
 
-function ToolCallGroupingPanel({
-  value,
-  disabled,
-  saving,
-  onChange,
+function ConversationDisplayPanel({
+  toolCallGroupingValue,
+  toolCallGroupingDisabled,
+  toolCallGroupingSaving,
+  onToolCallGroupingChange,
+  agentRoutingAutoSwitchEnabled,
+  agentRoutingAutoSwitchDisabled,
+  agentRoutingAutoSwitchSaving,
+  onAgentRoutingAutoSwitchChange,
 }: {
-  value: ToolCallGroupingPreference
-  disabled: boolean
-  saving: boolean
-  onChange: (checked: boolean) => void
+  toolCallGroupingValue: ToolCallGroupingPreference
+  toolCallGroupingDisabled: boolean
+  toolCallGroupingSaving: boolean
+  onToolCallGroupingChange?: (checked: boolean) => void
+  agentRoutingAutoSwitchEnabled: boolean
+  agentRoutingAutoSwitchDisabled: boolean
+  agentRoutingAutoSwitchSaving: boolean
+  onAgentRoutingAutoSwitchChange?: (checked: boolean) => void
 }) {
-  const grouped = value === "grouped"
+  const grouped = toolCallGroupingValue === "grouped"
 
   return (
     <section className="flex flex-col gap-3">
       <div>
         <h4 className="text-[13.5px] font-semibold tracking-tight text-foreground">Conversation display</h4>
         <p className="mt-1 text-[12.5px] leading-[1.5] text-muted-foreground">
-          Control how tool activity appears in agent conversations.
+          Control how tool and routing activity appears in agent conversations.
         </p>
       </div>
-      <div className="flex items-center justify-between gap-4 rounded-lg border border-border/60 bg-background px-4 py-3.5">
-        <div className="min-w-0 flex-1">
-          <Label
-            htmlFor="agent-tooling-tool-call-grouping"
-            className="text-[13px] font-semibold tracking-tight text-foreground"
-          >
-            Group completed tool calls
-          </Label>
-          <p className="mt-1 text-[12.5px] leading-[1.5] text-muted-foreground">
-            Adjacent completed tool calls collapse into one expandable row.
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2.5">
-          {saving ? (
-            <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-          ) : null}
-          <Switch
-            id="agent-tooling-tool-call-grouping"
-            checked={grouped}
-            disabled={disabled}
-            onCheckedChange={onChange}
-            aria-label="Group completed tool calls"
-          />
-        </div>
+      <div className="overflow-hidden rounded-lg border border-border/60 bg-background">
+        {onToolCallGroupingChange ? (
+          <div className="flex items-center justify-between gap-4 px-4 py-3.5">
+            <div className="min-w-0 flex-1">
+              <Label
+                htmlFor="agent-tooling-tool-call-grouping"
+                className="text-[13px] font-semibold tracking-tight text-foreground"
+              >
+                Group completed tool calls
+              </Label>
+              <p className="mt-1 text-[12.5px] leading-[1.5] text-muted-foreground">
+                Adjacent completed tool calls collapse into one expandable row.
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2.5">
+              {toolCallGroupingSaving ? (
+                <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+              ) : null}
+              <Switch
+                id="agent-tooling-tool-call-grouping"
+                checked={grouped}
+                disabled={toolCallGroupingDisabled}
+                onCheckedChange={onToolCallGroupingChange}
+                aria-label="Group completed tool calls"
+              />
+            </div>
+          </div>
+        ) : null}
+        {onAgentRoutingAutoSwitchChange ? (
+          <div className="flex items-center justify-between gap-4 border-t border-border/40 px-4 py-3.5 first:border-t-0">
+            <div className="min-w-0 flex-1">
+              <Label
+                htmlFor="agent-tooling-agent-routing-auto-switch"
+                className="text-[13px] font-semibold tracking-tight text-foreground"
+              >
+                Auto-switch suggested agents
+              </Label>
+              <p className="mt-1 text-[12.5px] leading-[1.5] text-muted-foreground">
+                Switch and continue automatically when the agent recommends a better specialist.
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2.5">
+              {agentRoutingAutoSwitchSaving ? (
+                <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+              ) : null}
+              <Switch
+                id="agent-tooling-agent-routing-auto-switch"
+                checked={agentRoutingAutoSwitchEnabled}
+                disabled={agentRoutingAutoSwitchDisabled}
+                onCheckedChange={onAgentRoutingAutoSwitchChange}
+                aria-label="Auto-switch suggested agents"
+              />
+            </div>
+          </div>
+        ) : null}
       </div>
     </section>
   )

@@ -275,6 +275,7 @@ pub struct AgentUsageRecord {
     pub provider_id: String,
     pub model_id: String,
     pub input_tokens: u64,
+    pub billable_input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
     pub cache_read_tokens: u64,
@@ -1532,6 +1533,67 @@ pub fn answer_pending_agent_action_requests(
     Ok(())
 }
 
+pub fn answer_pending_agent_action_request(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    action_id: &str,
+    response: &str,
+) -> Result<AgentActionRequestRecord, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    validate_non_empty_text(action_id, "actionId")?;
+    validate_non_empty_text(response, "response")?;
+
+    let connection = open_agent_database(repo_root)?;
+    let existing = read_agent_action_requests(&connection, project_id, run_id, repo_root)?
+        .into_iter()
+        .find(|action| action.action_id == action_id)
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "agent_action_request_not_found",
+                format!(
+                    "Xero could not find pending owned-agent action `{action_id}` for run `{run_id}`."
+                ),
+            )
+        })?;
+    if existing.status != "pending" {
+        return Err(CommandError::user_fixable(
+            "agent_action_request_already_resolved",
+            format!(
+                "Xero cannot answer owned-agent action `{action_id}` because it is already {}.",
+                existing.status
+            ),
+        ));
+    }
+
+    let now = crate::auth::now_timestamp();
+    connection
+        .execute(
+            r#"
+            UPDATE agent_action_requests
+            SET status = 'answered',
+                resolved_at = ?4,
+                response = ?5
+            WHERE project_id = ?1
+              AND run_id = ?2
+              AND action_id = ?3
+              AND status = 'pending'
+            "#,
+            params![project_id, run_id, action_id, now, response],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_action_request_answer_failed", error)
+        })?;
+
+    Ok(AgentActionRequestRecord {
+        status: "answered".into(),
+        resolved_at: Some(now),
+        response: Some(response.to_owned()),
+        ..existing
+    })
+}
+
 pub fn reject_pending_agent_action_request(
     repo_root: &Path,
     project_id: &str,
@@ -1613,6 +1675,7 @@ pub fn upsert_agent_usage(repo_root: &Path, record: &AgentUsageRecord) -> Result
                 provider_id,
                 model_id,
                 input_tokens,
+                billable_input_tokens,
                 output_tokens,
                 total_tokens,
                 cache_read_tokens,
@@ -1620,13 +1683,14 @@ pub fn upsert_agent_usage(repo_root: &Path, record: &AgentUsageRecord) -> Result
                 estimated_cost_micros,
                 updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
             ON CONFLICT(project_id, run_id) DO UPDATE SET
                 agent_definition_id = excluded.agent_definition_id,
                 agent_definition_version = excluded.agent_definition_version,
                 provider_id = excluded.provider_id,
                 model_id = excluded.model_id,
                 input_tokens = excluded.input_tokens,
+                billable_input_tokens = excluded.billable_input_tokens,
                 output_tokens = excluded.output_tokens,
                 total_tokens = excluded.total_tokens,
                 cache_read_tokens = excluded.cache_read_tokens,
@@ -1642,6 +1706,7 @@ pub fn upsert_agent_usage(repo_root: &Path, record: &AgentUsageRecord) -> Result
                 record.provider_id,
                 record.model_id,
                 record.input_tokens,
+                record.billable_input_tokens,
                 record.output_tokens,
                 record.total_tokens,
                 record.cache_read_tokens,
@@ -1883,6 +1948,7 @@ fn read_agent_usage(
                 provider_id,
                 model_id,
                 input_tokens,
+                billable_input_tokens,
                 output_tokens,
                 total_tokens,
                 cache_read_tokens,
@@ -2087,6 +2153,7 @@ pub fn list_agent_subagent_tasks_for_parent(
 pub struct ProjectUsageTotalsRecord {
     pub run_count: u64,
     pub input_tokens: u64,
+    pub billable_input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
     pub cache_read_tokens: u64,
@@ -2102,6 +2169,7 @@ pub struct ProjectUsageModelBreakdownRecord {
     pub model_id: String,
     pub run_count: u64,
     pub input_tokens: u64,
+    pub billable_input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
     pub cache_read_tokens: u64,
@@ -2132,6 +2200,7 @@ fn read_project_usage_totals(
             SELECT
                 COUNT(*) AS run_count,
                 COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                COALESCE(SUM(billable_input_tokens), 0) AS billable_input_tokens,
                 COALESCE(SUM(output_tokens), 0) AS output_tokens,
                 COALESCE(SUM(total_tokens), 0) AS total_tokens,
                 COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
@@ -2146,12 +2215,13 @@ fn read_project_usage_totals(
                 Ok(ProjectUsageTotalsRecord {
                     run_count: read_nonnegative_u64(row, 0)?,
                     input_tokens: read_nonnegative_u64(row, 1)?,
-                    output_tokens: read_nonnegative_u64(row, 2)?,
-                    total_tokens: read_nonnegative_u64(row, 3)?,
-                    cache_read_tokens: read_nonnegative_u64(row, 4)?,
-                    cache_creation_tokens: read_nonnegative_u64(row, 5)?,
-                    estimated_cost_micros: read_nonnegative_u64(row, 6)?,
-                    last_updated_at: row.get::<_, Option<String>>(7)?,
+                    billable_input_tokens: read_nonnegative_u64(row, 2)?,
+                    output_tokens: read_nonnegative_u64(row, 3)?,
+                    total_tokens: read_nonnegative_u64(row, 4)?,
+                    cache_read_tokens: read_nonnegative_u64(row, 5)?,
+                    cache_creation_tokens: read_nonnegative_u64(row, 6)?,
+                    estimated_cost_micros: read_nonnegative_u64(row, 7)?,
+                    last_updated_at: row.get::<_, Option<String>>(8)?,
                 })
             },
         )
@@ -2168,17 +2238,16 @@ pub struct AgentUsageCostBackfillRow {
     pub run_id: String,
     pub provider_id: String,
     pub model_id: String,
-    pub input_tokens: u64,
+    pub billable_input_tokens: u64,
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
+    pub estimated_cost_micros: u64,
 }
 
-/// List rows that need a cost recompute — rows priced at 0 but with non-zero
-/// token activity. Existed pre-Phase-3 (or were written by ollama / unknown
-/// models that legitimately price at 0; those will still resolve to 0 and
-/// won't trigger a write).
-pub fn list_unpriced_agent_usage_rows(
+/// List token-usage rows that can have `estimated_cost_micros` recomputed from
+/// the current pricing catalog.
+pub fn list_agent_usage_cost_rows(
     repo_root: &Path,
 ) -> Result<Vec<AgentUsageCostBackfillRow>, CommandError> {
     let connection = open_agent_database(repo_root)?;
@@ -2190,13 +2259,13 @@ pub fn list_unpriced_agent_usage_rows(
                 run_id,
                 provider_id,
                 model_id,
-                input_tokens,
+                billable_input_tokens,
                 output_tokens,
                 cache_read_tokens,
-                cache_creation_tokens
+                cache_creation_tokens,
+                estimated_cost_micros
             FROM agent_usage
-            WHERE estimated_cost_micros = 0
-              AND total_tokens > 0
+            WHERE total_tokens > 0
             "#,
         )
         .map_err(|error| {
@@ -2209,10 +2278,11 @@ pub fn list_unpriced_agent_usage_rows(
                 run_id: row.get(1)?,
                 provider_id: row.get(2)?,
                 model_id: row.get(3)?,
-                input_tokens: read_nonnegative_u64(row, 4)?,
+                billable_input_tokens: read_nonnegative_u64(row, 4)?,
                 output_tokens: read_nonnegative_u64(row, 5)?,
                 cache_read_tokens: read_nonnegative_u64(row, 6)?,
                 cache_creation_tokens: read_nonnegative_u64(row, 7)?,
+                estimated_cost_micros: read_nonnegative_u64(row, 8)?,
             })
         })
         .map_err(|error| {
@@ -2293,6 +2363,7 @@ fn read_project_usage_breakdown(
                 model_id,
                 COUNT(*) AS run_count,
                 COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                COALESCE(SUM(billable_input_tokens), 0) AS billable_input_tokens,
                 COALESCE(SUM(output_tokens), 0) AS output_tokens,
                 COALESCE(SUM(total_tokens), 0) AS total_tokens,
                 COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
@@ -2315,12 +2386,13 @@ fn read_project_usage_breakdown(
                 model_id: row.get(1)?,
                 run_count: read_nonnegative_u64(row, 2)?,
                 input_tokens: read_nonnegative_u64(row, 3)?,
-                output_tokens: read_nonnegative_u64(row, 4)?,
-                total_tokens: read_nonnegative_u64(row, 5)?,
-                cache_read_tokens: read_nonnegative_u64(row, 6)?,
-                cache_creation_tokens: read_nonnegative_u64(row, 7)?,
-                estimated_cost_micros: read_nonnegative_u64(row, 8)?,
-                last_updated_at: row.get::<_, Option<String>>(9)?,
+                billable_input_tokens: read_nonnegative_u64(row, 4)?,
+                output_tokens: read_nonnegative_u64(row, 5)?,
+                total_tokens: read_nonnegative_u64(row, 6)?,
+                cache_read_tokens: read_nonnegative_u64(row, 7)?,
+                cache_creation_tokens: read_nonnegative_u64(row, 8)?,
+                estimated_cost_micros: read_nonnegative_u64(row, 9)?,
+                last_updated_at: row.get::<_, Option<String>>(10)?,
             })
         })
         .map_err(|error| {
@@ -3083,12 +3155,13 @@ fn read_agent_usage_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentUsageR
         provider_id: row.get(4)?,
         model_id: row.get(5)?,
         input_tokens: read_nonnegative_u64(row, 6)?,
-        output_tokens: read_nonnegative_u64(row, 7)?,
-        total_tokens: read_nonnegative_u64(row, 8)?,
-        cache_read_tokens: read_nonnegative_u64(row, 9)?,
-        cache_creation_tokens: read_nonnegative_u64(row, 10)?,
-        estimated_cost_micros: read_nonnegative_u64(row, 11)?,
-        updated_at: row.get(12)?,
+        billable_input_tokens: read_nonnegative_u64(row, 7)?,
+        output_tokens: read_nonnegative_u64(row, 8)?,
+        total_tokens: read_nonnegative_u64(row, 9)?,
+        cache_read_tokens: read_nonnegative_u64(row, 10)?,
+        cache_creation_tokens: read_nonnegative_u64(row, 11)?,
+        estimated_cost_micros: read_nonnegative_u64(row, 12)?,
+        updated_at: row.get(13)?,
     })
 }
 
@@ -3297,4 +3370,132 @@ fn map_agent_store_write_error(
             database_path_for_repo(repo_root).display()
         ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::fs;
+
+    use crate::db::{
+        configure_connection, migrations::migrations, register_project_database_path_for_tests,
+    };
+
+    fn create_project_database(repo_root: &Path, project_id: &str) {
+        let database_path = repo_root.join("state.db");
+        register_project_database_path_for_tests(repo_root, database_path.clone());
+        let mut connection = Connection::open(&database_path).expect("open project database");
+        configure_connection(&connection).expect("configure project database");
+        migrations()
+            .to_latest(&mut connection)
+            .expect("migrate project database");
+        connection
+            .execute(
+                "INSERT INTO projects (id, name, description, milestone) VALUES (?1, 'Project', '', '')",
+                params![project_id],
+            )
+            .expect("insert project");
+        connection
+            .execute(
+                r#"
+                INSERT INTO repositories (id, project_id, root_path, display_name, branch, head_sha, is_git_repo)
+                VALUES ('repo-1', ?1, ?2, 'Project', 'main', 'abc123', 1)
+                "#,
+                params![project_id, repo_root.to_string_lossy().as_ref()],
+            )
+            .expect("insert repository");
+        connection
+            .execute(
+                "INSERT INTO agent_sessions (project_id, agent_session_id, title, status, selected) VALUES (?1, 'session-1', 'Default', 'active', 1)",
+                params![project_id],
+            )
+            .expect("insert agent session");
+    }
+
+    fn seed_run(repo_root: &Path, project_id: &str, run_id: &str) {
+        insert_agent_run(
+            repo_root,
+            &NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: None,
+                agent_definition_version: None,
+                project_id: project_id.into(),
+                agent_session_id: "session-1".into(),
+                run_id: run_id.into(),
+                provider_id: "provider-1".into(),
+                model_id: "model-1".into(),
+                prompt: "Do the thing".into(),
+                system_prompt: "System prompt".into(),
+                now: "2026-06-05T12:00:00Z".into(),
+            },
+        )
+        .expect("insert agent run");
+    }
+
+    fn append_action(repo_root: &Path, project_id: &str, run_id: &str, action_id: &str) {
+        append_agent_action_request(
+            repo_root,
+            &NewAgentActionRequestRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                action_id: action_id.into(),
+                action_type: "command_review".into(),
+                title: format!("Review {action_id}"),
+                detail: "Review before continuing.".into(),
+                created_at: "2026-06-05T12:00:01Z".into(),
+            },
+        )
+        .expect("append action request");
+    }
+
+    #[test]
+    fn answer_pending_agent_action_request_resolves_only_matching_row() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "project-1";
+        let run_id = "run-1";
+        create_project_database(&repo_root, project_id);
+        seed_run(&repo_root, project_id, run_id);
+        append_action(&repo_root, project_id, run_id, "action-a");
+        append_action(&repo_root, project_id, run_id, "action-b");
+
+        let answered = answer_pending_agent_action_request(
+            &repo_root,
+            project_id,
+            run_id,
+            "action-a",
+            "Approved.",
+        )
+        .expect("answer action-a");
+
+        assert_eq!(answered.action_id, "action-a");
+        assert_eq!(answered.status, "answered");
+        assert_eq!(answered.response.as_deref(), Some("Approved."));
+        let snapshot = load_agent_run(&repo_root, project_id, run_id).expect("load run");
+        let action_a = snapshot
+            .action_requests
+            .iter()
+            .find(|action| action.action_id == "action-a")
+            .expect("action-a row");
+        let action_b = snapshot
+            .action_requests
+            .iter()
+            .find(|action| action.action_id == "action-b")
+            .expect("action-b row");
+        assert_eq!(action_a.status, "answered");
+        assert_eq!(action_b.status, "pending");
+        assert!(action_b.response.is_none());
+
+        let retry_error = answer_pending_agent_action_request(
+            &repo_root,
+            project_id,
+            run_id,
+            "action-a",
+            "Approved again.",
+        )
+        .expect_err("resolved action cannot be answered again");
+        assert_eq!(retry_error.code, "agent_action_request_already_resolved");
+    }
 }

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { WorkflowAgentSummaryDto } from '@/src/lib/xero-model/workflow-agents'
 import type { WorkflowDefinitionSummaryDto } from '@/src/lib/xero-model/workflow-definition'
+import type { ComposerModelOptionView } from '@/src/features/xero/use-xero-desktop-state/runtime-provider'
 
 import { WorkflowsSidebar } from './workflows-sidebar'
 
@@ -52,6 +53,24 @@ const WORKFLOWS: WorkflowDefinitionSummaryDto[] = [
     activeVersionNumber: 1,
     createdAt: '2026-05-23T00:00:00.000Z',
     updatedAt: '2026-05-23T00:00:00.000Z',
+  },
+]
+
+const MODEL_OPTIONS: ComposerModelOptionView[] = [
+  {
+    selectionKey: 'openai_codex:gpt-5.4',
+    profileId: 'openai_codex-default',
+    providerId: 'openai_codex',
+    providerLabel: 'OpenAI Codex',
+    modelId: 'gpt-5.4',
+    displayName: 'GPT-5.4',
+    thinking: {
+      supported: true,
+      effortOptions: ['low', 'medium', 'high'],
+      defaultEffort: 'low',
+    },
+    thinkingEffortOptions: ['low', 'medium', 'high'],
+    defaultThinkingEffort: 'low',
   },
 ]
 
@@ -141,6 +160,46 @@ describe('WorkflowsSidebar', () => {
 
     await waitFor(() =>
       expect(onSetAgentDefaultModel).toHaveBeenCalledWith(REAL_AGENTS[0], null),
+    )
+  })
+
+  it('saves a default model with the selected thinking level', async () => {
+    const onSetAgentDefaultModel = vi.fn(async () => undefined)
+    render(
+      <WorkflowsSidebar
+        open
+        agents={REAL_AGENTS}
+        modelOptions={MODEL_OPTIONS}
+        onSetAgentDefaultModel={onSetAgentDefaultModel}
+      />,
+    )
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions for Engineer' }), {
+      button: 0,
+      ctrlKey: false,
+    })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Default model' }))
+
+    fireEvent.pointerDown(await screen.findByRole('combobox', { name: 'Model' }), {
+      button: 0,
+      pointerId: 1,
+      pointerType: 'mouse',
+    })
+    fireEvent.click(await screen.findByRole('option', { name: 'GPT-5.4' }))
+    const thinkingItem = screen.getByRole('menuitem', { name: /Thinking/i })
+    fireEvent.keyDown(thinkingItem, { key: 'ArrowRight' })
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'High' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() =>
+      expect(onSetAgentDefaultModel).toHaveBeenCalledWith(REAL_AGENTS[0], {
+        providerId: 'openai_codex',
+        providerProfileId: 'openai_codex-default',
+        modelId: 'gpt-5.4',
+        selectionKey: 'openai_codex:gpt-5.4',
+        thinkingEffort: 'high',
+      }),
     )
   })
 
@@ -242,168 +301,40 @@ describe('WorkflowsSidebar', () => {
     expect(screen.queryByText('Build by hand')).not.toBeInTheDocument()
   })
 
-  it('opens the shared workflow creation dialog from the workflows header', () => {
+  it('shows workflows as coming soon and disables workflow actions', () => {
     const onCreateWorkflow = vi.fn()
+    const onSelectWorkflow = vi.fn()
     render(
       <WorkflowsSidebar
         open
         agents={REAL_AGENTS}
         workflowDefinitions={WORKFLOWS}
         onCreateWorkflow={onCreateWorkflow}
-        onCreateWorkflowFromTemplate={vi.fn()}
-      />,
-    )
-
-    fireEvent.click(screen.getByRole('tab', { name: /workflows/i }))
-    fireEvent.click(screen.getByRole('button', { name: 'New workflow' }))
-
-    expect(onCreateWorkflow).not.toHaveBeenCalled()
-    expect(screen.getByRole('heading', { name: 'Create workflow' })).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: /Blank workflow/ }))
-    expect(onCreateWorkflow).toHaveBeenCalledTimes(1)
-    expect(screen.queryByRole('dialog')).toBeNull()
-  })
-
-  it('routes workflow creation to Agent Create from the shared dialog', () => {
-    const onCreateWorkflowWithAgentCreate = vi.fn()
-    render(
-      <WorkflowsSidebar
-        open
-        agents={REAL_AGENTS}
-        workflowDefinitions={WORKFLOWS}
-        onCreateWorkflow={vi.fn()}
-        onCreateWorkflowWithAgentCreate={onCreateWorkflowWithAgentCreate}
-      />,
-    )
-
-    fireEvent.click(screen.getByRole('tab', { name: /workflows/i }))
-    fireEvent.click(screen.getByRole('button', { name: 'New workflow' }))
-    fireEvent.click(screen.getByRole('button', { name: /Use Agent Create/ }))
-
-    expect(onCreateWorkflowWithAgentCreate).toHaveBeenCalledTimes(1)
-    expect(screen.queryByRole('dialog')).toBeNull()
-  })
-
-  it('uses the shared row action menu for workflow-specific actions', async () => {
-    const onSelectWorkflow = vi.fn()
-    const onStartWorkflowRun = vi.fn()
-    render(
-      <WorkflowsSidebar
-        open
-        agents={REAL_AGENTS}
-        workflowDefinitions={WORKFLOWS}
         onSelectWorkflow={onSelectWorkflow}
-        onStartWorkflowRun={onStartWorkflowRun}
       />,
     )
 
     fireEvent.click(screen.getByRole('tab', { name: /workflows/i }))
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions for Release pipeline' }), {
-      button: 0,
-      ctrlKey: false,
-    })
 
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Open workflow' }))
-    expect(onSelectWorkflow).toHaveBeenCalledWith('release-pipeline')
+    expect(screen.getByText('Workflows are coming soon')).toBeInTheDocument()
+    expect(screen.getAllByText('Coming soon').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByRole('button', { name: 'New workflow coming soon' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Search workflows coming soon' })).toBeDisabled()
+    expect(screen.queryByText('Release pipeline')).not.toBeInTheDocument()
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions for Release pipeline' }), {
-      button: 0,
-      ctrlKey: false,
-    })
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Start run' }))
-    expect(onStartWorkflowRun).toHaveBeenCalledWith('release-pipeline')
+    fireEvent.click(screen.getByRole('button', { name: 'New workflow coming soon' }))
+    expect(onCreateWorkflow).not.toHaveBeenCalled()
+    expect(onSelectWorkflow).not.toHaveBeenCalled()
   })
 
-  it('uses the shared row action menu for workflow template actions', async () => {
-    const onCreateWorkflowFromTemplate = vi.fn()
-    render(
-      <WorkflowsSidebar
-        open
-        agents={REAL_AGENTS}
-        workflowDefinitions={[]}
-        onCreateWorkflowFromTemplate={onCreateWorkflowFromTemplate}
-      />,
-    )
+  it('returns from the coming-soon workflows tab to working agents', () => {
+    render(<WorkflowsSidebar open agents={REAL_AGENTS} workflowDefinitions={WORKFLOWS} />)
 
     fireEvent.click(screen.getByRole('tab', { name: /workflows/i }))
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions for GSD Auto' }), {
-      button: 0,
-      ctrlKey: false,
-    })
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Use template' }))
+    fireEvent.click(screen.getByRole('button', { name: 'View agents' }))
 
-    expect(onCreateWorkflowFromTemplate).toHaveBeenCalledWith('gsd_auto')
-  })
-
-  it('inspects workflow templates from row selection without creating a draft', () => {
-    const onSelectWorkflowTemplate = vi.fn()
-    const onCreateWorkflowFromTemplate = vi.fn()
-    render(
-      <WorkflowsSidebar
-        open
-        agents={REAL_AGENTS}
-        workflowDefinitions={[]}
-        selectedWorkflowTemplateId="gsd_auto"
-        onSelectWorkflowTemplate={onSelectWorkflowTemplate}
-        onCreateWorkflowFromTemplate={onCreateWorkflowFromTemplate}
-      />,
-    )
-
-    fireEvent.click(screen.getByRole('tab', { name: /workflows/i }))
-    fireEvent.click(screen.getByLabelText('Inspect workflow template GSD Auto'))
-
-    expect(onSelectWorkflowTemplate).toHaveBeenCalledWith('gsd_auto')
-    expect(onCreateWorkflowFromTemplate).not.toHaveBeenCalled()
-    expect(screen.getByLabelText('Inspect workflow template GSD Auto').parentElement).toHaveClass(
-      'bg-primary/10',
-    )
-  })
-
-  it('uses the same library row shell for agents, workflows, and workflow templates', () => {
-    render(
-      <WorkflowsSidebar
-        open
-        agents={REAL_AGENTS}
-        workflowDefinitions={WORKFLOWS}
-        onSelectWorkflow={vi.fn()}
-        onSelectWorkflowTemplate={vi.fn()}
-        onCreateWorkflowFromTemplate={vi.fn()}
-      />,
-    )
-
-    const agentShell = screen.getByLabelText('Inspect Engineer').parentElement
-    expect(agentShell).toHaveClass(
-      'group',
-      'relative',
-      'flex',
-      'items-start',
-      'gap-3',
-      'px-3',
-      'py-3',
-    )
-
-    fireEvent.click(screen.getByRole('tab', { name: /workflows/i }))
-
-    const workflowShell = screen.getByLabelText('Open workflow Release pipeline').parentElement
-    const templateShell = screen.getByLabelText('Inspect workflow template GSD Auto').parentElement
-    expect(workflowShell).toHaveClass(
-      'group',
-      'relative',
-      'flex',
-      'items-start',
-      'gap-3',
-      'px-3',
-      'py-3',
-    )
-    expect(templateShell).toHaveClass(
-      'group',
-      'relative',
-      'flex',
-      'items-start',
-      'gap-3',
-      'px-3',
-      'py-3',
-    )
+    expect(screen.getByRole('tab', { name: /agents/i })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('Engineer')).toBeInTheDocument()
+    expect(screen.queryByText('Workflows are coming soon')).not.toBeInTheDocument()
   })
 })

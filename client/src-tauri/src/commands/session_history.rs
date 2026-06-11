@@ -27,9 +27,9 @@ use crate::{
         BrowserControlPreferenceDto, CommandError, CommandResult, CompactSessionHistoryRequestDto,
         CompactSessionHistoryResponseDto, CorrectSessionMemoryRequestDto,
         CorrectSessionMemoryResponseDto, DeleteSessionMemoryRequestDto,
-        ExportSessionTranscriptRequestDto, ExtractSessionMemoryCandidatesRequestDto,
-        ExtractSessionMemoryCandidatesResponseDto, GetSessionContextSnapshotRequestDto,
-        GetSessionMemoryReviewQueueRequestDto, GetSessionTranscriptRequestDto,
+        ExportSessionTranscriptRequestDto, ExtractSessionMemoriesRequestDto,
+        ExtractSessionMemoriesResponseDto, GetSessionContextSnapshotRequestDto,
+        GetSessionMemoryItemsRequestDto, GetSessionTranscriptRequestDto,
         ListSessionMemoriesRequestDto, ListSessionMemoriesResponseDto, ProjectAssetState,
         RewindAgentSessionRequestDto, SaveSessionTranscriptExportRequestDto,
         SearchSessionTranscriptsRequestDto, SearchSessionTranscriptsResponseDto,
@@ -38,19 +38,18 @@ use crate::{
         SessionContextDependencyManifestDto, SessionContextDispositionDto,
         SessionContextRedactionClassDto, SessionContextRedactionDto, SessionContextSnapshotDiffDto,
         SessionContextSnapshotDto, SessionContextTaskPhaseDto, SessionMemoryDiagnosticDto,
-        SessionMemoryKindDto, SessionMemoryRecordDto, SessionMemoryReviewStateDto,
-        SessionMemoryScopeDto, SessionTranscriptActorDto, SessionTranscriptDto,
-        SessionTranscriptExportFormatDto, SessionTranscriptExportPayloadDto,
-        SessionTranscriptExportResponseDto, SessionTranscriptItemDto, SessionTranscriptItemKindDto,
-        SessionTranscriptScopeDto, SessionTranscriptSearchResultSnippetDto, SessionUsageSourceDto,
-        SessionUsageTotalsDto, UpdateSessionMemoryRequestDto,
-        XERO_SESSION_CONTEXT_CONTRACT_VERSION,
+        SessionMemoryKindDto, SessionMemoryRecordDto, SessionMemoryScopeDto,
+        SessionTranscriptActorDto, SessionTranscriptDto, SessionTranscriptExportFormatDto,
+        SessionTranscriptExportPayloadDto, SessionTranscriptExportResponseDto,
+        SessionTranscriptItemDto, SessionTranscriptItemKindDto, SessionTranscriptScopeDto,
+        SessionTranscriptSearchResultSnippetDto, SessionUsageSourceDto, SessionUsageTotalsDto,
+        UpdateSessionMemoryRequestDto, XERO_SESSION_CONTEXT_CONTRACT_VERSION,
     },
     db::project_store::{
-        self, AgentCompactionTrigger, AgentMemoryKind, AgentMemoryListFilter,
-        AgentMemoryReviewState, AgentMemoryScope, AgentMessageRecord, AgentMessageRole,
-        AgentRunSnapshotRecord, AgentSessionBranchBoundary, AgentSessionBranchCreateRecord,
-        AgentSessionRecord, NewAgentCompactionRecord, NewAgentMemoryRecord,
+        self, AgentCompactionTrigger, AgentMemoryKind, AgentMemoryListFilter, AgentMemoryScope,
+        AgentMessageRecord, AgentMessageRole, AgentRunSnapshotRecord, AgentSessionBranchBoundary,
+        AgentSessionBranchCreateRecord, AgentSessionRecord, NewAgentCompactionRecord,
+        NewAgentMemoryRecord,
     },
     runtime::{
         agent_core::{
@@ -463,21 +462,13 @@ pub fn list_session_memories<R: Runtime>(
         return Err(CommandError::invalid_request("minConfidence"));
     }
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
-    let include_rejected = request.include_rejected
-        || request.review_state == Some(SessionMemoryReviewStateDto::Rejected);
-    let include_disabled = request.include_disabled
-        || request.retrievable == Some(false)
-        || request
-            .review_state
-            .as_ref()
-            .is_some_and(|state| *state != SessionMemoryReviewStateDto::Approved);
+    let include_disabled = request.include_disabled || request.retrievable == Some(false);
     let memories = project_store::list_agent_memories(
         &repo_root,
         &request.project_id,
         AgentMemoryListFilter {
             agent_session_id: request.agent_session_id.as_deref(),
             include_disabled,
-            include_rejected,
         },
     )?
     .iter()
@@ -504,13 +495,9 @@ fn session_memory_matches_filters(
     request: &ListSessionMemoriesRequestDto,
 ) -> bool {
     request
-        .review_state
+        .scope
         .as_ref()
-        .is_none_or(|state| agent_memory_review_state_to_dto(&memory.review_state) == *state)
-        && request
-            .scope
-            .as_ref()
-            .is_none_or(|scope| agent_memory_scope_to_dto(&memory.scope) == *scope)
+        .is_none_or(|scope| agent_memory_scope_to_dto(&memory.scope) == *scope)
         && request
             .kind
             .as_ref()
@@ -557,14 +544,6 @@ fn memory_related_path_matches(
         .any(|path| path == related_path || path.ends_with(related_path))
 }
 
-fn agent_memory_review_state_to_dto(state: &AgentMemoryReviewState) -> SessionMemoryReviewStateDto {
-    match state {
-        AgentMemoryReviewState::Candidate => SessionMemoryReviewStateDto::Candidate,
-        AgentMemoryReviewState::Approved => SessionMemoryReviewStateDto::Approved,
-        AgentMemoryReviewState::Rejected => SessionMemoryReviewStateDto::Rejected,
-    }
-}
-
 fn agent_memory_scope_to_dto(scope: &AgentMemoryScope) -> SessionMemoryScopeDto {
     match scope {
         AgentMemoryScope::Project => SessionMemoryScopeDto::Project,
@@ -586,14 +565,14 @@ fn agent_memory_kind_to_dto(kind: &AgentMemoryKind) -> SessionMemoryKindDto {
 pub fn get_session_memory_review_queue<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
-    request: GetSessionMemoryReviewQueueRequestDto,
+    request: GetSessionMemoryItemsRequestDto,
 ) -> CommandResult<serde_json::Value> {
     validate_non_empty(&request.project_id, "projectId")?;
     if let Some(agent_session_id) = request.agent_session_id.as_deref() {
         validate_non_empty(agent_session_id, "agentSessionId")?;
     }
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
-    project_store::load_agent_memory_review_queue(
+    project_store::load_agent_memory_items(
         &repo_root,
         &request.project_id,
         request.agent_session_id.as_deref(),
@@ -603,11 +582,11 @@ pub fn get_session_memory_review_queue<R: Runtime>(
 }
 
 #[tauri::command]
-pub fn extract_session_memory_candidates<R: Runtime>(
+pub fn extract_session_memories<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
-    request: ExtractSessionMemoryCandidatesRequestDto,
-) -> CommandResult<ExtractSessionMemoryCandidatesResponseDto> {
+    request: ExtractSessionMemoriesRequestDto,
+) -> CommandResult<ExtractSessionMemoriesResponseDto> {
     validate_transcript_request(
         &request.project_id,
         &request.agent_session_id,
@@ -616,7 +595,7 @@ pub fn extract_session_memory_candidates<R: Runtime>(
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
     let provider_config = resolve_owned_agent_provider_config(&app, state.inner(), None)?;
     let provider = create_provider_adapter(provider_config)?;
-    extract_session_memory_candidates_with_provider(
+    extract_session_memories_with_provider(
         &repo_root,
         &request.project_id,
         &request.agent_session_id,
@@ -633,22 +612,12 @@ pub fn update_session_memory<R: Runtime>(
 ) -> CommandResult<SessionMemoryRecordDto> {
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.memory_id, "memoryId")?;
-    if request.review_state.is_none() && request.enabled.is_none() {
+    if request.enabled.is_none() {
         return Err(CommandError::invalid_request("memoryUpdate"));
     }
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
-    let review_state = request
-        .review_state
-        .as_ref()
-        .map(agent_memory_review_state_from_dto);
-    let enabled = match request.review_state {
-        Some(SessionMemoryReviewStateDto::Approved) => Some(request.enabled.unwrap_or(true)),
-        Some(SessionMemoryReviewStateDto::Candidate | SessionMemoryReviewStateDto::Rejected) => {
-            Some(false)
-        }
-        None => request.enabled,
-    };
-    if review_state == Some(AgentMemoryReviewState::Approved) {
+    let enabled = request.enabled;
+    if enabled == Some(true) {
         let existing =
             project_store::get_agent_memory(&repo_root, &request.project_id, &request.memory_id)?;
         let (_text, redaction) = redact_session_context_text(&existing.text);
@@ -662,7 +631,6 @@ pub fn update_session_memory<R: Runtime>(
         &project_store::AgentMemoryUpdateRecord {
             project_id: request.project_id,
             memory_id: request.memory_id,
-            review_state,
             enabled,
             diagnostic: None,
         },
@@ -1942,13 +1910,13 @@ pub(crate) fn compact_session_history_with_provider(
     Ok(session_compaction_record_dto(&record))
 }
 
-fn extract_session_memory_candidates_with_provider(
+fn extract_session_memories_with_provider(
     repo_root: &Path,
     project_id: &str,
     agent_session_id: &str,
     run_id: Option<&str>,
     provider: &dyn ProviderAdapter,
-) -> CommandResult<ExtractSessionMemoryCandidatesResponseDto> {
+) -> CommandResult<ExtractSessionMemoriesResponseDto> {
     let _session = project_store::get_agent_session(repo_root, project_id, agent_session_id)?
         .ok_or_else(|| missing_session_error(project_id, agent_session_id))?;
     let snapshots = load_context_snapshots(repo_root, project_id, agent_session_id, run_id)?;
@@ -1977,7 +1945,6 @@ fn extract_session_memory_candidates_with_provider(
         AgentMemoryListFilter {
             agent_session_id: Some(agent_session_id),
             include_disabled: true,
-            include_rejected: false,
         },
     )?;
     let existing_texts = existing_memories
@@ -1999,8 +1966,8 @@ fn extract_session_memory_candidates_with_provider(
 
     let mut created = Vec::new();
     let mut diagnostics = Vec::new();
-    let mut skipped_duplicate_count = 0_usize;
-    let mut rejected_count = 0_usize;
+    let mut reinforced_duplicate_count = 0_usize;
+    let mut skipped_count = 0_usize;
     let now = now_timestamp();
 
     for candidate in outcome
@@ -2017,24 +1984,30 @@ fn extract_session_memory_candidates_with_provider(
         ) {
             Ok(record) => {
                 let text_hash = project_store::agent_memory_text_hash(&record.text);
-                if project_store::find_active_agent_memory_by_hash(
+                if let Some(existing) = project_store::find_active_agent_memory_by_hash(
                     repo_root,
                     project_id,
                     &record.scope,
                     record.agent_session_id.as_deref(),
                     &record.kind,
                     &text_hash,
-                )?
-                .is_some()
-                {
-                    skipped_duplicate_count = skipped_duplicate_count.saturating_add(1);
+                )? {
+                    project_store::reinforce_agent_memory(
+                        repo_root,
+                        project_id,
+                        &existing.memory_id,
+                        record.source_run_id.as_deref(),
+                        &record.source_item_ids,
+                        now.as_str(),
+                    )?;
+                    reinforced_duplicate_count = reinforced_duplicate_count.saturating_add(1);
                     continue;
                 }
                 let persisted = project_store::insert_agent_memory(repo_root, &record)?;
                 created.push(session_memory_record_dto(&persisted));
             }
             Err(diagnostic) => {
-                rejected_count = rejected_count.saturating_add(1);
+                skipped_count = skipped_count.saturating_add(1);
                 diagnostics.push(diagnostic);
             }
         }
@@ -2054,20 +2027,19 @@ fn extract_session_memory_candidates_with_provider(
         AgentMemoryListFilter {
             agent_session_id: Some(agent_session_id),
             include_disabled: true,
-            include_rejected: false,
         },
     )?
     .iter()
     .map(session_memory_record_dto)
     .collect::<Vec<_>>();
 
-    Ok(ExtractSessionMemoryCandidatesResponseDto {
+    Ok(ExtractSessionMemoriesResponseDto {
         project_id: project_id.into(),
         agent_session_id: agent_session_id.into(),
         memories,
         created_count: created.len(),
-        skipped_duplicate_count,
-        rejected_count,
+        reinforced_duplicate_count,
+        skipped_count,
         diagnostics,
     })
 }
@@ -2101,9 +2073,8 @@ fn build_memory_extraction_source(
         CodeHistoryMemoryGuard::for_session(repo_root, project_id, agent_session_id, run_id)?;
     let source_run_id = run_transcripts.last().map(|run| run.run_id.clone());
     let mut source_item_ids = Vec::new();
-    let mut transcript = String::from(
-        "Review this completed Xero session transcript for durable memory candidates.\n",
-    );
+    let mut transcript =
+        String::from("Review this completed Xero session transcript for durable memories.\n");
     transcript.push_str(
         "Code history operation rows are provenance: do not promote implementation details from turns before an undo or session return as durable facts unless the memory text explicitly notes the history operation and cites its provenance.\n",
     );
@@ -2169,27 +2140,27 @@ fn prepare_new_memory_candidate(
     let scope = agent_memory_scope_from_provider(&candidate.scope).ok_or_else(|| {
         session_memory_diagnostic_dto(
             "session_memory_candidate_scope_invalid",
-            "A provider memory candidate used an unsupported scope.",
+            "A provider extracted memory used an unsupported scope.",
         )
     })?;
     let kind = agent_memory_kind_from_provider(&candidate.kind).ok_or_else(|| {
         session_memory_diagnostic_dto(
             "session_memory_candidate_kind_invalid",
-            "A provider memory candidate used an unsupported kind.",
+            "A provider extracted memory used an unsupported kind.",
         )
     })?;
     let text = candidate.text.trim().to_string();
     if text.is_empty() {
         return Err(session_memory_diagnostic_dto(
             "session_memory_candidate_empty",
-            "A provider memory candidate did not include text.",
+            "A provider extracted memory did not include text.",
         ));
     }
     let confidence = candidate.confidence.unwrap_or(0).min(100);
     if confidence < MIN_MEMORY_CONFIDENCE {
         return Err(session_memory_diagnostic_dto(
             "session_memory_candidate_low_confidence",
-            "Xero skipped a low-confidence memory candidate.",
+            "Xero skipped a low-confidence extracted memory.",
         ));
     }
     let (_redacted_text, redaction) = redact_session_context_text(&text);
@@ -2234,8 +2205,7 @@ fn prepare_new_memory_candidate(
         scope,
         kind,
         text,
-        review_state: AgentMemoryReviewState::Candidate,
-        enabled: false,
+        enabled: true,
         confidence: Some(confidence),
         source_run_id: source.source_run_id.clone(),
         source_item_ids,
@@ -2274,12 +2244,12 @@ fn memory_candidate_blocked_diagnostic(
     {
         (
             "session_memory_candidate_integrity",
-            "Xero skipped a memory candidate because it looked like an instruction-override attempt.",
+            "Xero skipped an extracted memory because it looked like an instruction-override attempt.",
         )
     } else {
         (
             "session_memory_candidate_secret",
-            "Xero skipped a memory candidate because its text looked secret-bearing.",
+            "Xero skipped an extracted memory because its text looked secret-bearing.",
         )
     }
 }
@@ -2304,16 +2274,6 @@ fn agent_memory_kind_from_provider(value: &str) -> Option<AgentMemoryKind> {
             Some(AgentMemoryKind::Troubleshooting)
         }
         _ => None,
-    }
-}
-
-fn agent_memory_review_state_from_dto(
-    review_state: &SessionMemoryReviewStateDto,
-) -> AgentMemoryReviewState {
-    match review_state {
-        SessionMemoryReviewStateDto::Candidate => AgentMemoryReviewState::Candidate,
-        SessionMemoryReviewStateDto::Approved => AgentMemoryReviewState::Approved,
-        SessionMemoryReviewStateDto::Rejected => AgentMemoryReviewState::Rejected,
     }
 }
 
@@ -2584,6 +2544,7 @@ fn compile_prompt_context_for_snapshot(
                 runtime_agent_id: controls.active.runtime_agent_id,
                 agent_tool_policy: None,
                 tool_application_policy: Default::default(),
+                stage_allowed_tools: None,
             },
         )
         .into_descriptors()

@@ -8,10 +8,15 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
+import { WORKFLOWS_ENABLED } from "@/src/features/xero/workflows-feature-flag"
 
 const AGENT_DEFINITION_TOOL_NAME = "agent_definition"
 const WORKFLOW_DEFINITION_TOOL_NAME = "workflow_definition"
-const DEFINITION_TOOL_NAMES = new Set([AGENT_DEFINITION_TOOL_NAME, WORKFLOW_DEFINITION_TOOL_NAME])
+const DEFINITION_TOOL_NAMES = new Set(
+  WORKFLOWS_ENABLED
+    ? [AGENT_DEFINITION_TOOL_NAME, WORKFLOW_DEFINITION_TOOL_NAME]
+    : [AGENT_DEFINITION_TOOL_NAME],
+)
 
 interface AgentCreateDraftSectionProps {
   runtimeStreamItems: readonly RuntimeStreamViewItem[]
@@ -44,8 +49,8 @@ export function AgentCreateDraftSection({
             Agent Create
           </CardTitle>
           <CardDescription className="text-[12px]">
-            Describe the agent or Workflow you want to build. Agent Create will draft a
-            definition; saving requires explicit approval through the action panel below.
+            Describe the agent you want to build. Agent Create will draft a definition;
+            saving requires explicit approval through the action panel below.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-2 text-[12px] text-muted-foreground">
@@ -96,7 +101,7 @@ export function AgentCreateDraftSection({
         </CardTitle>
         <CardDescription className="text-[12px]">
           Recent definition tool calls from this run. Approve a save below to activate the
-          custom agent or Workflow.
+          custom agent.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-2">

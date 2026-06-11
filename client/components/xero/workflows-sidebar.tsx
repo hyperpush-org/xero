@@ -24,6 +24,11 @@ import {
   type LucideIcon,
 } from "lucide-react"
 import { BaseAlertDialog, BaseDialog } from "@xero/ui/components/base-dialog"
+import {
+  ModelThinkingSelect,
+  type ModelThinkingSelectGroup,
+  type ModelThinkingSelectOption,
+} from "@xero/ui/components/model-thinking-select"
 
 import { cn } from "@/lib/utils"
 import { useDeferredFilterQuery } from "@/lib/input-priority"
@@ -37,17 +42,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Label } from "@/components/ui/label"
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectLabel,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { createFrameCoalescer } from "@/lib/frame-governance"
 import { useSidebarOpenMotion, useSidebarWidthMotion } from "@/lib/sidebar-motion"
+import { WORKFLOWS_ENABLED } from "@/src/features/xero/workflows-feature-flag"
 import {
   agentRefKey,
   agentRefsEqual,
@@ -162,7 +159,9 @@ export function WorkflowsSidebar({
   modelOptions = [],
   onSetAgentDefaultModel,
 }: WorkflowsSidebarProps) {
-  const [tab, setTabState] = useState<LibraryTab>(() => readPersistedTab() ?? "workflows")
+  const [tab, setTabState] = useState<LibraryTab>(
+    () => readPersistedTab() ?? (WORKFLOWS_ENABLED ? "workflows" : "agents"),
+  )
   const [query, setQuery] = useState("")
   const [searchOpen, setSearchOpen] = useState(false)
   const [width, setWidth] = useState<number>(() => readPersistedWidth() ?? DEFAULT_WIDTH)
@@ -176,10 +175,13 @@ export function WorkflowsSidebar({
 
   const agents = useMemo(() => agentsProp ?? [], [agentsProp])
   const workflowDefinitions = useMemo(
-    () => workflowDefinitionsProp ?? [],
+    () => (WORKFLOWS_ENABLED ? workflowDefinitionsProp ?? [] : []),
     [workflowDefinitionsProp],
   )
-  const workflowRuns = useMemo(() => workflowRunsProp ?? [], [workflowRunsProp])
+  const workflowRuns = useMemo(
+    () => (WORKFLOWS_ENABLED ? workflowRunsProp ?? [] : []),
+    [workflowRunsProp],
+  )
   const [defaultModelTarget, setDefaultModelTarget] =
     useState<WorkflowAgentSummaryDto | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<WorkflowAgentSummaryDto | null>(null)
@@ -187,7 +189,8 @@ export function WorkflowsSidebar({
   const [createWorkflowDialogView, setCreateWorkflowDialogView] =
     useState<CreateEntityDialogView>("choice")
   const canCreateWorkflow = Boolean(
-    onCreateWorkflow || onCreateWorkflowWithAgentCreate || onCreateWorkflowFromTemplate,
+    WORKFLOWS_ENABLED &&
+      (onCreateWorkflow || onCreateWorkflowWithAgentCreate || onCreateWorkflowFromTemplate),
   )
 
   const closeCreateWorkflowDialog = useCallback(() => {
@@ -228,6 +231,9 @@ export function WorkflowsSidebar({
   )
 
   const setTab = useCallback((next: LibraryTab) => {
+    if (!WORKFLOWS_ENABLED && next === "workflows") {
+      setSearchOpen(false)
+    }
     setTabState((current) => {
       if (current === next) return current
       writePersistedTab(next)
@@ -249,6 +255,7 @@ export function WorkflowsSidebar({
     )
   }, [agents, deferredQuery, tab])
   const filteredWorkflowDefinitions = useMemo(() => {
+    if (!WORKFLOWS_ENABLED) return []
     if (tab !== "workflows") return workflowDefinitions
     const q = deferredQuery
     if (!q) return workflowDefinitions
@@ -312,6 +319,7 @@ export function WorkflowsSidebar({
   const totalCount = tab === "workflows" ? workflowDefinitions.length : agents.length
   const hasQuery = deferredQuery.length > 0
   const searchPlaceholder = tab === "workflows" ? "Search workflows" : "Search agents"
+  const searchDisabled = tab === "workflows" && !WORKFLOWS_ENABLED
 
   return (
     <aside
@@ -347,9 +355,11 @@ export function WorkflowsSidebar({
           <Header
             tab={tab}
             agentsCount={agents.length}
+            workflowsEnabled={WORKFLOWS_ENABLED}
             onTabChange={setTab}
             searchOpen={searchOpen}
             onToggleSearch={() => {
+              if (searchDisabled) return
               setSearchOpen((current) => {
                 const next = !current
                 if (!next) setQuery("")
@@ -362,7 +372,7 @@ export function WorkflowsSidebar({
               canCreateWorkflow ? () => handleCreateWorkflowDialogOpenChange(true) : undefined
             }
           />
-          {searchOpen ? (
+          {searchOpen && !searchDisabled ? (
             <Toolbar
               query={query}
               placeholder={searchPlaceholder}
@@ -401,6 +411,7 @@ export function WorkflowsSidebar({
             onRequestDeleteAgent={setDeleteTarget}
             onUseAgentInChat={onUseAgentInChat}
             onConfigureDefaultModel={setDefaultModelTarget}
+            onTabChange={setTab}
           />
         </div>
       </div>
@@ -454,6 +465,7 @@ export function WorkflowsSidebar({
 function Header({
   tab,
   agentsCount,
+  workflowsEnabled,
   onTabChange,
   searchOpen,
   onToggleSearch,
@@ -463,6 +475,7 @@ function Header({
 }: {
   tab: LibraryTab
   agentsCount: number
+  workflowsEnabled: boolean
   onTabChange: (next: LibraryTab) => void
   searchOpen: boolean
   onToggleSearch: () => void
@@ -471,14 +484,26 @@ function Header({
   onCreateWorkflow?: () => void
 }) {
   const isWorkflowsTab = tab === "workflows"
-  const newLabel = isWorkflowsTab ? "New workflow" : "New agent"
+  const workflowActionsDisabled = isWorkflowsTab && !workflowsEnabled
+  const newLabel = isWorkflowsTab
+    ? workflowsEnabled
+      ? "New workflow"
+      : "New workflow coming soon"
+    : "New agent"
   const searchLabel = searchOpen
     ? "Close search"
     : isWorkflowsTab
-      ? "Search workflows"
+      ? workflowsEnabled
+        ? "Search workflows"
+        : "Search workflows coming soon"
       : "Search agents"
-  const directCreate = isWorkflowsTab ? onCreateWorkflow : onCreateAgent ?? onCreateAgentByHand
+  const directCreate = isWorkflowsTab
+    ? workflowsEnabled
+      ? onCreateWorkflow
+      : undefined
+    : onCreateAgent ?? onCreateAgentByHand
   const createDisabled = !directCreate
+  const searchDisabled = workflowActionsDisabled
 
   return (
     <div
@@ -489,6 +514,8 @@ function Header({
       <div className="flex items-center gap-0.5">
         <TabPill
           active={isWorkflowsTab}
+          ariaLabel={workflowsEnabled ? undefined : "Workflows coming soon"}
+          comingSoon={!workflowsEnabled}
           label="Workflows"
           onSelect={() => onTabChange("workflows")}
         />
@@ -520,10 +547,13 @@ function Header({
           aria-pressed={searchOpen}
           className={cn(
             "flex h-6 w-6 items-center justify-center rounded-md transition-colors",
-            searchOpen
+            searchDisabled
+              ? "cursor-not-allowed text-muted-foreground/40"
+              : searchOpen
               ? "bg-primary/10 text-primary"
               : "text-muted-foreground hover:bg-primary/10 hover:text-primary",
           )}
+          disabled={searchDisabled}
           onClick={onToggleSearch}
           title={searchLabel}
           type="button"
@@ -537,17 +567,22 @@ function Header({
 
 function TabPill({
   active,
+  ariaLabel,
   count,
+  comingSoon = false,
   label,
   onSelect,
 }: {
   active: boolean
+  ariaLabel?: string
   count?: number
+  comingSoon?: boolean
   label: string
   onSelect: () => void
 }) {
   return (
     <button
+      aria-label={ariaLabel}
       aria-selected={active}
       className={cn(
         "flex h-6 items-center gap-1.5 rounded-md px-2 text-[10.5px] font-semibold uppercase tracking-[0.1em] transition-colors",
@@ -561,8 +596,19 @@ function TabPill({
       type="button"
     >
       {label}
+      {comingSoon ? (
+        <span
+          aria-hidden="true"
+          className="rounded-full border border-border/70 px-1 py-[1px] text-[8.5px] font-semibold leading-none text-muted-foreground"
+        >
+          Soon
+        </span>
+      ) : null}
       {active && count !== undefined ? (
-        <span className="rounded-full bg-muted/80 px-1.5 py-[1px] font-mono text-[10px] leading-none tabular-nums text-muted-foreground">
+        <span
+          aria-hidden="true"
+          className="rounded-full bg-muted/80 px-1.5 py-[1px] font-mono text-[10px] leading-none tabular-nums text-muted-foreground"
+        >
           {count}
         </span>
       ) : null}
@@ -644,6 +690,7 @@ function LibraryList({
   onRequestDeleteAgent,
   onUseAgentInChat,
   onConfigureDefaultModel,
+  onTabChange,
 }: {
   tab: LibraryTab
   agents: WorkflowAgentSummaryDto[]
@@ -672,6 +719,7 @@ function LibraryList({
   onRequestDeleteAgent?: (agent: WorkflowAgentSummaryDto) => void
   onUseAgentInChat?: (ref: AgentRefDto) => void
   onConfigureDefaultModel?: (agent: WorkflowAgentSummaryDto) => void
+  onTabChange: (next: LibraryTab) => void
 }) {
   if (tab === "workflows") {
     return (
@@ -693,6 +741,7 @@ function LibraryList({
         onStartWorkflowRun={onStartWorkflowRun}
         onCancelWorkflowRun={onCancelWorkflowRun}
         onResumeWorkflowRun={onResumeWorkflowRun}
+        onShowAgents={() => onTabChange("agents")}
       />
     )
   }
@@ -789,6 +838,7 @@ function WorkflowsList({
   onStartWorkflowRun,
   onCancelWorkflowRun,
   onResumeWorkflowRun,
+  onShowAgents,
 }: {
   definitions: WorkflowDefinitionSummaryDto[]
   runs: WorkflowRunDto[]
@@ -807,7 +857,11 @@ function WorkflowsList({
   onStartWorkflowRun?: (workflowId: string) => void
   onCancelWorkflowRun?: (runId: string) => void
   onResumeWorkflowRun?: (runId: string, nodeRunId: string, decision: string) => void
+  onShowAgents: () => void
 }) {
+  if (!WORKFLOWS_ENABLED) {
+    return <WorkflowsComingSoonState onShowAgents={onShowAgents} />
+  }
   if (error) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-1 px-3 py-8 text-center text-[11px] leading-relaxed text-destructive">
@@ -832,15 +886,15 @@ function WorkflowsList({
   }
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-thin">
-      {definitions.length === 0 && !hasQuery ? (
-        <WorkflowTemplates
-          selectedTemplateId={selectedWorkflowTemplateId}
-          onSelectWorkflowTemplate={onSelectWorkflowTemplate}
-          onCreateWorkflowFromTemplate={onCreateWorkflowFromTemplate}
-        />
-      ) : (
-        <ul className="flex flex-col py-1">
-          {definitions.map((definition) => {
+      <ul className="flex flex-col py-1">
+        {definitions.length === 0 && !hasQuery ? (
+          <WorkflowTemplateRows
+            selectedTemplateId={selectedWorkflowTemplateId}
+            onSelectWorkflowTemplate={onSelectWorkflowTemplate}
+            onCreateWorkflowFromTemplate={onCreateWorkflowFromTemplate}
+          />
+        ) : (
+          definitions.map((definition) => {
             const latestRun = runs.find((run) => run.workflowId === definition.id) ?? null
             return (
               <li key={definition.id}>
@@ -853,17 +907,17 @@ function WorkflowsList({
                 />
               </li>
             )
-          })}
-        </ul>
-      )}
-      {definitions.length > 0 ? (
-        <WorkflowTemplates
-          compact
-          selectedTemplateId={selectedWorkflowTemplateId}
-          onSelectWorkflowTemplate={onSelectWorkflowTemplate}
-          onCreateWorkflowFromTemplate={onCreateWorkflowFromTemplate}
-        />
-      ) : null}
+          })
+        )}
+        {definitions.length > 0 ? (
+          <WorkflowTemplateRows
+            compact
+            selectedTemplateId={selectedWorkflowTemplateId}
+            onSelectWorkflowTemplate={onSelectWorkflowTemplate}
+            onCreateWorkflowFromTemplate={onCreateWorkflowFromTemplate}
+          />
+        ) : null}
+      </ul>
       {runs.length > 0 ? (
         <WorkflowRunsTimeline
           runs={runs}
@@ -873,6 +927,34 @@ function WorkflowsList({
           onResumeWorkflowRun={onResumeWorkflowRun}
         />
       ) : null}
+    </div>
+  )
+}
+
+function WorkflowsComingSoonState({ onShowAgents }: { onShowAgents: () => void }) {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-8 text-center">
+      <Badge
+        variant="outline"
+        className="text-[9.5px] font-semibold uppercase tracking-[0.12em] text-muted-foreground"
+      >
+        Coming soon
+      </Badge>
+      <div className="space-y-1">
+        <h3 className="text-[13px] font-semibold text-foreground">Workflows are coming soon</h3>
+        <p className="max-w-[18rem] text-[11.5px] leading-relaxed text-muted-foreground">
+          Agent creation, editing, and chat are still available from the Agents tab.
+        </p>
+      </div>
+      <Button
+        type="button"
+        variant="secondary"
+        size="sm"
+        className="h-7 px-2.5 text-[11.5px]"
+        onClick={onShowAgents}
+      >
+        View agents
+      </Button>
     </div>
   )
 }
@@ -952,7 +1034,7 @@ function LibraryEntityRow({
   )
 }
 
-function WorkflowTemplates({
+function WorkflowTemplateRows({
   compact = false,
   selectedTemplateId = null,
   onSelectWorkflowTemplate,
@@ -964,17 +1046,10 @@ function WorkflowTemplates({
   onCreateWorkflowFromTemplate?: (templateId: WorkflowTemplateIdDto) => void
 }) {
   return (
-    <section className={cn("border-b border-border/60", compact ? "py-1" : "py-2")}>
-      <div className="flex items-center gap-2 px-3 py-2">
-        <WorkflowIcon className="h-3.5 w-3.5 text-muted-foreground/70" aria-hidden="true" />
-        <h3 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-          Templates
-        </h3>
-      </div>
-      <div className="flex flex-col">
-        {WORKFLOW_TEMPLATE_LIBRARY.map((template) => (
+    <>
+      {WORKFLOW_TEMPLATE_LIBRARY.map((template) => (
+        <li key={template.id}>
           <LibraryEntityRow
-            key={template.id}
             name={template.name}
             description={compact ? undefined : template.description}
             icon={Sparkles}
@@ -1008,9 +1083,9 @@ function WorkflowTemplates({
               />
             }
           />
-        ))}
-      </div>
-    </section>
+        </li>
+      ))}
+    </>
   )
 }
 
@@ -1456,17 +1531,35 @@ function AgentDefaultModelDialog({
     )
   }, [agent, modelOptions, selectionKey])
 
-  const groupedOptions = useMemo(() => {
-    const groups = new Map<string, ComposerModelOptionView[]>()
+  const modelGroups = useMemo<ModelThinkingSelectGroup[]>(() => {
+    const groups = new Map<string, ModelThinkingSelectOption[]>()
     for (const option of modelOptions) {
       const list = groups.get(option.providerLabel) ?? []
-      list.push(option)
+      list.push({ id: option.selectionKey, label: option.displayName })
       groups.set(option.providerLabel, list)
     }
-    return Array.from(groups.entries())
+    return [
+      {
+        id: "default",
+        options: [{ id: INHERIT_MODEL_VALUE, label: "Use provider default" }],
+      },
+      ...Array.from(groups.entries()).map(([providerLabel, options]) => ({
+        id: providerLabel,
+        label: providerLabel,
+        options,
+      })),
+    ]
   }, [modelOptions])
 
   const thinkingOptions = selectedModel?.thinkingEffortOptions ?? []
+  const thinkingSelectOptions = useMemo<ModelThinkingSelectOption[]>(
+    () =>
+      thinkingOptions.map((effort) => ({
+        id: effort,
+        label: formatThinkingEffort(effort),
+      })),
+    [thinkingOptions],
+  )
 
   useEffect(() => {
     if (!selectedModel) {
@@ -1533,54 +1626,26 @@ function AgentDefaultModelDialog({
 
         <div className="grid gap-4">
           <div className="grid gap-2">
-            <Label htmlFor="agent-default-model-select">Model</Label>
-            <Select
+            <Label>Model</Label>
+            <ModelThinkingSelect
+              ariaLabel="Model"
               value={selectionKey}
-              onValueChange={(value) => setSelectionKey(value)}
+              onChange={(value) => setSelectionKey(value)}
+              groups={modelGroups}
               disabled={saving || !hasModels}
-            >
-              <SelectTrigger id="agent-default-model-select" className="w-full">
-                <SelectValue placeholder={hasModels ? "Select model" : "No models available"} />
-              </SelectTrigger>
-              <SelectContent className="max-h-[320px]">
-                <SelectItem value={INHERIT_MODEL_VALUE}>Use provider default</SelectItem>
-                {groupedOptions.map(([providerLabel, options]) => (
-                  <SelectGroup key={providerLabel}>
-                    <SelectLabel>{providerLabel}</SelectLabel>
-                    {options.map((option) => (
-                      <SelectItem key={option.selectionKey} value={option.selectionKey}>
-                        {option.displayName}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                ))}
-              </SelectContent>
-            </Select>
+              onThinkingChange={(value) =>
+                setThinkingEffort(value as ProviderModelThinkingEffortDto)
+              }
+              placeholder={hasModels ? "Select model" : "No models available"}
+              selectedThinkingId={
+                thinkingEffort ?? selectedModel?.defaultThinkingEffort ?? thinkingOptions[0] ?? null
+              }
+              thinkingDisabled={saving || thinkingOptions.length === 0}
+              thinkingOptions={thinkingSelectOptions}
+              thinkingPlaceholder={selectedModel ? "Thinking unavailable" : "Choose model"}
+              variant="field"
+            />
           </div>
-
-          {thinkingOptions.length > 0 ? (
-            <div className="grid gap-2">
-              <Label htmlFor="agent-default-thinking-select">Thinking effort</Label>
-              <Select
-                value={thinkingEffort ?? selectedModel?.defaultThinkingEffort ?? thinkingOptions[0]}
-                onValueChange={(value) =>
-                  setThinkingEffort(value as ProviderModelThinkingEffortDto)
-                }
-                disabled={saving}
-              >
-                <SelectTrigger id="agent-default-thinking-select" className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {thinkingOptions.map((effort) => (
-                    <SelectItem key={effort} value={effort}>
-                      {formatThinkingEffort(effort)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          ) : null}
 
           {error ? (
             <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">

@@ -18,6 +18,7 @@ pub mod logs;
 pub mod pda;
 pub mod persona;
 pub mod program;
+pub mod provider_profiles;
 pub mod rpc_router;
 pub mod scenario;
 pub mod secrets;
@@ -47,6 +48,7 @@ use crate::{
 
 pub const SOLANA_PROGRAM_ARCHIVE_ROOT_ENV: &str = "XERO_SOLANA_PROGRAM_ARCHIVE_ROOT";
 pub const SOLANA_STATE_ROOT_ENV: &str = "XERO_SOLANA_STATE_ROOT";
+pub const SOLANA_APP_DATA_DIRECTORY_NAME: &str = "com.hyperpush.xero";
 
 pub use audit::{
     coverage::{
@@ -121,6 +123,10 @@ pub use program::{
     UpgradeInstructionAccount, UpgradeSafetyReport, UpgradeSafetyRequest, UpgradeSafetyVerdict,
     VerifiedBuildRequest, VerifiedBuildResult, VerifiedBuildRunner, BPF_UPGRADEABLE_LOADER,
     DEFAULT_VAULT_INDEX, PROGRAM_DATA_MAX_BYTES, SQUADS_V4_PROGRAM_ID,
+};
+pub use provider_profiles::{
+    ProviderInventoryEntry, ProviderProfileStore, ProviderProfileUpsert, ProviderProfileView,
+    ProviderProfilesResponse, ProviderRateLimit, SecretPlacement, SolanaProviderKind,
 };
 pub use rpc_router::{EndpointHealth, EndpointSpec, RpcRouter};
 pub use scenario::{
@@ -216,6 +222,9 @@ pub struct SolanaState {
     /// Phase 9 — provider usage prober. Tests swap in scripted
     /// runners via `with_cost_provider_runner`.
     cost_provider_runner: Arc<dyn ProviderUsageRunner>,
+    /// Durable, redacted provider profile catalogue and selected
+    /// per-cluster RPC profile.
+    provider_profiles: Arc<ProviderProfileStore>,
 }
 
 const LOG_POLL_INTERVAL: Duration = Duration::from_secs(4);
@@ -274,7 +283,7 @@ fn default_solana_state_root() -> PathBuf {
         return PathBuf::from(root);
     }
     dirs::data_dir()
-        .map(|dir| dir.join("xero").join("solana"))
+        .map(|dir| dir.join(SOLANA_APP_DATA_DIRECTORY_NAME).join("solana"))
         .unwrap_or_else(|| std::env::temp_dir().join("xero-solana"))
 }
 
@@ -284,6 +293,10 @@ fn metaplex_worker_root_for(root: &Path) -> PathBuf {
 
 fn program_archive_root_for(root: &Path) -> PathBuf {
     root.join("program-archive")
+}
+
+fn provider_profile_store_for(root: &Path) -> ProviderProfileStore {
+    ProviderProfileStore::new(root.join("provider-profiles"))
 }
 
 fn snapshot_store_for(root: &Path) -> SnapshotStore {
@@ -338,6 +351,8 @@ impl SolanaState {
             Arc::clone(&supervisor),
         ));
         let rpc_router = Arc::new(RpcRouter::new_with_default_pool());
+        let provider_profiles = Arc::new(provider_profile_store_for(&root));
+        let _ = provider_profiles.apply_to_router(&rpc_router);
         let (tx_pipeline, transport) = build_tx_pipeline(&supervisor, &rpc_router, &personas);
         let idl_registry = build_idl_registry(Arc::clone(&transport));
         let log_bus = Arc::new(LogBus::new(Arc::clone(&idl_registry)));
@@ -362,6 +377,7 @@ impl SolanaState {
             program_archive_root: program_archive_root_for(&root),
             cost_ledger: Arc::new(LocalCostLedger::new()),
             cost_provider_runner: Arc::new(SystemProviderUsageRunner::new()),
+            provider_profiles,
         }
     }
 
@@ -373,6 +389,8 @@ impl SolanaState {
         let root = default_solana_state_root();
         let personas = persona_store_for(&root);
         let personas = Arc::new(personas);
+        let provider_profiles = Arc::new(provider_profile_store_for(&root));
+        let _ = provider_profiles.apply_to_router(&rpc_router);
         let scenarios = Arc::new(ScenarioEngine::new(
             Arc::clone(&personas),
             Arc::clone(&supervisor),
@@ -401,6 +419,7 @@ impl SolanaState {
             program_archive_root: program_archive_root_for(&root),
             cost_ledger: Arc::new(LocalCostLedger::new()),
             cost_provider_runner: Arc::new(SystemProviderUsageRunner::new()),
+            provider_profiles,
         }
     }
 
@@ -413,6 +432,8 @@ impl SolanaState {
         personas: Arc<PersonaStore>,
     ) -> Self {
         let root = default_solana_state_root();
+        let provider_profiles = Arc::new(provider_profile_store_for(&root));
+        let _ = provider_profiles.apply_to_router(&rpc_router);
         let scenarios = Arc::new(ScenarioEngine::new(
             Arc::clone(&personas),
             Arc::clone(&supervisor),
@@ -441,6 +462,7 @@ impl SolanaState {
             program_archive_root: program_archive_root_for(&root),
             cost_ledger: Arc::new(LocalCostLedger::new()),
             cost_provider_runner: Arc::new(SystemProviderUsageRunner::new()),
+            provider_profiles,
         }
     }
 
@@ -455,6 +477,8 @@ impl SolanaState {
         tx_pipeline: Arc<TxPipeline>,
     ) -> Self {
         let root = default_solana_state_root();
+        let provider_profiles = Arc::new(provider_profile_store_for(&root));
+        let _ = provider_profiles.apply_to_router(&rpc_router);
         let scenarios = Arc::new(ScenarioEngine::new(
             Arc::clone(&personas),
             Arc::clone(&supervisor),
@@ -485,6 +509,7 @@ impl SolanaState {
             program_archive_root: program_archive_root_for(&root),
             cost_ledger: Arc::new(LocalCostLedger::new()),
             cost_provider_runner: Arc::new(SystemProviderUsageRunner::new()),
+            provider_profiles,
         }
     }
 
@@ -501,6 +526,8 @@ impl SolanaState {
         deploy_services: Arc<DeployServices>,
     ) -> Self {
         let root = default_solana_state_root();
+        let provider_profiles = Arc::new(provider_profile_store_for(&root));
+        let _ = provider_profiles.apply_to_router(&rpc_router);
         let scenarios = Arc::new(ScenarioEngine::new(
             Arc::clone(&personas),
             Arc::clone(&supervisor),
@@ -528,6 +555,7 @@ impl SolanaState {
             program_archive_root: program_archive_root_for(&root),
             cost_ledger: Arc::new(LocalCostLedger::new()),
             cost_provider_runner: Arc::new(SystemProviderUsageRunner::new()),
+            provider_profiles,
         }
     }
 
@@ -656,9 +684,13 @@ impl SolanaState {
         Arc::clone(&self.cost_provider_runner)
     }
 
+    pub fn provider_profiles(&self) -> Arc<ProviderProfileStore> {
+        Arc::clone(&self.provider_profiles)
+    }
+
     /// Resolve the RPC URL the persona / scenario commands should use when
     /// the caller hasn't supplied one. Prefers the active supervisor's URL;
-    /// falls back to whichever endpoint the router considers healthy.
+    /// falls back to the selected provider profile, then the router.
     pub fn resolve_rpc_url(&self, cluster: ClusterKind) -> Option<String> {
         let status = self.supervisor.status();
         if status.kind == Some(cluster) {
@@ -666,7 +698,9 @@ impl SolanaState {
                 return Some(url);
             }
         }
-        self.rpc_router.pick_healthy(cluster).map(|e| e.url)
+        self.provider_profiles
+            .resolve_rpc_url(cluster)
+            .or_else(|| self.rpc_router.pick_healthy(cluster).map(|e| e.url))
     }
 
     fn start_log_poller(&self, token: &LogSubscriptionToken, filter: &LogFilter) {
@@ -1005,6 +1039,62 @@ pub fn solana_rpc_endpoints_set(
         .rpc_router
         .set_endpoints(request.cluster, request.endpoints)?;
     Ok(state.rpc_router.snapshot_all())
+}
+
+#[tauri::command]
+pub fn solana_provider_profiles_list(
+    state: State<'_, SolanaState>,
+) -> CommandResult<ProviderProfilesResponse> {
+    Ok(state.provider_profiles.list())
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderProfileUpsertRequest {
+    pub profile: ProviderProfileUpsert,
+}
+
+#[tauri::command]
+pub fn solana_provider_profile_upsert(
+    state: State<'_, SolanaState>,
+    request: ProviderProfileUpsertRequest,
+) -> CommandResult<ProviderProfilesResponse> {
+    state
+        .provider_profiles
+        .upsert(request.profile, &state.rpc_router)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderProfileSelectRequest {
+    pub cluster: ClusterKind,
+    pub profile_id: String,
+}
+
+#[tauri::command]
+pub fn solana_provider_profile_select(
+    state: State<'_, SolanaState>,
+    request: ProviderProfileSelectRequest,
+) -> CommandResult<ProviderProfilesResponse> {
+    state
+        .provider_profiles
+        .select(request.cluster, request.profile_id, &state.rpc_router)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderProfileDeleteRequest {
+    pub profile_id: String,
+}
+
+#[tauri::command]
+pub fn solana_provider_profile_delete(
+    state: State<'_, SolanaState>,
+    request: ProviderProfileDeleteRequest,
+) -> CommandResult<ProviderProfilesResponse> {
+    state
+        .provider_profiles
+        .delete(request.profile_id, &state.rpc_router)
 }
 
 // ---------- Persona commands -----------------------------------------------

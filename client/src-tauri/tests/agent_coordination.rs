@@ -1,14 +1,19 @@
 use std::{fs, path::PathBuf};
 
+use serde_json::json;
 use tempfile::TempDir;
 use xero_desktop_lib::{
     auth::now_timestamp,
-    commands::RuntimeAgentIdDto,
+    commands::{
+        RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto,
+        RuntimeRunControlStateDto,
+    },
     db::{self, project_store},
     git::repository::CanonicalRepository,
     runtime::{
         AutonomousAgentCoordinationAction, AutonomousAgentCoordinationRequest,
-        AutonomousToolOutput, AutonomousToolRuntime,
+        AutonomousSafetyPolicyAction, AutonomousToolOutput, AutonomousToolRequest,
+        AutonomousToolRuntime, AutonomousWriteRequest,
     },
     state::DesktopState,
 };
@@ -17,10 +22,15 @@ fn seed_project(root: &TempDir) -> (String, PathBuf) {
     let repo_root = root.path().join("repo");
     fs::create_dir_all(repo_root.join("src")).expect("create repo root");
     let canonical_root = fs::canonicalize(&repo_root).expect("canonical repo root");
-    let project_id = "project-coordination".to_string();
+    let project_suffix = root
+        .path()
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("temp");
+    let project_id = format!("project-coordination-{project_suffix}");
     let repository = CanonicalRepository {
         project_id: project_id.clone(),
-        repository_id: "repo-coordination".into(),
+        repository_id: format!("repo-coordination-{project_suffix}"),
         root_path: canonical_root.clone(),
         root_path_string: canonical_root.to_string_lossy().into_owned(),
         common_git_dir: canonical_root.join(".git"),
@@ -147,7 +157,280 @@ fn coordination_request(
         ttl_seconds: None,
         summary: None,
         limit: None,
+        since_last_check: false,
     }
+}
+
+fn activate_run(repo_root: &std::path::Path, project_id: &str, run_id: &str, summary: &str) {
+    project_store::upsert_agent_coordination_presence(
+        repo_root,
+        &project_store::UpsertAgentCoordinationPresenceRecord {
+            project_id: project_id.into(),
+            run_id: run_id.into(),
+            pane_id: None,
+            status: "running".into(),
+            current_phase: "editing".into(),
+            activity_summary: summary.into(),
+            last_event_id: None,
+            last_event_kind: None,
+            updated_at: now_timestamp(),
+            lease_seconds: Some(3_600),
+        },
+    )
+    .expect("activate run");
+}
+
+fn engineer_runtime(
+    repo_root: &std::path::Path,
+    project_id: &str,
+    agent_session_id: &str,
+    run_id: &str,
+) -> AutonomousToolRuntime {
+    AutonomousToolRuntime::new(repo_root)
+        .expect("build runtime")
+        .with_runtime_run_controls(RuntimeRunControlStateDto {
+            active: RuntimeRunActiveControlSnapshotDto {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: Some("engineer".into()),
+                agent_definition_version: Some(1),
+                provider_profile_id: None,
+                model_id: "fake-model".into(),
+                thinking_effort: None,
+                approval_mode: RuntimeRunApprovalModeDto::Yolo,
+                plan_mode_required: false,
+                auto_compact_enabled: true,
+                revision: 1,
+                applied_at: now_timestamp(),
+            },
+            pending: None,
+        })
+        .with_agent_run_context(project_id, agent_session_id, run_id)
+}
+
+fn write_request(path: &str) -> AutonomousToolRequest {
+    AutonomousToolRequest::Write(AutonomousWriteRequest {
+        path: path.into(),
+        content: "fresh content\n".into(),
+        expected_hash: None,
+        create_only: true,
+        overwrite: None,
+        preview: false,
+    })
+}
+
+fn evaluate_write_policy(
+    runtime: &AutonomousToolRuntime,
+    request: &AutonomousToolRequest,
+) -> xero_desktop_lib::runtime::AutonomousSafetyPolicyDecision {
+    runtime
+        .evaluate_safety_policy("write", &json!({}), request, false, "input")
+        .expect("evaluate safety policy")
+}
+
+#[test]
+fn mailbox_gate_allows_mutation_when_only_one_run_is_active() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (project_id, repo_root) = seed_project(&root);
+    seed_run(
+        &repo_root,
+        &project_id,
+        project_store::DEFAULT_AGENT_SESSION_ID,
+        "run-solo",
+    );
+    activate_run(&repo_root, &project_id, "run-solo", "Solo run is active.");
+
+    let runtime = engineer_runtime(
+        &repo_root,
+        &project_id,
+        project_store::DEFAULT_AGENT_SESSION_ID,
+        "run-solo",
+    );
+    let request = write_request("src/solo.rs");
+    let decision = evaluate_write_policy(&runtime, &request);
+
+    assert_eq!(decision.action, AutonomousSafetyPolicyAction::Allow);
+    assert_eq!(decision.code, "policy_allowed_tool_call");
+}
+
+#[test]
+fn mailbox_gate_denies_concurrent_mutation_before_inbox_check() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (project_id, repo_root) = seed_project(&root);
+    seed_run(
+        &repo_root,
+        &project_id,
+        project_store::DEFAULT_AGENT_SESSION_ID,
+        "run-one",
+    );
+    let second_session = create_session(&repo_root, &project_id, "Parallel");
+    seed_run(&repo_root, &project_id, &second_session, "run-two");
+    activate_run(&repo_root, &project_id, "run-one", "Primary run is active.");
+    activate_run(&repo_root, &project_id, "run-two", "Sibling run is active.");
+
+    let runtime = engineer_runtime(
+        &repo_root,
+        &project_id,
+        project_store::DEFAULT_AGENT_SESSION_ID,
+        "run-one",
+    );
+    let request = write_request("src/concurrent.rs");
+    let decision = evaluate_write_policy(&runtime, &request);
+
+    assert_eq!(decision.action, AutonomousSafetyPolicyAction::Deny);
+    assert_eq!(
+        decision.code,
+        "policy_requires_mailbox_check_before_mutation"
+    );
+    assert!(decision.explanation.contains("read_inbox"));
+}
+
+#[test]
+fn mailbox_gate_allows_concurrent_mutation_after_inbox_check() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (project_id, repo_root) = seed_project(&root);
+    seed_run(
+        &repo_root,
+        &project_id,
+        project_store::DEFAULT_AGENT_SESSION_ID,
+        "run-one",
+    );
+    let second_session = create_session(&repo_root, &project_id, "Parallel");
+    seed_run(&repo_root, &project_id, &second_session, "run-two");
+    activate_run(&repo_root, &project_id, "run-one", "Primary run is active.");
+    activate_run(&repo_root, &project_id, "run-two", "Sibling run is active.");
+
+    let runtime = engineer_runtime(
+        &repo_root,
+        &project_id,
+        project_store::DEFAULT_AGENT_SESSION_ID,
+        "run-one",
+    );
+    runtime
+        .agent_coordination(coordination_request(
+            AutonomousAgentCoordinationAction::ReadInbox,
+        ))
+        .expect("read inbox records mailbox check evidence");
+
+    let request = write_request("src/after-read.rs");
+    let decision = evaluate_write_policy(&runtime, &request);
+
+    assert_eq!(decision.action, AutonomousSafetyPolicyAction::Allow);
+}
+
+#[test]
+fn check_inbox_status_returns_metadata_without_mailbox_bodies() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (project_id, repo_root) = seed_project(&root);
+    seed_run(
+        &repo_root,
+        &project_id,
+        project_store::DEFAULT_AGENT_SESSION_ID,
+        "run-one",
+    );
+    let second_session = create_session(&repo_root, &project_id, "Parallel");
+    seed_run(&repo_root, &project_id, &second_session, "run-two");
+    activate_run(&repo_root, &project_id, "run-one", "Primary run is active.");
+    activate_run(&repo_root, &project_id, "run-two", "Sibling run is active.");
+    project_store::publish_agent_mailbox_item(
+        &repo_root,
+        &project_store::NewAgentMailboxItemRecord {
+            project_id: project_id.clone(),
+            sender_run_id: "run-two".into(),
+            item_type: project_store::AgentMailboxItemType::HeadsUp,
+            parent_item_id: None,
+            target_agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+            target_run_id: Some("run-one".into()),
+            target_role: None,
+            title: "Status-only heads up".into(),
+            body: "This body must not be returned by check_inbox_status.".into(),
+            related_paths: vec!["src/status.rs".into()],
+            priority: project_store::AgentMailboxPriority::Normal,
+            created_at: now_timestamp(),
+            ttl_seconds: Some(3_600),
+        },
+    )
+    .expect("publish mailbox item");
+    let runtime = engineer_runtime(
+        &repo_root,
+        &project_id,
+        project_store::DEFAULT_AGENT_SESSION_ID,
+        "run-one",
+    );
+    let mut request = coordination_request(AutonomousAgentCoordinationAction::CheckInboxStatus);
+    request.paths = vec!["src/status.rs".into()];
+
+    let result = runtime
+        .agent_coordination(request)
+        .expect("check inbox status");
+    let AutonomousToolOutput::AgentCoordination(output) = result.output else {
+        panic!("expected agent coordination output");
+    };
+    let status = output.inbox_status.expect("inbox status");
+
+    assert!(output.mailbox.is_empty());
+    assert_eq!(status.relevant_item_count, 1);
+    assert_eq!(
+        status.relevant_counts_by_item_type.get("heads_up"),
+        Some(&1)
+    );
+}
+
+#[test]
+fn mailbox_gate_stales_check_after_later_relevant_mailbox_delivery() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (project_id, repo_root) = seed_project(&root);
+    seed_run(
+        &repo_root,
+        &project_id,
+        project_store::DEFAULT_AGENT_SESSION_ID,
+        "run-one",
+    );
+    let second_session = create_session(&repo_root, &project_id, "Parallel");
+    seed_run(&repo_root, &project_id, &second_session, "run-two");
+    activate_run(&repo_root, &project_id, "run-one", "Primary run is active.");
+    activate_run(&repo_root, &project_id, "run-two", "Sibling run is active.");
+
+    let runtime = engineer_runtime(
+        &repo_root,
+        &project_id,
+        project_store::DEFAULT_AGENT_SESSION_ID,
+        "run-one",
+    );
+    runtime
+        .agent_coordination(coordination_request(
+            AutonomousAgentCoordinationAction::ReadInbox,
+        ))
+        .expect("read inbox records mailbox check evidence");
+
+    project_store::publish_agent_mailbox_item(
+        &repo_root,
+        &project_store::NewAgentMailboxItemRecord {
+            project_id: project_id.clone(),
+            sender_run_id: "run-two".into(),
+            item_type: project_store::AgentMailboxItemType::HeadsUp,
+            parent_item_id: None,
+            target_agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+            target_run_id: Some("run-one".into()),
+            target_role: None,
+            title: "Heads up before writing".into(),
+            body: "I am touching adjacent files; please coordinate before mutating.".into(),
+            related_paths: vec!["src/stale.rs".into()],
+            priority: project_store::AgentMailboxPriority::Normal,
+            created_at: now_timestamp(),
+            ttl_seconds: Some(3_600),
+        },
+    )
+    .expect("publish later mailbox item");
+
+    let request = write_request("src/stale.rs");
+    let decision = evaluate_write_policy(&runtime, &request);
+
+    assert_eq!(decision.action, AutonomousSafetyPolicyAction::Deny);
+    assert_eq!(
+        decision.code,
+        "policy_requires_mailbox_check_before_mutation"
+    );
+    assert!(decision.explanation.contains("stale"));
 }
 
 #[test]
@@ -247,6 +530,43 @@ fn file_reservations_detect_overlap_expire_and_allow_explicit_override() {
     )
     .expect("check after expiry");
     assert!(after_expiry.is_empty());
+}
+
+#[test]
+fn file_reservations_capture_observed_file_hash() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (project_id, repo_root) = seed_project(&root);
+    fs::write(repo_root.join("src/lib.rs"), "pub fn demo() {}\n").expect("seed file");
+    seed_run(
+        &repo_root,
+        &project_id,
+        project_store::DEFAULT_AGENT_SESSION_ID,
+        "run-hash",
+    );
+
+    let claim = project_store::claim_agent_file_reservations(
+        &repo_root,
+        &project_store::ClaimAgentFileReservationRequest {
+            project_id: project_id.clone(),
+            owner_run_id: "run-hash".into(),
+            paths: vec!["src/lib.rs".into()],
+            operation: project_store::AgentCoordinationReservationOperation::Editing,
+            note: None,
+            override_reason: None,
+            claimed_at: "2026-05-03T00:00:00Z".into(),
+            lease_seconds: Some(300),
+        },
+    )
+    .expect("claim reservation");
+
+    assert_eq!(claim.claimed.len(), 1);
+    let reservation = &claim.claimed[0];
+    assert_eq!(reservation.path, "src/lib.rs");
+    assert_eq!(reservation.observed_hash.as_deref().map(str::len), Some(64));
+    assert_eq!(
+        reservation.observed_at.as_deref(),
+        Some("2026-05-03T00:00:00Z")
+    );
 }
 
 #[test]

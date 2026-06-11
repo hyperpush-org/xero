@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { homedir } from 'node:os'
 import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { loadRootDotenv } from '../../scripts/lib/env.mjs'
 import { createLogger, streamRun } from '../../scripts/lib/preflight-utils.mjs'
@@ -23,13 +23,18 @@ const sidecarPath = resolve(
   desktopSidecarBinaryName(),
 )
 
-const env = {
-  ...rootEnv,
-  CARGO_BUILD_JOBS: rootEnv.CARGO_BUILD_JOBS ?? '4',
-  CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: runner,
-  CARGO_TARGET_X86_64_APPLE_DARWIN_RUNNER: runner,
-  XERO_APP_DATA_DIR: rootEnv.XERO_APP_DATA_DIR ?? devAppDataDir,
-  XERO_DESKTOP_SIDECAR_PATH: sidecarPath,
+const env = buildTauriDevEnv(rootEnv, { devAppDataDir, runner, sidecarPath })
+
+export function buildTauriDevEnv(rootEnv, { devAppDataDir, runner, sidecarPath }) {
+  return {
+    ...rootEnv,
+    CARGO_BUILD_JOBS: rootEnv.CARGO_BUILD_JOBS ?? '4',
+    CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: runner,
+    CARGO_TARGET_X86_64_APPLE_DARWIN_RUNNER: runner,
+    XERO_APP_DATA_DIR: rootEnv.XERO_APP_DATA_DIR ?? devAppDataDir,
+    XERO_DESKTOP_SIDECAR_PATH: sidecarPath,
+    XERO_LAUNCH_MODE: rootEnv.XERO_LAUNCH_MODE ?? 'local-source',
+  }
 }
 
 async function main() {
@@ -70,10 +75,16 @@ async function main() {
   })
 }
 
-main().catch((error) => {
-  logger.fail(error?.message ?? String(error))
-  process.exit(1)
-})
+if (isDirectRun()) {
+  main().catch((error) => {
+    logger.fail(error?.message ?? String(error))
+    process.exit(1)
+  })
+}
+
+function isDirectRun() {
+  return Boolean(process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href)
+}
 
 function defaultAppDataDir(directoryName) {
   if (process.platform === 'darwin') {

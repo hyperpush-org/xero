@@ -679,6 +679,7 @@ pub fn developer_tool_model_run<R: Runtime + 'static>(
     let controls = RuntimeRunControlInputDto {
         runtime_agent_id,
         agent_definition_id: None,
+        agent_definition_version: None,
         provider_profile_id: None,
         model_id: String::new(),
         thinking_effort: None,

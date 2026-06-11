@@ -58,6 +58,12 @@ function makeAdvanced(overrides: Partial<AgentHeaderAdvancedFields> = {}): Agent
     subagentAllowed: false,
     commandAllowed: false,
     destructiveWriteAllowed: false,
+    handoffEnabled: true,
+    handoffRoutingMode: 'same_agent',
+    handoffAllowedTargets: [],
+    handoffPreserveDefinitionVersion: true,
+    handoffCarrySummary: true,
+    handoffIncludeDurableContext: true,
     ...overrides,
   }
 }

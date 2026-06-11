@@ -875,6 +875,7 @@ function SessionView() {
 									isComputerUseSession ? undefined : handleApprovalModeChange
 								}
 								pendingAttachments={attachmentsHook.pendingAttachments}
+								attachmentCompatibility={resolvedModelOption}
 								onAddFiles={attachmentsHook.addFiles}
 								onRemoveAttachment={attachmentsHook.removeAttachment}
 								contextMeter={contextMeter}
@@ -918,6 +919,10 @@ function SessionView() {
 						<ComputerUseDesktopDialog
 							open={desktopControlsOpen}
 							onOpenChange={setDesktopControlsOpen}
+							canClearChat={canClearComputerUseChat}
+							clearChatPending={clearChatPending}
+							clearChatTitle={clearComputerUseChatTitle}
+							onClearChat={handleClearComputerUseChat}
 							disabled={hostConnectionBlocked}
 							disabledReason={hostConnectionBlockedMessage}
 							agentSidebar={renderConversationPane(
@@ -1578,18 +1583,26 @@ interface ComputerUseDesktopViewportProps {
 interface ComputerUseDesktopControlsProps
 	extends ComputerUseDesktopViewportProps {
 	agentSidebar: ReactNode;
+	canClearChat: boolean;
+	clearChatPending: boolean;
+	clearChatTitle?: string;
 	disabled?: boolean;
 	disabledReason?: string;
 	onAgentSidebarDensityChange: (density: ComputerUseSidebarDensity) => void;
+	onClearChat: () => void;
 	onOpenChange: (open: boolean) => void;
 	open: boolean;
 }
 
 function ComputerUseDesktopDialog({
 	agentSidebar,
+	canClearChat,
+	clearChatPending,
+	clearChatTitle,
 	disabled = false,
 	disabledReason,
 	onAgentSidebarDensityChange,
+	onClearChat,
 	onOpenChange,
 	open,
 	...props
@@ -1634,7 +1647,11 @@ function ComputerUseDesktopDialog({
 					open={open}
 					onOpenChange={onOpenChange}
 					agentSidebar={agentSidebar}
+					canClearChat={canClearChat}
+					clearChatPending={clearChatPending}
+					clearChatTitle={clearChatTitle}
 					onAgentSidebarDensityChange={onAgentSidebarDensityChange}
+					onClearChat={onClearChat}
 					presentation={presentation}
 					viewportProps={props}
 				/>
@@ -1665,14 +1682,22 @@ function ComputerUseDesktopDialog({
 
 function ComputerUseDesktopFullscreen({
 	agentSidebar,
+	canClearChat,
+	clearChatPending,
+	clearChatTitle,
 	onAgentSidebarDensityChange,
+	onClearChat,
 	onOpenChange,
 	open,
 	presentation,
 	viewportProps,
 }: {
 	agentSidebar: ReactNode;
+	canClearChat: boolean;
+	clearChatPending: boolean;
+	clearChatTitle?: string;
 	onAgentSidebarDensityChange: (density: ComputerUseSidebarDensity) => void;
+	onClearChat: () => void;
 	onOpenChange: (open: boolean) => void;
 	open: boolean;
 	presentation: DesktopControlPresentation;
@@ -1710,7 +1735,14 @@ function ComputerUseDesktopFullscreen({
 				resizable
 				widthStorageKey="xero.cloud.computerUseSidebar.width.v1"
 			>
-				<ComputerUseSidebarHeader />
+				<ComputerUseSidebarHeader
+					clearDisabled={!canClearChat}
+					clearPending={clearChatPending}
+					clearTitle={clearChatTitle}
+					onClear={onClearChat}
+					closeLabel="Close Computer Use"
+					onClose={() => onOpenChange(false)}
+				/>
 				<ComputerUseSidebarContent>{agentSidebar}</ComputerUseSidebarContent>
 			</ComputerUseSidebar>
 		</section>,
@@ -2057,6 +2089,7 @@ export function ComputerUseDesktopViewport({
 	const adaptiveQualityStableSamplesRef = useRef(0);
 	const adaptiveQualityLastChangedAtRef = useRef(0);
 	const liveVideoSeenRef = useRef(false);
+	const hasLiveVideoRef = useRef(false);
 	const fallbackRecoveryLastAttemptAtRef = useRef(0);
 	const lastDesktopStreamRequestAtRef = useRef(0);
 	const lastDesktopVideoFrameAtRef = useRef(0);
@@ -2259,6 +2292,15 @@ export function ComputerUseDesktopViewport({
 		}
 		setFallbackPreviewUrl(null);
 	}, []);
+	const setDesktopHasLiveVideo = useCallback((next: boolean) => {
+		hasLiveVideoRef.current = next;
+		setHasLiveVideo(next);
+	}, []);
+	const desktopStateAfterManualControlEnds =
+		useCallback((): DesktopViewportState => {
+			if (hasLiveVideoRef.current) return "live";
+			return streamIdRef.current ? "degraded" : "waiting";
+		}, []);
 
 	const clearDesktopStreamMedia = useCallback(
 		({
@@ -2287,7 +2329,7 @@ export function ComputerUseDesktopViewport({
 			pendingIceCandidatesRef.current = [];
 			dataChannelFramesRef.current.clear();
 			if (videoRef.current) videoRef.current.srcObject = null;
-			setHasLiveVideo(false);
+			setDesktopHasLiveVideo(false);
 			lastDesktopVideoHealthProbeAtRef.current = 0;
 			if (clearPreview) clearFallbackPreview();
 			if (clearStreamId) {
@@ -2295,7 +2337,7 @@ export function ComputerUseDesktopViewport({
 				setStreamId(null);
 			}
 		},
-		[clearFallbackPreview],
+		[clearFallbackPreview, setDesktopHasLiveVideo],
 	);
 
 	const showDesktopDataChannelFrame = useCallback(
@@ -2312,10 +2354,10 @@ export function ComputerUseDesktopViewport({
 			pendingMediaStreamRef.current = null;
 			if (videoRef.current) videoRef.current.srcObject = null;
 			setFallbackPreviewUrl(objectUrl);
-			setHasLiveVideo(false);
+			setDesktopHasLiveVideo(false);
 			setState((current) => (current === "manual" ? current : "degraded"));
 		},
-		[],
+		[setDesktopHasLiveVideo],
 	);
 	const markDesktopVideoFrame = useCallback(() => {
 		lastDesktopVideoFrameAtRef.current = Date.now();
@@ -2372,7 +2414,7 @@ export function ComputerUseDesktopViewport({
 				pendingIceCandidatesRef.current = [];
 				dataChannelFramesRef.current.clear();
 				if (videoRef.current) videoRef.current.srcObject = null;
-				setHasLiveVideo(false);
+				setDesktopHasLiveVideo(false);
 			}
 			if (peerConnectionRef.current) return peerConnectionRef.current;
 			if (typeof RTCPeerConnection === "undefined") {
@@ -2408,7 +2450,7 @@ export function ComputerUseDesktopViewport({
 				markDesktopVideoFrame();
 				fallbackRecoveryLastAttemptAtRef.current = 0;
 				clearFallbackPreview();
-				setHasLiveVideo(true);
+				setDesktopHasLiveVideo(true);
 				setState((current) =>
 					current === "manual" || manualActive ? "manual" : "live",
 				);
@@ -2450,6 +2492,7 @@ export function ComputerUseDesktopViewport({
 			manualActive,
 			markDesktopVideoFrame,
 			sessionId,
+			setDesktopHasLiveVideo,
 			streamRunId,
 			streamToken,
 		],
@@ -2708,7 +2751,7 @@ export function ComputerUseDesktopViewport({
 				}
 				fallbackPreviewObjectUrlRef.current = objectUrl;
 				setFallbackPreviewUrl(objectUrl);
-				setHasLiveVideo(false);
+				setDesktopHasLiveVideo(false);
 				setState((current) => (current === "manual" ? current : "degraded"));
 			}
 			if (
@@ -2717,10 +2760,14 @@ export function ComputerUseDesktopViewport({
 				state !== "live" &&
 				state !== "manual"
 			) {
-				setState(
+				const webRtcStreamHealthy =
 					nextStreamDetails?.transport === "web_rtc" &&
-						nextStreamDetails.status !== "degraded"
-						? "connecting"
+					nextStreamDetails.status !== "degraded";
+				setState(
+					webRtcStreamHealthy
+						? hasLiveVideoRef.current
+							? "live"
+							: "connecting"
 						: "degraded",
 				);
 			} else if (
@@ -2740,7 +2787,7 @@ export function ComputerUseDesktopViewport({
 					manualControlIdRef.current = null;
 					setManualControlId(null);
 					setManualState("manual_denied");
-					setState(streamIdRef.current ? "degraded" : "waiting");
+					setState(desktopStateAfterManualControlEnds());
 				}
 			} else if (
 				payload.schema === "xero.computer_use_manual_control_heartbeat.v1"
@@ -2752,7 +2799,7 @@ export function ComputerUseDesktopViewport({
 				} else {
 					disarmKeyboardCaptureRef.current?.({ flushText: true });
 					setManualState("manual_reconnecting");
-					setState(streamIdRef.current ? "degraded" : "waiting");
+					setState(desktopStateAfterManualControlEnds());
 				}
 			} else if (
 				payload.schema === "xero.computer_use_manual_control_input.v1"
@@ -2761,7 +2808,7 @@ export function ComputerUseDesktopViewport({
 				if (!computerUseCommandSucceeded(payload)) {
 					disarmKeyboardCaptureRef.current?.({ flushText: true });
 					setManualState("manual_reconnecting");
-					setState(streamIdRef.current ? "degraded" : "waiting");
+					setState(desktopStateAfterManualControlEnds());
 				}
 			} else if (
 				payload.schema === "xero.computer_use_manual_control_release.v1"
@@ -2771,7 +2818,7 @@ export function ComputerUseDesktopViewport({
 				manualControlIdRef.current = null;
 				setManualControlId(null);
 				setManualState("manual_released");
-				setState(streamIdRef.current ? "degraded" : "waiting");
+				setState(desktopStateAfterManualControlEnds());
 			}
 		});
 		return () => {
@@ -2781,9 +2828,11 @@ export function ComputerUseDesktopViewport({
 		applyAdaptiveStreamQuality,
 		channel,
 		clearDesktopStreamMedia,
+		desktopStateAfterManualControlEnds,
 		handleRemoteCommandResult,
 		handleWebRtcSignal,
 		recoverDesktopWebRtcStream,
+		setDesktopHasLiveVideo,
 		state,
 	]);
 
@@ -2820,7 +2869,7 @@ export function ComputerUseDesktopViewport({
 							? "manual_reconnecting"
 							: "manual_denied",
 					);
-					setState(streamIdRef.current ? "degraded" : "waiting");
+					setState(desktopStateAfterManualControlEnds());
 				}
 				if (
 					payload.kind === "computer_use_manual_control_release" &&
@@ -2830,14 +2879,14 @@ export function ComputerUseDesktopViewport({
 					manualControlIdRef.current = null;
 					setManualControlId(null);
 					setManualState("manual_released");
-					setState(streamIdRef.current ? "degraded" : "waiting");
+					setState(desktopStateAfterManualControlEnds());
 				}
 			},
 		);
 		return () => {
 			channel.off("computer_use_command_outcome", ref);
 		};
-	}, [channel]);
+	}, [channel, desktopStateAfterManualControlEnds]);
 
 	useEffect(() => {
 		if (!channel || !deviceId || !manualActive || !manualControlId) return;
@@ -2857,7 +2906,7 @@ export function ComputerUseDesktopViewport({
 					result.outcome === "timed_out"
 				) {
 					setManualState("manual_reconnecting");
-					setState(streamIdRef.current ? "degraded" : "waiting");
+					setState(desktopStateAfterManualControlEnds());
 				}
 			});
 		};
@@ -2868,6 +2917,7 @@ export function ComputerUseDesktopViewport({
 		channel,
 		computerId,
 		deviceId,
+		desktopStateAfterManualControlEnds,
 		manualControlId,
 		manualActive,
 		sessionId,
@@ -2935,10 +2985,10 @@ export function ComputerUseDesktopViewport({
 				setManualControlId(null);
 				setManualState("manual_denied");
 			}
-			setState(streamIdRef.current ? "degraded" : "waiting");
+			setState(desktopStateAfterManualControlEnds());
 		}, timeoutMs);
 		return () => window.clearTimeout(handle);
-	}, [manualState]);
+	}, [desktopStateAfterManualControlEnds, manualState]);
 
 	useEffect(() => {
 		if (!channel || !deviceId || !streamId) return;
@@ -3073,7 +3123,7 @@ export function ComputerUseDesktopViewport({
 			pendingIceCandidatesRef.current = [];
 			dataChannelFramesRef.current.clear();
 			if (videoRef.current) videoRef.current.srcObject = null;
-			setHasLiveVideo(false);
+			setDesktopHasLiveVideo(false);
 			requestComputerUseStream(channel, {
 				computerId,
 				sessionId,
@@ -3094,6 +3144,7 @@ export function ComputerUseDesktopViewport({
 		deviceId,
 		iceServers,
 		sessionId,
+		setDesktopHasLiveVideo,
 		state,
 		streamRunId,
 		streamToken,
@@ -3233,6 +3284,7 @@ export function ComputerUseDesktopViewport({
 				manualControlIdRef.current = null;
 				setManualControlId(null);
 				setManualState("manual_denied");
+				setState(desktopStateAfterManualControlEnds());
 			}
 		});
 	};
@@ -3254,7 +3306,7 @@ export function ComputerUseDesktopViewport({
 				manualControlIdRef.current = null;
 				setManualControlId(null);
 				setManualState("manual_released");
-				setState(streamIdRef.current ? "degraded" : "waiting");
+				setState(desktopStateAfterManualControlEnds());
 			}
 		});
 	};
@@ -4400,10 +4452,10 @@ export function ComputerUseDesktopViewport({
 				}),
 	};
 	const desktopMediaClassName = cn(
-		"object-contain",
+		"block min-h-0 min-w-0 object-contain",
 		shouldRotateDesktopContent
 			? "absolute left-1/2 top-1/2 max-w-none -translate-x-1/2 -translate-y-1/2 rotate-90"
-			: "h-full w-full",
+			: "h-full w-full max-h-full max-w-full",
 	);
 	const desktopMediaStyle: CSSProperties | undefined =
 		shouldRotateDesktopContent
@@ -4460,7 +4512,7 @@ export function ComputerUseDesktopViewport({
 					</DialogDescription>
 				</div>
 			) : null}
-			<div className="h-full min-h-0">
+			<div className="h-full w-full min-h-0 min-w-0 overflow-hidden">
 				<section
 					ref={desktopSurfaceRef}
 					aria-label="Desktop"
@@ -4472,7 +4524,7 @@ export function ComputerUseDesktopViewport({
 					onLostPointerCapture={handleLostPointerCapture}
 					onWheel={handleWheel}
 					className={cn(
-						"relative flex h-full min-h-0 overflow-hidden bg-zinc-950 outline-none",
+						"relative flex h-full w-full min-h-0 min-w-0 overflow-hidden bg-zinc-950 outline-none",
 						presentation.isMobile && "touch-none select-none",
 						keyboardCaptured && "ring-2 ring-primary/40 ring-inset",
 					)}
@@ -4495,7 +4547,7 @@ export function ComputerUseDesktopViewport({
 						className="pointer-events-none absolute left-0 top-0 z-0 h-px w-px resize-none border-0 bg-transparent p-0 opacity-0 outline-none"
 					/>
 					<div
-						className="relative flex min-h-0 flex-1 items-center justify-center bg-zinc-950 text-zinc-100"
+						className="desktop-control-media-layer relative z-0 flex h-full w-full min-h-0 min-w-0 flex-1 basis-full items-center justify-center overflow-hidden bg-zinc-950 text-zinc-100 [contain:layout_paint]"
 						style={desktopMediaLayerStyle}
 					>
 						{hasLiveVideo ? (

@@ -37,6 +37,22 @@ export interface PendingOperatorIntent {
   kind: OperatorIntentKind
 }
 
+export interface ActionPromptError {
+  actionId: string
+  message: string
+}
+
+interface SubmitExplicitPromptOptions {
+  controls?: RuntimeRunControlInputDto | null
+  promptVisibility?: 'user' | 'internal'
+  replaceQueuedPrompt?: boolean
+}
+
+interface HiddenDraftPromptEntry {
+  id: string
+  value: string
+}
+
 interface UseAgentRuntimeControllerOptions {
   projectId: string
   selectedModelSelectionKey: string | null
@@ -475,6 +491,8 @@ export function useAgentRuntimeController({
   const [runtimeSessionBindInFlight, setRuntimeSessionBindInFlight] = useState(false)
   const [queuedDraftAcknowledgement, setQueuedDraftAcknowledgement] = useState<string | null>(null)
   const [runtimeRunActionMessage, setRuntimeRunActionMessage] = useState<string | null>(null)
+  const [operatorActionPromptError, setOperatorActionPromptError] =
+    useState<ActionPromptError | null>(null)
   const [autoCompactEnabled, setAutoCompactEnabled] = useState(
     () => getInitialComposerSettings().autoCompactEnabled,
   )
@@ -489,7 +507,7 @@ export function useAgentRuntimeController({
   const lastSeenProjectIdRef = useRef(projectId)
   const lastSeenRuntimeRunIdRef = useRef<string | null>(renderableRuntimeRun?.runId ?? null)
   const draftPromptRef = useRef(draftPrompt)
-  const hiddenDraftPromptsRef = useRef<string[]>([])
+  const hiddenDraftPromptsRef = useRef<HiddenDraftPromptEntry[]>([])
   const lastReportedComposerControlsRef = useRef<RuntimeRunControlInputDto | null | undefined>(undefined)
   const hasUserComposerSettingsRef = useRef(getInitialComposerSettings().fromStoredControls)
 
@@ -861,13 +879,17 @@ export function useAgentRuntimeController({
 
   function promptWithHiddenContext(visiblePrompt: string): string {
     const hiddenPrompt = hiddenDraftPromptsRef.current
-      .map((value) => value.trim())
+      .map((entry) => entry.value.trim())
       .filter((value) => value.length > 0)
       .join('\n\n')
     if (!hiddenPrompt) {
       return visiblePrompt
     }
     return visiblePrompt.length > 0 ? `${visiblePrompt}\n\n${hiddenPrompt}` : hiddenPrompt
+  }
+
+  function getDraftPromptWithHiddenContext(): string {
+    return promptWithHiddenContext(draftPromptRef.current.trim())
   }
 
   async function handleStartRuntimeRun(): Promise<boolean> {
@@ -979,6 +1001,89 @@ export function useAgentRuntimeController({
     }
   }
 
+  async function handleSubmitExplicitPrompt(
+    prompt: string,
+    options: SubmitExplicitPromptOptions = {},
+  ): Promise<boolean> {
+    const promptToSubmit = prompt.trim()
+    const controlsToSubmit = options.controls ?? null
+    const acknowledgeAsUserPrompt = options.promptVisibility !== 'internal'
+    const hasBlockingQueuedPrompt = hasQueuedPrompt && options.replaceQueuedPrompt !== true
+    if (
+      promptToSubmit.length === 0 ||
+      hasBlockingQueuedPrompt ||
+      runtimeRunActionStatus === 'running'
+    ) {
+      return false
+    }
+
+    setRuntimeRunActionMessage(null)
+
+    try {
+      if (!activeRuntimeRun) {
+        if (!onStartRuntimeRun || (!canStartRuntimeRun && !canStartRuntimeSession)) {
+          return false
+        }
+
+        if (!canStartRuntimeRun && canStartRuntimeSession) {
+          if (!onStartRuntimeSession) {
+            return false
+          }
+
+          setRuntimeSessionBindInFlight(true)
+          const boundRuntimeSession = await onStartRuntimeSession({
+            providerProfileId: selectedControlInput?.providerProfileId ?? null,
+          })
+          setRuntimeSessionBindInFlight(false)
+
+          if (!boundRuntimeSession?.isAuthenticated) {
+            const message = boundRuntimeSession?.isLoginInProgress
+              ? 'Finish provider sign-in, then send again.'
+              : boundRuntimeSession?.lastError?.message?.trim() ||
+                'Xero could not authenticate the configured provider. Check the provider setup and try again.'
+            setRuntimeRunActionMessage(message)
+            return false
+          }
+        }
+
+        if (!(await dictation.stopBeforeSubmit())) {
+          return false
+        }
+
+        await onStartRuntimeRun({
+          controls: controlsToSubmit ?? selectedControlInput,
+          prompt: promptToSubmit,
+        })
+        if (acknowledgeAsUserPrompt) {
+          setQueuedDraftAcknowledgement(promptToSubmit)
+        }
+        return true
+      }
+
+      if (!onUpdateRuntimeRunControls) {
+        return false
+      }
+
+      if (!(await dictation.stopBeforeSubmit())) {
+        return false
+      }
+
+      await onUpdateRuntimeRunControls({
+        ...(controlsToSubmit ? { controls: controlsToSubmit } : {}),
+        prompt: promptToSubmit,
+      })
+      if (acknowledgeAsUserPrompt) {
+        setQueuedDraftAcknowledgement(promptToSubmit)
+      }
+      return true
+    } catch (error) {
+      setQueuedDraftAcknowledgement(null)
+      setRuntimeSessionBindInFlight(false)
+      setRuntimeRunActionMessage(getErrorMessage(error, 'Xero could not continue with the current agent.'))
+      return false
+    }
+  }
+
   async function handleStopRuntimeRun() {
     if (!canStopRuntimeRun || !onStopRuntimeRun || !renderableRuntimeRun) {
       return
@@ -1006,12 +1111,23 @@ export function useAgentRuntimeController({
     })
   }
 
-  function handleAppendHiddenDraftPrompt(value: string) {
+  function handleAppendHiddenDraftPrompt(value: string, id?: string) {
     const nextPrompt = value.trim()
     if (nextPrompt.length === 0) {
       return
     }
-    hiddenDraftPromptsRef.current = [...hiddenDraftPromptsRef.current, nextPrompt]
+    const nextEntry: HiddenDraftPromptEntry = {
+      id: id ?? `hidden-draft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      value: nextPrompt,
+    }
+    hiddenDraftPromptsRef.current = [
+      ...hiddenDraftPromptsRef.current.filter((entry) => entry.id !== nextEntry.id),
+      nextEntry,
+    ]
+  }
+
+  function handleRemoveHiddenDraftPrompt(id: string) {
+    hiddenDraftPromptsRef.current = hiddenDraftPromptsRef.current.filter((entry) => entry.id !== id)
   }
 
   function handleAutoCompactEnabledChange(value: boolean) {
@@ -1187,12 +1303,18 @@ export function useAgentRuntimeController({
     }
 
     setPendingOperatorIntent({ actionId, kind: decision })
+    setOperatorActionPromptError(null)
 
     try {
       await onResolveOperatorAction(actionId, decision, {
         userAnswer: options.userAnswer ?? null,
       })
-    } catch {
+      setOperatorActionPromptError(null)
+    } catch (error) {
+      setOperatorActionPromptError({
+        actionId,
+        message: getErrorMessage(error, 'Xero could not persist the operator decision for this project.'),
+      })
       // Preserve the last truthful UI state. Hook-backed callers surface operatorActionError.
     } finally {
       setPendingOperatorIntent((currentIntent) =>
@@ -1207,12 +1329,18 @@ export function useAgentRuntimeController({
     }
 
     setPendingOperatorIntent({ actionId, kind: 'resume' })
+    setOperatorActionPromptError(null)
 
     try {
       await onResumeOperatorRun(actionId, {
         userAnswer: options.userAnswer ?? null,
       })
-    } catch {
+      setOperatorActionPromptError(null)
+    } catch (error) {
+      setOperatorActionPromptError({
+        actionId,
+        message: getErrorMessage(error, 'Xero could not record the operator resume request for this project.'),
+      })
       // Preserve the last truthful UI state. Hook-backed callers surface operatorActionError.
     } finally {
       setPendingOperatorIntent((currentIntent) =>
@@ -1274,6 +1402,7 @@ export function useAgentRuntimeController({
     runtimeSessionBindInFlight,
     operatorAnswers,
     pendingOperatorIntent,
+    operatorActionPromptError,
     recentRunReplacement,
     runtimeRunActionError: composerActionError,
     runtimeRunActionErrorTitle: composerActionErrorTitle,
@@ -1282,6 +1411,9 @@ export function useAgentRuntimeController({
     handleDraftPromptChange,
     handleAppendDraftPrompt,
     handleAppendHiddenDraftPrompt,
+    handleRemoveHiddenDraftPrompt,
+    getDraftPromptWithHiddenContext,
+    handleSubmitExplicitPrompt,
     handleAutoCompactEnabledChange,
     handleSubmitDraftPrompt,
     handleComposerModelChange,

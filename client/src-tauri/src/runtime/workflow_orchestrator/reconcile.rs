@@ -2800,17 +2800,26 @@ fn controls_for_agent_ref(
     agent_ref: &AgentRefDto,
     run_overrides: Option<&WorkflowRunOverrideDto>,
 ) -> CommandResult<RuntimeRunControlInputDto> {
-    let (runtime_agent_id, agent_definition_id) = match agent_ref {
+    let (runtime_agent_id, agent_definition_id, agent_definition_version) = match agent_ref {
         AgentRefDto::BuiltIn {
-            runtime_agent_id, ..
-        } => (*runtime_agent_id, None),
-        AgentRefDto::Custom { definition_id, .. } => {
-            let selection = project_store::resolve_agent_definition_for_run(
+            runtime_agent_id,
+            version,
+        } => (*runtime_agent_id, None, Some(*version)),
+        AgentRefDto::Custom {
+            definition_id,
+            version,
+        } => {
+            let selection = project_store::resolve_agent_definition_version_for_run(
                 repo_root,
                 Some(definition_id),
+                Some(*version),
                 crate::commands::default_runtime_agent_id(),
             )?;
-            (selection.runtime_agent_id, Some(selection.definition_id))
+            (
+                selection.runtime_agent_id,
+                Some(selection.definition_id),
+                Some(selection.version),
+            )
         }
     };
     let approval_mode: RuntimeRunApprovalModeDto = run_overrides
@@ -2820,6 +2829,7 @@ fn controls_for_agent_ref(
     Ok(RuntimeRunControlInputDto {
         runtime_agent_id,
         agent_definition_id,
+        agent_definition_version,
         provider_profile_id: run_overrides
             .and_then(|overrides| overrides.provider_profile_id.clone())
             .or_else(|| definition.run_policy.default_provider_profile_id.clone()),

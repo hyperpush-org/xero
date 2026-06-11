@@ -7,6 +7,7 @@ pub mod agent_session;
 pub mod agent_session_title;
 pub mod agent_task;
 pub mod agent_tooling_settings;
+pub mod autonomous_web_search;
 pub mod backend_jobs;
 pub mod browser;
 pub mod cancel_autonomous_run;
@@ -14,6 +15,7 @@ pub mod code_rollback;
 pub mod complete_oauth_callback;
 pub mod create_repository;
 pub mod desktop_control;
+pub mod developer_tool_error_log;
 pub mod developer_tool_harness;
 pub mod development_storage;
 pub mod dictation;
@@ -77,7 +79,6 @@ pub mod wipe_data;
 pub mod workflow_agents;
 pub mod workflows;
 pub mod workspace_index;
-pub mod xai_device_code_login;
 
 pub(crate) mod contracts;
 pub(crate) mod runtime_support;
@@ -114,26 +115,40 @@ pub use agent_session::{
 };
 pub use agent_session_title::auto_name_agent_session;
 pub use agent_task::{
-    cancel_agent_run, export_agent_trace, get_agent_run, list_agent_runs, resume_agent_run,
-    send_agent_message, start_agent_task, subscribe_agent_stream,
+    cancel_agent_run, export_agent_trace, get_agent_run, list_agent_runs, reject_agent_action,
+    resume_agent_run, send_agent_message, start_agent_task, subscribe_agent_stream,
 };
 pub use agent_tooling_settings::{
     agent_tooling_settings, agent_tooling_update_settings, AgentToolingModelOverrideDto,
     AgentToolingSettingsDto, UpsertAgentToolingModelOverrideRequestDto,
     UpsertAgentToolingSettingsRequestDto,
 };
+pub use autonomous_web_search::{
+    autonomous_web_search_check_provider, autonomous_web_search_delete_provider,
+    autonomous_web_search_set_active_provider, autonomous_web_search_settings,
+    autonomous_web_search_update_settings, autonomous_web_search_upsert_provider,
+    AutonomousWebProviderManagedStatusDto, AutonomousWebSearchProviderCheckDto,
+    AutonomousWebSearchProviderKindMetadataDto, AutonomousWebSearchProviderProfileDto,
+    AutonomousWebSearchProviderReadinessDto, AutonomousWebSearchSettingsDto,
+    CheckAutonomousWebSearchProviderRequestDto, DeleteAutonomousWebSearchProviderRequestDto,
+    SetActiveAutonomousWebSearchProviderRequestDto, UpsertAutonomousWebSearchProviderRequestDto,
+    UpsertAutonomousWebSearchSettingsRequestDto,
+};
 pub use browser::{
     browser_back, browser_click, browser_control_settings, browser_control_update_settings,
-    browser_cookies_get, browser_cookies_set, browser_current_url, browser_eval,
-    browser_eval_fire_and_forget, browser_forward, browser_hide, browser_history_state,
-    browser_internal_event, browser_internal_reply, browser_navigate, browser_press_key,
-    browser_query, browser_read_text, browser_reload, browser_resize, browser_resize_drag_end,
-    browser_resize_drag_start, browser_screenshot, browser_scroll, browser_show, browser_stop,
-    browser_storage_clear, browser_storage_read, browser_storage_write, browser_tab_close,
-    browser_tab_focus, browser_tab_list, browser_type, browser_wait_for_load,
-    browser_wait_for_selector, BrowserControlPreferenceDto, BrowserControlSettingsDto,
-    BrowserState, BrowserTabMetadata, UpsertBrowserControlSettingsRequestDto,
-    BROWSER_CONSOLE_EVENT, BROWSER_DIALOG_EVENT, BROWSER_DOWNLOAD_EVENT, BROWSER_LOAD_STATE_EVENT,
+    browser_cookies_get, browser_cookies_set, browser_current_url, browser_dev_server_running,
+    browser_eval, browser_eval_fire_and_forget, browser_forward, browser_hide,
+    browser_history_state, browser_internal_event, browser_internal_reply,
+    browser_list_running_dev_servers, browser_navigate, browser_press_key, browser_query,
+    browser_read_text, browser_reload, browser_resize, browser_resize_drag_end,
+    browser_resize_drag_start, browser_screenshot, browser_scroll, browser_set_occlusion_regions,
+    browser_show, browser_stop, browser_storage_clear, browser_storage_read, browser_storage_write,
+    browser_tab_close, browser_tab_focus, browser_tab_list, browser_tab_reorder, browser_type,
+    browser_wait_for_load, browser_wait_for_selector, BrowserControlPreferenceDto,
+    BrowserControlSettingsDto,
+    BrowserRunningDevServerDto, BrowserState, BrowserTabMetadata,
+    UpsertBrowserControlSettingsRequestDto, BROWSER_CONSOLE_EVENT, BROWSER_DIALOG_EVENT,
+    BROWSER_DOWNLOAD_EVENT, BROWSER_LOAD_STATE_EVENT, BROWSER_OCCLUSION_CLICK_EVENT,
     BROWSER_TAB_PREFIX, BROWSER_TAB_UPDATED_EVENT, BROWSER_URL_CHANGED_EVENT,
 };
 pub use cancel_autonomous_run::cancel_autonomous_run;
@@ -146,6 +161,7 @@ pub use desktop_control::{
     DesktopControlPolicyProfileDto, DesktopControlSettingsDto, DesktopControlStatusDto,
     UpsertDesktopControlSettingsRequestDto,
 };
+pub use developer_tool_error_log::{developer_tool_error_log_clear, developer_tool_error_log_list};
 pub use developer_tool_harness::{
     developer_tool_catalog, developer_tool_dry_run, developer_tool_harness_project,
     developer_tool_model_run, developer_tool_sequence_delete, developer_tool_sequence_list,
@@ -195,7 +211,10 @@ pub use git_operations::{
     git_commit, git_discard_changes, git_fetch, git_pull, git_push, git_revert_patch,
     git_stage_paths, git_unstage_paths,
 };
-pub use global_computer_use::{ensure_global_computer_use_session, GlobalComputerUseSessionDto};
+pub use global_computer_use::{
+    ensure_global_computer_use_session, reset_global_computer_use_session,
+    GlobalComputerUseSessionDto,
+};
 pub use import_mcp_servers::import_mcp_servers;
 pub use import_repository::import_repository;
 pub use list_mcp_servers::{list_mcp_servers, refresh_mcp_server_statuses};
@@ -220,11 +239,12 @@ pub use project_records::{
     SupersedeProjectContextRecordResponseDto,
 };
 pub use project_runner::{
-    suggest_project_start_targets, terminal_close, terminal_open, terminal_resize, terminal_write,
-    update_project_start_targets, OpenTerminalRequestDto, OpenTerminalResponseDto,
-    StartTargetInputDto, SuggestProjectStartTargetsRequestDto, SuggestedStartTargetDto,
-    SuggestedStartTargetsDto, TerminalIdRequestDto, TerminalResizeRequestDto,
-    TerminalWriteRequestDto, UpdateProjectStartTargetsRequestDto,
+    suggest_project_start_targets, terminal_clear_transcript, terminal_close, terminal_open,
+    terminal_read_transcript, terminal_resize, terminal_write, update_project_start_targets,
+    OpenTerminalRequestDto, OpenTerminalResponseDto, StartTargetInputDto,
+    SuggestProjectStartTargetsRequestDto, SuggestedStartTargetDto, SuggestedStartTargetsDto,
+    TerminalIdRequestDto, TerminalResizeRequestDto, TerminalTranscriptRequestDto,
+    TerminalTranscriptResponseDto, TerminalWriteRequestDto, UpdateProjectStartTargetsRequestDto,
 };
 pub use project_state::{
     create_project_state_backup, list_project_state_backups, read_app_ui_state,
@@ -254,7 +274,7 @@ pub use resume_operator_run::resume_operator_run;
 pub use search_project::{replace_in_project, search_project};
 pub use session_history::{
     branch_agent_session, compact_session_history, correct_session_memory, delete_session_memory,
-    export_session_transcript, extract_session_memory_candidates, get_session_context_snapshot,
+    export_session_transcript, extract_session_memories, get_session_context_snapshot,
     get_session_memory_review_queue, get_session_transcript, list_session_memories,
     rewind_agent_session, save_session_transcript_export, search_session_transcripts,
     update_session_memory,
@@ -277,12 +297,14 @@ pub use solana::{
     solana_persona_export_keypair, solana_persona_fund, solana_persona_import_keypair,
     solana_persona_list, solana_persona_roles, solana_priority_fee_estimate, solana_program_build,
     solana_program_deploy, solana_program_rollback, solana_program_upgrade_check,
-    solana_rpc_endpoints_set, solana_rpc_health, solana_scenario_list, solana_scenario_run,
-    solana_secrets_patterns, solana_secrets_scan, solana_secrets_scope_check,
-    solana_snapshot_create, solana_snapshot_delete, solana_snapshot_list, solana_snapshot_restore,
-    solana_squads_proposal_create, solana_subscribe_ready, solana_toolchain_install,
-    solana_toolchain_install_status, solana_toolchain_status, solana_tx_build, solana_tx_explain,
-    solana_tx_send, solana_tx_simulate, solana_verified_build_submit, SolanaState,
+    solana_provider_profile_delete, solana_provider_profile_select, solana_provider_profile_upsert,
+    solana_provider_profiles_list, solana_rpc_endpoints_set, solana_rpc_health,
+    solana_scenario_list, solana_scenario_run, solana_secrets_patterns, solana_secrets_scan,
+    solana_secrets_scope_check, solana_snapshot_create, solana_snapshot_delete,
+    solana_snapshot_list, solana_snapshot_restore, solana_squads_proposal_create,
+    solana_subscribe_ready, solana_toolchain_install, solana_toolchain_install_status,
+    solana_toolchain_status, solana_tx_build, solana_tx_explain, solana_tx_send,
+    solana_tx_simulate, solana_verified_build_submit, SolanaState,
 };
 pub use soul_settings::{
     soul_settings, soul_update_settings, SoulIdDto, SoulPresetDto, SoulSettingsDto,
@@ -316,7 +338,6 @@ pub use workflows::{
 pub use workspace_index::{
     workspace_explain, workspace_index, workspace_query, workspace_reset, workspace_status,
 };
-pub use xai_device_code_login::{poll_xai_device_code_login, start_xai_device_code_login};
 
 pub use crate::environment::service::EnvironmentDiscoveryStatus;
 pub use contracts::{

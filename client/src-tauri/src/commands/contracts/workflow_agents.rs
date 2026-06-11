@@ -331,6 +331,8 @@ pub struct WorkflowAgentDetailDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_structure: Option<JsonValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_policy: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authoring_graph: Option<JsonValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph_projection: Option<WorkflowAgentGraphProjectionDto>,

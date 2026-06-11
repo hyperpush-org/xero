@@ -47,6 +47,9 @@ export interface SessionModelOption {
 	thinkingSupported: boolean;
 	thinkingEffortOptions: SessionThinkingEffort[];
 	defaultThinkingEffort: SessionThinkingEffort | null;
+	inputModalities?: string[];
+	supportedTypes?: string[];
+	attachmentStatus?: string | null;
 }
 
 export interface SessionContextBudget {
@@ -96,6 +99,9 @@ type RawSessionModelOption = Partial<
 		| "thinkingSupported"
 		| "thinkingEffortOptions"
 		| "defaultThinkingEffort"
+		| "inputModalities"
+		| "supportedTypes"
+		| "attachmentStatus"
 	>
 > & {
 	modelId?: string | null;
@@ -105,6 +111,9 @@ type RawSessionModelOption = Partial<
 	thinkingSupported?: boolean | null;
 	thinkingEffortOptions?: ReadonlyArray<string | null> | null;
 	defaultThinkingEffort?: string | null;
+	inputModalities?: ReadonlyArray<string | null> | null;
+	supportedTypes?: ReadonlyArray<string | null> | null;
+	attachmentStatus?: string | null;
 };
 
 export interface SessionTranscript {
@@ -625,9 +634,25 @@ export function normalizeModelOptions(
 			thinkingSupported,
 			thinkingEffortOptions,
 			defaultThinkingEffort,
+			inputModalities: normalizeStringList(option.inputModalities),
+			supportedTypes: normalizeStringList(option.supportedTypes),
+			attachmentStatus:
+				typeof option.attachmentStatus === "string" &&
+				option.attachmentStatus.trim()
+					? option.attachmentStatus.trim()
+					: null,
 		});
 	}
 	return normalized;
+}
+
+function normalizeStringList(
+	values: ReadonlyArray<string | null> | null | undefined,
+): string[] {
+	if (!Array.isArray(values)) return [];
+	return values
+		.map((value) => (typeof value === "string" ? value.trim() : ""))
+		.filter((value) => value.length > 0);
 }
 
 export function parseThinkingEffort(
@@ -691,6 +716,9 @@ function ensureModelOption(
 			thinkingSupported: false,
 			thinkingEffortOptions: [],
 			defaultThinkingEffort: null,
+			inputModalities: [],
+			supportedTypes: [],
+			attachmentStatus: null,
 		},
 		...options,
 	];

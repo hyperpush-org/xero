@@ -21,7 +21,7 @@ use serde::Deserialize;
 use super::{
     policy::{process_manager_policy_trace, CommandPolicyDecision, PreparedCommandRequest},
     process::{apply_sanitized_command_environment, SAFE_COMMAND_ENV_KEYS},
-    repo_scope::{display_relative_or_root, normalize_relative_path},
+    repo_scope::{display_relative_or_root, normalize_optional_relative_path},
     AutonomousCommandPolicyOutcome, AutonomousCommandPolicyTrace, AutonomousProcessActionRiskLevel,
     AutonomousProcessCommandMetadata, AutonomousProcessHighlight, AutonomousProcessHighlightKind,
     AutonomousProcessLifecycleContract, AutonomousProcessManagerAction,
@@ -2575,7 +2575,7 @@ fn validate_process_manager_request(
     }
 
     if let Some(cwd) = request.cwd.as_deref() {
-        normalize_relative_path(cwd, "cwd")?;
+        normalize_optional_relative_path(Some(cwd), "cwd")?;
     }
     if let Some(label) = request.label.as_deref() {
         validate_non_empty(label, "label")?;

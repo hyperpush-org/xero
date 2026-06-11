@@ -10,6 +10,7 @@ function makeUsageSummary(): ProjectUsageSummaryDto {
     totals: {
       runCount: 0,
       inputTokens: 0,
+      billableInputTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
       cacheReadTokens: 0,

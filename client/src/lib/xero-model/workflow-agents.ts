@@ -725,6 +725,7 @@ export const workflowAgentDetailSchema = z
     consumes: z.array(agentConsumedArtifactSchema),
     attachedSkills: z.array(agentAttachedSkillSchema),
     workflowStructure: customAgentWorkflowStructureSchema.nullable().optional(),
+    handoffPolicy: customAgentHandoffPolicySchema.nullable().optional(),
     authoringGraph: agentAuthoringGraphSchema.nullable().optional(),
     graphProjection: workflowAgentGraphProjectionSchema.nullable().optional(),
   })

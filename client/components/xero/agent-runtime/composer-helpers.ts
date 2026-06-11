@@ -137,6 +137,7 @@ export function getComposerModelOption(
       availability: 'orphaned',
       availabilityLabel: 'Unavailable',
       thinkingSupported: false,
+      inputModalities: [],
       thinkingEffortOptions: [],
       defaultThinkingEffort: null,
     }

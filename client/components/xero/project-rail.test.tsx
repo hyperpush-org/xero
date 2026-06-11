@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { ProjectRail } from './project-rail'
@@ -73,6 +73,61 @@ describe('ProjectRail', () => {
     expect(screen.queryByText('0%')).not.toBeInTheDocument()
   })
 
+  it('shows a styled tooltip with the project name for project cards', async () => {
+    render(
+      <ProjectRail
+        activeProjectId="project-1"
+        errorMessage={null}
+        isImporting={false}
+        isLoading={false}
+        onImportProject={() => undefined}
+        onRemoveProject={() => undefined}
+        onSelectProject={() => undefined}
+        pendingProjectRemovalId={null}
+        projectRemovalStatus="idle"
+        projects={projects}
+      />,
+    )
+
+    const projectButton = screen.getByRole('button', { name: 'Open mesh-lang (active)' })
+    fireEvent.pointerEnter(projectButton)
+    fireEvent.pointerMove(projectButton)
+
+    await waitFor(() =>
+      expect(document.querySelector('[data-slot="tooltip-content"][data-side="right"]')).toHaveTextContent(
+        'mesh-lang',
+      ),
+    )
+  })
+
+  it('shows a styled tooltip for the project rail settings button', async () => {
+    render(
+      <ProjectRail
+        activeProjectId="project-1"
+        errorMessage={null}
+        isImporting={false}
+        isLoading={false}
+        onImportProject={() => undefined}
+        onOpenSettings={() => undefined}
+        onRemoveProject={() => undefined}
+        onSelectProject={() => undefined}
+        pendingProjectRemovalId={null}
+        projectRemovalStatus="idle"
+        projects={projects}
+      />,
+    )
+
+    const settingsButton = screen.getByRole('button', { name: 'Settings' })
+    fireEvent.pointerEnter(settingsButton)
+    fireEvent.pointerMove(settingsButton)
+
+    await waitFor(() =>
+      expect(document.querySelector('[data-slot="tooltip-content"][data-side="right"]')).toHaveTextContent(
+        'Settings',
+      ),
+    )
+  })
+
   it('keeps only compact project monograms', () => {
     const onImportProject = vi.fn()
     const { container } = render(
@@ -107,6 +162,96 @@ describe('ProjectRail', () => {
     expect(rail).toHaveAttribute('data-collapsed', 'true')
     expect(rail).toHaveClass('w-12')
     expect(onImportProject).not.toHaveBeenCalled()
+  })
+
+  it('shows the browser-capture style border animation for projects with running agents', () => {
+    const secondProject = {
+      ...projects[0],
+      id: 'project-2',
+      name: 'nova-ui',
+    }
+    const { container } = render(
+      <ProjectRail
+        activeProjectId="project-1"
+        errorMessage={null}
+        isImporting={false}
+        isLoading={false}
+        onImportProject={() => undefined}
+        onRemoveProject={() => undefined}
+        onSelectProject={() => undefined}
+        pendingProjectRemovalId={null}
+        projectRemovalStatus="idle"
+        projects={[...projects, secondProject]}
+        runningProjectIds={new Set(['project-2'])}
+      />,
+    )
+
+    const idleProjectButton = screen.getByRole('button', { name: 'Open mesh-lang (active)' })
+    const runningProjectButton = screen.getByRole('button', { name: 'Open nova-ui' })
+
+    expect(idleProjectButton).not.toHaveAttribute('data-agent-running')
+    expect(runningProjectButton).toHaveAttribute('data-agent-running', 'true')
+    expect(
+      runningProjectButton.querySelector('.xero-project-rail-activity-aura-field'),
+    ).not.toBeNull()
+    expect(container.querySelectorAll('.xero-project-rail-activity-aura-field')).toHaveLength(1)
+  })
+
+  it('shows completed unseen session counts on project cards', () => {
+    const secondProject = {
+      ...projects[0],
+      id: 'project-2',
+      name: 'nova-ui',
+    }
+    render(
+      <ProjectRail
+        activeProjectId="project-1"
+        completedSessionCountsByProject={new Map([['project-2', 2]])}
+        errorMessage={null}
+        isImporting={false}
+        isLoading={false}
+        onImportProject={() => undefined}
+        onRemoveProject={() => undefined}
+        onSelectProject={() => undefined}
+        pendingProjectRemovalId={null}
+        projectRemovalStatus="idle"
+        projects={[...projects, secondProject]}
+      />,
+    )
+
+    const idleProjectButton = screen.getByRole('button', { name: 'Open mesh-lang (active)' })
+    const completedProjectButton = screen.getByRole('button', { name: 'Open nova-ui' })
+
+    expect(idleProjectButton.querySelector('.xero-project-rail-completion-count-badge')).toBeNull()
+    expect(
+      completedProjectButton.querySelector('.xero-project-rail-completion-count-badge'),
+    ).toHaveTextContent('2')
+    expect(completedProjectButton).toHaveAccessibleDescription('2 completed unseen sessions')
+  })
+
+  it('caps large completed unseen session counts in the compact badge', () => {
+    render(
+      <ProjectRail
+        activeProjectId="project-1"
+        completedSessionCountsByProject={new Map([['project-1', 128]])}
+        errorMessage={null}
+        isImporting={false}
+        isLoading={false}
+        onImportProject={() => undefined}
+        onRemoveProject={() => undefined}
+        onSelectProject={() => undefined}
+        pendingProjectRemovalId={null}
+        projectRemovalStatus="idle"
+        projects={projects}
+      />,
+    )
+
+    const projectButton = screen.getByRole('button', { name: 'Open mesh-lang (active)' })
+
+    expect(projectButton.querySelector('.xero-project-rail-completion-count-badge')).toHaveTextContent(
+      '99+',
+    )
+    expect(projectButton).toHaveAccessibleDescription('128 completed unseen sessions')
   })
 
   it('does not render project load errors as a destructive rail slot', () => {

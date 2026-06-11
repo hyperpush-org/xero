@@ -1,4 +1,7 @@
-use std::{path::Path, time::Instant};
+use std::{
+    path::Path,
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
 
 use rusqlite::{params, OptionalExtension};
 use tauri::{AppHandle, Runtime};
@@ -13,8 +16,11 @@ use xero_agent_core::{
 
 use crate::{
     auth::{
-        load_latest_openai_codex_session, load_openai_codex_session_for_profile_link,
+        load_latest_openai_codex_session, load_latest_xai_session,
+        load_openai_codex_session_for_profile_link, load_xai_session,
+        load_xai_session_for_profile_link,
         openai_compatible::resolve_openai_compatible_endpoint_for_profile,
+        refresh_provider_auth_session, StoredXaiSession,
     },
     commands::{
         get_runtime_settings::runtime_settings_snapshot_for_provider_profile, CommandError,
@@ -29,10 +35,10 @@ use crate::{
         ProviderModelThinkingEffort,
     },
     runtime::{
-        ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID, CURSOR_PROVIDER_ID,
-        DEEPSEEK_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID, GITHUB_MODELS_PROVIDER_ID,
-        OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
-        OPENROUTER_PROVIDER_ID, VERTEX_PROVIDER_ID, XAI_PROVIDER_ID,
+        RuntimeProvider, ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID,
+        CURSOR_PROVIDER_ID, DEEPSEEK_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID,
+        GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID,
+        OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID, VERTEX_PROVIDER_ID, XAI_PROVIDER_ID,
     },
     state::DesktopState,
 };
@@ -40,6 +46,7 @@ use crate::{
 const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const XAI_BASE_URL: &str = "https://api.x.ai/v1";
 const PROVIDER_PREFLIGHT_LIVE_PROBE_TIMEOUT_MS: u64 = 5_000;
+const XAI_PREFLIGHT_REFRESH_SKEW_SECONDS: i64 = 60;
 
 pub(crate) fn run_selected_provider_preflight<R: Runtime>(
     app: &AppHandle<R>,
@@ -50,6 +57,7 @@ pub(crate) fn run_selected_provider_preflight<R: Runtime>(
     required_features: ProviderPreflightRequiredFeatures,
 ) -> CommandResult<ProviderPreflightSnapshot> {
     let started = Instant::now();
+    refresh_xai_session_before_preflight_if_needed(app, state, profile_id)?;
     let catalog = load_provider_model_catalog(app, state, profile_id, force_refresh)?;
     let provider_profiles =
         crate::commands::provider_credentials::load_provider_credentials_view(app, state)?;
@@ -125,6 +133,68 @@ pub(crate) fn run_selected_provider_preflight<R: Runtime>(
     Ok(snapshot)
 }
 
+pub(crate) fn provider_catalog_preflight_snapshot_for_run<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    profile_id: &str,
+    provider_id: &str,
+    model_id: &str,
+    required_features: ProviderPreflightRequiredFeatures,
+) -> CommandResult<ProviderPreflightSnapshot> {
+    refresh_xai_session_before_preflight_if_needed(app, state, profile_id)?;
+    let catalog = load_provider_model_catalog(app, state, profile_id, false)?;
+    let provider_profiles =
+        crate::commands::provider_credentials::load_provider_credentials_view(app, state)?;
+    let profile = provider_profiles
+        .profile(profile_id)
+        .or_else(|| {
+            provider_profiles
+                .profiles()
+                .iter()
+                .find(|profile| profile.provider_id == profile_id)
+        })
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "provider_not_found",
+                format!("Xero could not find provider `{profile_id}` for cached preflight."),
+            )
+        })?;
+    if profile.provider_id != provider_id {
+        return Err(CommandError::user_fixable(
+            "provider_preflight_profile_mismatch",
+            format!(
+                "Provider profile `{profile_id}` resolves to `{}`, but the run requested `{provider_id}`.",
+                profile.provider_id
+            ),
+        ));
+    }
+
+    let selected_model_id = match model_id.trim() {
+        "" => catalog.configured_model_id.as_str(),
+        trimmed => trimmed,
+    };
+    let credential_ready = provider_credentials_ready_for_preflight(app, state, profile)?;
+    let catalog_snapshot = provider_preflight_from_catalog(
+        &catalog,
+        selected_model_id,
+        required_features.clone(),
+        credential_ready,
+    );
+    let snapshot = live_openai_codex_preflight_for_profile(
+        app,
+        state,
+        profile,
+        selected_model_id,
+        required_features,
+        &catalog,
+    )?
+    .unwrap_or(catalog_snapshot);
+    let snapshot =
+        bind_provider_preflight_cache_for_profile(state, &provider_profiles, profile, snapshot)?;
+    persist_provider_preflight_snapshot(&state.global_db_path(app)?, &snapshot)?;
+    Ok(snapshot)
+}
+
 pub(crate) fn current_provider_preflight_cache_binding<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
@@ -176,6 +246,72 @@ pub(crate) fn latest_provider_preflight_snapshot<R: Runtime>(
         provider_id,
         model_id,
     )
+}
+
+fn refresh_xai_session_before_preflight_if_needed<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    profile_id: &str,
+) -> CommandResult<()> {
+    let provider_profiles =
+        crate::commands::provider_credentials::load_provider_credentials_view(app, state)?;
+    let Some(profile) = provider_profiles.profile(profile_id).or_else(|| {
+        provider_profiles
+            .profiles()
+            .iter()
+            .find(|profile| profile.provider_id == profile_id)
+    }) else {
+        return Ok(());
+    };
+    if profile.provider_id != XAI_PROVIDER_ID {
+        return Ok(());
+    }
+
+    let auth_store_path = state.global_db_path(app)?;
+    let session = match profile.credential_link.as_ref() {
+        Some(link @ ProviderCredentialLink::Xai { .. }) => {
+            load_xai_session_for_profile_link(&auth_store_path, link)
+                .map_err(crate::commands::runtime_support::command_error_from_auth)?
+        }
+        Some(ProviderCredentialLink::ApiKey { .. }) => return Ok(()),
+        _ => load_latest_xai_session(&auth_store_path)
+            .map_err(crate::commands::runtime_support::command_error_from_auth)?,
+    };
+    let Some(session) = session else {
+        return Ok(());
+    };
+    if !xai_session_needs_preflight_refresh(&session, current_unix_timestamp()) {
+        return Ok(());
+    }
+
+    let refreshed = refresh_provider_auth_session(
+        app,
+        state,
+        RuntimeProvider::Xai,
+        session.account_id.as_str(),
+    )
+    .map_err(crate::commands::runtime_support::command_error_from_auth)?;
+    load_xai_session(&auth_store_path, refreshed.account_id.as_str())
+        .map_err(crate::commands::runtime_support::command_error_from_auth)?
+        .ok_or_else(|| {
+            CommandError::retryable(
+                "xai_auth_refresh_missing",
+                "Xero refreshed xAI auth before provider preflight, but the refreshed session was not available in the app-local credential store.",
+            )
+        })?;
+
+    Ok(())
+}
+
+fn xai_session_needs_preflight_refresh(session: &StoredXaiSession, now: i64) -> bool {
+    session.expires_at <= now.saturating_add(XAI_PREFLIGHT_REFRESH_SKEW_SECONDS)
+}
+
+fn current_unix_timestamp() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn bind_provider_preflight_cache_for_profile(
@@ -325,6 +461,8 @@ pub(crate) fn static_provider_preflight_snapshot(
             thinking_supported: false,
             thinking_efforts: Vec::new(),
             thinking_default_effort: None,
+            input_modalities: Vec::new(),
+            input_modalities_source: Some("unknown".into()),
         }),
         credential_ready: None,
         endpoint_reachable: None,
@@ -396,6 +534,11 @@ fn live_xai_preflight_for_profile(
             thinking_default_effort: selected_model
                 .and_then(|model| model.thinking.default_effort.as_ref())
                 .map(thinking_effort_label),
+            input_modalities: selected_model
+                .map(|model| model.input_modalities.clone())
+                .unwrap_or_default(),
+            input_modalities_source: selected_model
+                .map(|model| model.input_modalities_source.clone()),
         },
     )))
 }
@@ -485,6 +628,11 @@ fn live_openai_compatible_preflight_for_profile(
             thinking_default_effort: selected_model
                 .and_then(|model| model.thinking.default_effort.as_ref())
                 .map(thinking_effort_label),
+            input_modalities: selected_model
+                .map(|model| model.input_modalities.clone())
+                .unwrap_or_default(),
+            input_modalities_source: selected_model
+                .map(|model| model.input_modalities_source.clone()),
         },
     )))
 }
@@ -627,6 +775,10 @@ fn openai_codex_capability_catalog_with_credential_proof(
         thinking_default_effort: thinking
             .and_then(|thinking| thinking.default_effort.as_ref())
             .map(thinking_effort_label),
+        input_modalities: selected_model
+            .map(|model| model.input_modalities.clone())
+            .unwrap_or_default(),
+        input_modalities_source: selected_model.map(|model| model.input_modalities_source.clone()),
     })
 }
 
@@ -914,6 +1066,8 @@ mod tests {
                     effort_options: vec![ProviderModelThinkingEffort::Medium],
                     default_effort: Some(ProviderModelThinkingEffort::Medium),
                 },
+                input_modalities: Vec::new(),
+                input_modalities_source: "unknown".into(),
                 context_window_tokens: Some(128_000),
                 max_output_tokens: Some(16_384),
                 context_limit_source: None,
@@ -933,6 +1087,47 @@ mod tests {
             check.code == "provider_preflight_tool_schema"
                 && check.status == xero_agent_core::ProviderPreflightStatus::Warning
         }));
+    }
+
+    #[test]
+    fn live_catalog_preflight_admits_supported_image_attachments_without_live_probe() {
+        let catalog = ProviderModelCatalog {
+            profile_id: "xai-default".into(),
+            provider_id: XAI_PROVIDER_ID.into(),
+            configured_model_id: "grok-4.3-latest".into(),
+            source: ProviderModelCatalogSource::Live,
+            fetched_at: Some("2026-06-04T16:06:35Z".into()),
+            last_success_at: Some("2026-06-04T16:06:35Z".into()),
+            last_refresh_error: None,
+            models: vec![ProviderModelRecord {
+                model_id: "grok-4.3-latest".into(),
+                display_name: "Grok 4.3 Latest".into(),
+                thinking: ProviderModelThinkingCapability {
+                    supported: true,
+                    effort_options: vec![ProviderModelThinkingEffort::Low],
+                    default_effort: Some(ProviderModelThinkingEffort::Low),
+                },
+                input_modalities: vec!["image".into(), "text".into()],
+                input_modalities_source: "xai_text_runtime_default".into(),
+                context_window_tokens: Some(1_000_000),
+                max_output_tokens: Some(4_096),
+                context_limit_source: Some(SessionContextLimitSourceDto::LiveCatalog),
+                context_limit_confidence: Some(SessionContextLimitConfidenceDto::High),
+                context_limit_fetched_at: Some("2026-06-04T16:06:35Z".into()),
+            }],
+        };
+        let mut required_features = ProviderPreflightRequiredFeatures::owned_agent_text_turn();
+        required_features.set_attachment_input_modalities(["image"]);
+
+        let snapshot =
+            provider_preflight_from_catalog(&catalog, "grok-4.3-latest", required_features, true);
+
+        assert_eq!(snapshot.source, ProviderPreflightSource::LiveCatalog);
+        assert_eq!(
+            snapshot.status,
+            xero_agent_core::ProviderPreflightStatus::Passed
+        );
+        assert!(xero_agent_core::provider_preflight_blockers(&snapshot).is_empty());
     }
 
     #[test]
@@ -971,6 +1166,8 @@ mod tests {
                     effort_options: vec![ProviderModelThinkingEffort::Medium],
                     default_effort: Some(ProviderModelThinkingEffort::Medium),
                 },
+                input_modalities: Vec::new(),
+                input_modalities_source: "unknown".into(),
                 context_window_tokens: Some(400_000),
                 max_output_tokens: Some(16_384),
                 context_limit_source: Some(SessionContextLimitSourceDto::BuiltInRegistry),
@@ -991,6 +1188,82 @@ mod tests {
         assert_eq!(
             snapshot.status,
             xero_agent_core::ProviderPreflightStatus::Passed
+        );
+        assert!(xero_agent_core::provider_preflight_blockers(&snapshot).is_empty());
+    }
+
+    #[test]
+    fn openai_codex_authenticated_preflight_admits_gpt_5_5_attachments() {
+        let profile = ProviderCredentialProfile {
+            profile_id: "openai_codex-default".into(),
+            provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            runtime_kind: OPENAI_CODEX_PROVIDER_ID.into(),
+            label: "OpenAI Codex".into(),
+            model_id: "gpt-5.5".into(),
+            preset_id: None,
+            base_url: None,
+            api_version: None,
+            region: None,
+            project_id: None,
+            credential_link: Some(ProviderCredentialLink::OpenAiCodex {
+                account_id: "acct-1".into(),
+                session_id: "session-1".into(),
+                updated_at: "2026-05-05T15:57:13Z".into(),
+            }),
+            updated_at: "2026-05-05T15:57:13Z".into(),
+        };
+        let catalog = ProviderModelCatalog {
+            profile_id: profile.profile_id.clone(),
+            provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            configured_model_id: "gpt-5.5".into(),
+            source: ProviderModelCatalogSource::Live,
+            fetched_at: Some("2026-05-05T15:57:13Z".into()),
+            last_success_at: Some("2026-05-05T15:57:13Z".into()),
+            last_refresh_error: None,
+            models: vec![ProviderModelRecord {
+                model_id: "gpt-5.5".into(),
+                display_name: "GPT-5.5".into(),
+                thinking: ProviderModelThinkingCapability {
+                    supported: true,
+                    effort_options: vec![ProviderModelThinkingEffort::High],
+                    default_effort: Some(ProviderModelThinkingEffort::High),
+                },
+                input_modalities: vec!["file".into(), "image".into(), "text".into()],
+                input_modalities_source: "openai_codex_static_multimodal".into(),
+                context_window_tokens: Some(272_000),
+                max_output_tokens: Some(16_384),
+                context_limit_source: Some(SessionContextLimitSourceDto::BuiltInRegistry),
+                context_limit_confidence: Some(SessionContextLimitConfidenceDto::Medium),
+                context_limit_fetched_at: None,
+            }],
+        };
+        let mut required_features = ProviderPreflightRequiredFeatures::owned_agent_text_turn();
+        required_features.set_attachment_input_modalities(["file", "image"]);
+
+        let snapshot = openai_codex_authenticated_preflight_snapshot(
+            &profile,
+            "gpt-5.5",
+            required_features,
+            &catalog,
+            true,
+        );
+
+        assert_eq!(snapshot.source, ProviderPreflightSource::LiveProbe);
+        assert_eq!(
+            snapshot.status,
+            xero_agent_core::ProviderPreflightStatus::Passed
+        );
+        assert_eq!(
+            snapshot.capabilities.capabilities.attachments.image_input,
+            "supported"
+        );
+        assert_eq!(
+            snapshot
+                .capabilities
+                .capabilities
+                .attachments
+                .document_input,
+            "supported"
         );
         assert!(xero_agent_core::provider_preflight_blockers(&snapshot).is_empty());
     }
@@ -1027,6 +1300,8 @@ mod tests {
                     effort_options: vec![ProviderModelThinkingEffort::Medium],
                     default_effort: Some(ProviderModelThinkingEffort::Medium),
                 },
+                input_modalities: Vec::new(),
+                input_modalities_source: "unknown".into(),
                 context_window_tokens: Some(400_000),
                 max_output_tokens: Some(16_384),
                 context_limit_source: Some(SessionContextLimitSourceDto::BuiltInRegistry),
@@ -1047,5 +1322,28 @@ mod tests {
         assert!(xero_agent_core::provider_preflight_blockers(&snapshot)
             .iter()
             .any(|check| check.code == "provider_preflight_credentials"));
+    }
+
+    #[test]
+    fn xai_preflight_refresh_uses_expiry_skew() {
+        let now = 1_000;
+        let session = |expires_at| StoredXaiSession {
+            provider_id: XAI_PROVIDER_ID.into(),
+            session_id: "session-123".into(),
+            account_id: "acct-123".into(),
+            access_token: "access-token".into(),
+            refresh_token: "refresh-token".into(),
+            expires_at,
+            updated_at: "2026-05-05T15:57:13Z".into(),
+        };
+
+        assert!(xai_session_needs_preflight_refresh(
+            &session(now + XAI_PREFLIGHT_REFRESH_SKEW_SECONDS),
+            now
+        ));
+        assert!(!xai_session_needs_preflight_refresh(
+            &session(now + XAI_PREFLIGHT_REFRESH_SKEW_SECONDS + 1),
+            now
+        ));
     }
 }

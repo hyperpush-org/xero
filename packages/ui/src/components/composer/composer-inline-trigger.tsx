@@ -33,7 +33,13 @@ export const ComposerInlineTrigger = forwardRef<
 			{...props}
 		>
 			{icon}
-			<span className="line-clamp-1 truncate">{label}</span>
+			<span className="flex min-w-0 flex-1 items-center overflow-hidden">
+				{typeof label === "string" || typeof label === "number" ? (
+					<span className="truncate">{label}</span>
+				) : (
+					label
+				)}
+			</span>
 			<ChevronDown aria-hidden="true" className="size-4 opacity-50" />
 		</button>
 	);

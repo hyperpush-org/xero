@@ -132,6 +132,9 @@ Detected/used CLIs include:
 
 If tools are missing, workbench surfaces degraded/missing-toolchain states rather than crashing.
 
+For the current Solana workbench and autonomous tool coverage map, see
+`docs/solana-workbench-tool-coverage-audit.md`.
+
 ### 4) Server features
 
 - Postgres is provided by `server/docker-compose.yml` in local development.
@@ -379,6 +382,10 @@ Use `--json` on batch commands for scriptable output, and `--app-data-dir PATH` 
 
 The agent TUI parity matrix lives in `docs/agent-tui-parity.md`. Desktop-only browser viewport, emulator live panes, graphical canvas gestures, window chrome, and microphone dictation remain explicit exclusions; renderer-independent workflows are exposed through terminal-native panes or CLI commands.
 
+Owned-agent file mutations use stale-file protection: agents must observe existing files and pass current SHA-256 guards before writing, while command mutations invalidate prior observations. See `docs/agent-stale-file-protection.md` for the mutation-path inventory and retry contract.
+
+Context pressure, compaction, and same-type handoff behavior are audited in `docs/context-exhaustion-compaction-handoff.md`, including the proposed continuity model-routing rollout.
+
 Scoped verification for harness work:
 
 ```bash
@@ -453,14 +460,12 @@ XERO_SKIP_DICTATION_SHIM=1
 These are optional and only needed for specific runtime integrations:
 
 ```bash
-# Custom web-search provider used by autonomous web tools
-XERO_AUTONOMOUS_WEB_SEARCH_URL=https://...
-XERO_AUTONOMOUS_WEB_SEARCH_BEARER_TOKEN=...
-
 # Solana workbench resource overrides
 XERO_SOLANA_RESOURCE_ROOT=/path/to/resources
 XERO_SOLANA_TOOLCHAIN_ROOT=/path/to/toolchain
 ```
+
+Autonomous web search is configured in the desktop app under Settings -> Web Search. Xero stores non-secret provider settings in OS app-data and stores API keys through the same provider credential table used for LLM providers. The custom endpoint contract is `GET <endpoint>?q=<query>&limit=<count>` with a JSON response shaped as `{ "results": [{ "title": string, "url": string, "snippet"?: string }] }`.
 
 ---
 

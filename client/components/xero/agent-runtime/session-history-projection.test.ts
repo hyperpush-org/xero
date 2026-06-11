@@ -533,11 +533,43 @@ describe('buildHistoricalConversationTurns', () => {
     })
     const routing = turns[2]
     if (routing.kind === 'routing_suggestion') {
+      expect(routing.targetKind).toBe('built_in')
       expect(routing.targetAgentId).toBe('plan')
+      expect(routing.targetAgentDefinitionId).toBeNull()
       expect(routing.reason).toBe('multi-file refactor')
       expect(routing.summary).toBe('rewrite routing layer')
       expect(routing.isResolved).toBe(true)
     }
+  })
+
+  it('extracts custom routing-suggestion targets with carry-over labels', () => {
+    const markerText =
+      '<xero-routing-suggestion targetKind="custom" definitionId="release_helper" runtimeAgentId="ask" targetLabel="Release Helper" reason="release docs" summary="draft notes from context"/>\n\nRelease Helper can take it from here.'
+    const transcript = makeTranscript(
+      [makeRun('run-A', 'completed', '2026-05-08T09:00:00Z', 2)],
+      [
+        makeMessageItem('run-A', 1, 'user', 'write release notes'),
+        makeMessageItem('run-A', 2, 'assistant', markerText),
+      ],
+    )
+
+    const turns = buildHistoricalConversationTurns(transcript, { activeRunId: null })
+    const routing = turns.find((turn) => turn.kind === 'routing_suggestion')
+
+    expect(turns[1]).toMatchObject({
+      role: 'assistant',
+      text: 'Release Helper can take it from here.',
+    })
+    expect(routing).toMatchObject({
+      kind: 'routing_suggestion',
+      targetKind: 'custom',
+      targetAgentId: 'ask',
+      targetAgentDefinitionId: 'release_helper',
+      targetLabel: 'Release Helper',
+      reason: 'release docs',
+      summary: 'draft notes from context',
+      isResolved: true,
+    })
   })
 
   it('leaves messages without the marker untouched', () => {

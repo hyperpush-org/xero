@@ -355,6 +355,8 @@ function makeProviderModelCatalog(modelCount: number): ProviderModelCatalogDto {
     models: Array.from({ length: modelCount }, (_, index) => ({
       modelId: `model-${index}`,
       displayName: `Model ${index}`,
+      inputModalities: [],
+      inputModalitiesSource: 'test_fixture_unreported',
       thinking: {
         supported: index % 2 === 0,
         effortOptions: index % 2 === 0 ? ['low' as const, 'medium' as const, 'high' as const] : [],
@@ -489,7 +491,7 @@ describe('UI latency performance smoke replays', () => {
         },
       })
 
-      for (let sequence = 1; sequence <= 1_000; sequence += 1) {
+      for (let sequence = 1; sequence <= 10_000; sequence += 1) {
         buffer.enqueue(makeRuntimeStreamEvent(sequence))
       }
 
@@ -497,14 +499,20 @@ describe('UI latency performance smoke replays', () => {
       expect(updateRuntimeStream).not.toHaveBeenCalled()
 
       const flush = flushCallback as (() => void) | null
+      const flushStartedAt = performance.now()
       flush?.()
+      const flushDurationMs = performance.now() - flushStartedAt
+      const retainedStreamBytes = stream ? estimateRuntimeStreamViewBytes(stream) : 0
 
       expect(updateRuntimeStream).toHaveBeenCalledTimes(1)
-      expect(stream?.lastSequence).toBe(1_000)
+      expect(stream?.lastSequence).toBe(10_000)
+      expect(flushDurationMs).toBeLessThan(8)
+      expect(retainedStreamBytes).toBeLessThan(256 * 1024)
 
       smokeReport.replays.runtimeStreamBurst = {
-        enqueuedItems: 1_000,
-        retainedStreamBytes: stream ? estimateRuntimeStreamViewBytes(stream) : 0,
+        enqueuedItems: 10_000,
+        flushDurationMs: Math.round(flushDurationMs * 100) / 100,
+        retainedStreamBytes,
         scheduledFlushCount,
         streamUpdateCount: updateRuntimeStream.mock.calls.length,
         lastSequence: stream?.lastSequence ?? null,

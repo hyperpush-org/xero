@@ -15,6 +15,10 @@ use xero_desktop_lib::{
     db::{self, project_store},
     git::repository::CanonicalRepository,
     runtime::{
+        autonomous_tool_runtime::{
+            AutonomousWorkspaceIndexAction, AutonomousWorkspaceIndexOutput,
+            AutonomousWorkspaceIndexRequest,
+        },
         create_owned_agent_run, run_owned_agent_task, AgentProviderConfig,
         AutonomousProjectContextAction, AutonomousProjectContextRecordImportance,
         AutonomousProjectContextRecordKind, AutonomousProjectContextRequest, AutonomousToolOutput,
@@ -66,6 +70,7 @@ fn controls_for_agent(runtime_agent_id: RuntimeAgentIdDto) -> RuntimeRunControlI
     RuntimeRunControlInputDto {
         runtime_agent_id,
         agent_definition_id: None,
+        agent_definition_version: None,
         provider_profile_id: None,
         model_id: "test-model".into(),
         thinking_effort: None,
@@ -339,6 +344,19 @@ fn execute_project_context(
     }
 }
 
+fn execute_workspace_index(
+    runtime: &AutonomousToolRuntime,
+    request: AutonomousWorkspaceIndexRequest,
+) -> AutonomousWorkspaceIndexOutput {
+    let output = runtime
+        .execute(AutonomousToolRequest::WorkspaceIndex(request))
+        .expect("execute workspace_index tool");
+    match output.output {
+        AutonomousToolOutput::WorkspaceIndex(output) => output,
+        other => panic!("unexpected output: {other:?}"),
+    }
+}
+
 #[test]
 fn lancedb_freshness_phase1_marks_related_path_current_then_stale_after_hash_change() {
     let root = tempfile::tempdir().expect("temp dir");
@@ -522,7 +540,6 @@ fn lancedb_freshness_phase1_marks_approved_memory_stale_after_source_file_change
             scope: project_store::AgentMemoryScope::Session,
             kind: project_store::AgentMemoryKind::ProjectFact,
             text: "freshcontract approved memory derives from memory_source.rs.".into(),
-            review_state: project_store::AgentMemoryReviewState::Approved,
             enabled: true,
             confidence: Some(95),
             source_run_id: Some("fresh-memory-source-run".into()),
@@ -561,10 +578,6 @@ fn lancedb_freshness_phase1_marks_approved_memory_stale_after_source_file_change
     );
     let memory = project_store::get_agent_memory(&repo_root, &project_id, "fresh-stale-memory")
         .expect("load stale approved memory");
-    assert_eq!(
-        memory.review_state,
-        project_store::AgentMemoryReviewState::Approved
-    );
     assert!(memory.enabled);
     assert_eq!(memory.freshness_state, "stale");
 }
@@ -588,7 +601,6 @@ fn lancedb_freshness_phase1_provider_turn_prompts_do_not_preload_raw_memory_or_r
             scope: project_store::AgentMemoryScope::Project,
             kind: project_store::AgentMemoryKind::ProjectFact,
             text: "FRESHNESS_RAW_MEMORY_SHOULD_NOT_APPEAR".into(),
-            review_state: project_store::AgentMemoryReviewState::Approved,
             enabled: true,
             confidence: Some(95),
             source_run_id: Some("fresh-raw-source-run".into()),
@@ -1236,6 +1248,86 @@ fn lancedb_freshness_phase1_project_context_search_result_can_be_followed_by_get
 }
 
 #[test]
+fn lancedb_freshness_phase1_project_context_search_reuses_duplicate_request_within_run() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (project_id, repo_root) = seed_project(&root);
+    seed_project_record(
+        &repo_root,
+        &project_id,
+        "fresh-dedup-record",
+        "freshcontract dedup search",
+        "freshcontract dedup search should only log once.",
+        Vec::new(),
+        "2026-05-03T12:18:30Z",
+    );
+    seed_agent_run_for_agent(
+        &repo_root,
+        &project_id,
+        "fresh-dedup-run",
+        RuntimeAgentIdDto::Engineer,
+    );
+    let runtime = AutonomousToolRuntime::new(&repo_root)
+        .expect("tool runtime")
+        .with_runtime_run_controls(control_state_for_agent(RuntimeAgentIdDto::Engineer))
+        .with_agent_run_context(
+            &project_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+            "fresh-dedup-run",
+        );
+
+    let mut request =
+        AutonomousProjectContextRequest::new(AutonomousProjectContextAction::SearchProjectRecords);
+    request.query = Some("freshcontract dedup search".into());
+    request.limit = Some(5);
+    let first = execute_project_context(&runtime, request.clone());
+    let first_query_id = first.query_id.clone().expect("first query id");
+    let second = execute_project_context(&runtime, request);
+
+    assert_eq!(second.query_id.as_deref(), Some(first_query_id.as_str()));
+    assert!(second.message.contains("reused cached"));
+    let queries = project_store::list_agent_retrieval_queries_for_run(
+        &repo_root,
+        &project_id,
+        "fresh-dedup-run",
+    )
+    .expect("list dedup retrieval queries");
+    assert_eq!(queries.len(), 1);
+    assert_eq!(queries[0].query_id, first_query_id);
+}
+
+#[test]
+fn lancedb_freshness_phase1_workspace_index_status_reuses_duplicate_request_within_run() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (project_id, repo_root) = seed_project(&root);
+    seed_agent_run_for_agent(
+        &repo_root,
+        &project_id,
+        "fresh-workspace-index-run",
+        RuntimeAgentIdDto::Engineer,
+    );
+    let runtime = AutonomousToolRuntime::new(&repo_root)
+        .expect("tool runtime")
+        .with_runtime_run_controls(control_state_for_agent(RuntimeAgentIdDto::Engineer))
+        .with_agent_run_context(
+            &project_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+            "fresh-workspace-index-run",
+        );
+
+    let request = AutonomousWorkspaceIndexRequest {
+        action: AutonomousWorkspaceIndexAction::Status,
+        query: None,
+        path: None,
+        limit: None,
+    };
+    let first = execute_workspace_index(&runtime, request.clone());
+    let second = execute_workspace_index(&runtime, request);
+
+    assert_eq!(first.status, second.status);
+    assert!(second.message.contains("reused cached"));
+}
+
+#[test]
 fn lancedb_freshness_phase1_context_manifests_record_tool_retrieval_and_freshness_diagnostics() {
     let root = tempfile::tempdir().expect("temp dir");
     let (project_id, repo_root) = seed_project(&root);
@@ -1355,7 +1447,6 @@ fn lancedb_freshness_phase1_retrieval_results_include_score_trust_citation_and_l
             scope: project_store::AgentMemoryScope::Project,
             kind: project_store::AgentMemoryKind::Decision,
             text: "freshcontract score metadata approved memory result.".into(),
-            review_state: project_store::AgentMemoryReviewState::Approved,
             enabled: true,
             confidence: Some(88),
             source_run_id: Some("fresh-retrieval-contract-run".into()),
@@ -1625,7 +1716,6 @@ fn lancedb_freshness_phase1_filtered_retrieval_preserves_filters_and_limit_contr
                 scope: project_store::AgentMemoryScope::Project,
                 kind,
                 text: format!("freshcontract filtered memory target body {memory_id}."),
-                review_state: project_store::AgentMemoryReviewState::Approved,
                 enabled: true,
                 confidence: Some(86),
                 source_run_id: Some(format!("{memory_id}-run")),
@@ -1705,15 +1795,36 @@ fn lancedb_freshness_phase1_context_manifest_explanation_is_compact_for_model_re
             project_store::DEFAULT_AGENT_SESSION_ID,
             "fresh-manifest-summary-run",
         );
-    let output = execute_project_context(
-        &runtime,
-        AutonomousProjectContextRequest::new(
-            AutonomousProjectContextAction::ExplainCurrentContextPackage,
-        ),
+    let unauthorized = runtime
+        .execute(AutonomousToolRequest::ProjectContext(
+            AutonomousProjectContextRequest::new(
+                AutonomousProjectContextAction::ExplainCurrentContextPackage,
+            ),
+        ))
+        .expect_err("manifest inspection requires diagnostic opt-in");
+    assert_eq!(
+        unauthorized.code,
+        "project_context_manifest_inspection_diagnostic_only"
     );
+
+    let retrieval_queries_before = project_store::list_agent_retrieval_queries_for_run(
+        &repo_root,
+        &project_id,
+        "fresh-manifest-summary-run",
+    )
+    .expect("list retrieval queries before manifest inspection");
+    let mut request = AutonomousProjectContextRequest::new(
+        AutonomousProjectContextAction::ExplainCurrentContextPackage,
+    );
+    request.include_historical = true;
+    let output = execute_project_context(&runtime, request.clone());
+    assert_eq!(output.query_id, None);
     let manifest = output.manifest.expect("compact manifest summary");
 
     assert_eq!(manifest["kind"], "provider_context_package_summary");
+    assert_eq!(manifest["inspection"]["diagnosticOnly"], true);
+    assert_eq!(manifest["inspection"]["retrievalLogged"], false);
+    assert_eq!(manifest["inspection"]["cached"], false);
     assert_eq!(manifest["omitted"]["fullManifestPersisted"], true);
     assert!(
         manifest["omitted"]["originalBytes"]
@@ -1739,6 +1850,34 @@ fn lancedb_freshness_phase1_context_manifest_explanation_is_compact_for_model_re
     let serialized = serde_json::to_string(&manifest).expect("manifest summary json");
     assert!(!serialized.contains("\"inputSchema\""));
     assert!(!serialized.contains("\"description\""));
+
+    let retrieval_queries_after = project_store::list_agent_retrieval_queries_for_run(
+        &repo_root,
+        &project_id,
+        "fresh-manifest-summary-run",
+    )
+    .expect("list retrieval queries after manifest inspection");
+    assert_eq!(
+        retrieval_queries_after.len(),
+        retrieval_queries_before.len()
+    );
+
+    let cached_output = execute_project_context(&runtime, request);
+    assert!(cached_output.message.contains("reused cached diagnostic"));
+    let cached_manifest = cached_output
+        .manifest
+        .expect("cached compact manifest summary");
+    assert_eq!(cached_manifest["inspection"]["cached"], true);
+    let retrieval_queries_after_cached = project_store::list_agent_retrieval_queries_for_run(
+        &repo_root,
+        &project_id,
+        "fresh-manifest-summary-run",
+    )
+    .expect("list retrieval queries after cached manifest inspection");
+    assert_eq!(
+        retrieval_queries_after_cached.len(),
+        retrieval_queries_before.len()
+    );
 }
 
 #[test]
@@ -2048,7 +2187,6 @@ fn lancedb_freshness_phase8_embedding_backfill_skips_stale_approved_memory() {
             scope: project_store::AgentMemoryScope::Project,
             kind: project_store::AgentMemoryKind::ProjectFact,
             text: memory_text.into(),
-            review_state: project_store::AgentMemoryReviewState::Approved,
             enabled: true,
             confidence: Some(91),
             source_run_id: Some("fresh-backfill-memory-run".into()),
@@ -2385,7 +2523,8 @@ fn lancedb_freshness_phase9_project_context_direct_reads_include_stale_evidence_
 }
 
 #[test]
-fn lancedb_freshness_phase9_direct_memory_read_preserves_review_state_while_annotating_staleness() {
+fn lancedb_freshness_phase9_direct_memory_read_preserves_enabled_state_while_annotating_staleness()
+{
     let root = tempfile::tempdir().expect("temp dir");
     let (project_id, repo_root) = seed_project(&root);
     let source_path = "src/phase9_direct_memory.rs";
@@ -2419,7 +2558,6 @@ fn lancedb_freshness_phase9_direct_memory_read_preserves_review_state_while_anno
             scope: project_store::AgentMemoryScope::Project,
             kind: project_store::AgentMemoryKind::ProjectFact,
             text: "freshcontract phase9 direct approved memory evidence.".into(),
-            review_state: project_store::AgentMemoryReviewState::Approved,
             enabled: true,
             confidence: Some(93),
             source_run_id: Some("fresh-phase9-memory-source-run".into()),
@@ -2463,10 +2601,6 @@ fn lancedb_freshness_phase9_direct_memory_read_preserves_review_state_while_anno
     let stored =
         project_store::get_agent_memory(&repo_root, &project_id, "fresh-phase9-direct-memory")
             .expect("load direct memory after freshness refresh");
-    assert_eq!(
-        stored.review_state,
-        project_store::AgentMemoryReviewState::Approved
-    );
     assert!(stored.enabled);
     assert_eq!(stored.freshness_state, "stale");
 }

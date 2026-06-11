@@ -1,11 +1,13 @@
 pub mod auth;
 pub mod commands;
 pub mod db;
+pub mod developer_tool_error_log;
 pub mod developer_tool_harness_terminal;
 pub mod developer_tool_harness_tui;
 pub mod environment;
 pub mod global_db;
 pub mod mcp;
+pub mod perf;
 pub mod provider_credentials;
 pub mod provider_models;
 pub mod provider_preflight;
@@ -45,6 +47,17 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
         .setup(|app| {
             commands::solana::toolchain::configure_tauri_roots(app.handle());
             window_state::configure_main_window(app.handle().clone());
+
+            {
+                use tauri::Manager;
+                let app_handle = app.handle().clone();
+                let app_handle_for_state = app_handle.clone();
+                let browser_state = app_handle_for_state.state::<commands::BrowserState>();
+                commands::browser::start_browser_dev_server_reconciler(
+                    app_handle,
+                    browser_state.inner(),
+                );
+            }
 
             // Solana workbench state is rooted under Tauri's app-data dir.
             // This app is new, so we deliberately do not migrate any older
@@ -100,6 +113,26 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             }
 
             {
+                use tauri::Manager;
+                let app_handle = app.handle().clone();
+                let desktop_state = app_handle.state::<state::DesktopState>();
+                let scheduler = desktop_state.agent_run_wakeup_scheduler().clone();
+                runtime::set_agent_run_wakeup_inserted_handler(move |repo_root, record, tool_runtime| {
+                    if let Err(error) = scheduler.schedule_record(
+                        app_handle.clone(),
+                        repo_root,
+                        record,
+                        Some(tool_runtime),
+                    ) {
+                        eprintln!(
+                            "[agent-wakeup] inserted wakeup scheduling skipped: {} - {}",
+                            error.code, error.message
+                        );
+                    }
+                });
+            }
+
+            {
                 let app_handle = app.handle().clone();
                 if let Err(error) =
                     commands::adrenaline_mode::apply_persisted_settings_on_startup(&app_handle)
@@ -126,6 +159,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
                 use tauri::Manager;
                 let app_handle = app.handle().clone();
                 let desktop_state = app_handle.state::<state::DesktopState>();
+                let wakeup_scheduler = desktop_state.agent_run_wakeup_scheduler().clone();
                 if let Ok(registry_path) = desktop_state.global_db_path(&app_handle) {
                     if let Ok(reg) = registry::read_registry(&registry_path) {
                         for record in reg.projects {
@@ -133,6 +167,16 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
                             if !root.is_dir() {
                                 continue;
                             }
+                            if let Err(error) = wakeup_scheduler.schedule_pending_for_project(
+                                app_handle.clone(),
+                                root.to_path_buf(),
+                            ) {
+                                eprintln!(
+                                    "[agent-wakeup] pending wakeup recovery skipped for {}: {} - {}",
+                                    record.root_path, error.code, error.message
+                                );
+                            }
+
                             let updated = runtime::pricing::backfill_agent_usage_costs(root);
                             if updated > 0 {
                                 eprintln!(
@@ -236,6 +280,8 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::developer_tool_harness::developer_tool_sequence_list,
             commands::developer_tool_harness::developer_tool_sequence_upsert,
             commands::developer_tool_harness::developer_tool_synthetic_run,
+            commands::developer_tool_error_log::developer_tool_error_log_clear,
+            commands::developer_tool_error_log::developer_tool_error_log_list,
             commands::development_storage::developer_storage_overview,
             commands::development_storage::developer_storage_read_table,
             commands::list_projects::list_projects,
@@ -310,6 +356,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::agent_session::get_agent_session,
             commands::agent_session::update_agent_session,
             commands::global_computer_use::ensure_global_computer_use_session,
+            commands::global_computer_use::reset_global_computer_use_session,
             commands::agent_session_title::auto_name_agent_session,
             commands::agent_session::archive_agent_session,
             commands::agent_session::restore_agent_session,
@@ -317,6 +364,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::agent_task::start_agent_task,
             commands::agent_task::send_agent_message,
             commands::agent_task::cancel_agent_run,
+            commands::agent_task::reject_agent_action,
             commands::agent_task::resume_agent_run,
             commands::agent_task::get_agent_run,
             commands::agent_task::export_agent_trace,
@@ -332,7 +380,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::session_history::rewind_agent_session,
             commands::session_history::list_session_memories,
             commands::session_history::get_session_memory_review_queue,
-            commands::session_history::extract_session_memory_candidates,
+            commands::session_history::extract_session_memories,
             commands::session_history::update_session_memory,
             commands::session_history::correct_session_memory,
             commands::session_history::delete_session_memory,
@@ -393,6 +441,11 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::project_runner::terminal_write,
             commands::project_runner::terminal_resize,
             commands::project_runner::terminal_close,
+            commands::project_runner::terminal_read_transcript,
+            commands::project_runner::terminal_clear_transcript,
+            commands::project_runner::terminal_suggest,
+            commands::project_runner::terminal_record_command,
+            commands::project_runner::terminal_ignore_suggestion,
             commands::skills::update_github_skill_source,
             commands::skills::upsert_plugin_root,
             commands::skills::remove_plugin_root,
@@ -412,12 +465,16 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::provider_credentials::list_provider_credentials,
             commands::provider_credentials::upsert_provider_credential,
             commands::provider_credentials::delete_provider_credential,
+            commands::autonomous_web_search::autonomous_web_search_settings,
+            commands::autonomous_web_search::autonomous_web_search_update_settings,
+            commands::autonomous_web_search::autonomous_web_search_upsert_provider,
+            commands::autonomous_web_search::autonomous_web_search_delete_provider,
+            commands::autonomous_web_search::autonomous_web_search_set_active_provider,
+            commands::autonomous_web_search::autonomous_web_search_check_provider,
             commands::start_openai_login::start_openai_login,
             commands::submit_openai_callback::submit_openai_callback,
             commands::start_oauth_login::start_oauth_login,
             commands::complete_oauth_callback::complete_oauth_callback,
-            commands::xai_device_code_login::start_xai_device_code_login,
-            commands::xai_device_code_login::poll_xai_device_code_login,
             commands::logout_runtime_session::logout_runtime_session,
             commands::start_autonomous_run::start_autonomous_run,
             commands::stage_agent_attachment::stage_agent_attachment,
@@ -446,6 +503,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::adrenaline_mode::closed_lid_mode_update_settings,
             commands::browser::browser_show,
             commands::browser::browser_resize,
+            commands::browser::browser_set_occlusion_regions,
             commands::browser::browser_resize_drag_start,
             commands::browser::browser_resize_drag_end,
             commands::browser::browser_hide,
@@ -454,6 +512,8 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::browser::browser_eval,
             commands::browser::browser_eval_fire_and_forget,
             commands::browser::browser_current_url,
+            commands::browser::browser_dev_server_running,
+            commands::browser::browser_list_running_dev_servers,
             commands::browser::browser_screenshot,
             commands::browser::browser_navigate,
             commands::browser::browser_back,
@@ -477,6 +537,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::browser::browser_tab_list,
             commands::browser::browser_tab_focus,
             commands::browser::browser_tab_close,
+            commands::browser::browser_tab_reorder,
             commands::browser::browser_internal_reply,
             commands::browser::browser_internal_event,
             commands::browser::cookie_import::browser_list_cookie_sources,
@@ -530,6 +591,10 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::solana::solana_snapshot_delete,
             commands::solana::solana_rpc_health,
             commands::solana::solana_rpc_endpoints_set,
+            commands::solana::solana_provider_profiles_list,
+            commands::solana::solana_provider_profile_upsert,
+            commands::solana::solana_provider_profile_select,
+            commands::solana::solana_provider_profile_delete,
             commands::solana::solana_persona_list,
             commands::solana::solana_persona_roles,
             commands::solana::solana_persona_create,

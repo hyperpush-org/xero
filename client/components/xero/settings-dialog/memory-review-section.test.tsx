@@ -2,13 +2,13 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { describe, expect, it, vi } from 'vitest'
 
 import {
-  MemoryReviewSection,
-  type MemoryReviewAdapter,
+  MemorySection,
+  type MemoryAdapter,
 } from '@/components/xero/settings-dialog/memory-review-section'
 import type {
-  AgentMemoryReviewQueueItemDto,
+  AgentMemoryItemDto,
   CorrectSessionMemoryResponseDto,
-  GetSessionMemoryReviewQueueResponseDto,
+  GetSessionMemoryItemsResponseDto,
   SessionMemoryRecordDto,
 } from '@/src/lib/xero-model/session-context'
 
@@ -17,14 +17,13 @@ const SESSION_ID = 'session-7'
 const CREATED_AT = '2026-05-09T18:00:00Z'
 
 function makeItem(
-  overrides: Partial<AgentMemoryReviewQueueItemDto> & Pick<AgentMemoryReviewQueueItemDto, 'memoryId'>,
-): AgentMemoryReviewQueueItemDto {
+  overrides: Partial<AgentMemoryItemDto> & Pick<AgentMemoryItemDto, 'memoryId'>,
+): AgentMemoryItemDto {
   return {
     memoryId: overrides.memoryId,
     scope: overrides.scope ?? 'session',
     kind: overrides.kind ?? 'project_fact',
-    reviewState: overrides.reviewState ?? 'candidate',
-    enabled: overrides.enabled ?? false,
+    enabled: overrides.enabled ?? true,
     confidence: overrides.confidence ?? 72,
     textPreview:
       overrides.textPreview ??
@@ -34,6 +33,19 @@ function makeItem(
       sourceRunId: 'run-12',
       sourceItemIds: ['message-3'],
       diagnostic: null,
+    },
+    reinforcement: overrides.reinforcement ?? {
+      count: 1,
+      lastReinforcedAt: CREATED_AT,
+      sources: [
+        {
+          observedAt: CREATED_AT,
+          sourceRunId: 'run-12',
+          sourceItemIds: ['message-3'],
+        },
+      ],
+      latestSourceRunId: 'run-12',
+      latestSourceItemIds: ['message-3'],
     },
     freshness: overrides.freshness ?? {
       state: 'current',
@@ -45,8 +57,8 @@ function makeItem(
       factKey: null,
     },
     retrieval: overrides.retrieval ?? {
-      eligible: false,
-      reason: 'pending_or_rejected_review',
+      eligible: true,
+      reason: 'retrievable',
     },
     redaction: overrides.redaction ?? {
       textPreviewRedacted: false,
@@ -54,9 +66,8 @@ function makeItem(
       rawTextHidden: true,
     },
     availableActions: overrides.availableActions ?? {
-      canApprove: true,
-      canReject: true,
-      canDisable: true,
+      canEnable: overrides.enabled === false,
+      canDisable: overrides.enabled !== false,
       canDelete: true,
       canEditByCorrection: true,
     },
@@ -68,20 +79,16 @@ function makeItem(
 const PAGE_SIZE = 10
 
 function makeQueueResponse(
-  allItems: AgentMemoryReviewQueueItemDto[],
+  allItems: AgentMemoryItemDto[],
   options: { offset?: number; limit?: number } = {},
-): GetSessionMemoryReviewQueueResponseDto {
+): GetSessionMemoryItemsResponseDto {
   const offset = options.offset ?? 0
   const limit = options.limit ?? PAGE_SIZE
   const items = allItems.slice(offset, offset + limit)
   const counts = {
-    candidate: allItems.filter((item) => item.reviewState === 'candidate').length,
-    approved: allItems.filter((item) => item.reviewState === 'approved').length,
-    rejected: allItems.filter((item) => item.reviewState === 'rejected').length,
+    enabled: allItems.filter((item) => item.enabled).length,
     disabled: allItems.filter((item) => !item.enabled).length,
-    retrievableApproved: allItems.filter(
-      (item) => item.reviewState === 'approved' && item.retrieval.eligible,
-    ).length,
+    retrievable: allItems.filter((item) => item.enabled && item.retrieval.eligible).length,
   }
   const nextOffset = offset + items.length
   const hasMore = nextOffset < allItems.length
@@ -95,8 +102,7 @@ function makeQueueResponse(
     counts,
     items,
     actions: {
-      approve: 'Approve memory',
-      reject: 'Reject memory',
+      enable: 'Enable memory',
       disable: 'Disable memory',
       delete: 'Delete memory',
       edit: 'Create a corrected memory',
@@ -107,17 +113,17 @@ function makeQueueResponse(
   }
 }
 
-function makeAdapter(initial: GetSessionMemoryReviewQueueResponseDto): {
-  adapter: MemoryReviewAdapter
+function makeAdapter(initial: GetSessionMemoryItemsResponseDto): {
+  adapter: MemoryAdapter
   getQueue: ReturnType<typeof vi.fn>
   updateMemory: ReturnType<typeof vi.fn>
   correctMemory: ReturnType<typeof vi.fn>
   deleteMemory: ReturnType<typeof vi.fn>
 } {
-  const getQueue = vi.fn<MemoryReviewAdapter['getQueue']>().mockResolvedValue(initial)
-  const updateMemory = vi.fn<MemoryReviewAdapter['updateMemory']>()
-  const correctMemory = vi.fn<MemoryReviewAdapter['correctMemory']>()
-  const deleteMemory = vi.fn<MemoryReviewAdapter['deleteMemory']>().mockResolvedValue(undefined)
+  const getQueue = vi.fn<MemoryAdapter['getQueue']>().mockResolvedValue(initial)
+  const updateMemory = vi.fn<MemoryAdapter['updateMemory']>()
+  const correctMemory = vi.fn<MemoryAdapter['correctMemory']>()
+  const deleteMemory = vi.fn<MemoryAdapter['deleteMemory']>().mockResolvedValue(undefined)
   return {
     adapter: { getQueue, updateMemory, correctMemory, deleteMemory },
     getQueue,
@@ -134,7 +140,6 @@ function dummyMemoryRecord(memoryId: string): SessionMemoryRecordDto {
     agentSessionId: SESSION_ID,
     scope: 'session',
     kind: 'fact',
-    reviewState: 'approved',
     enabled: true,
     text: '',
     textHash: 'sha256:abc',
@@ -147,25 +152,28 @@ function dummyMemoryRecord(memoryId: string): SessionMemoryRecordDto {
   } as unknown as SessionMemoryRecordDto
 }
 
-describe('MemoryReviewSection', () => {
+describe('MemorySection', () => {
   it('shows the project-bound empty state when no project is selected', () => {
-    render(<MemoryReviewSection projectId={null} projectLabel={null} adapter={null} />)
+    render(<MemorySection projectId={null} projectLabel={null} adapter={null} />)
     expect(screen.getByText('Select a project')).toBeInTheDocument()
   })
 
   it('renders queue counts and items returned by the adapter', async () => {
-    const candidate = makeItem({ memoryId: 'mem-1' })
-    const approved = makeItem({
+    const disabled = makeItem({
+      memoryId: 'mem-1',
+      enabled: false,
+      retrieval: { eligible: false, reason: 'disabled' },
+    })
+    const enabled = makeItem({
       memoryId: 'mem-2',
-      reviewState: 'approved',
       enabled: true,
       retrieval: { eligible: true, reason: 'retrievable' },
     })
-    const queue = makeQueueResponse([candidate, approved])
+    const queue = makeQueueResponse([disabled, enabled])
     const { adapter, getQueue } = makeAdapter(queue)
 
     render(
-      <MemoryReviewSection
+      <MemorySection
         projectId={PROJECT_ID}
         projectLabel="Xero"
         agentSessionId={SESSION_ID}
@@ -185,16 +193,16 @@ describe('MemoryReviewSection', () => {
     expect(await screen.findAllByTestId('memory-review-item')).toHaveLength(2)
 
     const counts = screen.getByTestId('memory-review-counts')
-    expect(within(counts).getByLabelText('Candidates: 1')).toBeVisible()
-    expect(within(counts).getByLabelText('Approved: 1')).toBeVisible()
+    expect(within(counts).getByLabelText('Enabled: 1')).toBeVisible()
     expect(within(counts).getByLabelText('Retrievable: 1')).toBeVisible()
+    expect(within(counts).getByLabelText('Disabled: 1')).toBeVisible()
   })
 
   it('keeps memory details collapsed until the card is opened', async () => {
     const item = makeItem({ memoryId: 'mem-collapsed' })
     const { adapter } = makeAdapter(makeQueueResponse([item]))
 
-    render(<MemoryReviewSection projectId={PROJECT_ID} projectLabel={null} adapter={adapter} />)
+    render(<MemorySection projectId={PROJECT_ID} projectLabel={null} adapter={adapter} />)
 
     const row = await screen.findByTestId('memory-review-item')
     expect(within(row).queryByTestId('memory-full-preview')).not.toBeInTheDocument()
@@ -214,7 +222,7 @@ describe('MemoryReviewSection', () => {
     const { adapter, getQueue } = makeAdapter(firstPage)
     getQueue.mockResolvedValueOnce(firstPage).mockResolvedValueOnce(secondPage)
 
-    render(<MemoryReviewSection projectId={PROJECT_ID} projectLabel={null} adapter={adapter} />)
+    render(<MemorySection projectId={PROJECT_ID} projectLabel={null} adapter={adapter} />)
 
     expect(await screen.findAllByTestId('memory-review-item')).toHaveLength(PAGE_SIZE)
 
@@ -234,15 +242,16 @@ describe('MemoryReviewSection', () => {
     expect(screen.getAllByText('Page 2 of 2')[0]).toBeVisible()
   })
 
-  it('hides the preview and disables Approve for redacted (secret-shaped) memory', async () => {
+  it('hides the preview and disables Enable for redacted (secret-shaped) memory', async () => {
     const redacted = makeItem({
       memoryId: 'mem-secret',
+      enabled: false,
+      retrieval: { eligible: false, reason: 'disabled' },
       textPreview: null,
       redaction: { textPreviewRedacted: true, factKeyRedacted: true, rawTextHidden: true },
       availableActions: {
-        canApprove: false,
-        canReject: true,
-        canDisable: true,
+        canEnable: false,
+        canDisable: false,
         canDelete: true,
         canEditByCorrection: true,
       },
@@ -251,39 +260,42 @@ describe('MemoryReviewSection', () => {
     const { adapter } = makeAdapter(queue)
 
     render(
-      <MemoryReviewSection projectId={PROJECT_ID} projectLabel={null} adapter={adapter} />,
+      <MemorySection projectId={PROJECT_ID} projectLabel={null} adapter={adapter} />,
     )
 
     const item = await screen.findByTestId('memory-review-item')
     expect(within(item).queryByTestId('memory-preview')).toBeNull()
     expect(within(item).getByTestId('memory-redacted-notice')).toBeInTheDocument()
     expect(within(item).getByTestId('redaction-badge')).toBeInTheDocument()
-    expect(within(item).getByRole('button', { name: 'Approve memory' })).toBeDisabled()
+    expect(within(item).getByRole('button', { name: 'Enable memory' })).toBeDisabled()
     fireEvent.pointerDown(within(item).getByRole('button', { name: 'Memory actions' }), { button: 0 })
     expect(await screen.findByRole('menuitem', { name: 'Edit memory' })).toBeEnabled()
   })
 
-  it('approves a candidate and refetches the queue', async () => {
-    const candidate = makeItem({ memoryId: 'mem-1' })
-    const before = makeQueueResponse([candidate])
+  it('enables a disabled memory and refetches the queue', async () => {
+    const disabled = makeItem({
+      memoryId: 'mem-1',
+      enabled: false,
+      retrieval: { eligible: false, reason: 'disabled' },
+    })
+    const before = makeQueueResponse([disabled])
     const after = makeQueueResponse([
-      { ...candidate, reviewState: 'approved', enabled: true },
+      { ...disabled, enabled: true, retrieval: { eligible: true, reason: 'retrievable' } },
     ])
 
     const { adapter, getQueue, updateMemory } = makeAdapter(before)
     getQueue.mockResolvedValueOnce(before).mockResolvedValueOnce(after)
     updateMemory.mockResolvedValue(dummyMemoryRecord('mem-1'))
 
-    render(<MemoryReviewSection projectId={PROJECT_ID} projectLabel={null} adapter={adapter} />)
+    render(<MemorySection projectId={PROJECT_ID} projectLabel={null} adapter={adapter} />)
 
     const item = await screen.findByTestId('memory-review-item')
-    fireEvent.click(within(item).getByRole('button', { name: 'Approve memory' }))
+    fireEvent.click(within(item).getByRole('button', { name: 'Enable memory' }))
 
     await waitFor(() => {
       expect(updateMemory).toHaveBeenCalledWith({
         projectId: PROJECT_ID,
         memoryId: 'mem-1',
-        reviewState: 'approved',
         enabled: true,
       })
     })
@@ -292,22 +304,21 @@ describe('MemoryReviewSection', () => {
     })
   })
 
-  it('rejects a candidate', async () => {
-    const candidate = makeItem({ memoryId: 'mem-r' })
-    const { adapter, updateMemory } = makeAdapter(makeQueueResponse([candidate]))
-    updateMemory.mockResolvedValue(dummyMemoryRecord('mem-r'))
+  it('disables an enabled memory', async () => {
+    const item = makeItem({ memoryId: 'mem-disable' })
+    const { adapter, updateMemory } = makeAdapter(makeQueueResponse([item]))
+    updateMemory.mockResolvedValue(dummyMemoryRecord('mem-disable'))
 
-    render(<MemoryReviewSection projectId={PROJECT_ID} projectLabel={null} adapter={adapter} />)
+    render(<MemorySection projectId={PROJECT_ID} projectLabel={null} adapter={adapter} />)
 
-    const item = await screen.findByTestId('memory-review-item')
-    fireEvent.pointerDown(within(item).getByRole('button', { name: 'Memory actions' }), { button: 0 })
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Reject memory' }))
+    const row = await screen.findByTestId('memory-review-item')
+    fireEvent.click(within(row).getByRole('button', { name: 'Disable memory' }))
 
     await waitFor(() => {
       expect(updateMemory).toHaveBeenCalledWith({
         projectId: PROJECT_ID,
-        memoryId: 'mem-r',
-        reviewState: 'rejected',
+        memoryId: 'mem-disable',
+        enabled: false,
       })
     })
   })
@@ -316,7 +327,7 @@ describe('MemoryReviewSection', () => {
     const item = makeItem({ memoryId: 'mem-del' })
     const { adapter, deleteMemory } = makeAdapter(makeQueueResponse([item]))
 
-    render(<MemoryReviewSection projectId={PROJECT_ID} projectLabel={null} adapter={adapter} />)
+    render(<MemorySection projectId={PROJECT_ID} projectLabel={null} adapter={adapter} />)
 
     const row = await screen.findByTestId('memory-review-item')
     fireEvent.pointerDown(within(row).getByRole('button', { name: 'Memory actions' }), { button: 0 })
@@ -342,7 +353,7 @@ describe('MemoryReviewSection', () => {
     } as unknown as CorrectSessionMemoryResponseDto
     correctMemory.mockResolvedValue(correctionResponse)
 
-    render(<MemoryReviewSection projectId={PROJECT_ID} projectLabel={null} adapter={adapter} />)
+    render(<MemorySection projectId={PROJECT_ID} projectLabel={null} adapter={adapter} />)
 
     const row = await screen.findByTestId('memory-review-item')
     fireEvent.pointerDown(within(row).getByRole('button', { name: 'Memory actions' }), { button: 0 })
@@ -366,10 +377,10 @@ describe('MemoryReviewSection', () => {
     const { adapter, updateMemory } = makeAdapter(makeQueueResponse([item]))
     updateMemory.mockRejectedValue(new Error('Network down'))
 
-    render(<MemoryReviewSection projectId={PROJECT_ID} projectLabel={null} adapter={adapter} />)
+    render(<MemorySection projectId={PROJECT_ID} projectLabel={null} adapter={adapter} />)
 
     const row = await screen.findByTestId('memory-review-item')
-    fireEvent.click(within(row).getByRole('button', { name: 'Approve memory' }))
+    fireEvent.click(within(row).getByRole('button', { name: 'Disable memory' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Network down')
     // queue items are still rendered

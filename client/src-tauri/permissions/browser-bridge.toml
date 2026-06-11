@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "browser-bridge"
+description = "Allows in-app browser child webviews to send Xero bridge callbacks to the host."
+commands.allow = ["browser_internal_event", "browser_internal_reply"]

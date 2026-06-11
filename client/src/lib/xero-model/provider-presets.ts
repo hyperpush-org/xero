@@ -49,8 +49,6 @@ export interface CloudProviderPreset {
   manualModelAllowed: boolean
   supportsCatalogRefresh: boolean
   connectionHint: string
-  browserOAuthSupported?: boolean
-  deviceCodeSupported?: boolean
 }
 
 const CLOUD_PROVIDER_PRESETS: CloudProviderPreset[] = [
@@ -135,16 +133,14 @@ const CLOUD_PROVIDER_PRESETS: CloudProviderPreset[] = [
     defaultProfileLabel: 'xAI / Grok',
     defaultModelId: 'grok-4.3',
     presetId: 'xai',
-    authMode: 'api_key',
+    authMode: 'oauth',
     baseUrlMode: 'none',
     apiVersionMode: 'none',
     regionMode: 'none',
     projectIdMode: 'none',
     manualModelAllowed: true,
     supportsCatalogRefresh: true,
-    connectionHint: 'Use browser sign-in, device code, or an app-local xAI API key.',
-    browserOAuthSupported: true,
-    deviceCodeSupported: true,
+    connectionHint: 'Use browser sign-in to connect xAI.',
   },
   {
     providerId: 'external_cursor_sdk',

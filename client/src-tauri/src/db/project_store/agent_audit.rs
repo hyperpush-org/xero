@@ -14,8 +14,8 @@ use super::{
     load_agent_definition_version, load_agent_run, open_runtime_database,
     project_record_kind_sql_value, read_project_row, validate_non_empty_text,
     AgentHandoffLineageRecord, AgentHandoffLineageStatus, AgentMemoryKind, AgentMemoryRecord,
-    AgentMemoryReviewState, ProjectRecordImportance, ProjectRecordRecord,
-    ProjectRecordRedactionState, ProjectRecordVisibility,
+    ProjectRecordImportance, ProjectRecordRecord, ProjectRecordRedactionState,
+    ProjectRecordVisibility,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1283,7 +1283,6 @@ fn redaction_safe_project_record_text(record: &ProjectRecordRecord, value: &str)
 
 fn knowledge_memory_visible(memory: &AgentMemoryRecord) -> bool {
     memory.enabled
-        && memory.review_state == AgentMemoryReviewState::Approved
         && !matches!(
             memory.freshness_state.as_str(),
             "stale" | "superseded" | "blocked"
@@ -1954,11 +1953,10 @@ mod tests {
                 resolve_agent_definition_for_run, AgentContextBudgetPressure,
                 AgentContextManifestRequestKind, AgentContextPolicyAction,
                 AgentContextRedactionState, AgentHandoffLineageStatus, AgentMemoryKind,
-                AgentMemoryReviewState, AgentMemoryScope, AgentSessionCreateRecord,
-                NewAgentContextManifestRecord, NewAgentDefinitionRecord,
-                NewAgentHandoffLineageRecord, NewAgentMemoryRecord, NewAgentRunRecord,
-                NewProjectRecordRecord, ProjectRecordImportance, ProjectRecordKind,
-                ProjectRecordRedactionState, ProjectRecordVisibility,
+                AgentMemoryScope, AgentSessionCreateRecord, NewAgentContextManifestRecord,
+                NewAgentDefinitionRecord, NewAgentHandoffLineageRecord, NewAgentMemoryRecord,
+                NewAgentRunRecord, NewProjectRecordRecord, ProjectRecordImportance,
+                ProjectRecordKind, ProjectRecordRedactionState, ProjectRecordVisibility,
                 BUILTIN_AGENT_DEFINITION_VERSION,
             },
             register_project_database_path,
@@ -2095,7 +2093,14 @@ mod tests {
                     "memoryKinds": ["project_fact"],
                     "reviewRequired": true
                 },
-                "handoffPolicy": { "enabled": true, "preserveDefinitionVersion": true },
+                "handoffPolicy": {
+                    "enabled": true,
+                    "routingMode": "same_agent",
+                    "allowedTargets": [],
+                    "preserveDefinitionVersion": true,
+                    "carrySummary": true,
+                    "includeDurableContext": true
+                },
                 "memoryPolicy": { "reviewRequired": true },
                 "retrievalDefaults": {
                     "enabled": true,
@@ -2919,7 +2924,6 @@ mod tests {
                 scope: AgentMemoryScope::Session,
                 kind: AgentMemoryKind::Decision,
                 text: "Approved memory likely to influence the agent.".into(),
-                review_state: AgentMemoryReviewState::Approved,
                 enabled: true,
                 confidence: Some(91),
                 source_run_id: Some("run-knowledge-source".into()),
@@ -2938,7 +2942,6 @@ mod tests {
                 scope: AgentMemoryScope::Session,
                 kind: AgentMemoryKind::Decision,
                 text: "Approved target-session memory should not influence the source run.".into(),
-                review_state: AgentMemoryReviewState::Approved,
                 enabled: true,
                 confidence: Some(88),
                 source_run_id: Some("run-knowledge-target".into()),

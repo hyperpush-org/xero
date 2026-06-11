@@ -4,11 +4,9 @@ import {
   AlertCircle,
   Check,
   ChevronDown,
-  ExternalLink,
   LoaderCircle,
   LogIn,
   LogOut,
-  MonitorCheck,
   Webhook,
 } from "lucide-react"
 import {
@@ -43,7 +41,6 @@ import {
   type RuntimeProviderIdDto,
   type RuntimeSessionView,
   type UpsertProviderCredentialRequestDto,
-  type XaiDeviceCodeLoginDto,
 } from "@/src/lib/xero-model"
 import { listCloudProviderPresets } from "@/src/lib/xero-model/provider-presets"
 
@@ -277,11 +274,6 @@ export interface ProviderCredentialsListProps {
     providerId: SupportedProviderId
     originator?: string | null
   }) => Promise<ProviderAuthSessionView | null>
-  onStartXaiDeviceCodeLogin?: (request: { providerId: "xai" }) => Promise<XaiDeviceCodeLoginDto>
-  onPollXaiDeviceCodeLogin?: (request: {
-    providerId: "xai"
-    flowId: string
-  }) => Promise<XaiDeviceCodeLoginDto>
 }
 
 export function ProviderCredentialsList({
@@ -295,8 +287,6 @@ export function ProviderCredentialsList({
   onUpsertProviderCredential,
   onDeleteProviderCredential,
   onStartOAuthLogin,
-  onStartXaiDeviceCodeLogin,
-  onPollXaiDeviceCodeLogin,
 }: ProviderCredentialsListProps) {
   const presets = useMemo(() => listCloudProviderPresets(), [])
   const [openProviderId, setOpenProviderId] = useState<SupportedProviderId | null>(null)
@@ -304,8 +294,6 @@ export function ProviderCredentialsList({
     () => ({}) as Record<SupportedProviderId, CredentialDraft>,
   )
   const [authPending, setAuthPending] = useState<AuthPending>(null)
-  const [deviceLogin, setDeviceLogin] = useState<XaiDeviceCodeLoginDto | null>(null)
-  const [devicePollPending, setDevicePollPending] = useState(false)
   const [saveError, setSaveError] = useState<SaveErrorState>(null)
   const [openAuthError, setOpenAuthError] = useState<SaveErrorState>(null)
 
@@ -316,49 +304,6 @@ export function ProviderCredentialsList({
       })
     }
   }, [providerCredentialsLoadStatus, onRefreshProviderCredentials])
-
-  useEffect(() => {
-    if (
-      !deviceLogin ||
-      deviceLogin.providerId !== "xai" ||
-      deviceLogin.phase !== "awaiting_manual_input" ||
-      !onPollXaiDeviceCodeLogin
-    ) {
-      return
-    }
-
-    let cancelled = false
-    const delayMs = Math.max(deviceLogin.intervalSeconds, 1) * 1000
-    const timer = window.setTimeout(async () => {
-      if (cancelled) return
-      setDevicePollPending(true)
-      try {
-        const next = await onPollXaiDeviceCodeLogin({
-          providerId: "xai",
-          flowId: deviceLogin.flowId,
-        })
-        if (!cancelled) {
-          setDeviceLogin(next)
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setOpenAuthError({
-            providerId: "xai",
-            message: errMsg(error, "Xero could not check the xAI device-code login."),
-          })
-        }
-      } finally {
-        if (!cancelled) {
-          setDevicePollPending(false)
-        }
-      }
-    }, delayMs)
-
-    return () => {
-      cancelled = true
-      window.clearTimeout(timer)
-    }
-  }, [deviceLogin, onPollXaiDeviceCodeLogin])
 
   const updateDraft = (providerId: SupportedProviderId, patch: Partial<CredentialDraft>) => {
     setDrafts((prev) => ({
@@ -456,28 +401,6 @@ export function ProviderCredentialsList({
     }
   }
 
-  const handleDeviceCodeLogin = async () => {
-    if (!onStartXaiDeviceCodeLogin) return
-    setAuthPending({ providerId: "xai" })
-    setOpenAuthError(null)
-    try {
-      const login = await onStartXaiDeviceCodeLogin({ providerId: "xai" })
-      setDeviceLogin(login)
-      setOpenProviderId("xai")
-      const target = login.verificationUriComplete ?? login.verificationUri
-      if (target) {
-        await openUrl(target)
-      }
-    } catch (error) {
-      setOpenAuthError({
-        providerId: "xai",
-        message: errMsg(error, "Xero could not start the xAI device-code flow."),
-      })
-    } finally {
-      setAuthPending(null)
-    }
-  }
-
   const showLoadingState =
     providerCredentialsLoadStatus === "loading" && !providerCredentials
   const showLoadError = providerCredentialsLoadStatus === "error"
@@ -518,9 +441,7 @@ export function ProviderCredentialsList({
         : null
     const localOpenAuthError =
       openAuthError?.providerId === providerId ? openAuthError.message : null
-    const supportsBrowserOAuth =
-      preset.authMode === "oauth" || preset.browserOAuthSupported === true
-    const supportsDeviceCode = preset.deviceCodeSupported === true && providerId === "xai"
+    const supportsBrowserOAuth = preset.authMode === "oauth"
     const hasConfigEditor = preset.authMode !== "oauth"
     const isAuthenticated =
       credential?.kind === "oauth_session" && credential?.hasOauthAccessToken
@@ -528,8 +449,20 @@ export function ProviderCredentialsList({
       supportsBrowserOAuth &&
       !!runtimeSession?.isLoginInProgress &&
       runtimeSession.providerId === providerId
-    const rowDeviceLogin = providerId === "xai" ? deviceLogin : null
     const status = credential ? getStatus(credential) : null
+    const showApiKeyField = hasConfigEditor && preset.authMode === "api_key"
+    const showBaseUrlField =
+      hasConfigEditor && (preset.baseUrlMode !== "none" || preset.authMode === "local")
+    const showApiVersionField = hasConfigEditor && preset.apiVersionMode !== "none"
+    const showRegionField = hasConfigEditor && preset.regionMode === "required"
+    const showProjectIdField = hasConfigEditor && preset.projectIdMode === "required"
+    const editorFieldCount = [
+      showApiKeyField,
+      showBaseUrlField,
+      showApiVersionField,
+      showRegionField,
+      showProjectIdField,
+    ].filter(Boolean).length
 
     return (
       <div
@@ -594,26 +527,6 @@ export function ProviderCredentialsList({
                 </Button>
               )
             ) : null}
-            {supportsDeviceCode && !isAuthenticated ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-8 gap-1.5 text-[12px] text-muted-foreground hover:text-foreground"
-                onClick={handleDeviceCodeLogin}
-                disabled={
-                  !onStartXaiDeviceCodeLogin ||
-                  authPending?.providerId === providerId ||
-                  rowDeviceLogin?.phase === "awaiting_manual_input"
-                }
-              >
-                {authPending?.providerId === providerId || devicePollPending ? (
-                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <MonitorCheck className="h-3.5 w-3.5" />
-                )}
-                Device
-              </Button>
-            ) : null}
             {hasConfigEditor ? (
               <Button
                 variant={credential ? "ghost" : "outline"}
@@ -646,183 +559,139 @@ export function ProviderCredentialsList({
           </div>
         ) : null}
 
-        {isOpen && (hasConfigEditor || rowDeviceLogin) ? (
+        {isOpen && hasConfigEditor ? (
           <div className="space-y-3 border-t border-border/60 px-3.5 py-3.5">
-            {rowDeviceLogin ? (
-              <div className="rounded-md border border-border/60 bg-background/50 p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-[12px] font-medium text-foreground">
-                      {rowDeviceLogin.phase === "authenticated"
-                        ? "Device sign-in complete"
-                        : "Device sign-in"}
-                    </div>
-                    <div className="mt-1 text-[12px] text-muted-foreground">
-                      {rowDeviceLogin.phase === "authenticated"
-                        ? "xAI is connected for this app."
-                        : "Enter this code in xAI, then keep this panel open while Xero checks the login."}
-                    </div>
+            <div className="flex flex-col gap-3">
+                <div className="flex flex-col gap-3 md:flex-row md:items-end">
+                  <div
+                    className={cn(
+                      "grid min-w-0 flex-1 gap-3",
+                      editorFieldCount > 1 && "sm:grid-cols-2",
+                    )}
+                  >
+                    {showApiKeyField ? (
+                      <FieldRow>
+                        <Label htmlFor={`${providerId}-api-key`} className="text-[11.5px] text-muted-foreground">
+                          API key
+                          {credential?.hasApiKey ? (
+                            <span className="ml-2 text-[11px] text-muted-foreground/70">
+                              (saved — leave empty to keep current)
+                            </span>
+                          ) : null}
+                        </Label>
+                        <Input
+                          id={`${providerId}-api-key`}
+                          type="password"
+                          autoComplete="off"
+                          value={draft.apiKey}
+                          onChange={(e) => updateDraft(providerId, { apiKey: e.target.value })}
+                          placeholder={credential?.hasApiKey ? "••••••••" : "Paste your API key"}
+                          className="h-9"
+                        />
+                      </FieldRow>
+                    ) : null}
+
+                    {showBaseUrlField ? (
+                      <FieldRow>
+                        <Label htmlFor={`${providerId}-base-url`} className="text-[11.5px] text-muted-foreground">
+                          Base URL
+                          {preset.baseUrlMode === "required" || preset.authMode === "local" ? (
+                            <span className="ml-1 text-destructive">*</span>
+                          ) : null}
+                        </Label>
+                        <Input
+                          id={`${providerId}-base-url`}
+                          value={draft.baseUrl}
+                          onChange={(e) => updateDraft(providerId, { baseUrl: e.target.value })}
+                          placeholder={preset.connectionHint}
+                          className="h-9"
+                        />
+                      </FieldRow>
+                    ) : null}
+
+                    {showApiVersionField ? (
+                      <FieldRow>
+                        <Label htmlFor={`${providerId}-api-version`} className="text-[11.5px] text-muted-foreground">
+                          API version
+                          {preset.apiVersionMode === "required" ? (
+                            <span className="ml-1 text-destructive">*</span>
+                          ) : null}
+                        </Label>
+                        <Input
+                          id={`${providerId}-api-version`}
+                          value={draft.apiVersion}
+                          onChange={(e) => updateDraft(providerId, { apiVersion: e.target.value })}
+                          className="h-9"
+                        />
+                      </FieldRow>
+                    ) : null}
+
+                    {showRegionField ? (
+                      <FieldRow>
+                        <Label htmlFor={`${providerId}-region`} className="text-[11.5px] text-muted-foreground">
+                          Region <span className="text-destructive">*</span>
+                        </Label>
+                        <Input
+                          id={`${providerId}-region`}
+                          value={draft.region}
+                          onChange={(e) => updateDraft(providerId, { region: e.target.value })}
+                          className="h-9"
+                        />
+                      </FieldRow>
+                    ) : null}
+
+                    {showProjectIdField ? (
+                      <FieldRow>
+                        <Label htmlFor={`${providerId}-project-id`} className="text-[11.5px] text-muted-foreground">
+                          Project ID <span className="text-destructive">*</span>
+                        </Label>
+                        <Input
+                          id={`${providerId}-project-id`}
+                          value={draft.projectId}
+                          onChange={(e) => updateDraft(providerId, { projectId: e.target.value })}
+                          className="h-9"
+                        />
+                      </FieldRow>
+                    ) : null}
                   </div>
-                  {rowDeviceLogin.phase === "awaiting_manual_input" ? (
+
+                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 md:self-end">
+                    {credential ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDelete(providerId)}
+                        disabled={isSaving || !onDeleteProviderCredential}
+                        className="h-8 text-[12px] text-destructive hover:bg-destructive/10 hover:text-destructive"
+                      >
+                        Remove
+                      </Button>
+                    ) : null}
                     <Button
-                      type="button"
-                      variant="outline"
                       size="sm"
                       className="h-8 gap-1.5 text-[12px]"
-                      onClick={() => {
-                        void openUrl(
-                          rowDeviceLogin.verificationUriComplete ??
-                            rowDeviceLogin.verificationUri,
-                        )
-                      }}
+                      onClick={() => handleSave(preset)}
+                      disabled={isSaving || !onUpsertProviderCredential}
                     >
-                      <ExternalLink className="h-3.5 w-3.5" />
-                      Open
+                      {isSaving ? (
+                        <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Check className="h-3.5 w-3.5" />
+                      )}
+                      Save
                     </Button>
-                  ) : null}
+                  </div>
                 </div>
-                {rowDeviceLogin.phase === "awaiting_manual_input" ? (
-                  <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-border/60 bg-card px-3 py-2">
-                    <span className="text-[11px] uppercase tracking-[0.12em] text-muted-foreground">
-                      Code
-                    </span>
-                    <span className="font-mono text-[17px] font-semibold tracking-[0.16em] text-foreground">
-                      {rowDeviceLogin.userCode}
-                    </span>
-                  </div>
+
+                {localSaveError || localSaveErrorFromAdapter ? (
+                  <Alert variant="destructive" className="border-destructive/40">
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertDescription>
+                      {localSaveError ?? localSaveErrorFromAdapter}
+                    </AlertDescription>
+                  </Alert>
                 ) : null}
-                {rowDeviceLogin.lastError?.message ? (
-                  <div className="mt-2 text-[12px] text-muted-foreground">
-                    {rowDeviceLogin.lastError.message}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-
-            {hasConfigEditor && preset.authMode === "api_key" ? (
-              <FieldRow>
-                <Label htmlFor={`${providerId}-api-key`} className="text-[11.5px] text-muted-foreground">
-                  API key
-                  {credential?.hasApiKey ? (
-                    <span className="ml-2 text-[11px] text-muted-foreground/70">
-                      (saved — leave empty to keep current)
-                    </span>
-                  ) : null}
-                </Label>
-                <Input
-                  id={`${providerId}-api-key`}
-                  type="password"
-                  autoComplete="off"
-                  value={draft.apiKey}
-                  onChange={(e) => updateDraft(providerId, { apiKey: e.target.value })}
-                  placeholder={credential?.hasApiKey ? "••••••••" : "Paste your API key"}
-                  className="h-9"
-                />
-              </FieldRow>
-            ) : null}
-
-            {hasConfigEditor && (preset.baseUrlMode !== "none" || preset.authMode === "local") ? (
-              <FieldRow>
-                <Label htmlFor={`${providerId}-base-url`} className="text-[11.5px] text-muted-foreground">
-                  Base URL
-                  {preset.baseUrlMode === "required" || preset.authMode === "local" ? (
-                    <span className="ml-1 text-destructive">*</span>
-                  ) : null}
-                </Label>
-                <Input
-                  id={`${providerId}-base-url`}
-                  value={draft.baseUrl}
-                  onChange={(e) => updateDraft(providerId, { baseUrl: e.target.value })}
-                  placeholder={preset.connectionHint}
-                  className="h-9"
-                />
-              </FieldRow>
-            ) : null}
-
-            {hasConfigEditor && preset.apiVersionMode !== "none" ? (
-              <FieldRow>
-                <Label htmlFor={`${providerId}-api-version`} className="text-[11.5px] text-muted-foreground">
-                  API version
-                  {preset.apiVersionMode === "required" ? (
-                    <span className="ml-1 text-destructive">*</span>
-                  ) : null}
-                </Label>
-                <Input
-                  id={`${providerId}-api-version`}
-                  value={draft.apiVersion}
-                  onChange={(e) => updateDraft(providerId, { apiVersion: e.target.value })}
-                  className="h-9"
-                />
-              </FieldRow>
-            ) : null}
-
-            {hasConfigEditor && preset.regionMode === "required" ? (
-              <FieldRow>
-                <Label htmlFor={`${providerId}-region`} className="text-[11.5px] text-muted-foreground">
-                  Region <span className="text-destructive">*</span>
-                </Label>
-                <Input
-                  id={`${providerId}-region`}
-                  value={draft.region}
-                  onChange={(e) => updateDraft(providerId, { region: e.target.value })}
-                  className="h-9"
-                />
-              </FieldRow>
-            ) : null}
-
-            {hasConfigEditor && preset.projectIdMode === "required" ? (
-              <FieldRow>
-                <Label htmlFor={`${providerId}-project-id`} className="text-[11.5px] text-muted-foreground">
-                  Project ID <span className="text-destructive">*</span>
-                </Label>
-                <Input
-                  id={`${providerId}-project-id`}
-                  value={draft.projectId}
-                  onChange={(e) => updateDraft(providerId, { projectId: e.target.value })}
-                  className="h-9"
-                />
-              </FieldRow>
-            ) : null}
-
-            {localSaveError || localSaveErrorFromAdapter ? (
-              <Alert variant="destructive" className="border-destructive/40">
-                <AlertCircle className="h-4 w-4" />
-                <AlertDescription>
-                  {localSaveError ?? localSaveErrorFromAdapter}
-                </AlertDescription>
-              </Alert>
-            ) : null}
-
-            {hasConfigEditor ? (
-              <div className="flex items-center justify-between gap-2 pt-1">
-                {credential ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => handleDelete(providerId)}
-                    disabled={isSaving || !onDeleteProviderCredential}
-                    className="h-8 text-[12px] text-destructive hover:bg-destructive/10 hover:text-destructive"
-                  >
-                    Remove
-                  </Button>
-                ) : (
-                  <span />
-                )}
-                <Button
-                  size="sm"
-                  className="h-8 gap-1.5 text-[12px]"
-                  onClick={() => handleSave(preset)}
-                  disabled={isSaving || !onUpsertProviderCredential}
-                >
-                  {isSaving ? (
-                    <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Check className="h-3.5 w-3.5" />
-                  )}
-                  Save
-                </Button>
-              </div>
-            ) : null}
+            </div>
           </div>
         ) : null}
       </div>

@@ -19,6 +19,7 @@ pub enum AutonomousAgentCoordinationAction {
     ExplainActivity,
     PublishMessage,
     ReadInbox,
+    CheckInboxStatus,
     Acknowledge,
     Reply,
     MarkResolved,
@@ -65,6 +66,8 @@ pub struct AutonomousAgentCoordinationRequest {
     pub summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
+    #[serde(default)]
+    pub since_last_check: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -84,6 +87,8 @@ pub struct AutonomousAgentCoordinationOutput {
     pub mailbox: Vec<project_store::AgentMailboxDeliveryRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mailbox_item: Option<project_store::AgentMailboxItemRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbox_status: Option<project_store::AgentMailboxMutationGateStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_workspace_epoch: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -138,6 +143,7 @@ impl AutonomousToolRuntime {
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: None,
+                    inbox_status: None,
                     code_workspace_epoch: None,
                     refreshed_paths: Vec::new(),
                     promoted_record_id: None,
@@ -182,6 +188,7 @@ impl AutonomousToolRuntime {
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: None,
+                    inbox_status: None,
                     code_workspace_epoch: None,
                     refreshed_paths: Vec::new(),
                     promoted_record_id: None,
@@ -206,6 +213,7 @@ impl AutonomousToolRuntime {
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: None,
+                    inbox_status: None,
                     code_workspace_epoch: None,
                     refreshed_paths: Vec::new(),
                     promoted_record_id: None,
@@ -246,6 +254,7 @@ impl AutonomousToolRuntime {
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: None,
+                    inbox_status: None,
                     code_workspace_epoch: None,
                     refreshed_paths: Vec::new(),
                     promoted_record_id: None,
@@ -276,6 +285,7 @@ impl AutonomousToolRuntime {
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: None,
+                    inbox_status: None,
                     code_workspace_epoch: None,
                     refreshed_paths: Vec::new(),
                     promoted_record_id: None,
@@ -304,6 +314,7 @@ impl AutonomousToolRuntime {
                     events: context.events,
                     mailbox: context.mailbox,
                     mailbox_item: None,
+                    inbox_status: None,
                     code_workspace_epoch: None,
                     refreshed_paths: Vec::new(),
                     promoted_record_id: None,
@@ -342,6 +353,7 @@ impl AutonomousToolRuntime {
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: Some(item),
+                    inbox_status: None,
                     code_workspace_epoch: None,
                     refreshed_paths: Vec::new(),
                     promoted_record_id: None,
@@ -349,22 +361,79 @@ impl AutonomousToolRuntime {
                 })
             }
             AutonomousAgentCoordinationAction::ReadInbox => {
-                let mailbox = project_store::list_agent_mailbox_inbox(
+                let paths = coordination_paths_from_optional_request(&request)?;
+                let mailbox = project_store::list_agent_mailbox_inbox_filtered(
                     self.repo_root(),
                     &run_context.project_id,
                     &run_context.run_id,
                     &now,
+                    &project_store::AgentMailboxInboxFilter {
+                        paths: paths.clone(),
+                        since_last_check: request.since_last_check,
+                    },
                     request.limit.unwrap_or(25),
                 )?;
+                project_store::record_agent_mailbox_inbox_check(
+                    self.repo_root(),
+                    &run_context.project_id,
+                    &run_context.run_id,
+                    &now,
+                    &paths,
+                )?;
+                let scope_message = if paths.is_empty() {
+                    "unfiltered".to_string()
+                } else {
+                    format!("scoped to {}", paths.join(", "))
+                };
                 Ok(AutonomousAgentCoordinationOutput {
                     action: request.action,
-                    message: format!("Found {} temporary mailbox item(s).", mailbox.len()),
+                    message: format!(
+                        "Found {} temporary mailbox item(s) ({scope_message}).",
+                        mailbox.len()
+                    ),
                     active_agents: Vec::new(),
                     reservations: Vec::new(),
                     conflicts: Vec::new(),
                     events: Vec::new(),
                     mailbox,
                     mailbox_item: None,
+                    inbox_status: None,
+                    code_workspace_epoch: None,
+                    refreshed_paths: Vec::new(),
+                    promoted_record_id: None,
+                    override_recorded: false,
+                })
+            }
+            AutonomousAgentCoordinationAction::CheckInboxStatus => {
+                let paths = coordination_paths_from_optional_request(&request)?;
+                let status = project_store::agent_mailbox_mutation_gate_status(
+                    self.repo_root(),
+                    &run_context.project_id,
+                    &run_context.run_id,
+                    &now,
+                    &paths,
+                )?;
+                Ok(AutonomousAgentCoordinationOutput {
+                    action: request.action,
+                    message: format!(
+                        "{} active sibling run(s); {} relevant open mailbox item(s); mailbox evidence {}.",
+                        status.active_sibling_count,
+                        status.relevant_item_count,
+                        if status.has_valid_mailbox_evidence {
+                            "is fresh"
+                        } else if status.evidence_stale {
+                            "is stale"
+                        } else {
+                            "is missing"
+                        }
+                    ),
+                    active_agents: Vec::new(),
+                    reservations: Vec::new(),
+                    conflicts: Vec::new(),
+                    events: Vec::new(),
+                    mailbox: Vec::new(),
+                    mailbox_item: None,
+                    inbox_status: Some(status),
                     code_workspace_epoch: None,
                     refreshed_paths: Vec::new(),
                     promoted_record_id: None,
@@ -402,6 +471,7 @@ impl AutonomousToolRuntime {
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: Some(item),
+                    inbox_status: None,
                     code_workspace_epoch: history_refresh
                         .as_ref()
                         .map(|refresh| refresh.code_workspace_epoch),
@@ -440,6 +510,7 @@ impl AutonomousToolRuntime {
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: Some(item),
+                    inbox_status: None,
                     code_workspace_epoch: None,
                     refreshed_paths: Vec::new(),
                     promoted_record_id: None,
@@ -470,6 +541,7 @@ impl AutonomousToolRuntime {
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: Some(item),
+                    inbox_status: None,
                     code_workspace_epoch: None,
                     refreshed_paths: Vec::new(),
                     promoted_record_id: None,
@@ -500,6 +572,7 @@ impl AutonomousToolRuntime {
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: Some(promotion.item),
+                    inbox_status: None,
                     code_workspace_epoch: None,
                     refreshed_paths: Vec::new(),
                     promoted_record_id: Some(promotion.promoted_record_id),

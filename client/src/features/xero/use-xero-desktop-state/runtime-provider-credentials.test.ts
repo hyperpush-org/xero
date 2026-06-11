@@ -55,6 +55,8 @@ function makeCatalog(
     models: models.map((m) => ({
       modelId: m.modelId,
       displayName: m.displayName,
+      inputModalities: [],
+      inputModalitiesSource: 'test_fixture_unreported',
       thinking: {
         supported: m.thinking ?? false,
         effortOptions: m.thinking ? ['medium', 'high'] : [],
@@ -140,12 +142,14 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
     updatedAt: '2026-04-15T20:00:00.000Z',
     checkpoints: [],
     latestCheckpoint: null,
+    waitingSummary: null,
     checkpointCount: 0,
     hasCheckpoints: false,
     isActive: true,
     isTerminal: false,
     isStale: false,
     isFailed: false,
+    isWaiting: false,
     ...overrides,
   }
 }

@@ -478,5 +478,6 @@ fn coordination_request(
         ttl_seconds: None,
         summary: None,
         limit: None,
+        since_last_check: false,
     }
 }

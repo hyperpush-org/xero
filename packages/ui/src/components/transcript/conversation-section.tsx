@@ -28,11 +28,14 @@ import {
   Info,
   Loader2,
   MoreHorizontal,
+  MousePointer2,
+  PencilLine,
   Terminal,
   Undo2,
   User,
   XCircle,
 } from 'lucide-react'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 
 import { cn } from '../../lib/utils'
@@ -42,6 +45,7 @@ import type {
   CodePatchTextHunkDto,
   RuntimeActionAnswerShapeDto,
   RuntimeActionRequiredOptionDto,
+  RuntimeSensitiveInputFieldDto,
   RuntimeAgentIdDto,
   RuntimeRunView,
   RuntimeStreamCompleteItemView,
@@ -50,6 +54,7 @@ import type {
   RuntimeStreamMediaSourceDto,
   RuntimeStreamToolItemView,
 } from '../../model'
+import { getRuntimeAgentLabel } from '../../model'
 import { AppLogo } from '../app-logo'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
@@ -72,6 +77,7 @@ import { ActionPromptCard } from './action-prompt-card'
 import { Markdown } from './conversation-markdown'
 import {
   AttachmentPreviewChip,
+  ImageAttachmentPreview,
   ToolMediaAttachments,
   attachmentDisplayName,
 } from './media-attachment-preview'
@@ -169,12 +175,15 @@ export type ConversationTurn =
       kind: 'action_prompt'
       sequence: number
       actionId: string
+      runId?: string | null
       actionType: string
       title: string
       detail: string
       shape: RuntimeActionAnswerShapeDto
       options: RuntimeActionRequiredOptionDto[] | null
       allowMultiple: boolean
+      sensitiveFields?: RuntimeSensitiveInputFieldDto[] | null
+      intendedUse?: string | null
       pendingDecision: 'approve' | 'reject' | 'resume' | null
       isResolved: boolean
     }
@@ -189,11 +198,18 @@ export type ConversationTurn =
       id: string
       kind: 'routing_suggestion'
       sequence: number
+      targetKind: 'built_in' | 'custom'
       targetAgentId: RuntimeAgentIdDto
+      targetAgentDefinitionId: string | null
+      targetAgentDefinitionVersion: number | null
+      targetLabel: string | null
       reason: string
       summary: string
       isResolved: boolean
       acceptedTarget: RuntimeAgentIdDto | null
+      acceptedTargetAgentDefinitionId: string | null
+      acceptedTargetLabel: string | null
+      routingResolutionMode?: 'manual' | 'automatic' | null
     }
   | {
       id: string
@@ -262,6 +278,8 @@ export interface ConversationSectionProps {
   accountAvatarUrl?: string | null
   /** GitHub login for the signed-in user, used as alt text. */
   accountLogin?: string | null
+  /** Active run agent label used for routing-decline actions. */
+  currentAgentLabel?: string | null
   /** Visual density. `dense` collapses each turn into a single PTY-style line. */
   variant?: 'default' | 'dense'
   codeUndoStates?: Record<string, CodeUndoUiState>
@@ -333,6 +351,65 @@ export function getReturnSessionToHereStateKey({
  */
 const HANDOFF_COMPLETION_DETAIL_MARKER = 'handed off to a same-type target run'
 
+const BROWSER_TOOL_CONTEXT_HEADING_PATTERN =
+  String.raw`Browser (?:sketch context|element inspection context)(?:\s*\(capture\s+\d+\))?:`
+const BROWSER_TOOL_CONTEXT_MARKER_PATTERN =
+  /^Browser (sketch context|element inspection context)(?:\s*\(capture\s+\d+\))?:$/
+const BROWSER_TOOL_CONTEXT_BLOCK_PATTERN = new RegExp(
+  String.raw`(^|\n{2,})(${BROWSER_TOOL_CONTEXT_HEADING_PATTERN}\n[\s\S]*?)(?=\n{2,}${BROWSER_TOOL_CONTEXT_HEADING_PATTERN}\n|$)`,
+  'g',
+)
+
+export interface BrowserToolPromptContext {
+  id: string
+  kind: 'sketch' | 'element'
+  title: string
+  page: string | null
+  lines: string[]
+  rawText: string
+}
+
+export interface BrowserToolPromptParts {
+  visibleText: string
+  contexts: BrowserToolPromptContext[]
+}
+
+interface BrowserToolContextAttachmentMapping {
+  pairedByContextId: Map<string, ConversationMessageAttachment>
+  unpairedAttachments: ConversationMessageAttachment[] | undefined
+}
+
+function pairBrowserToolContextAttachments(
+  contexts: readonly BrowserToolPromptContext[],
+  attachments: readonly ConversationMessageAttachment[] | null | undefined,
+): BrowserToolContextAttachmentMapping {
+  if (!attachments?.length || contexts.every((context) => context.kind !== 'sketch')) {
+    return {
+      pairedByContextId: new Map(),
+      unpairedAttachments: attachments?.slice(),
+    }
+  }
+
+  const imageAttachments = attachments.filter((attachment) => attachment.kind === 'image')
+  const pairedByContextId = new Map<string, ConversationMessageAttachment>()
+  const pairedAttachmentIds = new Set<string>()
+  let imageIndex = 0
+
+  for (const context of contexts) {
+    if (context.kind !== 'sketch') continue
+    const attachment = imageAttachments[imageIndex]
+    imageIndex += 1
+    if (!attachment) continue
+    pairedByContextId.set(context.id, attachment)
+    pairedAttachmentIds.add(attachment.id)
+  }
+
+  return {
+    pairedByContextId,
+    unpairedAttachments: attachments.filter((attachment) => !pairedAttachmentIds.has(attachment.id)),
+  }
+}
+
 function isHandoffCompletion(
   completion: RuntimeStreamCompleteItemView | null | undefined,
 ): boolean {
@@ -341,6 +418,157 @@ function isHandoffCompletion(
       ?.toLowerCase()
       .includes(HANDOFF_COMPLETION_DETAIL_MARKER),
   )
+}
+
+export function splitBrowserToolPromptContext(text: string): BrowserToolPromptParts {
+  const contexts: BrowserToolPromptContext[] = []
+  const visibleParts: string[] = []
+  let cursor = 0
+
+  BROWSER_TOOL_CONTEXT_BLOCK_PATTERN.lastIndex = 0
+  let match = BROWSER_TOOL_CONTEXT_BLOCK_PATTERN.exec(text)
+  while (match !== null) {
+    visibleParts.push(text.slice(cursor, match.index))
+
+    const separator = match[1] ?? ''
+    const rawText = (match[2] ?? '').trim()
+    const context = parseBrowserToolPromptContext(rawText, contexts.length)
+    if (context) {
+      contexts.push(context)
+      cursor = match.index + separator.length + (match[2] ?? '').length
+    } else {
+      visibleParts.push(separator, match[2] ?? '')
+      cursor = match.index + separator.length + (match[2] ?? '').length
+    }
+
+    match = BROWSER_TOOL_CONTEXT_BLOCK_PATTERN.exec(text)
+  }
+
+  visibleParts.push(text.slice(cursor))
+
+  return {
+    visibleText: visibleParts.join('').trim(),
+    contexts,
+  }
+}
+
+export function userVisiblePromptText(text: string): string {
+  return splitBrowserToolPromptContext(text).visibleText
+}
+
+function parseBrowserToolPromptContext(
+  rawText: string,
+  index: number,
+): BrowserToolPromptContext | null {
+  const lines = rawText.split(/\r?\n/)
+  const marker = lines[0]?.trim() ?? ''
+  const markerMatch = BROWSER_TOOL_CONTEXT_MARKER_PATTERN.exec(marker)
+  if (!markerMatch) {
+    return null
+  }
+
+  const kind = markerMatch[1] === 'sketch context' ? 'sketch' : 'element'
+  const pageLine = lines.find((line) => line.trim().startsWith('Page: '))
+  const page = pageLine ? pageLine.trim().replace(/^Page:\s*/, '') : null
+  const bodyLines = lines
+    .slice(1)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('Page: '))
+
+  return {
+    id: `${kind}-${index}`,
+    kind,
+    title: kind === 'sketch' ? 'Browser sketch context' : 'Element context',
+    page,
+    lines: bodyLines,
+    rawText,
+  }
+}
+
+function visibleConversationCopyText(
+  turns: readonly ConversationTurn[],
+  currentAgentLabel?: string | null,
+): string {
+  return turns
+    .flatMap((turn) => conversationTurnCopySections(turn, currentAgentLabel))
+    .map((section) => section.trim())
+    .filter(Boolean)
+    .join('\n\n')
+}
+
+function conversationTurnCopySections(
+  turn: ConversationTurn,
+  currentAgentLabel?: string | null,
+): string[] {
+  switch (turn.kind) {
+    case 'message': {
+      if (turn.role === 'user') {
+        const parsed = splitBrowserToolPromptContext(turn.text)
+        const sections: string[] = []
+        if (parsed.visibleText.trim().length > 0) {
+          sections.push(`You:\n${parsed.visibleText.trim()}`)
+        }
+        for (const context of parsed.contexts) {
+          sections.push(`${context.title}:\n${context.rawText}`)
+        }
+        return sections
+      }
+
+      return splitAssistantText(turn.text).flatMap((segment) => {
+        const text = segment.text.trim()
+        if (text.length === 0) return []
+        return segment.kind === 'thinking' ? [`Thoughts:\n${text}`] : [`Agent:\n${text}`]
+      })
+    }
+    case 'thinking':
+      return turn.text.trim().length > 0 ? [`Thoughts:\n${turn.text.trim()}`] : []
+    case 'action':
+      return [formatCopyTitleAndDetail(turn.title, turn.detail)]
+    case 'action_group':
+      return [formatCopyTitleAndDetail(turn.title, turn.detail)]
+    case 'file_change':
+      return [formatCopyTitleAndDetail(turn.title, turn.detail)]
+    case 'failure':
+      return [formatCopyTitleAndDetail('Failure', turn.message)]
+    case 'action_prompt':
+      return [formatCopyTitleAndDetail(turn.title, turn.detail)]
+    case 'handoff_notice':
+      return ['Run continued in a fresh session']
+    case 'routing_suggestion': {
+      const label = turn.targetLabel ?? turn.targetAgentDefinitionId ?? getRuntimeAgentLabel(turn.targetAgentId)
+      const targetDescription = turn.targetKind === 'custom' ? label : `the ${label} agent`
+      const visibleLines = [`This task may be better suited for ${targetDescription}.`]
+      const resolvedTargetLabel =
+        turn.acceptedTargetLabel?.trim() ||
+        (turn.acceptedTargetAgentDefinitionId ? 'custom agent' : null) ||
+        (turn.acceptedTarget ? getRuntimeAgentLabel(turn.acceptedTarget) : null)
+
+      if (turn.isResolved) {
+        const displayCurrentAgentLabel = currentAgentLabel?.trim() || 'current agent'
+        visibleLines.push(
+          turn.acceptedTarget
+            ? `${turn.routingResolutionMode === 'automatic' ? 'Auto-switched' : 'Switched'} to ${
+                resolvedTargetLabel ?? getRuntimeAgentLabel(turn.acceptedTarget)
+              } and continued.`
+            : `Continued with ${displayCurrentAgentLabel}.`,
+        )
+      }
+
+      return [`Routing suggestion:\n${visibleLines.join('\n')}`]
+    }
+    case 'subagent_group':
+      return [formatCopyTitleAndDetail(turn.roleLabel, turn.resultSummary ?? turn.prompt ?? turn.status)]
+    default:
+      return []
+  }
+}
+
+function formatCopyTitleAndDetail(title: string, detail: string | null | undefined): string {
+  const normalizedTitle = title.trim()
+  const normalizedDetail = detail?.trim() ?? ''
+  if (!normalizedTitle) return normalizedDetail
+  if (!normalizedDetail) return normalizedTitle
+  return `${normalizedTitle}:\n${normalizedDetail}`
 }
 
 export const ConversationSection = memo(function ConversationSection({
@@ -352,6 +580,7 @@ export const ConversationSection = memo(function ConversationSection({
   streamCompletion = null,
   accountAvatarUrl = null,
   accountLogin = null,
+  currentAgentLabel = null,
   variant = 'default',
   codeUndoStates = {},
   returnSessionToHereStates = {},
@@ -376,9 +605,36 @@ export const ConversationSection = memo(function ConversationSection({
         streamFailure.code,
       )
     : null
+  const inlineFailureDuplicatesRunFailure = Boolean(
+    runFailureMessage &&
+      visibleTurns.some(
+        (turn) =>
+          turn.kind === 'failure' &&
+          failureDiagnosticsMatch(
+            turn.message,
+            turn.code,
+            runFailureMessage,
+            runFailureCode,
+          ),
+      ),
+  )
+  const inlineFailureDuplicatesStreamFailure = Boolean(
+    streamFailure &&
+      visibleTurns.some(
+        (turn) =>
+          turn.kind === 'failure' &&
+          failureDiagnosticsMatch(
+            turn.message,
+            turn.code,
+            streamFailure.message,
+            streamFailure.code,
+          ),
+      ),
+  )
   const streamFailureIsDuplicate =
     Boolean(
-      streamFailure?.message && streamFailure.message === runFailureMessage,
+      streamFailure?.message &&
+        failureMessagesMatch(streamFailure.message, runFailureMessage),
     ) || Boolean(streamFailure?.code && streamFailure.code === runFailureCode)
   const streamIssueIsDuplicate =
     Boolean(
@@ -392,8 +648,10 @@ export const ConversationSection = memo(function ConversationSection({
           streamIssue.code === streamFailure?.code),
     )
 
-  const showRunFailure = Boolean(runFailureMessage)
-  const showStreamFailure = Boolean(streamFailure && !streamFailureIsDuplicate)
+  const showRunFailure = Boolean(runFailureMessage && !inlineFailureDuplicatesRunFailure)
+  const showStreamFailure = Boolean(
+    streamFailure && !streamFailureIsDuplicate && !inlineFailureDuplicatesStreamFailure,
+  )
   const showStreamIssue = Boolean(streamIssue && !streamIssueIsDuplicate)
   // Suppress the footer handoff notice if an inline `handoff_notice` turn is
   // already in the conversation. The inline turn is the steady-state marker
@@ -420,6 +678,10 @@ export const ConversationSection = memo(function ConversationSection({
       lastTurn.role === 'assistant' &&
       lastTurn.text.trim().length > 0,
   )
+  const copyableVisibleConversationText = useMemo(
+    () => visibleConversationCopyText(visibleTurns, currentAgentLabel),
+    [currentAgentLabel, visibleTurns],
+  )
 
   if (variant === 'dense') {
     return (
@@ -432,17 +694,20 @@ export const ConversationSection = memo(function ConversationSection({
             aria-label="Agent conversation turns"
             className="flex flex-col gap-2"
           >
-            {visibleTurns.map((turn) => (
-              <DenseTurnItem
-                key={turn.id}
-                turn={turn}
-                codeUndoStates={codeUndoStates}
-                returnSessionToHereStates={returnSessionToHereStates}
-                onUndoChangeGroup={onUndoChangeGroup}
-                onReturnSessionToHere={onReturnSessionToHere}
-                onOpenHandoffSummary={onOpenHandoffSummary}
-              />
-            ))}
+            <AnimatePresence initial={false}>
+              {visibleTurns.map((turn) => (
+                <DenseTurnItem
+                  key={turn.id}
+                  turn={turn}
+                  codeUndoStates={codeUndoStates}
+                  returnSessionToHereStates={returnSessionToHereStates}
+                  onUndoChangeGroup={onUndoChangeGroup}
+                  onReturnSessionToHere={onReturnSessionToHere}
+                  onOpenHandoffSummary={onOpenHandoffSummary}
+                  currentAgentLabel={currentAgentLabel}
+                />
+              ))}
+            </AnimatePresence>
           </ol>
         ) : null}
         {showActivityIndicator ? <AgentActivityIndicator /> : null}
@@ -526,30 +791,41 @@ export const ConversationSection = memo(function ConversationSection({
           aria-label="Agent conversation turns"
           className="flex flex-col gap-5"
         >
-          {visibleTurns.map((turn, index) => {
-            const prev = index > 0 ? visibleTurns[index - 1] : null
-            const next =
-              index < visibleTurns.length - 1 ? visibleTurns[index + 1] : null
-            return (
-              <ConversationTurnItem
-                key={turn.id}
-                turn={turn}
-                accountAvatarUrl={accountAvatarUrl}
-                accountLogin={accountLogin}
-                isStreaming={
-                  index === visibleTurns.length - 1 &&
-                  isLastTurnStreamingAssistant
-                }
-                connectsTop={isToolTurnKind(prev)}
-                connectsBottom={isToolTurnKind(next)}
-                codeUndoStates={codeUndoStates}
-                returnSessionToHereStates={returnSessionToHereStates}
-                onUndoChangeGroup={onUndoChangeGroup}
-                onReturnSessionToHere={onReturnSessionToHere}
-                onOpenHandoffSummary={onOpenHandoffSummary}
-              />
-            )
-          })}
+          <AnimatePresence initial={false}>
+            {visibleTurns.map((turn, index) => {
+              const prev = index > 0 ? visibleTurns[index - 1] : null
+              const next =
+                index < visibleTurns.length - 1
+                  ? visibleTurns[index + 1]
+                  : null
+              return (
+                <ConversationTurnItem
+                  key={turn.id}
+                  turn={turn}
+                  accountAvatarUrl={accountAvatarUrl}
+                  accountLogin={accountLogin}
+                  isStreaming={
+                    index === visibleTurns.length - 1 &&
+                    isLastTurnStreamingAssistant
+                  }
+                  connectsTop={isToolTurnKind(prev)}
+                  connectsBottom={isToolTurnKind(next)}
+                  codeUndoStates={codeUndoStates}
+                  returnSessionToHereStates={returnSessionToHereStates}
+                  onUndoChangeGroup={onUndoChangeGroup}
+                  onReturnSessionToHere={onReturnSessionToHere}
+                  onOpenHandoffSummary={onOpenHandoffSummary}
+                  currentAgentLabel={currentAgentLabel}
+                  isLastTurn={index === visibleTurns.length - 1}
+                  nextTurn={next}
+                  hideCopyBeforeFooterNotice={
+                    showHandoffNotice && index === visibleTurns.length - 1
+                  }
+                  visibleConversationCopyText={copyableVisibleConversationText}
+                />
+              )
+            })}
+          </AnimatePresence>
         </ol>
       ) : null}
 
@@ -703,7 +979,7 @@ function CopyTextButton({
 }
 
 function NoticeListItem({ children }: { children: React.ReactNode }) {
-  return <li className={TURN_ENTRY_CLASS}>{children}</li>
+  return <AnimatedTranscriptListItem>{children}</AnimatedTranscriptListItem>
 }
 
 /**
@@ -743,17 +1019,26 @@ function isToolTurnKind(turn: ConversationTurn | null): boolean {
   )
 }
 
+function isHandoffBoundaryTurn(turn: ConversationTurn | null): boolean {
+  return turn?.kind === 'routing_suggestion' || turn?.kind === 'handoff_notice'
+}
+
 interface ConversationTurnItemProps {
   turn: ConversationTurn
   accountAvatarUrl: string | null
   accountLogin: string | null
   isStreaming: boolean
+  isLastTurn: boolean
+  nextTurn: ConversationTurn | null
+  hideCopyBeforeFooterNotice: boolean
+  visibleConversationCopyText: string
   /** Previous visible turn is also a tool call; render a connector up to it. */
   connectsTop: boolean
   /** Next visible turn is also a tool call; render a connector down to it. */
   connectsBottom: boolean
   codeUndoStates: Record<string, CodeUndoUiState>
   returnSessionToHereStates: Record<string, CodeUndoUiState>
+  currentAgentLabel?: string | null
   onUndoChangeGroup?: (request: CodeUndoRequest) => void
   onReturnSessionToHere?: (request: ReturnSessionToHereUiRequest) => void
   onOpenHandoffSummary?: (request: {
@@ -762,42 +1047,112 @@ interface ConversationTurnItemProps {
   }) => void
 }
 
-// Custom keyframes (see globals.css `.agent-turn-soft-enter`) give each new
-// turn a softer landing — a small upward drift, micro scale, longer ease —
-// than tailwind's stock `animate-in fade-in-0 slide-in-from-bottom-1`.
-// Reduced motion is honoured globally by the `prefers-reduced-motion` rule
-// at the bottom of globals.css.
-const TURN_ENTRY_CLASS = 'agent-turn-soft-enter'
+const TRANSCRIPT_MOTION_TRANSITION = {
+  duration: 0.24,
+  ease: [0.22, 1, 0.36, 1],
+}
+const TRANSCRIPT_INSTANT_TRANSITION = { duration: 0 }
+
+function useTranscriptMotionTransition() {
+  return useReducedMotion()
+    ? TRANSCRIPT_INSTANT_TRANSITION
+    : TRANSCRIPT_MOTION_TRANSITION
+}
+
+function AnimatedTranscriptListItem({
+  children,
+  className,
+  style,
+  turn,
+}: {
+  children: React.ReactNode
+  className?: string
+  style?: React.CSSProperties
+  turn?: ConversationTurn
+}) {
+  const transition = useTranscriptMotionTransition()
+
+  return (
+    <motion.li
+      initial={false}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={transition}
+      className={className}
+      style={style}
+      data-conversation-turn-id={turn?.id}
+      data-conversation-turn-kind={turn?.kind}
+      data-conversation-turn-role={turn?.kind === 'message' ? turn.role : undefined}
+    >
+      {children}
+    </motion.li>
+  )
+}
+
+function AnimatedTranscriptPanel({
+  children,
+  className,
+}: {
+  children: React.ReactNode
+  className?: string
+}) {
+  const transition = useTranscriptMotionTransition()
+
+  return (
+    <motion.div
+      layout
+      initial={false}
+      animate={{ opacity: 1, height: 'auto', y: 0, scale: 1 }}
+      exit={{ opacity: 0, height: 0, y: -3, scale: 0.995 }}
+      transition={transition}
+      className={cn('overflow-hidden', className)}
+    >
+      {children}
+    </motion.div>
+  )
+}
 
 function ConversationTurnItem({
   turn,
   accountAvatarUrl,
   accountLogin,
   isStreaming,
+  isLastTurn,
+  nextTurn,
+  hideCopyBeforeFooterNotice,
+  visibleConversationCopyText,
   connectsTop,
   connectsBottom,
   codeUndoStates,
   returnSessionToHereStates,
+  currentAgentLabel,
   onUndoChangeGroup,
   onReturnSessionToHere,
   onOpenHandoffSummary,
 }: ConversationTurnItemProps) {
   return (
-    <li className={TURN_ENTRY_CLASS}>
+    <AnimatedTranscriptListItem
+      turn={turn}
+      className={turn.kind === 'routing_suggestion' ? 'mt-1 mb-1' : undefined}
+    >
       <ConversationTurnRow
         turn={turn}
         accountAvatarUrl={accountAvatarUrl}
         accountLogin={accountLogin}
         isStreaming={isStreaming}
+        isLastTurn={isLastTurn}
+        nextTurn={nextTurn}
+        hideCopyBeforeFooterNotice={hideCopyBeforeFooterNotice}
+        visibleConversationCopyText={visibleConversationCopyText}
         connectsTop={connectsTop}
         connectsBottom={connectsBottom}
         codeUndoStates={codeUndoStates}
         returnSessionToHereStates={returnSessionToHereStates}
+        currentAgentLabel={currentAgentLabel}
         onUndoChangeGroup={onUndoChangeGroup}
         onReturnSessionToHere={onReturnSessionToHere}
         onOpenHandoffSummary={onOpenHandoffSummary}
       />
-    </li>
+    </AnimatedTranscriptListItem>
   )
 }
 
@@ -806,10 +1161,15 @@ interface ConversationTurnRowProps {
   accountAvatarUrl: string | null
   accountLogin: string | null
   isStreaming: boolean
+  isLastTurn: boolean
+  nextTurn: ConversationTurn | null
+  hideCopyBeforeFooterNotice: boolean
+  visibleConversationCopyText: string
   connectsTop: boolean
   connectsBottom: boolean
   codeUndoStates: Record<string, CodeUndoUiState>
   returnSessionToHereStates: Record<string, CodeUndoUiState>
+  currentAgentLabel?: string | null
   onUndoChangeGroup?: (request: CodeUndoRequest) => void
   onReturnSessionToHere?: (request: ReturnSessionToHereUiRequest) => void
   onOpenHandoffSummary?: (request: {
@@ -823,10 +1183,15 @@ function ConversationTurnRow({
   accountAvatarUrl,
   accountLogin,
   isStreaming,
+  isLastTurn,
+  nextTurn,
+  hideCopyBeforeFooterNotice,
+  visibleConversationCopyText,
   connectsTop,
   connectsBottom,
   codeUndoStates,
   returnSessionToHereStates,
+  currentAgentLabel,
   onUndoChangeGroup,
   onReturnSessionToHere,
   onOpenHandoffSummary,
@@ -845,6 +1210,20 @@ function ConversationTurnRow({
         text={turn.text}
         attachments={turn.attachments}
         isStreaming={isStreaming}
+        hideCopyButton={
+          isHandoffBoundaryTurn(nextTurn) ||
+          (isLastTurn && hideCopyBeforeFooterNotice)
+        }
+        copyAction={
+          isLastTurn
+            ? {
+                text: visibleConversationCopyText,
+                label: 'Copy visible conversation',
+                copiedLabel: 'Copied visible conversation',
+                tooltip: 'Copy visible conversation',
+              }
+            : null
+        }
       />
     )
   }
@@ -930,12 +1309,15 @@ function ConversationTurnRow({
     return (
       <ActionPromptCard
         actionId={turn.actionId}
+        runId={turn.runId ?? null}
         actionType={turn.actionType}
         title={turn.title}
         detail={turn.detail}
         shape={turn.shape}
         options={turn.options}
         allowMultiple={turn.allowMultiple}
+        sensitiveFields={turn.sensitiveFields ?? null}
+        intendedUse={turn.intendedUse ?? null}
         resolved={turn.isResolved}
       />
     )
@@ -962,11 +1344,19 @@ function ConversationTurnRow({
     return (
       <RoutingSuggestionCard
         turnId={turn.id}
+        targetKind={turn.targetKind}
         targetAgentId={turn.targetAgentId}
+        targetAgentDefinitionId={turn.targetAgentDefinitionId}
+        targetAgentDefinitionVersion={turn.targetAgentDefinitionVersion}
+        targetLabel={turn.targetLabel}
         reason={turn.reason}
         summary={turn.summary}
         isResolved={turn.isResolved}
         acceptedTarget={turn.acceptedTarget}
+        acceptedTargetAgentDefinitionId={turn.acceptedTargetAgentDefinitionId}
+        acceptedTargetLabel={turn.acceptedTargetLabel}
+        resolutionMode={turn.routingResolutionMode}
+        currentAgentLabel={currentAgentLabel}
       />
     )
   }
@@ -1707,12 +2097,9 @@ function ActionCard({
   const hasDetails = detailRows.length > 0 || Boolean(mediaAttachments?.length)
   const [open, setOpen] = useState(() => defaultOpen && hasDetails)
   const isFailed = state === 'failed'
-  const isRunning = state === 'running'
   const rowClass = cn(
     'flex w-full items-center gap-2 rounded-md py-0.5 text-left transition-colors',
-    'hover:bg-foreground/[0.03]',
-    isRunning && 'bg-primary/[0.025] agent-tool-running-row',
-    isFailed && 'bg-destructive/[0.04]',
+    isFailed && 'text-destructive',
   )
 
   useEffect(() => {
@@ -1763,21 +2150,18 @@ function ActionCard({
           </div>
         )}
         {hasDetails ? (
-          <CollapsibleContent
-            className={cn(
-              'overflow-hidden',
-              'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-1',
-              'data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-1',
-              'data-[state=open]:duration-200 data-[state=closed]:duration-150',
-            )}
-          >
-            <div className="ml-[22px] pl-3 pr-1 pb-1.5 pt-1">
-              <ToolDetailRows
-                rows={detailRows}
-                mediaAttachments={mediaAttachments}
-              />
-            </div>
-          </CollapsibleContent>
+          <AnimatePresence initial={false}>
+            {open ? (
+              <AnimatedTranscriptPanel>
+                <div className="ml-[22px] pl-3 pr-1 pb-1.5 pt-1">
+                  <ToolDetailRows
+                    rows={detailRows}
+                    mediaAttachments={mediaAttachments}
+                  />
+                </div>
+              </AnimatedTranscriptPanel>
+            ) : null}
+          </AnimatePresence>
         ) : null}
       </Collapsible>
     </div>
@@ -2160,82 +2544,91 @@ function SubagentGroupCard({
           />
         </button>
       </CollapsibleTrigger>
-      <CollapsibleContent
-        className={cn(
-          'overflow-hidden',
-          'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-1',
-          'data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-1',
-          'data-[state=open]:duration-200 data-[state=closed]:duration-150',
-        )}
-      >
-        <div className="ml-[22px] mt-1 flex flex-col gap-2 border-l border-border/25 pl-3">
-          {turn.prompt ? (
-            <div className="rounded-md border border-border/40 bg-muted/15 px-2 py-1.5 text-[12px] text-muted-foreground">
-              <span className="mb-0.5 inline-flex items-center gap-1 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground/80">
-                <GitBranch aria-hidden="true" className="h-2.5 w-2.5" />
-                Subagent prompt
-              </span>
-              <div className="whitespace-pre-wrap break-words">
-                {turn.prompt}
-              </div>
-            </div>
-          ) : null}
-          {hasChildren ? (
-            <ul
-              aria-label={`${turn.roleLabel} subagent transcript`}
-              className="flex flex-col gap-2"
-            >
-              {turn.children.map((childTurn, index) => (
-                <li
-                  key={childTurn.id}
-                  className="agent-stagger-child"
-                  style={{ ['--stagger-index' as string]: index }}
+      <AnimatePresence initial={false}>
+        {open ? (
+          <AnimatedTranscriptPanel>
+            <div className="ml-[22px] mt-1 flex flex-col gap-2 border-l border-border/25 pl-3">
+              {turn.prompt ? (
+                <div className="rounded-md border border-border/40 bg-muted/15 px-2 py-1.5 text-[12px] text-muted-foreground">
+                  <span className="mb-0.5 inline-flex items-center gap-1 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground/80">
+                    <GitBranch aria-hidden="true" className="h-2.5 w-2.5" />
+                    Subagent prompt
+                  </span>
+                  <div className="whitespace-pre-wrap break-words">
+                    {turn.prompt}
+                  </div>
+                </div>
+              ) : null}
+              {hasChildren ? (
+                <ul
+                  aria-label={`${turn.roleLabel} subagent transcript`}
+                  className="flex flex-col gap-2"
                 >
-                  <ConversationTurnRow
-                    turn={childTurn}
-                    accountAvatarUrl={accountAvatarUrl}
-                    accountLogin={accountLogin}
-                    isStreaming={isStreaming && !isTerminal}
-                    connectsTop={false}
-                    connectsBottom={false}
-                    codeUndoStates={codeUndoStates}
-                    returnSessionToHereStates={returnSessionToHereStates}
-                    onUndoChangeGroup={onUndoChangeGroup}
-                    onReturnSessionToHere={onReturnSessionToHere}
-                    onOpenHandoffSummary={onOpenHandoffSummary}
-                  />
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <div className="text-[11.5px] italic text-muted-foreground/70">
-              {isActive
-                ? 'Subagent is starting up; transcript will appear here.'
-                : 'Subagent produced no transcript items.'}
-            </div>
-          )}
-          {turn.resultSummary ? (
-            <div
-              className={cn(
-                'rounded-md border px-2 py-1.5 text-[12px]',
-                turn.status === 'failed' || turn.status === 'budget_exhausted'
-                  ? 'border-destructive/30 bg-destructive/[0.04] text-destructive'
-                  : 'border-border/40 bg-muted/15 text-muted-foreground',
+                  <AnimatePresence initial={false}>
+                    {turn.children.map((childTurn, index) => {
+                      const nextChildTurn =
+                        index < turn.children.length - 1 ? turn.children[index + 1] : null
+                      return (
+                        <AnimatedTranscriptListItem
+                          key={childTurn.id}
+                          className="agent-stagger-child"
+                          style={{ ['--stagger-index' as string]: index }}
+                        >
+                          <ConversationTurnRow
+                            turn={childTurn}
+                            accountAvatarUrl={accountAvatarUrl}
+                            accountLogin={accountLogin}
+                            isStreaming={isStreaming && !isTerminal}
+                            isLastTurn={false}
+                            nextTurn={nextChildTurn}
+                            hideCopyBeforeFooterNotice={false}
+                            visibleConversationCopyText=""
+                            connectsTop={false}
+                            connectsBottom={false}
+                            codeUndoStates={codeUndoStates}
+                            returnSessionToHereStates={returnSessionToHereStates}
+                            onUndoChangeGroup={onUndoChangeGroup}
+                            onReturnSessionToHere={onReturnSessionToHere}
+                            onOpenHandoffSummary={onOpenHandoffSummary}
+                          />
+                        </AnimatedTranscriptListItem>
+                      )
+                    })}
+                  </AnimatePresence>
+                </ul>
+              ) : (
+                <div className="text-[11.5px] italic text-muted-foreground/70">
+                  {isActive
+                    ? 'Subagent is starting up; transcript will appear here.'
+                    : 'Subagent produced no transcript items.'}
+                </div>
               )}
-            >
-              <span className="mb-0.5 inline-flex items-center gap-1 text-[10.5px] font-medium uppercase tracking-wide opacity-80">
-                <Info aria-hidden="true" className="h-2.5 w-2.5" />
-                {turn.status === 'failed' || turn.status === 'budget_exhausted'
-                  ? 'Failure'
-                  : 'Result summary'}
-              </span>
-              <div className="whitespace-pre-wrap break-words">
-                {turn.resultSummary}
-              </div>
+              {turn.resultSummary ? (
+                <div
+                  className={cn(
+                    'rounded-md border px-2 py-1.5 text-[12px]',
+                    turn.status === 'failed' ||
+                      turn.status === 'budget_exhausted'
+                      ? 'border-destructive/30 bg-destructive/[0.04] text-destructive'
+                      : 'border-border/40 bg-muted/15 text-muted-foreground',
+                  )}
+                >
+                  <span className="mb-0.5 inline-flex items-center gap-1 text-[10.5px] font-medium uppercase tracking-wide opacity-80">
+                    <Info aria-hidden="true" className="h-2.5 w-2.5" />
+                    {turn.status === 'failed' ||
+                    turn.status === 'budget_exhausted'
+                      ? 'Failure'
+                      : 'Result summary'}
+                  </span>
+                  <div className="whitespace-pre-wrap break-words">
+                    {turn.resultSummary}
+                  </div>
+                </div>
+              ) : null}
             </div>
-          ) : null}
-        </div>
-      </CollapsibleContent>
+          </AnimatedTranscriptPanel>
+        ) : null}
+      </AnimatePresence>
     </Collapsible>
   )
 }
@@ -2273,8 +2666,52 @@ function ActionGroupCard({
   connectsBottom = false,
 }: ActionGroupCardProps) {
   const [open, setOpen] = useState(false)
-  const isRunning = state === 'running'
   const hasDetail = detail.trim().length > 0
+  const singleAction = actions.length === 1 ? actions[0] : null
+  const singleActionHasDetails = Boolean(
+    singleAction &&
+      (singleAction.detailRows.length > 0 ||
+        Boolean(singleAction.mediaAttachments?.length)),
+  )
+  const hasExpandableContent = !singleAction || singleActionHasDetails
+  const detailsLabel =
+    actions.length === 1 ? 'compact tool details' : 'grouped tool details'
+  const rowClassName = cn(
+    'flex w-full items-center gap-2 rounded-md py-0.5 text-left transition-colors',
+    hasExpandableContent &&
+      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+  )
+  const rowContent = (
+    <>
+      <ToolStatusIcon state={state} className="shrink-0" />
+      <span
+        className="min-w-0 shrink truncate text-[13px] font-medium tracking-[-0.005em] text-foreground"
+        title={title}
+      >
+        {title}
+      </span>
+      {hasDetail ? (
+        <span
+          className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground/75"
+          title={detail}
+        >
+          {detail}
+        </span>
+      ) : (
+        <span aria-hidden="true" className="flex-1" />
+      )}
+      {hasExpandableContent ? (
+        <ChevronDown
+          aria-hidden="true"
+          className={cn(
+            'h-3.5 w-3.5 shrink-0 text-muted-foreground/45 transition-all duration-200 ease-out',
+            'group-hover/tool:text-muted-foreground/80',
+            open ? 'rotate-180 text-muted-foreground/80' : 'rotate-0',
+          )}
+        />
+      ) : null}
+    </>
+  )
 
   return (
     <Collapsible
@@ -2286,64 +2723,51 @@ function ActionGroupCard({
         connectsTop={connectsTop}
         connectsBottom={connectsBottom}
       />
-      {open ? (
+      {open && hasExpandableContent ? (
         <span
           aria-hidden="true"
           className="pointer-events-none absolute left-[8px] top-[10px] bottom-0 w-px bg-border/60"
         />
       ) : null}
-      <CollapsibleTrigger asChild>
-        <button
-          type="button"
-          aria-label={`${open ? 'Hide' : 'Show'} grouped tool details for ${title}`}
-          className={cn(
-            'flex w-full items-center gap-2 rounded-md py-0.5 text-left transition-colors',
-            'hover:bg-foreground/[0.03]',
-            isRunning && 'bg-primary/[0.025] agent-tool-running-row',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
-          )}
-        >
-          <ToolStatusIcon state={state} className="shrink-0" />
-          <span
-            className="min-w-0 shrink truncate text-[13px] font-medium tracking-[-0.005em] text-foreground"
-            title={title}
+      {hasExpandableContent ? (
+        <CollapsibleTrigger asChild>
+          <button
+            type="button"
+            aria-label={`${open ? 'Hide' : 'Show'} ${detailsLabel} for ${title}`}
+            className={rowClassName}
           >
-            {title}
-          </span>
-          {hasDetail ? (
-            <span
-              className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground/75"
-              title={detail}
-            >
-              {detail}
-            </span>
-          ) : (
-            <span aria-hidden="true" className="flex-1" />
-          )}
-          <ChevronDown
-            aria-hidden="true"
-            className={cn(
-              'h-3.5 w-3.5 shrink-0 text-muted-foreground/45 transition-all duration-200 ease-out',
-              'group-hover/tool:text-muted-foreground/80',
-              open ? 'rotate-180 text-muted-foreground/80' : 'rotate-0',
+            {rowContent}
+          </button>
+        </CollapsibleTrigger>
+      ) : (
+        <div className={rowClassName}>{rowContent}</div>
+      )}
+      <AnimatePresence initial={false}>
+        {open && hasExpandableContent ? (
+          <AnimatedTranscriptPanel>
+            {singleAction ? (
+              <div className="ml-[22px] pl-3 pr-1 pb-1.5 pt-1">
+                <ToolDetailRows
+                  rows={singleAction.detailRows}
+                  mediaAttachments={singleAction.mediaAttachments}
+                />
+              </div>
+            ) : (
+              <ol className="ml-[12px] mt-0.5 flex flex-col gap-0.5 pl-3">
+                <AnimatePresence initial={false}>
+                  {actions.map((action, index) => (
+                    <ActionGroupItem
+                      key={action.id}
+                      action={action}
+                      index={index}
+                    />
+                  ))}
+                </AnimatePresence>
+              </ol>
             )}
-          />
-        </button>
-      </CollapsibleTrigger>
-      <CollapsibleContent
-        className={cn(
-          'overflow-hidden',
-          'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-1',
-          'data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-1',
-          'data-[state=open]:duration-200 data-[state=closed]:duration-150',
-        )}
-      >
-        <ol className="ml-[12px] mt-0.5 flex flex-col gap-0.5 pl-3">
-          {actions.map((action, index) => (
-            <ActionGroupItem key={action.id} action={action} index={index} />
-          ))}
-        </ol>
-      </CollapsibleContent>
+          </AnimatedTranscriptPanel>
+        ) : null}
+      </AnimatePresence>
     </Collapsible>
   )
 }
@@ -2360,13 +2784,11 @@ function ActionGroupItem({
     action.detailRows.length > 0 || Boolean(action.mediaAttachments?.length)
   const rowClass = cn(
     'flex w-full items-center gap-2 rounded-md py-0.5 text-left transition-colors',
-    'hover:bg-foreground/[0.03]',
-    action.state === 'running' && 'bg-primary/[0.025] agent-tool-running-row',
-    action.state === 'failed' && 'bg-destructive/[0.04]',
+    action.state === 'failed' && 'text-destructive',
   )
 
   return (
-    <li
+    <AnimatedTranscriptListItem
       className="group/sub agent-stagger-child relative"
       style={{ ['--stagger-index' as string]: index }}
     >
@@ -2396,24 +2818,21 @@ function ActionGroupItem({
           </div>
         )}
         {hasDetails ? (
-          <CollapsibleContent
-            className={cn(
-              'overflow-hidden',
-              'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-1',
-              'data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-1',
-              'data-[state=open]:duration-150 data-[state=closed]:duration-100',
-            )}
-          >
-            <div className="ml-[20px] pb-1.5 pl-3 pr-1 pt-1">
-              <ToolDetailRows
-                rows={action.detailRows}
-                mediaAttachments={action.mediaAttachments}
-              />
-            </div>
-          </CollapsibleContent>
+          <AnimatePresence initial={false}>
+            {open ? (
+              <AnimatedTranscriptPanel>
+                <div className="ml-[20px] pb-1.5 pl-3 pr-1 pt-1">
+                  <ToolDetailRows
+                    rows={action.detailRows}
+                    mediaAttachments={action.mediaAttachments}
+                  />
+                </div>
+              </AnimatedTranscriptPanel>
+            ) : null}
+          </AnimatePresence>
         ) : null}
       </Collapsible>
-    </li>
+    </AnimatedTranscriptListItem>
   )
 }
 
@@ -2478,7 +2897,15 @@ function UserMessage({
   accountAvatarUrl,
   accountLogin,
 }: UserMessageProps) {
-  const hasAttachments = attachments && attachments.length > 0
+  const promptParts = useMemo(() => splitBrowserToolPromptContext(text), [text])
+  const visibleText = promptParts.visibleText
+  const browserContexts = promptParts.contexts
+  const browserContextAttachments = useMemo(
+    () => pairBrowserToolContextAttachments(browserContexts, attachments),
+    [attachments, browserContexts],
+  )
+  const visibleAttachments = browserContextAttachments.unpairedAttachments
+  const hasAttachments = Boolean(visibleAttachments?.length)
   const isTouch = useIsTouchDevice()
   const [tapCopied, setTapCopied] = useState(false)
 
@@ -2488,19 +2915,19 @@ function UserMessage({
     return () => window.clearTimeout(timeoutId)
   }, [tapCopied])
 
-  const trimmedLength = text.trim().length
+  const trimmedLength = visibleText.trim().length
   const canTapCopy = isTouch && trimmedLength > 0
 
   const handleBubbleTap = useCallback(async () => {
     if (!canTapCopy) return
     try {
       if (!navigator.clipboard?.writeText) return
-      await navigator.clipboard.writeText(text)
+      await navigator.clipboard.writeText(visibleText)
       setTapCopied(true)
     } catch {
       // Clipboard writes can be denied by WebView permissions or test runners.
     }
-  }, [canTapCopy, text])
+  }, [canTapCopy, visibleText])
 
   const bubbleClassName = cn(
     'rounded-2xl px-3.5 py-2',
@@ -2520,7 +2947,7 @@ function UserMessage({
         <span className="sr-only">You</span>
         {hasAttachments ? (
           <div className="flex max-w-full flex-wrap justify-end gap-1.5">
-            {attachments?.map((attachment) => (
+            {visibleAttachments?.map((attachment) => (
               <AttachmentPreviewChip
                 key={attachment.id}
                 attachment={attachment}
@@ -2528,7 +2955,7 @@ function UserMessage({
             ))}
           </div>
         ) : null}
-        {text.length > 0 ? (
+        {visibleText.length > 0 ? (
           canTapCopy ? (
             <button
               type="button"
@@ -2538,11 +2965,22 @@ function UserMessage({
               }
               className={bubbleClassName}
             >
-              {text}
+              {visibleText}
             </button>
           ) : (
-            <div className={bubbleClassName}>{text}</div>
+            <div className={bubbleClassName}>{visibleText}</div>
           )
+        ) : null}
+        {browserContexts.length > 0 ? (
+          <div className="mt-2 flex w-full flex-col items-end gap-1.5">
+            {browserContexts.map((context) => (
+              <BrowserToolContextCard
+                key={context.id}
+                context={context}
+                attachment={browserContextAttachments.pairedByContextId.get(context.id)}
+              />
+            ))}
+          </div>
         ) : null}
         {!isTouch && trimmedLength > 0 ? (
           <div
@@ -2553,7 +2991,7 @@ function UserMessage({
             )}
           >
             <CopyTextButton
-              text={text}
+              text={visibleText}
               label="Copy your prompt"
               copiedLabel="Copied your prompt"
               tooltip="Copy"
@@ -2577,6 +3015,57 @@ function UserMessage({
       </div>
       <UserAvatar avatarUrl={accountAvatarUrl} login={accountLogin} />
     </div>
+  )
+}
+
+function BrowserToolContextCard({
+  attachment,
+  context,
+}: {
+  attachment?: ConversationMessageAttachment
+  context: BrowserToolPromptContext
+}) {
+  const Icon = context.kind === 'sketch' ? PencilLine : MousePointer2
+  const shouldShowAttachment = context.kind === 'sketch' && attachment?.kind === 'image'
+  return (
+    <article
+      role="note"
+      aria-label={`${context.title} attached to prompt`}
+      className="w-full rounded-lg border border-border/50 bg-muted/30 px-3 py-2 text-left text-foreground shadow-sm"
+    >
+      <div className="flex items-start gap-2">
+        <Icon
+          aria-hidden="true"
+          className="mt-[2px] h-3.5 w-3.5 shrink-0 text-primary/80"
+        />
+        <div className="min-w-0 flex-1">
+          <p className="m-0 text-[12.5px] font-medium">{context.title}</p>
+          {context.page ? (
+            <p className="mt-0.5 truncate text-[11.5px] text-muted-foreground/80" title={context.page}>
+              {context.page}
+            </p>
+          ) : null}
+          {shouldShowAttachment && attachment ? (
+            <div className="mt-2">
+              <ImageAttachmentPreview
+                attachment={attachment}
+                className="max-w-[260px]"
+                variant="response"
+              />
+            </div>
+          ) : null}
+          {context.lines.length > 0 ? (
+            <div className="mt-1.5 space-y-0.5 text-[12px] leading-relaxed text-muted-foreground">
+              {context.lines.map((line, index) => (
+                <p key={`${context.id}:line-${index}`} className="m-0 whitespace-pre-wrap break-words">
+                  {line}
+                </p>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </article>
   )
 }
 
@@ -2650,11 +3139,20 @@ function AssistantMessage({
   text,
   attachments,
   isStreaming,
+  hideCopyButton,
+  copyAction,
 }: {
   messageId: string
   text: string
   attachments?: ConversationMessageAttachment[]
   isStreaming: boolean
+  hideCopyButton?: boolean
+  copyAction?: {
+    text: string
+    label: string
+    copiedLabel: string
+    tooltip: string
+  } | null
 }) {
   const segments = useMemo(() => splitAssistantText(text), [text])
   const hasAttachments = Boolean(attachments?.length)
@@ -2674,6 +3172,12 @@ function AssistantMessage({
     }
     return -1
   })()
+  const resolvedCopyAction = copyAction ?? {
+    text: responseCopyText,
+    label: 'Copy agent response',
+    copiedLabel: 'Copied agent response',
+    tooltip: 'Copy',
+  }
 
   return (
     <div className="group/agent flex min-w-0 flex-col items-start gap-1.5">
@@ -2703,7 +3207,7 @@ function AssistantMessage({
           />
         ) : null}
       </div>
-      {responseCopyText.length > 0 ? (
+      {!hideCopyButton && resolvedCopyAction.text.length > 0 ? (
         <div
           className={cn(
             'mt-2 flex h-4 items-center pl-0.5 transition-opacity duration-150',
@@ -2713,10 +3217,10 @@ function AssistantMessage({
           )}
         >
           <CopyTextButton
-            text={responseCopyText}
-            label="Copy agent response"
-            copiedLabel="Copied agent response"
-            tooltip="Copy"
+            text={resolvedCopyAction.text}
+            label={resolvedCopyAction.label}
+            copiedLabel={resolvedCopyAction.copiedLabel}
+            tooltip={resolvedCopyAction.tooltip}
             className="h-4 w-4 text-muted-foreground/60 hover:text-foreground"
           />
         </div>
@@ -2967,11 +3471,62 @@ function failurePresentation(
         'The in-app browser is not open yet. Open the built-in browser, or continue from the visible desktop or another open app.',
     }
   }
+  if (code === 'autonomous_tool_edit_expected_text_mismatch') {
+    return {
+      tone: 'destructive',
+      title: 'Edit could not be applied',
+      message:
+        'The edit tool could not apply the patch because the exact line snapshot did not match. The agent should reread the file and retry against the current contents.',
+    }
+  }
   return {
     tone: 'destructive',
     title: 'Agent run failed',
-    message,
+    message: compactFailureMessage(message),
   }
+}
+
+function compactFailureMessage(message: string): string {
+  const normalized = message.trim()
+  if (normalized.length <= 900) return normalized
+
+  const firstLine = normalized.split(/\r?\n/, 1)[0]?.trim()
+  if (firstLine) {
+    return `${firstLine}\n\nDetailed diagnostics are saved with the run.`
+  }
+
+  return `${normalized.slice(0, 900).trimEnd()}\n\nDetailed diagnostics are saved with the run.`
+}
+
+function normalizeFailureMessage(message: string | null | undefined): string {
+  return (message ?? '').trim().replace(/\s+/g, ' ')
+}
+
+function failureMessagesMatch(
+  left: string | null | undefined,
+  right: string | null | undefined,
+): boolean {
+  const normalizedLeft = normalizeFailureMessage(left)
+  const normalizedRight = normalizeFailureMessage(right)
+  return Boolean(
+    normalizedLeft &&
+      normalizedRight &&
+      (normalizedLeft === normalizedRight ||
+        normalizedLeft.includes(normalizedRight) ||
+        normalizedRight.includes(normalizedLeft)),
+  )
+}
+
+function failureDiagnosticsMatch(
+  leftMessage: string | null | undefined,
+  leftCode: string | null | undefined,
+  rightMessage: string | null | undefined,
+  rightCode: string | null | undefined,
+): boolean {
+  return Boolean(
+    (leftCode && rightCode && leftCode === rightCode) ||
+      failureMessagesMatch(leftMessage, rightMessage),
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -3102,6 +3657,7 @@ interface DenseTurnItemProps {
   turn: ConversationTurn
   codeUndoStates: Record<string, CodeUndoUiState>
   returnSessionToHereStates: Record<string, CodeUndoUiState>
+  currentAgentLabel?: string | null
   onUndoChangeGroup?: (request: CodeUndoRequest) => void
   onReturnSessionToHere?: (request: ReturnSessionToHereUiRequest) => void
   onOpenHandoffSummary?: (request: {
@@ -3276,14 +3832,15 @@ function DenseTurnItem({
   }
 
   if (turn.kind === 'routing_suggestion') {
+    const label = turn.targetLabel ?? turn.targetAgentDefinitionId ?? turn.targetAgentId
     return (
       <li className="flex items-start gap-1.5 px-1 text-muted-foreground">
         <span className="shrink-0 select-none">↪</span>
         <span
           className="min-w-0 flex-1 truncate"
-          title={`Routing suggestion → ${turn.targetAgentId}`}
+          title={`Routing suggestion → ${label}`}
         >
-          suggested routing to {turn.targetAgentId}
+          suggested routing to {label}
         </span>
       </li>
     )
@@ -3396,13 +3953,34 @@ function DenseMessageItem({
   const [open, setOpen] = useState(!isUser)
   const marker = isUser ? '>' : '◆'
   const tone = isUser ? 'text-primary/85' : 'text-foreground/90'
-  const normalized = text.trim()
-  const hasAttachments = Boolean(attachments && attachments.length > 0)
+  const promptParts = useMemo(
+    () => (isUser ? splitBrowserToolPromptContext(text) : null),
+    [isUser, text],
+  )
+  const displayText = promptParts?.visibleText ?? text
+  const browserContexts = promptParts?.contexts ?? []
+  const browserContextAttachments = useMemo(
+    () => pairBrowserToolContextAttachments(browserContexts, attachments),
+    [attachments, browserContexts],
+  )
+  const visibleAttachments = browserContextAttachments.unpairedAttachments
+  const normalized = displayText.trim()
+  const hasAttachments = Boolean(visibleAttachments && visibleAttachments.length > 0)
   const hasMore =
-    normalized.length > 240 || /\r?\n/.test(normalized) || hasAttachments
+    normalized.length > 240 ||
+    /\r?\n/.test(normalized) ||
+    hasAttachments ||
+    browserContexts.length > 0
+  const summaryText =
+    normalized || (browserContexts.length > 0 ? browserContexts[0]?.title ?? 'Browser context' : '')
 
   return (
-    <li className="px-1">
+    <li
+      className="px-1"
+      data-conversation-turn-id={id}
+      data-conversation-turn-kind="message"
+      data-conversation-turn-role={role}
+    >
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
@@ -3422,9 +4000,9 @@ function DenseMessageItem({
         </span>
         <span
           className="min-w-0 flex-1 truncate text-foreground/85"
-          title={hasMore && !open ? text : undefined}
+          title={hasMore && !open ? summaryText : undefined}
         >
-          {truncateForLine(text)}
+          {truncateForLine(summaryText)}
         </span>
         {hasMore ? (
           <ChevronDown
@@ -3444,15 +4022,28 @@ function DenseMessageItem({
           )}
         >
           {isUser ? (
+            normalized.length > 0 ? (
             <p className="m-0 whitespace-pre-wrap break-words text-[12px] text-foreground/85">
               {normalized}
             </p>
+            ) : null
           ) : (
             <Markdown messageId={`${id}:dense`} text={text} scale="dense" />
           )}
+          {browserContexts.length > 0 ? (
+            <div className="mt-1.5 flex flex-col gap-1.5">
+              {browserContexts.map((context) => (
+                <BrowserToolContextCard
+                  key={`${id}:${context.id}`}
+                  context={context}
+                  attachment={browserContextAttachments.pairedByContextId.get(context.id)}
+                />
+              ))}
+            </div>
+          ) : null}
           {hasAttachments ? (
             <ul className="mt-1.5 flex flex-wrap gap-1 text-[11px] text-muted-foreground/80">
-              {attachments?.map((attachment) => (
+              {visibleAttachments?.map((attachment) => (
                 <li
                   key={attachment.id}
                   className="rounded-sm border border-border/40 bg-muted/20 px-1.5 py-0.5"
@@ -3542,7 +4133,7 @@ function DenseActionItem({
     Boolean(mediaAttachments?.length)
 
   return (
-    <li className="px-1">
+    <AnimatedTranscriptListItem className="px-1">
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
@@ -3578,21 +4169,20 @@ function DenseActionItem({
           />
         ) : null}
       </button>
-      {open && hasDetails ? (
-        <div
-          className={cn(
-            'ml-3 mt-1.5 border-l border-border/30 pl-2.5',
-            'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-150',
-          )}
-        >
-          <DenseToolDetails
-            detail={detail}
-            detailRows={detailRows}
-            mediaAttachments={mediaAttachments}
-          />
-        </div>
-      ) : null}
-    </li>
+      <AnimatePresence initial={false}>
+        {open && hasDetails ? (
+          <AnimatedTranscriptPanel>
+            <div className="ml-3 mt-1.5 border-l border-border/30 pl-2.5">
+              <DenseToolDetails
+                detail={detail}
+                detailRows={detailRows}
+                mediaAttachments={mediaAttachments}
+              />
+            </div>
+          </AnimatedTranscriptPanel>
+        ) : null}
+      </AnimatePresence>
+    </AnimatedTranscriptListItem>
   )
 }
 
@@ -3617,65 +4207,90 @@ function DenseActionGroupItem({
   actions,
 }: DenseActionGroupItemProps) {
   const [open, setOpen] = useState(false)
-  const hasChildren = actions.length > 0
+  const singleAction = actions.length === 1 ? actions[0] : null
+  const singleActionHasDetails = Boolean(
+    singleAction &&
+      (singleAction.detailRows.length > 0 ||
+        singleAction.detail.trim().length > 0 ||
+        Boolean(singleAction.mediaAttachments?.length)),
+  )
+  const hasExpandableContent = actions.length > 1 || singleActionHasDetails
+  const detailsLabel =
+    actions.length === 1 ? 'compact tool details' : 'grouped tool details'
+  const rowClassName = cn(
+    'flex w-full items-start gap-2 text-left',
+    hasExpandableContent
+      ? 'cursor-pointer hover:text-foreground'
+      : 'cursor-default',
+    'focus-visible:outline-none focus-visible:text-foreground',
+  )
+  const rowContent = (
+    <>
+      <ToolStatusIcon state={state} className="mt-[1px]" />
+      <span
+        className="min-w-0 flex-1 truncate text-foreground/85"
+        title={`${title}${detail ? ` — ${detail}` : ''}`}
+      >
+        {truncateForLine(title)}
+      </span>
+      {hasExpandableContent ? (
+        <ChevronDown
+          aria-hidden="true"
+          className={cn(
+            'mt-[3px] h-3 w-3 shrink-0 text-muted-foreground/50 transition-transform duration-150',
+            open ? 'rotate-180' : 'rotate-0',
+          )}
+        />
+      ) : null}
+    </>
+  )
 
   return (
-    <li className="px-1">
-      <button
-        type="button"
-        onClick={() => setOpen((prev) => !prev)}
-        aria-expanded={hasChildren ? open : undefined}
-        aria-label={
-          hasChildren
-            ? `${open ? 'Hide' : 'Show'} grouped tool details for ${title}`
-            : undefined
-        }
-        disabled={!hasChildren}
-        className={cn(
-          'flex w-full items-start gap-2 text-left',
-          hasChildren
-            ? 'cursor-pointer hover:text-foreground'
-            : 'cursor-default',
-          'focus-visible:outline-none focus-visible:text-foreground',
-        )}
-      >
-        <ToolStatusIcon state={state} className="mt-[1px]" />
-        <span
-          className="min-w-0 flex-1 truncate text-foreground/85"
-          title={`${title}${detail ? ` — ${detail}` : ''}`}
+    <AnimatedTranscriptListItem className="px-1">
+      {hasExpandableContent ? (
+        <button
+          type="button"
+          onClick={() => setOpen((prev) => !prev)}
+          aria-expanded={open}
+          aria-label={`${open ? 'Hide' : 'Show'} ${detailsLabel} for ${title}`}
+          className={rowClassName}
         >
-          {truncateForLine(title)}
-        </span>
-        {hasChildren ? (
-          <ChevronDown
-            aria-hidden="true"
-            className={cn(
-              'mt-[3px] h-3 w-3 shrink-0 text-muted-foreground/50 transition-transform duration-150',
-              open ? 'rotate-180' : 'rotate-0',
+          {rowContent}
+        </button>
+      ) : (
+        <div className={rowClassName}>{rowContent}</div>
+      )}
+      <AnimatePresence initial={false}>
+        {open && hasExpandableContent ? (
+          <AnimatedTranscriptPanel>
+            {singleAction ? (
+              <div className="ml-3 mt-1.5 border-l border-border/30 pl-2.5">
+                <DenseToolDetails
+                  detail={singleAction.detail}
+                  detailRows={singleAction.detailRows}
+                  mediaAttachments={singleAction.mediaAttachments}
+                />
+              </div>
+            ) : (
+              <ol className="ml-3 mt-1.5 flex flex-col gap-1.5 border-l border-border/30 pl-2.5">
+                <AnimatePresence initial={false}>
+                  {actions.map((action) => (
+                    <DenseActionItem
+                      key={action.id}
+                      title={action.title}
+                      detail={action.detail}
+                      detailRows={action.detailRows}
+                      mediaAttachments={action.mediaAttachments}
+                      state={action.state}
+                    />
+                  ))}
+                </AnimatePresence>
+              </ol>
             )}
-          />
+          </AnimatedTranscriptPanel>
         ) : null}
-      </button>
-      {open && hasChildren ? (
-        <ol
-          className={cn(
-            'ml-3 mt-1.5 flex flex-col gap-1.5 border-l border-border/30 pl-2.5',
-            'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-150',
-          )}
-        >
-          {actions.map((action) => (
-            <DenseActionItem
-              key={action.id}
-              title={action.title}
-              detail={action.detail}
-              detailRows={action.detailRows}
-              mediaAttachments={action.mediaAttachments}
-              state={action.state}
-            />
-          ))}
-        </ol>
-      ) : null}
-    </li>
+      </AnimatePresence>
+    </AnimatedTranscriptListItem>
   )
 }
 

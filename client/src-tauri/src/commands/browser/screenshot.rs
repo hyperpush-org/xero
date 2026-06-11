@@ -18,21 +18,20 @@ use {
 };
 
 #[cfg(target_os = "macos")]
-const WEBKIT_SNAPSHOT_TIMEOUT: Duration = Duration::from_millis(1_500);
+const WEBKIT_SNAPSHOT_TIMEOUT: Duration = Duration::from_millis(600);
 #[cfg(target_os = "macos")]
-const VIEW_CACHE_TIMEOUT: Duration = Duration::from_secs(2);
+const VIEW_CACHE_TIMEOUT: Duration = Duration::from_millis(900);
 
 #[cfg(target_os = "macos")]
 pub fn capture_webview<R: Runtime>(webview: &Webview<R>) -> CommandResult<String> {
-    match capture_webview_snapshot(webview) {
+    match capture_webview_cached_view(webview) {
         Ok(snapshot) => Ok(snapshot),
-        Err(snapshot_error) => capture_webview_cached_view(webview).map_err(|fallback_error| {
-            if snapshot_error.code == "browser_screenshot_snapshot_timeout" {
-                fallback_error
-            } else {
-                snapshot_error
+        Err(cached_view_error) => {
+            if cached_view_error.code == "browser_screenshot_zero_area" {
+                return Err(cached_view_error);
             }
-        }),
+            capture_webview_snapshot(webview)
+        }
     }
 }
 

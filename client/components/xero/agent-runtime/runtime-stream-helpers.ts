@@ -287,7 +287,7 @@ function parseToolDetail(detail: string | null): Map<string, string> {
     return values
   }
 
-  const pattern = /(?:^|,\s*)([A-Za-z][A-Za-z0-9]*):\s*([^,]+)/g
+  const pattern = /(?:^|[,\u00b7]\s*)([A-Za-z][A-Za-z0-9]*):\s*([^,\u00b7]+)/g
   let match: RegExpExecArray | null
   while ((match = pattern.exec(detail)) !== null) {
     const key = match[1]?.trim()
@@ -309,6 +309,56 @@ function firstDetailValue(detailValues: Map<string, string>, keys: string[]): st
   }
 
   return null
+}
+
+function normalizedProjectContextAction(item: RuntimeStreamToolItemView, detailValues: Map<string, string>): string | null {
+  const explicitAction = firstDetailValue(detailValues, ['action'])
+  if (explicitAction) {
+    return explicitAction.trim().toLowerCase()
+  }
+
+  const haystack = `${item.detail ?? ''}\n${item.toolResultPreview ?? ''}`.toLowerCase()
+  for (const action of [
+    'search_approved_memory',
+    'get_memory',
+    'update_context',
+    'refresh_freshness',
+    'record_context',
+    'propose_record_candidate',
+    'get_project_record',
+    'search_project_records',
+    'explain_current_context_package',
+    'memory_candidate',
+    'delete_memory',
+  ]) {
+    if (haystack.includes(action)) {
+      return action
+    }
+  }
+
+  if (haystack.includes('read approved memory')) {
+    return 'get_memory'
+  }
+  if (haystack.includes('supersedes approved memory') || haystack.includes('supersedesmemoryid')) {
+    return 'update_context'
+  }
+  if (haystack.includes('memory candidate')) {
+    return 'memory_candidate'
+  }
+  if (haystack.includes('approved memory')) {
+    return 'search_approved_memory'
+  }
+
+  return null
+}
+
+function projectContextHasMemoryTarget(item: RuntimeStreamToolItemView, detailValues: Map<string, string>): boolean {
+  if (firstDetailValue(detailValues, ['memoryId', 'memoryIds', 'memoryKind', 'candidateKind'])) {
+    return true
+  }
+
+  const haystack = `${item.detail ?? ''}\n${item.toolResultPreview ?? ''}`.toLowerCase()
+  return haystack.includes('memory') || haystack.includes('agent_memories:')
 }
 
 function getToolActionLabel(item: RuntimeStreamToolItemView): string {
@@ -361,6 +411,48 @@ function getToolActionLabel(item: RuntimeStreamToolItemView): string {
     case 'web_fetch':
       return 'fetch web page'
     case 'project_context':
+      {
+        const detailValues = parseToolDetail(item.detail)
+        const action = normalizedProjectContextAction(item, detailValues)
+        const memoryTarget = projectContextHasMemoryTarget(item, detailValues)
+        if (
+          action === 'explain_current_context_package' ||
+          item.detail?.toLowerCase().includes('context package') ||
+          item.detail?.toLowerCase().includes('context manifest')
+        ) {
+          return 'context package inspection'
+        }
+        if (action === 'search_approved_memory') {
+          return 'search memory'
+        }
+        if (action === 'get_memory') {
+          return 'fetch memory'
+        }
+        if (action === 'update_context' && memoryTarget) {
+          return 'update memory'
+        }
+        if (action === 'refresh_freshness' && memoryTarget) {
+          return 'refresh memory'
+        }
+        if (action === 'memory_candidate' || action === 'propose_record_candidate') {
+          return 'capture memory'
+        }
+        if (action?.includes('delete') && memoryTarget) {
+          return 'delete memory'
+        }
+        if (action === 'get_project_record') {
+          return 'fetch project context'
+        }
+        if (action === 'search_project_records') {
+          return 'search project context'
+        }
+        if (action === 'record_context') {
+          return 'record project context'
+        }
+        if (action === 'update_context') {
+          return 'update project context'
+        }
+      }
       return 'project context'
     default:
       return humanizeToolName(item.toolName) || 'tool'
@@ -406,7 +498,7 @@ function getToolTargetLabel(item: RuntimeStreamToolItemView): string | null {
     }
     case 'command':
     case 'command_session_start':
-      return firstDetailValue(detailValues, ['cmd', 'cwd'])
+      return firstDetailValue(detailValues, ['cmd', 'argv', 'cwd'])
     case 'command_session_read':
     case 'command_session_stop':
       return firstDetailValue(detailValues, ['sessionId'])
@@ -424,9 +516,26 @@ function getToolTargetLabel(item: RuntimeStreamToolItemView): string | null {
         ? summary.finalUrl ?? summary.target
         : firstDetailValue(detailValues, ['url'])
     case 'project_context':
+      {
+        const action = normalizedProjectContextAction(item, detailValues)
+        if (action === 'search_approved_memory' || action === 'search_project_records') {
+          return firstDetailValue(detailValues, ['query', 'queryId'])
+        }
+        if (
+          action === 'get_memory' ||
+          action === 'update_context' ||
+          action === 'refresh_freshness' ||
+          action?.includes('delete')
+        ) {
+          return firstDetailValue(detailValues, ['memoryId', 'memoryIds', 'recordId', 'recordIds', 'queryId'])
+        }
+        if (action === 'memory_candidate' || action === 'propose_record_candidate') {
+          return firstDetailValue(detailValues, ['candidateId', 'recordId', 'memoryId'])
+        }
+      }
       return firstDetailValue(detailValues, [
-        'action',
         'query',
+        'action',
         'queryId',
         'recordId',
         'memoryId',

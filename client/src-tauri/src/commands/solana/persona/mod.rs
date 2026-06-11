@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use crate::commands::{CommandError, CommandResult};
 
 use super::cluster::ClusterKind;
-use super::SOLANA_STATE_ROOT_ENV;
+use super::{SOLANA_APP_DATA_DIRECTORY_NAME, SOLANA_STATE_ROOT_ENV};
 use fund::{apply_delta, FundingContext};
 use keygen::{KeypairStore, OsRngKeypairProvider};
 use roles::PersonaRole;
@@ -506,7 +506,10 @@ fn default_root() -> CommandResult<PathBuf> {
             "Could not resolve OS data directory for persona store.",
         )
     })?;
-    Ok(data_dir.join("xero").join("solana").join("personas"))
+    Ok(data_dir
+        .join(SOLANA_APP_DATA_DIRECTORY_NAME)
+        .join("solana")
+        .join("personas"))
 }
 
 fn now_ms() -> u64 {

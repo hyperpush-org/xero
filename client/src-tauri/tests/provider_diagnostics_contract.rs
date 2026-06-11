@@ -84,6 +84,8 @@ fn catalog(
                 effort_options: vec![],
                 default_effort: None,
             },
+            input_modalities: vec!["text".into(), "image".into()],
+            input_modalities_source: "openrouter_models_api".into(),
             context_window_tokens: None,
             max_output_tokens: None,
             context_limit_source: None,

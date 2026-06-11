@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    time::UNIX_EPOCH,
 };
 
 use git2::{BranchType, DiffOptions, Repository, Status, StatusOptions};
@@ -135,6 +136,30 @@ impl RepositoryHandle {
             deletions,
         })
     }
+
+    pub fn status_cache_signature(&self) -> String {
+        let mut parts = Vec::new();
+        parts.push(format!("project={}", self.project_id()));
+        parts.push(format!("repo={}", self.repository_id()));
+        parts.push(format!(
+            "head={}",
+            self.head_sha.as_deref().unwrap_or("none")
+        ));
+        parts.push(format!(
+            "index={}",
+            metadata_fingerprint(&self.common_git_dir.join("index"))
+        ));
+        parts.push(format!(
+            "head-file={}",
+            metadata_fingerprint(&self.common_git_dir.join("HEAD"))
+        ));
+        parts.push(format!("workdir={}", metadata_fingerprint(&self.root_path)));
+        parts.push(format!(
+            "top={}",
+            top_level_worktree_signature(&self.root_path)
+        ));
+        stable_digest(&parts.join("\u{1f}"))
+    }
 }
 
 pub fn resolve_repository(selected_path: &str) -> CommandResult<CanonicalRepository> {
@@ -227,6 +252,46 @@ fn stable_digest(value: &str) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+fn metadata_fingerprint(path: &Path) -> String {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return "missing".into();
+    };
+    let modified_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    format!(
+        "{}:{}:{}",
+        metadata.len(),
+        modified_ns,
+        metadata.file_type().is_dir()
+    )
+}
+
+fn top_level_worktree_signature(root_path: &Path) -> String {
+    let Ok(entries) = fs::read_dir(root_path) else {
+        return "unreadable".into();
+    };
+    let mut parts = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == ".git" {
+                return None;
+            }
+            let fingerprint = metadata_fingerprint(&entry.path());
+            Some(format!("{name}:{fingerprint}"))
+        })
+        .collect::<Vec<_>>();
+    parts.sort();
+    if parts.len() > 128 {
+        parts.truncate(128);
+    }
+    stable_digest(&parts.join("\u{1e}"))
 }
 
 fn read_head_details(repository: &Repository) -> HeadDetails {
@@ -471,6 +536,37 @@ mod tests {
         assert!(status_entries
             .iter()
             .any(|entry| entry.path == "untracked.txt" && entry.untracked));
+    }
+
+    #[test]
+    fn status_cache_signature_changes_when_worktree_changes() {
+        let (temp_dir, _repository) = repository_with_committed_file("tracked.txt", "alpha\n");
+        let initial = open_repository_root(temp_dir.path())
+            .expect("open repository")
+            .status_cache_signature();
+
+        fs::write(temp_dir.path().join("tracked.txt"), "alpha\nbeta\n")
+            .expect("modify tracked file");
+        let modified = open_repository_root(temp_dir.path())
+            .expect("open modified repository")
+            .status_cache_signature();
+
+        assert_ne!(initial, modified);
+    }
+
+    #[test]
+    fn status_cache_signature_changes_when_top_level_untracked_file_appears() {
+        let (temp_dir, _repository) = repository_with_committed_file("tracked.txt", "alpha\n");
+        let initial = open_repository_root(temp_dir.path())
+            .expect("open repository")
+            .status_cache_signature();
+
+        fs::write(temp_dir.path().join("untracked.txt"), "new\n").expect("write untracked");
+        let modified = open_repository_root(temp_dir.path())
+            .expect("open modified repository")
+            .status_cache_signature();
+
+        assert_ne!(initial, modified);
     }
 
     fn repository_with_committed_file(path: &str, content: &str) -> (TempDir, Repository) {

@@ -271,6 +271,7 @@ fn controls_for_agent(runtime_agent_id: RuntimeAgentIdDto) -> RuntimeRunControlI
     RuntimeRunControlInputDto {
         runtime_agent_id,
         agent_definition_id: None,
+        agent_definition_version: None,
         provider_profile_id: None,
         model_id: "test-model".into(),
         thinking_effort: None,
@@ -344,7 +345,6 @@ fn seed_phase3_context(repo_root: &Path, project_id: &str) {
             scope: project_store::AgentMemoryScope::Project,
             kind: project_store::AgentMemoryKind::ProjectFact,
             text: "Phase 3 approved memory reaches Ask, Engineer, and Debug provider turns.".into(),
-            review_state: project_store::AgentMemoryReviewState::Approved,
             enabled: true,
             confidence: Some(95),
             source_run_id: Some("phase3-source-run".into()),
@@ -834,7 +834,6 @@ fn phase2_retrieval_populates_embeddings_filters_logs_and_deduplicates() {
             text:
                 "Approved memory: phase 2 retrieval should use LanceDB embeddings and cite results."
                     .into(),
-            review_state: project_store::AgentMemoryReviewState::Approved,
             enabled: true,
             confidence: Some(93),
             source_run_id: Some("run-phase2-memory".into()),
@@ -948,7 +947,6 @@ fn phase2_retrieval_fallback_dimension_mismatch_redaction_and_backfill_jobs() {
             scope: project_store::AgentMemoryScope::Project,
             kind: project_store::AgentMemoryKind::ProjectFact,
             text: "Project fact: keyword fallback can retrieve LanceDB memory without semantic embeddings.".into(),
-            review_state: project_store::AgentMemoryReviewState::Approved,
             enabled: true,
             confidence: Some(90),
             source_run_id: Some("run-fallback".into()),
@@ -969,7 +967,6 @@ fn phase2_retrieval_fallback_dimension_mismatch_redaction_and_backfill_jobs() {
             kind: project_store::AgentMemoryKind::ProjectFact,
             text: "Project fact: keyword fallback api_key=sk-secret should be redacted from retrieval snippets."
                 .into(),
-            review_state: project_store::AgentMemoryReviewState::Approved,
             enabled: true,
             confidence: Some(90),
             source_run_id: Some("run-redaction".into()),
@@ -1229,7 +1226,6 @@ fn phase6_model_visible_context_tooling_permissions_and_logging() {
             kind: project_store::AgentMemoryKind::Troubleshooting,
             text: "Phase 6 redaction memory should hide api_key=sk-secret from model-visible tool results."
                 .into(),
-            review_state: project_store::AgentMemoryReviewState::Approved,
             enabled: true,
             confidence: Some(91),
             source_run_id: Some("phase6-source-run".into()),
@@ -1449,7 +1445,6 @@ fn phase5_auto_capture_records_and_enabled_memory() {
         project_store::AgentMemoryListFilter {
             agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID),
             include_disabled: true,
-            include_rejected: false,
         },
     )
     .expect("list auto memory");
@@ -1461,10 +1456,6 @@ fn phase5_auto_capture_records_and_enabled_memory() {
                 .contains("Phase 5 enables safe durable context automatically")
         })
         .expect("phase5 automatic memory");
-    assert_eq!(
-        memory.review_state,
-        project_store::AgentMemoryReviewState::Approved
-    );
     assert!(memory.enabled);
 
     for runtime_agent_id in [
@@ -1526,7 +1517,6 @@ fn phase5_auto_capture_records_and_enabled_memory() {
         project_store::AgentMemoryListFilter {
             agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID),
             include_disabled: true,
-            include_rejected: true,
         },
     )
     .expect("list memories after blocked candidate");
@@ -1630,6 +1620,7 @@ fn phase4_handoff_orchestrator_hands_off_long_runs_to_same_type_targets() {
             provider_preflight: None,
             answer_pending_actions: false,
             auto_compact: None,
+            internal_resume: None,
         };
         let target =
             continue_owned_agent_run(continuation.clone()).expect("handoff target continues");
@@ -1822,6 +1813,7 @@ fn phase8_handoff_recovers_from_pending_lineage_after_simulated_crash() {
         provider_preflight: None,
         answer_pending_actions: false,
         auto_compact: None,
+        internal_resume: None,
     };
     let target = continue_owned_agent_run(continuation.clone()).expect("first handoff");
 

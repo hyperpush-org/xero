@@ -4,10 +4,12 @@ use std::{
     fs,
     io::{ErrorKind, Read},
     path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
 };
 
 use ignore::{DirEntry, WalkBuilder};
 use pulldown_cmark::{Event, Options as MarkdownOptions, Parser, Tag};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Runtime, State};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -31,7 +33,7 @@ use crate::{
         RenameProjectEntryRequestDto, RenameProjectEntryResponseDto, StatProjectFilesRequestDto,
         StatProjectFilesResponseDto, WriteProjectFileRequestDto, WriteProjectFileResponseDto,
     },
-    registry,
+    db, registry,
     state::DesktopState,
 };
 
@@ -43,6 +45,12 @@ const CSV_PREVIEW_COLUMN_LIMIT: usize = 80;
 const MARKDOWN_ASSET_REF_LIMIT: usize = 128;
 const DEFAULT_PROJECT_FILE_INDEX_LIMIT: usize = 20_000;
 const HARD_PROJECT_FILE_INDEX_LIMIT: usize = 50_000;
+const PROJECT_FILE_METADATA_CACHE_FILE: &str = "file-metadata-cache.json";
+const PROJECT_FILE_METADATA_CACHE_MAX_ENTRIES: usize = 4_096;
+
+static PROJECT_FILE_METADATA_CACHE_MEMORY: OnceLock<
+    Mutex<BTreeMap<String, ProjectFileMetadataCacheFile>>,
+> = OnceLock::new();
 
 const SKIPPED_DIRECTORY_NAMES: &[&str] = &[
     ".git",
@@ -84,6 +92,9 @@ pub async fn list_project_files<R: Runtime>(
         format!("project-tree:{project_id}:{normalized_path}"),
         "project tree",
         move |cancellation| {
+            let _perf = crate::perf::PerfSpan::new("project_file_tree")
+                .field("projectId", project_id.clone())
+                .field("path", normalized_path.clone());
             let built_tree = build_folder_listing(
                 &folder_path,
                 &normalized_path,
@@ -137,6 +148,10 @@ pub async fn list_project_file_index<R: Runtime>(
         format!("project-file-index:{project_id}:{include_hidden}:{limit}"),
         "project file index",
         move |cancellation| {
+            let _perf = crate::perf::PerfSpan::new("project_file_index")
+                .field("projectId", project_id.clone())
+                .field("includeHidden", include_hidden.to_string())
+                .field("limit", limit.to_string());
             build_project_file_index(
                 &project_root,
                 project_id,
@@ -171,6 +186,9 @@ pub async fn read_project_file<R: Runtime>(
         "project-file-read:visible",
         "project file read",
         move |cancellation| {
+            let _perf = crate::perf::PerfSpan::new("project_file_read")
+                .field("projectId", project_id.clone())
+                .field("path", normalized_path.clone());
             cancellation.check_cancelled("project file read")?;
             read_project_file_at_path(
                 project_id,
@@ -227,9 +245,16 @@ fn read_project_file_at_path_with_limits(
         });
     }
 
-    let sniff_bytes = read_file_prefix(&resolved_path, SNIFF_BYTE_LIMIT)?;
-    let detected = detect_project_file_type(&resolved_path, &sniff_bytes);
-    let content_hash = sha256_file(&resolved_path)?;
+    let cached_metadata = project_file_metadata(
+        &project_id,
+        &normalized_path,
+        &resolved_path,
+        byte_length,
+        &modified_at,
+        &metadata_file_identity(&metadata),
+    )?;
+    let detected = cached_metadata.detected;
+    let content_hash = cached_metadata.content_hash;
 
     match detected.renderer_kind {
         ProjectFileRendererKindDto::Image
@@ -378,6 +403,174 @@ struct DetectedProjectFileType {
     mime_type: String,
     renderer_kind: ProjectFileRendererKindDto,
     is_text: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ProjectFileCachedMetadata {
+    content_hash: String,
+    detected: DetectedProjectFileType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProjectFileMetadataCacheEntry {
+    content_hash: String,
+    mime_type: String,
+    renderer_kind: ProjectFileRendererKindDto,
+    is_text: bool,
+    touched_at: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProjectFileMetadataCacheFile {
+    entries: BTreeMap<String, ProjectFileMetadataCacheEntry>,
+}
+
+fn project_file_metadata(
+    project_id: &str,
+    normalized_path: &str,
+    resolved_path: &Path,
+    byte_length: u64,
+    modified_at: &str,
+    file_identity: &str,
+) -> CommandResult<ProjectFileCachedMetadata> {
+    let cache_key =
+        project_file_metadata_cache_key(normalized_path, byte_length, modified_at, file_identity);
+    let mut cache = read_project_file_metadata_cache(project_id);
+    if let Some(entry) = cache.entries.get(&cache_key) {
+        return Ok(ProjectFileCachedMetadata {
+            content_hash: entry.content_hash.clone(),
+            detected: DetectedProjectFileType {
+                mime_type: entry.mime_type.clone(),
+                renderer_kind: entry.renderer_kind.clone(),
+                is_text: entry.is_text,
+            },
+        });
+    }
+
+    let sniff_bytes = read_file_prefix(resolved_path, SNIFF_BYTE_LIMIT)?;
+    let detected = detect_project_file_type(resolved_path, &sniff_bytes);
+    let content_hash = sha256_file(resolved_path)?;
+    cache.entries.insert(
+        cache_key,
+        ProjectFileMetadataCacheEntry {
+            content_hash: content_hash.clone(),
+            mime_type: detected.mime_type.clone(),
+            renderer_kind: detected.renderer_kind.clone(),
+            is_text: detected.is_text,
+            touched_at: now_cache_timestamp(),
+        },
+    );
+    trim_project_file_metadata_cache(&mut cache);
+    write_project_file_metadata_cache(project_id, &cache);
+    Ok(ProjectFileCachedMetadata {
+        content_hash,
+        detected,
+    })
+}
+
+fn project_file_metadata_cache_key(
+    normalized_path: &str,
+    byte_length: u64,
+    modified_at: &str,
+    file_identity: &str,
+) -> String {
+    format!("{normalized_path}\u{0}{byte_length}\u{0}{modified_at}\u{0}{file_identity}")
+}
+
+#[cfg(unix)]
+fn metadata_file_identity(metadata: &fs::Metadata) -> String {
+    use std::os::unix::fs::MetadataExt;
+
+    format!("{}:{}", metadata.dev(), metadata.ino())
+}
+
+#[cfg(not(unix))]
+fn metadata_file_identity(_metadata: &fs::Metadata) -> String {
+    "unsupported".into()
+}
+
+fn project_file_metadata_cache_path(project_id: &str) -> Option<PathBuf> {
+    db::configured_app_data_dir()?;
+    Some(db::project_app_data_dir_for_project(project_id).join(PROJECT_FILE_METADATA_CACHE_FILE))
+}
+
+fn read_project_file_metadata_cache(project_id: &str) -> ProjectFileMetadataCacheFile {
+    let memory_key = project_file_metadata_memory_key(project_id);
+    let memory_cache =
+        PROJECT_FILE_METADATA_CACHE_MEMORY.get_or_init(|| Mutex::new(BTreeMap::new()));
+    if let Ok(guard) = memory_cache.lock() {
+        if let Some(cache) = guard.get(&memory_key) {
+            return cache.clone();
+        }
+    }
+
+    let Some(path) = project_file_metadata_cache_path(project_id) else {
+        return ProjectFileMetadataCacheFile::default();
+    };
+    let cache = match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Err(_) => ProjectFileMetadataCacheFile::default(),
+    };
+    if let Ok(mut guard) = memory_cache.lock() {
+        guard.insert(memory_key, cache.clone());
+    }
+    cache
+}
+
+fn write_project_file_metadata_cache(project_id: &str, cache: &ProjectFileMetadataCacheFile) {
+    let memory_key = project_file_metadata_memory_key(project_id);
+    let memory_cache =
+        PROJECT_FILE_METADATA_CACHE_MEMORY.get_or_init(|| Mutex::new(BTreeMap::new()));
+    if let Ok(mut guard) = memory_cache.lock() {
+        guard.insert(memory_key, cache.clone());
+    }
+
+    let Some(path) = project_file_metadata_cache_path(project_id) else {
+        return;
+    };
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let Ok(bytes) = serde_json::to_vec(cache) else {
+        return;
+    };
+    let _ = fs::write(path, bytes);
+}
+
+fn project_file_metadata_memory_key(project_id: &str) -> String {
+    project_file_metadata_cache_path(project_id)
+        .map(|path| format!("{project_id}:{}", path.display()))
+        .unwrap_or_else(|| project_id.to_owned())
+}
+
+fn trim_project_file_metadata_cache(cache: &mut ProjectFileMetadataCacheFile) {
+    if cache.entries.len() <= PROJECT_FILE_METADATA_CACHE_MAX_ENTRIES {
+        return;
+    }
+    let remove_count = cache
+        .entries
+        .len()
+        .saturating_sub(PROJECT_FILE_METADATA_CACHE_MAX_ENTRIES);
+    let mut oldest = cache
+        .entries
+        .iter()
+        .map(|(key, entry)| (entry.touched_at.clone(), key.clone()))
+        .collect::<Vec<_>>();
+    oldest.sort();
+    for (_, key) in oldest.into_iter().take(remove_count) {
+        cache.entries.remove(&key);
+    }
+}
+
+fn now_cache_timestamp() -> String {
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
 }
 
 fn detect_project_file_type(path: &Path, sniff_bytes: &[u8]) -> DetectedProjectFileType {
@@ -647,19 +840,27 @@ fn markdown_asset_preview_url(
         return None;
     }
 
-    let sniff_bytes = read_file_prefix(&resolved_path, SNIFF_BYTE_LIMIT).ok()?;
-    let detected = detect_project_file_type(&resolved_path, &sniff_bytes);
+    let modified_at = metadata_modified_at(&metadata);
+    let cached_metadata = project_file_metadata(
+        project_id,
+        &normalized_path,
+        &resolved_path,
+        metadata.len(),
+        &modified_at,
+        &metadata_file_identity(&metadata),
+    )
+    .ok()?;
+    let detected = cached_metadata.detected;
     if detected.renderer_kind != ProjectFileRendererKindDto::Image {
         return None;
     }
 
-    let content_hash = sha256_file(&resolved_path).ok()?;
     Some(asset_state.issue_preview_url(ProjectAssetGrant {
         project_id: project_id.to_owned(),
         path: normalized_path,
         byte_length: metadata.len(),
-        modified_at: metadata_modified_at(&metadata),
-        content_hash,
+        modified_at,
+        content_hash: cached_metadata.content_hash,
         mime_type: detected.mime_type,
         renderer_kind: detected.renderer_kind,
     }))
@@ -2140,8 +2341,9 @@ mod tests {
     };
 
     use super::{
-        build_folder_listing, detect_project_file_type, read_metadata,
-        read_project_file_at_path_with_limits, resolve_virtual_path, FileContentLimits,
+        build_folder_listing, detect_project_file_type, project_file_metadata_cache_key,
+        read_metadata, read_project_file_at_path_with_limits, resolve_virtual_path,
+        FileContentLimits,
     };
 
     #[test]
@@ -2182,6 +2384,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["/src/main.rs"]
         );
+    }
+
+    #[test]
+    fn project_file_metadata_cache_key_includes_file_identity() {
+        let first =
+            project_file_metadata_cache_key("/src/lib.rs", 12, "2026-06-03T00:00:00Z", "1:2");
+        let second =
+            project_file_metadata_cache_key("/src/lib.rs", 12, "2026-06-03T00:00:00Z", "1:3");
+
+        assert_ne!(first, second);
     }
 
     #[test]

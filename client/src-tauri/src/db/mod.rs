@@ -95,6 +95,26 @@ pub fn configure_project_database_paths(global_db_path: &Path) {
     let _ = global_db_path;
 }
 
+pub(crate) fn configured_app_data_dir() -> Option<PathBuf> {
+    THREAD_PROJECT_DATABASE_PATH_CONFIG
+        .with(|thread_config| {
+            thread_config
+                .borrow()
+                .registry_path
+                .as_ref()
+                .and_then(|path| path.parent().map(Path::to_path_buf))
+        })
+        .or_else(|| {
+            let config = PROJECT_DATABASE_PATH_CONFIG
+                .read()
+                .expect("project database path config lock poisoned");
+            config
+                .registry_path
+                .as_ref()
+                .and_then(|path| path.parent().map(Path::to_path_buf))
+        })
+}
+
 pub fn database_path_for_project(project_id: &str) -> PathBuf {
     configured_database_path_for_project(project_id)
         .unwrap_or_else(|| default_database_path_for_project(project_id))

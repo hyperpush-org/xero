@@ -51,11 +51,26 @@ pub fn ensure_global_computer_use_session<R: Runtime>(
     state: State<'_, DesktopState>,
 ) -> CommandResult<GlobalComputerUseSessionDto> {
     let record = ensure_global_computer_use_session_record(&app, state.inner())?;
-    Ok(GlobalComputerUseSessionDto {
+    Ok(global_computer_use_session_dto(&record))
+}
+
+#[tauri::command]
+pub fn reset_global_computer_use_session<R: Runtime + 'static>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+) -> CommandResult<GlobalComputerUseSessionDto> {
+    let record = reset_global_computer_use_session_record(&app, state.inner())?;
+    Ok(global_computer_use_session_dto(&record))
+}
+
+fn global_computer_use_session_dto(
+    record: &GlobalComputerUseSessionRecord,
+) -> GlobalComputerUseSessionDto {
+    GlobalComputerUseSessionDto {
         project_id: record.project_id.clone(),
         agent_session_id: record.session.agent_session_id.clone(),
         session: agent_session_dto(&record.session),
-    })
+    }
 }
 
 pub(crate) fn ensure_global_computer_use_session_record<R: Runtime>(

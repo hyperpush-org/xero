@@ -58,6 +58,9 @@ interface SessionSnapshotPayload {
 		thinkingSupported?: boolean | null;
 		thinkingEffortOptions?: ReadonlyArray<string | null> | null;
 		defaultThinkingEffort?: string | null;
+		inputModalities?: ReadonlyArray<string | null> | null;
+		supportedTypes?: ReadonlyArray<string | null> | null;
+		attachmentStatus?: string | null;
 	}>;
 	transcript?: unknown[];
 	runs?: unknown[];

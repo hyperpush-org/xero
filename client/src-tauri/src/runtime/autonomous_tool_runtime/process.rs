@@ -748,6 +748,10 @@ impl AutonomousToolRuntime {
         policy: AutonomousCommandPolicyTrace,
         on_chunk: &mut impl FnMut(&AutonomousCommandOutputChunk),
     ) -> CommandResult<AutonomousToolResult> {
+        let _perf = crate::perf::PerfSpan::new("autonomous_command_stream")
+            .field("toolName", tool_name.to_owned())
+            .field("argvCount", prepared.argv.len().to_string())
+            .field("timeoutMs", prepared.timeout_ms.to_string());
         let sandbox_metadata = self.command_sandbox_metadata(
             tool_name,
             &prepared,

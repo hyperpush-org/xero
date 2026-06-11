@@ -52,8 +52,38 @@ describe('ActionPromptCard', () => {
     fireEvent.click(submit)
 
     expect(resolveActionPrompt).toHaveBeenCalledWith('question-1', 'approve', {
+      actionType: 'short_text_required',
+      runId: null,
       userAnswer: 'Plan the runtime handoff',
     })
+  })
+
+  it('renders the matching action error inline', () => {
+    renderPrompt(
+      {},
+      {
+        actionError: {
+          actionId: 'question-1',
+          message: 'Xero could not resolve this action.',
+        },
+      },
+    )
+
+    expect(screen.getByText('Xero could not resolve this action.')).toBeInTheDocument()
+  })
+
+  it('does not render errors for other action cards', () => {
+    renderPrompt(
+      {},
+      {
+        actionError: {
+          actionId: 'question-2',
+          message: 'This belongs to another prompt.',
+        },
+      },
+    )
+
+    expect(screen.queryByText('This belongs to another prompt.')).not.toBeInTheDocument()
   })
 
   it('renders compact single-choice prompts as command buttons without stale radio state', () => {
@@ -71,7 +101,68 @@ describe('ActionPromptCard', () => {
     fireEvent.click(screen.getByRole('button', { name: /Large/ }))
 
     expect(resolveActionPrompt).toHaveBeenCalledWith('question-1', 'approve', {
+      actionType: 'single_choice_required',
+      runId: null,
       userAnswer: 'large',
+    })
+  })
+
+  it('keeps sensitive values hidden by default and submits only entered fields', () => {
+    const { resolveActionPrompt } = renderPrompt({
+      actionType: 'sensitive_input_request',
+      shape: 'sensitive_fields',
+      detail: 'Need local API credentials.',
+      intendedUse: 'Write the provided key into .env.local.',
+      sensitiveFields: [
+        {
+          key: 'api_key',
+          label: 'API key',
+          description: 'Used only for local setup.',
+          required: true,
+          validationHint: 'Starts with sk-',
+        },
+        {
+          key: 'webhook_secret',
+          label: 'Webhook secret',
+          description: null,
+          required: false,
+          validationHint: null,
+        },
+      ],
+    })
+
+    const approve = screen.getByRole('button', { name: 'Approve' })
+    const apiKey = screen.getByLabelText('API key')
+
+    expect(apiKey).toHaveAttribute('type', 'password')
+    expect(approve).toBeDisabled()
+
+    fireEvent.change(apiKey, { target: { value: 'sk-live-secret-value' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Reveal API key' }))
+    expect(apiKey).toHaveAttribute('type', 'text')
+
+    fireEvent.click(approve)
+
+    expect(resolveActionPrompt).toHaveBeenCalledWith('question-1', 'approve', {
+      actionType: 'sensitive_input_request',
+      runId: null,
+      userAnswer: JSON.stringify({ api_key: 'sk-live-secret-value' }),
+    })
+  })
+
+  it('passes run context through prompt decisions', () => {
+    const { resolveActionPrompt } = renderPrompt({
+      runId: 'run-owned',
+      actionType: 'safety_boundary',
+      shape: 'plain_text',
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+
+    expect(resolveActionPrompt).toHaveBeenCalledWith('question-1', 'approve', {
+      actionType: 'safety_boundary',
+      runId: 'run-owned',
+      userAnswer: '',
     })
   })
 })

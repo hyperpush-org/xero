@@ -42,7 +42,7 @@ use crate::{
         DEEPSEEK_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID, GITHUB_MODELS_PROVIDER_ID,
         OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
         OPENAI_CODEX_SUPPORTED_MODEL_IDS, OPENROUTER_PROVIDER_ID, VERTEX_PROVIDER_ID,
-        XAI_DEFAULT_MODEL_ID, XAI_PROVIDER_ID,
+        XAI_DEFAULT_MODEL_ID, XAI_PROVIDER_ID, XAI_SUPPORTED_TEXT_MODEL_IDS,
     },
     state::DesktopState,
 };
@@ -83,6 +83,8 @@ pub struct ProviderModelRecord {
     pub model_id: String,
     pub display_name: String,
     pub thinking: ProviderModelThinkingCapability,
+    pub input_modalities: Vec<String>,
+    pub input_modalities_source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -466,7 +468,7 @@ fn refresh_provider_model_catalog(
                 };
             };
 
-            fetch_openrouter_models(&secret.api_key, &state.openrouter_auth_config())
+            fetch_openrouter_models(Some(&secret.api_key), &state.openrouter_auth_config())
                 .map(normalize_openrouter_models)
                 .map_err(diagnostic_from_auth_error)
         }
@@ -528,7 +530,7 @@ fn refresh_provider_model_catalog(
     match live_models {
         Ok(models) => {
             let now = crate::auth::now_timestamp();
-            let models = models
+            let mut models = models
                 .into_iter()
                 .map(|mut model| {
                     if model.context_limit_source == Some(SessionContextLimitSourceDto::LiveCatalog)
@@ -538,6 +540,11 @@ fn refresh_provider_model_catalog(
                     model
                 })
                 .collect::<Vec<_>>();
+            enrich_model_modalities_from_openrouter(
+                state,
+                profile.provider_id.as_str(),
+                &mut models,
+            );
             let source = if matches!(
                 refresh_target,
                 ProviderModelCatalogRefreshTarget::AnthropicAmbient
@@ -601,6 +608,79 @@ fn refresh_provider_model_catalog(
     }
 }
 
+fn enrich_model_modalities_from_openrouter(
+    state: &DesktopState,
+    provider_id: &str,
+    models: &mut [ProviderModelRecord],
+) {
+    if models
+        .iter()
+        .all(|model| !model.input_modalities.is_empty())
+    {
+        return;
+    }
+    let Some(namespace) = openrouter_namespace_for_provider(provider_id) else {
+        return;
+    };
+    let Ok(openrouter_models) = fetch_openrouter_models(None, &state.openrouter_auth_config())
+    else {
+        return;
+    };
+    let by_id = openrouter_models
+        .into_iter()
+        .map(|model| (model.id.clone(), model))
+        .collect::<BTreeMap<_, _>>();
+
+    for model in models
+        .iter_mut()
+        .filter(|model| model.input_modalities.is_empty())
+    {
+        for candidate in openrouter_model_id_candidates(namespace, &model.model_id) {
+            let Some(openrouter_model) = by_id.get(&candidate) else {
+                continue;
+            };
+            if openrouter_model.input_modalities.is_empty() {
+                continue;
+            }
+            model.input_modalities =
+                normalize_input_modalities(openrouter_model.input_modalities.clone());
+            model.input_modalities_source = "openrouter_public_models_api".into();
+            break;
+        }
+    }
+}
+
+fn openrouter_namespace_for_provider(provider_id: &str) -> Option<&'static str> {
+    match provider_id {
+        OPENAI_API_PROVIDER_ID => Some("openai"),
+        OPENROUTER_PROVIDER_ID => Some("openrouter"),
+        GITHUB_MODELS_PROVIDER_ID => Some(""),
+        ANTHROPIC_PROVIDER_ID | BEDROCK_PROVIDER_ID | VERTEX_PROVIDER_ID => Some("anthropic"),
+        DEEPSEEK_PROVIDER_ID => Some("deepseek"),
+        GEMINI_AI_STUDIO_PROVIDER_ID => Some("google"),
+        XAI_PROVIDER_ID => Some("x-ai"),
+        _ => None,
+    }
+}
+
+fn openrouter_model_id_candidates(namespace: &str, model_id: &str) -> Vec<String> {
+    let trimmed = model_id.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let mut candidates = Vec::new();
+    if trimmed.contains('/') {
+        candidates.push(trimmed.to_owned());
+    } else if namespace.is_empty() {
+        return Vec::new();
+    } else {
+        candidates.push(format!("{namespace}/{trimmed}"));
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates
+}
+
 fn openai_codex_projection() -> Vec<ProviderModelRecord> {
     OPENAI_CODEX_SUPPORTED_MODEL_IDS
         .iter()
@@ -619,6 +699,8 @@ fn openai_codex_projection() -> Vec<ProviderModelRecord> {
                 (*model_id).into(),
                 display_name,
                 openai_codex_thinking_capability(model_id),
+                openai_codex_input_modalities(model_id),
+                openai_codex_input_modalities_source(model_id).into(),
                 None,
                 None,
             )
@@ -627,7 +709,10 @@ fn openai_codex_projection() -> Vec<ProviderModelRecord> {
 }
 
 fn xai_projection() -> Vec<ProviderModelRecord> {
-    vec![xai_model_record(XAI_DEFAULT_MODEL_ID.into())]
+    XAI_SUPPORTED_TEXT_MODEL_IDS
+        .iter()
+        .map(|model_id| xai_model_record((*model_id).into(), Vec::new(), "unknown".into()))
+        .collect()
 }
 
 fn cursor_projection() -> Vec<ProviderModelRecord> {
@@ -637,6 +722,8 @@ fn cursor_projection() -> Vec<ProviderModelRecord> {
             CURSOR_AUTO_MODEL_ID.into(),
             "Auto".into(),
             unsupported_thinking_capability(),
+            Vec::new(),
+            "external_agent".into(),
             None,
             None,
         ),
@@ -645,6 +732,8 @@ fn cursor_projection() -> Vec<ProviderModelRecord> {
             CURSOR_DEFAULT_MODEL_ID.into(),
             "Composer Latest".into(),
             unsupported_thinking_capability(),
+            Vec::new(),
+            "external_agent".into(),
             None,
             None,
         ),
@@ -815,6 +904,8 @@ fn cursor_model_record(model_id: &str, display_name: String) -> ProviderModelRec
         model_id.into(),
         display_name,
         unsupported_thinking_capability(),
+        Vec::new(),
+        "external_agent".into(),
         None,
         None,
     )
@@ -854,19 +945,57 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
 
-fn xai_model_record(model_id: String) -> ProviderModelRecord {
+fn xai_model_record(
+    model_id: String,
+    input_modalities: Vec<String>,
+    input_modalities_source: String,
+) -> ProviderModelRecord {
+    let (input_modalities, input_modalities_source) =
+        xai_model_input_modalities(&model_id, input_modalities, input_modalities_source);
     provider_model_record(
         XAI_PROVIDER_ID,
         model_id.clone(),
         xai_display_name(&model_id),
         xai_thinking_capability(&model_id),
+        input_modalities,
+        input_modalities_source,
         xai_context_window_tokens(&model_id),
         None,
     )
 }
 
+fn xai_model_input_modalities(
+    model_id: &str,
+    input_modalities: Vec<String>,
+    input_modalities_source: String,
+) -> (Vec<String>, String) {
+    let mut normalized = normalize_input_modalities(input_modalities);
+    let mut source = normalize_modality_source(input_modalities_source);
+    if !is_supported_xai_text_model_id(model_id) {
+        return (normalized, source);
+    }
+
+    let original_len = normalized.len();
+    if !normalized.iter().any(|modality| modality == "text") {
+        normalized.push("text".into());
+    }
+    if !normalized.iter().any(|modality| modality == "image") {
+        normalized.push("image".into());
+    }
+    normalized.sort();
+    normalized.dedup();
+
+    if normalized.len() != original_len && source == "unknown" {
+        source = "xai_text_runtime_default".into();
+    }
+
+    (normalized, source)
+}
+
 #[derive(Debug, Deserialize)]
 struct XaiModelListResponse {
+    #[serde(default)]
+    models: Vec<XaiModelEntry>,
     #[serde(default)]
     data: Vec<XaiModelEntry>,
 }
@@ -874,6 +1003,10 @@ struct XaiModelListResponse {
 #[derive(Debug, Deserialize)]
 struct XaiModelEntry {
     id: String,
+    #[serde(default)]
+    aliases: Vec<String>,
+    #[serde(default)]
+    input_modalities: Vec<String>,
 }
 
 fn fetch_xai_models(
@@ -891,7 +1024,7 @@ fn fetch_xai_models(
             )
         })?;
     let response = client
-        .get("https://api.x.ai/v1/models")
+        .get("https://api.x.ai/v1/language-models")
         .bearer_auth(bearer_token.trim())
         .send()
         .map_err(|error| {
@@ -933,18 +1066,35 @@ fn fetch_xai_models(
             format!("Xero could not decode the xAI model catalog response: {error}"),
         )
     })?;
-    Ok(payload.data)
+    Ok(if payload.models.is_empty() {
+        payload.data
+    } else {
+        payload.models
+    })
 }
 
 fn normalize_xai_models(models: Vec<XaiModelEntry>) -> Vec<ProviderModelRecord> {
     let normalized = models
         .into_iter()
-        .filter_map(|model| {
-            let model_id = model.id.trim().to_owned();
-            if model_id.is_empty() || !is_supported_xai_text_model_id(&model_id) {
-                return None;
-            }
-            Some(xai_model_record(model_id))
+        .flat_map(|model| {
+            let input_modalities = model.input_modalities;
+            let mut ids = std::iter::once(model.id)
+                .chain(model.aliases)
+                .filter_map(|model_id| {
+                    let model_id = model_id.trim().to_owned();
+                    (!model_id.is_empty() && is_supported_xai_text_model_id(&model_id))
+                        .then_some(model_id)
+                })
+                .collect::<Vec<_>>();
+            ids.sort();
+            ids.dedup();
+            ids.into_iter().map(move |model_id| {
+                xai_model_record(
+                    model_id,
+                    input_modalities.clone(),
+                    "xai_language_models_api".into(),
+                )
+            })
         })
         .collect::<Vec<_>>();
 
@@ -959,7 +1109,11 @@ fn xai_cached_models(models: &[ProviderModelRecord]) -> Vec<ProviderModelRecord>
             if model_id.is_empty() || !is_supported_xai_text_model_id(&model_id) {
                 return None;
             }
-            Some(xai_model_record(model_id))
+            Some(xai_model_record(
+                model_id,
+                model.input_modalities.clone(),
+                model.input_modalities_source.clone(),
+            ))
         })
         .collect::<Vec<_>>();
 
@@ -967,11 +1121,13 @@ fn xai_cached_models(models: &[ProviderModelRecord]) -> Vec<ProviderModelRecord>
 }
 
 fn finalize_xai_models(mut normalized: Vec<ProviderModelRecord>) -> Vec<ProviderModelRecord> {
-    if !normalized
-        .iter()
-        .any(|model| model.model_id == XAI_DEFAULT_MODEL_ID)
-    {
-        normalized.extend(xai_projection());
+    for projection in xai_projection() {
+        if !normalized
+            .iter()
+            .any(|model| model.model_id == projection.model_id)
+        {
+            normalized.push(projection);
+        }
     }
     normalized.sort_by(|left, right| {
         left.display_name
@@ -1089,6 +1245,18 @@ fn openai_codex_thinking_capability(model_id: &str) -> ProviderModelThinkingCapa
     supported_thinking_capability(effort_options)
 }
 
+fn openai_codex_input_modalities(model_id: &str) -> Vec<String> {
+    openai_gpt_attachment_input_modalities(OPENAI_CODEX_PROVIDER_ID, model_id).unwrap_or_default()
+}
+
+fn openai_codex_input_modalities_source(model_id: &str) -> &'static str {
+    if openai_gpt_attachment_input_modalities(OPENAI_CODEX_PROVIDER_ID, model_id).is_some() {
+        "openai_static_gpt_multimodal"
+    } else {
+        "unknown"
+    }
+}
+
 fn openai_codex_supports_x_high_thinking(model_id: &str) -> bool {
     let model_id = model_id.trim().to_ascii_lowercase();
     ["gpt-5.2", "gpt-5.3", "gpt-5.4", "gpt-5.5"]
@@ -1101,6 +1269,8 @@ fn provider_model_record(
     model_id: String,
     display_name: String,
     thinking: ProviderModelThinkingCapability,
+    input_modalities: Vec<String>,
+    input_modalities_source: String,
     live_context_window_tokens: Option<u64>,
     live_max_output_tokens: Option<u64>,
 ) -> ProviderModelRecord {
@@ -1112,6 +1282,8 @@ fn provider_model_record(
         model_id,
         display_name,
         thinking,
+        input_modalities: normalize_input_modalities(input_modalities),
+        input_modalities_source: normalize_modality_source(input_modalities_source),
         context_window_tokens: live_context_window_tokens
             .or(context_resolution.context_window_tokens),
         max_output_tokens: live_max_output_tokens.or(context_resolution.max_output_tokens),
@@ -1127,6 +1299,109 @@ fn provider_model_record(
         }),
         context_limit_fetched_at: None,
     }
+}
+
+fn normalize_input_modalities(modalities: Vec<String>) -> Vec<String> {
+    let mut out = modalities
+        .into_iter()
+        .filter_map(|modality| {
+            let normalized = modality.trim().replace('-', "_").to_ascii_lowercase();
+            (!normalized.is_empty()).then_some(normalized)
+        })
+        .collect::<Vec<_>>();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn normalize_modality_source(source: String) -> String {
+    let trimmed = source.trim();
+    if trimmed.is_empty() {
+        "unknown".into()
+    } else {
+        trimmed.into()
+    }
+}
+
+fn openai_gpt_cached_models(
+    provider_id: &str,
+    models: &[ProviderModelRecord],
+) -> Vec<ProviderModelRecord> {
+    models
+        .iter()
+        .map(|model| {
+            let mut model = model.clone();
+            apply_openai_gpt_attachment_defaults(provider_id, &mut model);
+            model
+        })
+        .collect()
+}
+
+fn apply_openai_gpt_attachment_defaults(provider_id: &str, model: &mut ProviderModelRecord) {
+    let Some(default_modalities) =
+        openai_gpt_attachment_input_modalities(provider_id, &model.model_id)
+    else {
+        return;
+    };
+    let original = normalize_input_modalities(model.input_modalities.clone());
+    let mut modalities = original.clone();
+    for modality in default_modalities {
+        if !modalities.iter().any(|existing| existing == &modality) {
+            modalities.push(modality);
+        }
+    }
+    let normalized = normalize_input_modalities(modalities);
+    if normalized != original {
+        model.input_modalities = normalized;
+        model.input_modalities_source = "openai_static_gpt_multimodal".into();
+    }
+}
+
+fn openai_gpt_attachment_input_modalities(
+    provider_id: &str,
+    model_id: &str,
+) -> Option<Vec<String>> {
+    if !matches!(
+        provider_id,
+        OPENAI_API_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID
+    ) {
+        return None;
+    }
+    if !is_openai_gpt_attachment_model(model_id) {
+        return None;
+    }
+    Some(vec!["file".into(), "image".into(), "text".into()])
+}
+
+fn is_openai_gpt_attachment_model(model_id: &str) -> bool {
+    let model_id = model_id
+        .trim()
+        .rsplit('/')
+        .next()
+        .unwrap_or(model_id)
+        .to_ascii_lowercase();
+    if model_id == "chat-latest" {
+        return true;
+    }
+    if !model_id.starts_with("gpt-") {
+        return false;
+    }
+    if model_id.starts_with("gpt-image")
+        || model_id.starts_with("gpt-audio")
+        || model_id.starts_with("gpt-realtime")
+        || model_id.contains("search")
+        || model_id.contains("transcribe")
+        || model_id.contains("tts")
+    {
+        return false;
+    }
+    model_id == "gpt-5"
+        || model_id.starts_with("gpt-5.")
+        || model_id.starts_with("gpt-5-")
+        || model_id == "gpt-4.1"
+        || model_id.starts_with("gpt-4.1-")
+        || model_id == "gpt-4o"
+        || model_id.starts_with("gpt-4o-")
 }
 
 fn provider_capability_catalog_for_parts(
@@ -1169,6 +1444,10 @@ fn provider_capability_catalog_for_parts(
         thinking_default_effort: thinking
             .and_then(|thinking| thinking.default_effort.as_ref())
             .map(provider_model_thinking_effort_string),
+        input_modalities: model
+            .map(|model| model.input_modalities.clone())
+            .unwrap_or_default(),
+        input_modalities_source: model.map(|model| model.input_modalities_source.clone()),
     })
 }
 
@@ -1232,6 +1511,8 @@ fn normalize_openrouter_models(models: Vec<OpenRouterDiscoveredModel>) -> Vec<Pr
                 model.id,
                 model.display_name,
                 thinking,
+                model.input_modalities,
+                model.input_modalities_source,
                 model.context_window_tokens,
                 model.max_output_tokens,
             )
@@ -1260,6 +1541,8 @@ fn normalize_anthropic_models(
                 model.id,
                 model.display_name,
                 thinking,
+                model.input_modalities,
+                model.input_modalities_source,
                 None,
                 None,
             )
@@ -1282,14 +1565,18 @@ fn normalize_openai_compatible_models(
         .into_iter()
         .map(|model| {
             let thinking = openai_compatible_thinking_capability(&model);
-            provider_model_record(
+            let mut record = provider_model_record(
                 provider_id,
                 model.id,
                 model.display_name,
                 thinking,
+                model.input_modalities,
+                model.input_modalities_source,
                 model.context_window_tokens,
                 model.max_output_tokens,
-            )
+            );
+            apply_openai_gpt_attachment_defaults(provider_id, &mut record);
+            record
         })
         .collect::<Vec<_>>();
 
@@ -1312,14 +1599,18 @@ fn manual_provider_projection(profile: &ProviderCredentialProfile) -> Vec<Provid
 fn manual_openai_compatible_projection(
     profile: &ProviderCredentialProfile,
 ) -> Vec<ProviderModelRecord> {
-    vec![provider_model_record(
+    let mut record = provider_model_record(
         profile.provider_id.as_str(),
         profile.model_id.clone(),
         profile.model_id.clone(),
         unsupported_thinking_capability(),
+        Vec::new(),
+        "unknown".into(),
         None,
         None,
-    )]
+    );
+    apply_openai_gpt_attachment_defaults(profile.provider_id.as_str(), &mut record);
+    vec![record]
 }
 
 fn manual_anthropic_family_projection(
@@ -1341,6 +1632,8 @@ fn manual_anthropic_family_projection(
         profile.model_id.clone(),
         profile.model_id.clone(),
         thinking,
+        Vec::new(),
+        "unknown".into(),
         None,
         None,
     )]
@@ -1470,6 +1763,11 @@ fn catalog_from_cached_row(
 ) -> ProviderModelCatalog {
     let models = if profile.provider_id == XAI_PROVIDER_ID {
         xai_cached_models(&cached.models)
+    } else if matches!(
+        profile.provider_id.as_str(),
+        OPENAI_API_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID
+    ) {
+        openai_gpt_cached_models(profile.provider_id.as_str(), &cached.models)
     } else {
         cached.models.clone()
     };
@@ -1898,18 +2196,13 @@ fn is_local_openai_compatible_base_url(base_url: &str) -> bool {
 }
 
 fn xai_catalog_bearer_token(
-    profile: &ProviderCredentialProfile,
+    _profile: &ProviderCredentialProfile,
     provider_profiles: &ProviderCredentialsView,
 ) -> Option<String> {
     provider_profiles
-        .matched_api_key_credential_for_profile(&profile.profile_id)
-        .map(|entry| entry.api_key.clone())
-        .or_else(|| {
-            provider_profiles
-                .record_for_provider(XAI_PROVIDER_ID)
-                .filter(|record| record.kind == ProviderCredentialKind::OAuthSession)
-                .and_then(|record| record.oauth_access_token.clone())
-        })
+        .record_for_provider(XAI_PROVIDER_ID)
+        .filter(|record| record.kind == ProviderCredentialKind::OAuthSession)
+        .and_then(|record| record.oauth_access_token.clone())
         .map(|token| token.trim().to_owned())
         .filter(|token| !token.is_empty())
 }
@@ -1939,7 +2232,7 @@ fn missing_xai_credential_diagnostic(
     ProviderModelCatalogDiagnostic {
         code: "xai_credential_missing".into(),
         message: format!(
-            "Xero cannot discover xAI models for provider `{}` because no xAI OAuth session or app-local API key is configured.",
+            "Xero cannot discover xAI models for provider `{}` because no xAI sign-in session is configured.",
             profile.provider_id
         ),
         retryable: false,
@@ -2050,6 +2343,8 @@ fn normalized_optional_string(value: Option<&str>) -> Option<String> {
 mod tests {
     use super::*;
 
+    use crate::auth::openai_compatible::OpenAiCompatibleDiscoveredThinkingCapability;
+
     #[test]
     fn openai_codex_projection_exposes_gsd_thinking_levels_for_openai_choices() {
         let models = openai_codex_projection();
@@ -2070,6 +2365,12 @@ mod tests {
         );
 
         for model in models {
+            assert_eq!(
+                model.input_modalities,
+                vec!["file", "image", "text"],
+                "{} should expose OpenAI GPT attachment input modalities",
+                model.model_id
+            );
             assert_eq!(
                 model.thinking.effort_options,
                 vec![
@@ -2123,6 +2424,11 @@ mod tests {
             .expect("gpt-5.5 model choice");
 
         assert_eq!(gpt_5_5.display_name, "GPT-5.5");
+        assert_eq!(gpt_5_5.input_modalities, vec!["file", "image", "text"]);
+        assert_eq!(
+            gpt_5_5.input_modalities_source,
+            "openai_static_gpt_multimodal"
+        );
         assert_eq!(
             gpt_5_5.thinking.effort_options,
             vec![
@@ -2142,9 +2448,15 @@ mod tests {
             .iter()
             .find(|model| model.model_id == XAI_DEFAULT_MODEL_ID)
             .expect("grok-4.3 model choice");
+        let latest = models
+            .iter()
+            .find(|model| model.model_id == "grok-4.3-latest")
+            .expect("grok-4.3-latest model choice");
 
         assert_eq!(grok.display_name, "Grok 4.3");
         assert_eq!(grok.context_window_tokens, Some(1_000_000));
+        assert_eq!(grok.input_modalities, vec!["image", "text"]);
+        assert_eq!(latest.input_modalities, vec!["image", "text"]);
         assert_eq!(
             grok.thinking.effort_options,
             vec![
@@ -2158,6 +2470,112 @@ mod tests {
             grok.thinking.default_effort,
             Some(ProviderModelThinkingEffort::Low)
         );
+    }
+
+    #[test]
+    fn xai_cached_models_upgrade_legacy_empty_modalities_for_grok() {
+        let models = xai_cached_models(&[ProviderModelRecord {
+            model_id: XAI_DEFAULT_MODEL_ID.into(),
+            display_name: "Grok 4.3".into(),
+            thinking: unsupported_thinking_capability(),
+            input_modalities: Vec::new(),
+            input_modalities_source: "unknown".into(),
+            context_window_tokens: None,
+            max_output_tokens: None,
+            context_limit_source: None,
+            context_limit_confidence: None,
+            context_limit_fetched_at: None,
+        }]);
+        let grok = models
+            .iter()
+            .find(|model| model.model_id == XAI_DEFAULT_MODEL_ID)
+            .expect("cached grok model");
+        let latest = models
+            .iter()
+            .find(|model| model.model_id == "grok-4.3-latest")
+            .expect("projected latest grok model");
+
+        assert_eq!(grok.input_modalities, vec!["image", "text"]);
+        assert_eq!(grok.input_modalities_source, "xai_text_runtime_default");
+        assert_eq!(latest.input_modalities, vec!["image", "text"]);
+    }
+
+    #[test]
+    fn openai_compatible_models_seed_gpt_attachment_modalities_when_omitted() {
+        let models = normalize_openai_compatible_models(
+            OPENAI_API_PROVIDER_ID,
+            vec![
+                OpenAiCompatibleDiscoveredModel {
+                    id: "gpt-5.5".into(),
+                    display_name: "GPT-5.5".into(),
+                    thinking: OpenAiCompatibleDiscoveredThinkingCapability {
+                        supported: false,
+                        effort_levels: Vec::new(),
+                        default_effort: None,
+                    },
+                    input_modalities: Vec::new(),
+                    input_modalities_source: "unknown".into(),
+                    context_window_tokens: None,
+                    max_output_tokens: None,
+                },
+                OpenAiCompatibleDiscoveredModel {
+                    id: "gpt-audio".into(),
+                    display_name: "GPT Audio".into(),
+                    thinking: OpenAiCompatibleDiscoveredThinkingCapability {
+                        supported: false,
+                        effort_levels: Vec::new(),
+                        default_effort: None,
+                    },
+                    input_modalities: Vec::new(),
+                    input_modalities_source: "unknown".into(),
+                    context_window_tokens: None,
+                    max_output_tokens: None,
+                },
+            ],
+        );
+
+        let gpt_5_5 = models
+            .iter()
+            .find(|model| model.model_id == "gpt-5.5")
+            .expect("gpt-5.5 model");
+        let gpt_audio = models
+            .iter()
+            .find(|model| model.model_id == "gpt-audio")
+            .expect("gpt-audio model");
+
+        assert_eq!(gpt_5_5.input_modalities, vec!["file", "image", "text"]);
+        assert_eq!(
+            gpt_5_5.input_modalities_source,
+            "openai_static_gpt_multimodal"
+        );
+        assert!(gpt_audio.input_modalities.is_empty());
+        assert_eq!(gpt_audio.input_modalities_source, "unknown");
+    }
+
+    #[test]
+    fn openai_cached_models_upgrade_legacy_empty_modalities_for_gpt() {
+        let models = openai_gpt_cached_models(
+            OPENAI_API_PROVIDER_ID,
+            &[ProviderModelRecord {
+                model_id: "openai/gpt-5.4".into(),
+                display_name: "GPT-5.4".into(),
+                thinking: unsupported_thinking_capability(),
+                input_modalities: Vec::new(),
+                input_modalities_source: "unknown".into(),
+                context_window_tokens: None,
+                max_output_tokens: None,
+                context_limit_source: None,
+                context_limit_confidence: None,
+                context_limit_fetched_at: None,
+            }],
+        );
+        let gpt = models
+            .iter()
+            .find(|model| model.model_id == "openai/gpt-5.4")
+            .expect("cached gpt model");
+
+        assert_eq!(gpt.input_modalities, vec!["file", "image", "text"]);
+        assert_eq!(gpt.input_modalities_source, "openai_static_gpt_multimodal");
     }
 
     #[test]
@@ -2230,24 +2648,38 @@ mod tests {
         let models = normalize_xai_models(vec![
             XaiModelEntry {
                 id: "grok-4.20-0309-non-reasoning".into(),
+                aliases: Vec::new(),
+                input_modalities: Vec::new(),
             },
             XaiModelEntry {
                 id: "grok-4.20-0309-reasoning".into(),
+                aliases: Vec::new(),
+                input_modalities: Vec::new(),
             },
             XaiModelEntry {
                 id: "grok-4.20-multi-agent-0309".into(),
+                aliases: Vec::new(),
+                input_modalities: Vec::new(),
             },
             XaiModelEntry {
                 id: "grok-imagine-image-quality".into(),
+                aliases: Vec::new(),
+                input_modalities: Vec::new(),
             },
             XaiModelEntry {
                 id: "grok-imagine-video".into(),
+                aliases: Vec::new(),
+                input_modalities: Vec::new(),
             },
             XaiModelEntry {
                 id: "grok-latest".into(),
+                aliases: vec!["grok-4.3".into()],
+                input_modalities: vec!["text".into(), "image".into()],
             },
             XaiModelEntry {
                 id: "grok-4.3-latest".into(),
+                aliases: Vec::new(),
+                input_modalities: vec!["text".into(), "image".into()],
             },
         ]);
 
@@ -2256,6 +2688,8 @@ mod tests {
             .map(|model| model.model_id.as_str())
             .collect::<Vec<_>>();
         assert_eq!(model_ids, vec!["grok-4.3", "grok-4.3-latest"]);
+        assert_eq!(models[0].input_modalities, vec!["image", "text"]);
+        assert_eq!(models[1].input_modalities, vec!["image", "text"]);
         assert_eq!(
             models[1].thinking.effort_options,
             vec![

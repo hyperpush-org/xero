@@ -1547,7 +1547,7 @@ function RpcEndpoints({
       <PanelHeader
         icon={Server}
         title="RPC endpoints"
-        description="Latency and health probes for the bundled free-tier RPC pool."
+        description="Probe latency and health for the active Solana endpoint pool."
         busy={probing}
         right={
           <button
@@ -1555,7 +1555,7 @@ function RpcEndpoints({
             aria-label="Probe RPC health"
             disabled={probing}
             onClick={() => void runProbe()}
-            className="inline-flex h-7 items-center gap-1 rounded-md border border-border/70 bg-background/40 px-2 text-[11px] text-foreground/85 transition-colors hover:border-primary/40 hover:text-foreground disabled:opacity-50"
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-border/70 px-2 text-[11px] text-muted-foreground hover:bg-secondary/60 hover:text-foreground disabled:opacity-60"
           >
             <RefreshCw className={cn("h-3 w-3", probing && "animate-spin")} />
             {probing ? "Probing" : "Probe"}

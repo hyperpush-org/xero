@@ -3,6 +3,7 @@ import { z } from 'zod'
 export const projectUsageTotalsSchema = z.object({
   runCount: z.number().int().nonnegative(),
   inputTokens: z.number().int().nonnegative(),
+  billableInputTokens: z.number().int().nonnegative(),
   outputTokens: z.number().int().nonnegative(),
   totalTokens: z.number().int().nonnegative(),
   cacheReadTokens: z.number().int().nonnegative(),
@@ -16,6 +17,7 @@ export const projectUsageModelBreakdownSchema = z.object({
   modelId: z.string().min(1),
   runCount: z.number().int().nonnegative(),
   inputTokens: z.number().int().nonnegative(),
+  billableInputTokens: z.number().int().nonnegative(),
   outputTokens: z.number().int().nonnegative(),
   totalTokens: z.number().int().nonnegative(),
   cacheReadTokens: z.number().int().nonnegative(),

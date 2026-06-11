@@ -266,6 +266,31 @@ describe('runtime run control schemas', () => {
     })
   })
 
+  it('projects scheduled-wait checkpoints as a waiting runtime run', () => {
+    const parsed = runtimeRunSchema.parse(
+      makeRuntimeRunDto({
+        checkpoints: [
+          {
+            sequence: 1,
+            kind: 'state',
+            summary: 'Agent waiting for scheduled wakeup `wake-1` due at 2026-04-24T12:00:15Z.',
+            createdAt: '2026-04-24T12:00:05Z',
+          },
+        ],
+        lastCheckpointSequence: 1,
+        lastCheckpointAt: '2026-04-24T12:00:05Z',
+      }),
+    )
+    const view = mapRuntimeRun(parsed)
+
+    expect(view.status).toBe('running')
+    expect(view.statusLabel).toBe('Agent waiting')
+    expect(view.runtimeLabel).toBe('Openai Codex · Agent waiting')
+    expect(view.isActive).toBe(true)
+    expect(view.isWaiting).toBe(true)
+    expect(view.waitingSummary).toBe('Agent waiting for scheduled wakeup `wake-1` due at 2026-04-24T12:00:15Z.')
+  })
+
   it('rejects runtime runs missing durable control snapshots', () => {
     const parsed = runtimeRunSchema.safeParse({
       ...makeRuntimeRunDto(),

@@ -772,7 +772,7 @@ describe('agent report command contracts', () => {
         },
         memory: {
           status: 'healthy',
-          memoryReviewBudgetStatus: null,
+          memoryItemsBudgetStatus: null,
           freshness: freshnessCounts,
         },
         handoff: {

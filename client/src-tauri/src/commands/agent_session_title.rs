@@ -568,6 +568,7 @@ mod tests {
         let controls = RuntimeRunControlInputDto {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
             agent_definition_id: None,
+            agent_definition_version: None,
             provider_profile_id: Some("openai-codex-default".into()),
             model_id: "gpt-5.4".into(),
             thinking_effort: Some(ProviderModelThinkingEffortDto::High),

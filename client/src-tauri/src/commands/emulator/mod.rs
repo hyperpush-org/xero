@@ -804,6 +804,11 @@ pub fn emulator_screenshot(state: State<'_, EmulatorState>) -> CommandResult<Scr
             "No frame has been captured yet. Wait for the stream to start.",
         )
     })?;
+    let _perf = crate::perf::PerfSpan::new("emulator_screenshot")
+        .field("seq", frame.seq.to_string())
+        .field("width", frame.width.to_string())
+        .field("height", frame.height.to_string())
+        .field("jpegBytes", frame.bytes.len().to_string());
 
     // `FrameBus` stores JPEG; re-encode once as PNG so agents get a
     // lossless copy they can pipe into a vision model without worrying
@@ -845,6 +850,11 @@ pub fn emulator_frame(state: State<'_, EmulatorState>) -> CommandResult<Emulator
             "No frame has been captured yet. Wait for the stream to start.",
         )
     })?;
+    let _perf = crate::perf::PerfSpan::new("emulator_frame")
+        .field("seq", frame.seq.to_string())
+        .field("width", frame.width.to_string())
+        .field("height", frame.height.to_string())
+        .field("jpegBytes", frame.bytes.len().to_string());
 
     Ok(EmulatorFrameResponse {
         seq: frame.seq,

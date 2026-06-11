@@ -545,7 +545,7 @@ export const agentKnowledgeInspectionSchema = z
       ctx,
       ['approvedMemory'],
       inspection.approvedMemory.map((memory) => memory.memoryId),
-      'Knowledge inspection approved memory entries must be unique.',
+      'Knowledge inspection enabled memory entries must be unique.',
     )
     addDuplicateStringIssues(
       ctx,
@@ -581,7 +581,7 @@ export const agentKnowledgeInspectionSchema = z
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
               path: ['approvedMemory', index, 'kind'],
-              message: 'Knowledge inspection approved memory must match retrieval policy filters.',
+              message: 'Knowledge inspection enabled memory must match retrieval policy filters.',
             })
           }
         })
@@ -1035,7 +1035,7 @@ export const agentSupportFailureAreasSchema = z
     memory: z
       .object({
         status: z.string().trim().min(1),
-        memoryReviewBudgetStatus: nullableTextSchema,
+        memoryItemsBudgetStatus: nullableTextSchema,
         freshness: agentSupportFreshnessCountsSchema,
       })
       .strict(),

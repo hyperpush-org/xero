@@ -364,6 +364,36 @@ describe('runtime run metadata coalescing', () => {
     expect(setRefreshSource).not.toHaveBeenCalled()
     expect(setErrorMessage).not.toHaveBeenCalled()
   })
+
+  it('passes agent session ids through for null runtime-run updates', () => {
+    let scheduledFlush: (() => void) | null = null
+    const applyRuntimeRunUpdate = vi.fn(
+      (_projectId: string, runtimeRun: RuntimeRunView | null) => runtimeRun,
+    )
+    const buffer = createRuntimeRunUpdateBuffer({
+      activeProjectIdRef: { current: 'project-1' },
+      applyRuntimeRunUpdate,
+      setRefreshSource: vi.fn(),
+      setErrorMessage: vi.fn(),
+      scheduleFlush: (callback) => {
+        scheduledFlush = callback
+        return vi.fn()
+      },
+    })
+
+    buffer.enqueue({
+      projectId: 'project-2',
+      agentSessionId: 'agent-session-background',
+      run: null,
+    })
+
+    const flush = scheduledFlush as (() => void) | null
+    flush?.()
+
+    expect(applyRuntimeRunUpdate).toHaveBeenCalledWith('project-2', null, {
+      agentSessionId: 'agent-session-background',
+    })
+  })
 })
 
 describe('runtime stream event coalescing', () => {
@@ -783,6 +813,32 @@ describe('runtime stream event coalescing', () => {
     ])
   })
 
+  it('keeps terminal completion when late reasoning arrives after cancellation', () => {
+    const stream = mergeRuntimeStreamEvents(makeRuntimeStream(), [
+      makeRuntimeStreamEvent(1, {
+        kind: 'complete',
+        text: 'Owned agent run was cancelled.',
+        detail: 'Owned agent run was cancelled.',
+      }),
+      makeReasoningRuntimeStreamEvent(2, 'Considering next steps'),
+    ])
+
+    expect(stream?.status).toBe('complete')
+    expect(stream?.completion).toMatchObject({
+      sequence: 1,
+      detail: 'Owned agent run was cancelled.',
+    })
+    expect(stream?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'activity',
+          code: 'owned_agent_reasoning',
+          text: 'Considering next steps',
+        }),
+      ]),
+    )
+  })
+
   it('does not merge assistant transcript deltas across intervening tool calls', () => {
     const stream = mergeRuntimeStreamEvents(makeRuntimeStream(), [
       makeRuntimeStreamEvent(1, { text: 'Before the tool. ' }),
@@ -834,6 +890,151 @@ describe('runtime stream event coalescing', () => {
       toolState: 'succeeded',
       detail: 'Read client/src/index.ts.',
       toolResultPreview: 'export { App } from "./App"',
+    })
+  })
+
+  it('keeps runtime_wait visually running while a scheduled wait pause is active', () => {
+    const stream = mergeRuntimeStreamEvents(makeRuntimeStream(), [
+      makeToolRuntimeStreamEvent(1, 'call-runtime-wait', {
+        toolName: 'runtime_wait',
+        toolState: 'succeeded',
+        detail: 'Scheduled owned-agent wakeup `wake-1` for 2026-06-02T20:33:28Z.',
+      }),
+      makeRuntimeStreamEvent(2, {
+        kind: 'activity',
+        code: 'owned_agent_scheduled_wait',
+        title: 'Agent waiting',
+        detail: 'Waiting until 2026-06-02T20:33:28Z before continuing.',
+        text: null,
+      }),
+      makeRuntimeStreamEvent(3, {
+        kind: 'activity',
+        code: 'owned_agent_validation_completed',
+        title: 'Validation completed',
+        detail: 'Validation passed: memory_extraction.',
+        text: 'Validation passed: memory_extraction.',
+      }),
+    ])
+
+    const toolItem = stream?.items.find(
+      (item): item is RuntimeStreamToolItemView => item.kind === 'tool',
+    )
+
+    expect(toolItem).toMatchObject({
+      toolCallId: 'call-runtime-wait',
+      toolName: 'runtime_wait',
+      toolState: 'running',
+    })
+    expect(stream?.toolCalls[0]).toMatchObject({
+      toolCallId: 'call-runtime-wait',
+      toolState: 'running',
+    })
+  })
+
+  it('keeps scheduled runtime_wait running before the pause marker arrives', () => {
+    const stream = mergeRuntimeStreamEvents(makeRuntimeStream(), [
+      makeToolRuntimeStreamEvent(1, 'call-runtime-wait', {
+        toolName: 'runtime_wait',
+        toolState: 'running',
+        code: 'owned_agent_runtime_wait_scheduled',
+        detail: 'Scheduled owned-agent wakeup `wake-1` for 2026-06-02T20:33:28Z.',
+      }),
+    ])
+
+    const toolItem = stream?.items.find(
+      (item): item is RuntimeStreamToolItemView => item.kind === 'tool',
+    )
+
+    expect(toolItem).toMatchObject({
+      toolCallId: 'call-runtime-wait',
+      toolName: 'runtime_wait',
+      toolState: 'running',
+    })
+    expect(stream?.toolCalls[0]).toMatchObject({
+      toolCallId: 'call-runtime-wait',
+      toolState: 'running',
+    })
+  })
+
+  it('returns runtime_wait to succeeded after scheduled wait resumes', () => {
+    const stream = mergeRuntimeStreamEvents(makeRuntimeStream(), [
+      makeToolRuntimeStreamEvent(1, 'call-runtime-wait', {
+        toolName: 'runtime_wait',
+        toolState: 'succeeded',
+        detail: 'Scheduled owned-agent wakeup `wake-1` for 2026-06-02T20:33:28Z.',
+      }),
+      makeRuntimeStreamEvent(2, {
+        kind: 'activity',
+        code: 'owned_agent_scheduled_wait',
+        title: 'Agent waiting',
+        detail: 'Waiting until 2026-06-02T20:33:28Z before continuing.',
+        text: null,
+      }),
+      makeRuntimeStreamEvent(3, {
+        transcriptRole: 'assistant',
+        text: 'The wait has elapsed; inspecting the project now.',
+      }),
+    ])
+
+    const toolItem = stream?.items.find(
+      (item): item is RuntimeStreamToolItemView => item.kind === 'tool',
+    )
+
+    expect(toolItem).toMatchObject({
+      toolCallId: 'call-runtime-wait',
+      toolName: 'runtime_wait',
+      toolState: 'succeeded',
+    })
+    expect(stream?.toolCalls[0]).toMatchObject({
+      toolCallId: 'call-runtime-wait',
+      toolState: 'succeeded',
+    })
+  })
+
+  it('returns backend-scheduled runtime_wait to succeeded when later tool work arrives', () => {
+    const stream = mergeRuntimeStreamEvents(makeRuntimeStream(), [
+      makeToolRuntimeStreamEvent(1, 'call-runtime-wait', {
+        toolName: 'runtime_wait',
+        toolState: 'running',
+        code: 'owned_agent_runtime_wait_scheduled',
+        detail: 'Scheduled owned-agent wakeup `wake-1` for 2026-06-02T20:33:28Z.',
+      }),
+      makeRuntimeStreamEvent(2, {
+        kind: 'activity',
+        code: 'owned_agent_validation_completed',
+        title: 'Validation completed',
+        detail: 'Validation passed: memory_extraction.',
+        text: 'Validation passed: memory_extraction.',
+      }),
+      makeToolRuntimeStreamEvent(3, 'call-todo', {
+        toolName: 'todo',
+        toolState: 'running',
+        detail: 'Started `todo`.',
+      }),
+    ])
+
+    const waitToolItem = stream?.items.find(
+      (item): item is RuntimeStreamToolItemView =>
+        item.kind === 'tool' && item.toolCallId === 'call-runtime-wait',
+    )
+    const todoToolItem = stream?.items.find(
+      (item): item is RuntimeStreamToolItemView =>
+        item.kind === 'tool' && item.toolCallId === 'call-todo',
+    )
+
+    expect(waitToolItem).toMatchObject({
+      toolCallId: 'call-runtime-wait',
+      toolName: 'runtime_wait',
+      toolState: 'succeeded',
+    })
+    expect(todoToolItem).toMatchObject({
+      toolCallId: 'call-todo',
+      toolName: 'todo',
+      toolState: 'running',
+    })
+    expect(stream?.toolCalls.find((tool) => tool.toolCallId === 'call-runtime-wait')).toMatchObject({
+      toolCallId: 'call-runtime-wait',
+      toolState: 'succeeded',
     })
   })
 
@@ -1053,6 +1254,104 @@ describe('runtime stream event coalescing', () => {
     )
 
     cleanup()
+  })
+
+  it('marks a resolved runtime stream subscription live before the first event arrives', async () => {
+    let stream: RuntimeStreamView | null = null
+    const currentStream = () => stream
+    const adapter = {
+      subscribeRuntimeStream: vi.fn(
+        async (projectId, agentSessionId, itemKinds) => ({
+          response: {
+            projectId,
+            agentSessionId,
+            runtimeKind: 'openai_codex',
+            runId: 'run-1',
+            sessionId: 'runtime-session-1',
+            flowId: 'flow-1',
+            subscribedItemKinds: itemKinds,
+          },
+          unsubscribe: vi.fn(),
+        }),
+      ),
+    } as Pick<XeroDesktopAdapter, 'subscribeRuntimeStream'> as XeroDesktopAdapter
+    const updateRuntimeStream = vi.fn(
+      (
+        _projectId: string,
+        _agentSessionId: string,
+        updater: (current: RuntimeStreamView | null) => RuntimeStreamView | null,
+      ) => {
+        stream = updater(stream)
+      },
+    )
+
+    const cleanup = attachRuntimeStreamSubscription({
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      runtimeSession: makeRuntimeSession(),
+      runId: 'run-1',
+      adapter,
+      runtimeActionRefreshKeysRef: { current: {} },
+      updateRuntimeStream,
+      scheduleRuntimeMetadataRefresh: vi.fn(),
+    })
+
+    expect(currentStream()?.status).toBe('subscribing')
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(currentStream()?.status).toBe('live')
+    expect(currentStream()?.lastIssue).toBeNull()
+
+    cleanup()
+  })
+
+  it('surfaces a retryable issue when runtime stream subscription never settles', () => {
+    vi.useFakeTimers()
+    try {
+      let stream: RuntimeStreamView | null = null
+      const currentStream = () => stream
+      const scheduleRuntimeMetadataRefresh = vi.fn()
+      const adapter = {
+        subscribeRuntimeStream: vi.fn(() => new Promise(() => undefined)),
+      } as Pick<XeroDesktopAdapter, 'subscribeRuntimeStream'> as XeroDesktopAdapter
+      const updateRuntimeStream = vi.fn(
+        (
+          _projectId: string,
+          _agentSessionId: string,
+          updater: (current: RuntimeStreamView | null) => RuntimeStreamView | null,
+        ) => {
+          stream = updater(stream)
+        },
+      )
+
+      const cleanup = attachRuntimeStreamSubscription({
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
+        runtimeSession: makeRuntimeSession(),
+        runId: 'run-1',
+        adapter,
+        runtimeActionRefreshKeysRef: { current: {} },
+        updateRuntimeStream,
+        scheduleRuntimeMetadataRefresh,
+        subscribeTimeoutMs: 25,
+      })
+
+      expect(currentStream()?.status).toBe('subscribing')
+
+      vi.advanceTimersByTime(24)
+      expect(currentStream()?.status).toBe('subscribing')
+
+      vi.advanceTimersByTime(1)
+      expect(currentStream()?.status).toBe('stale')
+      expect(currentStream()?.lastIssue?.code).toBe('runtime_stream_subscribe_timeout')
+      expect(currentStream()?.lastIssue?.retryable).toBe(true)
+      expect(scheduleRuntimeMetadataRefresh).toHaveBeenCalledWith('project-1', 'runtime_run:updated')
+
+      cleanup()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('requests a bounded incremental replay when resubscribing an existing stream', async () => {

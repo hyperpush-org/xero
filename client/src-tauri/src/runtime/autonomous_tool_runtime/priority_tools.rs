@@ -19,21 +19,22 @@ use sha2::{Digest, Sha256};
 use xero_agent_core::domain_tool_pack_ids_for_tool;
 
 use super::{
-    deferred_tool_catalog, persist_subagent_task_for_parent,
+    deferred_tool_catalog, expected_hash_required_error, persist_subagent_task_for_parent,
     process::apply_sanitized_command_environment,
     repo_scope::{normalize_relative_path, path_to_forward_slash, WalkErrorCodes, WalkState},
-    tool_allowed_for_runtime_agent, tool_available_on_current_host, tool_catalog_activation_groups,
-    tool_effect_class, AutonomousCodeDiagnostic, AutonomousCodeIntelAction,
-    AutonomousCodeIntelOutput, AutonomousCodeIntelRequest, AutonomousCodeSymbol,
-    AutonomousCommandRequest, AutonomousDynamicToolDescriptor, AutonomousDynamicToolRoute,
-    AutonomousLspAction, AutonomousLspInstallCommand, AutonomousLspInstallSuggestion,
-    AutonomousLspOutput, AutonomousLspRequest, AutonomousLspServerStatus, AutonomousMcpAction,
-    AutonomousMcpOutput, AutonomousMcpRequest, AutonomousMcpResultArtifact,
-    AutonomousMcpServerSummary, AutonomousNotebookEditOutput, AutonomousNotebookEditRequest,
-    AutonomousPowerShellRequest, AutonomousSubagentAction, AutonomousSubagentInputRecord,
-    AutonomousSubagentOutput, AutonomousSubagentRequest, AutonomousSubagentRole,
-    AutonomousSubagentTask, AutonomousTodoAction, AutonomousTodoItem, AutonomousTodoMode,
-    AutonomousTodoOutput, AutonomousTodoRequest, AutonomousTodoStatus, AutonomousToolCatalogEntry,
+    stale_file_error, tool_allowed_for_runtime_agent, tool_available_on_current_host,
+    tool_catalog_activation_groups, tool_effect_class, validate_sha256_hash,
+    AutonomousCodeDiagnostic, AutonomousCodeIntelAction, AutonomousCodeIntelOutput,
+    AutonomousCodeIntelRequest, AutonomousCodeSymbol, AutonomousCommandRequest,
+    AutonomousDynamicToolDescriptor, AutonomousDynamicToolRoute, AutonomousLspAction,
+    AutonomousLspInstallCommand, AutonomousLspInstallSuggestion, AutonomousLspOutput,
+    AutonomousLspRequest, AutonomousLspServerStatus, AutonomousMcpAction, AutonomousMcpOutput,
+    AutonomousMcpRequest, AutonomousMcpResultArtifact, AutonomousMcpServerSummary,
+    AutonomousNotebookEditOutput, AutonomousNotebookEditRequest, AutonomousPowerShellRequest,
+    AutonomousSubagentAction, AutonomousSubagentInputRecord, AutonomousSubagentOutput,
+    AutonomousSubagentRequest, AutonomousSubagentRole, AutonomousSubagentTask,
+    AutonomousTodoAction, AutonomousTodoItem, AutonomousTodoMode, AutonomousTodoOutput,
+    AutonomousTodoRequest, AutonomousTodoStatus, AutonomousToolCatalogEntry,
     AutonomousToolEffectClass, AutonomousToolOutput, AutonomousToolResult, AutonomousToolRuntime,
     AutonomousToolSearchMatch, AutonomousToolSearchOutput, AutonomousToolSearchRequest,
     AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX, AUTONOMOUS_TOOL_CODE_INTEL, AUTONOMOUS_TOOL_COMMAND_VERIFY,
@@ -1008,13 +1009,43 @@ impl AutonomousToolRuntime {
         }
 
         let resolved_path = self.resolve_existing_path(&relative_path)?;
-        let contents = fs::read_to_string(&resolved_path).map_err(|error| {
+        let contents_bytes = fs::read(&resolved_path).map_err(|error| {
             CommandError::retryable(
                 "autonomous_tool_notebook_read_failed",
                 format!(
                     "Xero could not read notebook {}: {error}",
                     resolved_path.display()
                 ),
+            )
+        })?;
+        let old_hash = sha256_hex(&contents_bytes);
+        match request.expected_hash.as_deref() {
+            Some(expected_hash) => {
+                let expected_hash = validate_sha256_hash(expected_hash, "expectedHash")?;
+                if expected_hash != old_hash {
+                    return Err(stale_file_error(
+                        "edit notebook",
+                        &display_path,
+                        "expectedHash",
+                        &expected_hash,
+                        &old_hash,
+                    ));
+                }
+            }
+            None if self.agent_run_context.is_some() => {
+                return Err(expected_hash_required_error(
+                    "edit notebook",
+                    &display_path,
+                    "expectedHash",
+                    &old_hash,
+                ));
+            }
+            None => {}
+        }
+        let contents = String::from_utf8(contents_bytes).map_err(|error| {
+            CommandError::user_fixable(
+                "autonomous_tool_notebook_utf8_invalid",
+                format!("Xero could not decode notebook `{display_path}` as UTF-8: {error}"),
             )
         })?;
         let mut notebook = serde_json::from_str::<JsonValue>(&contents).map_err(|error| {
@@ -1068,6 +1099,7 @@ impl AutonomousToolRuntime {
                 format!("Xero could not serialize notebook `{display_path}`: {error}"),
             )
         })?;
+        let new_hash = sha256_hex(&serialized);
         fs::write(&resolved_path, serialized).map_err(|error| {
             CommandError::retryable(
                 "autonomous_tool_notebook_write_failed",
@@ -1091,6 +1123,8 @@ impl AutonomousToolRuntime {
                 cell_type,
                 old_source_chars: old_source.chars().count(),
                 new_source_chars: request.replacement_source.chars().count(),
+                old_hash,
+                new_hash,
             }),
         })
     }
@@ -2624,6 +2658,10 @@ fn short_capability_hash(server_id: &str, tool_name: &str) -> String {
     hasher.update(tool_name.as_bytes());
     let hash = format!("{:x}", hasher.finalize());
     hash.chars().take(10).collect()
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 fn mcp_provider_input_schema(schema: Option<&JsonValue>) -> JsonValue {

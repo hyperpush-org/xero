@@ -287,6 +287,14 @@ describe('buildAgentGraph', () => {
       commandAllowed: true,
       destructiveWriteAllowed: false,
     }
+    detail.handoffPolicy = {
+      enabled: true,
+      routingMode: 'suggest',
+      allowedTargets: [{ kind: 'built_in', runtimeAgentId: 'debug' }],
+      preserveDefinitionVersion: true,
+      carrySummary: true,
+      includeDurableContext: true,
+    }
     const { nodes } = buildAgentGraph(detail)
     const header = nodes.find((node) => node.id === AGENT_GRAPH_HEADER_NODE_ID)
     const advanced = (header?.data as AgentHeaderNodeData | undefined)?.advanced
@@ -300,6 +308,8 @@ describe('buildAgentGraph', () => {
       deniedToolGroups: ['browser_control'],
       commandAllowed: true,
       browserControlAllowed: false,
+      handoffRoutingMode: 'suggest',
+      handoffAllowedTargets: [{ kind: 'built_in', runtimeAgentId: 'debug' }],
     })
   })
 

@@ -52,8 +52,10 @@ function makeModel(modelId: string, displayName?: string): ProviderModelDto {
   return {
     modelId,
     displayName: displayName ?? modelId,
-    thinking: { supported: false, effortOptions: [] },
-  } as ProviderModelDto
+    inputModalities: [],
+    inputModalitiesSource: 'test_fixture_unreported',
+    thinking: { supported: false, effortOptions: [], defaultEffort: null },
+  }
 }
 
 function makeCatalog(
@@ -213,6 +215,31 @@ describe('AgentToolingSection', () => {
 
     await waitFor(() =>
       expect(onToolCallGroupingPreferenceChange).toHaveBeenCalledWith('separate'),
+    )
+    expect(adapter.agentToolingUpdateSettings).not.toHaveBeenCalled()
+  })
+
+  it('saves the automatic agent routing preference without touching model tooling settings', async () => {
+    const adapter = makeAdapter()
+    const onAgentRoutingAutoSwitchChange = vi.fn(async () => undefined)
+
+    render(
+      <AgentToolingSection
+        adapter={adapter}
+        agentRoutingAutoSwitchEnabled={false}
+        onAgentRoutingAutoSwitchChange={onAgentRoutingAutoSwitchChange}
+      />,
+    )
+
+    const autoSwitch = await screen.findByRole('switch', {
+      name: 'Auto-switch suggested agents',
+    })
+    expect(autoSwitch).not.toBeChecked()
+
+    fireEvent.click(autoSwitch)
+
+    await waitFor(() =>
+      expect(onAgentRoutingAutoSwitchChange).toHaveBeenCalledWith(true),
     )
     expect(adapter.agentToolingUpdateSettings).not.toHaveBeenCalled()
   })

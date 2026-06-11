@@ -1,6 +1,31 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  type CSSProperties,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type WheelEvent,
+} from "react"
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragOverEvent,
+} from "@dnd-kit/core"
+import {
+  horizontalListSortingStrategy,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+} from "@dnd-kit/sortable"
+import { CSS } from "@dnd-kit/utilities"
 import { invoke, isTauri } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import {
@@ -10,6 +35,8 @@ import {
   FolderGit2,
   Loader2,
   MousePointerSquareDashed,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pencil,
   Plus,
   RotateCw,
@@ -27,32 +54,47 @@ import {
 import {
   BROWSER_TOOL_CLOSED_EVENT,
   BROWSER_TOOL_CONTEXT_EVENT,
+  BROWSER_TOOL_DICTATION_TOGGLE_EVENT,
+  BROWSER_TOOL_FOCUS_COMPOSER_NOTE_SCRIPT,
+  BROWSER_TOOL_NOTE_EVENT,
+  BROWSER_TOOL_STATE_EVENT,
   BROWSER_TOOL_DEACTIVATE_SCRIPT,
+  BROWSER_TOOL_FINISH_CAPTURE_SCRIPT,
   BROWSER_TOOL_PREPARE_CAPTURE_SCRIPT,
   BROWSER_TOOL_RESTORE_CAPTURE_SCRIPT,
   browserScreenshotBytesFromBase64,
   buildBrowserToolActivationScript,
   buildBrowserToolAgentPrompt,
+  buildBrowserToolContextCard,
+  buildBrowserToolDictationStateScript,
+  buildBrowserToolSetComposerNoteScript,
   buildBrowserToolVisiblePrompt,
   isDevServerUrl,
   readBrowserToolTheme,
   type BrowserAgentContextRequest,
-  type BrowserToolClosedEventPayload,
   type BrowserToolContext,
-  type BrowserToolContextEventPayload,
+  type BrowserToolPromptMetadata,
 } from "./browser-tool-injection"
+import {
+  useSpeechDictation,
+  type SpeechDictationAdapter,
+} from "./agent-runtime/use-speech-dictation"
 import {
   createBrowserResizeScheduler,
   readBrowserViewportRect,
   type ViewportRect,
 } from "./browser-resize-scheduler"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import type { BrowserLaunchTarget } from "./browser-launch-targets"
+  browserLaunchTargetMatchesBrowserStartTarget,
+  browserLaunchTargetMatchesUrl,
+  browserLaunchTargetMatchesStartTarget,
+  browserRunningServerDisplayLabel,
+  makeBrowserLaunchTarget,
+  normalizeLoopbackBrowserUrl,
+  type BrowserServerLabelStartTarget,
+  type BrowserLaunchTarget,
+} from "./browser-launch-targets"
 
 type ToolMode = "pen" | "inspect" | null
 
@@ -68,18 +110,53 @@ const COOKIE_IMPORT_PROMPTED_KEY = "xero.browser.cookieImportPrompted"
 const RESIZE_HANDLE_INSET = 6
 const TOOL_CAPTURE_SETTLE_MS = 50
 const SIDEBAR_GEOMETRY_SETTLE_MS = 190
+const OVERLAY_OCCLUSION_PADDING = 8
+const BROWSER_CAPTURE_FRAME_OCCLUSION_PADDING = 0
+const BROWSER_CAPTURE_OVERLAY_EXIT_MS = 180
+const BROWSER_CAPTURE_OVERLAY_SELECTOR = '[data-xero-browser-capture-overlay="true"]'
+const BROWSER_OCCLUSION_CLICK_EVENT = "browser:occlusion_click"
+const PROJECT_BROWSER_TARGET_POLL_MS = 2_000
+const PROJECT_TARGET_MENU_LEFT = 104
+const EMPTY_BROWSER_LAUNCH_TARGETS: BrowserLaunchTarget[] = []
+const EMPTY_BROWSER_START_TARGETS: BrowserServerLabelStartTarget[] = []
+const OVERLAY_OCCLUSION_SELECTOR = [
+  BROWSER_CAPTURE_OVERLAY_SELECTOR,
+  '[data-slot="alert-dialog-content"]',
+  '[data-slot="context-menu-content"]',
+  '[data-slot="context-menu-sub-content"]',
+  '[data-slot="dialog-content"]',
+  '[data-slot="drawer-content"]',
+  '[data-slot="dropdown-menu-content"]',
+  '[data-slot="dropdown-menu-sub-content"]',
+  '[data-slot="hover-card-content"]',
+  '[data-slot="menubar-content"]',
+  '[data-slot="menubar-sub-content"]',
+  '[data-slot="popover-content"]',
+  '[data-slot="select-content"]',
+  '[data-slot="sheet-content"]',
+  '[data-slot="tooltip-content"]',
+].join(",")
 
 interface BrowserSidebarProps {
   open: boolean
+  dictationAdapter?: SpeechDictationAdapter
+  projectId?: string | null
+  fullWidth?: boolean
+  fullWidthTarget?: number | null
+  onFullWidthChange?: (fullWidth: boolean) => void
   onAddAgentContext?: (request: BrowserAgentContextRequest) => Promise<void>
-  onAddAgentContextLoadingChange?: (loading: boolean) => void
+  penToolDisabledReason?: string | null
   projectBrowserTargets?: BrowserLaunchTarget[]
+  onProjectBrowserTargetUnavailable?: (url: string) => void
   pendingOpenUrl?: { id: string; url: string } | null
   onPendingOpenUrlConsumed?: (id: string) => void
+  projectRootPath?: string | null
+  projectStartTargets?: BrowserServerLabelStartTarget[]
 }
 
-interface BrowserTabMeta {
+export interface BrowserTabMeta {
   id: string
+  projectId?: string | null
   label: string
   title: string | null
   url: string | null
@@ -108,10 +185,28 @@ interface BrowserTabUpdatedPayload {
   tabs: BrowserTabMeta[]
 }
 
+interface BrowserDevServerUnavailablePayload {
+  tabId?: string
+  tab_id?: string
+  url?: string
+}
+
 interface BrowserResizeDragPayload extends ViewportRect {
   tabId: string | null
   sidebarWidth: number
   complete: boolean
+}
+
+interface BrowserOcclusionWheelPayload {
+  deltaX?: number | null
+  deltaY?: number | null
+  x?: number | null
+  y?: number | null
+}
+
+interface BrowserOcclusionClickPayload {
+  x?: number | null
+  y?: number | null
 }
 
 interface BrowserResizeDragRuntime {
@@ -120,6 +215,46 @@ interface BrowserResizeDragRuntime {
   nativeActive: boolean
   finish: (() => void) | null
 }
+
+interface BrowserRunningDevServer {
+  cwd?: string | null
+  detectedAt: number
+  label: string
+  processName?: string | null
+  url: string
+}
+
+interface NormalizedBrowserToolContextEvent {
+  tabId: string | null
+  context: BrowserToolContext
+}
+
+interface NormalizedBrowserToolClosedEvent {
+  tabId: string | null
+  mode: ToolMode
+}
+
+interface NormalizedBrowserToolStateEvent {
+  tabId: string | null
+  mode: ToolMode
+  strokeCount: number
+  hasDrawing: boolean
+}
+
+interface NormalizedBrowserToolNoteEvent {
+  tabId: string | null
+  mode: ToolMode
+  note: string
+  active: boolean
+}
+
+interface NormalizedBrowserToolDictationToggleEvent {
+  tabId: string | null
+  mode: ToolMode
+  note: string
+}
+
+type BrowserOcclusionRect = ViewportRect
 
 type BrowserCoalescedEvent =
   | { key: string; payload: BrowserLoadStatePayload; type: "load" }
@@ -198,6 +333,93 @@ export function createBrowserEventCoalescer({
   }
 }
 
+function occlusionRectsKey(rects: readonly BrowserOcclusionRect[]): string {
+  return rects.map((rect) => `${rect.x},${rect.y},${rect.width},${rect.height}`).join(";")
+}
+
+function isVisibleOverlayElement(element: HTMLElement): boolean {
+  if (element.closest('[aria-hidden="true"]')) return false
+  const style = window.getComputedStyle(element)
+  return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0"
+}
+
+function intersectClientRects(
+  viewport: ViewportRect,
+  overlay: DOMRect,
+  padding = OVERLAY_OCCLUSION_PADDING,
+): BrowserOcclusionRect | null {
+  const left = Math.max(viewport.x, Math.floor(overlay.left - padding))
+  const top = Math.max(viewport.y, Math.floor(overlay.top - padding))
+  const right = Math.min(
+    viewport.x + viewport.width,
+    Math.ceil(overlay.right + padding),
+  )
+  const bottom = Math.min(
+    viewport.y + viewport.height,
+    Math.ceil(overlay.bottom + padding),
+  )
+
+  const width = right - left
+  const height = bottom - top
+  if (width <= 0 || height <= 0) return null
+
+  return {
+    x: left - viewport.x,
+    y: top - viewport.y,
+    width,
+    height,
+  }
+}
+
+export function collectBrowserOverlayOcclusionRects(
+  viewportNode: HTMLElement,
+  inset = 0,
+  root: ParentNode = document,
+): BrowserOcclusionRect[] {
+  const viewport = readBrowserViewportRect(viewportNode, inset)
+  const rects: BrowserOcclusionRect[] = []
+  const seen = new Set<string>()
+
+  root.querySelectorAll<HTMLElement>(OVERLAY_OCCLUSION_SELECTOR).forEach((element) => {
+    if (!isVisibleOverlayElement(element)) return
+    const padding = element.matches(BROWSER_CAPTURE_OVERLAY_SELECTOR)
+      ? BROWSER_CAPTURE_FRAME_OCCLUSION_PADDING
+      : OVERLAY_OCCLUSION_PADDING
+    const rect = intersectClientRects(viewport, element.getBoundingClientRect(), padding)
+    if (!rect) return
+    const key = `${rect.x},${rect.y},${rect.width},${rect.height}`
+    if (seen.has(key)) return
+    seen.add(key)
+    rects.push(rect)
+  })
+
+  return rects
+}
+
+function canNativeWheelScrollElement(element: HTMLElement): boolean {
+  const style = window.getComputedStyle(element)
+  const overflowY = style.overflowY
+  const overflowX = style.overflowX
+  const canScrollY =
+    (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") &&
+    element.scrollHeight > element.clientHeight
+  const canScrollX =
+    (overflowX === "auto" || overflowX === "scroll" || overflowX === "overlay") &&
+    element.scrollWidth > element.clientWidth
+  return canScrollY || canScrollX
+}
+
+function findNativeWheelOverlayScrollTarget(start: Element | null): HTMLElement | null {
+  let element = start instanceof HTMLElement ? start : start?.parentElement ?? null
+  while (element && element !== document.body) {
+    if (element.closest(OVERLAY_OCCLUSION_SELECTOR) && canNativeWheelScrollElement(element)) {
+      return element
+    }
+    element = element.parentElement
+  }
+  return null
+}
+
 function viewportDefaultWidth() {
   if (typeof window === "undefined") return 640
   return Math.round(window.innerWidth * DEFAULT_RATIO)
@@ -208,10 +430,21 @@ function viewportMaxWidth() {
   return Math.max(MIN_WIDTH, window.innerWidth - RIGHT_PADDING)
 }
 
+function viewportFullWidthTarget() {
+  if (typeof window === "undefined") return 960
+  return Math.max(MIN_WIDTH, window.innerWidth)
+}
+
 function normalizeUrl(input: string): string | null {
   const trimmed = input.trim()
   if (!trimmed) return null
-  if (/^https?:\/\//i.test(trimmed)) return trimmed
+  if (/^https?:\/\//i.test(trimmed)) return normalizeLoopbackBrowserUrl(trimmed)
+  if (/^(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d{1,5})?(?:[/?#].*)?$/i.test(trimmed)) {
+    return normalizeLoopbackBrowserUrl(`http://${trimmed}`)
+  }
+  if (/^\[::1\](?::\d{1,5})?(?:[/?#].*)?$/i.test(trimmed)) {
+    return `http://${trimmed}`
+  }
   if (/^[\w.-]+\.[a-z]{2,}(\/.*)?$/i.test(trimmed)) return `https://${trimmed}`
   const query = encodeURIComponent(trimmed)
   return `https://www.google.com/search?q=${query}`
@@ -266,15 +499,186 @@ function isBrowserToolContext(value: unknown): value is BrowserToolContext {
   return typeof page.url === "string"
 }
 
+function readBrowserToolEventTabId(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null
+  const payload = value as { tabId?: unknown; tab_id?: unknown }
+  const tabId = payload.tabId ?? payload.tab_id
+  return typeof tabId === "string" && tabId.trim() ? tabId : null
+}
+
+function normalizeBrowserToolContextEvent(
+  value: unknown,
+): NormalizedBrowserToolContextEvent | null {
+  if (!value || typeof value !== "object") return null
+  const payload = value as { context?: unknown }
+  const context = payload.context ?? value
+  if (!isBrowserToolContext(context)) return null
+
+  return {
+    tabId: readBrowserToolEventTabId(value),
+    context,
+  }
+}
+
+function normalizeBrowserToolClosedEvent(
+  value: unknown,
+): NormalizedBrowserToolClosedEvent | null {
+  if (!value || typeof value !== "object") return null
+  const payload = value as { mode?: unknown }
+  const mode =
+    payload.mode === "pen" || payload.mode === "inspect" ? payload.mode : null
+
+  return {
+    tabId: readBrowserToolEventTabId(value),
+    mode,
+  }
+}
+
+function normalizeBrowserToolStateEvent(
+  value: unknown,
+): NormalizedBrowserToolStateEvent | null {
+  if (!value || typeof value !== "object") return null
+  const payload = value as {
+    hasDrawing?: unknown
+    mode?: unknown
+    strokeCount?: unknown
+    stroke_count?: unknown
+  }
+  const mode =
+    payload.mode === "pen" || payload.mode === "inspect" ? payload.mode : null
+  const strokeCount = Number(payload.strokeCount ?? payload.stroke_count ?? 0)
+
+  return {
+    tabId: readBrowserToolEventTabId(value),
+    mode,
+    strokeCount: Number.isFinite(strokeCount) ? Math.max(0, strokeCount) : 0,
+    hasDrawing: payload.hasDrawing === true || strokeCount > 0,
+  }
+}
+
+function normalizeBrowserToolNoteEvent(
+  value: unknown,
+): NormalizedBrowserToolNoteEvent | null {
+  if (!value || typeof value !== "object") return null
+  const payload = value as {
+    active?: unknown
+    mode?: unknown
+    note?: unknown
+  }
+  const mode =
+    payload.mode === "pen" || payload.mode === "inspect" ? payload.mode : null
+
+  return {
+    tabId: readBrowserToolEventTabId(value),
+    mode,
+    note: typeof payload.note === "string" ? payload.note : "",
+    active: payload.active === true,
+  }
+}
+
+function normalizeBrowserToolDictationToggleEvent(
+  value: unknown,
+): NormalizedBrowserToolDictationToggleEvent | null {
+  if (!value || typeof value !== "object") return null
+  const payload = value as { mode?: unknown; note?: unknown }
+  const mode =
+    payload.mode === "pen" || payload.mode === "inspect" ? payload.mode : null
+
+  return {
+    tabId: readBrowserToolEventTabId(value),
+    mode,
+    note: typeof payload.note === "string" ? payload.note : "",
+  }
+}
+
 function imageNameForContext(context: BrowserToolContext): string {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-")
   return `browser-${context.kind}-${timestamp}.png`
+}
+
+function browserToolUrlHostLabel(url: string): string | null {
+  try {
+    const parsed = new URL(url)
+    const host = parsed.port ? `${parsed.hostname}:${parsed.port}` : parsed.hostname
+    if (!host) return null
+    return isDevServerUrl(url) ? `local app ${host}` : host
+  } catch {
+    return null
+  }
+}
+
+function browserToolAppLabelForContext(
+  context: BrowserToolContext,
+  activeTab: BrowserTabMeta | null,
+  targets: readonly BrowserLaunchTarget[],
+): string | null {
+  const candidateUrls = [context.page.url, activeTab?.url ?? null].filter(
+    (url): url is string => Boolean(url),
+  )
+  for (const url of candidateUrls) {
+    const target = targets.find((candidate) => browserLaunchTargetMatchesUrl(candidate, url))
+    if (target?.label.trim()) {
+      return target.label.trim()
+    }
+  }
+  for (const url of candidateUrls) {
+    const hostLabel = browserToolUrlHostLabel(url)
+    if (hostLabel) return hostLabel
+  }
+  return activeTab?.title?.trim() || null
+}
+
+function buildBrowserToolPromptMetadataForContext(options: {
+  activeTab: BrowserTabMeta | null
+  attachmentName?: string | null
+  captureIndex: number
+  context: BrowserToolContext
+  targets: readonly BrowserLaunchTarget[]
+}): BrowserToolPromptMetadata {
+  return {
+    appLabel: browserToolAppLabelForContext(
+      options.context,
+      options.activeTab,
+      options.targets,
+    ),
+    attachmentName: options.attachmentName ?? null,
+    captureIndex: options.captureIndex,
+  }
+}
+
+function buildBrowserToolAgentPromptForCapture(
+  context: BrowserToolContext,
+  screenshotAttached: boolean,
+  metadata?: BrowserToolPromptMetadata,
+): string {
+  const fallbackLine =
+    context.kind === "pen"
+      ? "The browser sketch screenshot could not be captured, so use the note as the primary context."
+      : "The browser element screenshot could not be captured, so use the selected element metadata as the primary context."
+
+  const prompt = buildBrowserToolAgentPrompt(context, { metadata, screenshotAttached })
+  return screenshotAttached ? prompt : [prompt, fallbackLine].join("\n")
 }
 
 function waitForBrowserToolPaint(): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, TOOL_CAPTURE_SETTLE_MS)
   })
+}
+
+function scheduleProjectBrowserTargetPoll(callback: () => void): number {
+  const timeout = window.setTimeout(callback, PROJECT_BROWSER_TARGET_POLL_MS)
+  ;(timeout as unknown as { unref?: () => void }).unref?.()
+  return timeout
+}
+
+function shouldRepeatProjectBrowserTargetPoll(): boolean {
+  const processEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+    .process?.env
+  if (import.meta.env.MODE === "test" || import.meta.env.VITEST || processEnv?.VITEST) {
+    return false
+  }
+  return !(typeof window !== "undefined" && /jsdom/i.test(window.navigator.userAgent))
 }
 
 function readBrowserViewportRectForWidth(
@@ -293,30 +697,301 @@ function readBrowserViewportRectForWidth(
   }
 }
 
+function browserTabBelongsToProject(tab: BrowserTabMeta, projectId: string | null): boolean {
+  if (!projectId) return true
+  return tab.projectId === projectId
+}
+
+export function reorderBrowserTabs(
+  tabs: BrowserTabMeta[],
+  projectId: string | null,
+  activeTabId: string,
+  overTabId: string,
+): BrowserTabMeta[] {
+  if (!activeTabId || !overTabId || activeTabId === overTabId) return tabs
+
+  const projectTabs = tabs.filter((tab) => browserTabBelongsToProject(tab, projectId))
+  const fromIndex = projectTabs.findIndex((tab) => tab.id === activeTabId)
+  const toIndex = projectTabs.findIndex((tab) => tab.id === overTabId)
+  if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return tabs
+
+  const reorderedProjectTabs = projectTabs.slice()
+  const [moved] = reorderedProjectTabs.splice(fromIndex, 1)
+  if (!moved) return tabs
+  reorderedProjectTabs.splice(Math.min(toIndex, reorderedProjectTabs.length), 0, moved)
+
+  let projectTabIndex = 0
+  return tabs.map((tab) => {
+    if (!browserTabBelongsToProject(tab, projectId)) return tab
+    const replacement = reorderedProjectTabs[projectTabIndex]
+    projectTabIndex += 1
+    return replacement ?? tab
+  })
+}
+
+function browserTabOrderKey(projectId: string | null): string {
+  return projectId ?? "__global_browser_tabs__"
+}
+
+function browserProjectTabIds(tabs: readonly BrowserTabMeta[], projectId: string | null): string[] {
+  return tabs
+    .filter((tab) => browserTabBelongsToProject(tab, projectId))
+    .map((tab) => tab.id)
+}
+
+export function applyBrowserTabOrder(
+  tabs: BrowserTabMeta[],
+  projectId: string | null,
+  orderedTabIds: readonly string[] | null | undefined,
+): BrowserTabMeta[] {
+  if (!orderedTabIds || orderedTabIds.length === 0) return tabs
+
+  const projectTabs = tabs.filter((tab) => browserTabBelongsToProject(tab, projectId))
+  if (projectTabs.length < 2) return tabs
+
+  const remainingById = new Map(projectTabs.map((tab) => [tab.id, tab]))
+  const orderedProjectTabs: BrowserTabMeta[] = []
+  for (const tabId of orderedTabIds) {
+    const tab = remainingById.get(tabId)
+    if (!tab) continue
+    orderedProjectTabs.push(tab)
+    remainingById.delete(tabId)
+  }
+  for (const tab of projectTabs) {
+    if (remainingById.has(tab.id)) {
+      orderedProjectTabs.push(tab)
+    }
+  }
+
+  const currentProjectOrder = projectTabs.map((tab) => tab.id).join("\0")
+  const nextProjectOrder = orderedProjectTabs.map((tab) => tab.id).join("\0")
+  if (currentProjectOrder === nextProjectOrder) return tabs
+
+  let projectTabIndex = 0
+  return tabs.map((tab) => {
+    if (!browserTabBelongsToProject(tab, projectId)) return tab
+    const replacement = orderedProjectTabs[projectTabIndex]
+    projectTabIndex += 1
+    return replacement ?? tab
+  })
+}
+
+function selectActiveBrowserTab(
+  tabs: BrowserTabMeta[],
+  projectId: string | null,
+): BrowserTabMeta | null {
+  const projectTabs = tabs.filter((tab) => browserTabBelongsToProject(tab, projectId))
+  return projectTabs.find((tab) => tab.active) ?? projectTabs[0] ?? null
+}
+
+interface BrowserTabStripProps {
+  activeTabId: string | null
+  tabs: BrowserTabMeta[]
+  onCloseTab: (tabId: string) => void
+  onFocusTab: (tabId: string) => void
+  onNewTab: () => void
+  onReorderTabs: (activeTabId: string, overTabId: string) => void
+}
+
+function BrowserTabStrip({
+  activeTabId,
+  tabs,
+  onCloseTab,
+  onFocusTab,
+  onNewTab,
+  onReorderTabs,
+}: BrowserTabStripProps) {
+  const lastOverTabIdRef = useRef<string | null>(null)
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 3 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
+  const tabIds = useMemo(() => tabs.map((tab) => tab.id), [tabs])
+
+  const handleDragOver = useCallback((event: DragOverEvent) => {
+    const overId = event.over ? String(event.over.id) : null
+    if (overId) {
+      lastOverTabIdRef.current = overId
+    }
+  }, [])
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const activeId = String(event.active.id)
+      const overId = event.over ? String(event.over.id) : lastOverTabIdRef.current
+      lastOverTabIdRef.current = null
+      if (!overId || activeId === overId) return
+      onReorderTabs(activeId, overId)
+    },
+    [onReorderTabs],
+  )
+
+  const handleDragCancel = useCallback(() => {
+    lastOverTabIdRef.current = null
+  }, [])
+
+  return (
+    <DndContext
+      collisionDetection={closestCenter}
+      sensors={sensors}
+      onDragEnd={handleDragEnd}
+      onDragOver={handleDragOver}
+      onDragCancel={handleDragCancel}
+    >
+      <SortableContext items={tabIds} strategy={horizontalListSortingStrategy}>
+        <div className="flex h-8 shrink-0 items-center gap-1 overflow-x-auto border-b border-border/60">
+          {tabs.map((tab) => (
+            <BrowserSortableTab
+              key={tab.id}
+              active={tab.id === activeTabId}
+              tab={tab}
+              onClose={onCloseTab}
+              onFocus={onFocusTab}
+            />
+          ))}
+          <button
+            aria-label="New tab"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors motion-fast hover:bg-secondary/60 hover:text-foreground"
+            onClick={onNewTab}
+            type="button"
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </SortableContext>
+    </DndContext>
+  )
+}
+
+export function browserTabTranslateX(
+  transform:
+    | { x: number; y?: number; scaleX?: number; scaleY?: number }
+    | null
+    | undefined,
+): string | undefined {
+  return transform ? CSS.Translate.toString({ ...transform, y: 0 }) : undefined
+}
+
+interface BrowserSortableTabProps {
+  active: boolean
+  tab: BrowserTabMeta
+  onClose: (tabId: string) => void
+  onFocus: (tabId: string) => void
+}
+
+function BrowserSortableTab({
+  active,
+  tab,
+  onClose,
+  onFocus,
+}: BrowserSortableTabProps) {
+  const {
+    attributes,
+    listeners,
+    setActivatorNodeRef,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: tab.id })
+  const style: CSSProperties = {
+    transform: browserTabTranslateX(transform),
+    transition: isDragging ? "none" : transition,
+    opacity: isDragging ? 0.82 : undefined,
+    willChange: transform ? "transform" : undefined,
+    zIndex: isDragging ? 20 : undefined,
+  }
+  const label = tab.title ?? tab.url ?? "New tab"
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={cn(
+        "group relative flex h-8 max-w-[160px] shrink-0 items-center gap-1 border px-2 text-[11px] transition-[border-color,background-color,color,box-shadow,opacity] motion-fast",
+        active
+          ? "border-primary/40 bg-background/80 text-foreground"
+          : "border-border/50 bg-sidebar/60 text-muted-foreground hover:text-foreground",
+        isDragging && "shadow-lg shadow-black/25 ring-1 ring-primary/30",
+      )}
+      style={style}
+    >
+      <button
+        ref={setActivatorNodeRef}
+        className="min-w-0 flex-1 cursor-grab select-none truncate text-left active:cursor-grabbing"
+        onClick={() => onFocus(tab.id)}
+        title={label}
+        type="button"
+        {...attributes}
+        {...listeners}
+      >
+        {tab.loading ? (
+          <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
+        ) : null}
+        <span className="truncate">
+          {label}
+        </span>
+      </button>
+      <button
+        aria-label="Close tab"
+        className="flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity motion-fast hover:bg-secondary/60 hover:text-foreground group-hover:opacity-100"
+        onClick={() => onClose(tab.id)}
+        onPointerDown={(event) => event.stopPropagation()}
+        type="button"
+      >
+        <X className="h-3 w-3" />
+      </button>
+    </div>
+  )
+}
+
 export function BrowserSidebar({
   open,
+  dictationAdapter,
+  projectId = null,
+  fullWidth = false,
+  fullWidthTarget = null,
+  onFullWidthChange,
   onAddAgentContext,
-  onAddAgentContextLoadingChange,
-  projectBrowserTargets = [],
+  penToolDisabledReason = null,
+  projectBrowserTargets = EMPTY_BROWSER_LAUNCH_TARGETS,
+  onProjectBrowserTargetUnavailable,
   pendingOpenUrl = null,
   onPendingOpenUrlConsumed,
+  projectRootPath = null,
+  projectStartTargets = EMPTY_BROWSER_START_TARGETS,
 }: BrowserSidebarProps) {
   const [width, setWidth] = useState(viewportDefaultWidth)
   const [maxWidth, setMaxWidth] = useState(viewportMaxWidth)
   const [isResizing, setIsResizing] = useState(false)
   const [address, setAddress] = useState("")
+  const [addressSuggestionsOpen, setAddressSuggestionsOpen] = useState(false)
+  const [projectTargetPickerOpen, setProjectTargetPickerOpen] = useState(false)
   const [tabs, setTabs] = useState<BrowserTabMeta[]>([])
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [navError, setNavError] = useState<string | null>(null)
   const [showCookieBanner, setShowCookieBanner] = useState(false)
   const [toolMode, setToolMode] = useState<ToolMode>(null)
+  const [toolNoteDraft, setToolNoteDraft] = useState("")
+  const [toolNoteActive, setToolNoteActive] = useState(false)
+  const [penHasDrawing, setPenHasDrawing] = useState(false)
   const [toolSubmitting, setToolSubmitting] = useState(false)
+  const [captureOverlayVisible, setCaptureOverlayVisible] = useState(false)
+  const [captureOverlayExiting, setCaptureOverlayExiting] = useState(false)
   const [toolSubmitError, setToolSubmitError] = useState<string | null>(null)
+  const [discoveredProjectBrowserTargets, setDiscoveredProjectBrowserTargets] =
+    useState<BrowserLaunchTarget[]>([])
+  const [projectBrowserTargetLiveness, setProjectBrowserTargetLiveness] = useState<Record<string, boolean>>({})
   const motionOpen = useSidebarOpenMotion(open)
   const [openGeometrySettled, setOpenGeometrySettled] = useState(false)
-  const targetWidth = motionOpen ? width : 0
-  const widthMotion = useSidebarWidthMotion(targetWidth, { isResizing })
+  const activeFullWidth = open && fullWidth
+  const renderedWidth = activeFullWidth
+    ? Math.max(MIN_WIDTH, Math.round(fullWidthTarget ?? viewportFullWidthTarget()))
+    : width
+  const targetWidth = motionOpen ? renderedWidth : 0
+  const widthMotion = useSidebarWidthMotion(targetWidth, {
+    isResizing: isResizing && !activeFullWidth,
+  })
   const {
     browsers: cookieBrowsers,
     status: importStatus,
@@ -330,6 +1005,12 @@ export function BrowserSidebar({
   const sidebarRef = useRef<HTMLElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
   const viewportRef = useRef<HTMLDivElement | null>(null)
+  const projectTargetPickerButtonRef = useRef<HTMLButtonElement | null>(null)
+  const projectTargetPanelRef = useRef<HTMLDivElement | null>(null)
+  const toolNoteInputRef = useRef<HTMLTextAreaElement | null>(null)
+  const toolNoteDraftRef = useRef("")
+  const toolNoteDraftBrowserEchoRef = useRef<string | null>(null)
+  const browserToolDictationToggleRef = useRef<() => Promise<void>>(async () => undefined)
   const addressFocusedRef = useRef(false)
   const hasWebviewRef = useRef(false)
   if (tabs.length > 0) {
@@ -339,19 +1020,61 @@ export function BrowserSidebar({
   const resizeDragRuntimeRef = useRef<BrowserResizeDragRuntime | null>(null)
   const cookieSourcesLoadedRef = useRef(false)
   const openRef = useRef(open)
+  const projectIdRef = useRef(projectId)
   const activeTabIdRef = useRef(activeTabId)
+  const activeTabRef = useRef<BrowserTabMeta | null>(null)
+  const browserToolTargetsRef = useRef<BrowserLaunchTarget[]>(EMPTY_BROWSER_LAUNCH_TARGETS)
+  const browserToolCaptureSequenceRef = useRef(0)
   const toolModeRef = useRef(toolMode)
   const injectedToolModeRef = useRef<ToolMode>(null)
+  const finishCaptureOnOverlayExitRef = useRef(false)
   const toolActivationRequestRef = useRef(0)
+  const tabOrderByProjectRef = useRef<Record<string, string[]>>({})
   const onAddAgentContextRef = useRef(onAddAgentContext)
-  const onAddAgentContextLoadingChangeRef = useRef(onAddAgentContextLoadingChange)
+  const onProjectBrowserTargetUnavailableRef = useRef(onProjectBrowserTargetUnavailable)
   const consumedPendingOpenUrlIdsRef = useRef<Set<string>>(new Set())
+  const occlusionFrameRef = useRef<number | null>(null)
+  const lastOcclusionKeyRef = useRef("")
+  const projectTargetScopeKeyRef = useRef<string | null>(null)
 
   openRef.current = open
+  projectIdRef.current = projectId
   activeTabIdRef.current = activeTabId
   toolModeRef.current = toolMode
   onAddAgentContextRef.current = onAddAgentContext
-  onAddAgentContextLoadingChangeRef.current = onAddAgentContextLoadingChange
+  onProjectBrowserTargetUnavailableRef.current = onProjectBrowserTargetUnavailable
+
+  const focusBrowserToolNoteInput = useCallback(() => {
+    if (!isTauri()) return
+    void invoke("browser_eval_fire_and_forget", {
+      js: BROWSER_TOOL_FOCUS_COMPOSER_NOTE_SCRIPT,
+    }).catch(() => {
+      /* best-effort focus */
+    })
+  }, [])
+
+  const readBrowserToolNoteDraft = useCallback(() => toolNoteDraftRef.current, [])
+
+  const browserToolDictation = useSpeechDictation({
+    adapter: dictationAdapter,
+    enabled: open && toolNoteActive,
+    scopeKey: [
+      projectId ?? "global",
+      activeTabId ?? "none",
+      toolMode ?? "none",
+      toolNoteActive ? "active" : "inactive",
+    ].join(":"),
+    draftPrompt: toolNoteDraft,
+    setDraftPrompt: setToolNoteDraft,
+    promptInputDisabled: !open || !toolNoteActive || toolSubmitting,
+    promptInputRef: toolNoteInputRef,
+    focusPromptInput: focusBrowserToolNoteInput,
+    readDraftPrompt: readBrowserToolNoteDraft,
+  })
+
+  useEffect(() => {
+    browserToolDictationToggleRef.current = browserToolDictation.toggle
+  }, [browserToolDictation.toggle])
 
   useEffect(() => {
     if (!open || !motionOpen) {
@@ -365,6 +1088,43 @@ export function BrowserSidebar({
 
     return () => window.clearTimeout(timeout)
   }, [motionOpen, open])
+
+  const cancelBrowserOverlayOcclusionSync = useCallback(() => {
+    if (occlusionFrameRef.current === null) return
+    window.cancelAnimationFrame(occlusionFrameRef.current)
+    occlusionFrameRef.current = null
+  }, [])
+
+  const syncBrowserOverlayOcclusions = useCallback((options?: { force?: boolean }) => {
+    if (occlusionFrameRef.current !== null) return
+
+    occlusionFrameRef.current = window.requestAnimationFrame(() => {
+      occlusionFrameRef.current = null
+
+      if (
+        !openRef.current ||
+        (!hasWebviewRef.current && tabsRef.current.length === 0) ||
+        !isTauri()
+      ) {
+        return
+      }
+
+      const node = viewportRef.current
+      if (!node) return
+
+      const rects = collectBrowserOverlayOcclusionRects(node, RESIZE_HANDLE_INSET)
+      const key = occlusionRectsKey(rects)
+      if (!options?.force && key === lastOcclusionKeyRef.current) return
+
+      lastOcclusionKeyRef.current = key
+      void invoke("browser_set_occlusion_regions", {
+        rects,
+        tabId: activeTabIdRef.current,
+      }).catch(() => {
+        /* swallow */
+      })
+    })
+  }, [])
 
   const resizeScheduler = useMemo(
     () =>
@@ -380,9 +1140,10 @@ export function BrowserSidebar({
           void invoke("browser_resize", { ...rect, tabId }).catch(() => {
             /* swallow */
           })
+          syncBrowserOverlayOcclusions({ force: true })
         },
       }),
-    [],
+    [syncBrowserOverlayOcclusions],
   )
 
   const syncBrowserViewportToWidth = useCallback(
@@ -409,8 +1170,9 @@ export function BrowserSidebar({
       }).catch(() => {
         /* swallow */
       })
+      syncBrowserOverlayOcclusions({ force: true })
     },
-    [resizeScheduler],
+    [resizeScheduler, syncBrowserOverlayOcclusions],
   )
 
   const markBrowserViewportSyncedToWidth = useCallback(
@@ -470,6 +1232,58 @@ export function BrowserSidebar({
     [applySidebarWidth, resizeScheduler],
   )
 
+  const applyNativeOcclusionWheel = useCallback((payload: BrowserOcclusionWheelPayload) => {
+    const deltaX = Number.isFinite(payload.deltaX) ? Number(payload.deltaX) : 0
+    const deltaY = Number.isFinite(payload.deltaY) ? Number(payload.deltaY) : 0
+    if (deltaX === 0 && deltaY === 0) return
+
+    let target: HTMLElement | null = null
+    const x = Number.isFinite(payload.x) ? Number(payload.x) : null
+    const y = Number.isFinite(payload.y) ? Number(payload.y) : null
+    const viewport = viewportRef.current
+    if (viewport && x !== null && y !== null) {
+      const viewportRect = viewport.getBoundingClientRect()
+      target = findNativeWheelOverlayScrollTarget(
+        document.elementFromPoint(viewportRect.left + x, viewportRect.top + y),
+      )
+    }
+
+    const scrollTarget = target ?? projectTargetPanelRef.current
+    if (!scrollTarget) return
+
+    if (deltaX !== 0) {
+      scrollTarget.scrollLeft += deltaX
+    }
+    if (deltaY !== 0) {
+      scrollTarget.scrollTop += deltaY
+    }
+  }, [])
+
+  const applyNativeOcclusionClick = useCallback((payload: BrowserOcclusionClickPayload) => {
+    const x = Number.isFinite(payload.x) ? Number(payload.x) : null
+    const y = Number.isFinite(payload.y) ? Number(payload.y) : null
+    const viewport = viewportRef.current
+    if (!viewport || x === null || y === null) return
+
+    const viewportRect = viewport.getBoundingClientRect()
+    const element = document.elementFromPoint(viewportRect.left + x, viewportRect.top + y)
+    const clickTarget = element?.closest<HTMLElement>(
+      'button,a,input,select,textarea,[role="button"],[tabindex]:not([tabindex="-1"])',
+    )
+    if (!clickTarget) return
+
+    clickTarget.focus({ preventScroll: true })
+    clickTarget.dispatchEvent(
+      new MouseEvent("click", {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+        clientX: viewportRect.left + x,
+        clientY: viewportRect.top + y,
+      }),
+    )
+  }, [])
+
   const setSidebarWidthAndSync = useCallback(
     (nextWidth: number, options: { syncBrowser?: boolean } = {}) => {
       if (isResizingRef.current) {
@@ -486,12 +1300,100 @@ export function BrowserSidebar({
   )
 
   const activeTab = useMemo(
-    () => tabs.find((tab) => tab.id === activeTabId) ?? null,
-    [tabs, activeTabId],
+    () => tabs.find((tab) => tab.id === activeTabId && browserTabBelongsToProject(tab, projectId)) ?? null,
+    [tabs, activeTabId, projectId],
   )
+  const activeProjectTabs = useMemo(
+    () => tabs.filter((tab) => browserTabBelongsToProject(tab, projectId)),
+    [projectId, tabs],
+  )
+  const applyLocalTabOrder = useCallback((nextTabs: BrowserTabMeta[], targetProjectId: string | null) => {
+    const key = browserTabOrderKey(targetProjectId)
+    return applyBrowserTabOrder(nextTabs, targetProjectId, tabOrderByProjectRef.current[key])
+  }, [])
 
   const isDevTab = isDevServerUrl(activeTab?.url ?? null)
   const pageLabel = activeTab?.title ?? activeTab?.url ?? null
+  const browserSupportedProjectStartTargets = useMemo(
+    () => projectStartTargets.filter((target) => target.browserSupported === true),
+    [projectStartTargets],
+  )
+  const configuredProjectBrowserTargets = useMemo(
+    () =>
+      projectBrowserTargets.filter((target) =>
+        browserLaunchTargetMatchesBrowserStartTarget(target, projectStartTargets),
+      ),
+    [projectBrowserTargets, projectStartTargets],
+  )
+  const availableProjectBrowserTargets = useMemo(() => {
+    const byId = new Map<string, BrowserLaunchTarget>()
+    for (const target of discoveredProjectBrowserTargets) {
+      byId.set(target.id, target)
+    }
+    for (const target of configuredProjectBrowserTargets) {
+      byId.set(target.id, target)
+    }
+    const candidates = Array.from(byId.values()).sort((left, right) => right.detectedAt - left.detectedAt)
+    if (browserSupportedProjectStartTargets.length === 0) return candidates
+
+    const usedTargetIds = new Set<string>()
+    return browserSupportedProjectStartTargets.flatMap((startTarget) => {
+      const target = candidates.find(
+        (candidate) =>
+          !usedTargetIds.has(candidate.id) &&
+          browserLaunchTargetMatchesStartTarget(candidate, startTarget),
+      )
+      if (!target) return []
+      usedTargetIds.add(target.id)
+      return [target]
+    })
+  }, [browserSupportedProjectStartTargets, configuredProjectBrowserTargets, discoveredProjectBrowserTargets])
+  const liveProjectBrowserTargets = useMemo(
+    () => availableProjectBrowserTargets.filter((target) => projectBrowserTargetLiveness[target.id] === true),
+    [availableProjectBrowserTargets, projectBrowserTargetLiveness],
+  )
+  const showProjectTargetPanel =
+    liveProjectBrowserTargets.length > 0 && (addressSuggestionsOpen || projectTargetPickerOpen)
+  const isCheckingProjectBrowserTargets =
+    availableProjectBrowserTargets.length > 0 &&
+    availableProjectBrowserTargets.some((target) => !(target.id in projectBrowserTargetLiveness))
+  activeTabRef.current = activeTab
+  browserToolTargetsRef.current = availableProjectBrowserTargets
+  const resizeLockedByPenDrawing = toolMode === "pen" || penHasDrawing
+  const resizeDisabled = activeFullWidth || resizeLockedByPenDrawing
+  const isPenToolDisabled = toolSubmitting || Boolean(penToolDisabledReason)
+  const penToolTooltip = penToolDisabledReason ?? "Sketch on page"
+  const fullWidthButtonLabel = activeFullWidth ? "Show agent panel" : "Hide agent panel"
+  const projectTargetScopeKey = useMemo(
+    () =>
+      JSON.stringify([
+        projectId ?? "",
+        projectRootPath ?? "",
+        projectStartTargets.map((target) => [
+          target.name,
+          target.command,
+          target.browserSupported === true,
+        ]),
+      ]),
+    [projectId, projectRootPath, projectStartTargets],
+  )
+
+  useEffect(() => {
+    if (!penToolDisabledReason || toolMode !== "pen") return
+    setToolMode(null)
+  }, [penToolDisabledReason, toolMode])
+
+  useEffect(() => {
+    if (projectTargetScopeKeyRef.current === null) {
+      projectTargetScopeKeyRef.current = projectTargetScopeKey
+      return
+    }
+    if (projectTargetScopeKeyRef.current === projectTargetScopeKey) return
+    projectTargetScopeKeyRef.current = projectTargetScopeKey
+    setDiscoveredProjectBrowserTargets([])
+    setProjectBrowserTargetLiveness({})
+    setProjectTargetPickerOpen(false)
+  }, [projectTargetScopeKey])
 
   const deactivateInjectedTool = useCallback(async () => {
     if (!isTauri()) return
@@ -501,6 +1403,7 @@ export function BrowserSidebar({
       /* the active page may already have navigated away */
     })
     injectedToolModeRef.current = null
+    setPenHasDrawing(false)
   }, [])
 
   const restoreInjectedToolCapture = useCallback(async () => {
@@ -512,48 +1415,398 @@ export function BrowserSidebar({
     })
   }, [])
 
-  const addBrowserToolContextToAgent = useCallback(
-    async (payload: BrowserToolContextEventPayload) => {
-      if (payload.tabId !== activeTabIdRef.current) return
-      if (!isBrowserToolContext(payload.context)) return
+  const prepareInjectedToolCapture = useCallback(async () => {
+    if (!isTauri()) return
+    await invoke("browser_eval_fire_and_forget", {
+      js: BROWSER_TOOL_PREPARE_CAPTURE_SCRIPT,
+    })
+  }, [])
 
-      const context = payload.context
+  const finishInjectedToolCapture = useCallback(async () => {
+    if (!isTauri()) return
+    try {
+      await invoke("browser_eval_fire_and_forget", {
+        js: BROWSER_TOOL_FINISH_CAPTURE_SCRIPT(BROWSER_CAPTURE_OVERLAY_EXIT_MS),
+      })
+      injectedToolModeRef.current = null
+      setPenHasDrawing(false)
+    } catch {
+      await deactivateInjectedTool()
+    }
+  }, [deactivateInjectedTool])
+
+  const checkProjectBrowserTargetRunning = useCallback(async (target: BrowserLaunchTarget) => {
+    if (!isTauri()) return false
+    const running = await invoke<boolean>("browser_dev_server_running", {
+      url: target.url,
+    }).catch(() => false)
+    return running === true
+  }, [])
+
+  const markProjectBrowserTargetUnavailable = useCallback((target: BrowserLaunchTarget) => {
+    setProjectBrowserTargetLiveness((current) => {
+      if (current[target.id] === false) return current
+      return { ...current, [target.id]: false }
+    })
+    onProjectBrowserTargetUnavailableRef.current?.(target.url)
+  }, [])
+
+  const refreshRunningProjectBrowserTargets = useCallback(async () => {
+    if (!isTauri()) return
+    const servers = await invoke<BrowserRunningDevServer[]>(
+      "browser_list_running_dev_servers",
+    ).catch(() => null)
+    if (!servers) return
+
+    const targets = servers.flatMap((server) => {
+      const label = browserRunningServerDisplayLabel(
+        server,
+        projectStartTargets,
+        projectRootPath,
+      )
+      if (!label) return []
+
+      const target = makeBrowserLaunchTarget({
+        detectedAt: server.detectedAt,
+        label,
+        source: label.split(" · ", 1)[0] ?? null,
+        url: server.url,
+      })
+      return target ? [target] : []
+    })
+    setDiscoveredProjectBrowserTargets(targets)
+  }, [projectRootPath, projectStartTargets])
+
+  const addBrowserToolContextToAgent = useCallback(
+    async (payload: unknown) => {
+      const normalized = normalizeBrowserToolContextEvent(payload)
+      if (!normalized) {
+        return
+      }
+      if (normalized.tabId && normalized.tabId !== activeTabIdRef.current) {
+        return
+      }
+
+      const context = normalized.context
       setToolSubmitError(null)
-      setToolSubmitting(true)
-      onAddAgentContextLoadingChangeRef.current?.(true)
-      try {
-        await waitForBrowserToolPaint()
-        await invoke("browser_eval_fire_and_forget", {
-          js: BROWSER_TOOL_PREPARE_CAPTURE_SCRIPT,
+      if (context.kind === "pen" && penToolDisabledReason) {
+        setToolSubmitError(penToolDisabledReason)
+        await restoreInjectedToolCapture()
+        return
+      }
+      const captureIndex = browserToolCaptureSequenceRef.current + 1
+      browserToolCaptureSequenceRef.current = captureIndex
+      if (context.kind === "inspect") {
+        const metadata = buildBrowserToolPromptMetadataForContext({
+          activeTab: activeTabRef.current,
+          captureIndex,
+          context,
+          targets: browserToolTargetsRef.current,
         })
+        try {
+          const add = onAddAgentContextRef.current
+          if (add) {
+            await add({
+              prompt: buildBrowserToolAgentPrompt(context, {
+                metadata,
+                screenshotAttached: false,
+              }),
+              visiblePrompt: buildBrowserToolVisiblePrompt(context),
+              contextCard: buildBrowserToolContextCard(context),
+            })
+          }
+          await deactivateInjectedTool()
+          setToolMode(null)
+        } catch (error) {
+          setToolSubmitError(
+            getToolErrorMessage(error, "Xero could not add this browser context to the agent composer."),
+          )
+          await restoreInjectedToolCapture()
+        }
+        return
+      }
+
+      setToolSubmitting(true)
+      try {
+        await prepareInjectedToolCapture()
         await waitForBrowserToolPaint()
-        const screenshotBase64 = await invoke<string>("browser_screenshot")
+        const screenshotBase64 = await invoke<string>("browser_screenshot").catch(() => null)
+        const imageName = imageNameForContext(context)
+        let image: BrowserAgentContextRequest["image"] | undefined
+        if (screenshotBase64) {
+          try {
+            image = {
+              bytes: browserScreenshotBytesFromBase64(screenshotBase64),
+              mediaType: "image/png",
+              originalName: imageName,
+            }
+          } catch {
+            image = undefined
+          }
+        }
+        const metadata = buildBrowserToolPromptMetadataForContext({
+          activeTab: activeTabRef.current,
+          attachmentName: image ? imageName : null,
+          captureIndex,
+          context,
+          targets: browserToolTargetsRef.current,
+        })
         const add = onAddAgentContextRef.current
         if (add) {
           await add({
-            prompt: buildBrowserToolAgentPrompt(context),
+            prompt: buildBrowserToolAgentPromptForCapture(context, Boolean(image), metadata),
             visiblePrompt: buildBrowserToolVisiblePrompt(context),
-            image: {
-              bytes: browserScreenshotBytesFromBase64(screenshotBase64),
-              mediaType: "image/png",
-              originalName: imageNameForContext(context),
-            },
+            contextCard: buildBrowserToolContextCard(context),
+            ...(image ? { image } : {}),
           })
         }
-        await deactivateInjectedTool()
+        finishCaptureOnOverlayExitRef.current = true
+        injectedToolModeRef.current = null
+        setPenHasDrawing(false)
         setToolMode(null)
       } catch (error) {
+        finishCaptureOnOverlayExitRef.current = false
         setToolSubmitError(
           getToolErrorMessage(error, "Xero could not add this browser context to the agent composer."),
         )
         await restoreInjectedToolCapture()
       } finally {
         setToolSubmitting(false)
-        onAddAgentContextLoadingChangeRef.current?.(false)
       }
     },
-    [deactivateInjectedTool, restoreInjectedToolCapture],
+    [
+      deactivateInjectedTool,
+      penToolDisabledReason,
+      prepareInjectedToolCapture,
+      restoreInjectedToolCapture,
+    ],
   )
+
+  const handleBrowserToolNoteEvent = useCallback((payload: unknown) => {
+    const normalized = normalizeBrowserToolNoteEvent(payload)
+    if (!normalized) return
+    if (normalized.tabId && normalized.tabId !== activeTabIdRef.current) return
+    if (normalized.mode && normalized.mode !== toolModeRef.current) return
+
+    toolNoteDraftBrowserEchoRef.current = normalized.note
+    toolNoteDraftRef.current = normalized.note
+    setToolNoteDraft(normalized.note)
+    setToolNoteActive(normalized.active)
+  }, [])
+
+  const handleBrowserToolDictationToggle = useCallback(
+    async (payload: unknown) => {
+      const normalized = normalizeBrowserToolDictationToggleEvent(payload)
+      if (!normalized) return
+      if (normalized.tabId && normalized.tabId !== activeTabIdRef.current) return
+      if (normalized.mode && normalized.mode !== toolModeRef.current) return
+
+      toolNoteDraftRef.current = normalized.note
+      setToolNoteDraft(normalized.note)
+      setToolNoteActive(true)
+      await browserToolDictationToggleRef.current()
+    },
+    [],
+  )
+
+  useEffect(() => {
+    toolNoteDraftRef.current = toolNoteDraft
+  }, [toolNoteDraft])
+
+  useEffect(() => {
+    if (!open || toolMode === null || !activeTabId) {
+      toolNoteDraftBrowserEchoRef.current = null
+      toolNoteDraftRef.current = ""
+      setToolNoteActive(false)
+      setToolNoteDraft("")
+    }
+  }, [activeTabId, open, toolMode])
+
+  useEffect(() => {
+    if (!open || !toolNoteActive || !isTauri()) {
+      toolNoteDraftBrowserEchoRef.current = null
+      return
+    }
+
+    if (toolNoteDraftBrowserEchoRef.current === toolNoteDraft) {
+      toolNoteDraftBrowserEchoRef.current = null
+      return
+    }
+    toolNoteDraftBrowserEchoRef.current = null
+
+    void invoke("browser_eval_fire_and_forget", {
+      js: buildBrowserToolSetComposerNoteScript(toolNoteDraft),
+    }).catch(() => {
+      /* the active page may already have navigated away */
+    })
+  }, [open, toolNoteActive, toolNoteDraft])
+
+  useEffect(() => {
+    if (!open || !toolNoteActive || !isTauri()) return
+
+    void invoke("browser_eval_fire_and_forget", {
+        js: buildBrowserToolDictationStateScript({
+          ariaLabel: browserToolDictation.ariaLabel,
+          audioLevel: browserToolDictation.audioLevel,
+          isListening:
+            browserToolDictation.isListening ||
+            browserToolDictation.phase === "requesting" ||
+            browserToolDictation.phase === "stopping",
+          isToggleDisabled: browserToolDictation.isToggleDisabled,
+          tooltip: browserToolDictation.tooltip,
+          visible: browserToolDictation.isVisible,
+        }),
+    }).catch(() => {
+      /* the active page may already have navigated away */
+    })
+  }, [
+    browserToolDictation.ariaLabel,
+    browserToolDictation.audioLevel,
+    browserToolDictation.isListening,
+    browserToolDictation.isToggleDisabled,
+    browserToolDictation.isVisible,
+    browserToolDictation.phase,
+    browserToolDictation.tooltip,
+    open,
+    toolNoteActive,
+  ])
+
+  useEffect(() => {
+    if (!toolNoteActive || !browserToolDictation.error) return
+    setToolSubmitError(browserToolDictation.error.message)
+  }, [browserToolDictation.error, toolNoteActive])
+
+  useEffect(() => {
+    if (toolSubmitting) {
+      setCaptureOverlayVisible(true)
+      setCaptureOverlayExiting(false)
+      return
+    }
+
+    if (!captureOverlayVisible) return
+
+    finishCaptureOnOverlayExitRef.current =
+      finishCaptureOnOverlayExitRef.current && isTauri()
+    setCaptureOverlayExiting(true)
+    const timeout = window.setTimeout(() => {
+      setCaptureOverlayVisible(false)
+      setCaptureOverlayExiting(false)
+    }, BROWSER_CAPTURE_OVERLAY_EXIT_MS)
+
+    return () => window.clearTimeout(timeout)
+  }, [captureOverlayVisible, toolSubmitting])
+
+  useEffect(() => {
+    if (!captureOverlayExiting || !finishCaptureOnOverlayExitRef.current) return
+    finishCaptureOnOverlayExitRef.current = false
+    void finishInjectedToolCapture()
+  }, [captureOverlayExiting, finishInjectedToolCapture])
+
+  useEffect(() => {
+    if (!open || !isTauri()) return
+    syncBrowserOverlayOcclusions({ force: true })
+  }, [captureOverlayExiting, captureOverlayVisible, open, syncBrowserOverlayOcclusions])
+
+  useEffect(() => {
+    if (!open || !isTauri()) {
+      setDiscoveredProjectBrowserTargets([])
+      return
+    }
+
+    let cancelled = false
+    let timeout: number | null = null
+
+    const refreshTargets = async () => {
+      await refreshRunningProjectBrowserTargets()
+      if (cancelled) return
+      if (shouldRepeatProjectBrowserTargetPoll()) {
+        timeout = scheduleProjectBrowserTargetPoll(refreshTargets)
+      }
+    }
+
+    void refreshTargets()
+
+    return () => {
+      cancelled = true
+      if (timeout !== null) window.clearTimeout(timeout)
+    }
+  }, [open, refreshRunningProjectBrowserTargets])
+
+  useEffect(() => {
+    if (!open || availableProjectBrowserTargets.length === 0 || !isTauri()) {
+      setProjectBrowserTargetLiveness({})
+      setProjectTargetPickerOpen(false)
+      return
+    }
+
+    let cancelled = false
+    let timeout: number | null = null
+
+    const checkTargets = async () => {
+      const snapshot = availableProjectBrowserTargets
+      const results = await Promise.all(
+        snapshot.map(async (target) => ({
+          running: await checkProjectBrowserTargetRunning(target),
+          target,
+        })),
+      )
+      if (cancelled) return
+
+      const next: Record<string, boolean> = {}
+      for (const { running, target } of results) {
+        next[target.id] = running
+        if (!running) {
+          onProjectBrowserTargetUnavailableRef.current?.(target.url)
+        }
+      }
+      setProjectBrowserTargetLiveness(next)
+      if (shouldRepeatProjectBrowserTargetPoll()) {
+        timeout = scheduleProjectBrowserTargetPoll(checkTargets)
+      }
+    }
+
+    void checkTargets()
+
+    return () => {
+      cancelled = true
+      if (timeout !== null) window.clearTimeout(timeout)
+    }
+  }, [availableProjectBrowserTargets, checkProjectBrowserTargetRunning, open])
+
+  useEffect(() => {
+    if (liveProjectBrowserTargets.length > 0) return
+    setProjectTargetPickerOpen(false)
+  }, [liveProjectBrowserTargets.length])
+
+  useEffect(() => {
+    if (!open) {
+      setProjectTargetPickerOpen(false)
+      setAddressSuggestionsOpen(false)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!projectTargetPickerOpen) return
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (projectTargetPickerButtonRef.current?.contains(target)) return
+      if (projectTargetPanelRef.current?.contains(target)) return
+      setProjectTargetPickerOpen(false)
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown, true)
+    return () => document.removeEventListener("pointerdown", handlePointerDown, true)
+  }, [projectTargetPickerOpen])
+
+  useEffect(() => {
+    if (!open || !isTauri()) return
+    if (!hasWebviewRef.current && tabsRef.current.length === 0) return
+    resizeScheduler.reset()
+    resizeScheduler.schedule({ force: true })
+    syncBrowserOverlayOcclusions({ force: true })
+  }, [open, resizeScheduler, showProjectTargetPanel, syncBrowserOverlayOcclusions])
 
   // Tools are gated to dev-server tabs. Drop the active tool whenever the
   // tab/URL changes to one that isn't a dev server, or when the sidebar closes.
@@ -561,6 +1814,7 @@ export function BrowserSidebar({
     if (toolMode === null) return
     if (!open || !isDevTab) {
       setToolMode(null)
+      setPenHasDrawing(false)
     }
   }, [open, isDevTab, toolMode])
 
@@ -575,6 +1829,7 @@ export function BrowserSidebar({
     }
 
     const requestId = ++toolActivationRequestRef.current
+    setPenHasDrawing(false)
     const script = buildBrowserToolActivationScript({
       mode: toolMode,
       pageLabel,
@@ -614,6 +1869,19 @@ export function BrowserSidebar({
   }, [activeTabId, open, resizeScheduler])
 
   useEffect(() => {
+    if (!open || !isTauri()) return
+    if (!hasWebviewRef.current && tabsRef.current.length === 0) return
+    const forceSync = () => {
+      resizeScheduler.reset()
+      resizeScheduler.schedule({ force: true })
+    }
+
+    forceSync()
+    const timeout = window.setTimeout(forceSync, SIDEBAR_GEOMETRY_SETTLE_MS)
+    return () => window.clearTimeout(timeout)
+  }, [activeFullWidth, fullWidthTarget, open, resizeScheduler])
+
+  useEffect(() => {
     if (!openGeometrySettled || !isTauri()) return
     if (!hasWebviewRef.current && tabsRef.current.length === 0) return
 
@@ -625,8 +1893,9 @@ export function BrowserSidebar({
     if (!open || !isTauri()) return
     if (!hasWebviewRef.current && tabsRef.current.length === 0) return
 
-    const node = viewportRef.current
-    if (!node) return
+    const viewportNode = viewportRef.current
+    const sidebarNode = sidebarRef.current
+    if (!viewportNode && !sidebarNode) return
 
     const ResizeObserverCtor = window.ResizeObserver
     if (typeof ResizeObserverCtor !== "function") {
@@ -637,10 +1906,42 @@ export function BrowserSidebar({
     const observer = new ResizeObserverCtor(() => {
       resizeScheduler.schedule()
     })
-    observer.observe(node)
+    if (viewportNode) observer.observe(viewportNode)
+    if (sidebarNode && sidebarNode !== viewportNode) observer.observe(sidebarNode)
 
     return () => observer.disconnect()
   }, [activeTabId, open, resizeScheduler])
+
+  useEffect(() => {
+    if (!open || !isTauri()) return
+    if (!hasWebviewRef.current && tabsRef.current.length === 0) return
+
+    syncBrowserOverlayOcclusions({ force: true })
+
+    const schedule = () => syncBrowserOverlayOcclusions()
+    const observer = new MutationObserver(schedule)
+    if (document.body) {
+      observer.observe(document.body, {
+        attributes: true,
+        attributeFilter: ["aria-hidden", "class", "data-state", "hidden", "style"],
+        childList: true,
+        subtree: true,
+      })
+    }
+
+    window.addEventListener("resize", schedule)
+    window.addEventListener("scroll", schedule, true)
+    document.addEventListener("animationend", schedule, true)
+    document.addEventListener("transitionend", schedule, true)
+
+    return () => {
+      observer.disconnect()
+      window.removeEventListener("resize", schedule)
+      window.removeEventListener("scroll", schedule, true)
+      document.removeEventListener("animationend", schedule, true)
+      document.removeEventListener("transitionend", schedule, true)
+    }
+  }, [activeTabId, open, syncBrowserOverlayOcclusions])
 
   useEffect(() => {
     if (
@@ -655,6 +1956,7 @@ export function BrowserSidebar({
     void invoke("browser_hide").catch(() => {
       /* swallow */
     })
+    lastOcclusionKeyRef.current = ""
   }, [open, resizeScheduler])
 
   useEffect(() => {
@@ -669,7 +1971,13 @@ export function BrowserSidebar({
     return () => window.removeEventListener("resize", handleResize)
   }, [resizeScheduler])
 
-  useEffect(() => () => resizeScheduler.cancel(), [resizeScheduler])
+  useEffect(
+    () => () => {
+      resizeScheduler.cancel()
+      cancelBrowserOverlayOcclusionSync()
+    },
+    [cancelBrowserOverlayOcclusionSync, resizeScheduler],
+  )
 
   // Wire backend events
   useEffect(() => {
@@ -717,12 +2025,26 @@ export function BrowserSidebar({
         }
       },
       onTabUpdated: (payload) => {
-        setTabs(payload.tabs)
-        hasWebviewRef.current = payload.tabs.length > 0
-        const active = payload.tabs.find((tab) => tab.active)
+        const orderedTabs = applyLocalTabOrder(payload.tabs, projectIdRef.current)
+        setTabs(orderedTabs)
+        hasWebviewRef.current = orderedTabs.some((tab) =>
+          browserTabBelongsToProject(tab, projectIdRef.current),
+        )
+        const active = selectActiveBrowserTab(orderedTabs, projectIdRef.current)
         if (active) {
           activeTabIdRef.current = active.id
           setActiveTabId(active.id)
+          setLoading(active.loading)
+          if (active.url && !addressFocusedRef.current) {
+            setAddress(active.url)
+          }
+        } else {
+          activeTabIdRef.current = null
+          setActiveTabId(null)
+          setLoading(false)
+          if (!addressFocusedRef.current) {
+            setAddress("")
+          }
         }
       },
     })
@@ -760,6 +2082,18 @@ export function BrowserSidebar({
     )
 
     trackUnlisten(
+      listen<BrowserDevServerUnavailablePayload>("browser:dev_server_unavailable", (event) => {
+        recordIpcPayloadSample({
+          boundary: "event",
+          name: "browser:dev_server_unavailable",
+          payload: event.payload,
+        })
+        const url = typeof event.payload?.url === "string" ? event.payload.url : null
+        if (url) onProjectBrowserTargetUnavailableRef.current?.(url)
+      }),
+    )
+
+    trackUnlisten(
       listen<BrowserResizeDragPayload>("browser:resize_drag", (event) => {
         recordIpcPayloadSample({ boundary: "event", name: "browser:resize_drag", payload: event.payload })
         applyNativeResizeDrag(event.payload)
@@ -767,19 +2101,65 @@ export function BrowserSidebar({
     )
 
     trackUnlisten(
-      listen<BrowserToolContextEventPayload>(BROWSER_TOOL_CONTEXT_EVENT, (event) => {
+      listen<BrowserOcclusionClickPayload>(BROWSER_OCCLUSION_CLICK_EVENT, (event) => {
+        recordIpcPayloadSample({ boundary: "event", name: BROWSER_OCCLUSION_CLICK_EVENT, payload: event.payload })
+        applyNativeOcclusionClick(event.payload)
+      }),
+    )
+
+    trackUnlisten(
+      listen<BrowserOcclusionWheelPayload>("browser:occlusion_wheel", (event) => {
+        recordIpcPayloadSample({ boundary: "event", name: "browser:occlusion_wheel", payload: event.payload })
+        applyNativeOcclusionWheel(event.payload)
+      }),
+    )
+
+    trackUnlisten(
+      listen<unknown>(BROWSER_TOOL_CONTEXT_EVENT, (event) => {
         recordIpcPayloadSample({ boundary: "event", name: BROWSER_TOOL_CONTEXT_EVENT, payload: event.payload })
         void addBrowserToolContextToAgent(event.payload)
       }),
     )
 
     trackUnlisten(
-      listen<BrowserToolClosedEventPayload>(BROWSER_TOOL_CLOSED_EVENT, (event) => {
+      listen<unknown>(BROWSER_TOOL_NOTE_EVENT, (event) => {
+        recordIpcPayloadSample({ boundary: "event", name: BROWSER_TOOL_NOTE_EVENT, payload: event.payload })
+        handleBrowserToolNoteEvent(event.payload)
+      }),
+    )
+
+    trackUnlisten(
+      listen<unknown>(BROWSER_TOOL_DICTATION_TOGGLE_EVENT, (event) => {
+        recordIpcPayloadSample({
+          boundary: "event",
+          name: BROWSER_TOOL_DICTATION_TOGGLE_EVENT,
+          payload: event.payload,
+        })
+        void handleBrowserToolDictationToggle(event.payload)
+      }),
+    )
+
+    trackUnlisten(
+      listen<unknown>(BROWSER_TOOL_CLOSED_EVENT, (event) => {
         recordIpcPayloadSample({ boundary: "event", name: BROWSER_TOOL_CLOSED_EVENT, payload: event.payload })
-        if (event.payload.tabId === activeTabIdRef.current) {
+        const payload = normalizeBrowserToolClosedEvent(event.payload)
+        if (!payload) return
+        if (!payload.tabId || payload.tabId === activeTabIdRef.current) {
           injectedToolModeRef.current = null
           setToolMode(null)
+          setToolNoteActive(false)
+          setPenHasDrawing(false)
         }
+      }),
+    )
+
+    trackUnlisten(
+      listen<unknown>(BROWSER_TOOL_STATE_EVENT, (event) => {
+        recordIpcPayloadSample({ boundary: "event", name: BROWSER_TOOL_STATE_EVENT, payload: event.payload })
+        const payload = normalizeBrowserToolStateEvent(event.payload)
+        if (!payload) return
+        if (payload.tabId && payload.tabId !== activeTabIdRef.current) return
+        setPenHasDrawing(payload.mode === "pen" && payload.hasDrawing)
       }),
     )
 
@@ -788,32 +2168,50 @@ export function BrowserSidebar({
       coalescer.dispose()
       unsubs.forEach((unsub) => unsub())
     }
-  }, [addBrowserToolContextToAgent, applyNativeResizeDrag])
+  }, [
+    addBrowserToolContextToAgent,
+    applyLocalTabOrder,
+    applyNativeOcclusionClick,
+    applyNativeOcclusionWheel,
+    applyNativeResizeDrag,
+    handleBrowserToolDictationToggle,
+    handleBrowserToolNoteEvent,
+  ])
 
   // Hydrate tabs when sidebar opens
   useEffect(() => {
     if (!open || !isTauri()) return
     let cancelled = false
-    void safeInvoke<BrowserTabMeta[]>("browser_tab_list").then((list) => {
+    void safeInvoke<BrowserTabMeta[]>("browser_tab_list", {
+      projectId,
+    }).then((list) => {
       if (cancelled || !list) return
-      setTabs(list)
-      hasWebviewRef.current = list.length > 0
-      const active = list.find((tab) => tab.active) ?? list[0] ?? null
+      const orderedList = applyLocalTabOrder(list, projectId)
+      setTabs(orderedList)
+      hasWebviewRef.current = orderedList.length > 0
+      const active = selectActiveBrowserTab(orderedList, projectId)
       if (active) {
         activeTabIdRef.current = active.id
         setActiveTabId(active.id)
+        setLoading(active.loading)
         if (active.url && !addressFocusedRef.current) setAddress(active.url)
+      } else {
+        activeTabIdRef.current = null
+        setActiveTabId(null)
+        setLoading(false)
+        if (!addressFocusedRef.current) setAddress("")
       }
     })
     return () => {
       cancelled = true
     }
-  }, [open])
+  }, [applyLocalTabOrder, open, projectId])
 
   const handleResizeStart = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
       if (event.button !== 0) return
       event.preventDefault()
+      if (resizeLockedByPenDrawing) return
       const startX = event.clientX
       const startWidth = widthRef.current
       const ceiling = viewportMaxWidth()
@@ -918,6 +2316,7 @@ export function BrowserSidebar({
     [
       applySidebarWidth,
       markBrowserViewportSyncedToWidth,
+      resizeLockedByPenDrawing,
       resizeScheduler,
       setSidebarWidthAndSync,
       syncBrowserViewportToWidth,
@@ -927,6 +2326,7 @@ export function BrowserSidebar({
   const handleResizeKey = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return
     event.preventDefault()
+    if (resizeLockedByPenDrawing) return
     const step = event.shiftKey ? 32 : 8
     const ceiling = viewportMaxWidth()
     const delta = event.key === "ArrowLeft" ? step : -step
@@ -934,14 +2334,15 @@ export function BrowserSidebar({
     setMaxWidth(ceiling)
     setSidebarWidthAndSync(nextWidth)
     resizeScheduler.schedule({ force: true })
-  }, [resizeScheduler, setSidebarWidthAndSync])
+  }, [resizeLockedByPenDrawing, resizeScheduler, setSidebarWidthAndSync])
 
   const openUrl = useCallback(
     (target: string, options?: { tabId?: string; newTab?: boolean }) => {
       setNavError(null)
+      const navigationTarget = normalizeLoopbackBrowserUrl(target)
 
       if (!isTauri()) {
-        setAddress(target)
+        setAddress(navigationTarget)
         return
       }
 
@@ -950,7 +2351,8 @@ export function BrowserSidebar({
       const viewport = readBrowserViewportRect(node, RESIZE_HANDLE_INSET)
       const forceNew = options?.newTab === true
       const payload = {
-        url: target,
+        projectId: projectIdRef.current,
+        url: navigationTarget,
         ...viewport,
         tabId: forceNew ? null : options?.tabId ?? activeTabId ?? null,
         newTab: forceNew,
@@ -964,6 +2366,7 @@ export function BrowserSidebar({
             activeTabIdRef.current = meta.id
             setActiveTabId(meta.id)
           }
+          syncBrowserOverlayOcclusions({ force: true })
         })
         .catch((error: unknown) => {
           hasWebviewRef.current = false
@@ -975,7 +2378,7 @@ export function BrowserSidebar({
           setNavError(message || "Failed to open page")
         })
     },
-    [activeTabId, resizeScheduler],
+    [activeTabId, resizeScheduler, syncBrowserOverlayOcclusions],
   )
 
   const handleSubmit = useCallback(
@@ -1005,19 +2408,30 @@ export function BrowserSidebar({
 
   const handleReload = useCallback(() => {
     if (!isTauri()) return
+    if (loading) {
+      setLoading(false)
+      void invoke("browser_stop").catch(() => {
+        /* swallow */
+      })
+      return
+    }
     void invoke("browser_reload", { tabId: activeTabId ?? null }).catch(() => {
       /* swallow */
     })
-  }, [activeTabId])
+  }, [activeTabId, loading])
 
   const handleTabFocus = useCallback(
     (tabId: string) => {
       if (!isTauri() || tabId === activeTabId) return
-      void invoke<BrowserTabMeta>("browser_tab_focus", { tabId })
+      void invoke<BrowserTabMeta>("browser_tab_focus", {
+        projectId: projectIdRef.current,
+        tabId,
+      })
         .then((meta) => {
           if (meta) {
             activeTabIdRef.current = meta.id
             setActiveTabId(meta.id)
+            setLoading(meta.loading)
             if (meta.url && !addressFocusedRef.current) setAddress(meta.url)
           }
         })
@@ -1031,19 +2445,25 @@ export function BrowserSidebar({
   const handleTabClose = useCallback(
     (tabId: string) => {
       if (!isTauri()) return
-      void invoke<BrowserTabMeta[]>("browser_tab_close", { tabId })
+      void invoke<BrowserTabMeta[]>("browser_tab_close", {
+        projectId: projectIdRef.current,
+        tabId,
+        })
         .then((list) => {
           if (!list) return
-          setTabs(list)
-          if (list.length === 0) {
+          const orderedList = applyLocalTabOrder(list, projectIdRef.current)
+          setTabs(orderedList)
+          if (orderedList.length === 0) {
             activeTabIdRef.current = null
             setActiveTabId(null)
             setAddress("")
+            setLoading(false)
             hasWebviewRef.current = false
           } else {
-            const next = list.find((tab) => tab.active) ?? list[0]
+            const next = selectActiveBrowserTab(orderedList, projectIdRef.current) ?? orderedList[0]
             activeTabIdRef.current = next.id
             setActiveTabId(next.id)
+            setLoading(next.loading)
             if (next.url) setAddress(next.url)
           }
         })
@@ -1051,8 +2471,38 @@ export function BrowserSidebar({
           /* swallow */
         })
     },
-    [],
+    [applyLocalTabOrder],
   )
+
+  const handleTabReorder = useCallback((activeTabId: string, overTabId: string) => {
+    if (!activeTabId || !overTabId || activeTabId === overTabId) return
+
+    const projectId = projectIdRef.current
+    setTabs((current) => {
+      const next = reorderBrowserTabs(current, projectId, activeTabId, overTabId)
+      tabOrderByProjectRef.current[browserTabOrderKey(projectId)] = browserProjectTabIds(next, projectId)
+      return next
+    })
+
+    if (!isTauri()) return
+    void invoke<BrowserTabMeta[]>("browser_tab_reorder", {
+      projectId,
+      activeTabId,
+      overTabId,
+    })
+      .then((list) => {
+        if (list) {
+          setTabs(applyLocalTabOrder(list, projectId))
+        }
+      })
+      .catch(() => {
+        void safeInvoke<BrowserTabMeta[]>("browser_tab_list", {
+          projectId,
+        }).then((list) => {
+          if (list) setTabs(applyLocalTabOrder(list, projectId))
+        })
+      })
+  }, [applyLocalTabOrder])
 
   const handleNewTab = useCallback(() => {
     if (!isTauri()) return
@@ -1060,19 +2510,54 @@ export function BrowserSidebar({
   }, [openUrl])
 
   const handleOpenProjectBrowserTarget = useCallback(
-    (target: BrowserLaunchTarget) => {
+    async (target: BrowserLaunchTarget) => {
+      setAddressSuggestionsOpen(false)
+      setProjectTargetPickerOpen(false)
+
+      if (projectBrowserTargetLiveness[target.id] !== true) {
+        const running = await checkProjectBrowserTargetRunning(target)
+        if (!running) {
+          markProjectBrowserTargetUnavailable(target)
+          return
+        }
+      }
+
+      setProjectBrowserTargetLiveness((current) => {
+        if (current[target.id] === true) return current
+        return { ...current, [target.id]: true }
+      })
       setAddress(target.url)
       openUrl(target.url)
     },
-    [openUrl],
+    [
+      checkProjectBrowserTargetRunning,
+      markProjectBrowserTargetUnavailable,
+      openUrl,
+      projectBrowserTargetLiveness,
+    ],
   )
+
+  const handleProjectTargetPanelWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
+    const panel = event.currentTarget
+    const deltaY =
+      event.deltaMode === 1
+        ? event.deltaY * 16
+        : event.deltaMode === 2
+          ? event.deltaY * panel.clientHeight
+          : event.deltaY
+
+    panel.scrollTop += deltaY
+    event.preventDefault()
+    event.stopPropagation()
+  }, [])
 
   useEffect(() => {
     if (!open || !openGeometrySettled || !pendingOpenUrl) return
     if (consumedPendingOpenUrlIdsRef.current.has(pendingOpenUrl.id)) return
     consumedPendingOpenUrlIdsRef.current.add(pendingOpenUrl.id)
-    setAddress(pendingOpenUrl.url)
-    openUrl(pendingOpenUrl.url)
+    const url = normalizeLoopbackBrowserUrl(pendingOpenUrl.url)
+    setAddress(url)
+    openUrl(url)
     onPendingOpenUrlConsumed?.(pendingOpenUrl.id)
   }, [onPendingOpenUrlConsumed, open, openGeometrySettled, openUrl, pendingOpenUrl])
 
@@ -1082,7 +2567,7 @@ export function BrowserSidebar({
   // the shared cookie store.
   useEffect(() => {
     if (!open || !isTauri()) return
-    if (tabs.length === 0) return
+    if (activeProjectTabs.length === 0) return
     if (cookieSourcesLoadedRef.current) return
     cookieSourcesLoadedRef.current = true
 
@@ -1093,7 +2578,7 @@ export function BrowserSidebar({
       if (!list.some((browser) => browser.available)) return
       setShowCookieBanner(true)
     })
-  }, [open, tabs.length, refreshCookieSources])
+  }, [activeProjectTabs.length, open, refreshCookieSources])
 
   const handleImportCookies = useCallback(
     async (browser: DetectedBrowser) => {
@@ -1110,7 +2595,7 @@ export function BrowserSidebar({
 
   // Show the tab strip (and the + button) as soon as there's any tab — otherwise
   // users have no way to open a second tab because the new-tab trigger lives there.
-  const showTabs = tabs.length > 0
+  const showTabs = activeProjectTabs.length > 0
 
   return (
     <aside
@@ -1124,72 +2609,42 @@ export function BrowserSidebar({
       inert={!open ? true : undefined}
       style={widthMotion.style}
     >
-      <div
-        aria-label="Resize browser sidebar"
-        aria-orientation="vertical"
-        aria-valuemax={maxWidth}
-        aria-valuemin={MIN_WIDTH}
-        aria-valuenow={width}
-        className={cn(
-          "absolute inset-y-0 -left-[3px] z-10 w-[6px] cursor-col-resize bg-transparent transition-colors",
-          "hover:bg-primary/30",
-          isResizing && "bg-primary/40",
-        )}
-        onKeyDown={handleResizeKey}
-        onPointerDown={handleResizeStart}
-        role="separator"
-        tabIndex={open ? 0 : -1}
-      />
+      {!activeFullWidth ? (
+        <div
+          aria-label="Resize browser sidebar"
+          aria-orientation="vertical"
+          aria-valuemax={maxWidth}
+          aria-valuemin={MIN_WIDTH}
+          aria-valuenow={width}
+          aria-disabled={resizeDisabled ? true : undefined}
+          className={cn(
+            "absolute inset-y-0 -left-[3px] z-10 w-[6px] bg-transparent transition-colors",
+            resizeDisabled
+              ? "cursor-not-allowed hover:bg-destructive/20"
+              : "cursor-col-resize hover:bg-primary/30",
+            isResizing && "bg-primary/40",
+          )}
+          onKeyDown={handleResizeKey}
+          onPointerDown={handleResizeStart}
+          role="separator"
+          tabIndex={open ? 0 : -1}
+        />
+      ) : null}
 
       <div
         ref={contentRef}
-        className="flex h-full min-w-0 shrink-0 flex-col"
-        style={{ width }}
+        className="relative flex h-full min-w-0 shrink-0 flex-col"
+        style={{ width: renderedWidth }}
       >
       {showTabs ? (
-        <div className="flex h-8 shrink-0 items-center gap-1 overflow-x-auto border-b border-border/60">
-          {tabs.map((tab) => (
-            <div
-              key={tab.id}
-              className={cn(
-                "group flex h-8 max-w-[160px] shrink-0 items-center gap-1 border px-2 text-[11px]",
-                tab.id === activeTabId
-                  ? "border-primary/40 bg-background/80 text-foreground"
-                  : "border-border/50 bg-sidebar/60 text-muted-foreground hover:text-foreground",
-              )}
-            >
-              <button
-                className="min-w-0 flex-1 truncate text-left"
-                onClick={() => handleTabFocus(tab.id)}
-                title={tab.title ?? tab.url ?? "New tab"}
-                type="button"
-              >
-                {tab.loading ? (
-                  <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
-                ) : null}
-                <span className="truncate">
-                  {tab.title ?? tab.url ?? "New tab"}
-                </span>
-              </button>
-              <button
-                aria-label="Close tab"
-                className="flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:bg-secondary/60 hover:text-foreground group-hover:opacity-100"
-                onClick={() => handleTabClose(tab.id)}
-                type="button"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          ))}
-          <button
-            aria-label="New tab"
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground"
-            onClick={handleNewTab}
-            type="button"
-          >
-            <Plus className="h-3.5 w-3.5" />
-          </button>
-        </div>
+        <BrowserTabStrip
+          activeTabId={activeTabId}
+          tabs={activeProjectTabs}
+          onCloseTab={handleTabClose}
+          onFocusTab={handleTabFocus}
+          onNewTab={handleNewTab}
+          onReorderTabs={handleTabReorder}
+        />
       ) : null}
 
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border/70 px-2">
@@ -1224,65 +2679,56 @@ export function BrowserSidebar({
             <RotateCw className="h-3.5 w-3.5" />
           )}
         </button>
-        {projectBrowserTargets.length > 1 ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                aria-label="Open project app in browser"
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground"
-                title="Open project app"
-                type="button"
-              >
-                <FolderGit2 className="h-3.5 w-3.5" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-64">
-              {projectBrowserTargets.map((target) => (
-                <DropdownMenuItem
-                  key={target.id}
-                  className="flex min-w-0 flex-col items-start gap-0.5"
-                  onSelect={() => handleOpenProjectBrowserTarget(target)}
-                >
-                  <span className="max-w-full truncate text-[12px]">{target.label}</span>
-                  <span className="max-w-full truncate font-mono text-[10.5px] text-muted-foreground">
-                    {target.url}
-                  </span>
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : (
-          <button
-            aria-label="Open project app in browser"
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
-            disabled={projectBrowserTargets.length === 0}
-            onClick={() => {
-              const [target] = projectBrowserTargets
-              if (target) handleOpenProjectBrowserTarget(target)
-            }}
-            title={
-              projectBrowserTargets.length === 0
-                ? "No browser-supported project app detected"
-                : "Open project app"
+        <button
+          ref={projectTargetPickerButtonRef}
+          aria-expanded={projectTargetPickerOpen}
+          aria-label="Open project app in browser"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          disabled={liveProjectBrowserTargets.length === 0}
+          onClick={() => {
+            if (liveProjectBrowserTargets.length > 1) {
+              setProjectTargetPickerOpen((current) => !current)
+              setAddressSuggestionsOpen(false)
+              return
             }
-            type="button"
-          >
-            <FolderGit2 className="h-3.5 w-3.5" />
-          </button>
-        )}
+            const [target] = liveProjectBrowserTargets
+            if (target) void handleOpenProjectBrowserTarget(target)
+          }}
+          title={
+            liveProjectBrowserTargets.length === 0
+              ? isCheckingProjectBrowserTargets
+                ? "Checking project app availability"
+                : "No running browser-supported project app detected"
+              : "Open project app"
+          }
+          type="button"
+        >
+          <FolderGit2 className="h-3.5 w-3.5" />
+        </button>
         <form className="ml-1 flex min-w-0 flex-1" onSubmit={handleSubmit}>
           <input
             aria-label="Address"
+            autoCapitalize="none"
+            autoComplete="off"
+            autoCorrect="off"
             className="h-7 w-full min-w-0 rounded-md border border-border/70 bg-background/40 px-2 text-[11.5px] text-foreground placeholder:text-muted-foreground/70 focus:border-primary/50 focus:outline-none"
             onBlur={() => {
               addressFocusedRef.current = false
+              setAddressSuggestionsOpen(false)
             }}
-            onChange={(event) => setAddress(event.target.value)}
+            onChange={(event) => {
+              setAddress(event.target.value)
+              setAddressSuggestionsOpen(true)
+              setProjectTargetPickerOpen(false)
+            }}
             onFocus={(event) => {
               addressFocusedRef.current = true
+              setAddressSuggestionsOpen(true)
+              setProjectTargetPickerOpen(false)
               event.currentTarget.select()
             }}
             placeholder="Search or enter URL"
+            spellCheck={false}
             type="text"
             value={address}
           />
@@ -1292,25 +2738,62 @@ export function BrowserSidebar({
             className="ml-1 flex shrink-0 items-center gap-0.5 rounded-md border border-border/60 bg-background/40 px-0.5"
             data-testid="browser-dev-tools"
           >
-            <button
-              aria-label="Sketch on page"
-              aria-pressed={toolMode === "pen"}
-              className={cn(
-                "flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground",
-                toolMode === "pen"
-                  ? "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary"
-                  : null,
-              )}
-              disabled={toolSubmitting}
-              onClick={() => {
-                setToolSubmitError(null)
-                setToolMode((current) => (current === "pen" ? null : "pen"))
-              }}
-              title="Sketch on page"
-              type="button"
-            >
-              <Pencil className="h-3.5 w-3.5" />
-            </button>
+            {onFullWidthChange ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    aria-label={fullWidthButtonLabel}
+                    aria-pressed={activeFullWidth}
+                    className={cn(
+                      "flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground",
+                      activeFullWidth
+                        ? "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary"
+                        : null,
+                    )}
+                    onClick={() => onFullWidthChange(!activeFullWidth)}
+                    title={fullWidthButtonLabel}
+                    type="button"
+                  >
+                    {activeFullWidth ? (
+                      <PanelLeftOpen className="h-3.5 w-3.5" />
+                    ) : (
+                      <PanelLeftClose className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">{fullWidthButtonLabel}</TooltipContent>
+              </Tooltip>
+            ) : null}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  className="inline-flex"
+                  tabIndex={penToolDisabledReason ? 0 : -1}
+                >
+                  <button
+                    aria-label="Sketch on page"
+                    aria-pressed={toolMode === "pen"}
+                    className={cn(
+                      "flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground",
+                      toolMode === "pen"
+                        ? "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary"
+                        : null,
+                    )}
+                    disabled={isPenToolDisabled}
+                    onClick={() => {
+                      if (penToolDisabledReason) return
+                      setToolSubmitError(null)
+                      setToolMode((current) => (current === "pen" ? null : "pen"))
+                    }}
+                    title={penToolTooltip}
+                    type="button"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">{penToolTooltip}</TooltipContent>
+            </Tooltip>
             <button
               aria-label="Inspect element"
               aria-pressed={toolMode === "inspect"}
@@ -1332,20 +2815,40 @@ export function BrowserSidebar({
             </button>
           </div>
         ) : null}
-        {toolSubmitting ? (
-          <div
-            aria-live="polite"
-            aria-label="Adding browser context"
-            className="absolute inset-0 z-20 flex items-center justify-center bg-background/90 backdrop-blur-sm"
-            role="status"
-          >
-            <div className="flex items-center gap-2 rounded-md border border-border/70 bg-card px-3 py-2 text-[12px] font-medium text-foreground shadow-lg">
-              <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-              <span>Adding browser context…</span>
-            </div>
-          </div>
-        ) : null}
       </div>
+
+      {showProjectTargetPanel ? (
+        <div
+          ref={projectTargetPanelRef}
+          aria-label="Project app suggestions"
+          className="motion-popover absolute z-30 max-h-72 w-[min(18rem,calc(100%-7rem))] origin-top-left overflow-x-hidden overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+          data-slot="dropdown-menu-content"
+          data-state="open"
+          onWheelCapture={handleProjectTargetPanelWheel}
+          style={{ left: PROJECT_TARGET_MENU_LEFT, top: showTabs ? 78 : 46 }}
+        >
+          <div className="px-2 py-1.5 text-[11px] font-medium uppercase text-muted-foreground">
+            Local server
+          </div>
+          {liveProjectBrowserTargets.map((target) => (
+            <button
+              key={target.id}
+              aria-label={`Open ${target.label}`}
+              className="relative flex w-full min-w-0 cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm outline-hidden select-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
+              onClick={() => {
+                void handleOpenProjectBrowserTarget(target)
+              }}
+              onMouseDown={(event) => event.preventDefault()}
+              title={target.url}
+              type="button"
+            >
+              <span className="min-w-0 truncate font-mono text-[12.5px]">
+                {target.label}
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       {showCookieBanner ? (
         <CookieImportBanner
@@ -1381,6 +2884,52 @@ export function BrowserSidebar({
             <div className="mt-2 text-muted-foreground/80">
               Browser engine is only available in the desktop app.
             </div>
+          </div>
+        ) : null}
+        {captureOverlayVisible ? (
+          <div
+            role="status"
+            aria-live="polite"
+            aria-busy={toolSubmitting}
+            aria-label="Adding browser context"
+            className="xero-browser-capture-indicator pointer-events-none absolute inset-0 z-20"
+            data-state={captureOverlayExiting ? "closed" : "open"}
+          >
+            <div className="xero-browser-capture-aura" aria-hidden="true">
+              <span className="xero-browser-capture-aura-field" />
+            </div>
+            <span
+              data-xero-browser-capture-overlay="true"
+              className="xero-browser-capture-occlusion xero-browser-capture-occlusion-top"
+            />
+            <span
+              data-xero-browser-capture-overlay="true"
+              className="xero-browser-capture-occlusion xero-browser-capture-occlusion-right"
+            />
+            <span
+              data-xero-browser-capture-overlay="true"
+              className="xero-browser-capture-occlusion xero-browser-capture-occlusion-bottom"
+            />
+            <span
+              data-xero-browser-capture-overlay="true"
+              className="xero-browser-capture-occlusion xero-browser-capture-occlusion-left"
+            />
+            <span
+              data-xero-browser-capture-overlay="true"
+              className="xero-browser-capture-occlusion xero-browser-capture-occlusion-corner xero-browser-capture-occlusion-top-left"
+            />
+            <span
+              data-xero-browser-capture-overlay="true"
+              className="xero-browser-capture-occlusion xero-browser-capture-occlusion-corner xero-browser-capture-occlusion-top-right"
+            />
+            <span
+              data-xero-browser-capture-overlay="true"
+              className="xero-browser-capture-occlusion xero-browser-capture-occlusion-corner xero-browser-capture-occlusion-bottom-right"
+            />
+            <span
+              data-xero-browser-capture-overlay="true"
+              className="xero-browser-capture-occlusion xero-browser-capture-occlusion-corner xero-browser-capture-occlusion-bottom-left"
+            />
           </div>
         ) : null}
       </div>

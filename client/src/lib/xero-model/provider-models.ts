@@ -199,6 +199,7 @@ export const providerCapabilityCatalogSchema = z
   .strict()
 
 export const providerPreflightStatusSchema = z.enum(['passed', 'warning', 'failed', 'skipped'])
+export const PROVIDER_PREFLIGHT_CONTRACT_VERSION = 3
 export const providerPreflightSourceSchema = z.enum([
   'live_probe',
   'live_catalog',
@@ -213,8 +214,29 @@ export const providerPreflightRequiredFeaturesSchema = z
     toolCalls: z.boolean().default(false),
     reasoningControls: z.boolean().default(false),
     attachments: z.boolean().default(false),
+    attachmentInputModalities: z.array(z.string().trim().min(1)).default([]),
   })
   .strict()
+  .superRefine((features, ctx) => {
+    const uniqueModalities = new Set(features.attachmentInputModalities)
+    if (uniqueModalities.size !== features.attachmentInputModalities.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['attachmentInputModalities'],
+        message: 'Provider preflight attachment input modalities must be unique.',
+      })
+    }
+
+    for (const [index, modality] of features.attachmentInputModalities.entries()) {
+      if (modality !== modality.toLowerCase()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['attachmentInputModalities', index],
+          message: 'Provider preflight attachment input modalities must be lowercase catalog values.',
+        })
+      }
+    }
+  })
 
 export const providerPreflightCheckSchema = z
   .object({
@@ -229,7 +251,7 @@ export const providerPreflightCheckSchema = z
 
 export const providerPreflightSnapshotSchema = z
   .object({
-    contractVersion: z.literal(1),
+    contractVersion: z.literal(PROVIDER_PREFLIGHT_CONTRACT_VERSION),
     profileId: z.string().trim().min(1),
     providerId: z.string().trim().min(1),
     modelId: z.string().trim().min(1),
@@ -266,6 +288,7 @@ export const preflightProviderProfileRequestSchema = z
       toolCalls: true,
       reasoningControls: false,
       attachments: false,
+      attachmentInputModalities: [],
     }),
   })
   .strict()
@@ -274,6 +297,8 @@ export const providerModelSchema = z
   .object({
     modelId: z.string().trim().min(1),
     displayName: z.string().trim().min(1),
+    inputModalities: z.array(z.string().trim().min(1)),
+    inputModalitiesSource: z.string().trim().min(1),
     thinking: providerModelThinkingCapabilitySchema,
     contextWindowTokens: z.number().int().positive().nullable().optional(),
     maxOutputTokens: z.number().int().positive().nullable().optional(),
@@ -283,6 +308,26 @@ export const providerModelSchema = z
     capabilities: providerCapabilityCatalogSchema.nullable().optional(),
   })
   .strict()
+  .superRefine((model, ctx) => {
+    const uniqueModalities = new Set(model.inputModalities)
+    if (uniqueModalities.size !== model.inputModalities.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['inputModalities'],
+        message: 'Provider-model input modalities must be unique.',
+      })
+    }
+
+    for (const [index, modality] of model.inputModalities.entries()) {
+      if (modality !== modality.toLowerCase()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['inputModalities', index],
+          message: 'Provider-model input modalities must be lowercase catalog values.',
+        })
+      }
+    }
+  })
 
 function validateRuntimeProviderModel(
   payload: { providerId: z.infer<typeof runtimeProviderIdSchema>; modelId: string },
@@ -598,6 +643,10 @@ export function estimateProviderModelCatalogBytes(
     bytes += 96
     bytes += estimateUtf16Bytes(model.modelId)
     bytes += estimateUtf16Bytes(model.displayName)
+    bytes += estimateUtf16Bytes(model.inputModalitiesSource)
+    for (const modality of model.inputModalities) {
+      bytes += estimateUtf16Bytes(modality)
+    }
     bytes += estimateOptionalTextBytes(model.contextLimitFetchedAt)
     bytes += estimateOptionalTextBytes(model.contextLimitSource)
     bytes += estimateOptionalTextBytes(model.contextLimitConfidence)
@@ -655,6 +704,7 @@ export function createPreflightProviderProfileRequest(
       toolCalls: options.requiredFeatures?.toolCalls ?? true,
       reasoningControls: options.requiredFeatures?.reasoningControls ?? false,
       attachments: options.requiredFeatures?.attachments ?? false,
+      attachmentInputModalities: options.requiredFeatures?.attachmentInputModalities ?? [],
     },
   })
 }

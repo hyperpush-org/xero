@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   lazy,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -14,7 +15,10 @@ import type {
   AgentPaneCloseState,
   AgentRuntimeProps,
 } from '@/components/xero/agent-runtime'
-import type { BrowserLaunchTarget } from '@/components/xero/browser-launch-targets'
+import {
+  browserLaunchTargetMatchesUrl,
+  type BrowserLaunchTarget,
+} from '@/components/xero/browser-launch-targets'
 import { SetupEmptyState } from '@/components/xero/agent-runtime/setup-empty-state'
 import { AgentWorkspace } from '@/components/xero/agent-workspace'
 import { AgentSessionsSidebar } from '@/components/xero/agent-sessions-sidebar'
@@ -40,7 +44,7 @@ import {
   type PlatformVariant,
   type SurfacePreloadTarget,
 } from '@/components/xero/shell'
-import { invoke, isTauri } from '@tauri-apps/api/core'
+import { isTauri } from '@tauri-apps/api/core'
 import type { StatusFooterProps } from '@/components/xero/status-footer'
 import type { SettingsSection } from '@/components/xero/settings-dialog'
 import type { TerminalSidebarHandle } from '@/components/xero/terminal-sidebar'
@@ -108,6 +112,12 @@ import {
   writeStoredToolCallGroupingPreference,
   type ToolCallGroupingPreference,
 } from '@/src/features/xero/tool-call-grouping-preference'
+import {
+  persistAgentRoutingAutoSwitchPreference,
+  readAgentRoutingAutoSwitchPreference,
+  readStoredAgentRoutingAutoSwitchPreference,
+  writeStoredAgentRoutingAutoSwitchPreference,
+} from '@/src/features/xero/agent-routing-auto-switch-preference'
 import type {
   SessionTranscriptSearchResultSnippetDto,
 } from '@/src/lib/xero-model/session-context'
@@ -123,6 +133,8 @@ import type {
 import {
   useXeroDesktopState,
   type AgentPaneView,
+  type AgentWorkspaceLayoutState,
+  type AgentWorkspacePaneView,
   type OperatorActionErrorView,
   type RefreshSource,
   type RuntimeRunActionKind,
@@ -149,15 +161,35 @@ import { useGitHubAuth } from '@/src/lib/github-auth'
 import { getCloudProviderDefaultProfileId } from '@/src/lib/xero-model/provider-presets'
 import { SHORTCUT_DEFINITIONS, type ShortcutId } from '@/src/features/shortcuts/shortcuts-definitions'
 import { useShortcutListener } from '@/src/features/shortcuts/use-shortcut-listener'
+import {
+  loadSourceControlSettings,
+  subscribeSourceControlSettings,
+  type SourceControlModelSelection,
+} from '@/components/xero/source-control-settings'
 import { startLayoutShiftGuard } from '@/lib/layout-shift-guard'
-import { useSidebarOpenMotion, useSidebarWidthMotion } from '@/lib/sidebar-motion'
+import {
+  SIDEBAR_WIDTH_DURATION_MS,
+  useSidebarOpenMotion,
+  useSidebarWidthMotion,
+} from '@/lib/sidebar-motion'
 import { cn } from '@/lib/utils'
 import { FloatingRightSidebarFrame } from '@/components/xero/floating-right-sidebar-frame'
+import { SessionNotificationsSidebar } from '@/components/xero/session-notifications-sidebar'
+import { SignInReminderToast } from '@/components/xero/sign-in-reminder-toast'
 import type { BrowserAgentContextRequest } from '@/components/xero/browser-tool-injection'
 import { DesktopControlBanner } from '@/components/xero/desktop-control-banner'
+import { checkAttachmentModelCompatibility } from '@/lib/agent-attachments'
+import { WORKFLOWS_ENABLED } from '@/src/features/xero/workflows-feature-flag'
 
 export interface XeroAppProps {
   adapter?: XeroDesktopAdapter
+}
+
+interface AgentWorkspaceDisplaySnapshot {
+  project: ProjectDetailView
+  agentView: AgentPaneView | null
+  layout: AgentWorkspaceLayoutState | null
+  panes: AgentWorkspacePaneView[]
 }
 
 const loadAgentRuntime = () => import('@/components/xero/agent-runtime')
@@ -181,13 +213,41 @@ function preloadSolanaWorkbenchSurface() {
 }
 
 const ACTIVE_VIEW_APP_STATE_KEY = 'app.activeView.v1'
+const ONBOARDING_COMPLETED_APP_STATE_KEY = 'app.onboarding.completed.v1'
+const GLOBAL_BROWSER_PROJECT_KEY = '__global_browser__'
 const GLOBAL_COMPUTER_USE_PROJECT_ID = 'global-computer-use'
 const GLOBAL_COMPUTER_USE_AGENT_SESSION_ID = 'agent-session-global-computer-use'
+
+type AppSidebarSurface =
+  | 'agentDock'
+  | 'browser'
+  | 'computerUse'
+  | 'ios'
+  | 'notifications'
+  | 'solana'
+  | 'terminal'
+  | 'usage'
+  | 'vcs'
+  | 'workflows'
 
 interface ComputerUseLoadResult {
   project: ProjectDetailView
   runtimeSession: RuntimeSessionView | null
   runtimeRun: RuntimeRunView | null
+}
+
+interface BrowserSidebarProjectState {
+  open: boolean
+  fullWidth: boolean
+}
+
+const DEFAULT_BROWSER_SIDEBAR_PROJECT_STATE: BrowserSidebarProjectState = {
+  open: false,
+  fullWidth: false,
+}
+
+function browserSidebarProjectKey(projectId: string | null): string {
+  return projectId ?? GLOBAL_BROWSER_PROJECT_KEY
 }
 
 function normalizePersistedActiveView(value: unknown): View | null {
@@ -244,6 +304,32 @@ async function persistActiveView(adapter: XeroDesktopAdapter, view: View): Promi
   })
 }
 
+async function readPersistedOnboardingCompleted(adapter: XeroDesktopAdapter): Promise<boolean> {
+  if (!adapter.readAppUiState) {
+    return false
+  }
+
+  try {
+    const response = await adapter.readAppUiState({
+      key: ONBOARDING_COMPLETED_APP_STATE_KEY,
+    })
+    return response.value === true
+  } catch {
+    return false
+  }
+}
+
+async function persistOnboardingCompleted(adapter: XeroDesktopAdapter): Promise<void> {
+  if (!adapter.writeAppUiState) {
+    return
+  }
+
+  await adapter.writeAppUiState({
+    key: ONBOARDING_COMPLETED_APP_STATE_KEY,
+    value: true,
+  })
+}
+
 const warmedSurfaceChunks = new Set<SurfacePreloadTarget>()
 
 const BASE_IDLE_SURFACE_PRELOAD_SEQUENCE: SurfacePreloadTarget[] = [
@@ -265,18 +351,12 @@ const AGENT_DOCK_WIDTH_STORAGE_KEY = 'xero.agentDock.width'
 const AGENT_DOCK_MIN_WIDTH = 320
 const AGENT_DOCK_DEFAULT_WIDTH = 560
 const AGENT_DOCK_MAX_WIDTH = 720
-const STARTUP_SURFACE_PREWARM_SETTLE_MS = 320
+// Matches ProjectRail's fixed `w-12`; browser focus fills the workspace to its right.
+const PROJECT_RAIL_WIDTH = 48
+const BROWSER_FOCUS_MIN_WIDTH = 320
+const STARTUP_SURFACE_PREWARM_SETTLE_MS = 120
 const HEAVY_SURFACE_MOUNT_AFTER_REVEAL_MS = 180
-const BASE_STARTUP_SURFACE_PRELOAD_TARGETS: SurfacePreloadTarget[] = [
-  'agent-dock',
-  'browser',
-  'solana',
-  'settings',
-  'terminal',
-  'usage',
-  'vcs',
-  'workflows',
-]
+const BASE_STARTUP_SURFACE_PRELOAD_TARGETS: SurfacePreloadTarget[] = []
 
 type BrowserComposerInsertTarget = 'agent-view' | 'agent-dock'
 
@@ -343,6 +423,14 @@ function readPersistedAgentDockWidth(): number {
   }
 }
 
+function readBrowserFocusWidth(): number | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  return Math.max(BROWSER_FOCUS_MIN_WIDTH, Math.round(window.innerWidth - PROJECT_RAIL_WIDTH))
+}
+
 function preloadSurfaceChunk(target: SurfacePreloadTarget): void {
   if (import.meta.env.MODE === 'test') {
     return
@@ -392,7 +480,7 @@ function preloadSurfaceChunk(target: SurfacePreloadTarget): void {
     return
   }
   if (target === 'agent-dock') {
-    void loadAgentDockSidebar()
+    void Promise.all([loadAgentDockSidebar(), loadAgentRuntime()])
   }
 }
 
@@ -478,21 +566,7 @@ async function preloadStartupSurfaceChunks(): Promise<void> {
   const preloads: Array<Promise<unknown>> = [
     loadAgentRuntime(),
     loadExecutionView(),
-    loadBrowserSidebar(),
-    preloadSolanaWorkbenchSurface(),
-    loadSettingsDialog().then((module) => {
-      void module.preloadSettingsSectionChunks().catch(() => undefined)
-    }),
-    loadTerminalSidebar(),
-    loadUsageStatsSidebar(),
-    loadVcsSidebar(),
-    loadWorkflowsSidebar(),
-    loadAgentDockSidebar(),
   ]
-
-  if (shouldIncludeIosSurface()) {
-    preloads.push(loadIosEmulatorSidebar())
-  }
 
   await Promise.all(preloads)
   withPlatformSurfacePreloads(BASE_STARTUP_SURFACE_PRELOAD_TARGETS).forEach((target) =>
@@ -634,24 +708,34 @@ function preloadViewChunk(view: View): void {
 function getVcsCommitMessageModel(
   agent: AgentPaneView | null,
   composerControls: RuntimeRunControlInputDto | null,
+  sourceControlModelSelection: SourceControlModelSelection | null = null,
 ): VcsCommitMessageModel | null {
-  const modelId = composerControls?.modelId?.trim() || agent?.selectedModelId?.trim() || null
+  const configuredModelId = sourceControlModelSelection?.modelId?.trim() || null
+  const modelId =
+    configuredModelId || composerControls?.modelId?.trim() || agent?.selectedModelId?.trim() || null
   if (!agent || !modelId) {
     return null
   }
 
-  const providerId = agent.selectedModel?.providerId ?? agent.selectedProviderId ?? null
+  const providerId =
+    sourceControlModelSelection?.providerId ??
+    agent.selectedModel?.providerId ??
+    agent.selectedProviderId ??
+    null
   const selectedModelOption =
     agent.providerModelCatalog.models.find(
       (model) =>
         model.modelId === modelId &&
-        (!composerControls?.providerProfileId || model.profileId === composerControls.providerProfileId),
+        (!sourceControlModelSelection?.providerProfileId ||
+          model.profileId === sourceControlModelSelection.providerProfileId) &&
+        (!composerControls?.providerProfileId || configuredModelId || model.profileId === composerControls.providerProfileId),
     ) ??
     agent.providerModelCatalog.models.find(
       (model) => model.modelId === modelId || model.selectionKey === `${providerId}:${modelId}`,
-    ) ?? agent.selectedModelOption
+    ) ?? (configuredModelId ? null : agent.selectedModelOption)
   const providerProfileId =
-    composerControls?.providerProfileId ??
+    sourceControlModelSelection?.providerProfileId ??
+    (configuredModelId ? selectedModelOption?.profileId : composerControls?.providerProfileId) ??
     agent.runtimeRunActiveControls?.providerProfileId ??
     agent.runtimeRunPendingControls?.providerProfileId ??
     selectedModelOption?.profileId ??
@@ -661,11 +745,12 @@ function getVcsCommitMessageModel(
   return {
     providerProfileId,
     modelId,
-    thinkingEffort:
-      composerControls?.thinkingEffort ??
-      agent.selectedThinkingEffort ??
-      agent.selectedModelDefaultThinkingEffort ??
-      null,
+    thinkingEffort: configuredModelId
+      ? sourceControlModelSelection?.thinkingEffort ?? null
+      : composerControls?.thinkingEffort ??
+        agent.selectedThinkingEffort ??
+        agent.selectedModelDefaultThinkingEffort ??
+        null,
     label: selectedModelOption?.label ?? modelId,
   }
 }
@@ -1098,14 +1183,18 @@ interface LazyPrerenderedSurfaceProps {
   children: ReactNode
   open: boolean
   prewarm?: boolean
+  stickyPrewarm?: boolean
 }
 
 function LazyPrerenderedSurface({
   children,
   open,
   prewarm = false,
+  stickyPrewarm = false,
 }: LazyPrerenderedSurfaceProps) {
-  const shouldMount = useActivatedSurface(open, prewarm)
+  const activatedMount = useActivatedSurface(open, prewarm)
+  const stickyMount = useStickyPrewarmedSurface(open, prewarm)
+  const shouldMount = stickyPrewarm ? stickyMount : activatedMount
   const renderedChildren = useFrozenSurfaceChildren(children, {
     active: open,
     prewarm,
@@ -1364,17 +1453,78 @@ function SolanaWorkbenchSurface({ open, prewarm = false }: { open: boolean; prew
   )
 }
 
-function AppBootLoadingOverlay({ active }: { active: boolean }) {
-  if (!active) {
+export const APP_BOOT_LOADING_EXIT_MS = 160
+
+function DismissingLoadingOverlay({
+  active,
+  className,
+  loadingClassName,
+}: {
+  active: boolean
+  className?: string
+  loadingClassName?: string
+}) {
+  const [rendered, setRendered] = useState(active)
+
+  useEffect(() => {
+    if (active) {
+      setRendered(true)
+      return
+    }
+
+    if (!rendered) {
+      return
+    }
+
+    const timeout = window.setTimeout(() => {
+      setRendered(false)
+    }, APP_BOOT_LOADING_EXIT_MS)
+
+    return () => {
+      window.clearTimeout(timeout)
+    }
+  }, [active, rendered])
+
+  if (!rendered) {
     return null
   }
 
+  const closing = !active
+
+  return (
+    <div
+      aria-hidden={closing}
+      className={cn(
+        closing && 'pointer-events-none',
+        className,
+      )}
+      data-state={closing ? 'closed' : 'open'}
+      inert={closing ? true : undefined}
+    >
+      <LoadingScreen className={loadingClassName} state={closing ? 'closed' : 'open'} />
+    </div>
+  )
+}
+
+export function AppWideLoadingOverlay({ active }: { active: boolean }) {
+  return (
+    <DismissingLoadingOverlay
+      active={active}
+      className="absolute inset-0 z-40"
+      loadingClassName="h-full w-full"
+    />
+  )
+}
+
+export function AppBootLoadingOverlay({ active }: { active: boolean }) {
   // Rendered as an app-root sibling of XeroShell; the shell main row uses
   // paint containment, which would otherwise clip fixed descendants.
   return (
-    <div className="fixed inset-0 z-[2147483647] bg-background">
-      <LoadingScreen className="h-screen w-screen" />
-    </div>
+    <DismissingLoadingOverlay
+      active={active}
+      className="fixed inset-0 z-[2147483647]"
+      loadingClassName="h-screen w-screen"
+    />
   )
 }
 
@@ -1467,6 +1617,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     projects,
     activeProject,
     activeProjectId,
+    runningAgentProjectIds,
     pendingProjectSelectionId,
     repositoryStatus,
     workflowView,
@@ -1506,7 +1657,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
     pendingSkillSourceId,
     skillRegistryMutationError,
     isDesktopRuntime,
-    activeProjectUnreadCompletedSessionCount,
     selectProject,
     prefetchProject,
     importProject,
@@ -1541,8 +1691,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
     upsertProviderCredential,
     deleteProviderCredential,
     startOAuthLogin,
-    startXaiDeviceCodeLogin,
-    pollXaiDeviceCodeLogin,
     refreshMcpRegistry,
     upsertMcpServer,
     removeMcpServer,
@@ -1574,7 +1722,19 @@ export function XeroApp({ adapter }: XeroAppProps) {
     openSessionInNewPane,
     setSplitterRatios,
     acknowledgeCompletedAgentSessions,
+    unreadCompletedSessionCount,
+    unreadCompletedSessionNotifications,
   } = useXeroDesktopState({ adapter, subscribeRuntimeStreams: false })
+
+  const completedSessionCountsByProject = useMemo<ReadonlyMap<string, number>>(() => {
+    const counts = new Map<string, number>()
+
+    for (const notification of unreadCompletedSessionNotifications) {
+      counts.set(notification.projectId, (counts.get(notification.projectId) ?? 0) + 1)
+    }
+
+    return counts
+  }, [unreadCompletedSessionNotifications])
 
   const {
     session: githubSession,
@@ -1585,14 +1745,19 @@ export function XeroApp({ adapter }: XeroAppProps) {
   } = useGitHubAuth()
 
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>('providers')
+  const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>('account')
   const [toolCallGroupingPreference, setToolCallGroupingPreference] =
     useState<ToolCallGroupingPreference>(() => readStoredToolCallGroupingPreference())
+  const [agentRoutingAutoSwitchEnabled, setAgentRoutingAutoSwitchEnabled] =
+    useState<boolean>(() => readStoredAgentRoutingAutoSwitchPreference())
   const [pendingAgentSessionId, setPendingAgentSessionId] = useState<string | null>(null)
   const [paneCloseStates, setPaneCloseStates] = useState<Record<string, AgentPaneCloseState>>({})
   const [pendingPaneCloseId, setPendingPaneCloseId] = useState<string | null>(null)
   const [agentComposerControls, setAgentComposerControls] =
     useState<RuntimeRunControlInputDto | null>(null)
+  const [sourceControlSettings, setSourceControlSettings] = useState(
+    loadSourceControlSettings,
+  )
   const persistComposerSettings = useCallback(
     (controls: RuntimeRunControlInputDto | null) => {
       const value = composerSettingsValueFromControls(controls)
@@ -1625,6 +1790,13 @@ export function XeroApp({ adapter }: XeroAppProps) {
       disposed = true
     }
   }, [resolvedAdapter])
+  useEffect(
+    () =>
+      subscribeSourceControlSettings((nextSettings) => {
+        setSourceControlSettings(nextSettings)
+      }),
+    [],
+  )
   useEffect(() => {
     if (!isTauri()) return
     let disposed = false
@@ -1659,8 +1831,56 @@ export function XeroApp({ adapter }: XeroAppProps) {
   }, [])
   const [isCreatingAgentSession, setIsCreatingAgentSession] = useState(false)
   const [projectAddOpen, setProjectAddOpen] = useState(false)
-  const [browserOpen, setBrowserOpen] = useState(false)
+  const browserProjectKey = browserSidebarProjectKey(activeProjectId)
+  const [browserSidebarStateByProject, setBrowserSidebarStateByProject] = useState<
+    Record<string, BrowserSidebarProjectState>
+  >({})
+  const browserSidebarState =
+    browserSidebarStateByProject[browserProjectKey] ?? DEFAULT_BROWSER_SIDEBAR_PROJECT_STATE
+  const browserOpen = browserSidebarState.open
+  const browserFullWidth = browserSidebarState.fullWidth
+  const updateBrowserSidebarState = useCallback(
+    (update: (current: BrowserSidebarProjectState) => BrowserSidebarProjectState) => {
+      setBrowserSidebarStateByProject((current) => {
+        const previous =
+          current[browserProjectKey] ?? DEFAULT_BROWSER_SIDEBAR_PROJECT_STATE
+        const next = update(previous)
+        if (next.open === previous.open && next.fullWidth === previous.fullWidth) {
+          return current
+        }
+        return { ...current, [browserProjectKey]: next }
+      })
+    },
+    [browserProjectKey],
+  )
+  const setBrowserOpen = useCallback(
+    (open: boolean) => {
+      updateBrowserSidebarState((current) => ({
+        ...current,
+        open,
+      }))
+    },
+    [updateBrowserSidebarState],
+  )
+  const setBrowserFullWidth = useCallback(
+    (fullWidth: boolean) => {
+      updateBrowserSidebarState((current) => ({
+        ...current,
+        fullWidth,
+      }))
+    },
+    [updateBrowserSidebarState],
+  )
+  const [browserFullWidthTarget, setBrowserFullWidthTarget] =
+    useState<number | null>(readBrowserFocusWidth)
   const [browserLaunchTargets, setBrowserLaunchTargets] = useState<BrowserLaunchTarget[]>([])
+  const activeBrowserLaunchTargets = useMemo(
+    () =>
+      browserLaunchTargets.filter((target) =>
+        activeProjectId ? target.projectId === activeProjectId : !target.projectId,
+      ),
+    [activeProjectId, browserLaunchTargets],
+  )
   const [pendingBrowserOpenUrl, setPendingBrowserOpenUrl] = useState<PendingBrowserOpenUrl | null>(null)
   const [iosOpen, setIosOpen] = useState(false)
   const [solanaOpen, setSolanaOpen] = useState(false)
@@ -1685,12 +1905,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
     projectId: activeProjectId,
   })
   const [usageOpen, setUsageOpen] = useState(false)
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [agentDockOpen, setAgentDockOpen] = useState(false)
   const [computerUseOpen, setComputerUseOpen] = useState(false)
   const [pendingBrowserComposerInsert, setPendingBrowserComposerInsert] =
     useState<PendingBrowserComposerInsert | null>(null)
-  const [browserComposerInsertLoadingTarget, setBrowserComposerInsertLoadingTarget] =
-    useState<BrowserComposerInsertTarget | null>(null)
   const [computerUseProject, setComputerUseProject] = useState<ProjectDetailView | null>(null)
   const [computerUseRuntimeSession, setComputerUseRuntimeSession] =
     useState<RuntimeSessionView | null>(null)
@@ -1701,8 +1920,12 @@ export function XeroApp({ adapter }: XeroAppProps) {
     useState<RuntimeRunActionKind | null>(null)
   const [computerUseRuntimeRunActionError, setComputerUseRuntimeRunActionError] =
     useState<OperatorActionErrorView | null>(null)
+  const [computerUseClearChatPending, setComputerUseClearChatPending] = useState(false)
   const computerUseRuntimeActionRefreshKeysRef = useRef<Record<string, Set<string>>>({})
   const computerUseRuntimeMetadataRefreshTimeoutRef = useRef<number | null>(null)
+  const computerUseProjectLoadPromiseRef = useRef<Promise<ComputerUseLoadResult> | null>(null)
+  const pendingAgentDockOpenTimeoutRef = useRef<number | null>(null)
+  const pendingComputerUseOpenTimeoutRef = useRef<number | null>(null)
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [startTargetsDialogOpen, setStartTargetsDialogOpen] = useState(false)
   const [pendingInitialRuntimeAgent, setPendingInitialRuntimeAgent] =
@@ -1765,7 +1988,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     return defaults
   }, [customAgentDefinitions, workflowAgentInspector.agents])
   const refreshWorkflowDefinitions = useCallback(async () => {
-    if (!activeProjectId || !resolvedAdapter.listWorkflowDefinitions) {
+    if (!WORKFLOWS_ENABLED || !activeProjectId || !resolvedAdapter.listWorkflowDefinitions) {
       setWorkflowDefinitions([])
       setWorkflowDefinitionsStatus('idle')
       setWorkflowDefinitionsError(null)
@@ -1784,7 +2007,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
   }, [activeProjectId, resolvedAdapter])
 
   const refreshWorkflowRuns = useCallback(async () => {
-    if (!activeProjectId || !resolvedAdapter.listWorkflowRuns) {
+    if (!WORKFLOWS_ENABLED || !activeProjectId || !resolvedAdapter.listWorkflowRuns) {
       setWorkflowRuns([])
       setWorkflowRunsStatus('idle')
       return
@@ -1814,11 +2037,42 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const previousBrowserOpenRef = useRef<boolean>(browserOpen)
 
   useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    const updateBrowserFullWidthTarget = () => {
+      setBrowserFullWidthTarget(readBrowserFocusWidth())
+    }
+
+    updateBrowserFullWidthTarget()
+    window.addEventListener('resize', updateBrowserFullWidthTarget)
+    return () => window.removeEventListener('resize', updateBrowserFullWidthTarget)
+  }, [])
+
+  useEffect(() => {
+    if (browserOpen) return
+    setBrowserFullWidth(false)
+  }, [browserOpen, setBrowserFullWidth])
+
+  useEffect(() => {
     let cancelled = false
     void readToolCallGroupingPreference(resolvedAdapter)
       .then((preference) => {
         if (cancelled) return
         setToolCallGroupingPreference(preference)
+      })
+      .catch(() => undefined)
+
+    return () => {
+      cancelled = true
+    }
+  }, [resolvedAdapter])
+
+  useEffect(() => {
+    let cancelled = false
+    void readAgentRoutingAutoSwitchPreference(resolvedAdapter)
+      .then((enabled) => {
+        if (cancelled) return
+        setAgentRoutingAutoSwitchEnabled(enabled)
       })
       .catch(() => undefined)
 
@@ -1840,6 +2094,21 @@ export function XeroApp({ adapter }: XeroAppProps) {
       }
     },
     [resolvedAdapter, toolCallGroupingPreference],
+  )
+
+  const handleAgentRoutingAutoSwitchChange = useCallback(
+    async (enabled: boolean) => {
+      const previousPreference = agentRoutingAutoSwitchEnabled
+      setAgentRoutingAutoSwitchEnabled(enabled)
+      try {
+        await persistAgentRoutingAutoSwitchPreference(resolvedAdapter, enabled)
+      } catch (error) {
+        setAgentRoutingAutoSwitchEnabled(previousPreference)
+        writeStoredAgentRoutingAutoSwitchPreference(previousPreference)
+        throw error
+      }
+    },
+    [agentRoutingAutoSwitchEnabled, resolvedAdapter],
   )
 
   useEffect(() => {
@@ -1870,7 +2139,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     }
   }, [activeProjectId, customAgentDefinitionsRevision, resolvedAdapter])
 
-  const openSettings = useCallback((section: SettingsSection = 'providers') => {
+  const openSettings = useCallback((section: SettingsSection = 'account') => {
     preloadSurfaceChunk('settings')
     setSettingsInitialSection(section)
     setSettingsOpen(true)
@@ -1970,32 +2239,81 @@ export function XeroApp({ adapter }: XeroAppProps) {
     [resolvedAdapter],
   )
 
+  const clearPendingAgentDockOpen = useCallback(() => {
+    let clearedComputerUseOpen = false
+    if (pendingAgentDockOpenTimeoutRef.current === null) {
+      if (pendingComputerUseOpenTimeoutRef.current !== null) {
+        window.clearTimeout(pendingComputerUseOpenTimeoutRef.current)
+        pendingComputerUseOpenTimeoutRef.current = null
+        clearedComputerUseOpen = true
+      }
+      if (clearedComputerUseOpen) {
+        setIsCreatingAgentSession(false)
+      }
+      return
+    }
+    window.clearTimeout(pendingAgentDockOpenTimeoutRef.current)
+    pendingAgentDockOpenTimeoutRef.current = null
+    if (pendingComputerUseOpenTimeoutRef.current !== null) {
+      window.clearTimeout(pendingComputerUseOpenTimeoutRef.current)
+      pendingComputerUseOpenTimeoutRef.current = null
+      clearedComputerUseOpen = true
+    }
+    if (clearedComputerUseOpen) {
+      setIsCreatingAgentSession(false)
+    }
+  }, [])
+
+  useEffect(() => clearPendingAgentDockOpen, [clearPendingAgentDockOpen])
+
+  const closeSidebarsExcept = useCallback((except: AppSidebarSurface | null = null) => {
+    if (except !== 'browser') setBrowserOpen(false)
+    if (except !== 'ios') setIosOpen(false)
+    if (except !== 'solana') setSolanaOpen(false)
+    if (except !== 'vcs') setVcsOpen(false)
+    if (except !== 'workflows') setWorkflowsOpen(false)
+    if (except !== 'usage') setUsageOpen(false)
+    if (except !== 'notifications') setNotificationsOpen(false)
+    if (except !== 'agentDock') setAgentDockOpen(false)
+    if (except !== 'computerUse') setComputerUseOpen(false)
+    if (except !== 'terminal') setTerminalOpen(false)
+  }, [setBrowserOpen])
+
   const toggleBrowser = useCallback(() => {
+    clearPendingAgentDockOpen()
     if (browserOpen) {
+      setBrowserFullWidth(false)
       setBrowserOpen(false)
       return
     }
-    setIosOpen(false)
-    setSolanaOpen(false)
-    setVcsOpen(false)
-    setWorkflowsOpen(false)
-    setAgentDockOpen(false)
-    setComputerUseOpen(false)
-    setTerminalOpen(false)
+    closeSidebarsExcept('browser')
+    setBrowserFullWidth(false)
     setBrowserOpen(true)
-  }, [browserOpen])
+  }, [
+    browserOpen,
+    clearPendingAgentDockOpen,
+    closeSidebarsExcept,
+    setBrowserFullWidth,
+    setBrowserOpen,
+  ])
 
   const revealBrowserSidebar = useCallback(() => {
-    setIosOpen(false)
-    setSolanaOpen(false)
-    setVcsOpen(false)
-    setWorkflowsOpen(false)
-    setUsageOpen(false)
-    setAgentDockOpen(false)
-    setComputerUseOpen(false)
-    setTerminalOpen(false)
+    clearPendingAgentDockOpen()
+    closeSidebarsExcept('browser')
     setBrowserOpen(true)
-  }, [])
+  }, [clearPendingAgentDockOpen, closeSidebarsExcept, setBrowserOpen])
+
+  const handleBrowserFullWidthChange = useCallback(
+    (nextFullWidth: boolean) => {
+      clearPendingAgentDockOpen()
+      if (nextFullWidth) {
+        closeSidebarsExcept('browser')
+        setBrowserOpen(true)
+      }
+      setBrowserFullWidth(nextFullWidth)
+    },
+    [clearPendingAgentDockOpen, closeSidebarsExcept, setBrowserFullWidth, setBrowserOpen],
+  )
 
   const handleOpenUrlInBrowser = useCallback(
     (url: string) => {
@@ -2008,77 +2326,69 @@ export function XeroApp({ adapter }: XeroAppProps) {
 
   const handleBrowserLaunchTargetDetected = useCallback((target: BrowserLaunchTarget) => {
     setBrowserLaunchTargets((current) => {
-      const next = current.filter((entry) => entry.id !== target.id)
+      const next = current.filter(
+        (entry) => entry.id !== target.id || entry.projectId !== target.projectId,
+      )
       next.unshift(target)
-      return next.slice(0, 8)
+      return next.slice(0, 24)
     })
   }, [])
+
+  const handleBrowserLaunchTargetUnavailable = useCallback((url: string) => {
+    setBrowserLaunchTargets((current) =>
+      current.filter(
+        (target) =>
+          target.projectId !== activeProjectId || !browserLaunchTargetMatchesUrl(target, url),
+      ),
+    )
+  }, [activeProjectId])
 
   const handlePendingBrowserOpenUrlConsumed = useCallback((id: string) => {
     setPendingBrowserOpenUrl((current) => (current?.id === id ? null : current))
   }, [])
 
   const toggleIos = useCallback(() => {
+    clearPendingAgentDockOpen()
     if (iosOpen) {
       setIosOpen(false)
       return
     }
-    setBrowserOpen(false)
-    setSolanaOpen(false)
-    setVcsOpen(false)
-    setWorkflowsOpen(false)
-    setAgentDockOpen(false)
-    setComputerUseOpen(false)
-    setTerminalOpen(false)
+    closeSidebarsExcept('ios')
     setIosOpen(true)
-  }, [iosOpen])
+  }, [clearPendingAgentDockOpen, closeSidebarsExcept, iosOpen])
 
   const toggleSolana = useCallback(() => {
+    clearPendingAgentDockOpen()
     if (solanaOpen) {
       setSolanaOpen(false)
       return
     }
-    setBrowserOpen(false)
-    setIosOpen(false)
-    setVcsOpen(false)
-    setWorkflowsOpen(false)
-    setAgentDockOpen(false)
-    setComputerUseOpen(false)
-    setTerminalOpen(false)
+    closeSidebarsExcept('solana')
     setSolanaOpen(true)
-  }, [solanaOpen])
+  }, [clearPendingAgentDockOpen, closeSidebarsExcept, solanaOpen])
 
   const toggleVcs = useCallback(() => {
+    clearPendingAgentDockOpen()
     if (vcsOpen) {
       setVcsOpen(false)
       return
     }
-    setBrowserOpen(false)
-    setIosOpen(false)
-    setSolanaOpen(false)
-    setWorkflowsOpen(false)
-    setAgentDockOpen(false)
-    setComputerUseOpen(false)
-    setTerminalOpen(false)
+    closeSidebarsExcept('vcs')
     setVcsOpen(true)
-  }, [vcsOpen])
+  }, [clearPendingAgentDockOpen, closeSidebarsExcept, vcsOpen])
 
   const toggleWorkflows = useCallback(() => {
+    clearPendingAgentDockOpen()
     if (workflowsOpen) {
       setWorkflowsOpen(false)
       return
     }
-    setBrowserOpen(false)
-    setIosOpen(false)
-    setSolanaOpen(false)
-    setVcsOpen(false)
-    setAgentDockOpen(false)
-    setComputerUseOpen(false)
-    setTerminalOpen(false)
+    closeSidebarsExcept('workflows')
     setWorkflowsOpen(true)
-  }, [workflowsOpen])
+  }, [clearPendingAgentDockOpen, closeSidebarsExcept, workflowsOpen])
 
   const toggleAgentDock = useCallback(() => {
+    clearPendingAgentDockOpen()
     if (agentDockOpen) {
       setAgentDockOpen(false)
       return
@@ -2090,16 +2400,28 @@ export function XeroApp({ adapter }: XeroAppProps) {
         agentDefinitionId: null,
       })
     }
-    setBrowserOpen(false)
-    setIosOpen(false)
-    setSolanaOpen(false)
-    setVcsOpen(false)
-    setWorkflowsOpen(false)
-    setUsageOpen(false)
-    setTerminalOpen(false)
+    closeSidebarsExcept('agentDock')
+
+    if (computerUseOpen) {
+      setComputerUseOpen(false)
+      setAgentDockOpen(false)
+      pendingAgentDockOpenTimeoutRef.current = window.setTimeout(() => {
+        pendingAgentDockOpenTimeoutRef.current = null
+        setAgentDockOpen(true)
+      }, SIDEBAR_WIDTH_DURATION_MS)
+      return
+    }
+
     setComputerUseOpen(false)
     setAgentDockOpen(true)
-  }, [activeProject?.selectedAgentSessionId, activeView, agentDockOpen])
+  }, [
+    activeProject?.selectedAgentSessionId,
+    activeView,
+    agentDockOpen,
+    clearPendingAgentDockOpen,
+    closeSidebarsExcept,
+    computerUseOpen,
+  ])
 
   const loadComputerUseProject = useCallback(async (): Promise<ComputerUseLoadResult> => {
     await resolvedAdapter.ensureGlobalComputerUseSession?.()
@@ -2137,6 +2459,41 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setComputerUseRuntimeRun(runtimeRun)
     return { project, runtimeSession, runtimeRun }
   }, [resolvedAdapter])
+
+  const preloadComputerUseProject = useCallback((): Promise<ComputerUseLoadResult> => {
+    if (computerUseProject) {
+      return Promise.resolve({
+        project: computerUseProject,
+        runtimeSession: computerUseRuntimeSession,
+        runtimeRun: computerUseRuntimeRun,
+      })
+    }
+
+    if (computerUseProjectLoadPromiseRef.current) {
+      return computerUseProjectLoadPromiseRef.current
+    }
+
+    const loadPromise = loadComputerUseProject()
+    computerUseProjectLoadPromiseRef.current = loadPromise
+    loadPromise.then(
+      () => {
+        if (computerUseProjectLoadPromiseRef.current === loadPromise) {
+          computerUseProjectLoadPromiseRef.current = null
+        }
+      },
+      () => {
+        if (computerUseProjectLoadPromiseRef.current === loadPromise) {
+          computerUseProjectLoadPromiseRef.current = null
+        }
+      },
+    )
+    return loadPromise
+  }, [
+    computerUseProject,
+    computerUseRuntimeRun,
+    computerUseRuntimeSession,
+    loadComputerUseProject,
+  ])
 
   const refreshComputerUseRuntimeMetadata = useCallback(async () => {
     const [runtimeSession, runtimeRun] = await Promise.all([
@@ -2284,11 +2641,61 @@ export function XeroApp({ adapter }: XeroAppProps) {
     computerUseRuntimeRun?.isActive && !computerUseRuntimeRun.isTerminal,
   )
 
+  const clearComputerUseChat = useCallback(async () => {
+    if (
+      !resolvedAdapter.resetGlobalComputerUseSession ||
+      computerUseRunning ||
+      computerUseClearChatPending
+    ) {
+      return
+    }
+
+    setComputerUseClearChatPending(true)
+    setComputerUseRuntimeRunActionError(null)
+    try {
+      await resolvedAdapter.resetGlobalComputerUseSession()
+      computerUseRuntimeActionRefreshKeysRef.current = {}
+      highChurnStore.setRuntimeStreams((currentStreams) =>
+        removeRuntimeStreamForSession(
+          currentStreams,
+          GLOBAL_COMPUTER_USE_PROJECT_ID,
+          GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
+        ),
+      )
+      setComputerUseRuntimeRun(null)
+      await loadComputerUseProject()
+    } catch (error) {
+      setComputerUseRuntimeRunActionError(
+        getOperatorActionError(error, 'Xero could not clear the Computer Use chat.'),
+      )
+    } finally {
+      setComputerUseClearChatPending(false)
+    }
+  }, [
+    computerUseClearChatPending,
+    computerUseRunning,
+    highChurnStore,
+    loadComputerUseProject,
+    resolvedAdapter,
+  ])
+
+  const canClearComputerUseChat = Boolean(resolvedAdapter.resetGlobalComputerUseSession) &&
+    !computerUseRunning &&
+    !computerUseClearChatPending
+  const clearComputerUseChatTitle = !resolvedAdapter.resetGlobalComputerUseSession
+    ? 'Clear chat is unavailable in this build.'
+    : computerUseRunning
+      ? 'Stop the current run before clearing chat'
+      : computerUseClearChatPending
+        ? 'Clearing Computer Use chat'
+        : undefined
+
   const closeComputerUse = useCallback(() => {
     setComputerUseOpen(false)
   }, [])
 
   const toggleComputerUse = useCallback(() => {
+    clearPendingAgentDockOpen()
     if (computerUseOpen) {
       closeComputerUse()
       return
@@ -2299,40 +2706,46 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setSelectedWorkflowRun(null)
     setSelectedWorkflowIsDraft(false)
     setSelectedWorkflowTemplatePreviewId(null)
-    setBrowserOpen(false)
-    setIosOpen(false)
-    setSolanaOpen(false)
-    setVcsOpen(false)
-    setWorkflowsOpen(false)
-    setUsageOpen(false)
-    setTerminalOpen(false)
-    setAgentDockOpen(false)
+    closeSidebarsExcept('computerUse')
     setIsCreatingAgentSession(true)
-    void (async () => {
-      await loadComputerUseProject()
-      setComputerUseOpen(true)
-    })()
-      .catch(() => undefined)
-      .finally(() => {
-        setIsCreatingAgentSession(false)
-      })
-  }, [closeComputerUse, computerUseOpen, loadComputerUseProject])
+    const openComputerUse = () => {
+      void (async () => {
+        await preloadComputerUseProject()
+        setComputerUseOpen(true)
+      })()
+        .catch(() => undefined)
+        .finally(() => {
+          setIsCreatingAgentSession(false)
+        })
+    }
+
+    if (agentDockOpen) {
+      pendingComputerUseOpenTimeoutRef.current = window.setTimeout(() => {
+        pendingComputerUseOpenTimeoutRef.current = null
+        openComputerUse()
+      }, SIDEBAR_WIDTH_DURATION_MS)
+      return
+    }
+
+    openComputerUse()
+  }, [
+    agentDockOpen,
+    clearPendingAgentDockOpen,
+    closeComputerUse,
+    closeSidebarsExcept,
+    computerUseOpen,
+    preloadComputerUseProject,
+  ])
 
   const toggleTerminal = useCallback(() => {
+    clearPendingAgentDockOpen()
     if (terminalOpen) {
       setTerminalOpen(false)
       return
     }
-    setBrowserOpen(false)
-    setIosOpen(false)
-    setSolanaOpen(false)
-    setVcsOpen(false)
-    setWorkflowsOpen(false)
-    setUsageOpen(false)
-    setAgentDockOpen(false)
-    setComputerUseOpen(false)
+    closeSidebarsExcept('terminal')
     setTerminalOpen(true)
-  }, [terminalOpen])
+  }, [clearPendingAgentDockOpen, closeSidebarsExcept, terminalOpen])
   useEffect(() => {
     if (activeView === 'agent' && agentDockOpen) {
       setAgentDockOpen(false)
@@ -2360,16 +2773,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
   }, [])
 
   const revealTerminalSidebar = useCallback(() => {
-    setBrowserOpen(false)
-    setIosOpen(false)
-    setSolanaOpen(false)
-    setVcsOpen(false)
-    setWorkflowsOpen(false)
-    setUsageOpen(false)
-    setAgentDockOpen(false)
-    setComputerUseOpen(false)
+    closeSidebarsExcept('terminal')
     setTerminalOpen(true)
-  }, [])
+  }, [closeSidebarsExcept])
 
   const waitForTerminalSidebarHandle = useCallback(async () => {
     for (let attempt = 0; attempt < 30; attempt += 1) {
@@ -2393,6 +2799,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
       await handle.spawnTabWithCommand(target.command, {
         label: target.name,
         browserSupported: target.browserSupported,
+        source: {
+          kind: 'start-target',
+          targetId: target.id,
+          targetName: target.name,
+        },
       })
     },
     [activeProjectId, activeProjectStartTargets, revealTerminalSidebar, waitForTerminalSidebarHandle],
@@ -2412,6 +2823,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
       await handle.spawnTabWithCommand(target.command, {
         label: target.name,
         browserSupported: target.browserSupported,
+        source: {
+          kind: 'start-target',
+          targetId: target.id,
+          targetName: target.name,
+        },
       })
     }
   }, [activeProjectId, activeProjectStartTargets, revealTerminalSidebar, waitForTerminalSidebarHandle])
@@ -2425,6 +2841,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
       return handle.spawnTabWithCommand(request.command, {
         label: request.label,
         exitWhenDone: request.exitWhenDone ?? true,
+        source: {
+          kind: 'editor-task',
+          label: request.label,
+        },
         onData: request.onData,
         onExit: request.onExit,
       })
@@ -2566,12 +2986,15 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setPhaseNodePanelOpen(hasSelection)
   }, [])
   const phaseSidebarRestoreKeyRef = useRef<
-    'browser' | 'ios' | 'solana' | 'vcs' | 'workflows' | 'usage' | 'agentDock' | null
+    AppSidebarSurface | null
   >(null)
   const phaseSidebarStateRef = useRef({
     browserOpen,
+    computerUseOpen,
     iosOpen,
+    notificationsOpen,
     solanaOpen,
+    terminalOpen,
     vcsOpen,
     workflowsOpen,
     usageOpen,
@@ -2580,14 +3003,28 @@ export function XeroApp({ adapter }: XeroAppProps) {
   useEffect(() => {
     phaseSidebarStateRef.current = {
       browserOpen,
+      computerUseOpen,
       iosOpen,
+      notificationsOpen,
       solanaOpen,
+      terminalOpen,
       vcsOpen,
       workflowsOpen,
       usageOpen,
       agentDockOpen,
     }
-  }, [browserOpen, iosOpen, solanaOpen, vcsOpen, workflowsOpen, usageOpen, agentDockOpen])
+  }, [
+    agentDockOpen,
+    browserOpen,
+    computerUseOpen,
+    iosOpen,
+    notificationsOpen,
+    solanaOpen,
+    terminalOpen,
+    usageOpen,
+    vcsOpen,
+    workflowsOpen,
+  ])
   useEffect(() => {
     if (phaseNodePanelOpen) {
       // Don't double-collapse if we already stashed a sidebar for this open.
@@ -2596,12 +3033,21 @@ export function XeroApp({ adapter }: XeroAppProps) {
       if (snapshot.browserOpen) {
         phaseSidebarRestoreKeyRef.current = 'browser'
         setBrowserOpen(false)
+      } else if (snapshot.computerUseOpen) {
+        phaseSidebarRestoreKeyRef.current = 'computerUse'
+        setComputerUseOpen(false)
       } else if (snapshot.iosOpen) {
         phaseSidebarRestoreKeyRef.current = 'ios'
         setIosOpen(false)
+      } else if (snapshot.notificationsOpen) {
+        phaseSidebarRestoreKeyRef.current = 'notifications'
+        setNotificationsOpen(false)
       } else if (snapshot.solanaOpen) {
         phaseSidebarRestoreKeyRef.current = 'solana'
         setSolanaOpen(false)
+      } else if (snapshot.terminalOpen) {
+        phaseSidebarRestoreKeyRef.current = 'terminal'
+        setTerminalOpen(false)
       } else if (snapshot.vcsOpen) {
         phaseSidebarRestoreKeyRef.current = 'vcs'
         setVcsOpen(false)
@@ -2623,8 +3069,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
     const snapshot = phaseSidebarStateRef.current
     const anySidebarOpen =
       snapshot.browserOpen ||
+      snapshot.computerUseOpen ||
       snapshot.iosOpen ||
+      snapshot.notificationsOpen ||
       snapshot.solanaOpen ||
+      snapshot.terminalOpen ||
       snapshot.vcsOpen ||
       snapshot.workflowsOpen ||
       snapshot.usageOpen ||
@@ -2634,8 +3083,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
     // single-open invariant the toggle handlers maintain).
     if (anySidebarOpen) return
     if (key === 'browser') setBrowserOpen(true)
+    else if (key === 'computerUse') setComputerUseOpen(true)
     else if (key === 'ios') setIosOpen(true)
+    else if (key === 'notifications') setNotificationsOpen(true)
     else if (key === 'solana') setSolanaOpen(true)
+    else if (key === 'terminal') setTerminalOpen(true)
     else if (key === 'vcs') setVcsOpen(true)
     else if (key === 'workflows') setWorkflowsOpen(true)
     else if (key === 'usage') setUsageOpen(true)
@@ -2704,24 +3156,44 @@ export function XeroApp({ adapter }: XeroAppProps) {
 
   const [platformOverride, setPlatformOverride] = useState<PlatformVariant | null>(null)
   const [onboardingDismissed, setOnboardingDismissed] = useState(false)
+  const [onboardingCompletionHydrated, setOnboardingCompletionHydrated] = useState(
+    () => !resolvedAdapter.readAppUiState,
+  )
   const [onboardingOpen, setOnboardingOpen] = useState(false)
-  const [launchMode, setLaunchMode] = useState<string | null>(null)
+  const completeOnboarding = useCallback(() => {
+    setOnboardingDismissed(true)
+    setOnboardingOpen(false)
+    void persistOnboardingCompleted(resolvedAdapter).catch(() => undefined)
+  }, [resolvedAdapter])
+
   useEffect(() => {
-    if (!isTauri()) return
-    let cancelled = false
-    void invoke<string>('get_launch_mode')
-      .then((value) => {
-        if (!cancelled && typeof value === 'string' && value.length > 0) {
-          setLaunchMode(value)
-        }
-      })
-      .catch(() => {
-        // Command unavailable in older builds — leave launchMode null.
-      })
-    return () => {
-      cancelled = true
+    if (!resolvedAdapter.readAppUiState) {
+      setOnboardingCompletionHydrated(true)
+      return
     }
-  }, [])
+
+    let disposed = false
+    setOnboardingCompletionHydrated(false)
+    void readPersistedOnboardingCompleted(resolvedAdapter)
+      .then((completed) => {
+        if (disposed || !completed) {
+          return
+        }
+        setOnboardingDismissed(true)
+        setOnboardingOpen(false)
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (disposed) {
+          return
+        }
+        setOnboardingCompletionHydrated(true)
+      })
+
+    return () => {
+      disposed = true
+    }
+  }, [resolvedAdapter])
   useEffect(() => {
     const wasBrowserOpen = previousBrowserOpenRef.current
 
@@ -2772,26 +3244,45 @@ export function XeroApp({ adapter }: XeroAppProps) {
           totalCostMicros: footerSpend.totalCostMicros,
         }
       : null,
-    notifications: activeProjectUnreadCompletedSessionCount,
+    notifications: unreadCompletedSessionCount,
+    notificationsActive: notificationsOpen,
+    onNotificationsClick: () => {
+      if (notificationsOpen) {
+        setNotificationsOpen(false)
+        return
+      }
+      closeSidebarsExcept('notifications')
+      setNotificationsOpen(true)
+    },
     spendActive: usageOpen,
     onSpendClick: activeProjectId
       ? () => {
           preloadSurfaceChunk('usage')
-          setUsageOpen((current) => !current)
+          if (usageOpen) {
+            setUsageOpen(false)
+            return
+          }
+          closeSidebarsExcept('usage')
+          setUsageOpen(true)
         }
       : undefined,
   }
   const vcsCommitMessageModel = useMemo(
-    () => getVcsCommitMessageModel(agentView, agentComposerControls),
-    [agentComposerControls, agentView],
+    () =>
+      getVcsCommitMessageModel(
+        agentView,
+        agentComposerControls,
+        sourceControlSettings.commitMessageModelSelection,
+      ),
+    [agentComposerControls, agentView, sourceControlSettings.commitMessageModelSelection],
   )
   const projectRunnerModelOptions = useMemo(
     () => getProjectRunnerModelOptions(agentView),
     [agentView],
   )
-  const memoryReviewAdapter = useMemo(() => {
+  const memoryAdapter = useMemo(() => {
     if (
-      !resolvedAdapter.getSessionMemoryReviewQueue ||
+      !resolvedAdapter.getSessionMemoryItems ||
       !resolvedAdapter.updateSessionMemory ||
       !resolvedAdapter.correctSessionMemory ||
       !resolvedAdapter.deleteSessionMemory
@@ -2799,7 +3290,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
       return null
     }
     return {
-      getQueue: resolvedAdapter.getSessionMemoryReviewQueue.bind(resolvedAdapter),
+      getQueue: resolvedAdapter.getSessionMemoryItems.bind(resolvedAdapter),
       updateMemory: resolvedAdapter.updateSessionMemory.bind(resolvedAdapter),
       correctMemory: resolvedAdapter.correctSessionMemory.bind(resolvedAdapter),
       deleteMemory: resolvedAdapter.deleteSessionMemory.bind(resolvedAdapter),
@@ -2861,35 +3352,101 @@ export function XeroApp({ adapter }: XeroAppProps) {
     pendingAgentDockSelection?.agentDefinitionId ?? null
 
   useEffect(() => {
-    if (!onboardingDismissed && !isLoading && projects.length === 0) {
+    if (
+      onboardingCompletionHydrated &&
+      !onboardingDismissed &&
+      !isLoading &&
+      projects.length === 0
+    ) {
       setOnboardingOpen(true)
     }
-  }, [isLoading, onboardingDismissed, projects.length])
+  }, [isLoading, onboardingCompletionHydrated, onboardingDismissed, projects.length])
 
   const selectedAgentSessionId = activeProject?.selectedAgentSessionId ?? null
+  const currentAgentWorkspaceDisplay = useMemo<AgentWorkspaceDisplaySnapshot | null>(() => {
+    if (!activeProject) {
+      return null
+    }
+
+    return {
+      project: activeProject,
+      agentView,
+      layout: agentWorkspaceLayout,
+      panes: agentWorkspacePanes,
+    }
+  }, [activeProject, agentView, agentWorkspaceLayout, agentWorkspacePanes])
+  const shouldHoldAgentWorkspaceForProjectSelection =
+    activeView === 'agent' && pendingProjectSelectionId !== null
+  const lastStableAgentWorkspaceDisplayRef = useRef<AgentWorkspaceDisplaySnapshot | null>(
+    currentAgentWorkspaceDisplay,
+  )
+
+  useEffect(() => {
+    if (shouldHoldAgentWorkspaceForProjectSelection || !currentAgentWorkspaceDisplay) {
+      return
+    }
+
+    lastStableAgentWorkspaceDisplayRef.current = currentAgentWorkspaceDisplay
+  }, [currentAgentWorkspaceDisplay, shouldHoldAgentWorkspaceForProjectSelection])
+
+  const displayedAgentWorkspace =
+    shouldHoldAgentWorkspaceForProjectSelection &&
+      lastStableAgentWorkspaceDisplayRef.current
+      ? lastStableAgentWorkspaceDisplayRef.current
+      : currentAgentWorkspaceDisplay
+  const displayedActiveProject = displayedAgentWorkspace?.project ?? activeProject
+  const displayedAgentView = displayedAgentWorkspace?.agentView ?? agentView
+  const displayedAgentWorkspaceLayout =
+    displayedAgentWorkspace?.layout ?? agentWorkspaceLayout
+  const displayedAgentWorkspacePanes =
+    displayedAgentWorkspace?.panes ?? agentWorkspacePanes
+  const displayedSelectedAgentSessionId =
+    displayedActiveProject?.selectedAgentSessionId ?? selectedAgentSessionId
   const visibleAgentSessionIds = useMemo(() => {
     if (activeView !== 'agent') {
       return []
     }
 
     const paneSessionIds =
-      agentWorkspaceLayout?.paneSlots
+      displayedAgentWorkspaceLayout?.paneSlots
         .map((slot) => slot.agentSessionId)
         .filter((agentSessionId): agentSessionId is string => Boolean(agentSessionId)) ?? []
 
     return paneSessionIds.length > 0
       ? Array.from(new Set(paneSessionIds))
-      : selectedAgentSessionId
-        ? [selectedAgentSessionId]
+      : displayedSelectedAgentSessionId
+        ? [displayedSelectedAgentSessionId]
         : []
-  }, [activeView, agentWorkspaceLayout, selectedAgentSessionId])
+  }, [activeView, displayedAgentWorkspaceLayout, displayedSelectedAgentSessionId])
   useEffect(() => {
     if (visibleAgentSessionIds.length === 0) {
       return
     }
 
     acknowledgeCompletedAgentSessions(visibleAgentSessionIds)
-  }, [acknowledgeCompletedAgentSessions, visibleAgentSessionIds])
+  }, [acknowledgeCompletedAgentSessions, unreadCompletedSessionCount, visibleAgentSessionIds])
+  const handleOpenNotificationSession = useCallback(
+    (projectId: string, agentSessionId: string) => {
+      void (async () => {
+        closeSidebarsExcept(null)
+        setActiveView('agent')
+
+        if (projectId !== activeProjectId) {
+          await selectProject(projectId)
+        }
+
+        await selectAgentSession(agentSessionId)
+        acknowledgeCompletedAgentSessions([agentSessionId], { projectId })
+      })().catch(() => undefined)
+    },
+    [
+      acknowledgeCompletedAgentSessions,
+      activeProjectId,
+      closeSidebarsExcept,
+      selectAgentSession,
+      selectProject,
+    ],
+  )
   const resolvePaneAgentSessionId = useCallback(
     (paneId: string): string | null => {
       const slot = agentWorkspaceLayout?.paneSlots.find((candidate) => candidate.id === paneId)
@@ -2911,10 +3468,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
     },
     [activeProjectId, resolvePaneAgentSessionId, selectAgentSession, selectedAgentSessionId],
   )
-  const paneCount = agentWorkspaceLayout?.paneSlots.length ?? 1
+  const paneCount = displayedAgentWorkspaceLayout?.paneSlots.length ?? 1
   const isMultiPane = paneCount > 1
   useEffect(() => {
-    const livePaneIds = new Set(agentWorkspaceLayout?.paneSlots.map((slot) => slot.id) ?? [])
+    const livePaneIds = new Set(displayedAgentWorkspaceLayout?.paneSlots.map((slot) => slot.id) ?? [])
     setPaneCloseStates((current) => {
       let changed = false
       const next: Record<string, AgentPaneCloseState> = {}
@@ -2928,23 +3485,23 @@ export function XeroApp({ adapter }: XeroAppProps) {
       return changed ? next : current
     })
     setPendingPaneCloseId((current) => (current && livePaneIds.has(current) ? current : null))
-  }, [agentWorkspaceLayout])
+  }, [displayedAgentWorkspaceLayout])
   const sessionPaneAssignments = useMemo<Record<string, number>>(() => {
     const map: Record<string, number> = {}
-    if (!agentWorkspaceLayout) return map
-    agentWorkspaceLayout.paneSlots.forEach((slot, index) => {
+    if (!displayedAgentWorkspaceLayout) return map
+    displayedAgentWorkspaceLayout.paneSlots.forEach((slot, index) => {
       if (slot.agentSessionId) {
         map[slot.agentSessionId] = index + 1
       }
     })
     return map
-  }, [agentWorkspaceLayout])
+  }, [displayedAgentWorkspaceLayout])
   const dndPaneSlots = useMemo(() => {
-    if (!agentWorkspaceLayout || !activeProject) return []
-    const projectLabel = activeProject.name ?? null
-    return agentWorkspaceLayout.paneSlots.map((slot, index) => {
+    if (!displayedAgentWorkspaceLayout || !displayedActiveProject) return []
+    const projectLabel = displayedActiveProject.name ?? null
+    return displayedAgentWorkspaceLayout.paneSlots.map((slot, index) => {
       const session = slot.agentSessionId
-        ? activeProject.agentSessions.find(
+        ? displayedActiveProject.agentSessions.find(
             (entry) => entry.agentSessionId === slot.agentSessionId,
           ) ?? null
         : null
@@ -2956,23 +3513,23 @@ export function XeroApp({ adapter }: XeroAppProps) {
         index,
       }
     })
-  }, [activeProject, agentWorkspaceLayout])
+  }, [displayedActiveProject, displayedAgentWorkspaceLayout])
   const agentCommandPalettePanes = useMemo(() => {
-    if (!agentWorkspaceLayout || !activeProject) return []
-    return agentWorkspaceLayout.paneSlots.map((slot, index) => {
-      const session = activeProject.agentSessions.find(
+    if (!displayedAgentWorkspaceLayout || !displayedActiveProject) return []
+    return displayedAgentWorkspaceLayout.paneSlots.map((slot, index) => {
+      const session = displayedActiveProject.agentSessions.find(
         (candidate) => candidate.agentSessionId === slot.agentSessionId,
       )
       return {
         paneId: slot.id,
         paneNumber: index + 1,
         sessionTitle: session?.title ?? 'Untitled',
-        isFocused: slot.id === agentWorkspaceLayout.focusedPaneId,
+        isFocused: slot.id === displayedAgentWorkspaceLayout.focusedPaneId,
       }
     })
-  }, [activeProject, agentWorkspaceLayout])
+  }, [displayedActiveProject, displayedAgentWorkspaceLayout])
   const preSpawnExplorerModeRef = useRef<'pinned' | 'collapsed' | null>(null)
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (activeView !== 'agent') return
     if (isMultiPane) {
       if (preSpawnExplorerModeRef.current === null) {
@@ -3015,7 +3572,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
         return reportedState
       }
 
-      const pane = agentWorkspacePanes.find((candidate) => candidate.paneId === paneId)
+      const pane = displayedAgentWorkspacePanes.find((candidate) => candidate.paneId === paneId)
       if (!pane) {
         return null
       }
@@ -3026,7 +3583,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
         sessionTitle: pane.agent?.project.selectedAgentSession?.title?.trim() || 'New Chat',
       }
     },
-    [agentWorkspacePanes, paneCloseStates],
+    [displayedAgentWorkspacePanes, paneCloseStates],
   )
   const handleClosePane = useCallback(
     (paneId: string) => {
@@ -3185,12 +3742,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setSelectedWorkflowRun(null)
       setSelectedWorkflowIsDraft(false)
       setSelectedWorkflowTemplatePreviewId(null)
-      setWorkflowsOpen(false)
-      setBrowserOpen(false)
-      setIosOpen(false)
-      setSolanaOpen(false)
-      setVcsOpen(false)
-      setUsageOpen(false)
+      closeSidebarsExcept('agentDock')
       setActiveView('phases')
       setAgentAuthoringSession({ mode: 'create', initialDetail: null })
       setAgentDockOpen(true)
@@ -3210,7 +3762,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
           setIsCreatingAgentSession(false)
         })
     },
-    [activeProjectId, createAgentSession],
+    [activeProjectId, closeSidebarsExcept, createAgentSession],
   )
 
   const handleClearPendingInitialRuntimeAgent = useCallback(
@@ -3339,12 +3891,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setSelectedWorkflowTemplatePreviewId(null)
     setAgentAuthoringSession(null)
     workflowAgentInspector.selectAgent(null)
-    setWorkflowsOpen(false)
-    setBrowserOpen(false)
-    setIosOpen(false)
-    setSolanaOpen(false)
-    setVcsOpen(false)
-    setUsageOpen(false)
+    closeSidebarsExcept('agentDock')
     setActiveView('phases')
     setAgentDockOpen(true)
     const selectAgentCreate = (agentSessionId: string) => {
@@ -3370,6 +3917,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
   }, [
     activeProject?.selectedAgentSessionId,
     activeProjectId,
+    closeSidebarsExcept,
     createAgentSession,
     setActiveView,
     workflowAgentInspector.selectAgent,
@@ -3495,6 +4043,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
 
   const handleCreateWorkflow = useCallback(() => {
     if (!activeProjectId) {
+      closeSidebarsExcept('workflows')
       setWorkflowsOpen(true)
       return
     }
@@ -3508,10 +4057,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setSelectedWorkflowTemplatePreviewId(null)
     setAgentAuthoringSession(null)
     workflowAgentInspector.selectAgent(null)
-    setWorkflowsOpen(false)
+    closeSidebarsExcept(null)
     setActiveView('phases')
   }, [
     activeProjectId,
+    closeSidebarsExcept,
     setActiveView,
     workflowAgentInspector,
   ])
@@ -3530,11 +4080,12 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setSelectedWorkflowTemplatePreviewId(null)
       setAgentAuthoringSession(null)
       workflowAgentInspector.selectAgent(null)
-      setWorkflowsOpen(false)
+      closeSidebarsExcept(null)
       setActiveView('phases')
     },
     [
       activeProjectId,
+      closeSidebarsExcept,
       setActiveView,
       workflowAgentInspector,
       workflowAgentInspector.agents,
@@ -3811,14 +4362,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
         })
       }
 
-      setWorkflowsOpen(false)
-      setBrowserOpen(false)
-      setIosOpen(false)
-      setSolanaOpen(false)
-      setVcsOpen(false)
-      setUsageOpen(false)
-      setTerminalOpen(false)
-      setAgentDockOpen(false)
+      closeSidebarsExcept(null)
       setActiveView('agent')
 
       if (activeProject?.selectedAgentSessionId) {
@@ -3839,6 +4383,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     [
       activeProject?.selectedAgentSessionId,
       activeProjectId,
+      closeSidebarsExcept,
       createAgentSession,
       customAgentDefinitions,
       workflowAgentInspector.agents,
@@ -4049,49 +4594,49 @@ export function XeroApp({ adapter }: XeroAppProps) {
       updateRuntimeRunControls,
     ],
   )
+  const browserPenToolDisabledReason = useMemo(() => {
+    const compatibility = checkAttachmentModelCompatibility(
+      { kind: 'image', mediaType: 'image/png' },
+      agentView?.selectedModelOption ?? null,
+    )
+    if (compatibility.supported) return null
+    return `${compatibility.message} Choose a model with image input to use the pen tool.`
+  }, [agentView?.selectedModelOption])
   const handleAddBrowserContextToAgentComposer = useCallback(
     async (request: BrowserAgentContextRequest) => {
       if (!activeProject) {
         throw new Error('Select a project before adding browser context to an agent.')
       }
+      if (request.image && browserPenToolDisabledReason) {
+        throw new Error(browserPenToolDisabledReason)
+      }
 
       const target: BrowserComposerInsertTarget =
         activeView === 'agent' ? 'agent-view' : 'agent-dock'
+      const insertId = `browser-context-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       setPendingBrowserComposerInsert({
         target,
         insert: {
-          id: `browser-context-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          id: insertId,
           prompt: request.visiblePrompt,
           hiddenPrompt: request.prompt,
+          contextCard: request.contextCard,
           image: request.image,
         },
       })
 
       if (target === 'agent-dock') {
         preloadSurfaceChunk('agent-dock')
-        setBrowserOpen(false)
-        setIosOpen(false)
-        setSolanaOpen(false)
-        setVcsOpen(false)
-        setWorkflowsOpen(false)
-        setUsageOpen(false)
-        setTerminalOpen(false)
-        setComputerUseOpen(false)
+        closeSidebarsExcept('agentDock')
         setAgentDockOpen(true)
       }
     },
     [
       activeProject,
       activeView,
+      browserPenToolDisabledReason,
+      closeSidebarsExcept,
     ],
-  )
-  const handleBrowserContextLoadingChange = useCallback(
-    (loading: boolean) => {
-      setBrowserComposerInsertLoadingTarget(
-        loading ? (activeView === 'agent' ? 'agent-view' : 'agent-dock') : null,
-      )
-    },
-    [activeView],
   )
   const handleBrowserComposerInsertConsumed = useCallback((id: string) => {
     setPendingBrowserComposerInsert((current) =>
@@ -4449,6 +4994,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
             ),
         !options.heavySwitchSurface && visible ? 'translate-x-0' : null,
       )
+    const agentRenderProject = displayedActiveProject ?? activeProject
+    const agentRenderView = displayedAgentView
+    const agentRenderWorkspaceLayout = displayedAgentWorkspaceLayout
+    const agentRenderWorkspacePanes = displayedAgentWorkspacePanes
     const sessionsPeekAvailable = activeView === 'agent' && explorerMode === 'collapsed'
     const agentUsesHeavySwitchSurface = paneCount >= 3
 
@@ -4459,9 +5008,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
         onOpenSessionInNewPane={openSessionInNewPane}
       >
         <AgentSessionsSidebar
-          projectId={activeProject.id}
-          sessions={activeProject.agentSessions}
-          selectedSessionId={activeProject.selectedAgentSessionId}
+          projectId={agentRenderProject.id}
+          sessions={agentRenderProject.agentSessions}
+          selectedSessionId={agentRenderProject.selectedAgentSessionId}
           onSelectSession={handleSelectAgentSession}
           onCreateSession={handleCreateAgentSession}
           onArchiveSession={handleArchiveAgentSession}
@@ -4492,7 +5041,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
           sessionPaneAssignments={isMultiPane ? sessionPaneAssignments : undefined}
         />
         <AgentCommandPalette
-          enabled={activeView === 'agent' && Boolean(agentWorkspaceLayout)}
+          enabled={activeView === 'agent' && Boolean(agentRenderWorkspaceLayout)}
           panes={agentCommandPalettePanes}
           spawnDisabled={paneCount >= 6}
           onSpawnPane={handleSpawnPane}
@@ -4549,25 +5098,39 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onCreateAgent={handleCreateAgent}
                 onCreateAgentFromTemplate={handleCreateAgentFromTemplate}
                 onEditAgentFromWorkflow={(ref) => handleStartAgentAuthoringFromRef('edit', ref)}
-                selectedWorkflowDefinition={selectedWorkflowDefinition}
-                selectedWorkflowRun={selectedWorkflowRun}
-                selectedWorkflowIsDraft={selectedWorkflowIsDraft}
-                selectedWorkflowIsTemplatePreview={selectedWorkflowTemplatePreviewId !== null}
-                workflowActionRunning={workflowActionRunning}
-                onCreateWorkflow={handleCreateWorkflow}
-                onCreateWorkflowWithAgentCreate={handleStartWorkflowAgentCreate}
-                onCreateWorkflowFromTemplate={handleCreateWorkflowFromTemplate}
-                onSaveWorkflowDefinition={handleSaveWorkflowDefinition}
-                onCancelWorkflowEditing={handleCancelWorkflowEditing}
-                onClearWorkflowSelection={handleClearWorkflowSelection}
-                onStartWorkflowDefinitionRun={handleStartWorkflowDefinitionRun}
-                onCancelWorkflowRun={handleCancelWorkflowRun}
-                onRetryWorkflowNodeRun={handleRetryWorkflowNodeRun}
-                onSkipWorkflowBranch={handleSkipWorkflowBranch}
-                onResumeWorkflowCheckpoint={handleResumeWorkflowCheckpoint}
-                onExplainWorkflowRunBlocker={handleExplainWorkflowRunBlocker}
-                onExportWorkflowRunBundle={handleExportWorkflowRunBundle}
-                onResumeWorkflowNextIncompletePhase={handleResumeWorkflowNextIncompletePhase}
+                selectedWorkflowDefinition={WORKFLOWS_ENABLED ? selectedWorkflowDefinition : null}
+                selectedWorkflowRun={WORKFLOWS_ENABLED ? selectedWorkflowRun : null}
+                selectedWorkflowIsDraft={WORKFLOWS_ENABLED ? selectedWorkflowIsDraft : false}
+                selectedWorkflowIsTemplatePreview={
+                  WORKFLOWS_ENABLED ? selectedWorkflowTemplatePreviewId !== null : false
+                }
+                workflowActionRunning={WORKFLOWS_ENABLED ? workflowActionRunning : false}
+                onCreateWorkflow={WORKFLOWS_ENABLED ? handleCreateWorkflow : undefined}
+                onCreateWorkflowWithAgentCreate={
+                  WORKFLOWS_ENABLED ? handleStartWorkflowAgentCreate : undefined
+                }
+                onCreateWorkflowFromTemplate={
+                  WORKFLOWS_ENABLED ? handleCreateWorkflowFromTemplate : undefined
+                }
+                onSaveWorkflowDefinition={WORKFLOWS_ENABLED ? handleSaveWorkflowDefinition : undefined}
+                onCancelWorkflowEditing={WORKFLOWS_ENABLED ? handleCancelWorkflowEditing : undefined}
+                onClearWorkflowSelection={WORKFLOWS_ENABLED ? handleClearWorkflowSelection : undefined}
+                onStartWorkflowDefinitionRun={
+                  WORKFLOWS_ENABLED ? handleStartWorkflowDefinitionRun : undefined
+                }
+                onCancelWorkflowRun={WORKFLOWS_ENABLED ? handleCancelWorkflowRun : undefined}
+                onRetryWorkflowNodeRun={WORKFLOWS_ENABLED ? handleRetryWorkflowNodeRun : undefined}
+                onSkipWorkflowBranch={WORKFLOWS_ENABLED ? handleSkipWorkflowBranch : undefined}
+                onResumeWorkflowCheckpoint={
+                  WORKFLOWS_ENABLED ? handleResumeWorkflowCheckpoint : undefined
+                }
+                onExplainWorkflowRunBlocker={
+                  WORKFLOWS_ENABLED ? handleExplainWorkflowRunBlocker : undefined
+                }
+                onExportWorkflowRunBundle={WORKFLOWS_ENABLED ? handleExportWorkflowRunBundle : undefined}
+                onResumeWorkflowNextIncompletePhase={
+                  WORKFLOWS_ENABLED ? handleResumeWorkflowNextIncompletePhase : undefined
+                }
                 templates={workflowAgentInspector.agents}
                 templatesLoading={workflowAgentInspector.agentsStatus === 'loading'}
                 templatesError={workflowAgentInspector.agentsError}
@@ -4598,7 +5161,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
             </LazyActivityPane>
           ) : null}
 
-          {agentView ? (
+          {agentRenderView ? (
             <LazyActivityPane
               active={activeView === 'agent'}
               className={getViewPaneClassName(activeView === 'agent', {
@@ -4609,18 +5172,21 @@ export function XeroApp({ adapter }: XeroAppProps) {
             >
               <AgentWorkspace
                 active={activeView === 'agent'}
-                layout={agentWorkspaceLayout}
-                panes={agentWorkspacePanes}
+                layout={agentRenderWorkspaceLayout}
+                panes={agentRenderWorkspacePanes}
                 highChurnStore={highChurnStore}
                 desktopAdapter={resolvedAdapter}
                 accountAvatarUrl={githubSession?.user.avatarUrl ?? null}
                 accountLogin={githubSession?.user.login ?? null}
                 toolCallGroupingPreference={toolCallGroupingPreference}
+                agentRoutingAutoSwitchEnabled={agentRoutingAutoSwitchEnabled}
                 customAgentDefinitions={customAgentDefinitions}
                 agentDefaultModels={agentDefaultModels}
                 onOpenAgentManagement={handleOpenAgentManagement}
                 onCreateAgentByHand={handleStartAgentAuthoringCreate}
-                onStartWorkflowAgentCreate={handleStartWorkflowAgentCreate}
+                onStartWorkflowAgentCreate={
+                  WORKFLOWS_ENABLED ? handleStartWorkflowAgentCreate : undefined
+                }
                 onCreateSession={handleCreateAgentSession}
                 pendingInitialRuntimeAgent={pendingInitialRuntimeAgent}
                 onClearPendingInitialRuntimeAgent={handleClearPendingInitialRuntimeAgent}
@@ -4653,7 +5219,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
                     : null
                 }
                 onPendingComposerInsertConsumed={handleBrowserComposerInsertConsumed}
-                browserContextLoading={browserComposerInsertLoadingTarget === 'agent-view'}
               />
             </LazyActivityPane>
           ) : null}
@@ -4706,11 +5271,13 @@ export function XeroApp({ adapter }: XeroAppProps) {
         path: activeProject.repository?.rootPath ?? activeProject.name,
       }
     : null
-  const shouldAutoOpenOnboarding = !onboardingDismissed && !isLoading && projects.length === 0
+  const shouldAutoOpenOnboarding =
+    onboardingCompletionHydrated && !onboardingDismissed && !isLoading && projects.length === 0
   const showOnboarding =
     (onboardingOpen || shouldAutoOpenOnboarding) &&
     !onboardingDismissed &&
     !isLoading &&
+    onboardingCompletionHydrated &&
     activeViewHydrated
   const isForegroundProjectSelection = pendingProjectSelectionId !== null
   const pendingProjectSelectionName = pendingProjectSelectionId
@@ -4718,6 +5285,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     : null
   const shellProjectName = pendingProjectSelectionName ?? activeProject?.name
   const agentDockSurfaceOpen = agentDockOpen || computerUseOpen
+  const browserFocusMode = browserOpen && browserFullWidth
   const agentDockSurfaceAgent = computerUseOpen ? computerUseAgentView : agentView
   const agentDockSurfaceSessions = computerUseOpen
     ? (computerUseProjectForView?.agentSessions ?? [])
@@ -4746,10 +5314,28 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const showStartupSurfacePrewarm = !startupSurfacePrewarm.ready
   const showAppBootLoading = !showOnboarding && (
     !activeViewHydrated ||
+    !onboardingCompletionHydrated ||
     isLoading ||
     isBlockingProjectLoading ||
     showStartupSurfacePrewarm
   )
+  const signInReminderToast = (
+    <SignInReminderToast enabled={!showOnboarding && !showAppBootLoading} />
+  )
+
+  useEffect(() => {
+    if (
+      import.meta.env.MODE === 'test' ||
+      showAppBootLoading ||
+      !startupSurfacePrewarm.ready
+    ) {
+      return
+    }
+
+    return scheduleIdlePreload(() => {
+      void preloadComputerUseProject().catch(() => undefined)
+    }, 900)
+  }, [preloadComputerUseProject, showAppBootLoading, startupSurfacePrewarm.ready])
 
   useEffect(() => {
     if (environmentDiscoveryCheckedRef.current) {
@@ -4781,75 +5367,70 @@ export function XeroApp({ adapter }: XeroAppProps) {
 
   if (showOnboarding) {
     return (
-      <XeroShell
-        activeView={activeView}
-        onViewChange={setActiveView}
-        onViewPreload={preloadViewChunk}
-        onSurfacePreload={preloadSurfaceChunk}
-        projectId={activeProjectId}
-        projectName={shellProjectName}
-        onToggleBrowser={toggleBrowser}
-        browserOpen={browserOpen}
-        onToggleIos={toggleIos}
-        iosOpen={iosOpen}
-        onToggleSolana={toggleSolana}
-        solanaOpen={solanaOpen}
-        onToggleVcs={toggleVcs}
-        vcsOpen={vcsOpen}
-        onToggleWorkflows={toggleWorkflows}
-        workflowsOpen={workflowsOpen}
-        onToggleAgentDock={toggleAgentDock}
-        agentDockOpen={agentDockOpen}
-        agentDockDisabled={activeView === 'agent' || !activeProject}
-        onToggleComputerUse={toggleComputerUse}
-        computerUseOpen={computerUseOpen}
-        computerUseRunning={computerUseRunning}
-        vcsChangeCount={repositoryStatus?.statusCount ?? 0}
-        vcsAdditions={repositoryStatus?.additions ?? 0}
-        vcsDeletions={repositoryStatus?.deletions ?? 0}
-        platformOverride={platformOverride}
-        footer={statusFooter}
-        chromeOnly
-        hideFooter
-      >
-        <OnboardingFlow
-          providerCredentials={providerCredentials}
-          providerCredentialsLoadStatus={providerCredentialsLoadStatus}
-          providerCredentialsLoadError={providerCredentialsLoadError}
-          providerCredentialsSaveStatus={providerCredentialsSaveStatus}
-          providerCredentialsSaveError={providerCredentialsSaveError}
-          runtimeSession={agentView?.runtimeSession ?? null}
-          project={onboardingProject}
-          isImporting={isImporting}
-          isProjectLoading={isProjectLoading}
-          projectErrorMessage={errorMessage}
-          environmentPermissionRequests={environmentDiscoveryStatus?.permissionRequests ?? []}
-          onResolveEnvironmentPermissions={resolveEnvironmentPermissions}
-          launchMode={launchMode}
-          onImportProject={async () => {
-            await importProject()
-          }}
-          onRefreshProviderCredentials={(options) => refreshProviderCredentials(options)}
-          onUpsertProviderCredential={(request) => upsertProviderCredential(request)}
-          onDeleteProviderCredential={(providerId) => deleteProviderCredential(providerId)}
-          onStartOAuthLogin={(request) => startOAuthLogin(request)}
-          onStartXaiDeviceCodeLogin={(request) => startXaiDeviceCodeLogin(request)}
-          onPollXaiDeviceCodeLogin={(request) => pollXaiDeviceCodeLogin(request)}
-          onComplete={() => {
-            setOnboardingDismissed(true)
-            setOnboardingOpen(false)
-          }}
-          onDismiss={() => {
-            setOnboardingDismissed(true)
-            setOnboardingOpen(false)
-          }}
-        />
-      </XeroShell>
+      <>
+        {signInReminderToast}
+        <XeroShell
+          activeView={activeView}
+          onViewChange={setActiveView}
+          onViewPreload={preloadViewChunk}
+          onSurfacePreload={preloadSurfaceChunk}
+          projectId={activeProjectId}
+          projectName={shellProjectName}
+          onToggleBrowser={toggleBrowser}
+          browserOpen={browserOpen}
+          onToggleIos={toggleIos}
+          iosOpen={iosOpen}
+          onToggleSolana={toggleSolana}
+          solanaOpen={solanaOpen}
+          onToggleVcs={toggleVcs}
+          vcsOpen={vcsOpen}
+          onToggleWorkflows={toggleWorkflows}
+          workflowsOpen={workflowsOpen}
+          onToggleAgentDock={toggleAgentDock}
+          agentDockOpen={agentDockOpen}
+          agentDockDisabled={activeView === 'agent' || !activeProject}
+          onToggleComputerUse={toggleComputerUse}
+          computerUseOpen={computerUseOpen}
+          computerUseRunning={computerUseRunning}
+          vcsChangeCount={repositoryStatus?.statusCount ?? 0}
+          vcsAdditions={repositoryStatus?.additions ?? 0}
+          vcsDeletions={repositoryStatus?.deletions ?? 0}
+          platformOverride={platformOverride}
+          footer={statusFooter}
+          chromeOnly
+          hideFooter
+        >
+          <OnboardingFlow
+            providerCredentials={providerCredentials}
+            providerCredentialsLoadStatus={providerCredentialsLoadStatus}
+            providerCredentialsLoadError={providerCredentialsLoadError}
+            providerCredentialsSaveStatus={providerCredentialsSaveStatus}
+            providerCredentialsSaveError={providerCredentialsSaveError}
+            runtimeSession={agentView?.runtimeSession ?? null}
+            project={onboardingProject}
+            isImporting={isImporting}
+            isProjectLoading={isProjectLoading}
+            projectErrorMessage={errorMessage}
+            environmentPermissionRequests={environmentDiscoveryStatus?.permissionRequests ?? []}
+            onResolveEnvironmentPermissions={resolveEnvironmentPermissions}
+            onImportProject={async () => {
+              await importProject()
+            }}
+            onRefreshProviderCredentials={(options) => refreshProviderCredentials(options)}
+            onUpsertProviderCredential={(request) => upsertProviderCredential(request)}
+            onDeleteProviderCredential={(providerId) => deleteProviderCredential(providerId)}
+            onStartOAuthLogin={(request) => startOAuthLogin(request)}
+            onComplete={completeOnboarding}
+            onDismiss={completeOnboarding}
+          />
+        </XeroShell>
+      </>
     )
   }
 
   return (
     <>
+      {signInReminderToast}
       <div
         aria-hidden={showAppBootLoading}
         className={cn('h-screen w-screen', showAppBootLoading && 'invisible')}
@@ -4900,7 +5481,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
             isImporting={isImporting}
             isLoading={isLoading || (isProjectLoading && foregroundProjectLoad)}
             onImportProject={() => setProjectAddOpen(true)}
-            onOpenSettings={() => openSettings('providers')}
+            onOpenSettings={() => openSettings()}
             onPreloadProject={prefetchProject}
             onPreviewProject={handlePreviewProject}
             onRemoveProject={handleRemoveProject}
@@ -4909,6 +5490,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
             pendingProjectRemovalId={pendingProjectRemovalId}
             projectRemovalStatus={projectRemovalStatus}
             projects={projects}
+            completedSessionCountsByProject={completedSessionCountsByProject}
+            runningProjectIds={runningAgentProjectIds}
             onSessionsHoverEnter={
               activeView === 'agent' && explorerCollapsed && Boolean(activeProject)
                 ? requestExplorerPeek
@@ -4920,7 +5503,21 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 : undefined
             }
           />
-          {isProjectSelectionShellPending ? <LoadingScreen /> : renderBody()}
+          <div
+            aria-hidden={browserFocusMode ? true : undefined}
+            className={cn(
+              'relative flex min-h-0 min-w-0 flex-1 overflow-hidden transition-[max-width,opacity,transform] motion-standard',
+              browserFocusMode
+                ? 'pointer-events-none max-w-0 -translate-x-2 opacity-0'
+                : 'max-w-full translate-x-0 opacity-100',
+            )}
+            inert={browserFocusMode ? true : undefined}
+          >
+            <div className="flex min-h-0 min-w-0 flex-1">
+              {isProjectSelectionShellPending ? null : renderBody()}
+            </div>
+            <AppWideLoadingOverlay active={isProjectSelectionShellPending} />
+          </div>
           <LazyPrerenderedSurface
             open={browserOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
@@ -4930,11 +5527,19 @@ export function XeroApp({ adapter }: XeroAppProps) {
             >
               <LazyBrowserSidebar
                 open={browserOpen}
-                projectBrowserTargets={browserLaunchTargets}
+                dictationAdapter={resolvedAdapter}
+                projectId={activeProjectId}
+                fullWidth={browserFocusMode}
+                fullWidthTarget={browserFullWidthTarget}
+                onFullWidthChange={handleBrowserFullWidthChange}
+                penToolDisabledReason={browserPenToolDisabledReason}
+                projectBrowserTargets={activeBrowserLaunchTargets}
+                projectRootPath={activeProject?.repository?.rootPath ?? null}
+                projectStartTargets={activeProjectStartTargets}
+                onProjectBrowserTargetUnavailable={handleBrowserLaunchTargetUnavailable}
                 pendingOpenUrl={pendingBrowserOpenUrl}
                 onPendingOpenUrlConsumed={handlePendingBrowserOpenUrlConsumed}
                 onAddAgentContext={handleAddBrowserContextToAgentComposer}
-                onAddAgentContextLoadingChange={handleBrowserContextLoadingChange}
               />
             </Suspense>
           </LazyPrerenderedSurface>
@@ -4961,6 +5566,12 @@ export function XeroApp({ adapter }: XeroAppProps) {
               />
             </Suspense>
           </LazyPrerenderedSurface>
+          <SessionNotificationsSidebar
+            notifications={unreadCompletedSessionNotifications}
+            onClose={() => setNotificationsOpen(false)}
+            onOpenSession={handleOpenNotificationSession}
+            open={notificationsOpen}
+          />
           {MOBILE_EMULATOR_SURFACES_ENABLED ? (
             <IosEmulatorSurface
               open={iosOpen}
@@ -4989,34 +5600,53 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 agents={workflowAgentInspector.agents}
                 agentsLoading={workflowAgentInspector.agentsStatus === 'loading'}
                 agentsError={workflowAgentInspector.agentsError}
-                workflowDefinitions={workflowDefinitions}
-                workflowRuns={workflowRuns}
+                workflowDefinitions={WORKFLOWS_ENABLED ? workflowDefinitions : []}
+                workflowRuns={WORKFLOWS_ENABLED ? workflowRuns : []}
                 workflowsLoading={
-                  workflowDefinitionsStatus === 'loading' || workflowRunsStatus === 'loading'
+                  WORKFLOWS_ENABLED &&
+                  (workflowDefinitionsStatus === 'loading' || workflowRunsStatus === 'loading')
                 }
-                workflowsError={workflowDefinitionsError}
+                workflowsError={WORKFLOWS_ENABLED ? workflowDefinitionsError : null}
                 selectedWorkflowId={
-                  selectedWorkflowIsDraft || selectedWorkflowTemplatePreviewId
+                  !WORKFLOWS_ENABLED || selectedWorkflowIsDraft || selectedWorkflowTemplatePreviewId
                     ? null
                     : selectedWorkflowDefinition?.id ?? null
                 }
-                selectedWorkflowTemplateId={selectedWorkflowTemplatePreviewId}
-                selectedWorkflowRunId={selectedWorkflowRun?.id ?? null}
-                onSelectWorkflow={handleSelectWorkflowDefinition}
-                onSelectWorkflowTemplate={handlePreviewWorkflowTemplate}
-                onSelectWorkflowRun={handleSelectWorkflowRun}
-                onCreateWorkflow={handleCreateWorkflow}
-                onCreateWorkflowWithAgentCreate={handleStartWorkflowAgentCreate}
-                onCreateWorkflowFromTemplate={handleCreateWorkflowFromTemplate}
-                onStartWorkflowRun={(workflowId) => {
-                  void handleStartWorkflowDefinitionRun(workflowId, { goal: '' })
-                }}
-                onCancelWorkflowRun={(runId) => {
-                  void handleCancelWorkflowRun(runId)
-                }}
-                onResumeWorkflowRun={(runId, nodeRunId, decision) => {
-                  void handleResumeWorkflowCheckpoint(runId, nodeRunId, decision, { decision })
-                }}
+                selectedWorkflowTemplateId={
+                  WORKFLOWS_ENABLED ? selectedWorkflowTemplatePreviewId : null
+                }
+                selectedWorkflowRunId={WORKFLOWS_ENABLED ? selectedWorkflowRun?.id ?? null : null}
+                onSelectWorkflow={WORKFLOWS_ENABLED ? handleSelectWorkflowDefinition : undefined}
+                onSelectWorkflowTemplate={WORKFLOWS_ENABLED ? handlePreviewWorkflowTemplate : undefined}
+                onSelectWorkflowRun={WORKFLOWS_ENABLED ? handleSelectWorkflowRun : undefined}
+                onCreateWorkflow={WORKFLOWS_ENABLED ? handleCreateWorkflow : undefined}
+                onCreateWorkflowWithAgentCreate={
+                  WORKFLOWS_ENABLED ? handleStartWorkflowAgentCreate : undefined
+                }
+                onCreateWorkflowFromTemplate={
+                  WORKFLOWS_ENABLED ? handleCreateWorkflowFromTemplate : undefined
+                }
+                onStartWorkflowRun={
+                  WORKFLOWS_ENABLED
+                    ? (workflowId) => {
+                        void handleStartWorkflowDefinitionRun(workflowId, { goal: '' })
+                      }
+                    : undefined
+                }
+                onCancelWorkflowRun={
+                  WORKFLOWS_ENABLED
+                    ? (runId) => {
+                        void handleCancelWorkflowRun(runId)
+                      }
+                    : undefined
+                }
+                onResumeWorkflowRun={
+                  WORKFLOWS_ENABLED
+                    ? (runId, nodeRunId, decision) => {
+                        void handleResumeWorkflowCheckpoint(runId, nodeRunId, decision, { decision })
+                      }
+                    : undefined
+                }
                 selectedAgentRef={workflowAgentInspector.selectedRef}
                 onSelectAgent={handleInspectWorkflowAgent}
                 onCreateAgent={handleCreateAgent}
@@ -5065,6 +5695,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
           <LazyPrerenderedSurface
             open={agentDockSurfaceOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
+            stickyPrewarm
           >
             <Suspense
               fallback={
@@ -5077,6 +5708,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
             >
               <LazyAgentDockSidebar
                 open={agentDockSurfaceOpen}
+                prewarm={startupSurfacePrewarm.shouldMount}
                 agent={agentDockSurfaceAgent}
                 highChurnStore={highChurnStore}
                 sessions={agentDockSurfaceSessions}
@@ -5089,11 +5721,14 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 accountAvatarUrl={githubSession?.user.avatarUrl ?? null}
                 accountLogin={githubSession?.user.login ?? null}
                 toolCallGroupingPreference={toolCallGroupingPreference}
+                agentRoutingAutoSwitchEnabled={agentRoutingAutoSwitchEnabled}
                 customAgentDefinitions={customAgentDefinitions}
                 agentDefaultModels={agentDefaultModels}
                 onOpenAgentManagement={handleOpenAgentManagement}
                 onCreateAgentByHand={handleStartAgentAuthoringCreate}
-                onStartWorkflowAgentCreate={handleStartWorkflowAgentCreate}
+                onStartWorkflowAgentCreate={
+                  WORKFLOWS_ENABLED ? handleStartWorkflowAgentCreate : undefined
+                }
                 onOpenSettings={handleOpenAgentProviderSettings}
                 onOpenDiagnostics={handleOpenAgentDiagnostics}
                 onStartLogin={(options) => startOpenAiLogin(options)}
@@ -5108,6 +5743,12 @@ export function XeroApp({ adapter }: XeroAppProps) {
                     ? updateComputerUseRuntimeRunControls
                     : (request) => updateRuntimeRunControls(request)
                 }
+                onClearSidebarChat={computerUseOpen ? clearComputerUseChat : undefined}
+                sidebarChatClearDisabled={computerUseOpen ? !canClearComputerUseChat : undefined}
+                sidebarChatClearPending={
+                  computerUseOpen ? computerUseClearChatPending : undefined
+                }
+                sidebarChatClearTitle={computerUseOpen ? clearComputerUseChatTitle : undefined}
                 onComposerControlsChange={(controls) => {
                   persistComposerSettings(controls)
                   if (!computerUseOpen) {
@@ -5149,9 +5790,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
                   !computerUseOpen && pendingBrowserComposerInsert?.target === 'agent-dock'
                     ? pendingBrowserComposerInsert.insert
                     : null
-                }
-                browserContextLoading={
-                  !computerUseOpen && browserComposerInsertLoadingTarget === 'agent-dock'
                 }
                 onPendingComposerInsertConsumed={handleBrowserComposerInsertConsumed}
                 onPendingInitialRuntimeAgentIdConsumed={() => {
@@ -5205,8 +5843,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onUpsertProviderCredential={(request) => upsertProviderCredential(request)}
                 onDeleteProviderCredential={(providerId) => deleteProviderCredential(providerId)}
                 onStartOAuthLogin={(request) => startOAuthLogin(request)}
-                onStartXaiDeviceCodeLogin={(request) => startXaiDeviceCodeLogin(request)}
-                onPollXaiDeviceCodeLogin={(request) => pollXaiDeviceCodeLogin(request)}
                 doctorReport={doctorReport}
                 doctorReportStatus={doctorReportStatus}
                 doctorReportError={doctorReportError}
@@ -5221,10 +5857,13 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 desktopControlAdapter={resolvedAdapter}
                 soulAdapter={resolvedAdapter}
                 agentToolingAdapter={resolvedAdapter}
+                webSearchAdapter={resolvedAdapter}
                 powerAdapter={resolvedAdapter}
                 toolCallGroupingPreference={toolCallGroupingPreference}
                 onToolCallGroupingPreferenceChange={handleToolCallGroupingPreferenceChange}
-                memoryReviewAdapter={memoryReviewAdapter}
+                agentRoutingAutoSwitchEnabled={agentRoutingAutoSwitchEnabled}
+                onAgentRoutingAutoSwitchChange={handleAgentRoutingAutoSwitchChange}
+                memoryAdapter={memoryAdapter}
                 projectStateAdapter={projectStateAdapter}
                 dangerAdapter={dangerAdapter}
                 projects={projects}
@@ -5303,7 +5942,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 }}
                 resolveSuggestRequest={resolveProjectRunnerSuggestRequest}
                 onSuggest={handleSuggestProjectStartTargets}
-                modelOptions={projectRunnerModelOptions}
               />
             ) : null}
           </Suspense>

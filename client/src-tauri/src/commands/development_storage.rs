@@ -859,6 +859,7 @@ mod tests {
         assert!(is_sensitive_cell("provider_credentials", "provider_id"));
         assert!(is_sensitive_cell("projects", "oauth_access_token"));
         assert!(is_sensitive_cell("runtime_settings", "payload"));
+        assert!(is_sensitive_cell("autonomous_web_settings", "payload"));
         assert!(!is_sensitive_cell("projects", "name"));
     }
 

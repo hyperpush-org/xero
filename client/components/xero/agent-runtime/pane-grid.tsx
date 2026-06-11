@@ -4,6 +4,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -36,6 +37,7 @@ export interface PaneDragHandle {
 
 const REFLOW_DEBOUNCE_MS = 120
 const REFLOW_TRANSITION_MS = 200
+const PANE_ENTER_ANIMATION_MS = 220
 const STACK_MIN_PANE_HEIGHT = 320
 const MIN_RESIZED_RATIO = 0.05
 const KEYBOARD_RESIZE_STEP = 0.02
@@ -418,7 +420,24 @@ export const PaneGrid = memo(function PaneGrid({
 }: PaneGridProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const dragCleanupRef = useRef<(() => void) | null>(null)
+  const previousPaneIdsRef = useRef<Set<string> | null>(null)
+  const paneEnterTimersRef = useRef<number[]>([])
+  const [animatedPaneIds, setAnimatedPaneIds] = useState<Set<string>>(() => new Set())
   const containerSize = useDebouncedContainerSize(containerRef)
+  const paneIds = useMemo(() => slots.map((slot) => slot.paneId), [slots])
+  const paneIdsKey = paneIds.join('\0')
+  const enteringPaneIds = useMemo(() => {
+    const ids = new Set(animatedPaneIds)
+    const previousPaneIds = previousPaneIdsRef.current
+    if (previousPaneIds) {
+      paneIds.forEach((paneId) => {
+        if (!previousPaneIds.has(paneId)) {
+          ids.add(paneId)
+        }
+      })
+    }
+    return ids
+  }, [animatedPaneIds, paneIds, paneIdsKey])
 
   const solved = useMemo(
     () =>
@@ -521,8 +540,41 @@ export const PaneGrid = memo(function PaneGrid({
   useEffect(() => {
     return () => {
       dragCleanupRef.current?.()
+      paneEnterTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+      paneEnterTimersRef.current = []
     }
   }, [])
+
+  useLayoutEffect(() => {
+    const previousPaneIds = previousPaneIdsRef.current
+    previousPaneIdsRef.current = new Set(paneIds)
+    if (!previousPaneIds) {
+      return
+    }
+
+    const addedPaneIds = paneIds.filter((paneId) => !previousPaneIds.has(paneId))
+    if (addedPaneIds.length === 0) {
+      return
+    }
+
+    setAnimatedPaneIds((current) => {
+      const next = new Set(current)
+      addedPaneIds.forEach((paneId) => next.add(paneId))
+      return next
+    })
+
+    const timer = window.setTimeout(() => {
+      setAnimatedPaneIds((current) => {
+        let changed = false
+        const next = new Set(current)
+        addedPaneIds.forEach((paneId) => {
+          changed = next.delete(paneId) || changed
+        })
+        return changed ? next : current
+      })
+    }, PANE_ENTER_ANIMATION_MS)
+    paneEnterTimersRef.current.push(timer)
+  }, [paneIds, paneIdsKey])
 
   if (slots.length === 0) {
     return <div ref={containerRef} className={cn('flex min-h-0 min-w-0 flex-1', className)} />
@@ -546,7 +598,10 @@ export const PaneGrid = memo(function PaneGrid({
             {slots.map((slot, index) => (
               <div
                 key={slot.paneId}
-                className="flex flex-col"
+                className={cn(
+                  'flex flex-col',
+                  enteringPaneIds.has(slot.paneId) && 'agent-workspace-pane-enter',
+                )}
                 style={{ minHeight: STACK_MIN_PANE_HEIGHT }}
               >
                 <PaneShell
@@ -595,7 +650,10 @@ export const PaneGrid = memo(function PaneGrid({
           {slots.map((slot, index) => (
             <div
               key={slot.paneId}
-              className="flex min-h-0 min-w-0"
+              className={cn(
+                'flex min-h-0 min-w-0',
+                enteringPaneIds.has(slot.paneId) && 'agent-workspace-pane-enter',
+              )}
               style={getPaneGridStyle(index, arrangement)}
             >
               <PaneShell

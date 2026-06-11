@@ -23,6 +23,7 @@ import type {
   McpRegistryDto,
   XeroDoctorReportDto,
   AdrenalineModeSettingsDto,
+  AutonomousWebSearchSettingsDto,
   ClosedLidModeSettingsDto,
   DictationSettingsDto,
   DictationStatusDto,
@@ -255,6 +256,119 @@ function makePowerAdapter(
           updatedAt: '2026-05-18T12:01:00Z',
         }),
       ),
+  }
+}
+
+function makeWebSearchSettings(
+  overrides: Partial<AutonomousWebSearchSettingsDto> = {},
+): AutonomousWebSearchSettingsDto {
+  return {
+    mode: 'auto',
+    activeProviderId: 'brave-main',
+    providerManaged: {
+      modeAvailable: true,
+      status: 'ready',
+      message: 'Provider-managed search is ready for the selected model.',
+      supportedSources: ['openai'],
+    },
+    providerKinds: [
+      {
+        kind: 'brave_search',
+        label: 'Brave Search',
+        requiresApiKey: true,
+        supportsLocale: true,
+        supportsFreshness: true,
+        supportsSafeSearch: true,
+        selfHosted: false,
+        requiresEndpoint: false,
+        requiresGoogleCseCx: false,
+      },
+      {
+        kind: 'custom_endpoint',
+        label: 'Custom endpoint',
+        requiresApiKey: false,
+        supportsLocale: false,
+        supportsFreshness: false,
+        supportsSafeSearch: false,
+        selfHosted: true,
+        requiresEndpoint: true,
+        requiresGoogleCseCx: false,
+      },
+    ],
+    providers: [
+      {
+        profileId: 'brave-main',
+        kind: 'brave_search',
+        displayName: 'Brave fallback',
+        enabled: true,
+        endpoint: null,
+        baseUrl: null,
+        googleCseCx: null,
+        resultLimit: 5,
+        timeoutMs: 2500,
+        region: 'us',
+        language: 'en',
+        freshness: null,
+        safeSearch: true,
+        hasApiKey: true,
+        apiKeyUpdatedAt: '2026-05-30T12:00:00Z',
+        readiness: {
+          ready: true,
+          status: 'ready',
+          message: 'Provider is ready.',
+        },
+        lastCheck: null,
+        createdAt: '2026-05-30T12:00:00Z',
+        updatedAt: '2026-05-30T12:00:00Z',
+      },
+    ],
+    updatedAt: '2026-05-30T12:00:00Z',
+    ...overrides,
+  }
+}
+
+function makeWebSearchAdapter(
+  settings = makeWebSearchSettings(),
+): NonNullable<SettingsDialogProps['webSearchAdapter']> {
+  return {
+    isDesktopRuntime: vi.fn(() => true),
+    autonomousWebSearchSettings: vi.fn(async () => settings),
+    autonomousWebSearchUpdateSettings: vi.fn(async (request) =>
+      makeWebSearchSettings({
+        ...settings,
+        mode: request.mode,
+      }),
+    ),
+    autonomousWebSearchUpsertProvider: vi.fn(async () => settings),
+    autonomousWebSearchDeleteProvider: vi.fn(async () =>
+      makeWebSearchSettings({
+        ...settings,
+        activeProviderId: null,
+        providers: [],
+      }),
+    ),
+    autonomousWebSearchSetActiveProvider: vi.fn(async (request) =>
+      makeWebSearchSettings({
+        ...settings,
+        activeProviderId: request.providerId,
+      }),
+    ),
+    autonomousWebSearchCheckProvider: vi.fn(async () =>
+      makeWebSearchSettings({
+        ...settings,
+        providers: settings.providers.map((provider) => ({
+          ...provider,
+          lastCheck: {
+            status: 'ok',
+            code: 'autonomous_web_search_provider_ok',
+            message: 'Provider returned results.',
+            latencyMs: 42,
+            sampleResultCount: 1,
+            checkedAt: '2026-05-30T12:05:00Z',
+          },
+        })),
+      }),
+    ),
   }
 }
 
@@ -738,6 +852,16 @@ describe('SettingsDialog', () => {
           rootPath: '/tmp/harness-fixture',
         })
       }
+      if (command === 'developer_tool_error_log_list') {
+        return Promise.resolve({
+          databasePath: '/tmp/xero/development/tool-call-errors.sqlite',
+          entries: [],
+          projectIds: [],
+          totalCount: 0,
+          limit: 100,
+          offset: 0,
+        })
+      }
       if (command === 'browser_control_settings') {
         return Promise.resolve({
           preference: 'default',
@@ -768,6 +892,23 @@ describe('SettingsDialog', () => {
     expect(screen.getByRole('button', { name: 'Power' })).toBeVisible()
   })
 
+  it('opens the account section by default', async () => {
+    render(<SettingsDialog {...makeSettingsDialogProps()} />)
+
+    expect(await screen.findByRole('heading', { name: 'Account' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Account' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('button', { name: 'Providers' })).not.toHaveAttribute('aria-current')
+    expect(screen.queryByRole('heading', { name: 'Providers' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the full-screen settings dialog visible for its closed-state animation', async () => {
+    render(<SettingsDialog {...makeSettingsDialogProps()} />)
+
+    const dialog = await screen.findByRole('dialog')
+
+    expect(dialog.className).toContain('data-[state=closed]:opacity-100')
+  })
+
   it('keeps settings section tab hover states immediate', async () => {
     render(<SettingsDialog {...makeSettingsDialogProps()} />)
 
@@ -777,6 +918,67 @@ describe('SettingsDialog', () => {
       expect(screen.getByRole('button', { name }).className).not.toMatch(/\btransition-(?!none\b)[^\s]+/)
     }
   })
+
+  it('renders web search settings and dispatches mode and provider actions', async () => {
+    const settings = makeWebSearchSettings()
+    const webSearchAdapter = makeWebSearchAdapter(settings)
+
+    render(
+      <SettingsDialog
+        {...makeSettingsDialogProps({
+          initialSection: 'webSearch',
+          webSearchAdapter,
+        })}
+      />,
+    )
+
+    expect(await screen.findByRole('heading', { name: 'Web Search' }, { timeout: 5000 })).toBeVisible()
+    expect(await screen.findByText('Brave Search')).toBeVisible()
+    expect(screen.getByText('Provider-managed search is ready for the selected model.')).toBeVisible()
+    expect(screen.getByText('Configured')).toBeVisible()
+    expect(screen.getByText('Available')).toBeVisible()
+    expect(screen.getByText('Custom endpoint')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Configure' }))
+
+    expect(screen.queryByText('Name')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument()
+    const customEndpointInput = screen.getByPlaceholderText('https://search.example.com/api')
+    expect(customEndpointInput).toBeVisible()
+
+    fireEvent.change(customEndpointInput, {
+      target: { value: 'https://search.example.com/api' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() =>
+      expect(webSearchAdapter.autonomousWebSearchUpsertProvider).toHaveBeenCalledWith({
+        profileId: null,
+        kind: 'custom_endpoint',
+        displayName: 'Custom endpoint',
+        endpoint: 'https://search.example.com/api',
+        apiKey: null,
+        googleCseCx: null,
+        enabled: true,
+      }),
+    )
+
+    fireEvent.click(screen.getByText('Configured provider only'))
+
+    await waitFor(() =>
+      expect(webSearchAdapter.autonomousWebSearchUpdateSettings).toHaveBeenCalledWith({
+        mode: 'configured_provider_only',
+      }),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Test Brave Search' }))
+
+    await waitFor(() =>
+      expect(webSearchAdapter.autonomousWebSearchCheckProvider).toHaveBeenCalledWith({
+        providerId: 'brave-main',
+      }),
+    )
+  }, 15000)
 
   it('renders development controls without storage tabs or the storage inspector', async () => {
     render(
@@ -794,8 +996,10 @@ describe('SettingsDialog', () => {
       { timeout: 5000 },
     )
     const toolbarHeading = await screen.findByRole('heading', { name: 'Toolbar platform' })
+    const errorLogHeading = await screen.findByRole('heading', { name: 'Tool-call failures' })
     const harnessHeading = await screen.findByRole('heading', { name: 'Tool harness' })
     expect(screen.getByRole('button', { name: 'Start onboarding' })).toBeEnabled()
+    expect(await screen.findByText('No tool-call failures logged.')).toBeVisible()
     expect(await screen.findByText(/Harness fixture: Tool harness fixture/)).toBeVisible()
 
     expect(
@@ -806,13 +1010,26 @@ describe('SettingsDialog', () => {
       toolbarHeading.compareDocumentPosition(harnessHeading) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
+    expect(
+      toolbarHeading.compareDocumentPosition(errorLogHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(
+      errorLogHeading.compareDocumentPosition(harnessHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
     expect(screen.queryByRole('tab', { name: 'Storage' })).not.toBeInTheDocument()
     expect(screen.queryByText('Storage inspector')).not.toBeInTheDocument()
     expect(screen.queryByText('Local storage')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Reveal sensitive storage values')).not.toBeInTheDocument()
     expect(invokeMock).not.toHaveBeenCalledWith('developer_storage_overview')
     expect(invokeMock).not.toHaveBeenCalledWith('developer_storage_read_table', expect.anything())
-  })
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('developer_tool_error_log_list', {
+        request: { limit: 100 },
+      }),
+    )
+  }, 15000)
 
   it('renders doctor reports from the diagnostics section and runs extended checks explicitly', async () => {
     const report = makeDoctorReport()

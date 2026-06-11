@@ -25,6 +25,8 @@ pub async fn get_repository_status<R: Runtime>(
         format!("repository-status:{project_id}"),
         "repository status",
         move |cancellation| {
+            let _perf = crate::perf::PerfSpan::new("repository_status")
+                .field("projectId", project_id.clone());
             cancellation.check_cancelled("repository status")?;
             status::load_repository_status(&project_id, &registry_path)
         },

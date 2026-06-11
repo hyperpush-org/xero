@@ -9,6 +9,7 @@ import { SignInReminderToast } from './sign-in-reminder-toast'
 interface ToastArgs {
   title?: string
   description?: string
+  duration?: number
   action?: ReactElement<{ onClick: () => void }>
 }
 
@@ -72,10 +73,33 @@ describe('SignInReminderToast', () => {
     setAuth('idle')
     rerender(<SignInReminderToast />)
     expect(toastMock).toHaveBeenCalledTimes(1)
+    expect(toastMock.mock.calls[0]?.[0]?.duration).toBe(5_000)
 
     // A subsequent re-render must not re-fire the nudge.
     rerender(<SignInReminderToast />)
     expect(toastMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('waits until enabled before nudging after a signed-out load', () => {
+    const { rerender } = render(<SignInReminderToast enabled={false} />)
+    expect(toastMock).not.toHaveBeenCalled()
+
+    setAuth('idle')
+    rerender(<SignInReminderToast enabled={false} />)
+    expect(toastMock).not.toHaveBeenCalled()
+
+    rerender(<SignInReminderToast enabled />)
+    expect(toastMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('dismisses an open nudge when disabled', () => {
+    const { rerender } = render(<SignInReminderToast />)
+    setAuth('idle')
+    rerender(<SignInReminderToast />)
+    expect(toastMock).toHaveBeenCalledTimes(1)
+
+    rerender(<SignInReminderToast enabled={false} />)
+    expect(dismissMock).toHaveBeenCalledTimes(1)
   })
 
   it('triggers GitHub login from the toast action', () => {

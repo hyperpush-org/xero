@@ -8,20 +8,25 @@ use super::{
     tool_allowed_for_runtime_agent_with_policy, AutonomousBrowserAction,
     AutonomousCommandPolicyOutcome, AutonomousCommandPolicyProfile, AutonomousCommandPolicyTrace,
     AutonomousCommandRequest, AutonomousDesktopControlAction, AutonomousDesktopObserveAction,
-    AutonomousMacosAutomationAction, AutonomousMcpAction, AutonomousProcessActionRiskLevel,
-    AutonomousProcessManagerAction, AutonomousProcessManagerPolicyTrace,
-    AutonomousProcessOwnershipScope, AutonomousProjectContextAction, AutonomousSafetyApprovalGrant,
-    AutonomousSafetyPolicyAction, AutonomousSafetyPolicyDecision,
-    AutonomousSystemDiagnosticsAction, AutonomousSystemDiagnosticsPolicyTrace,
-    AutonomousToolRequest, AutonomousToolRuntime, AutonomousWorkflowDefinitionAction,
-    AUTONOMOUS_TOOL_COMMAND_PROBE, AUTONOMOUS_TOOL_COMMAND_VERIFY, AUTONOMOUS_TOOL_HOST_COMMAND,
-    DEFAULT_COMMAND_TIMEOUT_MS,
-};
-use crate::commands::{
-    validate_non_empty, CommandError, CommandErrorClass, CommandResult, RuntimeRunApprovalModeDto,
+    AutonomousFsTransactionAction, AutonomousMacosAutomationAction, AutonomousMcpAction,
+    AutonomousProcessActionRiskLevel, AutonomousProcessManagerAction,
+    AutonomousProcessManagerPolicyTrace, AutonomousProcessOwnershipScope,
+    AutonomousProjectContextAction, AutonomousSafetyApprovalGrant, AutonomousSafetyPolicyAction,
+    AutonomousSafetyPolicyDecision, AutonomousSystemDiagnosticsAction,
+    AutonomousSystemDiagnosticsPolicyTrace, AutonomousToolRequest, AutonomousToolRuntime,
+    AutonomousWorkflowDefinitionAction, AUTONOMOUS_TOOL_COMMAND_PROBE,
+    AUTONOMOUS_TOOL_COMMAND_VERIFY, AUTONOMOUS_TOOL_HOST_COMMAND, DEFAULT_COMMAND_TIMEOUT_MS,
 };
 use crate::runtime::redaction::{
     find_prohibited_persistence_content, is_sensitive_argument_name, render_command_for_persistence,
+};
+use crate::{
+    auth::now_timestamp,
+    commands::{
+        validate_non_empty, CommandError, CommandErrorClass, CommandResult,
+        RuntimeRunApprovalModeDto,
+    },
+    db::project_store,
 };
 use serde_json::Value as JsonValue;
 
@@ -126,6 +131,20 @@ impl AutonomousToolRuntime {
             ));
         }
 
+        if request_requires_mailbox_check(self, tool_name, request)? {
+            let mailbox_scope_paths = mailbox_gate_scope_paths(request);
+            if let Some((code, explanation)) =
+                mailbox_check_policy_denial(self, &mailbox_scope_paths)?
+            {
+                return Ok(safety_decision(
+                    AutonomousSafetyPolicyAction::Deny,
+                    code,
+                    explanation,
+                    &context,
+                ));
+            }
+        }
+
         let command_decision = command_family_policy_decision(self, tool_name, request)?;
         if let Some((action, code, explanation)) = command_decision {
             return Ok(safety_decision(action, code, explanation, &context));
@@ -148,16 +167,36 @@ impl AutonomousToolRuntime {
         ))
     }
 
+    pub(super) fn enforce_mailbox_check_before_mutation(
+        &self,
+        tool_name: &str,
+        request: &AutonomousToolRequest,
+    ) -> CommandResult<()> {
+        if request_requires_mailbox_check(self, tool_name, request)? {
+            let mailbox_scope_paths = mailbox_gate_scope_paths(request);
+            if let Some((code, explanation)) =
+                mailbox_check_policy_denial(self, &mailbox_scope_paths)?
+            {
+                return Err(CommandError::new(
+                    code,
+                    CommandErrorClass::PolicyDenied,
+                    explanation,
+                    false,
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn prepare_command_request(
         &self,
         request: AutonomousCommandRequest,
     ) -> CommandResult<PreparedCommandRequest> {
         let argv = normalize_command_argv(&request.argv)?;
-        let cwd_relative = request
-            .cwd
-            .as_deref()
-            .map(normalize_command_cwd)
-            .transpose()?;
+        let cwd_relative = match request.cwd.as_deref() {
+            Some(cwd) => normalize_command_cwd(cwd)?,
+            None => None,
+        };
         let cwd = match cwd_relative.as_ref() {
             Some(path) => self
                 .resolve_existing_directory(path)
@@ -305,6 +344,7 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
             }
         }
         AutonomousToolRequest::Browser(request) => {
+            let requires_approval = browser_action_requires_approval(&request.action);
             if browser_action_is_observe(&request.action) {
                 SafetyPolicyMetadata {
                     risk_class: "browser_observe",
@@ -312,20 +352,28 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
                     credential_sensitivity: "possible",
                     os_target: Some("browser"),
                     prior_observation_required: false,
-                    requires_approval: false,
+                    requires_approval,
                     require_approval_code: "policy_requires_approval_browser_observe",
-                    require_approval_reason: "Browser observation does not require operator approval.",
+                    require_approval_reason: if requires_approval {
+                        "This browser observation reads or persists sensitive browser evidence and requires operator approval."
+                    } else {
+                        "Browser observation does not require operator approval."
+                    },
                 }
             } else {
                 SafetyPolicyMetadata {
-                    risk_class: "browser_control",
+                    risk_class: browser_action_risk_class(&request.action),
                     network_intent: "browser",
                     credential_sensitivity: "possible",
                     os_target: Some("browser"),
                     prior_observation_required: false,
-                    requires_approval: false,
+                    requires_approval,
                     require_approval_code: "policy_requires_approval_browser_control",
-                    require_approval_reason: "Browser control requires operator approval.",
+                    require_approval_reason: if requires_approval {
+                        "This browser action transfers files, changes credential/browser state, intercepts network traffic, emits durable evidence, or exposes an external bridge and requires operator approval."
+                    } else {
+                        "Non-sensitive browser control does not require operator approval."
+                    },
                 }
             }
         }
@@ -677,13 +725,223 @@ fn project_context_action_is_read(action: AutonomousProjectContextAction) -> boo
     )
 }
 
+fn request_requires_mailbox_check(
+    runtime: &AutonomousToolRuntime,
+    tool_name: &str,
+    request: &AutonomousToolRequest,
+) -> CommandResult<bool> {
+    if repository_write_request(request) {
+        return Ok(true);
+    }
+
+    let command_request = match request {
+        AutonomousToolRequest::Command(request) => Some(request.clone()),
+        AutonomousToolRequest::CommandSessionStart(request) => Some(AutonomousCommandRequest {
+            argv: request.argv.clone(),
+            cwd: request.cwd.clone(),
+            timeout_ms: request.timeout_ms,
+        }),
+        AutonomousToolRequest::PowerShell(request) => Some(AutonomousCommandRequest {
+            argv: vec![
+                if cfg!(target_os = "windows") {
+                    "powershell.exe".into()
+                } else {
+                    "pwsh".into()
+                },
+                "-NoLogo".into(),
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-Command".into(),
+                request.script.clone(),
+            ],
+            cwd: request.cwd.clone(),
+            timeout_ms: request.timeout_ms,
+        }),
+        _ => None,
+    };
+
+    let Some(command_request) = command_request else {
+        return Ok(false);
+    };
+    let prepared = runtime.prepare_command_request(command_request)?;
+    let profile = match classify_command(&prepared) {
+        CommandClassification::Safe { profile, .. } => profile,
+        CommandClassification::Escalated { profile, .. } => profile,
+    };
+    if matches!(
+        profile,
+        AutonomousCommandPolicyProfile::ReadOnlyVerification
+    ) {
+        return Ok(false);
+    }
+    if let Some(policy) = command_tool_scope_escalation(
+        tool_name,
+        &prepared,
+        &policy_trace(
+            AutonomousCommandPolicyOutcome::Allowed,
+            RuntimeRunApprovalModeDto::Yolo,
+            profile,
+            "mailbox_gate_command_scope_probe",
+            "Classified command for mailbox mutation gating.",
+        ),
+    ) {
+        return Ok(policy.profile != AutonomousCommandPolicyProfile::ReadOnlyVerification);
+    }
+    Ok(true)
+}
+
+fn repository_write_request(request: &AutonomousToolRequest) -> bool {
+    matches!(
+        request,
+        AutonomousToolRequest::Edit(_)
+            | AutonomousToolRequest::Write(_)
+            | AutonomousToolRequest::Patch(_)
+            | AutonomousToolRequest::Copy(_)
+            | AutonomousToolRequest::FsTransaction(_)
+            | AutonomousToolRequest::JsonEdit(_)
+            | AutonomousToolRequest::TomlEdit(_)
+            | AutonomousToolRequest::YamlEdit(_)
+            | AutonomousToolRequest::Delete(_)
+            | AutonomousToolRequest::Rename(_)
+            | AutonomousToolRequest::Mkdir(_)
+            | AutonomousToolRequest::NotebookEdit(_)
+    )
+}
+
+fn mailbox_gate_scope_paths(request: &AutonomousToolRequest) -> Vec<String> {
+    let mut paths = Vec::new();
+    match request {
+        AutonomousToolRequest::Edit(request) => paths.push(request.path.clone()),
+        AutonomousToolRequest::Write(request) => paths.push(request.path.clone()),
+        AutonomousToolRequest::Patch(request) => {
+            if let Some(path) = request.path.clone() {
+                paths.push(path);
+            }
+            paths.extend(
+                request
+                    .operations
+                    .iter()
+                    .map(|operation| operation.path.clone()),
+            );
+        }
+        AutonomousToolRequest::Copy(request) => paths.push(request.to.clone()),
+        AutonomousToolRequest::FsTransaction(request) => {
+            for operation in &request.operations {
+                if let Some(path) = operation.path.clone() {
+                    paths.push(path);
+                }
+                if let Some(to) = operation.to.clone() {
+                    paths.push(to);
+                }
+                if let Some(to_path) = operation.to_path.clone() {
+                    paths.push(to_path);
+                }
+                if matches!(
+                    operation.action,
+                    AutonomousFsTransactionAction::Rename
+                        | AutonomousFsTransactionAction::DeleteFile
+                        | AutonomousFsTransactionAction::DeleteDirectory
+                ) {
+                    if let Some(from) = operation.from.clone() {
+                        paths.push(from);
+                    }
+                    if let Some(from_path) = operation.from_path.clone() {
+                        paths.push(from_path);
+                    }
+                }
+            }
+        }
+        AutonomousToolRequest::JsonEdit(request)
+        | AutonomousToolRequest::TomlEdit(request)
+        | AutonomousToolRequest::YamlEdit(request) => paths.push(request.path.clone()),
+        AutonomousToolRequest::Delete(request) => paths.push(request.path.clone()),
+        AutonomousToolRequest::Rename(request) => {
+            paths.push(request.from_path.clone());
+            paths.push(request.to_path.clone());
+        }
+        AutonomousToolRequest::Mkdir(request) => paths.push(request.path.clone()),
+        AutonomousToolRequest::NotebookEdit(request) => paths.push(request.path.clone()),
+        _ => {}
+    }
+    paths
+        .into_iter()
+        .map(|path| path.trim().to_owned())
+        .filter(|path| !path.is_empty())
+        .collect()
+}
+
+fn mailbox_check_policy_denial(
+    runtime: &AutonomousToolRuntime,
+    paths: &[String],
+) -> CommandResult<Option<(&'static str, String)>> {
+    let Some(run_context) = runtime.agent_run_context() else {
+        return Ok(None);
+    };
+    let now = now_timestamp();
+    let status = project_store::agent_mailbox_mutation_gate_status(
+        runtime.repo_root(),
+        &run_context.project_id,
+        &run_context.run_id,
+        &now,
+        paths,
+    )?;
+    if !status.requires_mailbox_check() {
+        return Ok(None);
+    }
+
+    let freshness = match status.checked_at.as_deref() {
+        Some(checked_at) => format!(
+            "the last mailbox check at {checked_at} is stale for the current coordination state"
+        ),
+        None => "this run has not checked its mailbox for the current coordination state".into(),
+    };
+    let retry_guidance = mailbox_check_retry_guidance(paths);
+    Ok(Some((
+        "policy_requires_mailbox_check_before_mutation",
+        format!(
+            "Xero denied this project-changing mutation because {freshness} while {} same-project sibling run(s) are active. {retry_guidance}",
+            status.active_sibling_count
+        ),
+    )))
+}
+
+fn mailbox_check_retry_guidance(paths: &[String]) -> String {
+    if paths.is_empty() {
+        "Call `agent_coordination` with action `check_inbox_status` if you want metadata first, or action `read_inbox` unfiltered, review the temporary mailbox, then retry the mutation."
+            .to_owned()
+    } else {
+        format!(
+            "Call `agent_coordination` with action `check_inbox_status` and `paths`, or action `read_inbox` with `paths: [{}]`, review the scoped temporary mailbox, then retry the mutation.",
+            paths
+                .iter()
+                .map(|path| format!("\"{path}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
 fn browser_action_is_observe(action: &AutonomousBrowserAction) -> bool {
+    if let AutonomousBrowserAction::InAppCdpFacade { method, .. } = action {
+        return in_app_cdp_facade_method_is_observe(method);
+    }
+    if let AutonomousBrowserAction::ActionCache { command, .. } = action {
+        return matches!(command.as_str(), "stats" | "list" | "get");
+    }
     matches!(
         action,
-        AutonomousBrowserAction::ReadText { .. }
+        AutonomousBrowserAction::Health
+            | AutonomousBrowserAction::Capabilities { .. }
+            | AutonomousBrowserAction::PageList { .. }
+            | AutonomousBrowserAction::ReadText { .. }
+            | AutonomousBrowserAction::Source { .. }
             | AutonomousBrowserAction::Query { .. }
+            | AutonomousBrowserAction::Snapshot { .. }
+            | AutonomousBrowserAction::GetRef { .. }
             | AutonomousBrowserAction::WaitForSelector { .. }
             | AutonomousBrowserAction::WaitForLoad { .. }
+            | AutonomousBrowserAction::WaitFor { .. }
+            | AutonomousBrowserAction::Assert { .. }
             | AutonomousBrowserAction::CurrentUrl
             | AutonomousBrowserAction::HistoryState
             | AutonomousBrowserAction::Screenshot
@@ -693,8 +951,131 @@ fn browser_action_is_observe(action: &AutonomousBrowserAction) -> bool {
             | AutonomousBrowserAction::NetworkSummary { .. }
             | AutonomousBrowserAction::AccessibilityTree { .. }
             | AutonomousBrowserAction::StateSnapshot { .. }
+            | AutonomousBrowserAction::FindBest { .. }
+            | AutonomousBrowserAction::ActionCache { .. }
+            | AutonomousBrowserAction::AnalyzeForm { .. }
+            | AutonomousBrowserAction::FrameList { .. }
+            | AutonomousBrowserAction::DialogList { .. }
+            | AutonomousBrowserAction::DownloadList { .. }
+            | AutonomousBrowserAction::TraceStatus { .. }
+            | AutonomousBrowserAction::VisualBaselineList { .. }
+            | AutonomousBrowserAction::EmulationState { .. }
+            | AutonomousBrowserAction::Extract { .. }
+            | AutonomousBrowserAction::FrameState { .. }
+            | AutonomousBrowserAction::VaultList { .. }
+            | AutonomousBrowserAction::AuthProfileList { .. }
+            | AutonomousBrowserAction::ViewerState { .. }
+            | AutonomousBrowserAction::BrowserResource { .. }
+            | AutonomousBrowserAction::BrowserPrompt { .. }
+            | AutonomousBrowserAction::ValidateBundle { .. }
+            | AutonomousBrowserAction::Timeline { .. }
+            | AutonomousBrowserAction::PromptInjectionScan { .. }
             | AutonomousBrowserAction::HarnessExtensionContract
             | AutonomousBrowserAction::TabList
+    )
+}
+
+fn browser_action_requires_approval(action: &AutonomousBrowserAction) -> bool {
+    if let AutonomousBrowserAction::InAppCdpFacade { method, .. } = action {
+        return !in_app_cdp_facade_method_is_observe(method);
+    }
+    if let AutonomousBrowserAction::ActionCache { command, .. } = action {
+        return !matches!(command.as_str(), "stats" | "list" | "get");
+    }
+    matches!(
+        action,
+        AutonomousBrowserAction::Launch { .. }
+            | AutonomousBrowserAction::Attach { .. }
+            | AutonomousBrowserAction::UploadFile { .. }
+            | AutonomousBrowserAction::Paste { .. }
+            | AutonomousBrowserAction::DownloadSave { .. }
+            | AutonomousBrowserAction::TraceStart { .. }
+            | AutonomousBrowserAction::TraceStop { .. }
+            | AutonomousBrowserAction::TraceExport { .. }
+            | AutonomousBrowserAction::VisualBaselineSave { .. }
+            | AutonomousBrowserAction::VisualDiff { .. }
+            | AutonomousBrowserAction::HarExport { .. }
+            | AutonomousBrowserAction::PdfExport { .. }
+            | AutonomousBrowserAction::DebugBundle { .. }
+            | AutonomousBrowserAction::ExportBundle { .. }
+    ) || matches!(
+        action,
+        AutonomousBrowserAction::Recording { command, .. } if command == "export"
+    ) || matches!(
+        action,
+        AutonomousBrowserAction::NetworkControl { .. }
+            | AutonomousBrowserAction::StateRestore { .. }
+            | AutonomousBrowserAction::VaultSave { .. }
+            | AutonomousBrowserAction::VaultLogin { .. }
+            | AutonomousBrowserAction::VaultDelete { .. }
+            | AutonomousBrowserAction::AuthProfileSave { .. }
+            | AutonomousBrowserAction::AuthProfileRestore { .. }
+            | AutonomousBrowserAction::AuthProfileDelete { .. }
+            | AutonomousBrowserAction::McpBridge { .. }
+            | AutonomousBrowserAction::GenerateTest { .. }
+    )
+}
+
+fn browser_action_risk_class(action: &AutonomousBrowserAction) -> &'static str {
+    match action {
+        AutonomousBrowserAction::InAppCdpFacade { method, .. } => {
+            if in_app_cdp_facade_method_is_observe(method) {
+                "browser_observe"
+            } else {
+                "browser_in_app_facade_control"
+            }
+        }
+        AutonomousBrowserAction::ActionCache { command, .. } => {
+            if matches!(command.as_str(), "stats" | "list" | "get") {
+                "browser_observe"
+            } else {
+                "browser_action_cache_mutation"
+            }
+        }
+        AutonomousBrowserAction::Attach {
+            allow_remote_endpoint: Some(true),
+            ..
+        } => "browser_remote_cdp_control_channel",
+        AutonomousBrowserAction::Launch { .. } | AutonomousBrowserAction::Attach { .. } => {
+            "browser_cdp_control_channel"
+        }
+        AutonomousBrowserAction::UploadFile { .. }
+        | AutonomousBrowserAction::DownloadSave { .. } => "browser_file_transfer",
+        AutonomousBrowserAction::VaultSave { .. }
+        | AutonomousBrowserAction::VaultLogin { .. }
+        | AutonomousBrowserAction::VaultDelete { .. }
+        | AutonomousBrowserAction::AuthProfileSave { .. }
+        | AutonomousBrowserAction::AuthProfileRestore { .. }
+        | AutonomousBrowserAction::AuthProfileDelete { .. }
+        | AutonomousBrowserAction::StateRestore { .. } => "browser_credential_state",
+        AutonomousBrowserAction::NetworkControl { .. } => "browser_network_interception",
+        AutonomousBrowserAction::TraceStart { .. }
+        | AutonomousBrowserAction::TraceStop { .. }
+        | AutonomousBrowserAction::TraceExport { .. }
+        | AutonomousBrowserAction::VisualBaselineSave { .. }
+        | AutonomousBrowserAction::VisualDiff { .. }
+        | AutonomousBrowserAction::HarExport { .. }
+        | AutonomousBrowserAction::PdfExport { .. }
+        | AutonomousBrowserAction::DebugBundle { .. }
+        | AutonomousBrowserAction::ExportBundle { .. }
+        | AutonomousBrowserAction::GenerateTest { .. } => "browser_evidence_persistence",
+        AutonomousBrowserAction::McpBridge { .. } => "browser_external_bridge",
+        _ => "browser_control",
+    }
+}
+
+fn in_app_cdp_facade_method_is_observe(method: &str) -> bool {
+    matches!(
+        method,
+        "Page.lifecycle"
+            | "DOM.snapshot"
+            | "DOM.resolveRef"
+            | "Log.entryAdded"
+            | "Network.requestWillBeSent"
+            | "Network.responseReceived"
+            | "Network.summary"
+            | "Accessibility.snapshot"
+            | "Storage.get"
     )
 }
 
@@ -818,7 +1199,7 @@ pub(super) fn command_tool_scope_escalation(
                 policy.profile,
                 "policy_escalated_command_verify_scope",
                 format!(
-                    "Xero requires operator review for command_verify `{}` because verification is limited to known test, lint, typecheck, build, format, and check commands.",
+                    "Xero requires operator review for command_verify `{}` because verification is limited to known test, lint, typecheck, type-check, build, format, and check commands.",
                     render_command_for_persistence(&prepared.argv)
                 ),
             ))
@@ -870,13 +1251,14 @@ fn command_verify_allows(
             )
         }),
         "npm" | "pnpm" | "yarn" | "bun" => {
-            git_subcommand(&prepared.argv).is_some_and(|subcommand| {
+            package_manager_subcommand(&prepared.argv).is_some_and(|subcommand| {
                 matches!(
                     subcommand,
                     "test"
                         | "tests"
                         | "lint"
                         | "typecheck"
+                        | "type-check"
                         | "check"
                         | "build"
                         | "run"
@@ -893,6 +1275,43 @@ fn git_subcommand(argv: &[String]) -> Option<&str> {
         .skip(1)
         .find(|argument| !argument.starts_with('-'))
         .map(String::as_str)
+}
+
+fn package_manager_subcommand(argv: &[String]) -> Option<&str> {
+    let mut skip_next = false;
+    for argument in argv.iter().skip(1) {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        let argument = argument.as_str();
+        if argument == "--" {
+            continue;
+        }
+        if package_manager_flag_takes_value(argument) {
+            skip_next = true;
+            continue;
+        }
+        if package_manager_flag_with_inline_value(argument) || argument.starts_with('-') {
+            continue;
+        }
+        return Some(argument);
+    }
+    None
+}
+
+fn package_manager_flag_takes_value(argument: &str) -> bool {
+    matches!(
+        argument,
+        "--filter" | "-F" | "--workspace" | "-w" | "--prefix" | "-C" | "--dir"
+    )
+}
+
+fn package_manager_flag_with_inline_value(argument: &str) -> bool {
+    matches!(
+        argument.split_once('=').map(|(name, _)| name),
+        Some("--filter" | "--workspace" | "--prefix" | "--dir")
+    )
 }
 
 struct SafetyDecisionContext<'a> {
@@ -1250,9 +1669,15 @@ fn normalize_command_argv(argv: &[String]) -> CommandResult<Vec<String>> {
         .collect())
 }
 
-fn normalize_command_cwd(value: &str) -> CommandResult<PathBuf> {
+fn normalize_command_cwd(value: &str) -> CommandResult<Option<PathBuf>> {
     validate_non_empty(value, "cwd")?;
-    normalize_relative_path(value, "cwd").map_err(map_cwd_policy_error)
+    let trimmed = value.trim();
+    if is_current_directory_path(trimmed) {
+        return Ok(None);
+    }
+    normalize_relative_path(trimmed, "cwd")
+        .map(Some)
+        .map_err(map_cwd_policy_error)
 }
 
 fn normalize_timeout_ms(timeout_ms: Option<u64>, max_timeout_ms: u64) -> CommandResult<u64> {
@@ -1506,11 +1931,7 @@ fn classify_cargo_command(argv: &[String]) -> CommandClassification {
 }
 
 fn classify_package_manager_command(argv: &[String], cwd: &Path) -> CommandClassification {
-    let subcommand = argv
-        .iter()
-        .skip(1)
-        .find(|argument| !argument.starts_with('-'));
-    match subcommand.map(String::as_str) {
+    match package_manager_subcommand(argv) {
         Some("install" | "add" | "remove" | "unlink" | "upgrade" | "update") => {
             CommandClassification::Escalated {
                 profile: AutonomousCommandPolicyProfile::DependencyInstallation,
@@ -1521,7 +1942,7 @@ fn classify_package_manager_command(argv: &[String], cwd: &Path) -> CommandClass
                 ),
             }
         }
-        Some(script @ ("test" | "lint" | "typecheck" | "build")) => {
+        Some(script @ ("test" | "lint" | "typecheck" | "type-check" | "build")) => {
             classify_repo_package_script(argv, cwd, script, true)
         }
         Some("exec") => CommandClassification::Escalated {
@@ -1646,7 +2067,7 @@ fn classify_repo_package_script(
 fn is_safe_package_script_name(script_name: &str) -> bool {
     matches!(
         script_name,
-        "test" | "tests" | "lint" | "typecheck" | "check" | "build" | "rust:test"
+        "test" | "tests" | "lint" | "typecheck" | "type-check" | "check" | "build" | "rust:test"
     )
 }
 
@@ -1865,6 +2286,110 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn mailbox_retry_guidance_recommends_path_scoped_read_when_paths_are_known() {
+        let guidance = mailbox_check_retry_guidance(&["src/lib.rs".into()]);
+
+        assert!(guidance.contains("check_inbox_status"));
+        assert!(guidance.contains("read_inbox"));
+        assert!(guidance.contains(r#""src/lib.rs""#));
+    }
+
+    #[test]
+    fn native_browser_gap_actions_have_observe_control_and_approval_policy() {
+        let observe_actions = [
+            AutonomousBrowserAction::DialogList { session_id: None },
+            AutonomousBrowserAction::DownloadList { session_id: None },
+            AutonomousBrowserAction::TraceStatus { session_id: None },
+            AutonomousBrowserAction::VisualBaselineList { session_id: None },
+            AutonomousBrowserAction::EmulationState { session_id: None },
+            AutonomousBrowserAction::Extract {
+                session_id: None,
+                mode: "page_summary".into(),
+                selector: None,
+                selector_map: None,
+                limit: None,
+            },
+            AutonomousBrowserAction::BrowserResource {
+                session_id: None,
+                resource: "current_state".into(),
+            },
+        ];
+        for action in observe_actions {
+            assert!(
+                browser_action_is_observe(&action),
+                "{action:?} should be observe"
+            );
+            assert!(!browser_action_requires_approval(&action));
+        }
+
+        for (action, risk_class) in [
+            (
+                AutonomousBrowserAction::Launch {
+                    session_id: None,
+                    label: None,
+                    url: None,
+                    browser_path: None,
+                    headless: None,
+                    sensitive_mode: None,
+                },
+                "browser_cdp_control_channel",
+            ),
+            (
+                AutonomousBrowserAction::Attach {
+                    endpoint: "http://127.0.0.1:9222".into(),
+                    session_id: None,
+                    label: None,
+                    sensitive_mode: None,
+                    allow_remote_endpoint: None,
+                },
+                "browser_cdp_control_channel",
+            ),
+            (
+                AutonomousBrowserAction::UploadFile {
+                    selector: Some("input[type=file]".into()),
+                    ref_id: None,
+                    paths: vec!["/tmp/file.txt".into()],
+                    timeout_ms: None,
+                },
+                "browser_file_transfer",
+            ),
+            (
+                AutonomousBrowserAction::DownloadSave {
+                    session_id: None,
+                    guid: "download-1".into(),
+                    destination: "/tmp/download.txt".into(),
+                },
+                "browser_file_transfer",
+            ),
+            (
+                AutonomousBrowserAction::AuthProfileRestore {
+                    session_id: None,
+                    name: "fixture".into(),
+                    navigate: Some(true),
+                },
+                "browser_credential_state",
+            ),
+            (
+                AutonomousBrowserAction::TraceExport { session_id: None },
+                "browser_evidence_persistence",
+            ),
+            (
+                AutonomousBrowserAction::McpBridge {
+                    command: "status".into(),
+                },
+                "browser_external_bridge",
+            ),
+        ] {
+            assert!(
+                !browser_action_is_observe(&action),
+                "{action:?} should be control"
+            );
+            assert!(browser_action_requires_approval(&action));
+            assert_eq!(browser_action_risk_class(&action), risk_class);
+        }
+    }
+
+    #[test]
     fn package_manager_run_allows_introspected_verification_script() {
         let tempdir = tempdir().expect("tempdir");
         fs::write(
@@ -1886,6 +2411,62 @@ mod tests {
                 assert!(reason.contains("test"));
             }
             other => panic!("expected safe script, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn package_manager_type_check_forms_are_verification_safe() {
+        let tempdir = tempdir().expect("tempdir");
+        fs::write(
+            tempdir.path().join("package.json"),
+            r#"{"scripts":{"type-check":"tsc --noEmit","typecheck":"tsc --noEmit"}}"#,
+        )
+        .expect("package");
+
+        for argv in [
+            ["pnpm", "type-check"].as_slice(),
+            ["pnpm", "--filter", "client", "type-check"].as_slice(),
+            ["pnpm", "run", "type-check"].as_slice(),
+        ] {
+            let prepared = PreparedCommandRequest {
+                argv: argv.iter().map(|value| (*value).to_owned()).collect(),
+                cwd_relative: None,
+                cwd: tempdir.path().to_path_buf(),
+                timeout_ms: DEFAULT_COMMAND_TIMEOUT_MS,
+            };
+            let decision = classify_command(&prepared);
+
+            match decision {
+                CommandClassification::Safe { profile, reason } => {
+                    assert_eq!(
+                        profile,
+                        AutonomousCommandPolicyProfile::ReadOnlyVerification
+                    );
+                    assert!(reason.contains("type-check"));
+                }
+                other => panic!("expected safe type-check script, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn package_manager_type_check_variants_stay_reviewed() {
+        let tempdir = tempdir().expect("tempdir");
+        fs::write(
+            tempdir.path().join("package.json"),
+            r#"{"scripts":{"type-check:ci":"tsc --noEmit"}}"#,
+        )
+        .expect("package");
+        let prepared = prepared_command(tempdir.path(), ["pnpm", "run", "type-check:ci"]);
+
+        let decision = classify_command(&prepared);
+
+        match decision {
+            CommandClassification::Escalated { code, reason, .. } => {
+                assert_eq!(code, "policy_escalated_package_manager_run");
+                assert!(reason.contains("verification allowlist"));
+            }
+            other => panic!("expected reviewed type-check variant, got {other:?}"),
         }
     }
 
@@ -2208,6 +2789,11 @@ mod tests {
     #[test]
     fn safety_policy_keeps_command_probe_readonly_and_verify_scoped() {
         let tempdir = tempdir().expect("tempdir");
+        fs::write(
+            tempdir.path().join("package.json"),
+            r#"{"scripts":{"type-check":"tsc --noEmit","type-check:ci":"tsc --noEmit"}}"#,
+        )
+        .expect("package");
         let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Yolo);
         let probe_request = AutonomousToolRequest::Command(AutonomousCommandRequest {
             argv: vec!["cargo".into(), "test".into()],
@@ -2242,6 +2828,71 @@ mod tests {
             .expect("verify policy");
 
         assert_eq!(verify_decision.action, AutonomousSafetyPolicyAction::Allow);
+
+        let root_cwd_verify_request = AutonomousToolRequest::Command(AutonomousCommandRequest {
+            argv: vec!["cargo".into(), "test".into()],
+            cwd: Some(".".into()),
+            timeout_ms: None,
+        });
+        let root_cwd_verify_decision = runtime
+            .evaluate_safety_policy(
+                AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                &json!({"argv": ["cargo", "test"], "cwd": "."}),
+                &root_cwd_verify_request,
+                false,
+                "input-hash",
+            )
+            .expect("verify policy with root cwd shorthand");
+
+        assert_eq!(
+            root_cwd_verify_decision.action,
+            AutonomousSafetyPolicyAction::Allow
+        );
+
+        let type_check_request = AutonomousToolRequest::Command(AutonomousCommandRequest {
+            argv: vec![
+                "pnpm".into(),
+                "--filter".into(),
+                "client".into(),
+                "type-check".into(),
+            ],
+            cwd: None,
+            timeout_ms: None,
+        });
+        let type_check_decision = runtime
+            .evaluate_safety_policy(
+                AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                &json!({"argv": ["pnpm", "--filter", "client", "type-check"]}),
+                &type_check_request,
+                false,
+                "input-hash",
+            )
+            .expect("scoped type-check verify policy");
+
+        assert_eq!(
+            type_check_decision.action,
+            AutonomousSafetyPolicyAction::Allow
+        );
+
+        let type_check_variant_request = AutonomousToolRequest::Command(AutonomousCommandRequest {
+            argv: vec!["pnpm".into(), "run".into(), "type-check:ci".into()],
+            cwd: None,
+            timeout_ms: None,
+        });
+        let type_check_variant_decision = runtime
+            .evaluate_safety_policy(
+                AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                &json!({"argv": ["pnpm", "run", "type-check:ci"]}),
+                &type_check_variant_request,
+                false,
+                "input-hash",
+            )
+            .expect("type-check variant verify policy");
+
+        assert_eq!(
+            type_check_variant_decision.action,
+            AutonomousSafetyPolicyAction::RequireApproval
+        );
     }
 
     #[test]

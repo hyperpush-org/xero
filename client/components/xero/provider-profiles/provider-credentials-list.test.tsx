@@ -5,7 +5,6 @@ import type {
   ProviderCredentialDto,
   ProviderCredentialsSnapshotDto,
   RuntimeSessionView,
-  XaiDeviceCodeLoginDto,
 } from '@/src/lib/xero-model'
 
 vi.mock('@tauri-apps/plugin-opener', () => ({
@@ -64,27 +63,6 @@ function makeRuntimeSession(overrides: Partial<RuntimeSessionView> = {}): Runtim
   }
 }
 
-function makeXaiDeviceCodeLogin(
-  overrides: Partial<XaiDeviceCodeLoginDto> = {},
-): XaiDeviceCodeLoginDto {
-  return {
-    providerId: 'xai',
-    flowId: 'xai-device-flow-1',
-    userCode: 'GROK-1234',
-    verificationUri: 'https://auth.x.ai/device',
-    verificationUriComplete: 'https://auth.x.ai/device?user_code=GROK-1234',
-    intervalSeconds: 5,
-    expiresAt: 1_779_984_000,
-    phase: 'awaiting_manual_input',
-    sessionId: null,
-    accountId: null,
-    lastErrorCode: null,
-    lastError: null,
-    updatedAt: '2026-04-15T20:00:00.000Z',
-    ...overrides,
-  }
-}
-
 function getProviderCard(label: string): HTMLElement {
   const card = screen
     .getAllByText(label)
@@ -114,9 +92,10 @@ describe('ProviderCredentialsList', () => {
     expect(within(getProviderCard('OpenRouter')).getByRole('button', { name: /configure/i })).toBeInTheDocument()
     expect(within(getProviderCard('Anthropic')).getByRole('button', { name: /configure/i })).toBeInTheDocument()
     expect(within(getProviderCard('DeepSeek')).getByRole('button', { name: /configure/i })).toBeInTheDocument()
-    expect(within(getProviderCard('xAI / Grok')).getByRole('button', { name: /sign in/i })).toBeInTheDocument()
-    expect(within(getProviderCard('xAI / Grok')).getByRole('button', { name: /device/i })).toBeInTheDocument()
-    expect(within(getProviderCard('xAI / Grok')).getByRole('button', { name: /configure/i })).toBeInTheDocument()
+    const xaiCard = getProviderCard('xAI / Grok')
+    expect(within(xaiCard).getByRole('button', { name: /sign in/i })).toBeInTheDocument()
+    expect(within(xaiCard).queryByRole('button', { name: /device/i })).not.toBeInTheDocument()
+    expect(within(xaiCard).queryByRole('button', { name: /configure/i })).not.toBeInTheDocument()
     expect(within(getProviderCard('Cursor')).getByRole('button', { name: /configure/i })).toBeInTheDocument()
     expect(within(getProviderCard('Ollama')).getByRole('button', { name: /configure/i })).toBeInTheDocument()
     expect(within(getProviderCard('Amazon Bedrock')).getByRole('button', { name: /configure/i })).toBeInTheDocument()
@@ -290,28 +269,6 @@ describe('ProviderCredentialsList', () => {
       fireEvent.click(within(card).getByRole('button', { name: /sign in/i }))
     })
     await waitFor(() => expect(onStart).toHaveBeenCalledWith({ providerId: 'openai_codex' }))
-  })
-
-  it('starts the xAI device-code flow and shows the user code', async () => {
-    const onStartDevice = vi.fn(async () => makeXaiDeviceCodeLogin())
-    render(
-      <ProviderCredentialsList
-        providerCredentials={makeSnapshot([])}
-        providerCredentialsLoadStatus="ready"
-        providerCredentialsLoadError={null}
-        providerCredentialsSaveStatus="idle"
-        providerCredentialsSaveError={null}
-        onStartXaiDeviceCodeLogin={onStartDevice}
-      />,
-    )
-
-    const card = getProviderCard('xAI / Grok')
-    await act(async () => {
-      fireEvent.click(within(card).getByRole('button', { name: /device/i }))
-    })
-
-    await waitFor(() => expect(onStartDevice).toHaveBeenCalledWith({ providerId: 'xai' }))
-    expect(within(card).getByText('GROK-1234')).toBeInTheDocument()
   })
 
   it('calls deleteProviderCredential when signing out an OAuth provider', async () => {

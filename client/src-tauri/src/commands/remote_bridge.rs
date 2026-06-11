@@ -11,7 +11,7 @@ use std::{
         Arc, Mutex, OnceLock,
     },
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -673,6 +673,20 @@ fn handle_inbound_command<R: Runtime + 'static>(
         .as_deref()
         .unwrap_or("__sessions__")
         .to_string();
+    if let Some(error) = command_freshness_error(&command) {
+        let outcome = if error.code == "remote_command_expired" {
+            "stale"
+        } else {
+            "rejected"
+        };
+        bridge
+            .forward_control_event(
+                &response_session,
+                command_outcome_payload(&command, outcome, Some(error.code.as_str())),
+            )
+            .map_err(map_bridge_error)?;
+        return Err(error);
+    }
     if command_is_duplicate(&command) {
         bridge
             .forward_control_event(
@@ -757,6 +771,56 @@ fn is_critical_command(kind: &InboundCommandKind) -> bool {
             | InboundCommandKind::ComputerUseStreamAnswer
             | InboundCommandKind::ComputerUseStreamIceCandidate
     )
+}
+
+fn command_requires_freshness(kind: &InboundCommandKind) -> bool {
+    matches!(
+        kind,
+        InboundCommandKind::ComputerUseManualControlRequest
+            | InboundCommandKind::ComputerUseManualControlGrant
+            | InboundCommandKind::ComputerUseManualControlHeartbeat
+            | InboundCommandKind::ComputerUseManualControlInput
+            | InboundCommandKind::ComputerUseManualControlRelease
+            | InboundCommandKind::ComputerUseStreamRequest
+            | InboundCommandKind::ComputerUseStreamOffer
+            | InboundCommandKind::ComputerUseStreamAnswer
+            | InboundCommandKind::ComputerUseStreamIceCandidate
+            | InboundCommandKind::ComputerUseStreamStop
+            | InboundCommandKind::ComputerUseStreamStatus
+            | InboundCommandKind::ComputerUseStreamSetQuality
+            | InboundCommandKind::ComputerUseStreamRequestKeyframe
+    )
+}
+
+fn command_freshness_error(command: &InboundCommand) -> Option<CommandError> {
+    if !command_requires_freshness(&command.kind) {
+        return None;
+    }
+    let Some(expires_at) = command.expires_at.as_ref() else {
+        return Some(CommandError::new(
+            "remote_command_expiry_missing",
+            crate::commands::CommandErrorClass::PolicyDenied,
+            "Remote Computer Use command was rejected because it did not include `expiresAt`.",
+            false,
+        ));
+    };
+    let Some(expires_at) = json_unix_millis(expires_at) else {
+        return Some(CommandError::new(
+            "remote_command_expiry_invalid",
+            crate::commands::CommandErrorClass::PolicyDenied,
+            "Remote Computer Use command was rejected because `expiresAt` was invalid.",
+            false,
+        ));
+    };
+    if expires_at <= current_unix_millis() {
+        return Some(CommandError::new(
+            "remote_command_expired",
+            crate::commands::CommandErrorClass::PolicyDenied,
+            "Remote Computer Use command was rejected because it expired before the desktop processed it.",
+            false,
+        ));
+    }
+    None
 }
 
 fn command_outcome_payload(
@@ -2422,14 +2486,22 @@ fn desktop_control_output_from_result(
 fn manual_control_input_request(
     payload: &JsonValue,
 ) -> CommandResult<AutonomousDesktopControlRequest> {
-    let action = required_payload_string(payload, &["action"])?;
-    let action =
-        serde_json::from_value::<AutonomousDesktopControlAction>(json!(action)).map_err(|_| {
+    let action_name = required_payload_string(payload, &["action"])?;
+    let action = serde_json::from_value::<AutonomousDesktopControlAction>(json!(action_name))
+        .map_err(|_| {
             CommandError::user_fixable(
                 "remote_manual_control_action_invalid",
-                format!("Remote manual-control action `{action}` is not supported."),
+                format!("Remote manual-control action `{action_name}` is not supported."),
             )
         })?;
+    if !remote_manual_control_action_allowed(&action) {
+        return Err(CommandError::user_fixable(
+            "remote_manual_control_action_denied",
+            format!(
+                "Remote manual-control action `{action_name}` is outside the manual input allowlist."
+            ),
+        ));
+    }
     Ok(AutonomousDesktopControlRequest {
         action,
         display_id: payload_string(payload, &["displayId", "display_id"]).map(ToOwned::to_owned),
@@ -2477,6 +2549,27 @@ fn manual_control_input_request(
             .or_else(|| Some("cloud_manual_control_input".into())),
         sensitivity: None,
     })
+}
+
+fn remote_manual_control_action_allowed(action: &AutonomousDesktopControlAction) -> bool {
+    matches!(
+        action,
+        AutonomousDesktopControlAction::MouseDown
+            | AutonomousDesktopControlAction::MouseMove
+            | AutonomousDesktopControlAction::MouseClick
+            | AutonomousDesktopControlAction::MouseDoubleClick
+            | AutonomousDesktopControlAction::MouseRightClick
+            | AutonomousDesktopControlAction::MouseDrag
+            | AutonomousDesktopControlAction::MouseDragMove
+            | AutonomousDesktopControlAction::MouseUp
+            | AutonomousDesktopControlAction::Scroll
+            | AutonomousDesktopControlAction::KeyPress
+            | AutonomousDesktopControlAction::Hotkey
+            | AutonomousDesktopControlAction::TypeText
+            | AutonomousDesktopControlAction::PasteText
+            | AutonomousDesktopControlAction::ClipboardWriteText
+            | AutonomousDesktopControlAction::CancelCurrentAction
+    )
 }
 
 fn stream_quality_from_str(value: &str) -> Option<AutonomousDesktopStreamQuality> {
@@ -3172,6 +3265,7 @@ struct RemoteModelOption {
     model_id: String,
     display_name: String,
     thinking: ProviderModelThinkingCapability,
+    input_modalities: Vec<String>,
 }
 
 /// Returns the credential-backed models the cloud composer surfaces in its dropdown.
@@ -3268,6 +3362,7 @@ fn remote_available_models<R: Runtime>(
                 "thinkingSupported": option.thinking.supported,
                 "thinkingEffortOptions": effort_options,
                 "defaultThinkingEffort": default_effort,
+                "inputModalities": option.input_modalities,
             })
         })
         .collect())
@@ -3332,6 +3427,7 @@ fn add_remote_model_option(
                 display_name
             },
             thinking: model.thinking.clone(),
+            input_modalities: model.input_modalities.clone(),
         },
     );
 }
@@ -3364,6 +3460,7 @@ fn add_remote_model_fallback_option(
                 effort_options: Vec::new(),
                 default_effort: None,
             },
+            input_modalities: Vec::new(),
         },
     );
 }
@@ -3378,6 +3475,7 @@ struct RemoteModelOptionInput<'a> {
     model_id: &'a str,
     display_name: &'a str,
     thinking: ProviderModelThinkingCapability,
+    input_modalities: Vec<String>,
 }
 
 fn push_remote_model_option(
@@ -3398,6 +3496,7 @@ fn push_remote_model_option(
         model_id: model.model_id.to_string(),
         display_name: model.display_name.to_string(),
         thinking: model.thinking,
+        input_modalities: model.input_modalities,
     });
 }
 
@@ -3586,6 +3685,7 @@ fn remote_run_controls_from_payload(
     Ok(Some(RuntimeRunControlInputDto {
         runtime_agent_id,
         agent_definition_id: Some(runtime_agent_id.as_str().to_string()),
+        agent_definition_version: None,
         provider_profile_id: payload_string(payload, &["providerProfileId", "provider_profile_id"])
             .map(ToOwned::to_owned)
             .or_else(|| fallback.and_then(|controls| controls.provider_profile_id.clone())),
@@ -3611,6 +3711,7 @@ fn selected_runtime_run_controls(
         return RuntimeRunControlInputDto {
             runtime_agent_id: pending.runtime_agent_id,
             agent_definition_id: pending.agent_definition_id.clone(),
+            agent_definition_version: pending.agent_definition_version,
             provider_profile_id: pending.provider_profile_id.clone(),
             model_id: pending.model_id.clone(),
             thinking_effort: pending.thinking_effort.clone(),
@@ -3623,6 +3724,7 @@ fn selected_runtime_run_controls(
     RuntimeRunControlInputDto {
         runtime_agent_id: snapshot.controls.active.runtime_agent_id,
         agent_definition_id: snapshot.controls.active.agent_definition_id.clone(),
+        agent_definition_version: snapshot.controls.active.agent_definition_version,
         provider_profile_id: snapshot.controls.active.provider_profile_id.clone(),
         model_id: snapshot.controls.active.model_id.clone(),
         thinking_effort: snapshot.controls.active.thinking_effort.clone(),
@@ -3743,6 +3845,23 @@ fn payload_string_array(payload: &JsonValue, keys: &[&str]) -> Vec<String> {
                 .map(ToOwned::to_owned)
                 .collect()
         })
+        .unwrap_or_default()
+}
+
+fn json_unix_millis(value: &JsonValue) -> Option<i128> {
+    if let Some(value) = value.as_i64() {
+        return Some(value as i128);
+    }
+    if let Some(value) = value.as_u64() {
+        return Some(value as i128);
+    }
+    value.as_str()?.trim().parse::<i128>().ok()
+}
+
+fn current_unix_millis() -> i128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i128)
         .unwrap_or_default()
 }
 
@@ -3911,6 +4030,7 @@ mod tests {
         RuntimeRunControlInputDto {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
             agent_definition_id: Some("engineer".into()),
+            agent_definition_version: None,
             provider_profile_id: Some("profile-openai".into()),
             model_id: model_id.into(),
             thinking_effort: None,
@@ -4080,6 +4200,7 @@ mod tests {
         let controls = RuntimeRunControlInputDto {
             runtime_agent_id: RuntimeAgentIdDto::Debug,
             agent_definition_id: Some("debug".into()),
+            agent_definition_version: None,
             provider_profile_id: Some("xai-default".into()),
             model_id: "grok-4.3".into(),
             thinking_effort: Some(ProviderModelThinkingEffortDto::Low),
@@ -4567,6 +4688,41 @@ mod tests {
     }
 
     #[test]
+    fn manual_control_rejects_non_manual_desktop_actions() {
+        for action in [
+            "launch_app",
+            "window_close",
+            "ax_press",
+            "clipboard_write_files",
+        ] {
+            let error = manual_control_input_request(&json!({
+                "action": action,
+                "appName": "Calculator",
+                "elementId": "element-1",
+                "filePaths": ["/tmp/example.txt"],
+            }))
+            .expect_err("non-manual action must be rejected");
+
+            assert_eq!(error.code, "remote_manual_control_action_denied");
+        }
+    }
+
+    #[test]
+    fn manual_control_allows_plain_clipboard_text_write() {
+        let request = manual_control_input_request(&json!({
+            "action": "clipboard_write_text",
+            "text": "hello",
+        }))
+        .expect("clipboard text write request");
+
+        assert_eq!(
+            request.action,
+            AutonomousDesktopControlAction::ClipboardWriteText
+        );
+        assert_eq!(request.text.as_deref(), Some("hello"));
+    }
+
+    #[test]
     fn stream_fallback_encoder_downscales_png_to_jpeg() {
         let png = sample_png(320, 160);
         let screenshot = fallback_screenshot(320, 160);
@@ -4800,6 +4956,49 @@ mod tests {
 
         command.kind = InboundCommandKind::ListSessions;
         assert!(!command_is_duplicate(&command));
+    }
+
+    #[test]
+    fn computer_use_commands_require_fresh_expiry() {
+        let mut command = inbound_command(
+            InboundCommandKind::ComputerUseManualControlInput,
+            json!({"manualControlId": "manual-1", "action": "mouse_click"}),
+        );
+        command.expires_at = Some(json!(current_unix_millis() + 1_000));
+
+        assert!(command_freshness_error(&command).is_none());
+
+        command.expires_at = Some(json!(current_unix_millis() - 1));
+        assert_eq!(
+            command_freshness_error(&command)
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("remote_command_expired")
+        );
+
+        command.expires_at = None;
+        assert_eq!(
+            command_freshness_error(&command)
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("remote_command_expiry_missing")
+        );
+
+        command.expires_at = Some(json!("not-millis"));
+        assert_eq!(
+            command_freshness_error(&command)
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("remote_command_expiry_invalid")
+        );
+    }
+
+    #[test]
+    fn non_desktop_commands_do_not_require_expiry() {
+        let mut command = inbound_command(InboundCommandKind::ListSessions, json!({}));
+        command.expires_at = None;
+
+        assert!(command_freshness_error(&command).is_none());
     }
 
     #[test]

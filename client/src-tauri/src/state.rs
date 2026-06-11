@@ -5,12 +5,14 @@ use tauri::{AppHandle, Manager, Runtime};
 use crate::{
     auth::{
         ActiveAuthFlowRegistry, AnthropicAuthConfig, OpenAiCodexAuthConfig,
-        OpenAiCompatibleAuthConfig, OpenRouterAuthConfig, XaiAuthConfig, XaiDeviceCodeFlowRegistry,
+        OpenAiCompatibleAuthConfig, OpenRouterAuthConfig, XaiAuthConfig,
     },
     commands::{backend_jobs::BackendJobRegistry, CommandError},
     global_db::global_database_path,
     provider_models::ProviderModelCatalogRefreshRegistry,
-    runtime::{AgentProviderConfig, AgentRunSupervisor, AutonomousWebConfig},
+    runtime::{
+        AgentProviderConfig, AgentRunSupervisor, AgentRunWakeupScheduler, AutonomousWebConfig,
+    },
 };
 
 pub const AUTONOMOUS_SKILL_CACHE_DIRECTORY_NAME: &str = "autonomous-skills";
@@ -42,10 +44,10 @@ pub struct DesktopState {
     import_failpoints: ImportFailpoints,
     runtime_stream_failpoints: RuntimeStreamFailpoints,
     agent_run_supervisor: AgentRunSupervisor,
+    agent_run_wakeup_scheduler: AgentRunWakeupScheduler,
     backend_jobs: BackendJobRegistry,
     provider_model_catalog_refresh_registry: ProviderModelCatalogRefreshRegistry,
     active_auth_flows: ActiveAuthFlowRegistry,
-    xai_device_code_flows: XaiDeviceCodeFlowRegistry,
 }
 
 impl DesktopState {
@@ -122,6 +124,10 @@ impl DesktopState {
         &self.agent_run_supervisor
     }
 
+    pub fn agent_run_wakeup_scheduler(&self) -> &AgentRunWakeupScheduler {
+        &self.agent_run_wakeup_scheduler
+    }
+
     pub fn backend_jobs(&self) -> &BackendJobRegistry {
         &self.backend_jobs
     }
@@ -166,16 +172,16 @@ impl DesktopState {
             .unwrap_or_else(AutonomousWebConfig::for_platform)
     }
 
+    pub fn autonomous_web_config_override(&self) -> Option<AutonomousWebConfig> {
+        self.autonomous_web_config_override.clone()
+    }
+
     pub fn owned_agent_provider_config_override(&self) -> Option<AgentProviderConfig> {
         self.owned_agent_provider_config_override.clone()
     }
 
     pub fn active_auth_flows(&self) -> &ActiveAuthFlowRegistry {
         &self.active_auth_flows
-    }
-
-    pub fn xai_device_code_flows(&self) -> &XaiDeviceCodeFlowRegistry {
-        &self.xai_device_code_flows
     }
 
     pub fn app_data_dir<R: Runtime>(&self, app: &AppHandle<R>) -> Result<PathBuf, CommandError> {

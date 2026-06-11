@@ -943,6 +943,20 @@ pub fn resolve_agent_definition_for_run(
     requested_definition_id: Option<&str>,
     fallback_runtime_agent_id: RuntimeAgentIdDto,
 ) -> Result<AgentDefinitionRunSelection, CommandError> {
+    resolve_agent_definition_version_for_run(
+        repo_root,
+        requested_definition_id,
+        None,
+        fallback_runtime_agent_id,
+    )
+}
+
+pub fn resolve_agent_definition_version_for_run(
+    repo_root: &Path,
+    requested_definition_id: Option<&str>,
+    requested_version: Option<u32>,
+    fallback_runtime_agent_id: RuntimeAgentIdDto,
+) -> Result<AgentDefinitionRunSelection, CommandError> {
     let definition_id = requested_definition_id
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -965,20 +979,27 @@ pub fn resolve_agent_definition_for_run(
             ),
         ));
     }
-    let version = load_agent_definition_version(
-        repo_root,
-        &definition.definition_id,
-        definition.current_version,
-    )?
-    .ok_or_else(|| {
-        CommandError::system_fault(
-            "agent_definition_version_missing",
+    let selected_version = requested_version.unwrap_or(definition.current_version);
+    if selected_version == 0 {
+        return Err(CommandError::user_fixable(
+            "agent_definition_version_required",
             format!(
-                "Xero resolved `{}` but could not load version {}.",
-                definition.definition_id, definition.current_version
+                "Xero cannot start a run from `{}` because the requested definition version is missing.",
+                definition.definition_id
             ),
-        )
-    })?;
+        ));
+    }
+    let version =
+        load_agent_definition_version(repo_root, &definition.definition_id, selected_version)?
+            .ok_or_else(|| {
+                CommandError::user_fixable(
+                    "agent_definition_version_missing",
+                    format!(
+                        "Xero resolved `{}` but could not load version {}.",
+                        definition.definition_id, selected_version
+                    ),
+                )
+            })?;
     if definition.scope != "built_in"
         && !agent_definition_validation_report_allows_activation(version.validation_report.as_ref())
     {
@@ -986,7 +1007,7 @@ pub fn resolve_agent_definition_for_run(
             "agent_definition_activation_preflight_failed",
             format!(
                 "Xero cannot start a run from `{}` because version {} does not have a valid custom-agent validation report.",
-                definition.definition_id, definition.current_version
+                definition.definition_id, selected_version
             ),
         ));
     }
@@ -997,7 +1018,7 @@ pub fn resolve_agent_definition_for_run(
     let snapshot = resolve_effective_agent_definition_snapshot(
         repo_root,
         &definition.definition_id,
-        definition.current_version,
+        selected_version,
         version.snapshot,
     )?;
     let base_capability_profile = snapshot
@@ -1017,7 +1038,7 @@ pub fn resolve_agent_definition_for_run(
     Ok(AgentDefinitionRunSelection {
         runtime_agent_id,
         definition_id: definition.definition_id,
-        version: definition.current_version,
+        version: selected_version,
         display_name: definition.display_name,
         base_capability_profile,
         default_approval_mode,
@@ -2361,7 +2382,11 @@ mod tests {
                 },
                 "handoffPolicy": {
                     "enabled": true,
-                    "preserveDefinitionVersion": true
+                    "routingMode": "same_agent",
+                    "allowedTargets": [],
+                    "preserveDefinitionVersion": true,
+                    "carrySummary": true,
+                    "includeDurableContext": true
                 },
                 "attachedSkills": []
             }),
@@ -2707,6 +2732,29 @@ mod tests {
         assert!(error
             .message
             .contains("does not have a valid custom-agent validation report"));
+    }
+
+    #[test]
+    fn s17_custom_definition_resolver_honors_requested_pinned_version() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        create_project_database(&repo_root, "project-pinned-custom-definition");
+        insert_agent_definition(&repo_root, &custom_definition(1, "2026-05-01T12:01:00Z"))
+            .expect("insert version 1");
+        insert_agent_definition(&repo_root, &custom_definition(2, "2026-05-01T12:02:00Z"))
+            .expect("insert version 2");
+
+        let selection = resolve_agent_definition_version_for_run(
+            &repo_root,
+            Some("project_researcher"),
+            Some(1),
+            RuntimeAgentIdDto::Ask,
+        )
+        .expect("resolve pinned custom definition");
+
+        assert_eq!(selection.definition_id, "project_researcher");
+        assert_eq!(selection.version, 1);
     }
 
     #[test]

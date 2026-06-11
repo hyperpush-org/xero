@@ -289,6 +289,62 @@ describe('owned agent run schemas', () => {
     ])
   })
 
+  it('projects scheduled-wait pauses as waiting agent runs', () => {
+    const parsed = agentRunSchema.parse(
+      makeAgentRunDto({
+        status: 'paused',
+        lastErrorCode: 'agent_run_scheduled_wait',
+        checkpoints: [
+          {
+            id: 1,
+            projectId: 'project-1',
+            runId: 'run-agent-1',
+            checkpointKind: 'scheduled_wait',
+            summary: 'Agent waiting for scheduled wakeup `wake-1` due at 2026-04-24T12:00:15Z.',
+            payload: {
+              state: 'scheduled_wait',
+              scheduledWakeups: [{ wakeId: 'wake-1', kind: 'sleep', dueAt: '2026-04-24T12:00:15Z' }],
+            },
+            createdAt: '2026-04-24T12:00:05Z',
+          },
+        ],
+        events: [
+          {
+            id: 1,
+            projectId: 'project-1',
+            runId: 'run-agent-1',
+            eventKind: 'run_paused',
+            payload: {
+              state: 'scheduled_wait',
+              stopReason: 'scheduled_wait',
+              scheduledWakeups: [
+                {
+                  wakeId: 'wake-1',
+                  kind: 'sleep',
+                  dueAt: '2026-04-24T12:00:15Z',
+                  deadlineAt: null,
+                },
+              ],
+            },
+            createdAt: '2026-04-24T12:00:05Z',
+          },
+        ],
+      }),
+    )
+    const view = mapAgentRun(parsed)
+
+    expect(view.statusLabel).toBe('Waiting')
+    expect(view.isWaiting).toBe(true)
+    expect(view.isActive).toBe(true)
+    expect(view.isTerminal).toBe(false)
+    expect(view.waitingUntil).toBe('2026-04-24T12:00:15Z')
+    expect(view.scheduledWakeups[0]).toMatchObject({
+      wakeId: 'wake-1',
+      kind: 'sleep',
+      dueAt: '2026-04-24T12:00:15Z',
+    })
+  })
+
   it('validates task-start controls and stream replay metadata', () => {
     const request = startAgentTaskRequestSchema.parse({
       projectId: 'project-1',
@@ -519,6 +575,35 @@ describe('owned agent run schemas', () => {
         },
       }).autoCompact?.thresholdPercent,
     ).toBe(85)
+    expect(
+      resumeAgentRunRequestSchema.parse({
+        runId: 'run-agent-1',
+        response: 'Approved; continue.',
+        actionId: 'tool-call-command',
+        autoCompact: {
+          enabled: false,
+        },
+      }),
+    ).toMatchObject({
+      actionId: 'tool-call-command',
+      autoCompact: {
+        enabled: false,
+      },
+    })
+    expect(
+      resumeAgentRunRequestSchema.parse({
+        runId: 'run-agent-1',
+        response: 'Approved; continue.',
+        actionId: null,
+      }).actionId,
+    ).toBeNull()
+    expect(() =>
+      resumeAgentRunRequestSchema.parse({
+        runId: 'run-agent-1',
+        response: 'Approved; continue.',
+        actionId: '',
+      }),
+    ).toThrow(/at least 1 character/)
     expect(
       resumeAgentRunRequestSchema.parse({
         runId: 'run-agent-1',

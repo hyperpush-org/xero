@@ -25,6 +25,7 @@ import {
   type RuntimeStreamEventDto,
   type RuntimeStreamItemKindDto,
   type RuntimeStreamPatchDto,
+  type RuntimeStreamStatus,
   type RuntimeStreamView,
 } from '@/src/lib/xero-model/runtime-stream'
 
@@ -40,6 +41,7 @@ import type { RefreshSource } from './types'
 export const RUNTIME_STREAM_BATCH_WINDOW_MS = 6
 export const REPOSITORY_STATUS_BATCH_WINDOW_MS = 6
 export const RUNTIME_RUN_UPDATE_BATCH_WINDOW_MS = 24
+export const RUNTIME_STREAM_SUBSCRIBE_TIMEOUT_MS = 15_000
 const INCREMENTAL_RUNTIME_STREAM_REPLAY_LIMIT = 200
 
 export const ACTIVE_RUNTIME_STREAM_ITEM_KINDS: RuntimeStreamItemKindDto[] = [
@@ -48,6 +50,10 @@ export const ACTIVE_RUNTIME_STREAM_ITEM_KINDS: RuntimeStreamItemKindDto[] = [
   'skill',
   'activity',
   'action_required',
+  'complete',
+  'failure',
+]
+const COMPLETION_NOTIFICATION_STREAM_ITEM_KINDS: RuntimeStreamItemKindDto[] = [
   'complete',
   'failure',
 ]
@@ -105,8 +111,9 @@ interface AttachDesktopRuntimeListenersArgs {
   applyRuntimeRunUpdate: (
     projectId: string,
     runtimeRun: RuntimeRunView | null,
-    options?: { clearGlobalError?: boolean; loadError?: string | null },
+    options?: { agentSessionId?: string | null; clearGlobalError?: boolean; loadError?: string | null },
   ) => RuntimeRunView | null
+  recordRuntimeSessionCompletion?: RuntimeStreamEventBufferArgs['onRuntimeSessionCompleted']
   loadProject: (projectId: string, source: ProjectLoadSource) => Promise<ProjectDetailView | null>
   resetRepositoryDiffs: (status: RepositoryStatusView | null) => void
 }
@@ -121,6 +128,16 @@ interface AttachRuntimeStreamSubscriptionArgs {
   runtimeActionRefreshKeysRef: MutableRefObject<Record<string, Set<string>>>
   updateRuntimeStream: UpdateRuntimeStream
   scheduleRuntimeMetadataRefresh: (projectId: string, source: RuntimeMetadataRefreshSource) => void
+  recordRuntimeSessionCompletion?: RuntimeStreamEventBufferArgs['onRuntimeSessionCompleted']
+  subscribeTimeoutMs?: number
+}
+
+interface AttachRuntimeCompletionNotificationSubscriptionArgs {
+  projectId: string
+  agentSessionId: string
+  runtimeSession: RuntimeSessionView
+  runId: string
+  adapter: XeroDesktopAdapter
   recordRuntimeSessionCompletion?: RuntimeStreamEventBufferArgs['onRuntimeSessionCompleted']
 }
 
@@ -152,8 +169,9 @@ interface RuntimeRunUpdateBufferArgs {
   applyRuntimeRunUpdate: (
     projectId: string,
     runtimeRun: RuntimeRunView | null,
-    options?: { clearGlobalError?: boolean; loadError?: string | null },
+    options?: { agentSessionId?: string | null; clearGlobalError?: boolean; loadError?: string | null },
   ) => RuntimeRunView | null
+  recordRuntimeSessionCompletion?: RuntimeStreamEventBufferArgs['onRuntimeSessionCompleted']
   setRefreshSource: SetState<RefreshSource>
   setErrorMessage: SetState<string | null>
   scheduleFlush?: FlushScheduler
@@ -253,12 +271,108 @@ function scheduleRuntimeRunUpdateFlush(callback: () => void): ScheduledFlushCanc
   return () => clearTimeout(timeoutId)
 }
 
+function getRuntimeStreamConnectedStatus(stream: RuntimeStreamView): RuntimeStreamStatus {
+  if (stream.completion) {
+    return 'complete'
+  }
+
+  if (stream.failure) {
+    return stream.failure.retryable ? 'stale' : 'error'
+  }
+
+  return 'live'
+}
+
 function isRuntimeStreamPatch(payload: RuntimeStreamChannelPayload): payload is RuntimeStreamPatchDto {
   return 'schema' in payload && payload.schema === 'xero.runtime_stream_patch.v1'
 }
 
 function getRuntimeStreamPayloadItem(payload: RuntimeStreamChannelPayload) {
   return payload.item
+}
+
+function runtimeStreamPayloadUpdateSequence(payload: RuntimeStreamChannelPayload): number {
+  const item = getRuntimeStreamPayloadItem(payload)
+  return typeof item.updatedSequence === 'number'
+    ? Math.max(item.sequence, item.updatedSequence)
+    : item.sequence
+}
+
+function canAggregateRuntimeTranscriptDelta(
+  previous: RuntimeStreamEventDto,
+  next: RuntimeStreamEventDto,
+): boolean {
+  const previousItem = previous.item
+  const nextItem = next.item
+  return previous.projectId === next.projectId &&
+    previous.agentSessionId === next.agentSessionId &&
+    previous.runtimeKind === next.runtimeKind &&
+    previous.runId === next.runId &&
+    previous.sessionId === next.sessionId &&
+    previous.flowId === next.flowId &&
+    previous.subscribedItemKinds.join('\u0000') === next.subscribedItemKinds.join('\u0000') &&
+    previousItem.kind === 'transcript' &&
+    nextItem.kind === 'transcript' &&
+    (previousItem.transcriptRole ?? 'assistant') === 'assistant' &&
+    (nextItem.transcriptRole ?? 'assistant') === 'assistant' &&
+    typeof previousItem.text === 'string' &&
+    typeof nextItem.text === 'string' &&
+    previousItem.text.length > 0 &&
+    nextItem.text.length > 0 &&
+    !previousItem.mediaAttachments?.length &&
+    !nextItem.mediaAttachments?.length &&
+    !previousItem.codeChangeGroupId &&
+    !nextItem.codeChangeGroupId &&
+    !previousItem.codeCommitId &&
+    !nextItem.codeCommitId &&
+    runtimeStreamPayloadUpdateSequence(previous) + 1 === nextItem.sequence
+}
+
+function aggregateRuntimeTranscriptDeltas(
+  events: RuntimeStreamChannelPayload[],
+): RuntimeStreamChannelPayload[] {
+  if (events.length < 2) {
+    return events
+  }
+
+  const aggregated: RuntimeStreamChannelPayload[] = []
+  for (const event of events) {
+    const previous = aggregated.at(-1)
+    if (
+      previous &&
+      !isRuntimeStreamPatch(previous) &&
+      !isRuntimeStreamPatch(event) &&
+      canAggregateRuntimeTranscriptDelta(previous, event)
+    ) {
+      previous.item = {
+        ...previous.item,
+        text: `${previous.item.text ?? ''}${event.item.text ?? ''}`,
+        updatedSequence: runtimeStreamPayloadUpdateSequence(event),
+        createdAt: event.item.createdAt,
+      }
+      continue
+    }
+
+    aggregated.push(
+      !isRuntimeStreamPatch(event) && event.item.kind === 'transcript'
+        ? cloneRuntimeStreamEventForAggregation(event)
+        : event,
+    )
+  }
+  return aggregated
+}
+
+function cloneRuntimeStreamEventForAggregation(event: RuntimeStreamEventDto): RuntimeStreamEventDto {
+  return {
+    ...event,
+    subscribedItemKinds: [...event.subscribedItemKinds],
+    item: {
+      ...event.item,
+      mediaAttachments: event.item.mediaAttachments
+        ? [...event.item.mediaAttachments]
+        : event.item.mediaAttachments,
+    },
+  }
 }
 
 export function isUrgentRuntimeStreamEvent(event: RuntimeStreamChannelPayload): boolean {
@@ -295,7 +409,7 @@ export function mergeRuntimeStreamEvents(
 ): RuntimeStreamView | null {
   let nextStream = currentStream
 
-  for (const event of events) {
+  for (const event of aggregateRuntimeTranscriptDeltas(events)) {
     try {
       nextStream = isRuntimeStreamPatch(event)
         ? createRuntimeStreamViewFromSnapshot(event.snapshot)
@@ -402,6 +516,7 @@ function notifyRuntimeStreamCompletions(
 export function createRuntimeRunUpdateBuffer({
   activeProjectIdRef,
   applyRuntimeRunUpdate,
+  recordRuntimeSessionCompletion,
   setRefreshSource,
   setErrorMessage,
   scheduleFlush = scheduleRuntimeRunUpdateFlush,
@@ -441,7 +556,17 @@ export function createRuntimeRunUpdateBuffer({
 
     startTransition(() => {
       for (const update of updates) {
-        applyRuntimeRunUpdate(update.projectId, update.runtimeRun)
+        applyRuntimeRunUpdate(update.projectId, update.runtimeRun, {
+          agentSessionId: update.agentSessionId,
+        })
+        if (update.runtimeRun?.status === 'stopped') {
+          recordRuntimeSessionCompletion?.({
+            projectId: update.projectId,
+            agentSessionId: update.agentSessionId,
+            runId: update.runtimeRun.runId,
+            completedAt: update.runtimeRun.stoppedAt ?? update.runtimeRun.updatedAt,
+          })
+        }
       }
 
       if (touchesActiveProject) {
@@ -646,6 +771,7 @@ export async function attachDesktopRuntimeListeners({
   setters,
   handleAdapterEventError,
   applyRuntimeRunUpdate,
+  recordRuntimeSessionCompletion,
   loadProject,
   resetRepositoryDiffs,
 }: AttachDesktopRuntimeListenersArgs): Promise<() => void> {
@@ -659,6 +785,7 @@ export async function attachDesktopRuntimeListeners({
   const runtimeRunUpdateBuffer = createRuntimeRunUpdateBuffer({
     activeProjectIdRef: refs.activeProjectIdRef,
     applyRuntimeRunUpdate,
+    recordRuntimeSessionCompletion,
     setRefreshSource: setters.setRefreshSource,
     setErrorMessage: setters.setErrorMessage,
   })
@@ -864,6 +991,95 @@ export async function attachDesktopRuntimeListeners({
   }
 }
 
+export function attachRuntimeCompletionNotificationSubscription({
+  projectId,
+  agentSessionId,
+  runtimeSession,
+  runId,
+  adapter,
+  recordRuntimeSessionCompletion,
+}: AttachRuntimeCompletionNotificationSubscriptionArgs): () => void {
+  if (
+    !recordRuntimeSessionCompletion ||
+    !runtimeSession.isAuthenticated ||
+    !runtimeSession.sessionId ||
+    typeof adapter.subscribeRuntimeStream !== 'function'
+  ) {
+    return () => undefined
+  }
+
+  let disposed = false
+  let unsubscribe: () => void = () => {}
+
+  const dispose = () => {
+    if (disposed) {
+      return
+    }
+
+    disposed = true
+    unsubscribe()
+  }
+
+  const handleTerminalPayload = (payload: RuntimeStreamChannelPayload) => {
+    if (disposed) {
+      return
+    }
+
+    const item = getRuntimeStreamPayloadItem(payload)
+    const payloadProjectId = isRuntimeStreamPatch(payload)
+      ? payload.snapshot.projectId
+      : payload.projectId
+    const payloadAgentSessionId = isRuntimeStreamPatch(payload)
+      ? payload.snapshot.agentSessionId
+      : payload.agentSessionId
+    const payloadRunId = isRuntimeStreamPatch(payload) ? payload.snapshot.runId : payload.runId
+    if (
+      payloadProjectId !== projectId ||
+      payloadAgentSessionId !== agentSessionId ||
+      payloadRunId !== runId
+    ) {
+      return
+    }
+
+    notifyRuntimeStreamCompletions([payload], recordRuntimeSessionCompletion)
+    if (
+      item.kind === 'complete' ||
+      item.kind === 'failure' ||
+      (isRuntimeStreamPatch(payload) && (payload.snapshot.completion || payload.snapshot.failure))
+    ) {
+      dispose()
+    }
+  }
+
+  void adapter
+    .subscribeRuntimeStream(
+      projectId,
+      agentSessionId,
+      COMPLETION_NOTIFICATION_STREAM_ITEM_KINDS,
+      handleTerminalPayload,
+      () => {
+        dispose()
+      },
+      {
+        afterSequence: null,
+        replayLimit: null,
+      },
+    )
+    .then((subscription) => {
+      if (disposed) {
+        subscription.unsubscribe()
+        return
+      }
+
+      unsubscribe = subscription.unsubscribe
+    })
+    .catch(() => {
+      disposed = true
+    })
+
+  return dispose
+}
+
 export function attachRuntimeStreamSubscription({
   projectId,
   agentSessionId,
@@ -875,6 +1091,7 @@ export function attachRuntimeStreamSubscription({
   updateRuntimeStream,
   scheduleRuntimeMetadataRefresh,
   recordRuntimeSessionCompletion,
+  subscribeTimeoutMs = RUNTIME_STREAM_SUBSCRIBE_TIMEOUT_MS,
 }: AttachRuntimeStreamSubscriptionArgs): () => void {
   if (!projectId || !agentSessionId) {
     return () => undefined
@@ -901,6 +1118,17 @@ export function attachRuntimeStreamSubscription({
   let disposed = false
   let unsubscribe: () => void = () => {}
   let replayAfterSequence: number | null = null
+  let subscriptionSettled = false
+  let subscribeTimeoutId: ReturnType<typeof setTimeout> | null = null
+
+  const clearSubscribeTimeout = () => {
+    if (subscribeTimeoutId === null) {
+      return
+    }
+
+    clearTimeout(subscribeTimeoutId)
+    subscribeTimeoutId = null
+  }
 
   if (typeof adapter.subscribeRuntimeStream !== 'function') {
     updateRuntimeStream(projectId, agentSessionId, (currentStream) =>
@@ -966,6 +1194,19 @@ export function attachRuntimeStreamSubscription({
     onRuntimeSessionCompleted: recordRuntimeSessionCompletion,
   })
 
+  subscribeTimeoutId = setTimeout(() => {
+    if (disposed || subscriptionSettled) {
+      return
+    }
+
+    streamEventBuffer.reportIssue({
+      code: 'runtime_stream_subscribe_timeout',
+      message: 'Xero could not connect the live runtime stream in time. Retry the stream to reconnect.',
+      retryable: true,
+    })
+    scheduleRuntimeMetadataRefresh(projectId, 'runtime_run:updated')
+  }, subscribeTimeoutMs)
+
   void adapter
     .subscribeRuntimeStream(
       projectId,
@@ -998,6 +1239,9 @@ export function attachRuntimeStreamSubscription({
       },
     )
     .then((subscription) => {
+      subscriptionSettled = true
+      clearSubscribeTimeout()
+
       if (disposed) {
         subscription.unsubscribe()
         return
@@ -1018,13 +1262,18 @@ export function attachRuntimeStreamSubscription({
             sessionId: subscription.response.sessionId,
             flowId: subscription.response.flowId ?? null,
             subscribedItemKinds: subscription.response.subscribedItemKinds,
+            status: getRuntimeStreamConnectedStatus(currentStream),
+            lastIssue: currentStream.failure ? currentStream.lastIssue : null,
           }
         }
 
-        return createRuntimeStreamFromSubscription(subscription.response, 'subscribing')
+        return createRuntimeStreamFromSubscription(subscription.response, 'live')
       })
     })
     .catch((error) => {
+      subscriptionSettled = true
+      clearSubscribeTimeout()
+
       if (disposed) {
         return
       }
@@ -1053,6 +1302,7 @@ export function attachRuntimeStreamSubscription({
 
   return () => {
     disposed = true
+    clearSubscribeTimeout()
     streamEventBuffer?.dispose()
     unsubscribe()
   }

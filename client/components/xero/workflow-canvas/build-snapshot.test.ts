@@ -126,6 +126,14 @@ function detail(): WorkflowAgentDetailDto {
       },
     ],
     attachedSkills: [],
+    handoffPolicy: {
+      enabled: true,
+      routingMode: 'suggest',
+      allowedTargets: [{ kind: 'built_in', runtimeAgentId: 'engineer' }],
+      preserveDefinitionVersion: true,
+      carrySummary: true,
+      includeDurableContext: true,
+    },
   }
 }
 
@@ -452,6 +460,14 @@ describe('buildSnapshotFromGraph', () => {
       reads: [{ table: 'project_context_records', kind: 'read' }],
     })
     expect(snapshot.consumes).toMatchObject([{ id: 'plan_pack' }])
+    expect(snapshot.handoffPolicy).toEqual({
+      enabled: true,
+      routingMode: 'suggest',
+      allowedTargets: [{ kind: 'built_in', runtimeAgentId: 'engineer' }],
+      preserveDefinitionVersion: true,
+      carrySummary: true,
+      includeDurableContext: true,
+    })
     expect(snapshot.toolPolicy).toMatchObject({
       allowedTools: ['read'],
       deniedTools: ['write'],

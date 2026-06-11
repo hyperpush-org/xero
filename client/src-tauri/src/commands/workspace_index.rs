@@ -1,8 +1,10 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    cmp::Ordering,
+    collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap},
     fs,
     path::{Path, PathBuf},
-    time::Instant,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 
 use git2::{Repository, Status};
@@ -41,6 +43,16 @@ const MAX_SYMBOLS: usize = 64;
 const MAX_TESTS: usize = 32;
 const MAX_DIFF_SIGNALS: usize = 12;
 const MAX_FAILURE_SIGNALS: usize = 12;
+const WORKSPACE_STATUS_CACHE_TTL: Duration = Duration::from_millis(1_500);
+
+#[derive(Debug, Clone)]
+struct CachedWorkspaceStatus {
+    stored_at: Instant,
+    status: WorkspaceIndexStatusDto,
+}
+
+static WORKSPACE_STATUS_CACHE: OnceLock<Mutex<HashMap<String, CachedWorkspaceStatus>>> =
+    OnceLock::new();
 
 #[tauri::command]
 pub async fn workspace_index<R: Runtime>(
@@ -57,7 +69,11 @@ pub async fn workspace_index<R: Runtime>(
     jobs.run_blocking_latest(
         format!("workspace-index:{}", request.project_id),
         "workspace index",
-        move |cancellation| index_workspace_at_root(&repo_root, request, cancellation),
+        move |cancellation| {
+            let _perf = crate::perf::PerfSpan::new("workspace_index")
+                .field("projectId", request.project_id.clone());
+            index_workspace_at_root(&repo_root, request, cancellation)
+        },
     )
     .await
 }
@@ -79,6 +95,8 @@ pub async fn workspace_status<R: Runtime>(
         format!("workspace-status:{project_id}"),
         "workspace index status",
         move |cancellation| {
+            let _perf = crate::perf::PerfSpan::new("workspace_status")
+                .field("projectId", project_id.clone());
             cancellation.check_cancelled("workspace index status")?;
             workspace_status_at_root(&repo_root, &project_id)
         },
@@ -104,6 +122,12 @@ pub async fn workspace_query<R: Runtime>(
         format!("workspace-query:{project_id}"),
         "workspace index query",
         move |cancellation| {
+            let _perf = crate::perf::PerfSpan::new("workspace_query")
+                .field("projectId", request.project_id.clone())
+                .field(
+                    "limit",
+                    request.limit.unwrap_or(DEFAULT_QUERY_LIMIT).to_string(),
+                );
             cancellation.check_cancelled("workspace index query")?;
             workspace_query_at_root(&repo_root, request)
         },
@@ -161,6 +185,11 @@ pub(crate) fn workspace_status_at_root(
     repo_root: &Path,
     project_id: &str,
 ) -> CommandResult<WorkspaceIndexStatusDto> {
+    let cache_key = workspace_status_cache_key_at_root(repo_root, project_id)?;
+    if let Some(status) = cached_workspace_status(&cache_key) {
+        return Ok(status);
+    }
+
     let database_path = database_path_for_repo(repo_root);
     let connection = open_project_database(repo_root, &database_path)?;
     let mut status = read_status_row(&connection, repo_root, project_id, &database_path)?
@@ -214,7 +243,57 @@ pub(crate) fn workspace_status_at_root(
             "Workspace status was estimated from the first indexed-file scan window.",
         ));
     }
+    store_workspace_status(cache_key, status.clone());
     Ok(status)
+}
+
+fn cached_workspace_status(cache_key: &str) -> Option<WorkspaceIndexStatusDto> {
+    let cache = WORKSPACE_STATUS_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().ok()?;
+    let cached = guard.get(cache_key)?;
+    if cached.stored_at.elapsed() <= WORKSPACE_STATUS_CACHE_TTL {
+        return Some(cached.status.clone());
+    }
+    guard.remove(cache_key);
+    None
+}
+
+fn store_workspace_status(cache_key: String, status: WorkspaceIndexStatusDto) {
+    let cache = WORKSPACE_STATUS_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(mut guard) = cache.lock() else {
+        return;
+    };
+    guard.insert(
+        cache_key,
+        CachedWorkspaceStatus {
+            stored_at: Instant::now(),
+            status,
+        },
+    );
+    if guard.len() > 64 {
+        guard.retain(|_, value| value.stored_at.elapsed() <= WORKSPACE_STATUS_CACHE_TTL);
+    }
+}
+
+pub(crate) fn workspace_status_cache_key_at_root(
+    repo_root: &Path,
+    project_id: &str,
+) -> CommandResult<String> {
+    let database_path = database_path_for_repo(repo_root);
+    let connection = open_project_database(repo_root, &database_path)?;
+    let metadata_status = read_status_row(&connection, repo_root, project_id, &database_path)?
+        .unwrap_or_else(|| empty_status(repo_root, project_id, &database_path));
+    let current_head_sha = repository_head_sha(repo_root);
+
+    Ok(format!(
+        "workspace-status:root={}:project={}:v{}:metadata-head={}:current-head={}:updated={}",
+        repo_root.display(),
+        project_id,
+        metadata_status.index_version,
+        metadata_status.head_sha.as_deref().unwrap_or("none"),
+        current_head_sha.as_deref().unwrap_or("none"),
+        metadata_status.updated_at.as_deref().unwrap_or("none")
+    ))
 }
 
 pub(crate) fn workspace_query_at_root(
@@ -240,35 +319,16 @@ pub(crate) fn workspace_query_at_root(
         });
     }
 
-    let mut ranked = rows
-        .into_iter()
-        .filter_map(|row| {
-            let embedding = serde_json::from_str::<Vec<f32>>(&row.embedding_json).ok()?;
-            let semantic =
-                project_store::cosine_similarity(&query_embedding.vector, embedding.as_slice());
-            let lexical = lexical_score(&query_tokens, &row, request.mode);
-            let score = score_for_mode(semantic, lexical.total, request.mode);
-            if score <= 0.001 {
-                return None;
-            }
-            Some(ScoredWorkspaceRow {
-                row,
-                score,
-                reasons: lexical.reasons,
-            })
-        })
-        .collect::<Vec<_>>();
-    ranked.sort_by(|left, right| {
-        right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.row.path.cmp(&right.row.path))
-    });
+    let mut ranked = top_workspace_query_rows(
+        rows,
+        &query_embedding.vector,
+        &query_tokens,
+        request.mode,
+        limit as usize,
+    );
 
     let results = ranked
-        .into_iter()
-        .take(limit as usize)
+        .drain(..)
         .enumerate()
         .map(|(index, scored)| row_to_query_result(index as u32 + 1, scored))
         .collect::<CommandResult<Vec<_>>>()?;
@@ -296,6 +356,105 @@ pub(crate) fn workspace_query_at_root(
         diagnostics,
         results,
     })
+}
+
+fn top_workspace_query_rows(
+    rows: Vec<StoredWorkspaceRow>,
+    query_embedding: &[f32],
+    query_tokens: &[String],
+    mode: WorkspaceQueryModeDto,
+    limit: usize,
+) -> Vec<ScoredWorkspaceRow> {
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    let mut heap = BinaryHeap::with_capacity(limit.saturating_add(1));
+    for row in rows {
+        let Ok(embedding) = serde_json::from_str::<Vec<f32>>(&row.embedding_json) else {
+            continue;
+        };
+        let semantic = project_store::cosine_similarity(query_embedding, embedding.as_slice());
+        let lexical = lexical_score(query_tokens, &row, mode);
+        let score = score_for_mode(semantic, lexical.total, mode);
+        if score <= 0.001 {
+            continue;
+        }
+        let scored = ScoredWorkspaceRow {
+            row,
+            score,
+            reasons: lexical.reasons,
+        };
+        if heap.len() < limit {
+            heap.push(HeapScoredWorkspaceRow(scored));
+            continue;
+        }
+        if heap
+            .peek()
+            .map(|worst| scored_workspace_row_is_better(&scored, &worst.0))
+            .unwrap_or(true)
+        {
+            heap.pop();
+            heap.push(HeapScoredWorkspaceRow(scored));
+        }
+    }
+
+    let mut ranked = heap.into_iter().map(|entry| entry.0).collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.row.path.cmp(&right.row.path))
+    });
+    ranked
+}
+
+#[derive(Debug, Clone)]
+struct HeapScoredWorkspaceRow(ScoredWorkspaceRow);
+
+impl PartialEq for HeapScoredWorkspaceRow {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.score == other.0.score && self.0.row.path == other.0.row.path
+    }
+}
+
+impl Eq for HeapScoredWorkspaceRow {}
+
+impl PartialOrd for HeapScoredWorkspaceRow {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for HeapScoredWorkspaceRow {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self
+            .0
+            .score
+            .partial_cmp(&other.0.score)
+            .unwrap_or(Ordering::Equal)
+        {
+            Ordering::Less => Ordering::Greater,
+            Ordering::Greater => Ordering::Less,
+            Ordering::Equal => self.0.row.path.cmp(&other.0.row.path),
+        }
+    }
+}
+
+fn scored_workspace_row_is_better(
+    candidate: &ScoredWorkspaceRow,
+    current_worst: &ScoredWorkspaceRow,
+) -> bool {
+    match candidate
+        .score
+        .partial_cmp(&current_worst.score)
+        .unwrap_or(Ordering::Equal)
+    {
+        Ordering::Greater => true,
+        Ordering::Less => false,
+        Ordering::Equal => candidate.row.path < current_worst.row.path,
+    }
 }
 
 pub(crate) fn workspace_explain_at_root(
@@ -2054,5 +2213,54 @@ mod tests {
         )
         .unwrap();
         assert_eq!(query.results[0].path, "/lib.rs");
+    }
+
+    #[test]
+    fn top_workspace_query_rows_keeps_best_rows_without_full_sort() {
+        fn row(path: &str, embedding: &[f32]) -> StoredWorkspaceRow {
+            StoredWorkspaceRow {
+                path: path.into(),
+                language: "rust".into(),
+                content_hash: format!("hash-{path}"),
+                summary: "target workspace query fixture".into(),
+                snippet: String::new(),
+                symbols_json: "[]".into(),
+                imports_json: "[]".into(),
+                tests_json: "[]".into(),
+                routes_json: "[]".into(),
+                commands_json: "[]".into(),
+                diffs_json: "[]".into(),
+                failures_json: "[]".into(),
+                embedding_json: serde_json::to_string(embedding).unwrap(),
+                indexed_at: "2026-06-03T00:00:00Z".into(),
+            }
+        }
+
+        let ranked = top_workspace_query_rows(
+            vec![
+                row("/z-third.rs", &[0.0, 1.0]),
+                row("/b-second.rs", &[0.92, 0.08]),
+                row("/a-best.rs", &[1.0, 0.0]),
+                row("/ignored-invalid.rs", &[0.5, 0.5]),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, mut row)| {
+                if index == 3 {
+                    row.embedding_json = "{invalid json".into();
+                }
+                row
+            })
+            .collect(),
+            &[1.0, 0.0],
+            &["target".into()],
+            WorkspaceQueryModeDto::Semantic,
+            2,
+        );
+
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0].row.path, "/a-best.rs");
+        assert_eq!(ranked[1].row.path, "/b-second.rs");
+        assert!(ranked[0].score >= ranked[1].score);
     }
 }

@@ -19,6 +19,7 @@
     "updater:allow-download",
     "updater:allow-install",
     "updater:allow-download-and-install",
+    "desktop-shell",
     {
       "identifier": "opener:allow-open-url",
       "allow": [

@@ -3,24 +3,21 @@
 import { useEffect, useMemo, useState } from "react"
 import { Globe2, Loader2, Plus, Save, Sparkles, Trash2 } from "lucide-react"
 import { BaseAlertDialog } from "@xero/ui/components/base-dialog"
+import {
+  ModelThinkingSelect,
+  type ModelThinkingSelectGroup,
+  type ModelThinkingSelectOption,
+} from "@xero/ui/components/model-thinking-select"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectLabel,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import type {
   StartTargetDto,
   StartTargetInputDto,
 } from "@/src/lib/xero-desktop"
+import { getProviderModelThinkingEffortLabel } from "@/src/lib/xero-model"
 import type { RuntimeAgentIdDto } from "@/src/lib/xero-model/runtime"
 
 export interface StartTargetsSuggestRequest {
@@ -72,6 +69,7 @@ interface StartTargetsEditorProps {
     request: StartTargetsSuggestRequest,
   ) => Promise<{ targets: SuggestedTarget[] }>
   modelOptions?: StartTargetsModelOption[]
+  showModelSelector?: boolean
   onSaved?: () => void
 }
 
@@ -180,6 +178,18 @@ function resolveInitialModelSelectionKey(
   return findModelForRequest(options, request)?.selectionKey ?? options[0]?.selectionKey ?? null
 }
 
+function resolveInitialThinkingEffort(
+  options: readonly StartTargetsModelOption[],
+  request: StartTargetsSuggestRequest | null,
+): StartTargetsSuggestRequest["thinkingEffort"] {
+  const option = findModelForRequest(options, request) ?? options[0] ?? null
+  if (!option) return request?.thinkingEffort ?? null
+  return normalizeThinkingEffortForModel(
+    option,
+    request?.thinkingEffort ?? option.defaultThinkingEffort ?? null,
+  )
+}
+
 function normalizeThinkingEffortForModel(
   option: StartTargetsModelOption,
   thinkingEffort: StartTargetsSuggestRequest["thinkingEffort"],
@@ -193,6 +203,7 @@ function normalizeThinkingEffortForModel(
 function requestWithModelOption(
   request: StartTargetsSuggestRequest | null,
   option: StartTargetsModelOption | null,
+  thinkingEffort: StartTargetsSuggestRequest["thinkingEffort"],
 ): StartTargetsSuggestRequest | null {
   if (!option) return request
   return {
@@ -202,18 +213,9 @@ function requestWithModelOption(
     runtimeAgentId: request?.runtimeAgentId ?? null,
     thinkingEffort: normalizeThinkingEffortForModel(
       option,
-      request?.thinkingEffort ?? option.defaultThinkingEffort ?? null,
+      thinkingEffort ?? request?.thinkingEffort ?? option.defaultThinkingEffort ?? null,
     ),
   }
-}
-
-function formatRequestModelLabel(
-  request: StartTargetsSuggestRequest | null,
-): string {
-  const modelId = request?.modelId.trim() ?? ""
-  if (!modelId) return "Provider default"
-  const provider = request?.providerId?.trim() || request?.providerProfileId?.trim()
-  return provider ? `${provider} · ${modelId}` : modelId
 }
 
 export function StartTargetsEditor({
@@ -226,6 +228,7 @@ export function StartTargetsEditor({
   resolveSuggestRequest,
   onSuggest,
   modelOptions = [],
+  showModelSelector = true,
   onSaved,
 }: StartTargetsEditorProps) {
   const [rows, setRows] = useState<RowState[]>(() =>
@@ -235,6 +238,9 @@ export function StartTargetsEditor({
   const [selectedModelSelectionKey, setSelectedModelSelectionKey] = useState<
     string | null
   >(() => resolveInitialModelSelectionKey(modelOptions, initialSuggestRequest))
+  const [selectedThinkingEffort, setSelectedThinkingEffort] = useState<
+    StartTargetsSuggestRequest["thinkingEffort"]
+  >(() => resolveInitialThinkingEffort(modelOptions, initialSuggestRequest))
   const [error, setError] = useState<string | null>(null)
   const [saveMessage, setSaveMessage] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -268,29 +274,47 @@ export function StartTargetsEditor({
   const selectedModel =
     modelOptions.find((option) => option.selectionKey === selectedModelSelectionKey) ??
     null
-  const currentSuggestRequest = resolveSuggestRequest?.() ?? null
-  const visibleModel = selectedModel ?? findModelForRequest(modelOptions, currentSuggestRequest)
-  const visibleModelLabel = visibleModel
-    ? `${visibleModel.providerLabel} · ${visibleModel.label}`
-    : formatRequestModelLabel(currentSuggestRequest)
-  const modelGroups = useMemo(() => {
+  const modelGroups = useMemo<ModelThinkingSelectGroup[]>(() => {
     const groups = new Map<
       string,
-      { providerLabel: string; options: StartTargetsModelOption[] }
+      { providerLabel: string; options: ModelThinkingSelectOption[] }
     >()
     for (const option of modelOptions) {
       const existing = groups.get(option.providerLabel)
+      const item = { id: option.selectionKey, label: option.label }
       if (existing) {
-        existing.options.push(option)
+        existing.options.push(item)
       } else {
         groups.set(option.providerLabel, {
           providerLabel: option.providerLabel,
-          options: [option],
+          options: [item],
         })
       }
     }
-    return Array.from(groups.values())
+    return Array.from(groups.values()).map((group) => ({
+      id: group.providerLabel,
+      label: group.providerLabel,
+      options: group.options,
+    }))
   }, [modelOptions])
+  const thinkingOptions = useMemo<ModelThinkingSelectOption[]>(
+    () =>
+      (selectedModel?.thinkingEffortOptions ?? []).map((effort) => ({
+        id: effort,
+        label: getProviderModelThinkingEffortLabel(effort),
+      })),
+    [selectedModel],
+  )
+
+  useEffect(() => {
+    if (!selectedModel) {
+      setSelectedThinkingEffort(null)
+      return
+    }
+    setSelectedThinkingEffort((current) =>
+      normalizeThinkingEffortForModel(selectedModel, current),
+    )
+  }, [selectedModel])
   const pristine = useMemo(
     () => rowsEqualToInitial(rows, initialTargets),
     [rows, initialTargets],
@@ -314,7 +338,11 @@ export function StartTargetsEditor({
   const handleSuggest = async () => {
     if (!onSuggest || !resolveSuggestRequest) return
     const baseRequest = resolveSuggestRequest()
-    const request = requestWithModelOption(baseRequest, selectedModel)
+    const request = requestWithModelOption(
+      baseRequest,
+      showModelSelector ? selectedModel : null,
+      selectedThinkingEffort,
+    )
     if (!request) {
       setError("Configure a model in the Agent pane before using AI suggest.")
       return
@@ -398,6 +426,23 @@ export function StartTargetsEditor({
     setRows((prev) => [...prev, blankRow()])
     setError(null)
     setSaveMessage(null)
+  }
+
+  const handleModelChange = (value: string) => {
+    const option = modelOptions.find((entry) => entry.selectionKey === value)
+    setSelectedModelSelectionKey(value)
+    if (!option) return
+    setSelectedThinkingEffort((current) =>
+      normalizeThinkingEffortForModel(option, current),
+    )
+  }
+
+  const handleThinkingChange = (value: string) => {
+    if (!selectedModel) return
+    const nextThinkingEffort = value as StartTargetsSuggestRequest["thinkingEffort"]
+    setSelectedThinkingEffort(
+      normalizeThinkingEffortForModel(selectedModel, nextThinkingEffort),
+    )
   }
 
   const saveDisabled =
@@ -488,43 +533,39 @@ export function StartTargetsEditor({
           <p className="text-[12px] text-success">{saveMessage}</p>
         ) : null}
 
-        {aiEnabled ? (
-          <div className="rounded-md border border-border/60 bg-secondary/15 px-2.5 py-2">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        {aiEnabled && showModelSelector ? (
+          <div className="rounded-md border border-border/60 bg-secondary/15 px-4 py-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
                   AI model
                 </div>
-                <div className="truncate text-[12.5px] text-foreground" title={visibleModelLabel}>
-                  {visibleModelLabel}
-                </div>
               </div>
               {modelOptions.length > 0 ? (
-                <Select
-                  value={selectedModelSelectionKey ?? undefined}
-                  onValueChange={(value) => setSelectedModelSelectionKey(value)}
-                  disabled={busy}
-                >
-                  <SelectTrigger
-                    aria-label="AI suggestion model"
-                    className="h-8 w-full text-[12px] sm:w-[260px]"
-                    size="sm"
-                  >
-                    <SelectValue placeholder="Select model" />
-                  </SelectTrigger>
-                  <SelectContent className="max-h-[320px]">
-                    {modelGroups.map((group) => (
-                      <SelectGroup key={group.providerLabel}>
-                        <SelectLabel>{group.providerLabel}</SelectLabel>
-                        {group.options.map((option) => (
-                          <SelectItem key={option.selectionKey} value={option.selectionKey}>
-                            {option.label}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="w-full sm:w-[260px]">
+                  <ModelThinkingSelect
+                    ariaLabel="AI suggestion model"
+                    disabled={busy}
+                    groups={modelGroups}
+                    onChange={handleModelChange}
+                    onThinkingChange={handleThinkingChange}
+                    placeholder="Select model"
+                    searchPlaceholder="Search models..."
+                    selectedThinkingId={selectedThinkingEffort}
+                    thinkingDisabled={
+                      busy ||
+                      !selectedModel ||
+                      selectedModel.thinkingEffortOptions.length === 0
+                    }
+                    thinkingOptions={thinkingOptions}
+                    thinkingPlaceholder={
+                      selectedModel ? "Thinking unavailable" : "Choose model"
+                    }
+                    triggerClassName="h-8 text-[12px]"
+                    value={selectedModelSelectionKey}
+                    variant="field"
+                  />
+                </div>
               ) : null}
             </div>
           </div>

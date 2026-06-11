@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use rusqlite_migration::{Migrations, M};
 
-pub const PROJECT_DATABASE_SCHEMA_VERSION: i64 = 35;
+pub const PROJECT_DATABASE_SCHEMA_VERSION: i64 = 42;
 
 pub fn migrations() -> &'static Migrations<'static> {
     static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
@@ -42,6 +42,13 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(MIGRATION_026_AGENT_CREATE_WORKFLOW_DEFINITIONS_SQL),
             M::up(MIGRATION_027_DELIVERY_STATE_SQL),
             M::up(MIGRATION_028_COMPUTER_USE_MODE_SQL),
+            M::up(MIGRATION_029_AGENT_RESERVATION_OBSERVED_HASH_SQL),
+            M::up(MIGRATION_030_AGENT_MAILBOX_INBOX_CHECKS_SQL),
+            M::up(MIGRATION_031_AGENT_MAILBOX_SCOPED_INBOX_CHECKS_SQL),
+            M::up(MIGRATION_032_AGENT_USAGE_BILLABLE_INPUT_SQL),
+            M::up(MIGRATION_033_AGENT_RUN_WAKEUPS_SQL),
+            M::up(MIGRATION_034_ENGINEER_MUTATION_STAGE_TOOLS_SQL),
+            M::up(MIGRATION_035_ENGINEER_CORE_STAGE_TOOLS_SQL),
         ])
     });
 
@@ -49,6 +56,409 @@ pub fn migrations() -> &'static Migrations<'static> {
 }
 
 const NOOP_SCHEMA_VERSION_MARKER_SQL: &str = "";
+
+const MIGRATION_035_ENGINEER_CORE_STAGE_TOOLS_SQL: &str = r#"
+    INSERT OR IGNORE INTO agent_definition_versions (
+        definition_id,
+        version,
+        snapshot_json,
+        validation_report_json,
+        created_at
+    )
+    SELECT
+        'engineer',
+        4,
+        json_set(
+            snapshot_json,
+            '$.version', 4,
+            '$.description', 'Implement repository changes with the complete repository observation and mutation toolset plus safety gates.',
+            '$.workflowStructure.phases[0].allowedTools', json_array(
+                'read',
+                'read_many',
+                'result_page',
+                'stat',
+                'search',
+                'find',
+                'list',
+                'list_tree',
+                'directory_digest',
+                'file_hash',
+                'git_status',
+                'git_diff',
+                'code_intel',
+                'lsp',
+                'workspace_index',
+                'tool_access',
+                'tool_search',
+                'project_context_search',
+                'project_context_get',
+                'environment_context',
+                'command_probe',
+                'todo'
+            ),
+            '$.workflowStructure.phases[1].allowedTools', json_array(
+                'read',
+                'read_many',
+                'result_page',
+                'stat',
+                'search',
+                'find',
+                'list',
+                'list_tree',
+                'directory_digest',
+                'file_hash',
+                'git_status',
+                'git_diff',
+                'code_intel',
+                'lsp',
+                'workspace_index',
+                'tool_access',
+                'tool_search',
+                'project_context_search',
+                'project_context_get',
+                'project_context_record',
+                'environment_context',
+                'command_probe',
+                'todo'
+            ),
+            '$.workflowStructure.phases[2].allowedTools', json_array(
+                'read',
+                'read_many',
+                'result_page',
+                'stat',
+                'search',
+                'find',
+                'list',
+                'list_tree',
+                'directory_digest',
+                'file_hash',
+                'git_status',
+                'git_diff',
+                'code_intel',
+                'lsp',
+                'workspace_index',
+                'tool_access',
+                'tool_search',
+                'project_context_search',
+                'project_context_get',
+                'project_context_record',
+                'environment_context',
+                'command_probe',
+                'edit',
+                'write',
+                'patch',
+                'copy',
+                'fs_transaction',
+                'json_edit',
+                'toml_edit',
+                'yaml_edit',
+                'delete',
+                'rename',
+                'mkdir',
+                'notebook_edit',
+                'command_run',
+                'todo'
+            ),
+            '$.workflowStructure.phases[3].allowedTools', json_array(
+                'read',
+                'read_many',
+                'result_page',
+                'stat',
+                'search',
+                'find',
+                'list',
+                'list_tree',
+                'directory_digest',
+                'file_hash',
+                'git_status',
+                'git_diff',
+                'code_intel',
+                'lsp',
+                'workspace_index',
+                'tool_access',
+                'tool_search',
+                'project_context_search',
+                'project_context_get',
+                'project_context_record',
+                'environment_context',
+                'command_probe',
+                'edit',
+                'write',
+                'patch',
+                'copy',
+                'fs_transaction',
+                'json_edit',
+                'toml_edit',
+                'yaml_edit',
+                'delete',
+                'rename',
+                'mkdir',
+                'notebook_edit',
+                'command_run',
+                'command_verify',
+                'system_diagnostics',
+                'todo'
+            )
+        ),
+        '{"status":"valid","source":"seed"}',
+        '2026-06-06T01:00:00Z'
+    FROM agent_definition_versions
+    WHERE definition_id = 'engineer'
+      AND version = 3;
+
+    UPDATE agent_definitions
+    SET current_version = 4,
+        description = 'Implement repository changes with the complete repository observation and mutation toolset plus safety gates.',
+        updated_at = '2026-06-06T01:00:00Z'
+    WHERE definition_id = 'engineer'
+      AND current_version < 4;
+"#;
+
+const MIGRATION_034_ENGINEER_MUTATION_STAGE_TOOLS_SQL: &str = r#"
+    INSERT OR IGNORE INTO agent_definition_versions (
+        definition_id,
+        version,
+        snapshot_json,
+        validation_report_json,
+        created_at
+    )
+    SELECT
+        'engineer',
+        3,
+        json_set(
+            snapshot_json,
+            '$.version', 3,
+            '$.description', 'Implement repository changes with the existing software-building toolset, patch support, and safety gates.',
+            '$.workflowStructure.phases[2].description', 'Apply scoped repository changes with the full mutation tool surface.',
+            '$.workflowStructure.phases[2].allowedTools', json_array(
+                'read',
+                'search',
+                'find',
+                'list',
+                'file_hash',
+                'git_status',
+                'git_diff',
+                'code_intel',
+                'lsp',
+                'workspace_index',
+                'tool_access',
+                'tool_search',
+                'project_context_search',
+                'project_context_get',
+                'project_context_record',
+                'environment_context',
+                'command_probe',
+                'edit',
+                'write',
+                'patch',
+                'copy',
+                'fs_transaction',
+                'json_edit',
+                'toml_edit',
+                'yaml_edit',
+                'delete',
+                'rename',
+                'mkdir',
+                'notebook_edit',
+                'command_run',
+                'todo'
+            ),
+            '$.workflowStructure.phases[2].requiredChecks', json_array(
+                json_object(
+                    'kind', 'tool_succeeded',
+                    'toolNames', json_array(
+                        'edit',
+                        'write',
+                        'patch',
+                        'copy',
+                        'fs_transaction',
+                        'json_edit',
+                        'toml_edit',
+                        'yaml_edit',
+                        'delete',
+                        'rename',
+                        'mkdir',
+                        'notebook_edit'
+                    ),
+                    'minCount', 1,
+                    'description', 'Apply at least one repository mutation before advancing to verify.'
+                )
+            ),
+            '$.workflowStructure.phases[3].allowedTools', json_array(
+                'read',
+                'search',
+                'find',
+                'list',
+                'file_hash',
+                'git_status',
+                'git_diff',
+                'code_intel',
+                'lsp',
+                'workspace_index',
+                'tool_access',
+                'tool_search',
+                'project_context_search',
+                'project_context_get',
+                'project_context_record',
+                'environment_context',
+                'command_probe',
+                'edit',
+                'write',
+                'patch',
+                'copy',
+                'fs_transaction',
+                'json_edit',
+                'toml_edit',
+                'yaml_edit',
+                'delete',
+                'rename',
+                'mkdir',
+                'notebook_edit',
+                'command_run',
+                'command_verify',
+                'system_diagnostics',
+                'todo'
+            )
+        ),
+        '{"status":"valid","source":"seed"}',
+        '2026-06-06T00:00:00Z'
+    FROM agent_definition_versions
+    WHERE definition_id = 'engineer'
+      AND version = 2;
+
+    UPDATE agent_definitions
+    SET current_version = 3,
+        description = 'Implement repository changes with the existing software-building toolset, patch support, and safety gates.',
+        updated_at = '2026-06-06T00:00:00Z'
+    WHERE definition_id = 'engineer'
+      AND current_version < 3;
+"#;
+
+const MIGRATION_033_AGENT_RUN_WAKEUPS_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS agent_run_wakeups (
+        project_id TEXT NOT NULL,
+        agent_session_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        wake_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        due_at TEXT NOT NULL,
+        deadline_at TEXT,
+        poll_interval_ms INTEGER CHECK (poll_interval_ms IS NULL OR poll_interval_ms > 0),
+        payload_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+        last_error_code TEXT,
+        last_error_message TEXT,
+        fired_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, run_id, wake_id),
+        CHECK (project_id <> ''),
+        CHECK (agent_session_id <> ''),
+        CHECK (run_id <> ''),
+        CHECK (wake_id <> ''),
+        CHECK (kind IN ('sleep', 'process_exit', 'process_ready', 'process_output')),
+        CHECK (due_at <> ''),
+        CHECK (deadline_at IS NULL OR deadline_at <> ''),
+        CHECK (payload_json <> '' AND json_valid(payload_json)),
+        CHECK (status IN ('pending', 'fired', 'cancelled', 'expired', 'failed')),
+        CHECK (
+            (last_error_code IS NULL AND last_error_message IS NULL)
+            OR (last_error_code IS NOT NULL AND last_error_message IS NOT NULL)
+        ),
+        CHECK (fired_at IS NULL OR fired_at <> ''),
+        CHECK (created_at <> ''),
+        CHECK (updated_at <> ''),
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_run_wakeups_pending_due
+        ON agent_run_wakeups(project_id, status, due_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_run_wakeups_run_status
+        ON agent_run_wakeups(project_id, run_id, status, updated_at DESC);
+"#;
+
+const MIGRATION_032_AGENT_USAGE_BILLABLE_INPUT_SQL: &str = r#"
+    ALTER TABLE agent_usage
+        ADD COLUMN billable_input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (billable_input_tokens >= 0);
+
+    UPDATE agent_usage
+    SET billable_input_tokens = input_tokens
+    WHERE billable_input_tokens = 0
+      AND input_tokens > 0;
+"#;
+
+const MIGRATION_031_AGENT_MAILBOX_SCOPED_INBOX_CHECKS_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS agent_mailbox_inbox_checks_v2 (
+        project_id TEXT NOT NULL,
+        agent_session_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        scope_paths_json TEXT NOT NULL DEFAULT '[]',
+        checked_at TEXT NOT NULL,
+        latest_relevant_item_rowid INTEGER NOT NULL DEFAULT 0 CHECK (latest_relevant_item_rowid >= 0),
+        relevant_item_count INTEGER NOT NULL DEFAULT 0 CHECK (relevant_item_count >= 0),
+        PRIMARY KEY (project_id, run_id, scope_paths_json),
+        CHECK (agent_session_id <> ''),
+        CHECK (run_id <> ''),
+        CHECK (scope_paths_json <> '' AND json_valid(scope_paths_json)),
+        CHECK (checked_at <> ''),
+        FOREIGN KEY (project_id, agent_session_id)
+            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+    );
+
+    INSERT OR REPLACE INTO agent_mailbox_inbox_checks_v2 (
+        project_id,
+        agent_session_id,
+        run_id,
+        scope_paths_json,
+        checked_at,
+        latest_relevant_item_rowid,
+        relevant_item_count
+    )
+    SELECT
+        project_id,
+        agent_session_id,
+        run_id,
+        '[]',
+        checked_at,
+        latest_relevant_item_rowid,
+        relevant_item_count
+    FROM agent_mailbox_inbox_checks;
+
+    DROP TABLE agent_mailbox_inbox_checks;
+
+    ALTER TABLE agent_mailbox_inbox_checks_v2 RENAME TO agent_mailbox_inbox_checks;
+
+    CREATE INDEX IF NOT EXISTS idx_agent_mailbox_inbox_checks_project_checked
+        ON agent_mailbox_inbox_checks(project_id, checked_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_mailbox_inbox_checks_scope
+        ON agent_mailbox_inbox_checks(project_id, run_id, scope_paths_json);
+"#;
+
+const MIGRATION_030_AGENT_MAILBOX_INBOX_CHECKS_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS agent_mailbox_inbox_checks (
+        project_id TEXT NOT NULL,
+        agent_session_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        checked_at TEXT NOT NULL,
+        latest_relevant_item_rowid INTEGER NOT NULL DEFAULT 0 CHECK (latest_relevant_item_rowid >= 0),
+        relevant_item_count INTEGER NOT NULL DEFAULT 0 CHECK (relevant_item_count >= 0),
+        PRIMARY KEY (project_id, run_id),
+        CHECK (agent_session_id <> ''),
+        CHECK (run_id <> ''),
+        CHECK (checked_at <> ''),
+        FOREIGN KEY (project_id, agent_session_id)
+            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_mailbox_inbox_checks_project_checked
+        ON agent_mailbox_inbox_checks(project_id, checked_at DESC);
+"#;
 
 const MIGRATION_028_COMPUTER_USE_MODE_SQL: &str = r#"
     ALTER TABLE agent_sessions ADD COLUMN session_kind TEXT NOT NULL DEFAULT 'standard' CHECK (session_kind IN ('standard', 'computer_use'));
@@ -76,6 +486,14 @@ const MIGRATION_028_COMPUTER_USE_MODE_SQL: &str = r#"
     )
     VALUES
         ('computer_use', 1, '{"schema":"xero.agent_definition.v1","id":"computer_use","version":1,"displayName":"Computer Use","shortLabel":"Computer","description":"Follow direct user instructions using the tools available for the current turn.","taskPurpose":"Complete general-purpose computer, project, automation, and tool-assisted tasks while respecting approvals, secrets, and safety boundaries.","scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"computer_use","defaultApprovalMode":"suggest","allowedApprovalModes":["suggest"],"promptPolicy":"computer_use","toolPolicy":"computer_use","outputContract":"answer","workflowContract":"","finalResponseContract":"Answer directly with what was done, what still needs user confirmation, or why the requested action was stopped. Do not include secrets.","projectDataPolicy":{"required":true,"recordKinds":["agent_handoff","project_fact","decision","constraint","question","context_note","diagnostic"],"structuredSchemas":["xero.project_record.v1"],"unstructuredScopes":["answer_note","session_summary","troubleshooting_note"],"memoryCandidateKinds":["project_fact","user_preference","decision","session_summary","troubleshooting"]},"attachedSkills":[]}', '{"status":"valid","source":"seed"}', '2026-05-24T00:00:00Z');
+"#;
+
+const MIGRATION_029_AGENT_RESERVATION_OBSERVED_HASH_SQL: &str = r#"
+    ALTER TABLE agent_file_reservations ADD COLUMN observed_hash TEXT;
+    ALTER TABLE agent_file_reservations ADD COLUMN observed_at TEXT;
+
+    CREATE INDEX IF NOT EXISTS idx_agent_file_reservations_observed_hash
+        ON agent_file_reservations(project_id, observed_hash);
 "#;
 
 const MIGRATION_027_DELIVERY_STATE_SQL: &str = r#"
@@ -2928,8 +3346,6 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         CHECK (target_runtime_agent_id <> ''),
         CHECK (target_agent_definition_id <> ''),
         CHECK (target_agent_definition_version > 0),
-        CHECK (source_agent_definition_id = target_agent_definition_id),
-        CHECK (source_agent_definition_version = target_agent_definition_version),
         CHECK (provider_id <> ''),
         CHECK (model_id <> ''),
         CHECK (length(source_context_hash) = 64),
@@ -3271,6 +3687,12 @@ mod tests {
                 "agent_sessions should include `{column}`"
             );
         }
+
+        let usage_columns = table_columns(&connection, "agent_usage");
+        assert!(
+            usage_columns.contains(&"billable_input_tokens".to_string()),
+            "agent_usage should include `billable_input_tokens`"
+        );
     }
 
     #[test]
@@ -3289,7 +3711,7 @@ mod tests {
         assert!(built_ins.contains(&"agent_create:3:Agent Create".to_string()));
         assert!(built_ins.contains(&"computer_use:1:Computer Use".to_string()));
         assert!(built_ins.contains(&"debug:2:Debug".to_string()));
-        assert!(built_ins.contains(&"engineer:2:Engineer".to_string()));
+        assert!(built_ins.contains(&"engineer:4:Engineer".to_string()));
         assert!(built_ins.contains(&"generalist:1:Agent".to_string()));
         assert!(built_ins.contains(&"plan:2:Plan".to_string()));
 
@@ -3305,5 +3727,74 @@ mod tests {
             )
             .expect("count built-in snapshots missing attachedSkills");
         assert_eq!(missing_attached_skills, 0);
+    }
+
+    #[test]
+    fn fresh_schema_seeds_engineer_stage_tools() {
+        let connection = migrate_to_latest_in_memory();
+
+        let implement_patch_tools: i64 = connection
+            .query_row(
+                r#"
+                SELECT COUNT(*)
+                FROM agent_definition_versions adv,
+                     json_each(adv.snapshot_json, '$.workflowStructure.phases[2].allowedTools') tools
+                WHERE adv.definition_id = 'engineer'
+                  AND adv.version = 4
+                  AND tools.value = 'patch'
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .expect("count engineer implement patch tools");
+        assert_eq!(implement_patch_tools, 1);
+
+        let implement_list_tree_tools: i64 = connection
+            .query_row(
+                r#"
+                SELECT COUNT(*)
+                FROM agent_definition_versions adv,
+                     json_each(adv.snapshot_json, '$.workflowStructure.phases[2].allowedTools') tools
+                WHERE adv.definition_id = 'engineer'
+                  AND adv.version = 4
+                  AND tools.value = 'list_tree'
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .expect("count engineer implement list_tree tools");
+        assert_eq!(implement_list_tree_tools, 1);
+
+        let gate_patch_tools: i64 = connection
+            .query_row(
+                r#"
+                SELECT COUNT(*)
+                FROM agent_definition_versions adv,
+                     json_each(adv.snapshot_json, '$.workflowStructure.phases[2].requiredChecks[0].toolNames') tools
+                WHERE adv.definition_id = 'engineer'
+                  AND adv.version = 4
+                  AND tools.value = 'patch'
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .expect("count engineer gate patch tools");
+        assert_eq!(gate_patch_tools, 1);
+
+        let verify_patch_tools: i64 = connection
+            .query_row(
+                r#"
+                SELECT COUNT(*)
+                FROM agent_definition_versions adv,
+                     json_each(adv.snapshot_json, '$.workflowStructure.phases[3].allowedTools') tools
+                WHERE adv.definition_id = 'engineer'
+                  AND adv.version = 4
+                  AND tools.value = 'patch'
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .expect("count engineer verify patch tools");
+        assert_eq!(verify_patch_tools, 1);
     }
 }

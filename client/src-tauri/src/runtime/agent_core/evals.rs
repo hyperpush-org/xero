@@ -1550,6 +1550,7 @@ mod removed_test_agent_ci_runtime {
         RuntimeRunControlInputDto {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
             agent_definition_id: None,
+            agent_definition_version: None,
             provider_profile_id: None,
             model_id: OPENAI_CODEX_PROVIDER_ID.into(),
             thinking_effort: None,
@@ -4069,7 +4070,11 @@ fn builtin_definition_snapshot(
         },
         "handoffPolicy": {
             "enabled": true,
-            "preserveDefinitionVersion": true
+            "routingMode": "same_agent",
+            "allowedTargets": [],
+            "preserveDefinitionVersion": true,
+            "carrySummary": true,
+            "includeDurableContext": true
         },
         "examplePrompts": [
             "Summarize relevant project context.",
@@ -4184,7 +4189,11 @@ fn custom_observe_only_definition_snapshot() -> JsonValue {
         },
         "handoffPolicy": {
             "enabled": true,
-            "preserveDefinitionVersion": true
+            "routingMode": "same_agent",
+            "allowedTargets": [],
+            "preserveDefinitionVersion": true,
+            "carrySummary": true,
+            "includeDurableContext": true
         },
         "safetyLimits": ["Never edit files.", "Do not invent release claims.", "Escalate missing context."],
         "examplePrompts": [
@@ -4298,7 +4307,11 @@ fn custom_engineering_definition_snapshot(version: u32, marker: &str) -> JsonVal
         },
         "handoffPolicy": {
             "enabled": true,
-            "preserveDefinitionVersion": true
+            "routingMode": "same_agent",
+            "allowedTargets": [],
+            "preserveDefinitionVersion": true,
+            "carrySummary": true,
+            "includeDurableContext": true
         },
         "safetyLimits": ["No browser, MCP, skill, subagent, or destructive delete access.", "Run scoped verification after edits.", "Pause if stale worktree state conflicts."],
         "examplePrompts": [
@@ -4412,7 +4425,11 @@ fn custom_debugging_definition_snapshot() -> JsonValue {
         },
         "handoffPolicy": {
             "enabled": true,
-            "preserveDefinitionVersion": true
+            "routingMode": "same_agent",
+            "allowedTargets": [],
+            "preserveDefinitionVersion": true,
+            "carrySummary": true,
+            "includeDurableContext": true
         },
         "safetyLimits": ["No browser, MCP, skill, subagent, or destructive delete access.", "Do not claim root cause without evidence.", "Do not finish after edits without verification evidence."],
         "examplePrompts": [
@@ -4804,6 +4821,7 @@ fn compile_agent_definition_eval_prompt(
             runtime_agent_id: case.runtime_agent_id,
             agent_tool_policy,
             tool_application_policy: Default::default(),
+            stage_allowed_tools: None,
         },
     );
     let exposed_tools = registry.descriptor_names().into_iter().collect::<Vec<_>>();

@@ -24,10 +24,7 @@ use super::{
         AgentEmbeddingService, LOCAL_HASH_AGENT_EMBEDDING_PROVIDER,
     },
     agent_memory::refresh_agent_memory_rows,
-    agent_memory::{
-        agent_memory_retrieval_reason_from_parts, AgentMemoryKind, AgentMemoryReviewState,
-        AgentMemoryScope,
-    },
+    agent_memory::{agent_memory_retrieval_reason_from_parts, AgentMemoryKind, AgentMemoryScope},
     agent_memory_lance::{self, AgentMemoryListFilterOwned, AgentMemoryRow, ProjectMemoryStore},
     freshness::{
         evaluate_freshness, freshness_metadata_json, freshness_update_changed,
@@ -369,8 +366,7 @@ pub fn enqueue_missing_agent_embedding_backfill_jobs(
     }
 
     for row in memory_store.list_all_rows()? {
-        if row.review_state != AgentMemoryReviewState::Approved
-            || !row.enabled
+        if !row.enabled
             || backfill_should_skip_for_freshness(&row.freshness_state)
             || embedding_is_current(
                 row.embedding.as_ref(),
@@ -732,7 +728,6 @@ fn collect_candidates(
         for row in rows {
             scanned_approved_memories += 1;
             let retrieval_reason = agent_memory_retrieval_reason_from_parts(
-                &row.review_state,
                 row.enabled,
                 &row.freshness_state,
                 row.superseded_by_id.as_deref(),
@@ -814,7 +809,6 @@ fn default_memory_exclusion_counts(
         session_filter,
         AgentMemoryListFilterOwned {
             include_disabled: true,
-            include_rejected: true,
         },
     )?;
     for row in rows {
@@ -822,7 +816,6 @@ fn default_memory_exclusion_counts(
             continue;
         }
         let reason = agent_memory_retrieval_reason_from_parts(
-            &row.review_state,
             row.enabled,
             &row.freshness_state,
             row.superseded_by_id.as_deref(),
@@ -999,10 +992,7 @@ fn memory_vector_filter_sql(
     request: &AgentContextRetrievalRequest,
     session_filter: Option<&str>,
 ) -> Option<String> {
-    let mut conditions = vec![
-        "review_state = 'approved'".to_string(),
-        "enabled = true".to_string(),
-    ];
+    let mut conditions = vec!["enabled = true".to_string()];
     if !request.filters.include_historical {
         conditions.push("freshness_state IN ('current', 'source_unknown')".to_string());
         conditions.push("superseded_by_id IS NULL".to_string());
@@ -1275,7 +1265,6 @@ fn memory_candidate(
 ) -> Result<Option<SearchCandidate>, CommandError> {
     if !request.filters.include_historical
         && agent_memory_retrieval_reason_from_parts(
-            &row.review_state,
             row.enabled,
             &row.freshness_state,
             row.superseded_by_id.as_deref(),
@@ -1284,8 +1273,7 @@ fn memory_candidate(
     {
         return Ok(None);
     }
-    if row.review_state != AgentMemoryReviewState::Approved
-        || !row.enabled
+    if !row.enabled
         || !request.filters.tags.is_empty()
         || !request.filters.related_paths.is_empty()
         || request.filters.runtime_agent_id.is_some()
@@ -1321,6 +1309,7 @@ fn memory_candidate(
         return Ok(None);
     }
     let freshness_adjustment = freshness_score_adjustment(&row.freshness_state);
+    let reinforcement_adjustment = memory_reinforcement_score_adjustment(row.reinforcement_count);
     let related_paths = source_fingerprint_paths(&row.source_fingerprints_json)?;
     let trust_signal = retrieval_trust_signal(
         &row.freshness_state,
@@ -1334,7 +1323,9 @@ fn memory_candidate(
             .confidence
             .map(|value| f64::from(value) / 500.0)
             .unwrap_or(0.0);
-    let score = (score + freshness_adjustment + trust_signal.ranking_adjustment).max(0.0);
+    let score =
+        (score + freshness_adjustment + trust_signal.ranking_adjustment + reinforcement_adjustment)
+            .max(0.0);
     let (snippet, redaction_state) = retrieval_snippet(&row.text);
     let scope = memory_scope_sql_value(&row.scope);
     let kind = memory_kind_sql_value(&row.kind);
@@ -1374,6 +1365,10 @@ fn memory_candidate(
         "contradictionPenalty": trust_signal.contradiction_penalty,
         "sourceRunId": row.source_run_id,
         "sourceItemIds": row.source_item_ids,
+        "reinforcementCount": row.reinforcement_count,
+        "lastReinforcedAt": row.last_reinforced_at,
+        "reinforcementSources": memory_reinforcement_sources_json(&row),
+        "reinforcementAdjustment": reinforcement_adjustment,
         "relatedPaths": related_paths,
     });
     Ok(Some(SearchCandidate {
@@ -1394,6 +1389,8 @@ fn memory_candidate(
             "sourceItemIds": trust["sourceItemIds"].clone(),
             "relatedPaths": trust["relatedPaths"].clone(),
             "confidence": trust["confidence"].clone(),
+            "reinforcementCount": trust["reinforcementCount"].clone(),
+            "lastReinforcedAt": trust["lastReinforcedAt"].clone(),
             "trustScore": trust["trustScore"].clone(),
             "trustStatus": trust["trustStatus"].clone(),
             "contradictionState": trust["contradictionState"].clone(),
@@ -1415,6 +1412,7 @@ fn memory_candidate(
                 "vectorScore": vector_score,
                 "freshnessAdjustment": freshness_adjustment,
                 "trustAdjustment": trust_signal.ranking_adjustment,
+                "reinforcementAdjustment": reinforcement_adjustment,
             },
             "freshness": freshness,
             "trust": trust,
@@ -1424,6 +1422,8 @@ fn memory_candidate(
                 "memoryKind": kind,
                 "relatedPaths": trust["relatedPaths"].clone(),
                 "sourceItemIds": trust["sourceItemIds"].clone(),
+                "reinforcementCount": trust["reinforcementCount"].clone(),
+                "lastReinforcedAt": trust["lastReinforcedAt"].clone(),
             }
         }),
     }))
@@ -1803,12 +1803,12 @@ fn apply_backfill_job(
             else {
                 return Ok(BackfillOutcome::Skipped(json!({
                     "code": "agent_embedding_backfill_source_missing",
-                    "message": "The approved memory no longer exists.",
+                    "message": "The memory no longer exists.",
                     "freshnessState": JsonValue::Null
                 })));
             };
             let row = refresh_memory_backfill_freshness(repo_root, memory_store, row, now)?;
-            if row.review_state != AgentMemoryReviewState::Approved || !row.enabled {
+            if !row.enabled {
                 return Ok(BackfillOutcome::Skipped(backfill_memory_diagnostic(
                     &row,
                     "agent_embedding_backfill_source_not_approved",
@@ -1819,14 +1819,14 @@ fn apply_backfill_job(
                 return Ok(BackfillOutcome::Skipped(backfill_memory_diagnostic(
                     &row,
                     "agent_embedding_backfill_source_hash_mismatch",
-                    "The approved memory text changed after this embedding backfill job was queued.",
+                    "The memory text changed after this embedding backfill job was queued.",
                 )));
             }
             if backfill_should_skip_for_freshness(&row.freshness_state) {
                 return Ok(BackfillOutcome::Skipped(backfill_memory_diagnostic(
                     &row,
                     "agent_embedding_backfill_source_not_fresh",
-                    "The approved memory is not factually current, so Xero skipped embedding backfill.",
+                    "The memory is not factually current, so Xero skipped embedding backfill.",
                 )));
             }
             let embedding = embedding_with_service(default_embedding_service(), &row.text)?;
@@ -2401,6 +2401,16 @@ fn freshness_score_adjustment(freshness_state: &str) -> f64 {
         "superseded" => -0.30,
         _ => 0.0,
     }
+}
+
+fn memory_reinforcement_score_adjustment(reinforcement_count: u32) -> f64 {
+    let duplicate_observations = reinforcement_count.saturating_sub(1).min(5);
+    f64::from(duplicate_observations) * 0.03
+}
+
+fn memory_reinforcement_sources_json(row: &AgentMemoryRow) -> JsonValue {
+    serde_json::from_str(&row.reinforcement_sources_json)
+        .unwrap_or_else(|_| JsonValue::Array(Vec::new()))
 }
 
 fn retrieval_source_kind_label(source_kind: &AgentRetrievalResultSourceKind) -> &'static str {
@@ -3161,7 +3171,6 @@ mod tests {
 
         let memory_filter =
             memory_vector_filter_sql(&request, Some("session-a")).expect("memory vector filter");
-        assert!(memory_filter.contains("review_state = 'approved'"));
         assert!(memory_filter.contains("enabled = true"));
         assert!(memory_filter.contains("freshness_state IN ('current', 'source_unknown')"));
         assert!(memory_filter.contains("superseded_by_id IS NULL"));
@@ -3268,6 +3277,17 @@ mod tests {
         assert!(current.score > stale.score);
         assert!(stale.score > superseded.score);
         assert!(current.ranking_adjustment > stale.ranking_adjustment);
+    }
+
+    #[test]
+    fn s51_memory_reinforcement_boost_is_capped() {
+        assert_eq!(memory_reinforcement_score_adjustment(1), 0.0);
+        assert!(memory_reinforcement_score_adjustment(3) > 0.0);
+        assert_eq!(
+            memory_reinforcement_score_adjustment(6),
+            memory_reinforcement_score_adjustment(99)
+        );
+        assert!(memory_reinforcement_score_adjustment(99) <= 0.15);
     }
 
     #[test]

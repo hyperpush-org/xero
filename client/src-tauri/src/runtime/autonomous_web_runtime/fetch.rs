@@ -6,7 +6,7 @@ use super::{
         truncate_chars_with_flag,
     },
     is_success_status, normalize_bounded_usize, normalize_timeout_ms, parse_http_url,
-    transport::AutonomousWebTransportRequest,
+    transport::{AutonomousWebHttpMethod, AutonomousWebTransportRequest},
     AutonomousWebFetchContentKind, AutonomousWebFetchOutput, AutonomousWebFetchRequest,
     AutonomousWebRuntime,
 };
@@ -38,8 +38,10 @@ impl AutonomousWebRuntime {
         )?;
 
         let response = self.execute_transport(AutonomousWebTransportRequest {
+            method: AutonomousWebHttpMethod::Get,
             url: url.to_string(),
             headers: Vec::new(),
+            body: None,
             timeout_ms,
             max_response_bytes: self.config.limits.max_response_bytes,
         })?;

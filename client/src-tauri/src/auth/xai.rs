@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
     path::Path,
@@ -38,7 +37,6 @@ const DEFAULT_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
 const DEFAULT_DISCOVERY_URL: &str = "https://auth.x.ai/.well-known/openid-configuration";
 const DEFAULT_AUTHORIZE_URL: &str = "https://auth.x.ai/oauth2/authorize";
 const DEFAULT_TOKEN_URL: &str = "https://auth.x.ai/oauth2/token";
-const DEFAULT_DEVICE_AUTHORIZATION_URL: &str = "https://auth.x.ai/oauth2/device/code";
 const DEFAULT_SCOPE: &str = "openid profile email offline_access grok-cli:access api:access";
 const DEFAULT_CALLBACK_HOST: &str = "127.0.0.1";
 const DEFAULT_CALLBACK_PORT: u16 = 56121;
@@ -54,7 +52,6 @@ pub struct XaiAuthConfig {
     pub discovery_url: String,
     pub authorize_url: String,
     pub token_url: String,
-    pub device_authorization_url: String,
     pub callback_host: String,
     pub callback_port: u16,
     pub callback_path: String,
@@ -69,7 +66,6 @@ impl Default for XaiAuthConfig {
             discovery_url: DEFAULT_DISCOVERY_URL.into(),
             authorize_url: DEFAULT_AUTHORIZE_URL.into(),
             token_url: DEFAULT_TOKEN_URL.into(),
-            device_authorization_url: DEFAULT_DEVICE_AUTHORIZATION_URL.into(),
             callback_host: DEFAULT_CALLBACK_HOST.into(),
             callback_port: DEFAULT_CALLBACK_PORT,
             callback_path: DEFAULT_CALLBACK_PATH.into(),
@@ -103,14 +99,14 @@ impl XaiAuthConfig {
             return Err(AuthFlowError::terminal(
                 "xai_oauth_client_unconfigured",
                 phase,
-                "This Xero build does not include xAI OAuth sign-in. Use an xAI API key, or install a Xero build with xAI OAuth enabled.",
+                "This Xero build does not include xAI OAuth sign-in. Install a Xero build with xAI OAuth enabled.",
             ));
         }
         if looks_like_x_developer_portal_client_id(client_id) {
             return Err(AuthFlowError::terminal(
                 "xai_oauth_client_wrong_issuer",
                 phase,
-                "The configured xAI OAuth client id looks like an X Developer Portal OAuth client id. auth.x.ai does not accept ordinary X Developer Portal client ids; Xero needs an xAI-issued OAuth client id, or you can use an xAI API key.",
+                "The configured xAI OAuth client id looks like an X Developer Portal OAuth client id. auth.x.ai does not accept ordinary X Developer Portal client ids; Xero needs an xAI-issued OAuth client id.",
             ));
         }
         Ok(())
@@ -319,95 +315,6 @@ impl ActiveXaiFlow {
 
     pub(super) fn callback_path(&self) -> &str {
         &self.callback_path
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct XaiDeviceCodeLogin {
-    pub provider_id: String,
-    pub flow_id: String,
-    pub user_code: String,
-    pub verification_uri: String,
-    pub verification_uri_complete: Option<String>,
-    pub interval_seconds: u64,
-    pub expires_at: i64,
-    pub phase: RuntimeAuthPhase,
-    pub session_id: Option<String>,
-    pub account_id: Option<String>,
-    pub last_error_code: Option<String>,
-    pub last_error: Option<AuthDiagnostic>,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone)]
-struct XaiDeviceCodeFlow {
-    flow_id: String,
-    device_code: String,
-    user_code: String,
-    verification_uri: String,
-    verification_uri_complete: Option<String>,
-    interval_seconds: u64,
-    expires_at: i64,
-    phase: RuntimeAuthPhase,
-    session_id: Option<String>,
-    account_id: Option<String>,
-    last_error: Option<AuthDiagnostic>,
-    updated_at: String,
-}
-
-impl XaiDeviceCodeFlow {
-    fn snapshot(&self) -> XaiDeviceCodeLogin {
-        XaiDeviceCodeLogin {
-            provider_id: XAI_PROVIDER_ID.into(),
-            flow_id: self.flow_id.clone(),
-            user_code: self.user_code.clone(),
-            verification_uri: self.verification_uri.clone(),
-            verification_uri_complete: self.verification_uri_complete.clone(),
-            interval_seconds: self.interval_seconds,
-            expires_at: self.expires_at,
-            phase: self.phase.clone(),
-            session_id: self.session_id.clone(),
-            account_id: self.account_id.clone(),
-            last_error_code: self.last_error.as_ref().map(|error| error.code.clone()),
-            last_error: self.last_error.clone(),
-            updated_at: self.updated_at.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct XaiDeviceCodeFlowRegistry {
-    inner: Arc<Mutex<HashMap<String, XaiDeviceCodeFlow>>>,
-}
-
-impl XaiDeviceCodeFlowRegistry {
-    fn insert(&self, flow: XaiDeviceCodeFlow) {
-        self.inner
-            .lock()
-            .expect("xai device-code registry lock poisoned")
-            .insert(flow.flow_id.clone(), flow);
-    }
-
-    fn flow(&self, flow_id: &str) -> Option<XaiDeviceCodeFlow> {
-        self.inner
-            .lock()
-            .expect("xai device-code registry lock poisoned")
-            .get(flow_id)
-            .cloned()
-    }
-
-    fn update(
-        &self,
-        flow_id: &str,
-        operation: impl FnOnce(&mut XaiDeviceCodeFlow),
-    ) -> Option<XaiDeviceCodeLogin> {
-        let mut flows = self
-            .inner
-            .lock()
-            .expect("xai device-code registry lock poisoned");
-        let flow = flows.get_mut(flow_id)?;
-        operation(flow);
-        Some(flow.snapshot())
     }
 }
 
@@ -692,153 +599,6 @@ pub fn cancel_xai_flow(
         })
 }
 
-pub fn start_xai_device_code_flow(
-    state: &DesktopState,
-    config: XaiAuthConfig,
-) -> Result<XaiDeviceCodeLogin, AuthFlowError> {
-    config.require_client_id(RuntimeAuthPhase::Starting)?;
-    let endpoints = resolve_oauth_endpoints(&config, RuntimeAuthPhase::Starting)?;
-    let device_url = endpoints.device_authorization_url.ok_or_else(|| {
-        AuthFlowError::terminal(
-            "xai_device_code_unavailable",
-            RuntimeAuthPhase::Failed,
-            "xAI OAuth discovery did not expose a device-code endpoint. Use browser sign-in or an xAI API key.",
-        )
-    })?;
-    let client = config.http_client()?;
-    let response = client
-        .post(device_url)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .form(&[
-            ("client_id", config.client_id.as_str()),
-            ("scope", config.scope.as_str()),
-        ])
-        .send()
-        .map_err(|error| map_http_error(error, RuntimeAuthPhase::Starting, "device_code_start"))?;
-    let payload = parse_device_code_response(response)?;
-    let flow = XaiDeviceCodeFlow {
-        flow_id: random_hex(16)?,
-        device_code: payload.device_code,
-        user_code: payload.user_code,
-        verification_uri: payload.verification_uri,
-        verification_uri_complete: payload.verification_uri_complete,
-        interval_seconds: payload.interval.unwrap_or(5).max(1),
-        expires_at: current_unix_timestamp() + payload.expires_in.unwrap_or(900).max(1),
-        phase: RuntimeAuthPhase::AwaitingManualInput,
-        session_id: None,
-        account_id: None,
-        last_error: None,
-        updated_at: now_timestamp(),
-    };
-    let snapshot = flow.snapshot();
-    state.xai_device_code_flows().insert(flow);
-    Ok(snapshot)
-}
-
-pub fn poll_xai_device_code_flow<R: Runtime>(
-    app: &AppHandle<R>,
-    state: &DesktopState,
-    flow_id: &str,
-    config: &XaiAuthConfig,
-) -> Result<XaiDeviceCodeLogin, AuthFlowError> {
-    config.require_client_id(RuntimeAuthPhase::ExchangingCode)?;
-    let flow = state.xai_device_code_flows().flow(flow_id).ok_or_else(|| {
-        AuthFlowError::terminal(
-            "auth_flow_not_found",
-            RuntimeAuthPhase::Failed,
-            format!("Xero could not find the active xAI device-code flow `{flow_id}`."),
-        )
-    })?;
-
-    if flow.phase == RuntimeAuthPhase::Authenticated || flow.phase == RuntimeAuthPhase::Failed {
-        return Ok(flow.snapshot());
-    }
-    if current_unix_timestamp() >= flow.expires_at {
-        return state
-            .xai_device_code_flows()
-            .update(flow_id, |flow| {
-                flow.phase = RuntimeAuthPhase::Failed;
-                flow.last_error = Some(AuthDiagnostic {
-                    code: "device_code_expired".into(),
-                    message: "The xAI device-code login expired. Start a fresh device-code login."
-                        .into(),
-                    retryable: false,
-                });
-                flow.updated_at = now_timestamp();
-            })
-            .ok_or_else(|| {
-                AuthFlowError::terminal(
-                    "auth_flow_not_found",
-                    RuntimeAuthPhase::Failed,
-                    format!("Xero could not find the active xAI device-code flow `{flow_id}`."),
-                )
-            });
-    }
-
-    let endpoints = resolve_oauth_endpoints(config, RuntimeAuthPhase::ExchangingCode)?;
-    let token_result = poll_device_token(&flow.device_code, &endpoints, config)?;
-    match token_result {
-        DevicePollResult::Pending => Ok(state
-            .xai_device_code_flows()
-            .update(flow_id, |flow| {
-                flow.phase = RuntimeAuthPhase::AwaitingManualInput;
-                flow.last_error = None;
-                flow.updated_at = now_timestamp();
-            })
-            .unwrap_or_else(|| flow.snapshot())),
-        DevicePollResult::SlowDown => Ok(state
-            .xai_device_code_flows()
-            .update(flow_id, |flow| {
-                flow.phase = RuntimeAuthPhase::AwaitingManualInput;
-                flow.interval_seconds = flow.interval_seconds.saturating_add(5);
-                flow.last_error = Some(AuthDiagnostic {
-                    code: "device_code_slow_down".into(),
-                    message: "xAI asked Xero to slow device-code polling.".into(),
-                    retryable: true,
-                });
-                flow.updated_at = now_timestamp();
-            })
-            .unwrap_or_else(|| flow.snapshot())),
-        DevicePollResult::Failed(error) => Ok(state
-            .xai_device_code_flows()
-            .update(flow_id, |flow| {
-                flow.phase = RuntimeAuthPhase::Failed;
-                flow.last_error = Some(error);
-                flow.updated_at = now_timestamp();
-            })
-            .unwrap_or_else(|| flow.snapshot())),
-        DevicePollResult::Success(token_response) => {
-            let account_id = extract_xai_account_id(&token_response)?;
-            let session_id = random_hex(16)?;
-            let stored_session = StoredXaiSession {
-                provider_id: XAI_PROVIDER_ID.into(),
-                session_id: session_id.clone(),
-                account_id: account_id.clone(),
-                access_token: token_response.access_token,
-                refresh_token: token_response.refresh_token,
-                expires_at: token_response.expires_at,
-                updated_at: now_timestamp(),
-            };
-            persist_xai_session_path(
-                &state
-                    .global_db_path(app)
-                    .map_err(auth_flow_error_from_command_error)?,
-                &stored_session,
-            )?;
-            Ok(state
-                .xai_device_code_flows()
-                .update(flow_id, |flow| {
-                    flow.phase = RuntimeAuthPhase::Authenticated;
-                    flow.session_id = Some(session_id);
-                    flow.account_id = Some(account_id);
-                    flow.last_error = None;
-                    flow.updated_at = stored_session.updated_at.clone();
-                })
-                .unwrap_or_else(|| flow.snapshot()))
-        }
-    }
-}
-
 pub fn ensure_xai_profile_target<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
@@ -998,14 +758,12 @@ fn stored_xai_session_from_record(record: ProviderCredentialRecord) -> Option<St
 struct OAuthEndpoints {
     authorize_url: String,
     token_url: String,
-    device_authorization_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct DiscoveryDocument {
     authorization_endpoint: Option<String>,
     token_endpoint: Option<String>,
-    device_authorization_endpoint: Option<String>,
 }
 
 fn resolve_oauth_endpoints(
@@ -1028,12 +786,6 @@ fn resolve_oauth_endpoints(
         .as_ref()
         .and_then(|doc| doc.token_endpoint.clone())
         .unwrap_or_else(|| config.token_url.clone());
-    let device_authorization_url = discovered
-        .as_ref()
-        .and_then(|doc| doc.device_authorization_endpoint.clone())
-        .or_else(|| Some(config.device_authorization_url.clone()))
-        .filter(|value| !value.trim().is_empty());
-
     Url::parse(&authorize_url).map_err(|error| {
         AuthFlowError::terminal(
             "xai_authorize_url_invalid",
@@ -1052,7 +804,6 @@ fn resolve_oauth_endpoints(
     Ok(OAuthEndpoints {
         authorize_url,
         token_url,
-        device_authorization_url,
     })
 }
 
@@ -1219,128 +970,6 @@ fn parse_token_response(
         expires_at: current_unix_timestamp() + expires_in,
         id_token: payload.id_token,
     })
-}
-
-#[derive(Debug, Deserialize)]
-struct DeviceCodeResponse {
-    device_code: String,
-    user_code: String,
-    #[serde(alias = "verification_url")]
-    verification_uri: String,
-    verification_uri_complete: Option<String>,
-    expires_in: Option<i64>,
-    interval: Option<u64>,
-}
-
-fn parse_device_code_response(response: Response) -> Result<DeviceCodeResponse, AuthFlowError> {
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().unwrap_or_default();
-        return Err(AuthFlowError::new(
-            if status.is_server_error() {
-                "device_code_start_server_error"
-            } else {
-                "device_code_start_rejected"
-            },
-            RuntimeAuthPhase::Starting,
-            format!(
-                "xAI returned HTTP {} while starting device-code login.{}",
-                status.as_u16(),
-                if body.trim().is_empty() {
-                    String::new()
-                } else {
-                    format!(" Response: {}", body.trim())
-                }
-            ),
-            status.is_server_error(),
-        ));
-    }
-    response.json().map_err(|error| {
-        AuthFlowError::terminal(
-            "device_code_start_decode_failed",
-            RuntimeAuthPhase::Starting,
-            format!("Xero could not decode the xAI device-code response: {error}"),
-        )
-    })
-}
-
-#[derive(Debug, Deserialize)]
-struct OAuthErrorResponse {
-    error: Option<String>,
-    error_description: Option<String>,
-}
-
-enum DevicePollResult {
-    Pending,
-    SlowDown,
-    Failed(AuthDiagnostic),
-    Success(TokenSuccess),
-}
-
-fn poll_device_token(
-    device_code: &str,
-    endpoints: &OAuthEndpoints,
-    config: &XaiAuthConfig,
-) -> Result<DevicePollResult, AuthFlowError> {
-    let client = config.http_client()?;
-    let response = client
-        .post(&endpoints.token_url)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .form(&[
-            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-            ("device_code", device_code),
-            ("client_id", config.client_id.as_str()),
-        ])
-        .send()
-        .map_err(|error| {
-            map_http_error(error, RuntimeAuthPhase::ExchangingCode, "device_code_poll")
-        })?;
-    if response.status().is_success() {
-        return parse_token_response(
-            response,
-            RuntimeAuthPhase::ExchangingCode,
-            "device_code_poll",
-        )
-        .map(DevicePollResult::Success);
-    }
-
-    let status = response.status();
-    let text = response.text().unwrap_or_default();
-    let parsed = serde_json::from_str::<OAuthErrorResponse>(&text).ok();
-    let error_code = parsed
-        .as_ref()
-        .and_then(|error| error.error.as_deref())
-        .unwrap_or_default();
-    match error_code {
-        "authorization_pending" => Ok(DevicePollResult::Pending),
-        "slow_down" => Ok(DevicePollResult::SlowDown),
-        "expired_token" => Ok(DevicePollResult::Failed(AuthDiagnostic {
-            code: "device_code_expired".into(),
-            message: "The xAI device-code login expired. Start a fresh device-code login.".into(),
-            retryable: false,
-        })),
-        _ => Ok(DevicePollResult::Failed(AuthDiagnostic {
-            code: format!("device_code_poll_http_{}", status.as_u16()),
-            message: parsed
-                .and_then(|error| error.error_description)
-                .filter(|message| !message.trim().is_empty())
-                .unwrap_or_else(|| {
-                    if text.trim().is_empty() {
-                        format!(
-                            "xAI returned HTTP {} during device-code polling.",
-                            status.as_u16()
-                        )
-                    } else {
-                        format!(
-                            "xAI returned HTTP {} during device-code polling: {}",
-                            status.as_u16(),
-                            text.trim()
-                        )
-                    }
-                }),
-            retryable: status.is_server_error(),
-        })),
-    }
 }
 
 fn extract_xai_account_id(token_response: &TokenSuccess) -> Result<String, AuthFlowError> {
@@ -1848,10 +1477,6 @@ mod tests {
         );
         assert_eq!(config.authorize_url, "https://auth.x.ai/oauth2/authorize");
         assert_eq!(config.token_url, "https://auth.x.ai/oauth2/token");
-        assert_eq!(
-            config.device_authorization_url,
-            "https://auth.x.ai/oauth2/device/code"
-        );
         assert!(config.scope.contains("openid"));
         assert!(config.scope.contains("offline_access"));
         assert!(config.scope.contains("email"));

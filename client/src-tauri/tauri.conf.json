@@ -28,7 +28,7 @@
       }
     ],
     "security": {
-      "capabilities": ["default"],
+      "capabilities": ["default", "browser-webview"],
       "csp": {
         "default-src": ["'self'"],
         "script-src": ["'self'"],
@@ -90,6 +90,7 @@
       "resources/scrcpy-server-v2.7.jar",
       "resources/solana-toolchain/**/*",
       "resources/xero-ios-helper",
+      "resources/xero-cursor-sidecar*",
       "resources/xero-desktop-sidecar*"
     ]
   }

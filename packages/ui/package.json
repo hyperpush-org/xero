@@ -23,6 +23,7 @@
     "./components/transcript/*": "./src/components/transcript/*.tsx",
     "./components/composer": "./src/components/composer/index.ts",
     "./components/composer/*": "./src/components/composer/*.tsx",
+    "./components/model-thinking-select": "./src/components/model-thinking-select.tsx",
     "./components/cloud-account-card": "./src/components/cloud-account-card.tsx",
     "./components/computer-use-sidebar": "./src/components/computer-use-sidebar.tsx",
     "./components/resizable-sidebar": "./src/components/resizable-sidebar.tsx",

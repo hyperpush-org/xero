@@ -1,9 +1,10 @@
-use std::{collections::BTreeSet, path::Path};
+use std::{collections::BTreeSet, fs, path::Path};
 
 use rand::RngCore;
 use rusqlite::{params, Connection, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
+use sha2::{Digest, Sha256};
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 
 use crate::{
@@ -98,6 +99,8 @@ pub struct AgentFileReservationRecord {
     pub owner_trace_id: String,
     pub note: Option<String>,
     pub override_reason: Option<String>,
+    pub observed_hash: Option<String>,
+    pub observed_at: Option<String>,
     pub claimed_at: String,
     pub last_heartbeat_at: String,
     pub expires_at: String,
@@ -489,6 +492,8 @@ pub fn list_active_agent_file_reservations(
                 owner_trace_id,
                 note,
                 override_reason,
+                observed_hash,
+                observed_at,
                 claimed_at,
                 last_heartbeat_at,
                 expires_at,
@@ -727,6 +732,8 @@ pub fn claim_agent_file_reservations(
     let mut claimed = Vec::with_capacity(paths.len());
     for path in paths {
         let reservation_id = generate_reservation_id();
+        let observed_hash = reservation_observed_hash(repo_root, &path)?;
+        let observed_at = observed_hash.as_ref().map(|_| request.claimed_at.as_str());
         let inserted = connection
             .execute(
                 r#"
@@ -744,6 +751,8 @@ pub fn claim_agent_file_reservations(
                     owner_trace_id,
                     note,
                     override_reason,
+                    observed_hash,
+                    observed_at,
                     claimed_at,
                     last_heartbeat_at,
                     expires_at
@@ -767,20 +776,24 @@ pub fn claim_agent_file_reservations(
                     ?6,
                     ?7,
                     ?8,
-                    ?8,
-                    ?9
+                    ?9,
+                    ?10,
+                    ?10,
+                    ?11
                 FROM agent_runs
                 WHERE agent_runs.project_id = ?2
-                  AND agent_runs.run_id = ?10
+                  AND agent_runs.run_id = ?12
                 "#,
                 params![
                     reservation_id,
                     request.project_id,
-                    path,
+                    path.as_str(),
                     "path",
                     request.operation.as_str(),
                     request.note.as_deref(),
                     request.override_reason.as_deref(),
+                    observed_hash.as_deref(),
+                    observed_at,
                     request.claimed_at,
                     expires_at,
                     request.owner_run_id,
@@ -1065,6 +1078,8 @@ pub fn list_agent_file_reservations_for_run(
                 owner_trace_id,
                 note,
                 override_reason,
+                observed_hash,
+                observed_at,
                 claimed_at,
                 last_heartbeat_at,
                 expires_at,
@@ -1396,6 +1411,40 @@ fn normalize_reservation_path(path: &str) -> CommandResult<String> {
     Ok(parts.join("/"))
 }
 
+fn reservation_observed_hash(repo_root: &Path, path: &str) -> CommandResult<Option<String>> {
+    let candidate = repo_root.join(path);
+    let metadata = match fs::symlink_metadata(&candidate) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(CommandError::retryable(
+                "agent_file_reservation_observed_hash_stat_failed",
+                format!(
+                    "Xero could not inspect reservation path {}: {error}",
+                    candidate.display()
+                ),
+            ));
+        }
+    };
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Ok(None);
+    }
+    let bytes = fs::read(&candidate).map_err(|error| {
+        CommandError::retryable(
+            "agent_file_reservation_observed_hash_read_failed",
+            format!(
+                "Xero could not hash reservation path {}: {error}",
+                candidate.display()
+            ),
+        )
+    })?;
+    Ok(Some(sha256_hex(&bytes)))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
 fn history_reservation_invalidation_reason(
     operation_id: &str,
     matching_paths: &[String],
@@ -1443,6 +1492,8 @@ fn reservations_for_owner(
                 owner_trace_id,
                 note,
                 override_reason,
+                observed_hash,
+                observed_at,
                 claimed_at,
                 last_heartbeat_at,
                 expires_at,
@@ -1584,6 +1635,8 @@ fn read_reservation(
                 owner_trace_id,
                 note,
                 override_reason,
+                observed_hash,
+                observed_at,
                 claimed_at,
                 last_heartbeat_at,
                 expires_at,
@@ -1665,14 +1718,16 @@ fn read_reservation_row(row: &Row<'_>) -> rusqlite::Result<AgentFileReservationR
         owner_trace_id: row.get(10)?,
         note: row.get(11)?,
         override_reason: row.get(12)?,
-        claimed_at: row.get(13)?,
-        last_heartbeat_at: row.get(14)?,
-        expires_at: row.get(15)?,
-        released_at: row.get(16)?,
-        release_reason: row.get(17)?,
-        invalidated_at: row.get(18)?,
-        invalidation_reason: row.get(19)?,
-        invalidating_history_operation_id: row.get(20)?,
+        observed_hash: row.get(13)?,
+        observed_at: row.get(14)?,
+        claimed_at: row.get(15)?,
+        last_heartbeat_at: row.get(16)?,
+        expires_at: row.get(17)?,
+        released_at: row.get(18)?,
+        release_reason: row.get(19)?,
+        invalidated_at: row.get(20)?,
+        invalidation_reason: row.get(21)?,
+        invalidating_history_operation_id: row.get(22)?,
     })
 }
 

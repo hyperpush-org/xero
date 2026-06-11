@@ -33,6 +33,8 @@ pub async fn get_project_load_bundle<R: Runtime + 'static>(
         "project-load-bundle",
         "project load bundle",
         move |cancellation| {
+            let _perf = crate::perf::PerfSpan::new("project_load_bundle")
+                .field("projectId", request.project_id.clone());
             cancellation.check_cancelled("project load bundle")?;
             get_project_load_bundle_blocking(app, state, request)
         },

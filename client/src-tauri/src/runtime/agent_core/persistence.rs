@@ -1,5 +1,8 @@
 use super::*;
-use crate::runtime::{AutonomousFsTransactionRequest, AutonomousSubagentWriteScope};
+use crate::runtime::{
+    autonomous_tool_runtime::AutonomousSensitiveInputOutput, AutonomousFsTransactionRequest,
+    AutonomousSubagentWriteScope,
+};
 use std::{
     collections::{BTreeSet, HashMap},
     path::PathBuf,
@@ -1830,7 +1833,6 @@ pub(crate) fn capture_memory_candidates_for_run(
         project_store::AgentMemoryListFilter {
             agent_session_id: Some(&snapshot.run.agent_session_id),
             include_disabled: true,
-            include_rejected: false,
         },
     )?;
     let request = ProviderMemoryExtractionRequest {
@@ -1878,11 +1880,9 @@ pub(crate) fn capture_memory_candidates_for_run(
         }
     };
 
-    let mut candidate_count = 0_usize;
-    let mut promoted_count = 0_usize;
-    let mut rejected_count = 0_usize;
-    let mut kept_candidate_count = 0_usize;
-    let mut skipped_duplicate_count = 0_usize;
+    let mut created_count = 0_usize;
+    let mut skipped_count = 0_usize;
+    let mut reinforced_duplicate_count = 0_usize;
     let mut diagnostics = Vec::new();
     let now = now_timestamp();
     for candidate in outcome
@@ -1900,61 +1900,37 @@ pub(crate) fn capture_memory_candidates_for_run(
         ) {
             Ok(prepared) => {
                 let text_hash = project_store::agent_memory_text_hash(&prepared.record.text);
-                if project_store::find_active_agent_memory_by_hash(
+                if let Some(existing) = project_store::find_active_agent_memory_by_hash(
                     repo_root,
                     &snapshot.run.project_id,
                     &prepared.record.scope,
                     prepared.record.agent_session_id.as_deref(),
                     &prepared.record.kind,
                     &text_hash,
-                )?
-                .is_some()
-                {
-                    skipped_duplicate_count = skipped_duplicate_count.saturating_add(1);
+                )? {
+                    project_store::reinforce_agent_memory(
+                        repo_root,
+                        &snapshot.run.project_id,
+                        &existing.memory_id,
+                        prepared.record.source_run_id.as_deref(),
+                        &prepared.record.source_item_ids,
+                        now.as_str(),
+                    )?;
+                    reinforced_duplicate_count = reinforced_duplicate_count.saturating_add(1);
                     continue;
                 }
-                let inserted = project_store::insert_agent_memory(repo_root, &prepared.record)?;
-                candidate_count = candidate_count.saturating_add(1);
-                let decision = automated_memory_promotion_gate(&inserted, &prepared, &policy);
+                let decision = automated_memory_promotion_gate(&prepared, &policy);
                 match decision.outcome {
                     AutomatedMemoryPromotionOutcome::Promote => {
-                        project_store::update_agent_memory(
-                            repo_root,
-                            &project_store::AgentMemoryUpdateRecord {
-                                project_id: snapshot.run.project_id.clone(),
-                                memory_id: inserted.memory_id,
-                                review_state: Some(project_store::AgentMemoryReviewState::Approved),
-                                enabled: Some(true),
-                                diagnostic: Some(decision.diagnostic),
-                            },
-                        )?;
-                        promoted_count = promoted_count.saturating_add(1);
+                        let mut record = prepared.record;
+                        record.enabled = true;
+                        record.diagnostic = Some(decision.diagnostic);
+                        project_store::insert_agent_memory(repo_root, &record)?;
+                        created_count = created_count.saturating_add(1);
                     }
-                    AutomatedMemoryPromotionOutcome::Reject => {
-                        project_store::update_agent_memory(
-                            repo_root,
-                            &project_store::AgentMemoryUpdateRecord {
-                                project_id: snapshot.run.project_id.clone(),
-                                memory_id: inserted.memory_id,
-                                review_state: Some(project_store::AgentMemoryReviewState::Rejected),
-                                enabled: Some(false),
-                                diagnostic: Some(decision.diagnostic),
-                            },
-                        )?;
-                        rejected_count = rejected_count.saturating_add(1);
-                    }
-                    AutomatedMemoryPromotionOutcome::KeepCandidate => {
-                        project_store::update_agent_memory(
-                            repo_root,
-                            &project_store::AgentMemoryUpdateRecord {
-                                project_id: snapshot.run.project_id.clone(),
-                                memory_id: inserted.memory_id,
-                                review_state: None,
-                                enabled: Some(false),
-                                diagnostic: Some(decision.diagnostic),
-                            },
-                        )?;
-                        kept_candidate_count = kept_candidate_count.saturating_add(1);
+                    AutomatedMemoryPromotionOutcome::Skip => {
+                        skipped_count = skipped_count.saturating_add(1);
+                        diagnostics.push(decision.diagnostic);
                     }
                 }
             }
@@ -1971,13 +1947,10 @@ pub(crate) fn capture_memory_candidates_for_run(
             "label": "memory_extraction",
             "outcome": "passed",
             "trigger": trigger,
-            "candidateCount": candidate_count,
-            "createdCount": candidate_count,
-            "promotedCount": promoted_count,
-            "rejectedCount": rejected_count,
-            "keptCandidateCount": kept_candidate_count,
-            "skippedDuplicateCount": skipped_duplicate_count,
-            "preInsertRejectedCount": diagnostics.len(),
+            "createdCount": created_count,
+            "skippedCount": skipped_count,
+            "reinforcedDuplicateCount": reinforced_duplicate_count,
+            "diagnosticCount": diagnostics.len(),
             "promotionGate": AUTOMATED_MEMORY_PROMOTION_GATE,
             "promotionGateVersion": AUTOMATED_MEMORY_PROMOTION_GATE_VERSION,
         }),
@@ -1987,8 +1960,8 @@ pub(crate) fn capture_memory_candidates_for_run(
             repo_root,
             snapshot,
             trigger,
-            candidate_count,
-            skipped_duplicate_count,
+            created_count,
+            reinforced_duplicate_count,
             &diagnostics,
         )?;
     }
@@ -2265,8 +2238,7 @@ struct RuntimeMemoryExtractionPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AutomatedMemoryPromotionOutcome {
     Promote,
-    Reject,
-    KeepCandidate,
+    Skip,
 }
 
 #[derive(Debug, Clone)]
@@ -2428,24 +2400,11 @@ fn prepare_automatic_memory_candidate(
             scope,
             kind,
             text,
-            review_state: project_store::AgentMemoryReviewState::Candidate,
-            enabled: false,
+            enabled: true,
             confidence: Some(confidence),
             source_run_id: Some(source.source_run_id.clone()),
             source_item_ids: provenance.source_item_ids,
-            diagnostic: Some(memory_promotion_gate_diagnostic(
-                "memory_promotion_gate_candidate_prepared",
-                MemoryPromotionGateDiagnosticInput {
-                    decision: "kept_candidate",
-                    trigger: &policy.trigger,
-                    policy,
-                    confidence,
-                    provenance_quality: provenance.provenance_quality,
-                    source_item_fallback: provenance.source_item_fallback,
-                    evidence_snippets: &provenance.evidence_snippets,
-                    message: "Candidate persisted for automated promotion-gate evaluation.",
-                },
-            )),
+            diagnostic: None,
             created_at: created_at.into(),
         },
         confidence,
@@ -2493,19 +2452,19 @@ impl RuntimeMemoryExtractionPolicy {
 }
 
 fn automated_memory_promotion_gate(
-    memory: &project_store::AgentMemoryRecord,
     prepared: &PreparedAutomaticMemoryCandidate,
     policy: &RuntimeMemoryExtractionPolicy,
 ) -> AutomatedMemoryPromotionDecision {
+    let memory = &prepared.record;
     let threshold = memory_kind_confidence_threshold(&memory.kind);
     if prepared.confidence < threshold || prepared.confidence < MIN_AUTOMATIC_MEMORY_CONFIDENCE {
         return memory_promotion_decision(
-            AutomatedMemoryPromotionOutcome::Reject,
+            AutomatedMemoryPromotionOutcome::Skip,
             "memory_promotion_gate_low_confidence",
             prepared,
             policy,
             format!(
-                "Automated memory promotion rejected `{}` because confidence {} is below the `{}` threshold {}.",
+                "Automated memory promotion skipped `{}` because confidence {} is below the `{}` threshold {}.",
                 memory.memory_id,
                 prepared.confidence,
                 agent_memory_kind_policy_label(&memory.kind),
@@ -2515,19 +2474,19 @@ fn automated_memory_promotion_gate(
     }
     if prepared.provenance_quality == "fallback_source" {
         return memory_promotion_decision(
-            AutomatedMemoryPromotionOutcome::KeepCandidate,
+            AutomatedMemoryPromotionOutcome::Skip,
             "memory_promotion_gate_low_provenance",
             prepared,
             policy,
             format!(
-                "Automated memory promotion kept `{}` inactive because the provider did not cite a source item with enough overlap.",
+                "Automated memory promotion skipped `{}` because the provider did not cite a source item with enough overlap.",
                 memory.memory_id
             ),
         );
     }
     if let Some(reason) = memory_kind_quality_rejection_reason(memory, prepared) {
         return memory_promotion_decision(
-            AutomatedMemoryPromotionOutcome::Reject,
+            AutomatedMemoryPromotionOutcome::Skip,
             reason.0,
             prepared,
             policy,
@@ -2557,8 +2516,7 @@ fn memory_promotion_decision(
 ) -> AutomatedMemoryPromotionDecision {
     let decision = match outcome {
         AutomatedMemoryPromotionOutcome::Promote => "promoted",
-        AutomatedMemoryPromotionOutcome::Reject => "rejected",
-        AutomatedMemoryPromotionOutcome::KeepCandidate => "kept_candidate",
+        AutomatedMemoryPromotionOutcome::Skip => "skipped",
     };
     AutomatedMemoryPromotionDecision {
         outcome,
@@ -2830,7 +2788,7 @@ fn memory_kind_confidence_threshold(kind: &project_store::AgentMemoryKind) -> u8
 }
 
 fn memory_kind_quality_rejection_reason(
-    memory: &project_store::AgentMemoryRecord,
+    memory: &project_store::NewAgentMemoryRecord,
     prepared: &PreparedAutomaticMemoryCandidate,
 ) -> Option<(&'static str, String)> {
     match memory.kind {
@@ -2839,7 +2797,7 @@ fn memory_kind_quality_rejection_reason(
                 return Some((
                     "memory_promotion_gate_decision_source_missing",
                     format!(
-                        "Automated memory promotion rejected `{}` because decision memory requires decision-source evidence.",
+                        "Automated memory promotion skipped `{}` because decision memory requires decision-source evidence.",
                         memory.memory_id
                     ),
                 ));
@@ -2854,7 +2812,7 @@ fn memory_kind_quality_rejection_reason(
                 return Some((
                     "memory_promotion_gate_troubleshooting_incomplete",
                     format!(
-                        "Automated memory promotion rejected `{}` because troubleshooting memory requires symptom, fix, or failed-attempt evidence.",
+                        "Automated memory promotion skipped `{}` because troubleshooting memory requires symptom, fix, or failed-attempt evidence.",
                         memory.memory_id
                     ),
                 ));
@@ -2865,7 +2823,7 @@ fn memory_kind_quality_rejection_reason(
                 return Some((
                     "memory_promotion_gate_session_summary_scope_invalid",
                     format!(
-                        "Automated memory promotion rejected `{}` because session summaries must remain session-scoped.",
+                        "Automated memory promotion skipped `{}` because session summaries must remain session-scoped.",
                         memory.memory_id
                     ),
                 ));
@@ -2878,7 +2836,7 @@ fn memory_kind_quality_rejection_reason(
 }
 
 fn evidence_or_text_contains(
-    memory: &project_store::AgentMemoryRecord,
+    memory: &project_store::NewAgentMemoryRecord,
     prepared: &PreparedAutomaticMemoryCandidate,
     needles: &[&str],
 ) -> bool {
@@ -2900,7 +2858,7 @@ fn record_memory_extraction_diagnostics(
     snapshot: &AgentRunSnapshotRecord,
     trigger: &str,
     created_count: usize,
-    skipped_duplicate_count: usize,
+    reinforced_duplicate_count: usize,
     diagnostics: &[project_store::AgentRunDiagnosticRecord],
 ) -> CommandResult<()> {
     if diagnostics.is_empty() {
@@ -2918,7 +2876,7 @@ fn record_memory_extraction_diagnostics(
             record_kind: project_store::ProjectRecordKind::Diagnostic,
             title: "Memory extraction diagnostics".into(),
             summary: format!(
-                "{} candidate{} rejected during {trigger} extraction.",
+                "{} memory item{} skipped during {trigger} extraction.",
                 diagnostics.len(),
                 if diagnostics.len() == 1 { "" } else { "s" }
             ),
@@ -2927,8 +2885,8 @@ fn record_memory_extraction_diagnostics(
                 "schema": "xero.memory_extraction.diagnostics.v1",
                 "trigger": trigger,
                 "createdCount": created_count,
-                "skippedDuplicateCount": skipped_duplicate_count,
-                "rejectedCount": diagnostics.len(),
+                "reinforcedDuplicateCount": reinforced_duplicate_count,
+                "skippedCount": diagnostics.len(),
                 "diagnostics": diagnostics.iter().map(|diagnostic| json!({
                     "code": diagnostic.code,
                     "message": diagnostic.message,
@@ -3895,10 +3853,74 @@ pub(crate) fn record_command_output_event(
                 record_desktop_action_required(repo_root, project_id, run_id, output)?;
             }
         }
+        AutonomousToolOutput::SensitiveInput(output) => {
+            let created_at = now_timestamp();
+            if output.status == "approved" {
+                return Ok(());
+            }
+            let approval = project_store::upsert_pending_operator_approval_with_action_id(
+                repo_root,
+                project_id,
+                run_id,
+                None,
+                "sensitive_input_request",
+                &output.action_id,
+                "Sensitive input requested",
+                &output.purpose,
+                &created_at,
+            )?;
+            record_action_request(
+                repo_root,
+                project_id,
+                run_id,
+                &approval.action_id,
+                "sensitive_input_request",
+                "Sensitive input requested",
+                &output.purpose,
+            )?;
+            append_event(
+                repo_root,
+                project_id,
+                run_id,
+                AgentRunEventKind::ActionRequired,
+                json!({
+                    "actionId": approval.action_id,
+                    "actionType": "sensitive_input_request",
+                    "answerShape": "sensitive_fields",
+                    "title": "Sensitive input requested",
+                    "detail": output.purpose,
+                    "purpose": output.purpose,
+                    "intendedUse": output.intended_use,
+                    "allowPartial": output.allow_partial,
+                    "sensitiveFields": sensitive_input_field_metadata(output),
+                    "redacted": true,
+                }),
+            )?;
+        }
         _ => {}
     }
 
     Ok(())
+}
+
+fn sensitive_input_field_metadata(output: &AutonomousSensitiveInputOutput) -> Vec<JsonValue> {
+    output
+        .fields
+        .iter()
+        .map(|field| {
+            let mut metadata = JsonMap::new();
+            metadata.insert("key".into(), json!(field.key));
+            metadata.insert("label".into(), json!(field.label));
+            metadata.insert("required".into(), json!(field.required));
+            if let Some(description) = &field.description {
+                metadata.insert("description".into(), json!(description));
+            }
+            if let Some(validation_hint) = &field.validation_hint {
+                metadata.insert("validationHint".into(), json!(validation_hint));
+            }
+            JsonValue::Object(metadata)
+        })
+        .collect()
 }
 
 pub(crate) fn record_command_output_chunk_event(
@@ -4058,7 +4080,7 @@ fn record_command_action_required(
     reason: &str,
     code: &str,
 ) -> CommandResult<()> {
-    record_action_request(
+    let action = record_action_request(
         repo_root,
         project_id,
         run_id,
@@ -4073,10 +4095,15 @@ fn record_command_action_required(
         run_id,
         AgentRunEventKind::ActionRequired,
         json!({
+            "actionId": action.action_id,
+            "actionType": action.action_type,
+            "title": action.title,
+            "detail": action.detail,
             "reason": reason,
             "code": code,
             "toolName": tool_name,
             "argv": argv,
+            "answerShape": "plain_text",
         }),
     )?;
     Ok(())
@@ -4090,7 +4117,7 @@ pub(crate) fn record_action_request(
     action_type: &str,
     title: &str,
     detail: &str,
-) -> CommandResult<()> {
+) -> CommandResult<project_store::AgentActionRequestRecord> {
     project_store::append_agent_action_request(
         repo_root,
         &NewAgentActionRequestRecord {
@@ -4102,8 +4129,7 @@ pub(crate) fn record_action_request(
             detail: detail.into(),
             created_at: now_timestamp(),
         },
-    )?;
-    Ok(())
+    )
 }
 
 pub(crate) fn sanitize_action_id(value: &str) -> String {
@@ -4260,7 +4286,7 @@ impl AgentWorkspaceGuard {
                         "agent_file_write_requires_observation",
                         CommandErrorClass::PolicyDenied,
                         format!(
-                            "Xero refused to modify `{path_key}` because the owned agent has not read this existing file during the run."
+                            "Xero refused to modify `{path_key}` because the owned agent has not read or hashed this existing file during the run. Read or hash the current file evidence, then retry with the current expected hash."
                         ),
                         false,
                     ));
@@ -4273,12 +4299,12 @@ impl AgentWorkspaceGuard {
                         old_hash: Some(current_hash.clone()),
                     });
                 }
-                (Some(_), Some(observed_hash)) => {
+                (Some(current_hash), Some(observed_hash)) => {
                     return Err(CommandError::new(
                         "agent_file_changed_since_observed",
                         CommandErrorClass::PolicyDenied,
                         format!(
-                            "Xero refused to modify `{path_key}` because the file changed after the owned agent last observed it (last observed hash: {}).",
+                            "Xero refused to modify `{path_key}` because the file changed after the owned agent last observed it (last observed hash: {}, current hash: {current_hash}). Re-read or re-hash the current file evidence before retrying.",
                             observed_hash.as_deref().unwrap_or("absent")
                         ),
                         false,
@@ -4330,6 +4356,15 @@ impl AgentWorkspaceGuard {
                 self.record_code_workspace_epoch(workspace_epoch);
             }
         }
+        if let AutonomousToolOutput::Command(output) = output {
+            if output.changed_files_truncated {
+                self.observed_hashes.clear();
+            } else {
+                for entry in &output.changed_files {
+                    self.invalidate_path_observation(&entry.path);
+                }
+            }
+        }
         for path in observed_paths_from_output(output) {
             self.record_path_observation(repo_root, &path)?;
         }
@@ -4346,6 +4381,14 @@ impl AgentWorkspaceGuard {
         let hash = file_hash_if_present(repo_root, &path_key)?;
         self.observed_hashes.insert(path_key, hash);
         Ok(())
+    }
+
+    fn invalidate_path_observation(&mut self, path: &str) {
+        let Some(path_key) = relative_path_key(path) else {
+            return;
+        };
+        self.observed_hashes
+            .retain(|observed_path, _| !paths_overlap(observed_path, &path_key));
     }
 
     fn record_persisted_output_observation(
@@ -4396,6 +4439,18 @@ impl AgentWorkspaceGuard {
                     }
                 }
             }
+            AutonomousToolOutput::NotebookEdit(output) => {
+                self.record_persisted_path_hash(output.path.as_str(), Some(&output.new_hash));
+            }
+            AutonomousToolOutput::Command(output) => {
+                if output.changed_files_truncated {
+                    self.observed_hashes.clear();
+                } else {
+                    for entry in &output.changed_files {
+                        self.invalidate_path_observation(&entry.path);
+                    }
+                }
+            }
             AutonomousToolOutput::AgentCoordination(output) => {
                 if let Some(workspace_epoch) = output.code_workspace_epoch {
                     self.record_code_workspace_epoch(workspace_epoch);
@@ -4420,6 +4475,10 @@ fn path_is_inside_subagent_write_set(path: &str, owned: &str) -> bool {
         || path
             .strip_prefix(owned)
             .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn paths_overlap(left: &str, right: &str) -> bool {
+    path_is_inside_subagent_write_set(left, right) || path_is_inside_subagent_write_set(right, left)
 }
 
 fn planned_file_change_paths(request: &AutonomousToolRequest) -> Vec<&str> {
@@ -4698,11 +4757,16 @@ mod tests {
     use crate::db::project_store::{
         AgentEventRecord, AgentFileChangeRecord, AgentRunRecord, AgentToolCallRecord,
     };
-    use crate::runtime::{
-        AutonomousAgentCoordinationAction, AutonomousAgentCoordinationOutput, AutonomousLineEnding,
-        AutonomousPatchOperation, AutonomousPatchRequest, AutonomousReadContentKind,
-        AutonomousReadOutput, AutonomousSearchMatch, AutonomousSearchOmissions,
-        AutonomousSearchOutput, AutonomousStatKind, FakeProviderAdapter,
+    use crate::{
+        commands::{RepositoryStatusEntryDto, RuntimeRunApprovalModeDto},
+        runtime::{
+            AutonomousAgentCoordinationAction, AutonomousAgentCoordinationOutput,
+            AutonomousCommandOutput, AutonomousCommandPolicyOutcome,
+            AutonomousCommandPolicyProfile, AutonomousCommandPolicyTrace, AutonomousLineEnding,
+            AutonomousPatchOperation, AutonomousPatchRequest, AutonomousReadContentKind,
+            AutonomousReadOutput, AutonomousSearchMatch, AutonomousSearchOmissions,
+            AutonomousSearchOutput, AutonomousStatKind, FakeProviderAdapter,
+        },
     };
     use crate::{db, git::repository::CanonicalRepository, state::DesktopState};
     use tempfile::tempdir;
@@ -4998,7 +5062,6 @@ mod tests {
                 project_store::AgentMemoryListFilter {
                     agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID),
                     include_disabled: true,
-                    include_rejected: true,
                 },
             )
             .expect("list memories");
@@ -5008,10 +5071,6 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(enabled.len(), 1, "{trigger}: {memories:?}");
             let memory = enabled[0];
-            assert_eq!(
-                memory.review_state,
-                project_store::AgentMemoryReviewState::Approved
-            );
             let diagnostic = memory.diagnostic.as_ref().expect("gate diagnostic");
             assert_eq!(diagnostic.code, "memory_promotion_gate_promoted");
             assert!(diagnostic
@@ -5027,7 +5086,7 @@ mod tests {
     }
 
     #[test]
-    fn automatic_memory_extraction_keeps_low_confidence_memory_disabled_after_gate() {
+    fn automatic_memory_extraction_skips_low_confidence_memory_before_storage() {
         let _guard = PROJECT_DB_LOCK.lock().expect("project db lock");
         project_store::agent_memory_lance::reset_connection_cache_for_tests();
         let project_id = "project-memory-gate-low-confidence";
@@ -5051,25 +5110,10 @@ mod tests {
             project_store::AgentMemoryListFilter {
                 agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID),
                 include_disabled: true,
-                include_rejected: true,
             },
         )
         .expect("list memories");
-        assert_eq!(memories.len(), 1, "{memories:?}");
-        let memory = &memories[0];
-        assert!(!memory.enabled);
-        assert_eq!(
-            memory.review_state,
-            project_store::AgentMemoryReviewState::Rejected
-        );
-        assert_eq!(
-            memory
-                .diagnostic
-                .as_ref()
-                .map(|diagnostic| diagnostic.code.as_str()),
-            Some("memory_promotion_gate_low_confidence")
-        );
-        assert!(!project_store::is_retrievable_agent_memory(memory));
+        assert!(memories.is_empty(), "{memories:?}");
     }
 
     #[test]
@@ -5496,6 +5540,77 @@ Repository map captured.
     }
 
     #[test]
+    fn command_changed_files_invalidate_observed_hashes() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        fs::create_dir_all(root.join("src")).expect("src");
+        fs::write(root.join("src/lib.rs"), "fn before() {}\n").expect("source");
+
+        let mut guard = AgentWorkspaceGuard::default();
+        guard
+            .record_path_observation(root, "src/lib.rs")
+            .expect("record observation");
+        guard
+            .record_tool_output(
+                root,
+                &AutonomousToolOutput::Command(AutonomousCommandOutput {
+                    argv: vec![
+                        "sh".into(),
+                        "-c".into(),
+                        "printf changed > src/lib.rs".into(),
+                    ],
+                    cwd: ".".into(),
+                    intent: "simulate command mutation".into(),
+                    stdout: Some(String::new()),
+                    stderr: Some(String::new()),
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                    stdout_redacted: false,
+                    stderr_redacted: false,
+                    exit_code: Some(0),
+                    timed_out: false,
+                    spawned: false,
+                    preview_token: None,
+                    policy: AutonomousCommandPolicyTrace {
+                        outcome: AutonomousCommandPolicyOutcome::Allowed,
+                        approval_mode: RuntimeRunApprovalModeDto::Suggest,
+                        profile: AutonomousCommandPolicyProfile::GeneralExecution,
+                        code: "test".into(),
+                        reason: "test".into(),
+                    },
+                    changed_files: vec![RepositoryStatusEntryDto {
+                        path: "src/lib.rs".into(),
+                        staged: None,
+                        unstaged: None,
+                        untracked: true,
+                    }],
+                    changed_files_truncated: false,
+                    output_artifact: None,
+                    suggested_next_actions: Vec::new(),
+                    host_command_impact: None,
+                    sandbox: None,
+                }),
+            )
+            .expect("record command output");
+
+        let error = guard
+            .validate_write_intent(
+                root,
+                &AutonomousToolRequest::Write(crate::runtime::AutonomousWriteRequest {
+                    path: "src/lib.rs".into(),
+                    content: "after\n".into(),
+                    expected_hash: None,
+                    create_only: false,
+                    overwrite: Some(true),
+                    preview: false,
+                }),
+                false,
+            )
+            .expect_err("command mutation should invalidate prior observation");
+        assert_eq!(error.code, "agent_file_write_requires_observation");
+    }
+
+    #[test]
     fn rollback_restore_reinstates_checkpointed_file_content() {
         let tempdir = tempdir().expect("tempdir");
         let root = tempdir.path();
@@ -5773,6 +5888,7 @@ Repository map captured.
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: None,
+                    inbox_status: None,
                     code_workspace_epoch: Some(1),
                     refreshed_paths: vec!["src/stale.rs".into()],
                     promoted_record_id: None,

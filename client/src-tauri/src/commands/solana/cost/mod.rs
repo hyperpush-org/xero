@@ -25,6 +25,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::commands::solana::cluster::ClusterKind;
+use crate::commands::solana::provider_profiles::redact_url;
 use crate::commands::solana::rpc_router::RpcRouter;
 use crate::commands::CommandResult;
 
@@ -99,12 +100,13 @@ pub fn snapshot(
                 if matches!(kind, ProviderKind::Unknown) {
                     continue;
                 }
-                let usage = runner.probe(&providers::ProviderUsageProbeRequest {
+                let mut usage = runner.probe(&providers::ProviderUsageProbeRequest {
                     cluster: *cluster,
                     endpoint_id: endpoint.id.clone(),
                     endpoint_url: endpoint.url.clone(),
                     kind,
                 });
+                usage.endpoint_url = redact_url(&usage.endpoint_url);
                 providers.push(usage);
             }
         }

@@ -127,7 +127,10 @@ impl AutonomousToolRuntime {
             request.project_id.as_deref(),
             &definition.project_id,
         )?;
-        let validation_report = workflow_orchestrator::validate_workflow_definition(&definition);
+        let validation_report = workflow_orchestrator::validate_workflow_definition_with_registry(
+            &self.repo_root,
+            &definition,
+        );
         let summary = workflow_summary_from_definition(&definition, true)?;
 
         Ok(AutonomousWorkflowDefinitionOutput {
@@ -154,7 +157,10 @@ impl AutonomousToolRuntime {
             request.project_id.as_deref(),
             &definition.project_id,
         )?;
-        let validation_report = workflow_orchestrator::validate_workflow_definition(&definition);
+        let validation_report = workflow_orchestrator::validate_workflow_definition_with_registry(
+            &self.repo_root,
+            &definition,
+        );
         let summary = workflow_summary_from_definition(&definition, true)?;
         let valid = validation_report.status == WorkflowValidationStatusDto::Valid;
 
@@ -191,7 +197,10 @@ impl AutonomousToolRuntime {
             request.project_id.as_deref(),
             &definition.project_id,
         )?;
-        let validation_report = workflow_orchestrator::validate_workflow_definition(&definition);
+        let validation_report = workflow_orchestrator::validate_workflow_definition_with_registry(
+            &self.repo_root,
+            &definition,
+        );
         let summary = workflow_summary_from_definition(&definition, true)?;
         if validation_report.status != WorkflowValidationStatusDto::Valid {
             return Ok(invalid_workflow_output(
@@ -280,7 +289,10 @@ impl AutonomousToolRuntime {
                 format!("Xero could not find Workflow `{workflow_id}`."),
             )
         })?;
-        let validation_report = workflow_orchestrator::validate_workflow_definition(&definition);
+        let validation_report = workflow_orchestrator::validate_workflow_definition_with_registry(
+            &self.repo_root,
+            &definition,
+        );
         let summary = workflow_summary_from_definition(&definition, true)?;
         if validation_report.status != WorkflowValidationStatusDto::Valid {
             return Ok(invalid_workflow_output(

@@ -6296,6 +6296,7 @@ dependencies = [
  "bitflags 2.11.1",
  "objc2",
  "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation",
 ]
 
@@ -11859,6 +11860,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "xero-cursor-sidecar"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "xero-agent-core",
+]
+
+[[package]]
 name = "xero-desktop"
 version = "0.1.42"
 dependencies = [
@@ -11887,7 +11896,9 @@ dependencies = [
  "mime_guess",
  "objc2",
  "objc2-app-kit",
+ "objc2-core-graphics",
  "objc2-foundation",
+ "objc2-quartz-core",
  "objc2-web-kit",
  "openh264",
  "portable-pty",

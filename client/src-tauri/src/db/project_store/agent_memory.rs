@@ -40,14 +40,6 @@ pub enum AgentMemoryKind {
     Troubleshooting,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentMemoryReviewState {
-    Candidate,
-    Approved,
-    Rejected,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentMemoryRecord {
     pub id: i64,
@@ -58,11 +50,13 @@ pub struct AgentMemoryRecord {
     pub kind: AgentMemoryKind,
     pub text: String,
     pub text_hash: String,
-    pub review_state: AgentMemoryReviewState,
     pub enabled: bool,
     pub confidence: Option<u8>,
     pub source_run_id: Option<String>,
     pub source_item_ids: Vec<String>,
+    pub reinforcement_count: u32,
+    pub last_reinforced_at: Option<String>,
+    pub reinforcement_sources_json: String,
     pub diagnostic: Option<AgentRunDiagnosticRecord>,
     pub freshness_state: String,
     pub freshness_checked_at: Option<String>,
@@ -84,7 +78,6 @@ pub struct NewAgentMemoryRecord {
     pub scope: AgentMemoryScope,
     pub kind: AgentMemoryKind,
     pub text: String,
-    pub review_state: AgentMemoryReviewState,
     pub enabled: bool,
     pub confidence: Option<u8>,
     pub source_run_id: Option<String>,
@@ -97,7 +90,6 @@ pub struct NewAgentMemoryRecord {
 pub struct AgentMemoryUpdateRecord {
     pub project_id: String,
     pub memory_id: String,
-    pub review_state: Option<AgentMemoryReviewState>,
     pub enabled: Option<bool>,
     pub diagnostic: Option<AgentRunDiagnosticRecord>,
 }
@@ -112,7 +104,6 @@ pub struct AgentMemoryCorrectionResult {
 pub struct AgentMemoryListFilter<'a> {
     pub agent_session_id: Option<&'a str>,
     pub include_disabled: bool,
-    pub include_rejected: bool,
 }
 
 pub fn generate_agent_memory_id() -> String {
@@ -132,6 +123,37 @@ pub fn agent_memory_text_hash(text: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(normalized.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+fn initial_reinforcement_sources_json(
+    source_run_id: Option<&str>,
+    source_item_ids: &[String],
+    observed_at: &str,
+) -> String {
+    capped_reinforcement_sources_json(Vec::new(), source_run_id, source_item_ids, observed_at)
+}
+
+fn capped_reinforcement_sources_json(
+    mut sources: Vec<serde_json::Value>,
+    source_run_id: Option<&str>,
+    source_item_ids: &[String],
+    observed_at: &str,
+) -> String {
+    sources.push(serde_json::json!({
+        "observedAt": observed_at,
+        "sourceRunId": source_run_id,
+        "sourceItemIds": source_item_ids,
+    }));
+    const MAX_REINFORCEMENT_SOURCES: usize = 25;
+    if sources.len() > MAX_REINFORCEMENT_SOURCES {
+        sources = sources
+            .into_iter()
+            .rev()
+            .take(MAX_REINFORCEMENT_SOURCES)
+            .collect::<Vec<_>>();
+        sources.reverse();
+    }
+    serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into())
 }
 
 pub fn insert_agent_memory(
@@ -157,11 +179,17 @@ pub fn insert_agent_memory(
         kind: record.kind.clone(),
         text: record.text.trim().to_string(),
         text_hash,
-        review_state: record.review_state.clone(),
         enabled: record.enabled,
         confidence: record.confidence,
         source_run_id: record.source_run_id.clone(),
         source_item_ids: record.source_item_ids.clone(),
+        reinforcement_count: 1,
+        last_reinforced_at: None,
+        reinforcement_sources_json: initial_reinforcement_sources_json(
+            record.source_run_id.as_deref(),
+            &record.source_item_ids,
+            &record.created_at,
+        ),
         diagnostic: record.diagnostic.clone(),
         freshness_state: freshness.freshness_state.as_str().into(),
         freshness_checked_at: freshness.freshness_checked_at,
@@ -309,8 +337,7 @@ fn apply_agent_memory_supersession(
     fact_key: &str,
     now: &str,
 ) -> Result<(), CommandError> {
-    if accepted.review_state != AgentMemoryReviewState::Approved
-        || !accepted.enabled
+    if !accepted.enabled
         || parse_freshness_state(&accepted.freshness_state) == FreshnessState::Superseded
     {
         return Ok(());
@@ -319,7 +346,6 @@ fn apply_agent_memory_supersession(
     let mut superseded_ids = Vec::new();
     for row in store.list_all_rows()? {
         if row.memory_id == accepted.memory_id
-            || row.review_state != AgentMemoryReviewState::Approved
             || !row.enabled
             || row.freshness_state != FreshnessState::Current.as_str()
         {
@@ -546,7 +572,6 @@ pub fn list_agent_memories(
         filter.agent_session_id,
         AgentMemoryListFilterOwned {
             include_disabled: filter.include_disabled,
-            include_rejected: filter.include_rejected,
         },
     )
 }
@@ -568,7 +593,7 @@ pub fn list_approved_agent_memories(
         .collect())
 }
 
-pub fn load_agent_memory_review_queue(
+pub fn load_agent_memory_items(
     repo_root: &Path,
     project_id: &str,
     agent_session_id: Option<&str>,
@@ -586,7 +611,6 @@ pub fn load_agent_memory_review_queue(
         AgentMemoryListFilter {
             agent_session_id,
             include_disabled: true,
-            include_rejected: true,
         },
     )?;
     let total = memories.len();
@@ -597,29 +621,24 @@ pub fn load_agent_memory_review_queue(
     } else {
         offset
     };
-    let mut candidate_count = 0_usize;
-    let mut approved_count = 0_usize;
-    let mut rejected_count = 0_usize;
+    let mut enabled_count = 0_usize;
     let mut disabled_count = 0_usize;
-    let mut retrievable_approved_count = 0_usize;
+    let mut retrievable_count = 0_usize;
     for memory in &memories {
-        match memory.review_state {
-            AgentMemoryReviewState::Candidate => candidate_count += 1,
-            AgentMemoryReviewState::Approved => approved_count += 1,
-            AgentMemoryReviewState::Rejected => rejected_count += 1,
-        }
-        if !memory.enabled {
+        if memory.enabled {
+            enabled_count += 1;
+        } else {
             disabled_count += 1;
         }
         if is_retrievable_agent_memory(memory) {
-            retrievable_approved_count += 1;
+            retrievable_count += 1;
         }
     }
     let items = memories
         .iter()
         .skip(offset)
         .take(limit)
-        .map(memory_review_queue_item)
+        .map(memory_item)
         .collect::<Vec<_>>();
     let next_offset = offset.saturating_add(items.len());
     let has_more = next_offset < total;
@@ -632,18 +651,15 @@ pub fn load_agent_memory_review_queue(
         "limit": limit,
         "total": total,
         "counts": {
-            "candidate": candidate_count,
-            "approved": approved_count,
-            "rejected": rejected_count,
+            "enabled": enabled_count,
             "disabled": disabled_count,
-            "retrievableApproved": retrievable_approved_count
+            "retrievable": retrievable_count
         },
         "items": items,
         "actions": {
-            "approve": "Set reviewState to approved; enabled memories become retrievable when redaction and freshness allow it.",
-            "reject": "Set reviewState to rejected and disabled so retrieval excludes it.",
+            "enable": "Enable this memory for retrieval when freshness and provenance allow it.",
             "disable": "Keep the record for provenance but exclude it from retrieval.",
-            "delete": "Remove the memory record from the approved-memory retrieval store.",
+            "delete": "Remove the memory record from the retrieval store.",
             "edit": "Create a corrected memory or superseding project record; direct text mutation is intentionally not part of this backend contract."
         },
         "hasMore": has_more,
@@ -666,13 +682,34 @@ pub fn find_active_agent_memory_by_hash(
     store.find_active_by_hash(scope, agent_session_id, kind, text_hash)
 }
 
+pub fn reinforce_agent_memory(
+    repo_root: &Path,
+    project_id: &str,
+    memory_id: &str,
+    source_run_id: Option<&str>,
+    source_item_ids: &[String],
+    now: &str,
+) -> Result<AgentMemoryRecord, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(memory_id, "memoryId")?;
+    validate_non_empty_text(now, "reinforcedAt")?;
+    if let Some(source_run_id) = source_run_id {
+        validate_non_empty_text(source_run_id, "sourceRunId")?;
+    }
+    for source_item_id in source_item_ids {
+        validate_non_empty_text(source_item_id, "sourceItemIds")?;
+    }
+    let store = open_store_with_project_check(repo_root, project_id)?;
+    store.reinforce(memory_id, source_run_id, source_item_ids, now)
+}
+
 pub fn update_agent_memory(
     repo_root: &Path,
     update: &AgentMemoryUpdateRecord,
 ) -> Result<AgentMemoryRecord, CommandError> {
     validate_non_empty_text(&update.project_id, "projectId")?;
     validate_non_empty_text(&update.memory_id, "memoryId")?;
-    if update.review_state.is_none() && update.enabled.is_none() && update.diagnostic.is_none() {
+    if update.enabled.is_none() && update.diagnostic.is_none() {
         return Err(CommandError::invalid_request("memoryUpdate"));
     }
 
@@ -681,13 +718,12 @@ pub fn update_agent_memory(
         AgentMemoryUpdate {
             project_id: update.project_id.clone(),
             memory_id: update.memory_id.clone(),
-            review_state: update.review_state.clone(),
             enabled: update.enabled,
             diagnostic: update.diagnostic.clone(),
         },
         now_timestamp(),
     )?;
-    if updated.review_state == AgentMemoryReviewState::Approved && updated.enabled {
+    if updated.enabled {
         let fact_key = updated
             .fact_key
             .clone()
@@ -729,7 +765,6 @@ pub fn correct_agent_memory(
             scope: original.scope.clone(),
             kind: original.kind.clone(),
             text: corrected_text.trim().to_string(),
-            review_state: AgentMemoryReviewState::Approved,
             enabled: true,
             confidence: original.confidence,
             source_run_id: original.source_run_id.clone(),
@@ -832,16 +867,14 @@ pub fn get_agent_memory(
         .ok_or_else(|| missing_agent_memory_error(project_id, memory_id))
 }
 
-fn memory_review_queue_item(memory: &AgentMemoryRecord) -> serde_json::Value {
-    let (text_preview, text_redacted) = memory_review_text_preview(&memory.text);
-    let (fact_key, fact_key_redacted) =
-        memory_review_optional_redacted_text(memory.fact_key.as_deref());
+fn memory_item(memory: &AgentMemoryRecord) -> serde_json::Value {
+    let (text_preview, text_redacted) = memory_text_preview(&memory.text);
+    let (fact_key, fact_key_redacted) = memory_optional_redacted_text(memory.fact_key.as_deref());
     let retrieval_eligible = is_retrievable_agent_memory(memory);
     serde_json::json!({
         "memoryId": memory.memory_id,
         "scope": agent_memory_scope_fact_value(&memory.scope),
         "kind": agent_memory_kind_fact_value(&memory.kind),
-        "reviewState": agent_memory_review_state_value(&memory.review_state),
         "enabled": memory.enabled,
         "confidence": memory.confidence,
         "textPreview": text_preview,
@@ -853,6 +886,13 @@ fn memory_review_queue_item(memory: &AgentMemoryRecord) -> serde_json::Value {
                 "code": diagnostic.code,
                 "message": diagnostic.message,
             }))
+        },
+        "reinforcement": {
+            "count": memory.reinforcement_count,
+            "lastReinforcedAt": memory.last_reinforced_at,
+            "sources": memory_reinforcement_sources_json(memory),
+            "latestSourceRunId": latest_reinforcement_source_run_id(memory),
+            "latestSourceItemIds": latest_reinforcement_source_item_ids(memory),
         },
         "freshness": {
             "state": memory.freshness_state,
@@ -873,8 +913,7 @@ fn memory_review_queue_item(memory: &AgentMemoryRecord) -> serde_json::Value {
             "rawTextHidden": true,
         },
         "availableActions": {
-            "canApprove": memory.review_state != AgentMemoryReviewState::Approved && !text_redacted,
-            "canReject": memory.review_state != AgentMemoryReviewState::Rejected,
+            "canEnable": !memory.enabled && !text_redacted,
             "canDisable": memory.enabled,
             "canDelete": true,
             "canEditByCorrection": true
@@ -884,7 +923,30 @@ fn memory_review_queue_item(memory: &AgentMemoryRecord) -> serde_json::Value {
     })
 }
 
-fn memory_review_optional_redacted_text(value: Option<&str>) -> (serde_json::Value, bool) {
+fn memory_reinforcement_sources_json(memory: &AgentMemoryRecord) -> serde_json::Value {
+    serde_json::from_str(&memory.reinforcement_sources_json)
+        .unwrap_or_else(|_| serde_json::Value::Array(Vec::new()))
+}
+
+fn latest_reinforcement_source_run_id(memory: &AgentMemoryRecord) -> serde_json::Value {
+    memory_reinforcement_sources_json(memory)
+        .as_array()
+        .and_then(|sources| sources.last())
+        .and_then(|source| source.get("sourceRunId"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
+}
+
+fn latest_reinforcement_source_item_ids(memory: &AgentMemoryRecord) -> serde_json::Value {
+    memory_reinforcement_sources_json(memory)
+        .as_array()
+        .and_then(|sources| sources.last())
+        .and_then(|source| source.get("sourceItemIds"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]))
+}
+
+fn memory_optional_redacted_text(value: Option<&str>) -> (serde_json::Value, bool) {
     let Some(value) = value else {
         return (serde_json::Value::Null, false);
     };
@@ -897,7 +959,7 @@ fn memory_review_optional_redacted_text(value: Option<&str>) -> (serde_json::Val
     }
 }
 
-fn memory_review_text_preview(text: &str) -> (serde_json::Value, bool) {
+fn memory_text_preview(text: &str) -> (serde_json::Value, bool) {
     let preview = text.chars().take(240).collect::<String>();
     let value = serde_json::Value::String(preview);
     let (redacted, was_redacted) = crate::runtime::redaction::redact_json_for_persistence(&value);
@@ -914,7 +976,6 @@ pub fn is_retrievable_agent_memory(memory: &AgentMemoryRecord) -> bool {
 
 pub fn agent_memory_retrieval_reason(memory: &AgentMemoryRecord) -> &'static str {
     agent_memory_retrieval_reason_from_parts(
-        &memory.review_state,
         memory.enabled,
         &memory.freshness_state,
         memory.superseded_by_id.as_deref(),
@@ -923,15 +984,11 @@ pub fn agent_memory_retrieval_reason(memory: &AgentMemoryRecord) -> &'static str
 }
 
 pub(crate) fn agent_memory_retrieval_reason_from_parts(
-    review_state: &AgentMemoryReviewState,
     enabled: bool,
     freshness_state: &str,
     superseded_by_id: Option<&str>,
     invalidated_at: Option<&str>,
 ) -> &'static str {
-    if *review_state != AgentMemoryReviewState::Approved {
-        return "pending_or_rejected_review";
-    }
     if !enabled {
         return "disabled";
     }
@@ -949,14 +1006,6 @@ pub(crate) fn agent_memory_retrieval_reason_from_parts(
         return "invalidated";
     }
     "retrievable"
-}
-
-fn agent_memory_review_state_value(state: &AgentMemoryReviewState) -> &'static str {
-    match state {
-        AgentMemoryReviewState::Candidate => "candidate",
-        AgentMemoryReviewState::Approved => "approved",
-        AgentMemoryReviewState::Rejected => "rejected",
-    }
 }
 
 pub fn refresh_all_agent_memory_freshness(
@@ -1146,9 +1195,6 @@ fn validate_new_agent_memory(record: &NewAgentMemoryRecord) -> Result<(), Comman
         }
         AgentMemoryScope::Project => {}
     }
-    if record.enabled && record.review_state != AgentMemoryReviewState::Approved {
-        return Err(CommandError::invalid_request("enabled"));
-    }
     if record
         .source_item_ids
         .iter()
@@ -1306,7 +1352,6 @@ mod tests {
             scope: AgentMemoryScope::Session,
             kind: AgentMemoryKind::Decision,
             text: "Body".into(),
-            review_state: AgentMemoryReviewState::Candidate,
             enabled: false,
             confidence: None,
             source_run_id: None,
@@ -1320,29 +1365,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_new_rejects_enabled_unless_approved() {
-        let record = NewAgentMemoryRecord {
-            memory_id: "memory-x".into(),
-            project_id: "project-x".into(),
-            agent_session_id: None,
-            scope: AgentMemoryScope::Project,
-            kind: AgentMemoryKind::Decision,
-            text: "Body".into(),
-            review_state: AgentMemoryReviewState::Candidate,
-            enabled: true,
-            confidence: None,
-            source_run_id: None,
-            source_item_ids: vec![],
-            diagnostic: None,
-            created_at: "2026-04-26T00:00:00Z".into(),
-        };
-        let err = validate_new_agent_memory(&record).expect_err("enabled requires approved");
-        assert_eq!(err.code, "invalid_request");
-        assert!(err.message.contains("enabled"));
-    }
-
-    #[test]
-    fn retrieval_predicate_rejects_non_approved_or_contradicted_memory() {
+    fn retrieval_predicate_rejects_disabled_or_contradicted_memory() {
         let mut memory = AgentMemoryRecord {
             id: 1,
             memory_id: "memory-retrieval-contract".into(),
@@ -1352,11 +1375,18 @@ mod tests {
             kind: AgentMemoryKind::ProjectFact,
             text: "Durable memory retrieval predicate fixture.".into(),
             text_hash: "a".repeat(64),
-            review_state: AgentMemoryReviewState::Approved,
             enabled: true,
             confidence: Some(90),
             source_run_id: Some("run-retrieval-contract".into()),
             source_item_ids: vec!["agent_messages:1".into()],
+            reinforcement_count: 1,
+            last_reinforced_at: None,
+            reinforcement_sources_json: serde_json::json!([{
+                "observedAt": "2026-05-09T00:00:00Z",
+                "sourceRunId": "run-retrieval-contract",
+                "sourceItemIds": ["agent_messages:1"]
+            }])
+            .to_string(),
             diagnostic: Some(AgentRunDiagnosticRecord {
                 code: "memory_promotion_gate_promoted".into(),
                 message: "{}".into(),
@@ -1374,13 +1404,6 @@ mod tests {
         };
         assert!(is_retrievable_agent_memory(&memory));
 
-        memory.review_state = AgentMemoryReviewState::Candidate;
-        assert_eq!(
-            agent_memory_retrieval_reason(&memory),
-            "pending_or_rejected_review"
-        );
-
-        memory.review_state = AgentMemoryReviewState::Approved;
         memory.enabled = false;
         assert_eq!(agent_memory_retrieval_reason(&memory), "disabled");
 
@@ -1394,7 +1417,7 @@ mod tests {
     }
 
     #[test]
-    fn s28_memory_review_delete_removes_approved_memory_from_retrieval() {
+    fn s28_memory_delete_removes_enabled_memory_from_retrieval() {
         agent_memory_lance::reset_connection_cache_for_tests();
         let tempdir = tempfile::tempdir().expect("tempdir");
         let repo_root = tempdir.path().join("repo");
@@ -1412,7 +1435,6 @@ mod tests {
                 kind: AgentMemoryKind::ProjectFact,
                 text: "Memory review delete should remove this approved fact from retrieval."
                     .into(),
-                review_state: AgentMemoryReviewState::Approved,
                 enabled: true,
                 confidence: Some(90),
                 source_run_id: None,
@@ -1421,14 +1443,14 @@ mod tests {
                 created_at: "2026-05-09T00:00:00Z".into(),
             },
         )
-        .expect("insert approved memory");
+        .expect("insert enabled memory");
         assert!(list_approved_agent_memories(&repo_root, project_id, None)
             .expect("list approved before delete")
             .iter()
             .any(|memory| memory.memory_id == "memory-delete-review"));
 
         delete_agent_memory(&repo_root, project_id, "memory-delete-review")
-            .expect("delete approved memory");
+            .expect("delete enabled memory");
 
         assert!(!list_approved_agent_memories(&repo_root, project_id, None)
             .expect("list approved after delete")
@@ -1438,7 +1460,78 @@ mod tests {
     }
 
     #[test]
-    fn s28_memory_review_queue_exposes_actions_provenance_and_retrieval_status() {
+    fn s51_duplicate_memory_insert_reinforces_existing_memory() {
+        agent_memory_lance::reset_connection_cache_for_tests();
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("repo dir");
+        let project_id = "project-memory-reinforcement";
+        create_project_database(&repo_root, project_id);
+        let text = "The workspace stores durable memory under OS app data.";
+
+        let first = insert_agent_memory(
+            &repo_root,
+            &NewAgentMemoryRecord {
+                memory_id: "memory-reinforced-original".into(),
+                project_id: project_id.into(),
+                agent_session_id: None,
+                scope: AgentMemoryScope::Project,
+                kind: AgentMemoryKind::ProjectFact,
+                text: text.into(),
+                enabled: true,
+                confidence: Some(90),
+                source_run_id: Some("run-memory-reinforcement-1".into()),
+                source_item_ids: vec!["message:1".into()],
+                diagnostic: None,
+                created_at: "2026-05-09T00:00:00Z".into(),
+            },
+        )
+        .expect("insert first memory");
+        let duplicate = insert_agent_memory(
+            &repo_root,
+            &NewAgentMemoryRecord {
+                memory_id: "memory-reinforced-duplicate".into(),
+                project_id: project_id.into(),
+                agent_session_id: None,
+                scope: AgentMemoryScope::Project,
+                kind: AgentMemoryKind::ProjectFact,
+                text: text.into(),
+                enabled: true,
+                confidence: Some(92),
+                source_run_id: Some("run-memory-reinforcement-2".into()),
+                source_item_ids: vec!["message:2".into()],
+                diagnostic: None,
+                created_at: "2026-05-09T00:01:00Z".into(),
+            },
+        )
+        .expect("insert duplicate memory");
+
+        assert_eq!(duplicate.memory_id, first.memory_id);
+        assert_eq!(duplicate.reinforcement_count, 2);
+        assert_eq!(
+            duplicate.last_reinforced_at.as_deref(),
+            Some("2026-05-09T00:01:00Z")
+        );
+        let sources =
+            serde_json::from_str::<Vec<serde_json::Value>>(&duplicate.reinforcement_sources_json)
+                .expect("reinforcement sources json");
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[1]["sourceRunId"], "run-memory-reinforcement-2");
+        assert_eq!(sources[1]["sourceItemIds"][0], "message:2");
+        let memories = list_agent_memories(
+            &repo_root,
+            project_id,
+            AgentMemoryListFilter {
+                agent_session_id: None,
+                include_disabled: true,
+            },
+        )
+        .expect("list memories");
+        assert_eq!(memories.len(), 1);
+    }
+
+    #[test]
+    fn s28_memory_items_expose_actions_provenance_and_retrieval_status() {
         agent_memory_lance::reset_connection_cache_for_tests();
         let tempdir = tempfile::tempdir().expect("tempdir");
         let repo_root = tempdir.path().join("repo");
@@ -1448,13 +1541,12 @@ mod tests {
         insert_agent_memory(
             &repo_root,
             &NewAgentMemoryRecord {
-                memory_id: "memory-review-candidate".into(),
+                memory_id: "memory-review-disabled".into(),
                 project_id: project_id.into(),
                 agent_session_id: None,
                 scope: AgentMemoryScope::Project,
                 kind: AgentMemoryKind::Decision,
-                text: "Candidate memory awaiting user review.".into(),
-                review_state: AgentMemoryReviewState::Candidate,
+                text: "Disabled memory kept for provenance.".into(),
                 enabled: false,
                 confidence: Some(82),
                 source_run_id: Some("run-memory-review-source".into()),
@@ -1463,7 +1555,7 @@ mod tests {
                 created_at: "2026-05-09T00:00:00Z".into(),
             },
         )
-        .expect("insert candidate memory");
+        .expect("insert disabled memory");
         insert_agent_memory(
             &repo_root,
             &NewAgentMemoryRecord {
@@ -1473,7 +1565,6 @@ mod tests {
                 scope: AgentMemoryScope::Project,
                 kind: AgentMemoryKind::ProjectFact,
                 text: "Approved memory should be retrieval eligible.".into(),
-                review_state: AgentMemoryReviewState::Approved,
                 enabled: true,
                 confidence: Some(95),
                 source_run_id: None,
@@ -1482,7 +1573,7 @@ mod tests {
                 created_at: "2026-05-09T00:01:00Z".into(),
             },
         )
-        .expect("insert approved memory");
+        .expect("insert enabled memory");
         insert_agent_memory(
             &repo_root,
             &NewAgentMemoryRecord {
@@ -1492,7 +1583,6 @@ mod tests {
                 scope: AgentMemoryScope::Project,
                 kind: AgentMemoryKind::Troubleshooting,
                 text: "api_key=sk-s28-memory-review-secret-value".into(),
-                review_state: AgentMemoryReviewState::Candidate,
                 enabled: false,
                 confidence: Some(90),
                 source_run_id: Some("run-memory-review-source".into()),
@@ -1501,27 +1591,27 @@ mod tests {
                 created_at: "2026-05-09T00:02:00Z".into(),
             },
         )
-        .expect("insert redaction candidate memory");
+        .expect("insert redaction memory");
 
-        let queue = load_agent_memory_review_queue(&repo_root, project_id, None, 10, 0)
-            .expect("load memory review queue");
+        let queue = load_agent_memory_items(&repo_root, project_id, None, 10, 0)
+            .expect("load memory items");
 
         assert_eq!(
             queue["schema"],
             serde_json::json!("xero.agent_memory_review_queue.v1")
         );
-        assert_eq!(queue["counts"]["candidate"], serde_json::json!(2));
-        assert_eq!(queue["counts"]["approved"], serde_json::json!(1));
-        assert_eq!(queue["counts"]["retrievableApproved"], serde_json::json!(1));
-        let limited_queue = load_agent_memory_review_queue(&repo_root, project_id, None, 1, 0)
-            .expect("load limited review queue");
-        assert_eq!(limited_queue["counts"]["candidate"], serde_json::json!(2));
+        assert_eq!(queue["counts"]["enabled"], serde_json::json!(1));
+        assert_eq!(queue["counts"]["disabled"], serde_json::json!(2));
+        assert_eq!(queue["counts"]["retrievable"], serde_json::json!(1));
+        let limited_queue = load_agent_memory_items(&repo_root, project_id, None, 1, 0)
+            .expect("load limited memory items");
+        assert_eq!(limited_queue["counts"]["disabled"], serde_json::json!(2));
         assert_eq!(limited_queue["offset"], serde_json::json!(0));
         assert_eq!(limited_queue["total"], serde_json::json!(3));
         assert_eq!(limited_queue["hasMore"], serde_json::json!(true));
         assert_eq!(limited_queue["nextOffset"], serde_json::json!(1));
-        let clamped_queue = load_agent_memory_review_queue(&repo_root, project_id, None, 1, 99)
-            .expect("load clamped review queue");
+        let clamped_queue = load_agent_memory_items(&repo_root, project_id, None, 1, 99)
+            .expect("load clamped memory items");
         assert_eq!(clamped_queue["offset"], serde_json::json!(2));
         assert_eq!(clamped_queue["hasMore"], serde_json::json!(false));
         assert!(clamped_queue["nextOffset"].is_null());
@@ -1545,17 +1635,22 @@ mod tests {
             approved["availableActions"]["canDisable"],
             serde_json::json!(true)
         );
-        let candidate = items
-            .iter()
-            .find(|item| item["memoryId"] == serde_json::json!("memory-review-candidate"))
-            .expect("candidate item");
+        assert_eq!(approved["reinforcement"]["count"], serde_json::json!(1));
         assert_eq!(
-            candidate["provenance"]["sourceItemIds"][0],
+            approved["reinforcement"]["sources"][0]["observedAt"],
+            serde_json::json!("2026-05-09T00:01:00Z")
+        );
+        let disabled = items
+            .iter()
+            .find(|item| item["memoryId"] == serde_json::json!("memory-review-disabled"))
+            .expect("disabled item");
+        assert_eq!(
+            disabled["provenance"]["sourceItemIds"][0],
             serde_json::json!("message:7")
         );
         assert_eq!(
-            candidate["retrieval"]["reason"],
-            serde_json::json!("pending_or_rejected_review")
+            disabled["retrieval"]["reason"],
+            serde_json::json!("disabled")
         );
         let secret = items
             .iter()
@@ -1567,7 +1662,7 @@ mod tests {
             serde_json::json!(true)
         );
         assert_eq!(
-            secret["availableActions"]["canApprove"],
+            secret["availableActions"]["canEnable"],
             serde_json::json!(false)
         );
         let serialized = serde_json::to_string(&queue).expect("serialize queue");
@@ -1583,7 +1678,6 @@ mod tests {
             scope: AgentMemoryScope::Project,
             kind: AgentMemoryKind::Decision,
             text: "Body".into(),
-            review_state: AgentMemoryReviewState::Candidate,
             enabled: false,
             confidence: None,
             source_run_id: None,
@@ -1638,7 +1732,6 @@ mod tests {
                 scope: AgentMemoryScope::Session,
                 kind: AgentMemoryKind::ProjectFact,
                 text: "The feature helper lives in src/lib.rs.".into(),
-                review_state: AgentMemoryReviewState::Approved,
                 enabled: true,
                 confidence: Some(92),
                 source_run_id: Some("run-memory-source".into()),
@@ -1675,10 +1768,6 @@ mod tests {
         assert_eq!(
             memory_outbox.payload["memoryId"].as_str(),
             Some("memory-source-file")
-        );
-        assert_eq!(
-            memory_outbox.payload["row"]["review_state"].as_str(),
-            Some("approved")
         );
         assert_eq!(
             memory_outbox
@@ -1733,7 +1822,6 @@ mod tests {
                 scope: AgentMemoryScope::Project,
                 kind: AgentMemoryKind::ProjectFact,
                 text: "The s29 freshness contract lives in the stale memory source.".into(),
-                review_state: AgentMemoryReviewState::Approved,
                 enabled: true,
                 confidence: Some(97),
                 source_run_id: Some("run-memory-s29-stale".into()),
@@ -1742,7 +1830,7 @@ mod tests {
                 created_at: "2026-05-03T01:02:00Z".into(),
             },
         )
-        .expect("insert stale candidate memory");
+        .expect("insert stale memory");
 
         seed_agent_run(&repo_root, project_id, "run-memory-s29-current");
         let current_change = append_agent_file_change(
@@ -1768,7 +1856,6 @@ mod tests {
                 scope: AgentMemoryScope::Project,
                 kind: AgentMemoryKind::ProjectFact,
                 text: "The s29 freshness contract lives in the current memory source.".into(),
-                review_state: AgentMemoryReviewState::Approved,
                 enabled: true,
                 confidence: Some(80),
                 source_run_id: Some("run-memory-s29-current".into()),
@@ -1831,7 +1918,7 @@ mod tests {
                 created_at: "2026-05-03T01:06:00Z".into(),
             },
         )
-        .expect("search approved memory");
+        .expect("search enabled memory");
 
         assert_eq!(
             response
@@ -1876,7 +1963,6 @@ mod tests {
                 scope: AgentMemoryScope::Session,
                 kind: AgentMemoryKind::ProjectFact,
                 text: "The outbox existing memory is already in Lance.".into(),
-                review_state: AgentMemoryReviewState::Approved,
                 enabled: true,
                 confidence: Some(90),
                 source_run_id: Some("run-memory-outbox-existing".into()),
@@ -1905,7 +1991,7 @@ mod tests {
         )
         .expect("seed existing-memory pending outbox");
 
-        let replay_text = "The outbox can replay missing approved memory rows.";
+        let replay_text = "The outbox can replay missing persisted memory rows.";
         let replay_text_hash = agent_memory_text_hash(replay_text);
         let replay_row = AgentMemoryRow {
             memory_id: "memory-outbox-replayed".into(),
@@ -1915,11 +2001,18 @@ mod tests {
             kind: AgentMemoryKind::ProjectFact,
             text: replay_text.into(),
             text_hash: replay_text_hash.clone(),
-            review_state: AgentMemoryReviewState::Approved,
             enabled: true,
             confidence: Some(88),
             source_run_id: None,
             source_item_ids: Vec::new(),
+            reinforcement_count: 1,
+            last_reinforced_at: None,
+            reinforcement_sources_json: serde_json::json!([{
+                "observedAt": "2026-05-03T00:12:00Z",
+                "sourceRunId": null,
+                "sourceItemIds": []
+            }])
+            .to_string(),
             diagnostic: None,
             freshness_state: FreshnessState::Current.as_str().into(),
             freshness_checked_at: Some("2026-05-03T00:12:00Z".into()),
@@ -2072,7 +2165,6 @@ mod tests {
                 scope: AgentMemoryScope::Project,
                 kind: AgentMemoryKind::ProjectFact,
                 text: "The freshness memory subject lives in the legacy cache.".into(),
-                review_state: AgentMemoryReviewState::Approved,
                 enabled: true,
                 confidence: Some(90),
                 source_run_id: Some("run-memory-supersession-old".into()),
@@ -2107,7 +2199,6 @@ mod tests {
                 scope: AgentMemoryScope::Project,
                 kind: AgentMemoryKind::ProjectFact,
                 text: "The freshness memory subject now lives in the durable cache.".into(),
-                review_state: AgentMemoryReviewState::Approved,
                 enabled: true,
                 confidence: Some(95),
                 source_run_id: Some("run-memory-supersession-new".into()),
@@ -2179,7 +2270,6 @@ mod tests {
                 scope: AgentMemoryScope::Project,
                 kind: AgentMemoryKind::ProjectFact,
                 text: "The memory correction subject lives in the temporary cache.".into(),
-                review_state: AgentMemoryReviewState::Approved,
                 enabled: true,
                 confidence: Some(80),
                 source_run_id: Some("run-memory-correction".into()),
@@ -2211,10 +2301,6 @@ mod tests {
             correction.corrected.supersedes_id.as_deref(),
             Some("memory-correction-original")
         );
-        assert_eq!(
-            correction.corrected.review_state,
-            AgentMemoryReviewState::Approved
-        );
         assert!(correction.corrected.enabled);
         assert!(correction
             .corrected
@@ -2232,26 +2318,26 @@ mod tests {
     }
 
     #[test]
-    fn candidate_agent_memory_supersedes_only_after_approval() {
+    fn disabled_agent_memory_supersedes_only_after_enable() {
         agent_memory_lance::reset_connection_cache_for_tests();
         let tempdir = tempfile::tempdir().expect("temp dir");
         let repo_root = tempdir.path().join("repo");
         fs::create_dir_all(repo_root.join("src")).expect("repo src dir");
         fs::write(
-            repo_root.join("src/candidate_subject.rs"),
+            repo_root.join("src/disabled_subject.rs"),
             "pub fn subject() {}\n",
         )
         .expect("write source");
-        let project_id = "project-memory-candidate-supersession";
+        let project_id = "project-memory-disabled-supersession";
         create_project_database(&repo_root, project_id);
-        seed_agent_run(&repo_root, project_id, "run-memory-candidate-old");
+        seed_agent_run(&repo_root, project_id, "run-memory-disabled-old");
         let old_change = append_agent_file_change(
             &repo_root,
             &NewAgentFileChangeRecord {
                 project_id: project_id.into(),
-                run_id: "run-memory-candidate-old".into(),
+                run_id: "run-memory-disabled-old".into(),
                 change_group_id: None,
-                path: "src/candidate_subject.rs".into(),
+                path: "src/disabled_subject.rs".into(),
                 operation: "edit".into(),
                 old_hash: None,
                 new_hash: None,
@@ -2262,16 +2348,15 @@ mod tests {
         insert_agent_memory(
             &repo_root,
             &NewAgentMemoryRecord {
-                memory_id: "memory-candidate-old".into(),
+                memory_id: "memory-disabled-old".into(),
                 project_id: project_id.into(),
                 agent_session_id: None,
                 scope: AgentMemoryScope::Project,
                 kind: AgentMemoryKind::ProjectFact,
-                text: "The freshness candidate subject lives in the old memory.".into(),
-                review_state: AgentMemoryReviewState::Approved,
+                text: "The disabled subject lives in the old memory.".into(),
                 enabled: true,
                 confidence: Some(90),
-                source_run_id: Some("run-memory-candidate-old".into()),
+                source_run_id: Some("run-memory-disabled-old".into()),
                 source_item_ids: vec![format!("file_change:{}", old_change.id)],
                 diagnostic: None,
                 created_at: "2026-05-03T00:02:00Z".into(),
@@ -2279,14 +2364,14 @@ mod tests {
         )
         .expect("insert old memory");
 
-        seed_agent_run(&repo_root, project_id, "run-memory-candidate-new");
+        seed_agent_run(&repo_root, project_id, "run-memory-disabled-new");
         let new_change = append_agent_file_change(
             &repo_root,
             &NewAgentFileChangeRecord {
                 project_id: project_id.into(),
-                run_id: "run-memory-candidate-new".into(),
+                run_id: "run-memory-disabled-new".into(),
                 change_group_id: None,
-                path: "src/candidate_subject.rs".into(),
+                path: "src/disabled_subject.rs".into(),
                 operation: "edit".into(),
                 old_hash: None,
                 new_hash: None,
@@ -2297,28 +2382,27 @@ mod tests {
         insert_agent_memory(
             &repo_root,
             &NewAgentMemoryRecord {
-                memory_id: "memory-candidate-new".into(),
+                memory_id: "memory-disabled-new".into(),
                 project_id: project_id.into(),
                 agent_session_id: None,
                 scope: AgentMemoryScope::Project,
                 kind: AgentMemoryKind::ProjectFact,
-                text: "The freshness candidate subject now lives in the new memory.".into(),
-                review_state: AgentMemoryReviewState::Candidate,
+                text: "The disabled subject now lives in the new memory.".into(),
                 enabled: false,
                 confidence: Some(95),
-                source_run_id: Some("run-memory-candidate-new".into()),
+                source_run_id: Some("run-memory-disabled-new".into()),
                 source_item_ids: vec![format!("file_change:{}", new_change.id)],
                 diagnostic: None,
                 created_at: "2026-05-03T00:04:00Z".into(),
             },
         )
-        .expect("insert candidate memory");
+        .expect("insert disabled memory");
         let before = list_agent_memories(&repo_root, project_id, AgentMemoryListFilter::default())
-            .expect("list memories before approval");
+            .expect("list memories before enable");
         let old_before = before
             .iter()
-            .find(|memory| memory.memory_id == "memory-candidate-old")
-            .expect("old memory before approval");
+            .find(|memory| memory.memory_id == "memory-disabled-old")
+            .expect("old memory before enable");
         assert_eq!(old_before.freshness_state, FreshnessState::Current.as_str());
         assert!(old_before.superseded_by_id.is_none());
 
@@ -2326,23 +2410,22 @@ mod tests {
             &repo_root,
             &AgentMemoryUpdateRecord {
                 project_id: project_id.into(),
-                memory_id: "memory-candidate-new".into(),
-                review_state: Some(AgentMemoryReviewState::Approved),
+                memory_id: "memory-disabled-new".into(),
                 enabled: Some(true),
                 diagnostic: None,
             },
         )
-        .expect("approve candidate memory");
+        .expect("enable disabled memory");
         let after = list_agent_memories(&repo_root, project_id, AgentMemoryListFilter::default())
-            .expect("list memories after approval");
+            .expect("list memories after enable");
         let old_after = after
             .iter()
-            .find(|memory| memory.memory_id == "memory-candidate-old")
-            .expect("old memory after approval");
+            .find(|memory| memory.memory_id == "memory-disabled-old")
+            .expect("old memory after enable");
         let new_after = after
             .iter()
-            .find(|memory| memory.memory_id == "memory-candidate-new")
-            .expect("new memory after approval");
+            .find(|memory| memory.memory_id == "memory-disabled-new")
+            .expect("new memory after enable");
 
         assert_eq!(
             old_after.freshness_state,
@@ -2350,11 +2433,11 @@ mod tests {
         );
         assert_eq!(
             old_after.superseded_by_id.as_deref(),
-            Some("memory-candidate-new")
+            Some("memory-disabled-new")
         );
         assert_eq!(
             new_after.supersedes_id.as_deref(),
-            Some("memory-candidate-old")
+            Some("memory-disabled-old")
         );
     }
 }

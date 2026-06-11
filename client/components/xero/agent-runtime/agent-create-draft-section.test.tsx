@@ -33,7 +33,7 @@ describe('AgentCreateDraftSection', () => {
       />,
     )
 
-    expect(screen.getByText(/Describe the agent or Workflow/i)).toBeInTheDocument()
+    expect(screen.getByText(/Describe the agent you want to build/i)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /Manage agents/i }))
     expect(onOpen).toHaveBeenCalledTimes(1)
   })
@@ -57,8 +57,8 @@ describe('AgentCreateDraftSection', () => {
 
     expect(screen.getByText('2 pending approvals')).toBeInTheDocument()
     expect(screen.getByText(/Drafted agent definition/)).toBeInTheDocument()
-    expect(screen.getByText('workflow_definition')).toBeInTheDocument()
-    expect(screen.getByText(/failed validation/)).toBeInTheDocument()
+    expect(screen.queryByText('workflow_definition')).not.toBeInTheDocument()
+    expect(screen.queryByText(/failed validation/)).not.toBeInTheDocument()
   })
 
   it('ignores non definition tool items', () => {
@@ -84,7 +84,7 @@ describe('AgentCreateDraftSection', () => {
       />,
     )
 
-    expect(screen.getByText(/Describe the agent or Workflow/i)).toBeInTheDocument()
+    expect(screen.getByText(/Describe the agent you want to build/i)).toBeInTheDocument()
     expect(screen.queryByText('Saved record')).not.toBeInTheDocument()
   })
 })

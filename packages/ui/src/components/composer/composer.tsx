@@ -1,5 +1,6 @@
 import * as SelectPrimitive from "@radix-ui/react-select";
 import { Activity, Brain, ChevronDown, Cpu, MessageCircle, Settings, ShieldCheck, Sparkles } from "lucide-react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
 	type ChangeEvent,
 	type CSSProperties,
@@ -16,6 +17,9 @@ import {
 	useState,
 } from "react";
 import {
+	type AgentAttachmentCompatibilityProfile,
+	attachmentCompatibilityRejectionMessage,
+	checkAttachmentModelCompatibility,
 	classificationRejectionMessage,
 	classifyAttachment,
 } from "../../lib/agent-attachments";
@@ -42,6 +46,7 @@ import {
 import {
 	ComposerAttachmentChips,
 	type ComposerPendingAttachment,
+	type ComposerPendingContext,
 } from "./composer-attachment-chips";
 import {
 	ComposerInlineTrigger,
@@ -56,6 +61,7 @@ import {
 
 export type { ComposerSelectGroup, ComposerSelectOption } from "./composer-types";
 export type ComposerPendingAttachmentType = ComposerPendingAttachment;
+export type ComposerPendingContextType = ComposerPendingContext;
 
 export interface ComposerShortcutBinding {
 	/** "Mod" — Cmd on macOS, Ctrl on Windows/Linux. */
@@ -138,8 +144,11 @@ export interface ComposerProps {
 	autoCompactDisabled?: boolean;
 
 	pendingAttachments?: readonly ComposerPendingAttachment[];
+	pendingContexts?: readonly ComposerPendingContext[];
+	attachmentCompatibility?: AgentAttachmentCompatibilityProfile | null;
 	onAddFiles?: (files: File[]) => void;
 	onRemoveAttachment?: (id: string) => void;
+	onRemoveContext?: (id: string) => void;
 
 	dictation?: ComposerDictationLike;
 	/** Defaults to Cmd/Ctrl+Shift+D. Pass null to disable the composer-owned shortcut. */
@@ -244,6 +253,23 @@ function clampAudioLevel(level: number | null | undefined): number {
 	return Math.max(0, Math.min(1, level));
 }
 
+function pendingAttachmentCompatibilityMessage(
+	attachments: readonly ComposerPendingAttachment[] | null | undefined,
+	compatibility: AgentAttachmentCompatibilityProfile | null | undefined,
+): string | null {
+	for (const attachment of attachments ?? []) {
+		if (attachment.status === "error") continue;
+		const result = checkAttachmentModelCompatibility(
+			{ kind: attachment.kind, mediaType: attachment.mediaType },
+			compatibility,
+		);
+		if (!result.supported) {
+			return `${result.message} Choose a compatible model or remove "${attachment.originalName}".`;
+		}
+	}
+	return null;
+}
+
 export function Composer({
 	draftPrompt,
 	onDraftPromptChange,
@@ -278,8 +304,11 @@ export function Composer({
 	onAutoCompactEnabledChange,
 	autoCompactDisabled,
 	pendingAttachments,
+	pendingContexts,
+	attachmentCompatibility,
 	onAddFiles,
 	onRemoveAttachment,
+	onRemoveContext,
 	dictation: externalDictation,
 	dictationShortcut,
 	contextMeter,
@@ -320,9 +349,21 @@ export function Composer({
 	const dictationAudioLevel = clampAudioLevel(dictation.audioLevel);
 
 	const isMobile = useIsMobile();
+	const reduceComposerMotion = useReducedMotion();
 	const hasText = draftPrompt.trim().length > 0;
 	const hasPendingAttachments = (pendingAttachments?.length ?? 0) > 0;
-	const sendDisabled = isSendDisabled || (!hasText && !hasPendingAttachments);
+	const hasPendingContexts = (pendingContexts?.length ?? 0) > 0;
+	const pendingAttachmentCompatibilityError = useMemo(
+		() => pendingAttachmentCompatibilityMessage(
+			pendingAttachments,
+			attachmentCompatibility,
+		),
+		[pendingAttachments, attachmentCompatibility],
+	);
+	const sendDisabled =
+		isSendDisabled ||
+		Boolean(pendingAttachmentCompatibilityError) ||
+		(!hasText && !hasPendingAttachments);
 
 	// Compact agent panes adopt the sidebar's flush, dense chrome.
 	const dense = inSidebar || density === "compact";
@@ -333,6 +374,10 @@ export function Composer({
 	const inlineTriggerClassName = dense
 		? "h-6 px-1.5 gap-1.5 text-[11.5px]"
 		: undefined;
+	const modelInlineTriggerClassName = cn(
+		inlineTriggerClassName,
+		"max-w-72",
+	);
 
 	useIsomorphicLayoutEffect(() => {
 		const node = textareaRef.current;
@@ -356,6 +401,10 @@ export function Composer({
 		return () => window.removeEventListener("keydown", handleDictationShortcut);
 	}, [dictation, dictationVisible, resolvedDictationShortcut]);
 
+	useEffect(() => {
+		setClassificationError(null);
+	}, [selectedModelId]);
+
 	const handleTextareaChange = useCallback(
 		(value: string) => {
 			if (dictation.updateDraftPrompt) {
@@ -378,6 +427,7 @@ export function Composer({
 		const hasContent =
 			nextDraft.trim().length > 0 || hasPendingAttachments;
 		if (isSendDisabled || !hasContent) return;
+		if (pendingAttachmentCompatibilityError) return;
 		onSubmit(nextDraft);
 	}, [
 		draftPrompt,
@@ -385,6 +435,7 @@ export function Composer({
 		internalDictation,
 		isSendDisabled,
 		onSubmit,
+		pendingAttachmentCompatibilityError,
 		usingInternalDictation,
 	]);
 
@@ -430,12 +481,21 @@ export function Composer({
 					rejections.push(classificationRejectionMessage(file, classification));
 					continue;
 				}
+				const compatibilityMessage = attachmentCompatibilityRejectionMessage(
+					file,
+					classification,
+					attachmentCompatibility,
+				);
+				if (compatibilityMessage) {
+					rejections.push(compatibilityMessage);
+					continue;
+				}
 				accepted.push(file);
 			}
 			setClassificationError(rejections.length > 0 ? rejections.join(" ") : null);
 			if (accepted.length > 0) onAddFiles(accepted);
 		},
-		[onAddFiles],
+		[attachmentCompatibility, onAddFiles],
 	);
 
 	const hasThinkingOptions = Boolean(thinkingOptions && thinkingOptions.length > 0);
@@ -461,15 +521,37 @@ export function Composer({
 	const hasAgents = agentGroups.some((group) => group.options.length > 0);
 	const hasModels = modelGroups.length > 0;
 
-	const attachmentsRow =
-		pendingAttachments && pendingAttachments.length > 0 ? (
-			<div className="border-b border-border/40 px-2.5 py-2">
-				<ComposerAttachmentChips
-					attachments={pendingAttachments}
-					onRemove={onRemoveAttachment}
-				/>
-			</div>
-		) : null;
+	const attachmentsRow = (
+		<AnimatePresence>
+			{hasPendingAttachments || hasPendingContexts ? (
+				<motion.div
+					key="composer-attachment-row"
+					initial={reduceComposerMotion ? false : { opacity: 0, height: 0, y: -4 }}
+					animate={{ opacity: 1, height: "auto", y: 0 }}
+					exit={
+						reduceComposerMotion
+							? { opacity: 0, height: 0 }
+							: { opacity: 0, height: 0, y: -3 }
+					}
+					transition={
+						reduceComposerMotion
+							? { duration: 0 }
+							: { duration: 0.24, ease: [0.2, 0, 0, 1] }
+					}
+					className="overflow-hidden border-b border-border/40"
+				>
+					<div className="px-2.5 py-2">
+						<ComposerAttachmentChips
+							attachments={pendingAttachments ?? []}
+							contexts={pendingContexts}
+							onRemove={onRemoveAttachment}
+							onRemoveContext={onRemoveContext}
+						/>
+					</div>
+				</motion.div>
+			) : null}
+		</AnimatePresence>
+	);
 
 	const agentPill = hasAgents ? (
 		<GroupedPillSelect
@@ -496,12 +578,12 @@ export function Composer({
 			onThinkingChange={onThinkingChange}
 			thinkingDisabled={thinkingControlDisabled}
 			thinkingPlaceholder={thinkingPlaceholder}
-			triggerClassName={inlineTriggerClassName}
+			triggerClassName={modelInlineTriggerClassName}
 		/>
 	);
 
 	const inlinePills = (
-		<div className="flex min-w-0 items-center gap-0.5 overflow-x-auto pb-0.5">
+		<div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden pb-0.5">
 			{agentPill}
 			{modelPill}
 		</div>
@@ -646,7 +728,7 @@ export function Composer({
 	return (
 		<div
 			className={cn(
-				"group/composer relative flex w-full flex-col overflow-hidden bg-card/90 supports-[backdrop-filter]:bg-card/75",
+				"group/composer relative flex w-full max-w-full min-w-0 flex-col overflow-hidden bg-card/90 supports-[backdrop-filter]:bg-card/75",
 				dense
 					? "border-t border-border/60 transition-colors focus-within:border-primary/40"
 					: "agent-composer-glow rounded-xl border border-border/60 shadow-[0_8px_24px_-12px_rgba(15,23,42,0.12),0_1px_3px_-1px_rgba(15,23,42,0.06)] ring-1 ring-inset ring-foreground/[0.03] backdrop-blur hover:border-border focus-within:border-primary/40 focus-within:ring-primary/20 dark:shadow-[0_20px_60px_-20px_rgba(0,0,0,0.6),0_2px_8px_-2px_rgba(0,0,0,0.3)]",
@@ -673,11 +755,11 @@ export function Composer({
 			/>
 			<div
 				className={cn(
-					"flex items-center gap-1 border-t border-border/40",
+					"flex max-w-full min-w-0 items-center gap-1 overflow-hidden border-t border-border/40",
 					dense ? "px-2 py-1" : "px-2.5 py-1.5",
 				)}
 			>
-				<div className="flex min-w-0 flex-1 items-center gap-1">
+				<div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
 					{supportsAttachments ? (
 						<ComposerAttachButton
 							density={actionDensity}
@@ -755,12 +837,12 @@ export function Composer({
 					{dictationError}
 				</p>
 			) : null}
-			{classificationError ? (
+			{classificationError || pendingAttachmentCompatibilityError ? (
 				<p
 					className="border-t border-border/40 px-2.5 py-1.5 text-[11px] leading-relaxed text-destructive"
 					role="alert"
 				>
-					{classificationError}
+					{classificationError ?? pendingAttachmentCompatibilityError}
 				</p>
 			) : null}
 			{supportsAttachments ? (

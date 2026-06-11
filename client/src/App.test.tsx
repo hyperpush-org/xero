@@ -6,11 +6,13 @@ const {
   githubLogoutMock,
   githubRefreshMock,
   openUrlMock,
+  signInReminderToastMock,
 } = vi.hoisted(() => ({
   githubLoginMock: vi.fn(async () => undefined),
   githubLogoutMock: vi.fn(async () => undefined),
   githubRefreshMock: vi.fn(async () => undefined),
   openUrlMock: vi.fn(),
+  signInReminderToastMock: vi.fn(),
 }))
 
 vi.mock('@tauri-apps/plugin-opener', () => ({
@@ -26,6 +28,13 @@ vi.mock('@/src/lib/github-auth', () => ({
     logout: githubLogoutMock,
     refresh: githubRefreshMock,
   }),
+}))
+
+vi.mock('@/components/xero/sign-in-reminder-toast', () => ({
+  SignInReminderToast: (props: { enabled?: boolean }) => {
+    signInReminderToastMock(props)
+    return null
+  },
 }))
 
 vi.mock('@/components/ui/tooltip', () => ({
@@ -109,6 +118,7 @@ afterEach(() => {
   githubLoginMock.mockClear()
   githubLogoutMock.mockClear()
   githubRefreshMock.mockClear()
+  signInReminderToastMock.mockClear()
   openUrlMock.mockReset()
   if (typeof window.localStorage?.clear === 'function') {
     window.localStorage.clear()
@@ -119,6 +129,9 @@ afterEach(() => {
 })
 
 import {
+  APP_BOOT_LOADING_EXIT_MS,
+  AppBootLoadingOverlay,
+  AppWideLoadingOverlay,
   XeroApp,
   projectRunnerSuggestRequestFromStoredComposerSettings,
   useActivatedSurface,
@@ -126,6 +139,7 @@ import {
 } from './App'
 import { XeroDesktopError, type XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 import {
+  PROVIDER_PREFLIGHT_CONTRACT_VERSION,
   createXeroDoctorReport,
   providerModelCatalogSchema,
 } from '@/src/lib/xero-model'
@@ -166,7 +180,6 @@ import type {
   SubscribeRuntimeStreamResponseDto,
   SkillRegistryDto,
   UpsertMcpServerRequestDto,
-  XaiDeviceCodeLoginDto,
 } from '@/src/lib/xero-model'
 import type {
   AgentRefDto,
@@ -441,27 +454,6 @@ function makeProviderAuthSession(overrides: Partial<ProviderAuthSessionDto> = {}
     callbackBound: true,
     authorizationUrl: 'https://auth.openai.com/oauth/authorize?client_id=test',
     redirectUri: 'http://127.0.0.1:1455/auth/callback',
-    lastErrorCode: null,
-    lastError: null,
-    updatedAt: '2026-04-15T20:00:00Z',
-    ...overrides,
-  }
-}
-
-function makeXaiDeviceCodeLogin(
-  overrides: Partial<XaiDeviceCodeLoginDto> = {},
-): XaiDeviceCodeLoginDto {
-  return {
-    providerId: 'xai',
-    flowId: 'xai-device-flow-1',
-    userCode: 'GROK-1234',
-    verificationUri: 'https://auth.x.ai/device',
-    verificationUriComplete: 'https://auth.x.ai/device?user_code=GROK-1234',
-    intervalSeconds: 5,
-    expiresAt: 1_779_984_000,
-    phase: 'awaiting_manual_input',
-    sessionId: null,
-    accountId: null,
     lastErrorCode: null,
     lastError: null,
     updatedAt: '2026-04-15T20:00:00Z',
@@ -884,7 +876,11 @@ function buildProviderModelCatalog(profile: ProviderProfileDto): ProviderModelCa
     fetchedAt: isReady ? '2026-04-21T12:00:00Z' : null,
     lastSuccessAt: isReady ? '2026-04-21T12:00:00Z' : null,
     lastRefreshError,
-    models,
+    models: (models ?? []).map((model) => ({
+      inputModalities: [],
+      inputModalitiesSource: 'test_fixture_unreported',
+      ...model,
+    })),
   })
 }
 
@@ -982,7 +978,7 @@ function buildProviderPreflightSnapshot(
   const status = profile.readiness.ready || profile.providerId === 'openai_codex' ? 'passed' : 'warning'
 
   return {
-    contractVersion: 1,
+    contractVersion: PROVIDER_PREFLIGHT_CONTRACT_VERSION,
     profileId: profile.profileId,
     providerId: profile.providerId,
     modelId,
@@ -996,6 +992,7 @@ function buildProviderPreflightSnapshot(
       toolCalls: options.requiredFeatures?.toolCalls ?? true,
       reasoningControls: options.requiredFeatures?.reasoningControls ?? false,
       attachments: options.requiredFeatures?.attachments ?? false,
+      attachmentInputModalities: options.requiredFeatures?.attachmentInputModalities ?? [],
     },
     capabilities: buildProviderCapabilityCatalog(profile, modelId),
     checks: [
@@ -1244,6 +1241,7 @@ function createAdapter(options?: {
       totals: {
         runCount: 0,
         inputTokens: 0,
+        billableInputTokens: 0,
         outputTokens: 0,
         totalTokens: 0,
         cacheReadTokens: 0,
@@ -2228,6 +2226,11 @@ function createAdapter(options?: {
       agentSessionId: GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
       session: makeComputerUseAgentSession(),
     }),
+    resetGlobalComputerUseSession: async () => ({
+      projectId: GLOBAL_COMPUTER_USE_PROJECT_ID,
+      agentSessionId: GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
+      session: makeComputerUseAgentSession(),
+    }),
     getRuntimeRun: async (projectId) =>
       currentRuntimeRun?.projectId === projectId ? currentRuntimeRun : null,
     listMcpServers,
@@ -2315,9 +2318,6 @@ function createAdapter(options?: {
     completeOAuthCallback: async () => {
       return makeProviderAuthSession()
     },
-    startXaiDeviceCodeLogin: async () => makeXaiDeviceCodeLogin(),
-    pollXaiDeviceCodeLogin: async (request) =>
-      makeXaiDeviceCodeLogin({ flowId: request.flowId }),
     startRuntimeSession: async (projectId) => {
       currentRuntimeSession = makeRuntimeSession(projectId)
       return currentRuntimeSession
@@ -2615,6 +2615,76 @@ describe('useStickyPrewarmedSurface', () => {
   })
 })
 
+describe('AppBootLoadingOverlay', () => {
+  it('animates out before unmounting when loading completes', () => {
+    vi.useFakeTimers()
+
+    try {
+      const { container, rerender } = render(<AppBootLoadingOverlay active />)
+
+      const overlay = screen.getByRole('status', { name: 'Loading' }).parentElement
+      expect(overlay).toHaveAttribute('data-state', 'open')
+
+      rerender(<AppBootLoadingOverlay active={false} />)
+
+      const closingOverlay = screen.getByRole('status', { name: 'Loading', hidden: true }).parentElement
+      const closingScreen = screen.getByRole('status', { name: 'Loading', hidden: true })
+      expect(closingOverlay).toHaveAttribute('data-state', 'closed')
+      expect(closingOverlay).toHaveAttribute('aria-hidden', 'true')
+      expect(closingScreen).toHaveAttribute('data-state', 'closed')
+      expect(closingScreen).toHaveClass('xero-loading-screen')
+
+      act(() => {
+        vi.advanceTimersByTime(APP_BOOT_LOADING_EXIT_MS - 1)
+      })
+      expect(screen.getByRole('status', { name: 'Loading', hidden: true })).toHaveAttribute('data-state', 'closed')
+
+      act(() => {
+        vi.advanceTimersByTime(1)
+      })
+      expect(container.querySelector('[data-state="closed"]')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('AppWideLoadingOverlay', () => {
+  it('keeps the wide loading surface mounted for its exit animation', () => {
+    vi.useFakeTimers()
+
+    try {
+      const { container, rerender } = render(
+        <div className="relative h-96 w-96">
+          <AppWideLoadingOverlay active />
+        </div>,
+      )
+
+      expect(container.querySelector('[data-state="open"]')).not.toBeNull()
+
+      rerender(
+        <div className="relative h-96 w-96">
+          <AppWideLoadingOverlay active={false} />
+        </div>,
+      )
+
+      const closingOverlay = screen.getByRole('status', { name: 'Loading', hidden: true }).parentElement
+      const closingScreen = screen.getByRole('status', { name: 'Loading', hidden: true })
+      expect(closingOverlay).toHaveClass('absolute')
+      expect(closingOverlay).toHaveAttribute('data-state', 'closed')
+      expect(closingScreen).toHaveAttribute('data-state', 'closed')
+      expect(closingScreen).toHaveClass('xero-loading-screen')
+
+      act(() => {
+        vi.advanceTimersByTime(APP_BOOT_LOADING_EXIT_MS)
+      })
+      expect(container.querySelector('[data-state="closed"]')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('XeroApp current UI', () => {
   it('shows the onboarding flow on a cold-start empty state', async () => {
     const { adapter, getEnvironmentDiscoveryStatus, startEnvironmentDiscovery } = createAdapter({
@@ -2638,8 +2708,8 @@ describe('XeroApp current UI', () => {
     expect(screen.queryByRole('heading', { name: /Review environment access/i })).not.toBeInTheDocument()
   })
 
-  it('falls through to the legacy empty state when onboarding is dismissed', async () => {
-    const { adapter, startEnvironmentDiscovery } = createAdapter({
+  it('defers the sign-in reminder until onboarding is dismissed', async () => {
+    const { adapter } = createAdapter({
       projects: [],
       runtimeSession: makeRuntimeSession('project-1', {
         phase: 'idle',
@@ -2650,11 +2720,117 @@ describe('XeroApp current UI', () => {
 
     render(<XeroApp adapter={adapter} />)
 
+    expect(await screen.findByRole('heading', { name: /Welcome to Xero/i })).toBeVisible()
+    expect(signInReminderToastMock.mock.calls.at(-1)?.[0]).toEqual({ enabled: false })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skip setup' }))
+
+    expect(await screen.findByRole('heading', { name: 'Add your first project' })).toBeVisible()
+    await waitFor(() =>
+      expect(signInReminderToastMock.mock.calls.at(-1)?.[0]).toEqual({ enabled: true }),
+    )
+  })
+
+  it('falls through to the legacy empty state when onboarding is dismissed', async () => {
+    const { adapter, startEnvironmentDiscovery } = createAdapter({
+      projects: [],
+      runtimeSession: makeRuntimeSession('project-1', {
+        phase: 'idle',
+        sessionId: null,
+        accountId: null,
+      }),
+    })
+    const writeAppUiState = vi.fn(async (request: { key: string; value?: unknown | null }) => ({
+      schema: 'xero.app_ui_state.v1' as const,
+      key: request.key,
+      value: request.value ?? null,
+      storageScope: 'os_app_data' as const,
+      uiDeferred: true,
+    }))
+    adapter.writeAppUiState = writeAppUiState
+
+    render(<XeroApp adapter={adapter} />)
+
     fireEvent.click(await screen.findByRole('button', { name: 'Skip setup' }))
 
     expect(await screen.findByRole('heading', { name: 'Add your first project' })).toBeVisible()
     expect(screen.getAllByRole('button', { name: /Import repository/ }).length).toBeGreaterThanOrEqual(1)
     await waitFor(() => expect(startEnvironmentDiscovery).toHaveBeenCalledTimes(1))
+    await waitFor(() =>
+      expect(writeAppUiState).toHaveBeenCalledWith({
+        key: 'app.onboarding.completed.v1',
+        value: true,
+      }),
+    )
+  })
+
+  it('persists onboarding completion after continuing through every step without setup data', async () => {
+    const { adapter } = createAdapter({
+      projects: [],
+      runtimeSession: makeRuntimeSession('project-1', {
+        phase: 'idle',
+        sessionId: null,
+        accountId: null,
+      }),
+      environmentDiscoveryStatus: makeEnvironmentDiscoveryStatus({
+        hasProfile: true,
+        status: 'ready',
+        stale: false,
+        shouldStart: false,
+        refreshedAt: '2026-04-30T18:00:00Z',
+      }),
+    })
+    const writeAppUiState = vi.fn(async (request: { key: string; value?: unknown | null }) => ({
+      schema: 'xero.app_ui_state.v1' as const,
+      key: request.key,
+      value: request.value ?? null,
+      storageScope: 'os_app_data' as const,
+      uiDeferred: true,
+    }))
+    adapter.writeAppUiState = writeAppUiState
+
+    render(<XeroApp adapter={adapter} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Get started' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue' }))
+    expect(await screen.findByRole('heading', { name: 'Review and finish' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByRole('heading', { name: 'Early beta' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Enter Xero' }))
+
+    expect(await screen.findByRole('heading', { name: 'Add your first project' })).toBeVisible()
+    await waitFor(() =>
+      expect(writeAppUiState).toHaveBeenCalledWith({
+        key: 'app.onboarding.completed.v1',
+        value: true,
+      }),
+    )
+  })
+
+  it('does not reopen onboarding on an empty cold start after completion was persisted', async () => {
+    const { adapter } = createAdapter({
+      projects: [],
+      runtimeSession: makeRuntimeSession('project-1', {
+        phase: 'idle',
+        sessionId: null,
+        accountId: null,
+      }),
+    })
+    const readAppUiState = vi.fn(async (request: { key: string }) => ({
+      schema: 'xero.app_ui_state.v1' as const,
+      key: request.key,
+      value: request.key === 'app.onboarding.completed.v1' ? true : null,
+      storageScope: 'os_app_data' as const,
+      uiDeferred: true,
+    }))
+    adapter.readAppUiState = readAppUiState
+
+    render(<XeroApp adapter={adapter} />)
+
+    expect(await screen.findByRole('heading', { name: 'Add your first project' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: /Welcome to Xero/i })).not.toBeInTheDocument()
+    expect(readAppUiState).toHaveBeenCalledWith({ key: 'app.onboarding.completed.v1' })
   })
 
   it('persists environment access decisions before confirmation', async () => {
@@ -2741,7 +2917,7 @@ describe('XeroApp current UI', () => {
 
     expect(await screen.findByRole('heading', { name: 'Review environment access' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Skip' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /^Skip$/ })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Allow Required toolchain access' }))
     expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled()
@@ -3033,6 +3209,23 @@ describe('XeroApp current UI', () => {
     expect(within(dialog).getByRole('button', { name: /Create new/ })).toBeVisible()
   })
 
+  it('opens generic settings from the project rail on the Account tab', async () => {
+    const { adapter } = createAdapter()
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    const projectRail = screen.getByRole('complementary', { name: 'Projects' })
+    fireEvent.click(within(projectRail).getByRole('button', { name: 'Settings' }))
+
+    expect(await screen.findByRole('heading', { name: 'Account' }, { timeout: 5000 })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Account' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('button', { name: 'Providers' })).not.toHaveAttribute('aria-current')
+  })
+
   it('defaults the agent dock composer to Agent Create when opened from Workflow', async () => {
     const { adapter } = createAdapter()
 
@@ -3084,6 +3277,94 @@ describe('XeroApp current UI', () => {
       'true',
     )
     expect(screen.getAllByText('mesh-lang')[0]).toBeVisible()
+  })
+
+  it('animates the sidebar closed before switching from Computer Use to the agent dock', async () => {
+    const { adapter } = createAdapter({
+      projects: [makeProjectSummary('project-1', 'mesh-lang')],
+      snapshot: makeSnapshot('project-1', 'mesh-lang'),
+      status: makeStatus('project-1', 'mesh-lang'),
+    })
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Computer Use' }))
+
+    const dock = await screen.findByLabelText('Agent dock')
+    await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'false'))
+    expect(within(dock).getByRole('button', { name: 'Close Computer Use' })).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open agent dock' }))
+
+    await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'true'))
+    await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'false'))
+    expect(within(dock).getByRole('button', { name: 'Close agent dock' })).toBeVisible()
+    expect(within(dock).queryByRole('button', { name: 'Clear Computer Use chat' })).not.toBeInTheDocument()
+  })
+
+  it('animates the sidebar closed before switching from the agent dock to Computer Use', async () => {
+    const { adapter } = createAdapter({
+      projects: [makeProjectSummary('project-1', 'mesh-lang')],
+      snapshot: makeSnapshot('project-1', 'mesh-lang'),
+      status: makeStatus('project-1', 'mesh-lang'),
+    })
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open agent dock' }))
+
+    const dock = await screen.findByLabelText('Agent dock')
+    await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'false'))
+    expect(within(dock).getByRole('button', { name: 'Close agent dock' })).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Computer Use' }))
+
+    await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'true'))
+    await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'false'))
+    expect(within(dock).getByRole('button', { name: 'Close Computer Use' })).toBeVisible()
+    expect(within(dock).getByRole('button', { name: 'Clear Computer Use chat' })).toBeVisible()
+  })
+
+  it('clears the Computer Use sidebar chat from the header', async () => {
+    const { adapter } = createAdapter({
+      projects: [makeProjectSummary('project-1', 'mesh-lang')],
+      snapshot: makeSnapshot('project-1', 'mesh-lang'),
+      status: makeStatus('project-1', 'mesh-lang'),
+    })
+    const resetGlobalComputerUseSession = vi.fn(async () => ({
+      projectId: GLOBAL_COMPUTER_USE_PROJECT_ID,
+      agentSessionId: GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
+      session: makeComputerUseAgentSession(),
+    }))
+    adapter.resetGlobalComputerUseSession = resetGlobalComputerUseSession
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Computer Use' }))
+
+    const dock = await screen.findByLabelText('Agent dock')
+    await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'false'))
+    const clearButton = within(dock).getByRole('button', {
+      name: 'Clear Computer Use chat',
+    })
+    expect(clearButton).not.toBeDisabled()
+    fireEvent.click(clearButton)
+
+    await waitFor(() => {
+      expect(resetGlobalComputerUseSession).toHaveBeenCalledTimes(1)
+    })
   })
 
   it('lazy-activates the agent pane only after the Agent view is opened', async () => {
@@ -3556,6 +3837,7 @@ describe('XeroApp current UI', () => {
         totals: {
           runCount: 2,
           inputTokens: 1,
+          billableInputTokens: 1,
           outputTokens: 1,
           totalTokens: 2,
           cacheReadTokens: 0,
@@ -3568,6 +3850,7 @@ describe('XeroApp current UI', () => {
             modelId: 'claude-sonnet-4-6',
             runCount: 1,
             inputTokens: 600_000,
+            billableInputTokens: 600_000,
             outputTokens: 300_000,
             totalTokens: 900_000,
             cacheReadTokens: 0,
@@ -3579,6 +3862,7 @@ describe('XeroApp current UI', () => {
             modelId: 'gpt-5.1',
             runCount: 1,
             inputTokens: 100_000,
+            billableInputTokens: 100_000,
             outputTokens: 50_500,
             totalTokens: 150_500,
             cacheReadTokens: 0,
@@ -3622,9 +3906,51 @@ describe('XeroApp current UI', () => {
 
     await waitFor(() => expect(screen.getByLabelText('1 unread notifications')).toBeVisible())
 
-    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+    fireEvent.click(screen.getByLabelText('1 unread notifications'))
+    const notificationsPanel = await screen.findByRole('complementary', {
+      name: 'Session notifications',
+    })
+    expect(within(notificationsPanel).getByText('Unread sessions')).toBeVisible()
+    expect(within(notificationsPanel).getByText('Xero')).toBeVisible()
+    fireEvent.click(within(notificationsPanel).getByRole('button', { name: /Main session/i }))
+
     expect(await screen.findByLabelText('Agent conversation viewport')).toBeVisible()
     await waitFor(() => expect(screen.getByLabelText('0 unread notifications')).toBeVisible())
+  })
+
+  it('keeps the footer notification count global while switching projects', async () => {
+    const { adapter, emitRuntimeStream, streamSubscriptions } = createAdapter({
+      projects: [
+        makeProjectSummary('project-1', 'Xero'),
+        makeProjectSummary('project-2', 'Orchestra'),
+      ],
+      runtimeRun: makeRuntimeRun('project-1', { runId: 'run-1' }),
+    })
+    adapter.getProjectSnapshot = vi.fn(async (projectId: string) =>
+      projectId === 'project-2'
+        ? makeSnapshot('project-2', 'Orchestra')
+        : makeSnapshot('project-1', 'Xero'),
+    )
+
+    render(<XeroApp adapter={adapter} />)
+
+    expect(await screen.findByRole('button', { name: 'Workflow' })).toBeVisible()
+    await waitFor(() => expect(streamSubscriptions).toHaveLength(1))
+    expect(screen.getByLabelText('0 unread notifications')).toBeVisible()
+
+    act(() => {
+      emitRuntimeStream(0, makeRuntimeCompletionEvent('project-1'))
+    })
+
+    await waitFor(() => expect(screen.getByLabelText('1 unread notifications')).toBeVisible())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Orchestra' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open Orchestra (active)' })).toBeVisible())
+    expect(screen.getByLabelText('1 unread notifications')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Xero' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open Xero (active)' })).toBeVisible())
+    expect(screen.getByLabelText('1 unread notifications')).toBeVisible()
   })
 
   it('opens the project usage sidebar from the footer spend button on the first click', async () => {
@@ -3656,6 +3982,37 @@ describe('XeroApp current UI', () => {
     expect(screen.getByText('No agent runs recorded for this project yet.')).toBeVisible()
   })
 
+  it('keeps footer floating sidebars mutually exclusive with app sidebars', async () => {
+    const { adapter } = createAdapter()
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open browser' }))
+    expect(screen.getByRole('button', { name: 'Close browser' })).toHaveAttribute('aria-pressed', 'true')
+
+    const statusBar = screen.getByRole('contentinfo', { name: 'Status bar' })
+    const spendButton = within(statusBar).getByRole('button', {
+      name: /Project spend: no usage recorded yet/i,
+    })
+    fireEvent.click(spendButton)
+
+    await screen.findByRole('complementary', { name: 'Project usage statistics' })
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Open browser' })).toHaveAttribute('aria-pressed', 'false'),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open browser' }))
+
+    await waitFor(() =>
+      expect(screen.queryByRole('complementary', { name: 'Project usage statistics' })).not.toBeInTheDocument(),
+    )
+    expect(screen.getByRole('button', { name: 'Close browser' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
   it('renders the project rail as a compact icon strip', async () => {
     const { adapter } = createAdapter()
 
@@ -3668,6 +4025,219 @@ describe('XeroApp current UI', () => {
     expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull()
     expect(screen.queryByRole('button', { name: 'Project actions for xero' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Open Xero (active)' })).toBeVisible()
+  })
+
+  it('animates the active project rail card while an agent run is active', async () => {
+    const { adapter, emitRuntimeRunUpdated } = createAdapter({
+      runtimeRun: makeRuntimeRun('project-1'),
+    })
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    const projectButton = screen.getByRole('button', { name: 'Open Xero (active)' })
+    await waitFor(() => expect(projectButton).toHaveAttribute('data-agent-running', 'true'))
+    expect(projectButton.querySelector('.xero-project-rail-activity-aura-field')).not.toBeNull()
+
+    act(() => {
+      emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
+        run: makeRuntimeRun('project-1', {
+          status: 'stopped',
+          stoppedAt: '2026-04-15T20:05:00Z',
+          updatedAt: '2026-04-15T20:05:00Z',
+        }),
+      })
+    })
+
+    await waitFor(() => expect(projectButton).not.toHaveAttribute('data-agent-running'))
+  })
+
+  it('clears the project rail animation when the runtime stream reports completion', async () => {
+    const { adapter, emitRuntimeStream, streamSubscriptions } = createAdapter({
+      runtimeRun: makeRuntimeRun('project-1', { runId: 'run-1' }),
+    })
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    const projectButton = screen.getByRole('button', { name: 'Open Xero (active)' })
+    await waitFor(() => expect(projectButton).toHaveAttribute('data-agent-running', 'true'))
+    await waitFor(() => expect(streamSubscriptions).toHaveLength(1))
+
+    act(() => {
+      emitRuntimeStream(0, makeRuntimeCompletionEvent('project-1'))
+    })
+
+    await waitFor(() => expect(projectButton).not.toHaveAttribute('data-agent-running'))
+    await waitFor(() =>
+      expect(projectButton.querySelector('.xero-project-rail-completion-count-badge')).toHaveTextContent('1'),
+    )
+  })
+
+  it('keeps the project rail animation until every session run in the project completes', async () => {
+    const { adapter, emitRuntimeRunUpdated, emitRuntimeStream, streamSubscriptions } = createAdapter({
+      runtimeRun: makeRuntimeRun('project-1', {
+        agentSessionId: 'agent-session-main',
+        runId: 'run-main',
+      }),
+    })
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    const projectButton = screen.getByRole('button', { name: 'Open Xero (active)' })
+    await waitFor(() => expect(projectButton).toHaveAttribute('data-agent-running', 'true'))
+
+    act(() => {
+      emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-secondary',
+        run: null,
+      })
+    })
+
+    act(() => {
+      emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-secondary',
+        run: makeRuntimeRun('project-1', {
+          agentSessionId: 'agent-session-secondary',
+          runId: 'run-secondary',
+        }),
+      })
+    })
+
+    await waitFor(() => expect(streamSubscriptions).toHaveLength(1))
+
+    act(() => {
+      emitRuntimeStream(
+        0,
+        makeRuntimeCompletionEvent('project-1', {
+          agentSessionId: 'agent-session-main',
+          runId: 'run-main',
+        }),
+      )
+    })
+
+    await waitFor(() => {
+      expect(projectButton.querySelector('.xero-project-rail-completion-count-badge')).toHaveTextContent('1')
+      expect(projectButton).toHaveAttribute('data-agent-running', 'true')
+    })
+
+    act(() => {
+      emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-secondary',
+        run: makeRuntimeRun('project-1', {
+          agentSessionId: 'agent-session-secondary',
+          runId: 'run-secondary',
+          status: 'stopped',
+          stoppedAt: '2026-04-15T20:06:00Z',
+          updatedAt: '2026-04-15T20:06:00Z',
+        }),
+      })
+    })
+
+    await waitFor(() => {
+      expect(projectButton.querySelector('.xero-project-rail-completion-count-badge')).toHaveTextContent('2')
+      expect(projectButton).not.toHaveAttribute('data-agent-running')
+    })
+  })
+
+  it('clears the project rail animation when a background project run is no longer active', async () => {
+    const { adapter, emitRuntimeRunUpdated } = createAdapter({
+      projects: [makeProjectSummary('project-1', 'Xero'), makeProjectSummary('project-2', 'Nova')],
+    })
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    const backgroundProjectButton = screen.getByRole('button', { name: 'Open Nova' })
+    expect(backgroundProjectButton).not.toHaveAttribute('data-agent-running')
+
+    act(() => {
+      emitRuntimeRunUpdated({
+        projectId: 'project-2',
+        agentSessionId: 'agent-session-main',
+        run: makeRuntimeRun('project-2', { runId: 'run-project-2' }),
+      })
+    })
+
+    await waitFor(() =>
+      expect(backgroundProjectButton).toHaveAttribute('data-agent-running', 'true'),
+    )
+
+    act(() => {
+      emitRuntimeRunUpdated({
+        projectId: 'project-2',
+        agentSessionId: 'agent-session-main',
+        run: null,
+      })
+    })
+
+    await waitFor(() => expect(backgroundProjectButton).not.toHaveAttribute('data-agent-running'))
+    expect(backgroundProjectButton.querySelector('.xero-project-rail-activity-aura-field')).toBeNull()
+  })
+
+  it('shows completed unseen session counts from notifications on project rail cards', async () => {
+    const { adapter, emitRuntimeRunUpdated } = createAdapter({
+      projects: [makeProjectSummary('project-1', 'Xero'), makeProjectSummary('project-2', 'Nova')],
+    })
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    const backgroundProjectButton = screen.getByRole('button', { name: 'Open Nova' })
+    expect(backgroundProjectButton.querySelector('.xero-project-rail-completion-count-badge')).toBeNull()
+
+    act(() => {
+      emitRuntimeRunUpdated({
+        projectId: 'project-2',
+        agentSessionId: 'agent-session-main',
+        run: makeRuntimeRun('project-2', { runId: 'run-project-2' }),
+      })
+    })
+
+    await waitFor(() =>
+      expect(backgroundProjectButton).toHaveAttribute('data-agent-running', 'true'),
+    )
+
+    act(() => {
+      emitRuntimeRunUpdated({
+        projectId: 'project-2',
+        agentSessionId: 'agent-session-main',
+        run: makeRuntimeRun('project-2', {
+          runId: 'run-project-2',
+          status: 'stopped',
+          stoppedAt: '2026-04-15T20:05:00Z',
+          updatedAt: '2026-04-15T20:05:00Z',
+        }),
+      })
+    })
+
+    await waitFor(() =>
+      expect(
+        backgroundProjectButton.querySelector('.xero-project-rail-completion-count-badge'),
+      ).toHaveTextContent('1'),
+    )
+    expect(backgroundProjectButton).toHaveAccessibleDescription('1 completed unseen session')
   })
 
   it('keeps the compact project rail on the workflow canvas view', async () => {

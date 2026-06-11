@@ -24,6 +24,9 @@ pub async fn get_repository_diff<R: Runtime>(
     drop(app);
 
     jobs.run_blocking_latest(key, "repository diff", move |cancellation| {
+        let _perf = crate::perf::PerfSpan::new("repository_diff")
+            .field("projectId", project_id.clone())
+            .field("scope", format!("{scope:?}"));
         cancellation.check_cancelled("repository diff")?;
         diff::load_repository_diff(&project_id, scope, &registry_path)
     })

@@ -1276,6 +1276,8 @@ where
                             thinking_supported: false,
                             thinking_efforts: Vec::new(),
                             thinking_default_effort: None,
+                            input_modalities: Vec::new(),
+                            input_modalities_source: Some("unknown".into()),
                         },
                     ),
                     credential_ready: Some(true),
@@ -1316,6 +1318,8 @@ where
                         thinking_supported: false,
                         thinking_efforts: Vec::new(),
                         thinking_default_effort: None,
+                        input_modalities: Vec::new(),
+                        input_modalities_source: Some("unknown".into()),
                     },
                 ))
             }
@@ -1346,6 +1350,8 @@ where
                             thinking_supported: true,
                             thinking_efforts: vec!["low".into(), "medium".into(), "high".into()],
                             thinking_default_effort: Some("medium".into()),
+                            input_modalities: Vec::new(),
+                            input_modalities_source: Some("unknown".into()),
                         },
                     ),
                     credential_ready: Some(self.provider.has_provider_credentials()),

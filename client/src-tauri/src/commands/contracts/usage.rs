@@ -9,6 +9,7 @@ use crate::db::project_store::{ProjectUsageModelBreakdownRecord, ProjectUsageTot
 pub struct ProjectUsageTotalsDto {
     pub run_count: u64,
     pub input_tokens: u64,
+    pub billable_input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
     pub cache_read_tokens: u64,
@@ -26,6 +27,7 @@ pub struct ProjectUsageModelBreakdownDto {
     pub model_id: String,
     pub run_count: u64,
     pub input_tokens: u64,
+    pub billable_input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
     pub cache_read_tokens: u64,
@@ -48,6 +50,7 @@ pub fn project_usage_totals_dto(record: ProjectUsageTotalsRecord) -> ProjectUsag
     ProjectUsageTotalsDto {
         run_count: record.run_count,
         input_tokens: record.input_tokens,
+        billable_input_tokens: record.billable_input_tokens,
         output_tokens: record.output_tokens,
         total_tokens: record.total_tokens,
         cache_read_tokens: record.cache_read_tokens,
@@ -65,6 +68,7 @@ pub fn project_usage_model_breakdown_dto(
         model_id: record.model_id,
         run_count: record.run_count,
         input_tokens: record.input_tokens,
+        billable_input_tokens: record.billable_input_tokens,
         output_tokens: record.output_tokens,
         total_tokens: record.total_tokens,
         cache_read_tokens: record.cache_read_tokens,

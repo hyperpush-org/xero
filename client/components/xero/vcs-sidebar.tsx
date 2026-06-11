@@ -1,6 +1,7 @@
 "use client"
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type MutableRefObject } from "react"
+import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -52,7 +53,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { FloatingRightSidebarFrame } from "@/components/xero/floating-right-sidebar-frame"
 
 const MIN_WIDTH = 600
-const DEFAULT_WIDTH_RATIO = 0.7
+const DEFAULT_WIDTH_RATIO = 0.55
 const FILE_LIST_WIDTH = 300
 const MAX_DIFF_CACHE_ENTRIES = 80
 export const DIFF_PATCH_CACHE_MAX_BYTES = 4 * 1024 * 1024
@@ -64,6 +65,7 @@ export const DIFF_LINE_HIGHLIGHT_BYTE_LIMIT = 8 * 1024
 export const DIFF_TOKENIZATION_BATCH_SIZE = 24
 const DIFF_PARSE_CACHE_MAX_ENTRIES = 80
 export const DIFF_PARSE_CACHE_MAX_BYTES = 4 * 1024 * 1024
+const ACTION_SUCCESS_DISMISS_MS = 4000
 
 type ChangeKind = RepositoryStatusEntryView["staged"]
 type RepositoryDiffFileDto = RepositoryDiffResponseDto["files"][number]
@@ -256,6 +258,7 @@ export const VcsSidebar = memo(function VcsSidebar(props: VcsSidebarProps) {
       onOverlayClick={handleClose}
       open={open}
       width={renderedWidth}
+      isResizing={isResizing}
     >
       {shouldRenderDiffPane ? (
         <div
@@ -322,6 +325,13 @@ function VcsSidebarBody({
   const [actionMessage, setActionMessage] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const onLoadDiffRef = useRef(onLoadDiff)
+  const shouldReduceMotion = useReducedMotion()
+  const actionBannerTransition = shouldReduceMotion
+    ? { duration: 0 }
+    : { duration: 0.18, ease: [0.22, 1, 0.36, 1] as const }
+  const diffPaneTransition = shouldReduceMotion
+    ? { duration: 0 }
+    : { duration: 0.16, ease: [0.22, 1, 0.36, 1] as const }
 
   const statusEntriesSignature = useMemo(() => getStatusEntriesSignature(status), [status])
   const repositoryRevision = status?.diffRevision ?? createRepositoryStatusDiffRevision(status)
@@ -345,6 +355,14 @@ function VcsSidebarBody({
   useEffect(() => {
     onLoadDiffRef.current = onLoadDiff
   }, [onLoadDiff])
+
+  useEffect(() => {
+    if (!actionMessage || actionError) return
+    const timeout = window.setTimeout(() => {
+      setActionMessage(null)
+    }, ACTION_SUCCESS_DISMISS_MS)
+    return () => window.clearTimeout(timeout)
+  }, [actionError, actionMessage])
 
   const { stagedFiles, unstagedFiles } = useMemo(() => {
     const staged: FileEntry[] = []
@@ -454,14 +472,19 @@ function VcsSidebarBody({
   }, [allEntries, selectedPath])
 
   const runAction = useCallback(
-    async <T,>(kind: ActionKind, fn: () => Promise<T>, successLabel?: string): Promise<T | null> => {
+    async <T,>(
+      kind: ActionKind,
+      fn: () => Promise<T>,
+      successLabel?: string,
+      refreshStatus = true,
+    ): Promise<T | null> => {
       setActionKind(kind)
       setActionError(null)
       setActionMessage(null)
       try {
         const result = await fn()
         if (successLabel) setActionMessage(successLabel)
-        await onRefreshStatus()
+        if (refreshStatus) await onRefreshStatus()
         return result
       } catch (error) {
         setActionError(error instanceof Error ? error.message : "Action failed.")
@@ -518,14 +541,11 @@ function VcsSidebarBody({
     void runAction(
       "generate-commit-message",
       () => onGenerateCommitMessage(projectId, commitMessageModel),
+      undefined,
+      false,
     ).then((result) => {
       if (!result) return
       setCommitMessage(result.message)
-      setActionMessage(
-        result.diffTruncated
-          ? "Commit message generated from truncated staged diff."
-          : "Commit message generated.",
-      )
     })
   }, [commitMessageModel, onGenerateCommitMessage, projectId, runAction, stagedFiles.length])
   const handleFetch = useCallback(() => {
@@ -563,6 +583,11 @@ function VcsSidebarBody({
   const generateCommitMessageLabel = commitMessageModel?.label
     ? `Generate commit message with ${commitMessageModel.label}`
     : "Generate commit message"
+  const actionBanner = actionError
+    ? { kind: "error" as const, text: actionError }
+    : actionMessage
+      ? { kind: "success" as const, text: actionMessage }
+      : null
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col">
@@ -597,15 +622,29 @@ function VcsSidebarBody({
       </div>
 
       {/* Action banner */}
-      {actionError ? (
-        <div className="shrink-0 border-b border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[11px] text-destructive">
-          {actionError}
-        </div>
-      ) : actionMessage ? (
-        <div className="shrink-0 border-b border-success/20 bg-success/10 px-3 py-1.5 text-[11px] text-success">
-          {actionMessage}
-        </div>
-      ) : null}
+      <AnimatePresence initial={false}>
+        {actionBanner ? (
+          <motion.div
+            key={`${actionBanner.kind}-${actionBanner.text}`}
+            className="shrink-0 overflow-hidden"
+            initial={{ height: 0, opacity: 0, y: -4 }}
+            animate={{ height: "auto", opacity: 1, y: 0 }}
+            exit={{ height: 0, opacity: 0, y: -4 }}
+            transition={actionBannerTransition}
+          >
+            <div
+              className={cn(
+                "border-b px-3 py-1.5 text-[11px]",
+                actionBanner.kind === "error"
+                  ? "border-destructive/30 bg-destructive/10 text-destructive"
+                  : "border-success/20 bg-success/10 text-success",
+              )}
+            >
+              {actionBanner.text}
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
 
       {/* Two-column body */}
       <div className="flex min-h-0 flex-1">
@@ -675,34 +714,34 @@ function VcsSidebarBody({
               placeholder="Commit message (⌘⏎ to commit)"
               value={commitMessage}
             />
-            <div className="mt-1.5 flex items-center justify-between gap-2">
+            <div className="mt-2 flex items-center justify-between gap-2">
               <span className="text-[10.5px] text-muted-foreground">
                 {stagedFiles.length} staged · {unstagedFiles.length} unstaged
               </span>
-              <div className="ml-auto flex items-center gap-1">
+              <div className="ml-auto flex items-center gap-1.5">
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
                       aria-label={generateCommitMessageLabel}
-                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                      className="size-[22px] text-muted-foreground hover:text-foreground"
                       disabled={!canGenerateCommitMessage}
                       onClick={handleGenerateCommitMessage}
-                      size="icon-sm"
+                      size="icon-xs"
                       title={generateCommitMessageLabel}
                       type="button"
                       variant="ghost"
                     >
                       {actionKind === "generate-commit-message" ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        <Loader2 className="h-2.5 w-2.5 animate-spin" />
                       ) : (
-                        <Sparkles className="h-3.5 w-3.5" />
+                        <Sparkles className="h-2.5 w-2.5" />
                       )}
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent side="top">{generateCommitMessageLabel}</TooltipContent>
                 </Tooltip>
                 <Button
-                  className="h-7 gap-1.5 px-2.5 text-[11.5px]"
+                  className="h-6 gap-1 px-2 text-[11px]"
                   disabled={
                     isBusy || !projectId || stagedFiles.length === 0 || commitMessage.trim().length === 0
                   }
@@ -711,43 +750,49 @@ function VcsSidebarBody({
                   type="button"
                 >
                   {actionKind === "commit" ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
+                    <Loader2 className="h-2.5 w-2.5 animate-spin" />
                   ) : (
-                    <GitCommit className="h-3 w-3" />
+                    <GitCommit className="h-2.5 w-2.5" />
                   )}
                   Commit
-                  <kbd className="ml-0.5 hidden rounded border border-primary-foreground/20 bg-primary-foreground/10 px-1 py-px font-mono text-[9px] sm:inline-flex">
-                    ⌘⏎
-                  </kbd>
                 </Button>
               </div>
             </div>
           </div>
         </div>
 
-        {shouldRenderDiffPane ? (
-          <div className="flex min-w-0 flex-1 flex-col bg-background/40">
-            <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-border/70 bg-sidebar px-3">
-              <span className="truncate text-[12px] font-medium text-foreground/85">
-                {selectedPath ?? "Select a file"}
-              </span>
-              {diffLoading ? (
-                <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-              ) : null}
-            </div>
-            <div className="min-h-0 flex-1">
-              {diffError ? (
-                <div className="px-4 py-4 text-[12px] text-destructive">{diffError}</div>
-              ) : diffFile || diffPatch ? (
-                <DiffView file={diffFile} patch={diffPatch} path={selectedPath ?? ""} />
-              ) : (
-                <div className="px-4 py-4 text-[12px] text-muted-foreground/70">
-                  {selectedPath ? "No diff available." : "Select a file to view its diff."}
-                </div>
-              )}
-            </div>
-          </div>
-        ) : null}
+        <AnimatePresence initial={false}>
+          {shouldRenderDiffPane ? (
+            <motion.div
+              key="diff-pane"
+              className="flex min-w-0 flex-1 flex-col bg-background/40"
+              initial={{ opacity: 0, x: 12 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 12 }}
+              transition={diffPaneTransition}
+            >
+              <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-border/70 bg-sidebar px-3">
+                <span className="truncate text-[12px] font-medium text-foreground/85">
+                  {selectedPath ?? "Select a file"}
+                </span>
+                {diffLoading ? (
+                  <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+                ) : null}
+              </div>
+              <div className="min-h-0 flex-1">
+                {diffError ? (
+                  <div className="px-4 py-4 text-[12px] text-destructive">{diffError}</div>
+                ) : diffFile || diffPatch ? (
+                  <DiffView file={diffFile} patch={diffPatch} path={selectedPath ?? ""} />
+                ) : (
+                  <div className="px-4 py-4 text-[12px] text-muted-foreground/70">
+                    {selectedPath ? "No diff available." : "Select a file to view its diff."}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
       </div>
     </div>
   )
@@ -779,11 +824,6 @@ type VcsFileListRow =
       count: number
     }
   | {
-      kind: "empty"
-      groupKind: "staged" | "unstaged"
-      label: string
-    }
-  | {
       kind: "file"
       groupKind: "staged" | "unstaged"
       entry: FileEntry
@@ -801,21 +841,13 @@ function createVcsFileListRows({
   const rows: VcsFileListRow[] = []
 
   rows.push({ kind: "group", groupKind: "staged", groupLabel: "Staged Changes", count: stagedFiles.length })
-  if (!collapsedGroups.staged) {
-    if (stagedFiles.length === 0) {
-      rows.push({ kind: "empty", groupKind: "staged", label: "No staged changes" })
-    } else {
-      for (const entry of stagedFiles) rows.push({ kind: "file", groupKind: "staged", entry })
-    }
+  if (!collapsedGroups.staged && stagedFiles.length > 0) {
+    for (const entry of stagedFiles) rows.push({ kind: "file", groupKind: "staged", entry })
   }
 
   rows.push({ kind: "group", groupKind: "unstaged", groupLabel: "Changes", count: unstagedFiles.length })
-  if (!collapsedGroups.unstaged) {
-    if (unstagedFiles.length === 0) {
-      rows.push({ kind: "empty", groupKind: "unstaged", label: "Working tree is clean" })
-    } else {
-      for (const entry of unstagedFiles) rows.push({ kind: "file", groupKind: "unstaged", entry })
-    }
+  if (!collapsedGroups.unstaged && unstagedFiles.length > 0) {
+    for (const entry of unstagedFiles) rows.push({ kind: "file", groupKind: "unstaged", entry })
   }
 
   return rows
@@ -882,7 +914,8 @@ const VcsFileList = memo(function VcsFileList({
       {renderedRowIndexes.map((rowIndex) => {
         const row = rows[rowIndex]
         if (row.kind === "group") {
-          const collapsed = collapsedGroups[row.groupKind]
+          const isEmpty = row.count === 0
+          const collapsed = isEmpty || collapsedGroups[row.groupKind]
           const groupAction =
             row.groupKind === "unstaged"
               ? {
@@ -906,8 +939,15 @@ const VcsFileList = memo(function VcsFileList({
             >
               <button
                 aria-expanded={!collapsed}
-                aria-label={collapsed ? `Expand ${row.groupLabel}` : `Collapse ${row.groupLabel}`}
-                className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                aria-label={
+                  isEmpty
+                    ? `${row.groupLabel} is empty`
+                    : collapsed
+                      ? `Expand ${row.groupLabel}`
+                      : `Collapse ${row.groupLabel}`
+                }
+                className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-default"
+                disabled={isEmpty}
                 onClick={() => toggleGroup(row.groupKind)}
                 type="button"
               >
@@ -929,18 +969,6 @@ const VcsFileList = memo(function VcsFileList({
                   <GroupActionButton disabled={busy} {...groupAction} />
                 </span>
               ) : null}
-            </div>
-          )
-        }
-
-        if (row.kind === "empty") {
-          return (
-            <div
-              className="flex h-[28px] shrink-0 items-center border-b border-border/40 px-7 text-[11px] text-muted-foreground/70"
-              key={`${row.groupKind}:empty`}
-              role="presentation"
-            >
-              {row.label}
             </div>
           )
         }

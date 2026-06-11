@@ -1857,6 +1857,33 @@ pub fn list_agent_retrieval_results(
         .collect()
 }
 
+pub fn list_agent_retrieval_queries_for_run(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> Result<Vec<AgentRetrievalQueryLogRecord>, CommandError> {
+    validate_non_empty_text(
+        project_id,
+        "projectId",
+        "agent_retrieval_query_project_required",
+    )?;
+    validate_non_empty_text(run_id, "runId", "agent_retrieval_query_run_required")?;
+    let connection = open_continuity_database(repo_root)?;
+    let mut statement = connection
+        .prepare(
+            retrieval_query_select_sql("WHERE project_id = ?1 AND run_id = ?2 ORDER BY id ASC")
+                .as_str(),
+        )
+        .map_err(map_continuity_read_error)?;
+    let rows = statement
+        .query_map(params![project_id, run_id], read_retrieval_query_row)
+        .map_err(map_continuity_read_error)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(map_continuity_read_error)?
+        .into_iter()
+        .collect()
+}
+
 pub fn retrieval_query_hash(query_text: &str) -> String {
     let normalized = query_text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut hasher = Sha256::new();
@@ -2540,14 +2567,6 @@ fn validate_handoff(record: &NewAgentHandoffLineageRecord) -> Result<(), Command
         "sourceRunId",
         "agent_handoff_lineage_source_run_required",
     )?;
-    if record.source_agent_definition_id != record.target_agent_definition_id
-        || record.source_agent_definition_version != record.target_agent_definition_version
-    {
-        return Err(CommandError::user_fixable(
-            "agent_handoff_lineage_target_definition_mismatch",
-            "Same-agent handoff requires the target agent definition id and version to match the source definition.",
-        ));
-    }
     validate_non_empty_text(
         &record.source_agent_definition_id,
         "sourceAgentDefinitionId",

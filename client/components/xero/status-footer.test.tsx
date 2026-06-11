@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { StatusFooter } from './status-footer'
 
@@ -40,5 +40,51 @@ describe('StatusFooter', () => {
 
     expect(screen.queryByText('↑2 ↓0')).not.toBeInTheDocument()
     expect(screen.getByText('clean')).toBeVisible()
+  })
+
+  it('shows a styled tooltip for the footer spend button', async () => {
+    vi.useRealTimers()
+
+    render(
+      <StatusFooter
+        spend={{ totalTokens: 1_190_000, totalCostMicros: 1_670_000 }}
+        onSpendClick={() => undefined}
+      />,
+    )
+
+    const spendButton = screen.getByRole('button', {
+      name: 'Project spend: 1.19M tokens, $1.67',
+    })
+    fireEvent.pointerEnter(spendButton)
+    fireEvent.pointerMove(spendButton)
+
+    await waitFor(() =>
+      expect(document.querySelector('[data-slot="tooltip-content"][data-side="top"]')).toHaveTextContent(
+        'View project usage breakdown',
+      ),
+    )
+  })
+
+  it('shows a styled tooltip for the footer notifications button', async () => {
+    vi.useRealTimers()
+
+    render(
+      <StatusFooter
+        notifications={1}
+        onNotificationsClick={() => undefined}
+      />,
+    )
+
+    const notificationsButton = screen.getByRole('button', {
+      name: '1 unread notifications',
+    })
+    fireEvent.pointerEnter(notificationsButton)
+    fireEvent.pointerMove(notificationsButton)
+
+    await waitFor(() =>
+      expect(document.querySelector('[data-slot="tooltip-content"][data-side="top"]')).toHaveTextContent(
+        'View unread session responses',
+      ),
+    )
   })
 })
