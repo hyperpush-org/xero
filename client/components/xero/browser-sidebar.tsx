@@ -54,6 +54,9 @@ import {
 import {
   BROWSER_TOOL_CLOSED_EVENT,
   BROWSER_TOOL_CONTEXT_EVENT,
+  BROWSER_TOOL_DICTATION_TOGGLE_EVENT,
+  BROWSER_TOOL_FOCUS_COMPOSER_NOTE_SCRIPT,
+  BROWSER_TOOL_NOTE_EVENT,
   BROWSER_TOOL_STATE_EVENT,
   BROWSER_TOOL_DEACTIVATE_SCRIPT,
   BROWSER_TOOL_FINISH_CAPTURE_SCRIPT,
@@ -63,6 +66,8 @@ import {
   buildBrowserToolActivationScript,
   buildBrowserToolAgentPrompt,
   buildBrowserToolContextCard,
+  buildBrowserToolDictationStateScript,
+  buildBrowserToolSetComposerNoteScript,
   buildBrowserToolVisiblePrompt,
   isDevServerUrl,
   readBrowserToolTheme,
@@ -70,6 +75,10 @@ import {
   type BrowserToolContext,
   type BrowserToolPromptMetadata,
 } from "./browser-tool-injection"
+import {
+  useSpeechDictation,
+  type SpeechDictationAdapter,
+} from "./agent-runtime/use-speech-dictation"
 import {
   createBrowserResizeScheduler,
   readBrowserViewportRect,
@@ -130,6 +139,7 @@ const OVERLAY_OCCLUSION_SELECTOR = [
 
 interface BrowserSidebarProps {
   open: boolean
+  dictationAdapter?: SpeechDictationAdapter
   projectId?: string | null
   fullWidth?: boolean
   fullWidthTarget?: number | null
@@ -229,6 +239,19 @@ interface NormalizedBrowserToolStateEvent {
   mode: ToolMode
   strokeCount: number
   hasDrawing: boolean
+}
+
+interface NormalizedBrowserToolNoteEvent {
+  tabId: string | null
+  mode: ToolMode
+  note: string
+  active: boolean
+}
+
+interface NormalizedBrowserToolDictationToggleEvent {
+  tabId: string | null
+  mode: ToolMode
+  note: string
 }
 
 type BrowserOcclusionRect = ViewportRect
@@ -530,6 +553,41 @@ function normalizeBrowserToolStateEvent(
     mode,
     strokeCount: Number.isFinite(strokeCount) ? Math.max(0, strokeCount) : 0,
     hasDrawing: payload.hasDrawing === true || strokeCount > 0,
+  }
+}
+
+function normalizeBrowserToolNoteEvent(
+  value: unknown,
+): NormalizedBrowserToolNoteEvent | null {
+  if (!value || typeof value !== "object") return null
+  const payload = value as {
+    active?: unknown
+    mode?: unknown
+    note?: unknown
+  }
+  const mode =
+    payload.mode === "pen" || payload.mode === "inspect" ? payload.mode : null
+
+  return {
+    tabId: readBrowserToolEventTabId(value),
+    mode,
+    note: typeof payload.note === "string" ? payload.note : "",
+    active: payload.active === true,
+  }
+}
+
+function normalizeBrowserToolDictationToggleEvent(
+  value: unknown,
+): NormalizedBrowserToolDictationToggleEvent | null {
+  if (!value || typeof value !== "object") return null
+  const payload = value as { mode?: unknown; note?: unknown }
+  const mode =
+    payload.mode === "pen" || payload.mode === "inspect" ? payload.mode : null
+
+  return {
+    tabId: readBrowserToolEventTabId(value),
+    mode,
+    note: typeof payload.note === "string" ? payload.note : "",
   }
 }
 
@@ -888,6 +946,7 @@ function BrowserSortableTab({
 
 export function BrowserSidebar({
   open,
+  dictationAdapter,
   projectId = null,
   fullWidth = false,
   fullWidthTarget = null,
@@ -913,6 +972,8 @@ export function BrowserSidebar({
   const [navError, setNavError] = useState<string | null>(null)
   const [showCookieBanner, setShowCookieBanner] = useState(false)
   const [toolMode, setToolMode] = useState<ToolMode>(null)
+  const [toolNoteDraft, setToolNoteDraft] = useState("")
+  const [toolNoteActive, setToolNoteActive] = useState(false)
   const [penHasDrawing, setPenHasDrawing] = useState(false)
   const [toolSubmitting, setToolSubmitting] = useState(false)
   const [captureOverlayVisible, setCaptureOverlayVisible] = useState(false)
@@ -946,6 +1007,10 @@ export function BrowserSidebar({
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const projectTargetPickerButtonRef = useRef<HTMLButtonElement | null>(null)
   const projectTargetPanelRef = useRef<HTMLDivElement | null>(null)
+  const toolNoteInputRef = useRef<HTMLTextAreaElement | null>(null)
+  const toolNoteDraftRef = useRef("")
+  const toolNoteDraftBrowserEchoRef = useRef<string | null>(null)
+  const browserToolDictationToggleRef = useRef<() => Promise<void>>(async () => undefined)
   const addressFocusedRef = useRef(false)
   const hasWebviewRef = useRef(false)
   if (tabs.length > 0) {
@@ -978,6 +1043,38 @@ export function BrowserSidebar({
   toolModeRef.current = toolMode
   onAddAgentContextRef.current = onAddAgentContext
   onProjectBrowserTargetUnavailableRef.current = onProjectBrowserTargetUnavailable
+
+  const focusBrowserToolNoteInput = useCallback(() => {
+    if (!isTauri()) return
+    void invoke("browser_eval_fire_and_forget", {
+      js: BROWSER_TOOL_FOCUS_COMPOSER_NOTE_SCRIPT,
+    }).catch(() => {
+      /* best-effort focus */
+    })
+  }, [])
+
+  const readBrowserToolNoteDraft = useCallback(() => toolNoteDraftRef.current, [])
+
+  const browserToolDictation = useSpeechDictation({
+    adapter: dictationAdapter,
+    enabled: open && toolNoteActive,
+    scopeKey: [
+      projectId ?? "global",
+      activeTabId ?? "none",
+      toolMode ?? "none",
+      toolNoteActive ? "active" : "inactive",
+    ].join(":"),
+    draftPrompt: toolNoteDraft,
+    setDraftPrompt: setToolNoteDraft,
+    promptInputDisabled: !open || !toolNoteActive || toolSubmitting,
+    promptInputRef: toolNoteInputRef,
+    focusPromptInput: focusBrowserToolNoteInput,
+    readDraftPrompt: readBrowserToolNoteDraft,
+  })
+
+  useEffect(() => {
+    browserToolDictationToggleRef.current = browserToolDictation.toggle
+  }, [browserToolDictation.toggle])
 
   useEffect(() => {
     if (!open || !motionOpen) {
@@ -1485,6 +1582,100 @@ export function BrowserSidebar({
     ],
   )
 
+  const handleBrowserToolNoteEvent = useCallback((payload: unknown) => {
+    const normalized = normalizeBrowserToolNoteEvent(payload)
+    if (!normalized) return
+    if (normalized.tabId && normalized.tabId !== activeTabIdRef.current) return
+    if (normalized.mode && normalized.mode !== toolModeRef.current) return
+
+    toolNoteDraftBrowserEchoRef.current = normalized.note
+    toolNoteDraftRef.current = normalized.note
+    setToolNoteDraft(normalized.note)
+    setToolNoteActive(normalized.active)
+  }, [])
+
+  const handleBrowserToolDictationToggle = useCallback(
+    async (payload: unknown) => {
+      const normalized = normalizeBrowserToolDictationToggleEvent(payload)
+      if (!normalized) return
+      if (normalized.tabId && normalized.tabId !== activeTabIdRef.current) return
+      if (normalized.mode && normalized.mode !== toolModeRef.current) return
+
+      toolNoteDraftRef.current = normalized.note
+      setToolNoteDraft(normalized.note)
+      setToolNoteActive(true)
+      await browserToolDictationToggleRef.current()
+    },
+    [],
+  )
+
+  useEffect(() => {
+    toolNoteDraftRef.current = toolNoteDraft
+  }, [toolNoteDraft])
+
+  useEffect(() => {
+    if (!open || toolMode === null || !activeTabId) {
+      toolNoteDraftBrowserEchoRef.current = null
+      toolNoteDraftRef.current = ""
+      setToolNoteActive(false)
+      setToolNoteDraft("")
+    }
+  }, [activeTabId, open, toolMode])
+
+  useEffect(() => {
+    if (!open || !toolNoteActive || !isTauri()) {
+      toolNoteDraftBrowserEchoRef.current = null
+      return
+    }
+
+    if (toolNoteDraftBrowserEchoRef.current === toolNoteDraft) {
+      toolNoteDraftBrowserEchoRef.current = null
+      return
+    }
+    toolNoteDraftBrowserEchoRef.current = null
+
+    void invoke("browser_eval_fire_and_forget", {
+      js: buildBrowserToolSetComposerNoteScript(toolNoteDraft),
+    }).catch(() => {
+      /* the active page may already have navigated away */
+    })
+  }, [open, toolNoteActive, toolNoteDraft])
+
+  useEffect(() => {
+    if (!open || !toolNoteActive || !isTauri()) return
+
+    void invoke("browser_eval_fire_and_forget", {
+        js: buildBrowserToolDictationStateScript({
+          ariaLabel: browserToolDictation.ariaLabel,
+          audioLevel: browserToolDictation.audioLevel,
+          isListening:
+            browserToolDictation.isListening ||
+            browserToolDictation.phase === "requesting" ||
+            browserToolDictation.phase === "stopping",
+          isToggleDisabled: browserToolDictation.isToggleDisabled,
+          tooltip: browserToolDictation.tooltip,
+          visible: browserToolDictation.isVisible,
+        }),
+    }).catch(() => {
+      /* the active page may already have navigated away */
+    })
+  }, [
+    browserToolDictation.ariaLabel,
+    browserToolDictation.audioLevel,
+    browserToolDictation.isListening,
+    browserToolDictation.isToggleDisabled,
+    browserToolDictation.isVisible,
+    browserToolDictation.phase,
+    browserToolDictation.tooltip,
+    open,
+    toolNoteActive,
+  ])
+
+  useEffect(() => {
+    if (!toolNoteActive || !browserToolDictation.error) return
+    setToolSubmitError(browserToolDictation.error.message)
+  }, [browserToolDictation.error, toolNoteActive])
+
   useEffect(() => {
     if (toolSubmitting) {
       setCaptureOverlayVisible(true)
@@ -1931,6 +2122,24 @@ export function BrowserSidebar({
     )
 
     trackUnlisten(
+      listen<unknown>(BROWSER_TOOL_NOTE_EVENT, (event) => {
+        recordIpcPayloadSample({ boundary: "event", name: BROWSER_TOOL_NOTE_EVENT, payload: event.payload })
+        handleBrowserToolNoteEvent(event.payload)
+      }),
+    )
+
+    trackUnlisten(
+      listen<unknown>(BROWSER_TOOL_DICTATION_TOGGLE_EVENT, (event) => {
+        recordIpcPayloadSample({
+          boundary: "event",
+          name: BROWSER_TOOL_DICTATION_TOGGLE_EVENT,
+          payload: event.payload,
+        })
+        void handleBrowserToolDictationToggle(event.payload)
+      }),
+    )
+
+    trackUnlisten(
       listen<unknown>(BROWSER_TOOL_CLOSED_EVENT, (event) => {
         recordIpcPayloadSample({ boundary: "event", name: BROWSER_TOOL_CLOSED_EVENT, payload: event.payload })
         const payload = normalizeBrowserToolClosedEvent(event.payload)
@@ -1938,6 +2147,7 @@ export function BrowserSidebar({
         if (!payload.tabId || payload.tabId === activeTabIdRef.current) {
           injectedToolModeRef.current = null
           setToolMode(null)
+          setToolNoteActive(false)
           setPenHasDrawing(false)
         }
       }),
@@ -1964,6 +2174,8 @@ export function BrowserSidebar({
     applyNativeOcclusionClick,
     applyNativeOcclusionWheel,
     applyNativeResizeDrag,
+    handleBrowserToolDictationToggle,
+    handleBrowserToolNoteEvent,
   ])
 
   // Hydrate tabs when sidebar opens

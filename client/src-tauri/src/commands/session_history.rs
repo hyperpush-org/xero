@@ -2544,6 +2544,7 @@ fn compile_prompt_context_for_snapshot(
                 runtime_agent_id: controls.active.runtime_agent_id,
                 agent_tool_policy: None,
                 tool_application_policy: Default::default(),
+                stage_allowed_tools: None,
             },
         )
         .into_descriptors()

@@ -699,10 +699,32 @@ final class XeroLegacyDictationEngine {
         guard !transcript.isEmpty else {
             return segment
         }
+        if transcriptSegment(segment, startsWithCompleteTranscript: transcript) {
+            return segment
+        }
         if transcript.hasSuffix(" ") || segment.hasPrefix(" ") {
             return transcript + segment
         }
         return transcript + " " + segment
+    }
+
+    private func transcriptSegment(_ segment: String, startsWithCompleteTranscript transcript: String) -> Bool {
+        guard segment.count >= transcript.count else {
+            return false
+        }
+        let prefix = String(segment.prefix(transcript.count))
+        guard prefix.compare(transcript, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame else {
+            return false
+        }
+        guard segment.count > transcript.count else {
+            return true
+        }
+        let boundaryIndex = segment.index(segment.startIndex, offsetBy: transcript.count)
+        return isTranscriptBoundary(segment[boundaryIndex])
+    }
+
+    private func isTranscriptBoundary(_ character: Character) -> Bool {
+        character.isWhitespace || ",.;:!?)".contains(character)
     }
 
     private func emit(_ payload: [String: Any]) {

@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use rusqlite_migration::{Migrations, M};
 
-pub const PROJECT_DATABASE_SCHEMA_VERSION: i64 = 40;
+pub const PROJECT_DATABASE_SCHEMA_VERSION: i64 = 42;
 
 pub fn migrations() -> &'static Migrations<'static> {
     static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
@@ -47,6 +47,8 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(MIGRATION_031_AGENT_MAILBOX_SCOPED_INBOX_CHECKS_SQL),
             M::up(MIGRATION_032_AGENT_USAGE_BILLABLE_INPUT_SQL),
             M::up(MIGRATION_033_AGENT_RUN_WAKEUPS_SQL),
+            M::up(MIGRATION_034_ENGINEER_MUTATION_STAGE_TOOLS_SQL),
+            M::up(MIGRATION_035_ENGINEER_CORE_STAGE_TOOLS_SQL),
         ])
     });
 
@@ -54,6 +56,283 @@ pub fn migrations() -> &'static Migrations<'static> {
 }
 
 const NOOP_SCHEMA_VERSION_MARKER_SQL: &str = "";
+
+const MIGRATION_035_ENGINEER_CORE_STAGE_TOOLS_SQL: &str = r#"
+    INSERT OR IGNORE INTO agent_definition_versions (
+        definition_id,
+        version,
+        snapshot_json,
+        validation_report_json,
+        created_at
+    )
+    SELECT
+        'engineer',
+        4,
+        json_set(
+            snapshot_json,
+            '$.version', 4,
+            '$.description', 'Implement repository changes with the complete repository observation and mutation toolset plus safety gates.',
+            '$.workflowStructure.phases[0].allowedTools', json_array(
+                'read',
+                'read_many',
+                'result_page',
+                'stat',
+                'search',
+                'find',
+                'list',
+                'list_tree',
+                'directory_digest',
+                'file_hash',
+                'git_status',
+                'git_diff',
+                'code_intel',
+                'lsp',
+                'workspace_index',
+                'tool_access',
+                'tool_search',
+                'project_context_search',
+                'project_context_get',
+                'environment_context',
+                'command_probe',
+                'todo'
+            ),
+            '$.workflowStructure.phases[1].allowedTools', json_array(
+                'read',
+                'read_many',
+                'result_page',
+                'stat',
+                'search',
+                'find',
+                'list',
+                'list_tree',
+                'directory_digest',
+                'file_hash',
+                'git_status',
+                'git_diff',
+                'code_intel',
+                'lsp',
+                'workspace_index',
+                'tool_access',
+                'tool_search',
+                'project_context_search',
+                'project_context_get',
+                'project_context_record',
+                'environment_context',
+                'command_probe',
+                'todo'
+            ),
+            '$.workflowStructure.phases[2].allowedTools', json_array(
+                'read',
+                'read_many',
+                'result_page',
+                'stat',
+                'search',
+                'find',
+                'list',
+                'list_tree',
+                'directory_digest',
+                'file_hash',
+                'git_status',
+                'git_diff',
+                'code_intel',
+                'lsp',
+                'workspace_index',
+                'tool_access',
+                'tool_search',
+                'project_context_search',
+                'project_context_get',
+                'project_context_record',
+                'environment_context',
+                'command_probe',
+                'edit',
+                'write',
+                'patch',
+                'copy',
+                'fs_transaction',
+                'json_edit',
+                'toml_edit',
+                'yaml_edit',
+                'delete',
+                'rename',
+                'mkdir',
+                'notebook_edit',
+                'command_run',
+                'todo'
+            ),
+            '$.workflowStructure.phases[3].allowedTools', json_array(
+                'read',
+                'read_many',
+                'result_page',
+                'stat',
+                'search',
+                'find',
+                'list',
+                'list_tree',
+                'directory_digest',
+                'file_hash',
+                'git_status',
+                'git_diff',
+                'code_intel',
+                'lsp',
+                'workspace_index',
+                'tool_access',
+                'tool_search',
+                'project_context_search',
+                'project_context_get',
+                'project_context_record',
+                'environment_context',
+                'command_probe',
+                'edit',
+                'write',
+                'patch',
+                'copy',
+                'fs_transaction',
+                'json_edit',
+                'toml_edit',
+                'yaml_edit',
+                'delete',
+                'rename',
+                'mkdir',
+                'notebook_edit',
+                'command_run',
+                'command_verify',
+                'system_diagnostics',
+                'todo'
+            )
+        ),
+        '{"status":"valid","source":"seed"}',
+        '2026-06-06T01:00:00Z'
+    FROM agent_definition_versions
+    WHERE definition_id = 'engineer'
+      AND version = 3;
+
+    UPDATE agent_definitions
+    SET current_version = 4,
+        description = 'Implement repository changes with the complete repository observation and mutation toolset plus safety gates.',
+        updated_at = '2026-06-06T01:00:00Z'
+    WHERE definition_id = 'engineer'
+      AND current_version < 4;
+"#;
+
+const MIGRATION_034_ENGINEER_MUTATION_STAGE_TOOLS_SQL: &str = r#"
+    INSERT OR IGNORE INTO agent_definition_versions (
+        definition_id,
+        version,
+        snapshot_json,
+        validation_report_json,
+        created_at
+    )
+    SELECT
+        'engineer',
+        3,
+        json_set(
+            snapshot_json,
+            '$.version', 3,
+            '$.description', 'Implement repository changes with the existing software-building toolset, patch support, and safety gates.',
+            '$.workflowStructure.phases[2].description', 'Apply scoped repository changes with the full mutation tool surface.',
+            '$.workflowStructure.phases[2].allowedTools', json_array(
+                'read',
+                'search',
+                'find',
+                'list',
+                'file_hash',
+                'git_status',
+                'git_diff',
+                'code_intel',
+                'lsp',
+                'workspace_index',
+                'tool_access',
+                'tool_search',
+                'project_context_search',
+                'project_context_get',
+                'project_context_record',
+                'environment_context',
+                'command_probe',
+                'edit',
+                'write',
+                'patch',
+                'copy',
+                'fs_transaction',
+                'json_edit',
+                'toml_edit',
+                'yaml_edit',
+                'delete',
+                'rename',
+                'mkdir',
+                'notebook_edit',
+                'command_run',
+                'todo'
+            ),
+            '$.workflowStructure.phases[2].requiredChecks', json_array(
+                json_object(
+                    'kind', 'tool_succeeded',
+                    'toolNames', json_array(
+                        'edit',
+                        'write',
+                        'patch',
+                        'copy',
+                        'fs_transaction',
+                        'json_edit',
+                        'toml_edit',
+                        'yaml_edit',
+                        'delete',
+                        'rename',
+                        'mkdir',
+                        'notebook_edit'
+                    ),
+                    'minCount', 1,
+                    'description', 'Apply at least one repository mutation before advancing to verify.'
+                )
+            ),
+            '$.workflowStructure.phases[3].allowedTools', json_array(
+                'read',
+                'search',
+                'find',
+                'list',
+                'file_hash',
+                'git_status',
+                'git_diff',
+                'code_intel',
+                'lsp',
+                'workspace_index',
+                'tool_access',
+                'tool_search',
+                'project_context_search',
+                'project_context_get',
+                'project_context_record',
+                'environment_context',
+                'command_probe',
+                'edit',
+                'write',
+                'patch',
+                'copy',
+                'fs_transaction',
+                'json_edit',
+                'toml_edit',
+                'yaml_edit',
+                'delete',
+                'rename',
+                'mkdir',
+                'notebook_edit',
+                'command_run',
+                'command_verify',
+                'system_diagnostics',
+                'todo'
+            )
+        ),
+        '{"status":"valid","source":"seed"}',
+        '2026-06-06T00:00:00Z'
+    FROM agent_definition_versions
+    WHERE definition_id = 'engineer'
+      AND version = 2;
+
+    UPDATE agent_definitions
+    SET current_version = 3,
+        description = 'Implement repository changes with the existing software-building toolset, patch support, and safety gates.',
+        updated_at = '2026-06-06T00:00:00Z'
+    WHERE definition_id = 'engineer'
+      AND current_version < 3;
+"#;
 
 const MIGRATION_033_AGENT_RUN_WAKEUPS_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS agent_run_wakeups (
@@ -3432,7 +3711,7 @@ mod tests {
         assert!(built_ins.contains(&"agent_create:3:Agent Create".to_string()));
         assert!(built_ins.contains(&"computer_use:1:Computer Use".to_string()));
         assert!(built_ins.contains(&"debug:2:Debug".to_string()));
-        assert!(built_ins.contains(&"engineer:2:Engineer".to_string()));
+        assert!(built_ins.contains(&"engineer:4:Engineer".to_string()));
         assert!(built_ins.contains(&"generalist:1:Agent".to_string()));
         assert!(built_ins.contains(&"plan:2:Plan".to_string()));
 
@@ -3448,5 +3727,74 @@ mod tests {
             )
             .expect("count built-in snapshots missing attachedSkills");
         assert_eq!(missing_attached_skills, 0);
+    }
+
+    #[test]
+    fn fresh_schema_seeds_engineer_stage_tools() {
+        let connection = migrate_to_latest_in_memory();
+
+        let implement_patch_tools: i64 = connection
+            .query_row(
+                r#"
+                SELECT COUNT(*)
+                FROM agent_definition_versions adv,
+                     json_each(adv.snapshot_json, '$.workflowStructure.phases[2].allowedTools') tools
+                WHERE adv.definition_id = 'engineer'
+                  AND adv.version = 4
+                  AND tools.value = 'patch'
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .expect("count engineer implement patch tools");
+        assert_eq!(implement_patch_tools, 1);
+
+        let implement_list_tree_tools: i64 = connection
+            .query_row(
+                r#"
+                SELECT COUNT(*)
+                FROM agent_definition_versions adv,
+                     json_each(adv.snapshot_json, '$.workflowStructure.phases[2].allowedTools') tools
+                WHERE adv.definition_id = 'engineer'
+                  AND adv.version = 4
+                  AND tools.value = 'list_tree'
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .expect("count engineer implement list_tree tools");
+        assert_eq!(implement_list_tree_tools, 1);
+
+        let gate_patch_tools: i64 = connection
+            .query_row(
+                r#"
+                SELECT COUNT(*)
+                FROM agent_definition_versions adv,
+                     json_each(adv.snapshot_json, '$.workflowStructure.phases[2].requiredChecks[0].toolNames') tools
+                WHERE adv.definition_id = 'engineer'
+                  AND adv.version = 4
+                  AND tools.value = 'patch'
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .expect("count engineer gate patch tools");
+        assert_eq!(gate_patch_tools, 1);
+
+        let verify_patch_tools: i64 = connection
+            .query_row(
+                r#"
+                SELECT COUNT(*)
+                FROM agent_definition_versions adv,
+                     json_each(adv.snapshot_json, '$.workflowStructure.phases[3].allowedTools') tools
+                WHERE adv.definition_id = 'engineer'
+                  AND adv.version = 4
+                  AND tools.value = 'patch'
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .expect("count engineer verify patch tools");
+        assert_eq!(verify_patch_tools, 1);
     }
 }

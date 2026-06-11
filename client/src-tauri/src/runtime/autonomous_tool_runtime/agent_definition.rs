@@ -918,6 +918,7 @@ impl AutonomousToolRuntime {
             runtime_agent_id,
             agent_tool_policy: agent_tool_policy.clone(),
             tool_application_policy: self.tool_application_policy().clone(),
+            stage_allowed_tools: None,
         });
         let registry_tool_names = tool_registry
             .descriptors()
@@ -3393,16 +3394,31 @@ fn validate_workflow_check(
         }
         "tool_succeeded" => {
             let known_tools = tool_access_all_known_tools();
-            if let Some(tool_name) =
-                required_workflow_text(object, "toolName", &format!("{path}.toolName"), diagnostics)
-            {
-                if !known_tools.contains(tool_name.as_str()) {
-                    diagnostics.push(diagnostic(
-                        "agent_definition_workflow_tool_unknown",
-                        format!("Workflow check references unknown tool `{tool_name}`."),
-                        format!("{path}.toolName"),
-                    ));
-                }
+            let mut saw_tool = false;
+            if let Some(tool_name) = workflow_text(object, "toolName") {
+                saw_tool = true;
+                validate_workflow_tool_name(
+                    &tool_name,
+                    &known_tools,
+                    &format!("{path}.toolName"),
+                    diagnostics,
+                );
+            }
+            if let Some(tool_names) = object.get("toolNames") {
+                validate_workflow_tool_names(
+                    tool_names,
+                    &known_tools,
+                    &format!("{path}.toolNames"),
+                    diagnostics,
+                    &mut saw_tool,
+                );
+            }
+            if !saw_tool {
+                diagnostics.push(diagnostic(
+                    "agent_definition_workflow_text_required",
+                    "Workflow check requires non-empty text field `toolName` or non-empty string array `toolNames`.",
+                    format!("{path}.toolName"),
+                ));
             }
             validate_workflow_positive_count(object, path, diagnostics);
         }
@@ -3415,6 +3431,72 @@ fn validate_workflow_check(
             },
             format!("{path}.kind"),
         )),
+    }
+}
+
+fn workflow_text(object: &JsonMap<String, JsonValue>, field: &str) -> Option<String> {
+    object
+        .get(field)
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn validate_workflow_tool_name(
+    tool_name: &str,
+    known_tools: &std::collections::BTreeSet<&'static str>,
+    path: &str,
+    diagnostics: &mut Vec<AutonomousAgentDefinitionValidationDiagnostic>,
+) {
+    if !known_tools.contains(tool_name) {
+        diagnostics.push(diagnostic(
+            "agent_definition_workflow_tool_unknown",
+            format!("Workflow check references unknown tool `{tool_name}`."),
+            path,
+        ));
+    }
+}
+
+fn validate_workflow_tool_names(
+    value: &JsonValue,
+    known_tools: &std::collections::BTreeSet<&'static str>,
+    path: &str,
+    diagnostics: &mut Vec<AutonomousAgentDefinitionValidationDiagnostic>,
+    saw_tool: &mut bool,
+) {
+    let Some(items) = value.as_array() else {
+        diagnostics.push(diagnostic(
+            "agent_definition_workflow_tool_names_invalid",
+            "Workflow toolNames must be a non-empty string array.",
+            path,
+        ));
+        return;
+    };
+    if items.is_empty() {
+        diagnostics.push(diagnostic(
+            "agent_definition_workflow_tool_names_invalid",
+            "Workflow toolNames must be a non-empty string array.",
+            path,
+        ));
+        return;
+    }
+    for (index, item) in items.iter().enumerate() {
+        let item_path = format!("{path}[{index}]");
+        let Some(tool_name) = item
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            diagnostics.push(diagnostic(
+                "agent_definition_workflow_tool_names_invalid",
+                "Workflow toolNames entries must be non-empty strings.",
+                item_path,
+            ));
+            continue;
+        };
+        *saw_tool = true;
+        validate_workflow_tool_name(tool_name, known_tools, &item_path, diagnostics);
     }
 }
 
@@ -6390,7 +6472,7 @@ mod tests {
                     "title": "Draft",
                     "allowedTools": ["read"],
                     "requiredChecks": [
-                        {"kind": "tool_succeeded", "toolName": "read", "minCount": 1}
+                        {"kind": "tool_succeeded", "toolNames": ["read", "search"], "minCount": 1}
                     ]
                 }
             ]
@@ -6406,8 +6488,8 @@ mod tests {
 
         definition["workflowStructure"]["phases"][0]["branches"][0]["targetPhaseId"] =
             json!("missing");
-        definition["workflowStructure"]["phases"][1]["requiredChecks"][0]["toolName"] =
-            json!("not_a_tool");
+        definition["workflowStructure"]["phases"][1]["requiredChecks"][0]["toolNames"] =
+            json!(["read", "not_a_tool"]);
         let report = validate_definition_snapshot(&definition);
         assert_eq!(
             report.status,

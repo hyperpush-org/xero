@@ -149,6 +149,7 @@ pub struct ToolRegistryOptions {
     pub runtime_agent_id: RuntimeAgentIdDto,
     pub agent_tool_policy: Option<AutonomousAgentToolPolicy>,
     pub tool_application_policy: ResolvedAgentToolApplicationStyleDto,
+    pub stage_allowed_tools: Option<BTreeSet<String>>,
 }
 
 impl Default for ToolRegistryOptions {
@@ -159,6 +160,7 @@ impl Default for ToolRegistryOptions {
             runtime_agent_id: RuntimeAgentIdDto::Ask,
             agent_tool_policy: None,
             tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
+            stage_allowed_tools: None,
         }
     }
 }
@@ -341,13 +343,7 @@ impl ToolRegistry {
                 options.skill_tool_enabled || descriptor.name != AUTONOMOUS_TOOL_SKILL
             })
             .filter(|descriptor| tool_available_on_current_host(&descriptor.name))
-            .filter(|descriptor| {
-                tool_allowed_for_runtime_agent_with_policy(
-                    options.runtime_agent_id,
-                    &descriptor.name,
-                    options.agent_tool_policy.as_ref(),
-                )
-            })
+            .filter(|descriptor| tool_allowed_by_registry_options(&options, &descriptor.name))
             .collect::<Vec<_>>();
         sort_descriptors_for_tool_application_style(
             &mut descriptors,
@@ -430,11 +426,7 @@ impl ToolRegistry {
                 tool_names.contains(descriptor.name.as_str())
                     && (options.skill_tool_enabled || descriptor.name != AUTONOMOUS_TOOL_SKILL)
                     && tool_available_on_current_host(&descriptor.name)
-                    && tool_allowed_for_runtime_agent_with_policy(
-                        options.runtime_agent_id,
-                        &descriptor.name,
-                        options.agent_tool_policy.as_ref(),
-                    )
+                    && tool_allowed_by_registry_options(&options, &descriptor.name)
             })
             .collect::<Vec<_>>();
         sort_descriptors_for_tool_application_style(
@@ -483,13 +475,7 @@ impl ToolRegistry {
                 options.skill_tool_enabled || descriptor.name != AUTONOMOUS_TOOL_SKILL
             })
             .filter(|descriptor| tool_available_on_current_host(&descriptor.name))
-            .filter(|descriptor| {
-                tool_allowed_for_runtime_agent_with_policy(
-                    options.runtime_agent_id,
-                    &descriptor.name,
-                    options.agent_tool_policy.as_ref(),
-                )
-            })
+            .filter(|descriptor| tool_allowed_by_registry_options(&options, &descriptor.name))
             .filter(|descriptor| {
                 options
                     .agent_tool_policy
@@ -680,11 +666,7 @@ impl ToolRegistry {
             if let Some(descriptor) = builtin_descriptors.get(tool_name) {
                 if (self.options.skill_tool_enabled || descriptor.name != AUTONOMOUS_TOOL_SKILL)
                     && tool_available_on_current_host(&descriptor.name)
-                    && tool_allowed_for_runtime_agent_with_policy(
-                        self.options.runtime_agent_id,
-                        &descriptor.name,
-                        self.options.agent_tool_policy.as_ref(),
-                    )
+                    && tool_allowed_by_registry_options(&self.options, &descriptor.name)
                 {
                     descriptors_by_name.insert(descriptor.name.clone(), descriptor.clone());
                 }
@@ -697,6 +679,7 @@ impl ToolRegistry {
                     .as_ref()
                     .map(|policy| policy.allows_tool(tool_name))
                     .unwrap_or(true)
+                && tool_allowed_by_registry_stage(&self.options, tool_name)
             {
                 if let Some(dynamic) = tool_runtime.dynamic_tool_descriptor(tool_name)? {
                     if self
@@ -755,6 +738,12 @@ impl ToolRegistry {
                     ),
                 ));
             }
+            if known_tool && !tool_allowed_by_registry_stage(&self.options, &tool_call.tool_name) {
+                return Err(CommandError::policy_denied(format!(
+                    "Tool `{}` is not available in the current custom workflow stage.",
+                    tool_call.tool_name
+                )));
+            }
             if known_tool
                 && !tool_allowed_for_runtime_agent_with_policy(
                     self.options.runtime_agent_id,
@@ -776,11 +765,7 @@ impl ToolRegistry {
             ));
         }
 
-        if !tool_allowed_for_runtime_agent_with_policy(
-            self.options.runtime_agent_id,
-            &tool_call.tool_name,
-            self.options.agent_tool_policy.as_ref(),
-        ) {
+        if !tool_allowed_by_registry_options(&self.options, &tool_call.tool_name) {
             return Err(agent_tool_boundary_violation(
                 self.options.runtime_agent_id,
                 &tool_call.tool_name,
@@ -864,6 +849,22 @@ impl ToolRegistry {
     pub(crate) fn tool_application_policy(&self) -> &ResolvedAgentToolApplicationStyleDto {
         &self.options.tool_application_policy
     }
+}
+
+fn tool_allowed_by_registry_options(options: &ToolRegistryOptions, tool_name: &str) -> bool {
+    tool_allowed_for_runtime_agent_with_policy(
+        options.runtime_agent_id,
+        tool_name,
+        options.agent_tool_policy.as_ref(),
+    ) && tool_allowed_by_registry_stage(options, tool_name)
+}
+
+fn tool_allowed_by_registry_stage(options: &ToolRegistryOptions, tool_name: &str) -> bool {
+    options
+        .stage_allowed_tools
+        .as_ref()
+        .map(|allowed_tools| allowed_tools.contains(tool_name))
+        .unwrap_or(true)
 }
 
 fn sort_descriptors_for_tool_application_style(
@@ -2311,6 +2312,33 @@ mod tests {
             }
             other => panic!("unexpected request: {other:?}"),
         }
+    }
+
+    #[test]
+    fn tool_registry_filters_descriptors_by_current_stage_allowlist() {
+        let registry = ToolRegistry::for_tool_names_with_options(
+            [
+                AUTONOMOUS_TOOL_READ.to_owned(),
+                AUTONOMOUS_TOOL_LIST_TREE.to_owned(),
+                AUTONOMOUS_TOOL_TOOL_ACCESS.to_owned(),
+            ]
+            .into_iter()
+            .collect(),
+            ToolRegistryOptions {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                stage_allowed_tools: Some(
+                    [AUTONOMOUS_TOOL_READ.to_owned()]
+                        .into_iter()
+                        .collect::<BTreeSet<_>>(),
+                ),
+                ..ToolRegistryOptions::default()
+            },
+        );
+
+        let names = registry.descriptor_names();
+        assert!(names.contains(AUTONOMOUS_TOOL_READ));
+        assert!(!names.contains(AUTONOMOUS_TOOL_LIST_TREE));
+        assert!(!names.contains(AUTONOMOUS_TOOL_TOOL_ACCESS));
     }
 
     #[test]

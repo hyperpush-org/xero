@@ -65,12 +65,13 @@ pub use events::{
     BrowserConsolePayload, BrowserDevServerUnavailablePayload, BrowserDialogPayload,
     BrowserDownloadPayload, BrowserLoadStatePayload, BrowserOcclusionClickPayload,
     BrowserOcclusionWheelPayload, BrowserResizeDragPayload, BrowserTabUpdatedPayload,
-    BrowserToolClosedPayload, BrowserToolContextPayload, BrowserToolStatePayload,
-    BrowserUrlChangedPayload, BROWSER_CONSOLE_EVENT, BROWSER_DEV_SERVER_UNAVAILABLE_EVENT,
-    BROWSER_DIALOG_EVENT, BROWSER_DOWNLOAD_EVENT, BROWSER_LOAD_STATE_EVENT,
-    BROWSER_OCCLUSION_CLICK_EVENT, BROWSER_OCCLUSION_WHEEL_EVENT, BROWSER_RESIZE_DRAG_EVENT,
-    BROWSER_TAB_UPDATED_EVENT, BROWSER_TOOL_CLOSED_EVENT, BROWSER_TOOL_CONTEXT_EVENT,
-    BROWSER_TOOL_STATE_EVENT, BROWSER_URL_CHANGED_EVENT,
+    BrowserToolClosedPayload, BrowserToolContextPayload, BrowserToolDictationTogglePayload,
+    BrowserToolNotePayload, BrowserToolStatePayload, BrowserUrlChangedPayload,
+    BROWSER_CONSOLE_EVENT, BROWSER_DEV_SERVER_UNAVAILABLE_EVENT, BROWSER_DIALOG_EVENT,
+    BROWSER_DOWNLOAD_EVENT, BROWSER_LOAD_STATE_EVENT, BROWSER_OCCLUSION_CLICK_EVENT,
+    BROWSER_OCCLUSION_WHEEL_EVENT, BROWSER_RESIZE_DRAG_EVENT, BROWSER_TAB_UPDATED_EVENT,
+    BROWSER_TOOL_CLOSED_EVENT, BROWSER_TOOL_CONTEXT_EVENT, BROWSER_TOOL_DICTATION_TOGGLE_EVENT,
+    BROWSER_TOOL_NOTE_EVENT, BROWSER_TOOL_STATE_EVENT, BROWSER_URL_CHANGED_EVENT,
 };
 pub use native_cdp::{NativeCdpActionResult, NativeCdpBrowserService};
 pub use screenshot::capture_webview as screenshot_webview;
@@ -2422,6 +2423,47 @@ pub fn browser_internal_event<R: Runtime>(
                     stroke_count,
                     has_drawing,
                 },
+            );
+        }
+        "tool_note" => {
+            let mode = parsed
+                .get("mode")
+                .and_then(|value| value.as_str())
+                .map(str::to_string);
+            let note = parsed
+                .get("note")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string();
+            let active = parsed
+                .get("active")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            events::emit(
+                &app,
+                BROWSER_TOOL_NOTE_EVENT,
+                &BrowserToolNotePayload {
+                    tab_id,
+                    mode,
+                    note,
+                    active,
+                },
+            );
+        }
+        "tool_dictation_toggle" => {
+            let mode = parsed
+                .get("mode")
+                .and_then(|value| value.as_str())
+                .map(str::to_string);
+            let note = parsed
+                .get("note")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string();
+            events::emit(
+                &app,
+                BROWSER_TOOL_DICTATION_TOGGLE_EVENT,
+                &BrowserToolDictationTogglePayload { tab_id, mode, note },
             );
         }
         _ => {}

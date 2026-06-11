@@ -27,6 +27,8 @@ export interface BrowserToolTheme {
 export const BROWSER_TOOL_CONTEXT_EVENT = "browser:tool_context"
 export const BROWSER_TOOL_CLOSED_EVENT = "browser:tool_closed"
 export const BROWSER_TOOL_STATE_EVENT = "browser:tool_state"
+export const BROWSER_TOOL_NOTE_EVENT = "browser:tool_note"
+export const BROWSER_TOOL_DICTATION_TOGGLE_EVENT = "browser:tool_dictation_toggle"
 
 export interface BrowserToolPageContext {
   url: string
@@ -631,6 +633,19 @@ const BROWSER_TOOL_RUNTIME = String.raw`
     return node;
   }
 
+  function createMicIcon() {
+    var svg = createSvgNode("svg", "dictation-icon");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    var mic = createSvgNode("path");
+    mic.setAttribute("d", "M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z");
+    var stem = createSvgNode("path");
+    stem.setAttribute("d", "M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8");
+    svg.appendChild(mic);
+    svg.appendChild(stem);
+    return svg;
+  }
+
   function clearNode(node) {
     while (node.firstChild) node.removeChild(node.firstChild);
   }
@@ -1054,6 +1069,8 @@ const BROWSER_TOOL_RUNTIME = String.raw`
     if (!composer || composer.getAttribute("data-closing") === "true") return;
     composer.setAttribute("data-closing", "true");
     composer.removeAttribute("data-open");
+    var note = state && state.composerInput ? String(state.composerInput.value || "") : "";
+    emitComposerNote(state, note, false);
     var finished = false;
     function complete() {
       if (finished) return;
@@ -1063,6 +1080,7 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       if (state.composer === composer) {
         state.composer = null;
         state.composerInput = null;
+        state.composerDictationButton = null;
         state.composerAvoidRect = null;
       }
       if (typeof afterRemove === "function") afterRemove();
@@ -1107,10 +1125,61 @@ const BROWSER_TOOL_RUNTIME = String.raw`
     return true;
   }
 
+  function emitComposerNote(state, note, active) {
+    if (!state) return;
+    bridgeEmit("tool_note", {
+      mode: state.mode,
+      note: String(note || ""),
+      active: Boolean(active)
+    });
+  }
+
+  function applyComposerDictationState(state) {
+    if (!state || !state.composerDictationButton) return;
+    var control = state.composerDictationButton;
+    var dictation = state.dictationState || {};
+    var visible = dictation.visible === true;
+    var listening = dictation.isListening === true;
+    var disabled = dictation.isToggleDisabled === true;
+    var ariaLabel = String(dictation.ariaLabel || (listening ? "Stop dictation" : "Start dictation"));
+    var tooltip = String(dictation.tooltip || ariaLabel);
+    var level = Number(dictation.audioLevel || 0);
+
+    control.hidden = !visible;
+    control.disabled = disabled;
+    control.setAttribute("aria-label", ariaLabel);
+    control.setAttribute("aria-pressed", listening ? "true" : "false");
+    control.setAttribute("title", tooltip);
+    control.setAttribute("data-listening", listening ? "true" : "false");
+    control.style.setProperty("--xero-dictation-level", String(clamp(level, 0, 1)));
+  }
+
+  function setComposerNoteValue(state, note) {
+    var input = state && state.composerInput;
+    if (!input) return false;
+    var next = String(note || "");
+    if (input.value !== next) {
+      input.value = next;
+      try {
+        input.selectionStart = next.length;
+        input.selectionEnd = next.length;
+      } catch (_error) {
+        // ignore
+      }
+    }
+    try {
+      input.focus();
+    } catch (_error) {
+      // ignore
+    }
+    return true;
+  }
+
   function makeComposer(state, options) {
     if (state.composer) {
       state.composer.remove();
       state.composer = null;
+      state.composerDictationButton = null;
     }
     var composer = createNode("div", "composer xero-tool-chrome");
     var header = createNode("div", "composer-header");
@@ -1132,11 +1201,20 @@ const BROWSER_TOOL_RUNTIME = String.raw`
 
     var footer = createNode("div", "composer-footer");
     var hint = createNode("span", "composer-hint", options.footer || "");
+    var actions = createNode("div", "composer-actions");
+    var dictation = createNode("button", "dictation-button");
+    dictation.type = "button";
+    dictation.hidden = true;
+    dictation.setAttribute("aria-label", "Start dictation");
+    dictation.setAttribute("aria-pressed", "false");
+    dictation.appendChild(createMicIcon());
     var send = createNode("button", "send-button", "Add");
     send.type = "button";
     send.setAttribute("aria-label", "Add browser context to composer");
     footer.appendChild(hint);
-    footer.appendChild(send);
+    actions.appendChild(dictation);
+    actions.appendChild(send);
+    footer.appendChild(actions);
 
     composer.appendChild(header);
     composer.appendChild(textarea);
@@ -1144,8 +1222,11 @@ const BROWSER_TOOL_RUNTIME = String.raw`
     state.layer.appendChild(composer);
     state.composer = composer;
     state.composerInput = textarea;
+    state.composerDictationButton = dictation;
     state.composerAvoidRect = options.avoidRect || null;
+    applyComposerDictationState(state);
     positionComposer(composer, options.x, options.y, options.avoidRect || null);
+    emitComposerNote(state, textarea.value, true);
     requestAnimationFrame(function () {
       composer.setAttribute("data-open", "true");
     });
@@ -1159,6 +1240,18 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       removeComposer(state, composer, function () {
         options.onSubmit(note);
       });
+    });
+    dictation.addEventListener("click", function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (dictation.disabled || dictation.hidden) return;
+      bridgeEmit("tool_dictation_toggle", {
+        mode: state.mode,
+        note: String(textarea.value || "")
+      });
+    });
+    textarea.addEventListener("input", function () {
+      emitComposerNote(state, textarea.value, true);
     });
     textarea.addEventListener("keydown", function (event) {
       if (event.key === "Escape") {
@@ -1709,12 +1802,14 @@ const BROWSER_TOOL_RUNTIME = String.raw`
         cancelAnimationFrame(syncFrameId);
         syncFrameId = 0;
       }
+      emitComposerNote(state, state.composerInput ? state.composerInput.value : "", false);
       state.pendingContext = null;
       state.composerAnchor = null;
       state.composerStroke = null;
       if (state.composer) state.composer.remove();
       state.composer = null;
       state.composerInput = null;
+      state.composerDictationButton = null;
       clearNode(pageLayer);
       pageDefs = createPenDefs(pageLayer);
       emitPenState();
@@ -1898,11 +1993,13 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       state.hoveredElement = null;
       state.selectedElement = null;
       state.selectedContext = null;
+      emitComposerNote(state, state.composerInput ? state.composerInput.value : "", false);
       if (state.composer && state.composer.parentNode) {
         state.composer.parentNode.removeChild(state.composer);
       }
       state.composer = null;
       state.composerInput = null;
+      state.composerDictationButton = null;
       state.composerAvoidRect = null;
       showElement(null, false);
     };
@@ -2021,6 +2118,14 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       ".composer-input::placeholder{color:var(--xero-tool-muted-foreground,#a1a1aa)}" +
       ".composer-footer{display:flex;align-items:center;justify-content:space-between;gap:10px;border-top:1px solid var(--xero-tool-border,#3f3f46);background:var(--xero-tool-card,#18181b);padding:7px 8px}" +
       ".composer-hint{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;color:var(--xero-tool-muted-foreground,#a1a1aa)}" +
+      ".composer-actions{display:flex;align-items:center;gap:6px;flex:0 0 auto}" +
+      ".dictation-button{appearance:none;position:relative;display:flex;align-items:center;justify-content:center;width:28px;height:28px;border:1px solid var(--xero-tool-border,#3f3f46);border-radius:8px;background:transparent;color:var(--xero-tool-muted-foreground,#a1a1aa);cursor:pointer}" +
+      ".dictation-button[hidden]{display:none!important}" +
+      ".dictation-button:hover{background:var(--xero-tool-secondary,#27272a);color:var(--xero-tool-secondary-foreground,#fafafa)}" +
+      ".dictation-button:focus-visible{outline:2px solid var(--xero-tool-ring,#f97316);outline-offset:1px}" +
+      ".dictation-button:disabled{cursor:not-allowed;opacity:.48}" +
+      ".dictation-button[data-listening='true']{border-color:var(--xero-tool-primary,#fafafa);background:var(--xero-tool-primary,#fafafa);color:var(--xero-tool-primary-foreground,#18181b);box-shadow:0 0 0 calc(2px + var(--xero-dictation-level,0) * 5px) color-mix(in srgb,var(--xero-tool-primary,#fafafa) 18%,transparent)}" +
+      ".dictation-icon{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}" +
       ".send-button{appearance:none;border:1px solid var(--xero-tool-primary,#fafafa);border-radius:8px;background:var(--xero-tool-primary,#fafafa);color:var(--xero-tool-primary-foreground,#18181b);height:28px;padding:0 10px;font:700 11px/1 ui-sans-serif,system-ui;cursor:pointer}" +
       ".send-button:hover{filter:brightness(1.08)}" +
       ".inspect-highlight{position:fixed;z-index:2;display:none;border:2px solid var(--xero-tool-selection,#f97316);border-radius:6px;background:rgba(249,115,22,.08);box-shadow:0 0 0 9999px rgba(0,0,0,.08),0 0 0 1px rgba(255,255,255,.1) inset;pointer-events:none}" +
@@ -2066,10 +2171,12 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       toolbar: null,
       composer: null,
       composerInput: null,
+      composerDictationButton: null,
       composerAnchor: null,
       composerStroke: null,
       penLayer: null,
       highlight: null,
+      dictationState: null,
       cleanups: [],
       pendingContext: null,
       captureMode: false,
@@ -2165,6 +2272,26 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       }
       return true;
     },
+    setComposerNote: function (note) {
+      return setComposerNoteValue(api.state, note);
+    },
+    focusComposerNote: function () {
+      var input = api.state && api.state.composerInput;
+      if (!input) return false;
+      try {
+        input.focus();
+        return true;
+      } catch (_error) {
+        return false;
+      }
+    },
+    setDictationState: function (dictationState) {
+      var state = api.state;
+      if (!state) return false;
+      state.dictationState = dictationState || null;
+      applyComposerDictationState(state);
+      return true;
+    },
     showLoading: function () {
       return showCaptureLoading(api.state);
     },
@@ -2175,6 +2302,7 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       var state = api.state;
       if (state) {
         hideCaptureLoading(state);
+        emitComposerNote(state, state.composerInput ? state.composerInput.value : "", false);
         for (var index = 0; index < state.cleanups.length; index += 1) {
           try { state.cleanups[index](); } catch (_error) { /* ignore */ }
         }
@@ -2238,6 +2366,35 @@ if (window.__xeroBrowserTool && typeof window.__xeroBrowserTool.restoreCapture =
   window.__xeroBrowserTool.restoreCapture();
 }
 `
+
+export function buildBrowserToolSetComposerNoteScript(note: string): string {
+  return `
+if (window.__xeroBrowserTool && typeof window.__xeroBrowserTool.setComposerNote === "function") {
+  window.__xeroBrowserTool.setComposerNote(${JSON.stringify(note)});
+}
+`
+}
+
+export const BROWSER_TOOL_FOCUS_COMPOSER_NOTE_SCRIPT = `
+if (window.__xeroBrowserTool && typeof window.__xeroBrowserTool.focusComposerNote === "function") {
+  window.__xeroBrowserTool.focusComposerNote();
+}
+`
+
+export function buildBrowserToolDictationStateScript(state: {
+  ariaLabel: string
+  audioLevel?: number
+  isListening: boolean
+  isToggleDisabled: boolean
+  tooltip: string
+  visible: boolean
+}): string {
+  return `
+if (window.__xeroBrowserTool && typeof window.__xeroBrowserTool.setDictationState === "function") {
+  window.__xeroBrowserTool.setDictationState(${JSON.stringify(state)});
+}
+`
+}
 
 export function browserScreenshotBytesFromBase64(base64: string): Uint8Array {
   const raw = base64.includes(",") ? base64.slice(base64.lastIndexOf(",") + 1) : base64

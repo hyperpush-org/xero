@@ -85,6 +85,10 @@ pub fn create_owned_agent_run(
         controls.active.plan_mode_required && controls.active.runtime_agent_id.allows_plan_gate();
     let agent_tool_policy =
         effective_agent_tool_policy(&definition_selection.snapshot, &request.tool_runtime);
+    let stage_allowed_tools = initial_workflow_allowed_tools_for_runtime_agent(
+        controls.active.runtime_agent_id,
+        &definition_selection.snapshot,
+    );
     let tool_registry = ToolRegistry::for_prompt_with_options(
         &request.repo_root,
         &request.prompt,
@@ -95,6 +99,7 @@ pub fn create_owned_agent_run(
             runtime_agent_id: controls.active.runtime_agent_id,
             agent_tool_policy: agent_tool_policy.clone(),
             tool_application_policy: request.tool_runtime.tool_application_policy().clone(),
+            stage_allowed_tools,
         },
     );
     let attached_skill_snapshot = resolve_attached_skill_snapshot_for_run(
@@ -437,6 +442,14 @@ fn workflow_policy_for_runtime_agent(
         return None;
     }
     AutonomousAgentWorkflowPolicy::from_definition_snapshot(definition_snapshot)
+}
+
+fn initial_workflow_allowed_tools_for_runtime_agent(
+    runtime_agent_id: RuntimeAgentIdDto,
+    definition_snapshot: &JsonValue,
+) -> Option<BTreeSet<String>> {
+    workflow_policy_for_runtime_agent(runtime_agent_id, definition_snapshot)
+        .and_then(|policy| policy.initial_allowed_tools())
 }
 
 fn attached_skill_resolution_report_error(
@@ -791,18 +804,11 @@ pub fn prepare_owned_agent_continuation_for_drive(
             effective_agent_tool_policy(&definition_snapshot, &request.tool_runtime);
         let agent_workflow_policy =
             workflow_policy_for_runtime_agent(before.run.runtime_agent_id, &definition_snapshot);
-        let tool_registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
-            skill_tool_enabled: request.tool_runtime.skill_tool_enabled(),
-            browser_control_preference: request.tool_runtime.browser_control_preference(),
-            runtime_agent_id: controls.active.runtime_agent_id,
-            agent_tool_policy: agent_tool_policy.clone(),
-            tool_application_policy: request.tool_runtime.tool_application_policy().clone(),
-        });
         let replay_tool_runtime = request
             .tool_runtime
             .clone()
-            .with_runtime_run_controls(controls)
-            .with_agent_tool_policy(agent_tool_policy)
+            .with_runtime_run_controls(controls.clone())
+            .with_agent_tool_policy(agent_tool_policy.clone())
             .with_agent_workflow_policy(agent_workflow_policy)
             .with_agent_run_context(
                 &request.project_id,
@@ -814,6 +820,15 @@ pub fn prepare_owned_agent_continuation_for_drive(
                 &request.project_id,
                 &request.run_id,
             )?;
+        let stage_allowed_tools = replay_tool_runtime.current_workflow_allowed_tools()?;
+        let tool_registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
+            skill_tool_enabled: request.tool_runtime.skill_tool_enabled(),
+            browser_control_preference: request.tool_runtime.browser_control_preference(),
+            runtime_agent_id: controls.active.runtime_agent_id,
+            agent_tool_policy: agent_tool_policy.clone(),
+            tool_application_policy: request.tool_runtime.tool_application_policy().clone(),
+            stage_allowed_tools,
+        });
         replay_answered_tool_action_requests(
             &request.repo_root,
             &request.project_id,
@@ -856,18 +871,11 @@ pub fn prepare_owned_agent_continuation_for_drive(
             effective_agent_tool_policy(&definition_snapshot, &request.tool_runtime);
         let agent_workflow_policy =
             workflow_policy_for_runtime_agent(before.run.runtime_agent_id, &definition_snapshot);
-        let tool_registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
-            skill_tool_enabled: request.tool_runtime.skill_tool_enabled(),
-            browser_control_preference: request.tool_runtime.browser_control_preference(),
-            runtime_agent_id: controls.active.runtime_agent_id,
-            agent_tool_policy: agent_tool_policy.clone(),
-            tool_application_policy: request.tool_runtime.tool_application_policy().clone(),
-        });
         let replay_tool_runtime = request
             .tool_runtime
             .clone()
-            .with_runtime_run_controls(controls)
-            .with_agent_tool_policy(agent_tool_policy)
+            .with_runtime_run_controls(controls.clone())
+            .with_agent_tool_policy(agent_tool_policy.clone())
             .with_agent_workflow_policy(agent_workflow_policy)
             .with_agent_run_context(
                 &request.project_id,
@@ -879,6 +887,15 @@ pub fn prepare_owned_agent_continuation_for_drive(
                 &request.project_id,
                 &request.run_id,
             )?;
+        let stage_allowed_tools = replay_tool_runtime.current_workflow_allowed_tools()?;
+        let tool_registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
+            skill_tool_enabled: request.tool_runtime.skill_tool_enabled(),
+            browser_control_preference: request.tool_runtime.browser_control_preference(),
+            runtime_agent_id: controls.active.runtime_agent_id,
+            agent_tool_policy: agent_tool_policy.clone(),
+            tool_application_policy: request.tool_runtime.tool_application_policy().clone(),
+            stage_allowed_tools,
+        });
         replay_answered_tool_action_requests(
             &request.repo_root,
             &request.project_id,
@@ -2518,6 +2535,10 @@ fn create_or_load_handoff_target_run(
     let controls = handoff_controls_for_target(request, source_snapshot, target);
     let definition_snapshot = &target.definition_snapshot;
     let agent_tool_policy = effective_agent_tool_policy(definition_snapshot, &request.tool_runtime);
+    let stage_allowed_tools = initial_workflow_allowed_tools_for_runtime_agent(
+        controls.active.runtime_agent_id,
+        definition_snapshot,
+    );
     let handoff_seed = render_handoff_seed_message(bundle)?;
     let tool_registry = ToolRegistry::for_prompt_with_options(
         &request.repo_root,
@@ -2529,6 +2550,7 @@ fn create_or_load_handoff_target_run(
             runtime_agent_id: controls.active.runtime_agent_id,
             agent_tool_policy,
             tool_application_policy: request.tool_runtime.tool_application_policy().clone(),
+            stage_allowed_tools,
         },
     );
     let attached_skill_snapshot = resolve_attached_skill_snapshot_for_run(

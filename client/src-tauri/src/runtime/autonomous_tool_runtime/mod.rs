@@ -1445,8 +1445,13 @@ struct AutonomousAgentWorkflowBranch {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AutonomousAgentWorkflowCondition {
     Always,
-    TodoCompleted { todo_id: String },
-    ToolSucceeded { tool_name: String, min_count: usize },
+    TodoCompleted {
+        todo_id: String,
+    },
+    ToolSucceeded {
+        tool_names: BTreeSet<String>,
+        min_count: usize,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1493,6 +1498,11 @@ impl AutonomousAgentWorkflowPolicy {
 
     fn phase(&self, phase_id: &str) -> Option<&AutonomousAgentWorkflowPhase> {
         self.phases.iter().find(|phase| phase.id == phase_id)
+    }
+
+    pub(crate) fn initial_allowed_tools(&self) -> Option<BTreeSet<String>> {
+        self.phase(&self.start_phase_id)
+            .and_then(AutonomousAgentWorkflowPhase::registry_allowed_tools)
     }
 
     fn next_sequential_phase(&self, phase_id: &str) -> Option<&AutonomousAgentWorkflowPhase> {
@@ -1603,6 +1613,17 @@ impl AutonomousAgentWorkflowPhase {
                 AUTONOMOUS_TOOL_TODO | AUTONOMOUS_TOOL_TOOL_SEARCH | AUTONOMOUS_TOOL_TOOL_ACCESS
             )
     }
+
+    fn registry_allowed_tools(&self) -> Option<BTreeSet<String>> {
+        if self.allowed_tools.is_empty() {
+            return None;
+        }
+        let mut allowed_tools = self.allowed_tools.clone();
+        allowed_tools.insert(AUTONOMOUS_TOOL_TODO.to_owned());
+        allowed_tools.insert(AUTONOMOUS_TOOL_TOOL_SEARCH.to_owned());
+        allowed_tools.insert(AUTONOMOUS_TOOL_TOOL_ACCESS.to_owned());
+        Some(allowed_tools)
+    }
 }
 
 impl AutonomousAgentWorkflowBranch {
@@ -1623,14 +1644,30 @@ impl AutonomousAgentWorkflowCondition {
             "todo_completed" => Some(Self::TodoCompleted {
                 todo_id: normalize_workflow_id(object.get("todoId")?)?,
             }),
-            "tool_succeeded" => Some(Self::ToolSucceeded {
-                tool_name: json_non_empty_string(object.get("toolName"))?,
-                min_count: object
-                    .get("minCount")
-                    .and_then(JsonValue::as_u64)
-                    .filter(|count| *count > 0)
-                    .unwrap_or(1) as usize,
-            }),
+            "tool_succeeded" => {
+                let mut tool_names = BTreeSet::new();
+                if let Some(tool_name) = json_non_empty_string(object.get("toolName")) {
+                    tool_names.insert(tool_name);
+                }
+                if let Some(items) = object.get("toolNames").and_then(JsonValue::as_array) {
+                    tool_names.extend(
+                        items
+                            .iter()
+                            .filter_map(|item| json_non_empty_string(Some(item))),
+                    );
+                }
+                if tool_names.is_empty() {
+                    return None;
+                }
+                Some(Self::ToolSucceeded {
+                    tool_names,
+                    min_count: object
+                        .get("minCount")
+                        .and_then(JsonValue::as_u64)
+                        .filter(|count| *count > 0)
+                        .unwrap_or(1) as usize,
+                })
+            }
             _ => None,
         }
     }
@@ -1646,9 +1683,15 @@ impl AutonomousAgentWorkflowCondition {
                 .get(todo_id)
                 .is_some_and(|item| item.status == AutonomousTodoStatus::Completed),
             Self::ToolSucceeded {
-                tool_name,
+                tool_names,
                 min_count,
-            } => state.tool_successes.get(tool_name).copied().unwrap_or(0) >= *min_count,
+            } => {
+                tool_names
+                    .iter()
+                    .map(|tool_name| state.tool_successes.get(tool_name).copied().unwrap_or(0))
+                    .sum::<usize>()
+                    >= *min_count
+            }
         }
     }
 }
@@ -5642,7 +5685,7 @@ impl AutonomousToolRuntime {
                         Some(tools) => {
                             for tool in tools {
                                 if self.tool_available_by_runtime(tool)
-                                    && self.tool_allowed_by_active_agent(tool)
+                                    && self.tool_allowed_by_active_agent_and_stage(tool)
                                 {
                                     requested.insert((*tool).to_owned());
                                 } else {
@@ -5660,7 +5703,7 @@ impl AutonomousToolRuntime {
                 for tool in request.tools {
                     let runtime_tool_available = known_tools.contains(tool.as_str())
                         && self.tool_available_by_runtime(tool.as_str())
-                        && self.tool_allowed_by_active_agent(tool.as_str());
+                        && self.tool_allowed_by_active_agent_and_stage(tool.as_str());
                     let dynamic_tool_available =
                         self.active_runtime_agent_id().allows_engineering_tools()
                             && self
@@ -5668,6 +5711,7 @@ impl AutonomousToolRuntime {
                                 .as_ref()
                                 .map(|policy| policy.allows_tool(&tool))
                                 .unwrap_or(true)
+                            && self.tool_allowed_by_current_workflow_phase(&tool)
                             && self.dynamic_tool_descriptor(&tool)?.is_some();
                     if runtime_tool_available || dynamic_tool_available {
                         requested.insert(tool);
@@ -5712,7 +5756,8 @@ impl AutonomousToolRuntime {
             .into_iter()
             .filter_map(|mut group| {
                 group.tools.retain(|tool| {
-                    self.tool_available_by_runtime(tool) && self.tool_allowed_by_active_agent(tool)
+                    self.tool_available_by_runtime(tool)
+                        && self.tool_allowed_by_active_agent_and_stage(tool)
                 });
                 group.tool_summaries = group
                     .tools
@@ -5755,7 +5800,7 @@ impl AutonomousToolRuntime {
             effect_class: tool_effect_class(tool).as_str().into(),
             risk_class,
             runtime_available: self.tool_available_by_runtime(tool),
-            allowed_for_agent: self.tool_allowed_by_active_agent(tool),
+            allowed_for_agent: self.tool_allowed_by_active_agent_and_stage(tool),
             activation_groups: tool_catalog_activation_groups(tool),
         }
     }
@@ -5803,7 +5848,8 @@ impl AutonomousToolRuntime {
 
     fn tool_pack_enabled_by_policy(&self, manifest: &DomainToolPackManifest) -> bool {
         manifest.tools.iter().any(|tool| {
-            self.tool_available_by_runtime(tool) && self.tool_allowed_by_active_agent(tool)
+            self.tool_available_by_runtime(tool)
+                && self.tool_allowed_by_active_agent_and_stage(tool)
         })
     }
 
@@ -5952,6 +5998,48 @@ impl AutonomousToolRuntime {
             tool,
             self.agent_tool_policy.as_ref(),
         )
+    }
+
+    fn tool_allowed_by_active_agent_and_stage(&self, tool: &str) -> bool {
+        self.tool_allowed_by_active_agent(tool) && self.tool_allowed_by_current_workflow_phase(tool)
+    }
+
+    fn tool_allowed_by_current_workflow_phase(&self, tool: &str) -> bool {
+        let Some(policy) = self.agent_workflow_policy.as_ref() else {
+            return true;
+        };
+        let Ok(todos) = self.todo_items.lock() else {
+            return false;
+        };
+        let Ok(mut state) = self.agent_workflow_state.lock() else {
+            return false;
+        };
+        policy.advance_state(&mut state, &todos);
+        policy
+            .phase(&state.current_phase_id)
+            .is_some_and(|phase| phase.allows_tool(tool))
+    }
+
+    pub(crate) fn current_workflow_allowed_tools(&self) -> CommandResult<Option<BTreeSet<String>>> {
+        let Some(policy) = self.agent_workflow_policy.as_ref() else {
+            return Ok(None);
+        };
+        let todos = self.todo_items.lock().map_err(|_| {
+            CommandError::system_fault(
+                "autonomous_tool_todo_lock_failed",
+                "Xero could not lock the owned-agent todo store.",
+            )
+        })?;
+        let mut state = self.agent_workflow_state.lock().map_err(|_| {
+            CommandError::system_fault(
+                "agent_workflow_state_lock_failed",
+                "Xero could not lock the custom-agent workflow state.",
+            )
+        })?;
+        policy.advance_state(&mut state, &todos);
+        Ok(policy
+            .phase(&state.current_phase_id)
+            .and_then(AutonomousAgentWorkflowPhase::registry_allowed_tools))
     }
 
     fn tool_available_by_runtime(&self, tool: &str) -> bool {
@@ -12020,6 +12108,7 @@ mod tests {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let runtime = AutonomousToolRuntime::new(tempdir.path())
             .expect("runtime")
+            .with_runtime_run_controls(engineer_runtime_controls())
             .with_agent_workflow_policy(Some(policy));
 
         let denied = runtime
@@ -12067,6 +12156,190 @@ mod tests {
             std::fs::read_to_string(tempdir.path().join("notes.txt")).expect("read written file"),
             "gated write\n"
         );
+    }
+
+    #[test]
+    fn s22_tool_access_respects_current_workflow_stage() {
+        let policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&json!({
+            "workflowStructure": {
+                "startPhaseId": "inspect",
+                "phases": [
+                    {
+                        "id": "inspect",
+                        "title": "Inspect",
+                        "allowedTools": [
+                            AUTONOMOUS_TOOL_READ,
+                            AUTONOMOUS_TOOL_TOOL_ACCESS,
+                            AUTONOMOUS_TOOL_TODO
+                        ],
+                        "requiredChecks": [
+                            {"kind": "todo_completed", "todoId": "inspect_done"}
+                        ]
+                    },
+                    {
+                        "id": "edit",
+                        "title": "Edit",
+                        "allowedTools": [
+                            AUTONOMOUS_TOOL_PATCH,
+                            AUTONOMOUS_TOOL_TOOL_ACCESS,
+                            AUTONOMOUS_TOOL_TODO
+                        ]
+                    }
+                ]
+            }
+        }))
+        .expect("workflow policy");
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let runtime = AutonomousToolRuntime::new(tempdir.path())
+            .expect("runtime")
+            .with_runtime_run_controls(engineer_runtime_controls())
+            .with_agent_workflow_policy(Some(policy));
+
+        let blocked = tool_access_output(runtime.tool_access(AutonomousToolAccessRequest {
+            action: AutonomousToolAccessAction::Request,
+            groups: vec!["mutation".into()],
+            tools: Vec::new(),
+            reason: Some("need to edit".into()),
+        }));
+        assert!(blocked.granted_tools.is_empty());
+        assert!(blocked.denied_tools.contains(&"mutation".to_string()));
+
+        runtime
+            .execute(AutonomousToolRequest::Todo(AutonomousTodoRequest {
+                action: AutonomousTodoAction::Upsert,
+                id: Some("inspect_done".into()),
+                title: Some("Inspection gate satisfied".into()),
+                notes: None,
+                status: Some(AutonomousTodoStatus::Completed),
+                mode: None,
+                debug_stage: None,
+                evidence: Some("Read required context.".into()),
+                phase_id: Some("inspect".into()),
+                phase_title: Some("Inspect".into()),
+                slice_id: None,
+                handoff_note: None,
+            }))
+            .expect("complete gate todo");
+
+        let granted = tool_access_output(runtime.tool_access(AutonomousToolAccessRequest {
+            action: AutonomousToolAccessAction::Request,
+            groups: Vec::new(),
+            tools: vec![AUTONOMOUS_TOOL_PATCH.into()],
+            reason: Some("apply patch".into()),
+        }));
+        assert_eq!(
+            granted.granted_tools,
+            vec![AUTONOMOUS_TOOL_PATCH.to_string()]
+        );
+        assert!(granted.denied_tools.is_empty());
+    }
+
+    #[test]
+    fn s22_custom_workflow_tool_names_gate_accepts_patch_success() {
+        let policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&json!({
+            "workflowStructure": {
+                "startPhaseId": "implement",
+                "phases": [
+                    {
+                        "id": "implement",
+                        "title": "Implement",
+                        "allowedTools": [AUTONOMOUS_TOOL_PATCH, AUTONOMOUS_TOOL_READ],
+                        "requiredChecks": [
+                            {
+                                "kind": "tool_succeeded",
+                                "toolNames": [AUTONOMOUS_TOOL_EDIT, AUTONOMOUS_TOOL_PATCH],
+                                "minCount": 1
+                            }
+                        ]
+                    },
+                    {
+                        "id": "verify",
+                        "title": "Verify",
+                        "allowedTools": [AUTONOMOUS_TOOL_READ]
+                    }
+                ]
+            }
+        }))
+        .expect("workflow policy");
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(tempdir.path().join("notes.txt"), "before\n").expect("write fixture");
+        let runtime = AutonomousToolRuntime::new(tempdir.path())
+            .expect("runtime")
+            .with_agent_workflow_policy(Some(policy));
+
+        runtime
+            .execute(AutonomousToolRequest::Patch(AutonomousPatchRequest {
+                path: Some("notes.txt".into()),
+                search: Some("before\n".into()),
+                replace: Some("after\n".into()),
+                replace_all: false,
+                expected_hash: None,
+                preview: false,
+                operations: Vec::new(),
+            }))
+            .expect("patch satisfies mutation gate");
+
+        let denied = runtime
+            .execute(AutonomousToolRequest::Patch(AutonomousPatchRequest {
+                path: Some("notes.txt".into()),
+                search: Some("after\n".into()),
+                replace: Some("again\n".into()),
+                replace_all: false,
+                expected_hash: None,
+                preview: false,
+                operations: Vec::new(),
+            }))
+            .expect_err("workflow advanced to verify after patch");
+        assert_eq!(denied.code, "policy_denied");
+        assert!(denied.message.contains("required gates"));
+
+        runtime
+            .execute(AutonomousToolRequest::Read(AutonomousReadRequest {
+                path: "notes.txt".into(),
+                system_path: false,
+                mode: None,
+                start_line: None,
+                line_count: None,
+                cursor: None,
+                around_pattern: None,
+                max_bytes_per_file: None,
+                byte_offset: None,
+                byte_count: None,
+                include_line_hashes: false,
+            }))
+            .expect("read allowed in verify stage");
+        assert_eq!(
+            std::fs::read_to_string(tempdir.path().join("notes.txt")).expect("read fixture"),
+            "after\n"
+        );
+    }
+
+    fn tool_access_output(
+        result: CommandResult<AutonomousToolResult>,
+    ) -> AutonomousToolAccessOutput {
+        match result.expect("tool access").output {
+            AutonomousToolOutput::ToolAccess(output) => output,
+            output => panic!("unexpected output: {output:?}"),
+        }
+    }
+
+    fn engineer_runtime_controls() -> RuntimeRunControlStateDto {
+        RuntimeRunControlStateDto {
+            active: crate::commands::RuntimeRunActiveControlSnapshotDto {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: Some("engineer".into()),
+                agent_definition_version: Some(4),
+                provider_profile_id: None,
+                model_id: "test-model".into(),
+                thinking_effort: None,
+                approval_mode: RuntimeRunApprovalModeDto::Suggest,
+                plan_mode_required: false,
+                auto_compact_enabled: true,
+                revision: 1,
+                applied_at: "2026-06-06T00:00:00Z".into(),
+            },
+            pending: None,
+        }
     }
 
     #[test]

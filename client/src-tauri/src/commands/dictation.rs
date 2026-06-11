@@ -250,12 +250,31 @@ pub fn speech_dictation_update_settings<R: Runtime>(
 }
 
 #[tauri::command]
-pub fn speech_dictation_start<R: Runtime>(
+pub async fn speech_dictation_start<R: Runtime + 'static>(
     webview: Webview<R>,
     state: State<'_, DictationState>,
     request: DictationStartRequestDto,
 ) -> CommandResult<DictationStartResponseDto> {
     let channel = resolve_channel(&webview, request.channel.as_deref())?;
+    let state = state.inner().clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        speech_dictation_start_blocking(state, channel, request)
+    })
+    .await
+    .map_err(|error| {
+        CommandError::system_fault(
+            "dictation_start_task_failed",
+            format!("Xero could not finish background dictation start work: {error}"),
+        )
+    })?
+}
+
+fn speech_dictation_start_blocking(
+    state: DictationState,
+    channel: Channel<DictationEventDto>,
+    request: DictationStartRequestDto,
+) -> CommandResult<DictationStartResponseDto> {
     let request = normalize_start_request(request);
     let status = probe_dictation_status();
     ensure_native_dictation_platform(&status)?;
@@ -274,7 +293,7 @@ pub fn speech_dictation_start<R: Runtime>(
 
     let context = Arc::new(NativeCallbackContext {
         session_id: session_id.clone(),
-        state: state.inner().clone(),
+        state: state.clone(),
         channel,
     });
     let mut native_request = NativeSessionRequest {

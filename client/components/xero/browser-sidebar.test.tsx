@@ -55,6 +55,8 @@ vi.mock("@tauri-apps/api/event", () => ({
 }))
 
 import {
+  BROWSER_TOOL_DICTATION_TOGGLE_EVENT,
+  BROWSER_TOOL_NOTE_EVENT,
   buildBrowserToolActivationScript,
   buildBrowserToolAgentPrompt,
   buildBrowserToolVisiblePrompt,
@@ -62,6 +64,8 @@ import {
   type BrowserToolMode,
   type BrowserToolTheme,
 } from "./browser-tool-injection"
+import type { SpeechDictationAdapter } from "./agent-runtime/use-speech-dictation"
+import type { DictationEngineDto, DictationEventDto, DictationStatusDto } from "@/src/lib/xero-model/dictation"
 import {
   applyBrowserTabOrder,
   BrowserSidebar,
@@ -238,6 +242,112 @@ function browserToolTestTheme(): BrowserToolTheme {
     border: "#3f3f46",
     input: "#3f3f46",
     ring: "#f97316",
+  }
+}
+
+function makeDictationStatus(overrides: Partial<DictationStatusDto> = {}): DictationStatusDto {
+  return {
+    platform: "macos",
+    osVersion: "26.0.0",
+    defaultLocale: "en_US",
+    supportedLocales: ["en_US"],
+    modern: {
+      available: false,
+      compiled: false,
+      runtimeSupported: false,
+      reason: "modern_sdk_unavailable",
+    },
+    legacy: {
+      available: true,
+      compiled: true,
+      runtimeSupported: true,
+      reason: null,
+    },
+    windowsSdk: {
+      available: false,
+      compiled: false,
+      runtimeSupported: false,
+      reason: null,
+    },
+    modernAssets: {
+      status: "unavailable",
+      locale: null,
+      reason: "modern_sdk_unavailable",
+    },
+    microphonePermission: "authorized",
+    speechPermission: "authorized",
+    activeSession: null,
+    ...overrides,
+  }
+}
+
+function createDictationAdapter(options: {
+  engine?: DictationEngineDto
+  status?: DictationStatusDto
+  start?: (
+    handler: (event: DictationEventDto) => void,
+    session: {
+      response: {
+        sessionId: string
+        engine: DictationEngineDto
+        locale: string
+      }
+    },
+  ) => Promise<void>
+  stop?: () => Promise<void>
+  cancel?: () => Promise<void>
+} = {}) {
+  let eventHandler: ((event: DictationEventDto) => void) | null = null
+  const engine = options.engine ?? "legacy"
+  const session = {
+    response: {
+      sessionId: "dictation-session-1",
+      engine,
+      locale: "en_US",
+    },
+    unsubscribe: vi.fn(),
+    stop: vi.fn(options.stop ?? (async () => undefined)),
+    cancel: vi.fn(options.cancel ?? (async () => undefined)),
+  }
+  const adapter: SpeechDictationAdapter = {
+    isDesktopRuntime: () => true,
+    speechDictationStatus: vi.fn(async () => options.status ?? makeDictationStatus()),
+    speechDictationSettings: vi.fn(async () => ({
+      enginePreference: "automatic",
+      privacyMode: "on_device_preferred",
+      locale: "en_US",
+      updatedAt: null,
+    })),
+    speechDictationStart: vi.fn(async (_request, handler) => {
+      eventHandler = handler
+      if (options.start) {
+        await options.start(handler, session)
+        return session
+      }
+      handler({
+        kind: "started",
+        sessionId: session.response.sessionId,
+        engine,
+        locale: "en_US",
+      })
+      return session
+    }),
+    speechDictationStop: vi.fn(async () => undefined),
+    speechDictationCancel: vi.fn(async () => undefined),
+  }
+
+  return {
+    adapter,
+    session,
+    emit(event: DictationEventDto) {
+      if (!eventHandler) {
+        throw new Error("Dictation session has not started.")
+      }
+
+      act(() => {
+        eventHandler?.(event)
+      })
+    },
   }
 }
 
@@ -2452,6 +2562,195 @@ describe("BrowserSidebar", () => {
     ).toBe(true)
   })
 
+  it("starts dictation from a browser tool note and writes dictated text back into the note", async () => {
+    const dictation = createDictationAdapter()
+    const latestComposerNoteScript = () => {
+      const calls = invokeCalls.filter(
+        (call) =>
+          call.command === "browser_eval_fire_and_forget" &&
+          String(call.args?.js ?? "").includes("setComposerNote"),
+      )
+      return String(calls[calls.length - 1]?.args?.js ?? "")
+    }
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "xero-browser-tab-1",
+        title: "Local",
+        url: "http://localhost:5173/",
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+    registerInvoke("browser_eval_fire_and_forget", async () => null)
+
+    render(<BrowserSidebar open dictationAdapter={dictation.adapter} />)
+    fireEvent.click(await screen.findByLabelText("Inspect element"))
+
+    await act(async () => {
+      emitEvent(BROWSER_TOOL_NOTE_EVENT, {
+        tabId: "tab-1",
+        mode: "inspect",
+        note: "Typed start",
+        active: true,
+      })
+    })
+
+    await waitFor(() => expect(dictation.adapter.speechDictationStatus).toHaveBeenCalledTimes(1))
+    await waitFor(() => {
+      expect(
+        invokeCalls.some(
+          (call) =>
+            call.command === "browser_eval_fire_and_forget" &&
+            String(call.args?.js ?? "").includes("setDictationState") &&
+            String(call.args?.js ?? "").includes('"visible":true'),
+        ),
+      ).toBe(true)
+    })
+
+    await act(async () => {
+      emitEvent(BROWSER_TOOL_DICTATION_TOGGLE_EVENT, {
+        tabId: "tab-1",
+        mode: "inspect",
+        note: "Typed start after edit",
+      })
+    })
+
+    await waitFor(() => expect(dictation.adapter.speechDictationStart).toHaveBeenCalledTimes(1))
+    dictation.emit({
+      kind: "partial",
+      sessionId: "dictation-session-1",
+      text: "dictated",
+      sequence: 1,
+    })
+
+    await waitFor(() => {
+      expect(latestComposerNoteScript()).toContain("Typed start after edit dictated")
+    })
+
+    await act(async () => {
+      emitEvent(BROWSER_TOOL_NOTE_EVENT, {
+        tabId: "tab-1",
+        mode: "inspect",
+        note: "Typed start after edit dictated",
+        active: true,
+      })
+    })
+
+    dictation.emit({
+      kind: "final",
+      sessionId: "dictation-session-1",
+      text: "dictated finish",
+      sequence: 2,
+    })
+
+    await waitFor(() => {
+      expect(latestComposerNoteScript()).toContain("Typed start after edit dictated finish")
+      expect(latestComposerNoteScript()).not.toContain("Typed start after edit dictated dictated finish")
+    })
+
+    await act(async () => {
+      emitEvent(BROWSER_TOOL_NOTE_EVENT, {
+        tabId: "tab-1",
+        mode: "inspect",
+        note: "Typed start after edit dictated finish",
+        active: true,
+      })
+    })
+
+    dictation.emit({
+      kind: "final",
+      sessionId: "dictation-session-1",
+      text: "dictated finish",
+      sequence: 3,
+    })
+
+    await waitFor(() => {
+      expect(latestComposerNoteScript()).toContain("Typed start after edit dictated finish")
+      expect(latestComposerNoteScript()).not.toContain("Typed start after edit dictated dictated finish")
+      expect(latestComposerNoteScript()).not.toContain("Typed start after edit dictated finish dictated finish")
+    })
+
+    dictation.emit({
+      kind: "final",
+      sessionId: "dictation-session-1",
+      text: "dictated finish and next sentence",
+      sequence: 4,
+    })
+
+    await waitFor(() => {
+      expect(latestComposerNoteScript()).toContain("Typed start after edit dictated finish and next sentence")
+      expect(latestComposerNoteScript()).not.toContain("dictated finish dictated finish")
+    })
+  })
+
+  it("marks browser tool note dictation active while native startup is pending", async () => {
+    let resolveStart: (() => void) | null = null
+    const dictation = createDictationAdapter({
+      start: async () => {
+        await new Promise<void>((resolve) => {
+          resolveStart = resolve
+        })
+      },
+    })
+    const latestDictationStateScript = () => {
+      const calls = invokeCalls.filter(
+        (call) =>
+          call.command === "browser_eval_fire_and_forget" &&
+          String(call.args?.js ?? "").includes("setDictationState"),
+      )
+      return String(calls[calls.length - 1]?.args?.js ?? "")
+    }
+    registerInvoke("browser_tab_list", async () => [
+      {
+        id: "tab-1",
+        label: "xero-browser-tab-1",
+        title: "Local",
+        url: "http://localhost:5173/",
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        active: true,
+      },
+    ])
+    registerInvoke("browser_eval_fire_and_forget", async () => null)
+
+    render(<BrowserSidebar open dictationAdapter={dictation.adapter} />)
+    fireEvent.click(await screen.findByLabelText("Inspect element"))
+
+    await act(async () => {
+      emitEvent(BROWSER_TOOL_NOTE_EVENT, {
+        tabId: "tab-1",
+        mode: "inspect",
+        note: "Typed start",
+        active: true,
+      })
+    })
+
+    await waitFor(() => expect(dictation.adapter.speechDictationStatus).toHaveBeenCalledTimes(1))
+
+    await act(async () => {
+      emitEvent(BROWSER_TOOL_DICTATION_TOGGLE_EVENT, {
+        tabId: "tab-1",
+        mode: "inspect",
+        note: "Typed start",
+      })
+    })
+
+    await waitFor(() => expect(dictation.adapter.speechDictationStart).toHaveBeenCalledTimes(1))
+    await waitFor(() => {
+      expect(latestDictationStateScript()).toContain('"ariaLabel":"Starting dictation"')
+      expect(latestDictationStateScript()).toContain('"isListening":true')
+      expect(latestDictationStateScript()).toContain('"isToggleDisabled":true')
+    })
+
+    await act(async () => {
+      resolveStart?.()
+    })
+  })
+
   it("captures submitted pen context and adds it to the agent composer", async () => {
     const addedRequests: BrowserAgentContextRequest[] = []
     const onAddAgentContext = vi.fn(async (request: BrowserAgentContextRequest) => {
@@ -3239,6 +3538,124 @@ describe("BrowserSidebar", () => {
       expect(payload.kind).toBe("pen")
       expect(payload.note).toBe("Keep this attached")
       expect(payload.strokeCount).toBe(1)
+    } finally {
+      ;(window as unknown as { __xeroBrowserTool?: { deactivate: () => void } })
+        .__xeroBrowserTool?.deactivate()
+      if (originalTauriInternals) {
+        Object.defineProperty(window, "__TAURI_INTERNALS__", originalTauriInternals)
+      } else {
+        delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+      }
+      if (originalBridge) {
+        Object.defineProperty(window, "__xeroBridge__", originalBridge)
+      } else {
+        delete (window as unknown as { __xeroBridge__?: unknown }).__xeroBridge__
+      }
+    }
+  })
+
+  it("renders dictation controls inside the injected browser tool note composer", async () => {
+    const originalTauriInternals = Object.getOwnPropertyDescriptor(
+      window,
+      "__TAURI_INTERNALS__",
+    )
+    const originalBridge = Object.getOwnPropertyDescriptor(window, "__xeroBridge__")
+    const invoke = vi.fn(async (_command: string, _args?: Record<string, unknown>) => null)
+    const script = buildBrowserToolActivationScript({
+      mode: "pen",
+      pageLabel: "Local App",
+      theme: browserToolTestTheme(),
+    })
+
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: { invoke },
+    })
+    Object.defineProperty(window, "__xeroBridge__", {
+      configurable: true,
+      value: undefined,
+    })
+
+    try {
+      new Function(script)()
+      const toolHost = document.getElementById("__xero-browser-tool-root")
+      const shadow = toolHost?.shadowRoot
+      const overlay = shadow?.querySelector(".pen-layer")
+      expect(overlay).toBeTruthy()
+
+      dispatchPointer(overlay!, "pointerdown", { clientX: 100, clientY: 100 })
+      dispatchPointer(overlay!, "pointermove", { clientX: 140, clientY: 110 })
+      dispatchPointer(overlay!, "pointerup", { clientX: 180, clientY: 120 })
+
+      const textarea = shadow?.querySelector<HTMLTextAreaElement>(".composer-input")
+      const dictationButton = shadow?.querySelector<HTMLButtonElement>(".dictation-button")
+      expect(textarea).toBeTruthy()
+      expect(dictationButton).toBeTruthy()
+      expect(dictationButton?.hidden).toBe(true)
+
+      ;(window as unknown as {
+        __xeroBrowserTool?: {
+          setComposerNote: (note: string) => boolean
+          setDictationState: (state: Record<string, unknown>) => boolean
+        }
+      }).__xeroBrowserTool?.setDictationState({
+        ariaLabel: "Start dictation",
+        audioLevel: 0,
+        isListening: false,
+        isToggleDisabled: false,
+        tooltip: "Start dictation",
+        visible: true,
+      })
+
+      expect(dictationButton?.hidden).toBe(false)
+      expect(dictationButton?.getAttribute("aria-label")).toBe("Start dictation")
+      expect(dictationButton?.getAttribute("aria-pressed")).toBe("false")
+
+      textarea!.value = "Typed note"
+      dictationButton!.click()
+
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith(
+          "browser_internal_event",
+          expect.objectContaining({
+            kind: "tool_dictation_toggle",
+            payload: expect.any(String),
+          }),
+        ),
+      )
+      const toggleCall = invoke.mock.calls.find(
+        ([command, args]) =>
+          command === "browser_internal_event" &&
+          (args as { kind?: unknown } | undefined)?.kind === "tool_dictation_toggle",
+      )
+      const togglePayload = JSON.parse(
+        String((toggleCall?.[1] as { payload?: unknown } | undefined)?.payload ?? "{}"),
+      ) as { note?: unknown }
+      expect(togglePayload.note).toBe("Typed note")
+
+      ;(window as unknown as {
+        __xeroBrowserTool?: {
+          setComposerNote: (note: string) => boolean
+          setDictationState: (state: Record<string, unknown>) => boolean
+        }
+      }).__xeroBrowserTool?.setComposerNote("Typed note dictated")
+      expect(textarea?.value).toBe("Typed note dictated")
+
+      ;(window as unknown as {
+        __xeroBrowserTool?: {
+          setDictationState: (state: Record<string, unknown>) => boolean
+        }
+      }).__xeroBrowserTool?.setDictationState({
+        ariaLabel: "Stop dictation",
+        audioLevel: 0.75,
+        isListening: true,
+        isToggleDisabled: false,
+        tooltip: "Stop dictation",
+        visible: true,
+      })
+      expect(dictationButton?.getAttribute("aria-label")).toBe("Stop dictation")
+      expect(dictationButton?.getAttribute("aria-pressed")).toBe("true")
+      expect(dictationButton?.getAttribute("data-listening")).toBe("true")
     } finally {
       ;(window as unknown as { __xeroBrowserTool?: { deactivate: () => void } })
         .__xeroBrowserTool?.deactivate()

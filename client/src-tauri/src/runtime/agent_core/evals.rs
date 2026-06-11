@@ -4821,6 +4821,7 @@ fn compile_agent_definition_eval_prompt(
             runtime_agent_id: case.runtime_agent_id,
             agent_tool_policy,
             tool_application_policy: Default::default(),
+            stage_allowed_tools: None,
         },
     );
     let exposed_tools = registry.descriptor_names().into_iter().collect::<Vec<_>>();

@@ -5750,6 +5750,10 @@ pub(crate) fn tool_registry_for_snapshot(
     } else {
         prompt_context.as_str()
     };
+    let stage_allowed_tools = tool_runtime
+        .map(AutonomousToolRuntime::current_workflow_allowed_tools)
+        .transpose()?
+        .flatten();
 
     let prompt_registry = ToolRegistry::for_prompt_with_options(
         repo_root,
@@ -5764,6 +5768,7 @@ pub(crate) fn tool_registry_for_snapshot(
             tool_application_policy: tool_runtime
                 .map(|runtime| runtime.tool_application_policy().clone())
                 .unwrap_or_default(),
+            stage_allowed_tools: stage_allowed_tools.clone(),
         },
     );
     let options = ToolRegistryOptions {
@@ -5774,6 +5779,7 @@ pub(crate) fn tool_registry_for_snapshot(
         tool_application_policy: tool_runtime
             .map(|runtime| runtime.tool_application_policy().clone())
             .unwrap_or_default(),
+        stage_allowed_tools,
     };
     let mut registry = if let Some(latest_registry) = latest_tool_registry_snapshot(snapshot)? {
         let mut registry = ToolRegistry::from_descriptors_with_dynamic_routes(

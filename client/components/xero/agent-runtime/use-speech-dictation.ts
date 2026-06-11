@@ -38,6 +38,8 @@ interface UseSpeechDictationOptions {
   setDraftPrompt: Dispatch<SetStateAction<string>>
   promptInputDisabled: boolean
   promptInputRef: RefObject<HTMLTextAreaElement | null>
+  focusPromptInput?: () => void
+  readDraftPrompt?: () => string
 }
 
 interface SpeechDictationController {
@@ -76,6 +78,37 @@ function appendDictationSegment(baseDraft: string, dictatedText: string): string
   const startsWithPunctuation = /^[,.;:!?)]/.test(segment)
   const needsSpace = !/\s$/.test(baseDraft) && !startsWithPunctuation
   return `${baseDraft}${needsSpace ? ' ' : ''}${segment}`
+}
+
+function isCumulativeDictationText(committedTranscript: string, candidateText: string): boolean {
+  const committed = committedTranscript.trim()
+  const candidate = candidateText.trimStart()
+
+  if (committed.length === 0 || candidate.length < committed.length) {
+    return false
+  }
+
+  const committedLower = committed.toLocaleLowerCase()
+  const candidateLower = candidate.toLocaleLowerCase()
+  if (!candidateLower.startsWith(committedLower)) {
+    return false
+  }
+
+  const nextCharacter = candidate.charAt(committed.length)
+  return nextCharacter.length === 0 || /[\s,.;:!?)]/.test(nextCharacter)
+}
+
+function mergeDictationTranscriptSegment(committedTranscript: string, dictatedText: string): string {
+  const segment = dictatedText.trimStart()
+  if (segment.length === 0) {
+    return committedTranscript
+  }
+
+  if (isCumulativeDictationText(committedTranscript, segment)) {
+    return segment
+  }
+
+  return appendDictationSegment(committedTranscript, segment)
 }
 
 function getUnknownErrorMessage(error: unknown, fallback: string): string {
@@ -152,6 +185,8 @@ export function useSpeechDictation({
   setDraftPrompt,
   promptInputDisabled,
   promptInputRef,
+  focusPromptInput: focusPromptInputOverride,
+  readDraftPrompt,
 }: UseSpeechDictationOptions): SpeechDictationController {
   const [status, setStatus] = useState<DictationStatusDto | null>(null)
   const [phase, setPhase] = useState<SpeechDictationPhase>('idle')
@@ -160,16 +195,22 @@ export function useSpeechDictation({
 
   const adapterRef = useRef(adapter)
   const draftPromptRef = useRef(draftPrompt)
+  const readDraftPromptRef = useRef(readDraftPrompt)
   const phaseRef = useRef<SpeechDictationPhase>('idle')
   const sessionRef = useRef<XeroDictationSession | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   const dictationBaseRef = useRef('')
+  const dictationTranscriptRef = useRef('')
   const renderedDraftRef = useRef('')
   const statusRequestRef = useRef(0)
 
   useEffect(() => {
     adapterRef.current = adapter
   }, [adapter])
+
+  useEffect(() => {
+    readDraftPromptRef.current = readDraftPrompt
+  }, [readDraftPrompt])
 
   useEffect(() => {
     draftPromptRef.current = draftPrompt
@@ -181,10 +222,15 @@ export function useSpeechDictation({
   }, [])
 
   const focusPromptInput = useCallback(() => {
+    if (focusPromptInputOverride) {
+      focusPromptInputOverride()
+      return
+    }
+
     window.requestAnimationFrame(() => {
       promptInputRef.current?.focus()
     })
-  }, [promptInputRef])
+  }, [focusPromptInputOverride, promptInputRef])
 
   const releaseSession = useCallback(() => {
     sessionRef.current?.unsubscribe()
@@ -192,19 +238,24 @@ export function useSpeechDictation({
     sessionIdRef.current = null
     setAudioLevel(0)
     dictationBaseRef.current = draftPromptRef.current
+    dictationTranscriptRef.current = ''
     renderedDraftRef.current = draftPromptRef.current
   }, [])
 
   const applyDictatedSegment = useCallback(
-    (text: string, commit: boolean) => {
+    (text: string) => {
       setDraftPrompt((currentDraft) => {
         const expectedDraft = renderedDraftRef.current
-        const nextBase = currentDraft === expectedDraft ? dictationBaseRef.current : currentDraft
-        const nextDraft = appendDictationSegment(nextBase, text)
+        const userEditedDraft = currentDraft !== expectedDraft
+        const nextBase = userEditedDraft ? currentDraft : dictationBaseRef.current
+        const currentTranscript = userEditedDraft ? '' : dictationTranscriptRef.current
+        const nextTranscript = mergeDictationTranscriptSegment(currentTranscript, text)
+        const nextDraft = appendDictationSegment(nextBase, nextTranscript)
 
         draftPromptRef.current = nextDraft
+        dictationBaseRef.current = nextBase
         renderedDraftRef.current = nextDraft
-        dictationBaseRef.current = commit ? nextDraft : nextBase
+        dictationTranscriptRef.current = nextTranscript
 
         return nextDraft
       })
@@ -248,7 +299,7 @@ export function useSpeechDictation({
 
       if (event.kind === 'partial') {
         updatePhase('listening')
-        applyDictatedSegment(event.text, false)
+        applyDictatedSegment(event.text)
         return
       }
 
@@ -260,7 +311,7 @@ export function useSpeechDictation({
 
       if (event.kind === 'final') {
         updatePhase('listening')
-        applyDictatedSegment(event.text, true)
+        applyDictatedSegment(event.text)
         return
       }
 
@@ -337,8 +388,10 @@ export function useSpeechDictation({
       return
     }
 
-    const baseDraft = draftPromptRef.current
+    const baseDraft = readDraftPromptRef.current?.() ?? draftPromptRef.current
+    draftPromptRef.current = baseDraft
     dictationBaseRef.current = baseDraft
+    dictationTranscriptRef.current = ''
     renderedDraftRef.current = baseDraft
     setError(null)
     updatePhase('requesting')
@@ -446,7 +499,14 @@ export function useSpeechDictation({
   const isListening = phase === 'listening'
   const isBusy = phase === 'requesting' || phase === 'stopping'
   const isToggleDisabled = promptInputDisabled || isBusy
-  const ariaLabel = isListening ? 'Stop dictation' : 'Start dictation'
+  const ariaLabel =
+    phase === 'requesting'
+      ? 'Starting dictation'
+      : phase === 'stopping'
+        ? 'Stopping dictation'
+        : isListening
+          ? 'Stop dictation'
+          : 'Start dictation'
   const tooltip =
     phase === 'requesting'
       ? 'Requesting dictation permission'

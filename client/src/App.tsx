@@ -5510,6 +5510,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
             >
               <LazyBrowserSidebar
                 open={browserOpen}
+                dictationAdapter={resolvedAdapter}
                 projectId={activeProjectId}
                 fullWidth={browserFocusMode}
                 fullWidthTarget={browserFullWidthTarget}

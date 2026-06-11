@@ -627,6 +627,16 @@ function makeDictationStatus(overrides: Partial<DictationStatusDto> = {}): Dicta
 function createDictationAdapter(options: {
   engine?: DictationEngineDto
   status?: DictationStatusDto
+  start?: (
+    handler: (event: DictationEventDto) => void,
+    session: {
+      response: {
+        sessionId: string
+        engine: DictationEngineDto
+        locale: string
+      }
+    },
+  ) => Promise<void>
   stop?: () => Promise<void>
   cancel?: () => Promise<void>
 } = {}) {
@@ -647,6 +657,10 @@ function createDictationAdapter(options: {
     speechDictationStatus: vi.fn(async () => options.status ?? makeDictationStatus()),
     speechDictationStart: vi.fn(async (_request, handler) => {
       eventHandler = handler
+      if (options.start) {
+        await options.start(handler, session)
+        return session
+      }
       handler({
         kind: 'started',
         sessionId: session.response.sessionId,
@@ -5801,6 +5815,42 @@ describe('AgentRuntime current UI', () => {
     expect(dictation.adapter.speechDictationStart).not.toHaveBeenCalled()
   })
 
+  it('shows dictation startup feedback before the native session finishes starting', async () => {
+    let resolveStart: (() => void) | null = null
+    const dictation = createDictationAdapter({
+      start: async () => {
+        await new Promise<void>((resolve) => {
+          resolveStart = resolve
+        })
+      },
+    })
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun(),
+        })}
+        desktopAdapter={dictation.adapter}
+        onUpdateRuntimeRunControls={vi.fn(async () => makeRuntimeRun())}
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Start dictation' }))
+
+    await waitFor(() => expect(dictation.adapter.speechDictationStart).toHaveBeenCalledTimes(1))
+    const startingButton = screen.getByRole('button', { name: 'Starting dictation' })
+    expect(startingButton).toBeDisabled()
+    expect(startingButton).toHaveAttribute('aria-pressed', 'true')
+    expect(document.querySelector('.composer-dictation-waveform')).not.toBeNull()
+
+    await act(async () => {
+      resolveStart?.()
+    })
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop dictation' })).toBeVisible())
+  })
+
   it('keeps Enter-to-send behavior unchanged when dictation support is available', async () => {
     const dictation = createDictationAdapter()
     const onUpdateRuntimeRunControls = vi.fn(async () => makeRuntimeRun())
@@ -6081,6 +6131,90 @@ describe('AgentRuntime current UI', () => {
       sequence: 3,
     })
     expect(input).toHaveValue('Review the logs carefully before sending')
+  })
+
+  it('replaces partial text when the final transcript repeats the same utterance', async () => {
+    const dictation = createDictationAdapter()
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun(),
+        })}
+        desktopAdapter={dictation.adapter}
+        onUpdateRuntimeRunControls={vi.fn(async () => makeRuntimeRun())}
+      />,
+    )
+
+    const input = screen.getByLabelText('Agent input')
+    fireEvent.change(input, { target: { value: 'Log' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Start dictation' }))
+
+    await waitFor(() => expect(dictation.adapter.speechDictationStart).toHaveBeenCalledTimes(1))
+
+    dictation.emit({
+      kind: 'partial',
+      sessionId: 'dictation-session-1',
+      text: 'The logo',
+      sequence: 1,
+    })
+    expect(input).toHaveValue('Log The logo')
+
+    dictation.emit({
+      kind: 'final',
+      sessionId: 'dictation-session-1',
+      text: 'The logo is broken',
+      sequence: 2,
+    })
+    expect(input).toHaveValue('Log The logo is broken')
+
+    dictation.emit({
+      kind: 'final',
+      sessionId: 'dictation-session-1',
+      text: 'The logo is broken',
+      sequence: 3,
+    })
+    expect(input).toHaveValue('Log The logo is broken')
+  })
+
+  it('replaces cumulative dictated finals instead of appending repeated transcripts', async () => {
+    const dictation = createDictationAdapter()
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun(),
+        })}
+        desktopAdapter={dictation.adapter}
+        onUpdateRuntimeRunControls={vi.fn(async () => makeRuntimeRun())}
+      />,
+    )
+
+    const input = screen.getByLabelText('Agent input')
+    fireEvent.click(await screen.findByRole('button', { name: 'Start dictation' }))
+
+    await waitFor(() => expect(dictation.adapter.speechDictationStart).toHaveBeenCalledTimes(1))
+
+    dictation.emit({
+      kind: 'final',
+      sessionId: 'dictation-session-1',
+      text: 'The logo is broken',
+      sequence: 1,
+    })
+    expect(input).toHaveValue('The logo is broken')
+
+    dictation.emit({
+      kind: 'final',
+      sessionId: 'dictation-session-1',
+      text: 'The logo is broken. Also should be using a reasonable component globally for all the apps',
+      sequence: 2,
+    })
+
+    expect(input).toHaveValue(
+      'The logo is broken. Also should be using a reasonable component globally for all the apps',
+    )
   })
 
   it('starts native Windows SDK dictation from the shared composer control', async () => {

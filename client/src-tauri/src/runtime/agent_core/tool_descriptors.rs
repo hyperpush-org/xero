@@ -976,15 +976,44 @@ fn workflow_structure_fragment(snapshot: Option<&JsonValue>) -> Option<PromptFra
                                 ))
                             }
                             "tool_succeeded" => {
-                                let tool_name =
-                                    item.get("toolName").and_then(JsonValue::as_str)?;
+                                let mut tool_names = Vec::new();
+                                if let Some(tool_name) =
+                                    item.get("toolName").and_then(JsonValue::as_str)
+                                {
+                                    tool_names.push(tool_name.trim());
+                                }
+                                if let Some(items) =
+                                    item.get("toolNames").and_then(JsonValue::as_array)
+                                {
+                                    tool_names.extend(
+                                        items
+                                            .iter()
+                                            .filter_map(JsonValue::as_str)
+                                            .map(str::trim)
+                                            .filter(|value| !value.is_empty()),
+                                    );
+                                }
+                                if tool_names.is_empty() {
+                                    return None;
+                                }
                                 let min_count = item
                                     .get("minCount")
                                     .and_then(JsonValue::as_u64)
                                     .unwrap_or(1);
-                                Some(format!(
-                                    "  Required gate: succeed `{tool_name}` at least {min_count} time(s)."
-                                ))
+                                let tool_list = tool_names
+                                    .iter()
+                                    .map(|tool_name| format!("`{tool_name}`"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                if tool_names.len() == 1 {
+                                    Some(format!(
+                                        "  Required gate: succeed {tool_list} at least {min_count} time(s)."
+                                    ))
+                                } else {
+                                    Some(format!(
+                                        "  Required gate: succeed one of {tool_list} at least {min_count} time(s)."
+                                    ))
+                                }
                             }
                             _ => None,
                         }
@@ -9179,7 +9208,7 @@ mod tests {
                         "description": "Understand the request.",
                         "allowedTools": ["read"],
                         "requiredChecks": [
-                            { "kind": "tool_succeeded", "toolName": "read", "minCount": 1 }
+                            { "kind": "tool_succeeded", "toolNames": ["read", "search"], "minCount": 1 }
                         ]
                     },
                     {
@@ -9199,6 +9228,9 @@ mod tests {
         assert!(fragment.body.contains("Runtime-enforced Stages"));
         assert!(fragment.body.contains("Start Stage: `intake`."));
         assert!(fragment.body.contains("Stage 1 `intake` (Intake)"));
+        assert!(fragment
+            .body
+            .contains("succeed one of `read`, `search` at least 1 time(s)"));
         assert!(fragment.body.contains("terminal or auto-advance Stage"));
         assert!(!fragment.body.contains("workflow structure"));
         assert!(!fragment.body.contains("Phase 1"));
