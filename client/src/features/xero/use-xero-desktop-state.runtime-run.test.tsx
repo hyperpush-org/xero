@@ -1092,6 +1092,7 @@ function Harness({ adapter }: { adapter: XeroDesktopAdapter }) {
       <div data-testid="stream-run-id">{state.agentView?.runtimeStream?.runId ?? 'none'}</div>
       <div data-testid="stream-last-sequence">{String(state.agentView?.runtimeStream?.lastSequence ?? 0)}</div>
       <div data-testid="stream-item-count">{String(state.agentView?.runtimeStreamItems?.length ?? 0)}</div>
+      <div data-testid="activity-count">{String(state.agentView?.activityItems?.length ?? 0)}</div>
       <div data-testid="stream-tool-count">{String(state.agentView?.runtimeStream?.toolCalls.length ?? 0)}</div>
       <div data-testid="stream-tool-first-id">{firstToolCall?.toolCallId ?? 'none'}</div>
       <div data-testid="stream-tool-first-state">{firstToolCall?.toolState ?? 'none'}</div>
@@ -1654,6 +1655,152 @@ describe('useXeroDesktopState runtime-run hydration', () => {
     expect(screen.getByTestId('runtime-run-checkpoint-count')).toHaveTextContent('2')
     expect(screen.getByTestId('messages-reason')).toHaveTextContent(
       'Live runtime activity is streaming for this project (0 items captured).',
+    )
+  })
+
+  it('replays saved failed runtime stream history without requiring an active auth session', async () => {
+    const runId = 'run-failed-project-1'
+    const setup = createMockAdapter({
+      runtimeSessions: {
+        'project-1': makeRuntimeSession('project-1'),
+      },
+      runtimeRuns: {
+        'project-1': makeRuntimeRun('project-1', {
+          runId,
+          status: 'failed',
+          stoppedAt: '2026-04-16T13:30:10Z',
+          lastErrorCode: 'invalid_request',
+          lastError: {
+            code: 'invalid_request',
+            message: 'Field `title` must be a non-empty string.',
+          },
+          updatedAt: '2026-04-16T13:30:10Z',
+        }),
+      },
+      subscribeResponses: {
+        'project-1': makeStreamResponse('project-1', {
+          runId,
+          sessionId: `owned-agent:${runId}`,
+          flowId: null,
+        }),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('runtime-run-status')).toHaveTextContent('failed'))
+    await waitFor(() => expect(setup.subscribeRuntimeStream).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(setup.subscribeRuntimeStream).mock.calls[0]?.[5]).toEqual({
+      afterSequence: null,
+      replayLimit: null,
+    })
+    expect(screen.getByTestId('stream-run-id')).toHaveTextContent(runId)
+
+    await act(async () => {
+      setup.emitRuntimeStream(0, makeRuntimeStreamEvent('project-1', {
+        runId,
+        sessionId: `owned-agent:${runId}`,
+        item: {
+          kind: 'activity',
+          runId,
+          sessionId: `owned-agent:${runId}`,
+          sequence: 1,
+          title: 'THOUGHTS',
+          code: 'owned_agent_reasoning',
+          detail: 'Inspecting the existing project list before editing.',
+          text: 'Inspecting the existing project list before editing.',
+        },
+      }))
+      setup.emitRuntimeStream(0, makeRuntimeStreamEvent('project-1', {
+        runId,
+        sessionId: `owned-agent:${runId}`,
+        item: {
+          kind: 'tool',
+          runId,
+          sessionId: `owned-agent:${runId}`,
+          sequence: 2,
+          toolCallId: 'tool-list-tree-1',
+          toolName: 'list_tree',
+          toolState: 'succeeded',
+          detail: 'Listed the repository tree.',
+          text: null,
+        },
+      }))
+    })
+
+    await waitFor(() => expect(screen.getByTestId('stream-last-sequence')).toHaveTextContent('2'))
+    expect(screen.getByTestId('stream-item-count')).toHaveTextContent('2')
+    expect(screen.getByTestId('activity-count')).toHaveTextContent('1')
+    expect(screen.getByTestId('stream-tool-count')).toHaveTextContent('1')
+    expect(screen.getByTestId('stream-tool-first-id')).toHaveTextContent('tool-list-tree-1')
+    expect(screen.getByTestId('stream-tool-first-state')).toHaveTextContent('succeeded')
+    expect(screen.getByTestId('messages-reason')).toHaveTextContent(
+      'Live runtime activity is streaming for this project (2 items captured).',
+    )
+  })
+
+  it('keeps saved non-terminal action-required streams visible without an auth session', async () => {
+    const runId = 'run-paused-project-1'
+    const setup = createMockAdapter({
+      runtimeSessions: {
+        'project-1': makeRuntimeSession('project-1'),
+      },
+      runtimeRuns: {
+        'project-1': makeRuntimeRun('project-1', {
+          runId,
+          status: 'running',
+          runtimeKind: 'owned_agent',
+          providerId: 'xai',
+          lastHeartbeatAt: '2026-06-26T22:58:18Z',
+          updatedAt: '2026-06-26T22:58:18Z',
+        }),
+      },
+      subscribeResponses: {
+        'project-1': makeStreamResponse('project-1', {
+          runtimeKind: 'owned_agent',
+          runId,
+          sessionId: `owned-agent:${runId}`,
+          flowId: null,
+        }),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('runtime-run-status')).toHaveTextContent('running'))
+    await waitFor(() => expect(setup.subscribeRuntimeStream).toHaveBeenCalledTimes(1))
+    expect(screen.getByTestId('stream-run-id')).toHaveTextContent(runId)
+
+    await act(async () => {
+      setup.emitRuntimeStream(0, makeRuntimeStreamEvent('project-1', {
+        runtimeKind: 'owned_agent',
+        runId,
+        sessionId: `owned-agent:${runId}`,
+        item: {
+          kind: 'action_required',
+          runId,
+          sessionId: `owned-agent:${runId}`,
+          sequence: 3,
+          actionId: 'tool-call-command-probe',
+          boundaryId: 'owned_agent',
+          actionType: 'safety_boundary',
+          answerShape: 'plain_text',
+          title: 'Action required',
+          detail:
+            'Xero denied the autonomous shell command because argument `/Users/sn0w/Documents/dev/panda2` escapes the imported repository root.',
+          text:
+            'Xero denied the autonomous shell command because argument `/Users/sn0w/Documents/dev/panda2` escapes the imported repository root.',
+          code: 'policy_denied_argument_outside_repo',
+          message:
+            'Xero denied the autonomous shell command because argument `/Users/sn0w/Documents/dev/panda2` escapes the imported repository root.',
+        },
+      }))
+    })
+
+    await waitFor(() => expect(screen.getByTestId('stream-action-required-count')).toHaveTextContent('1'))
+    expect(screen.getByTestId('stream-item-count')).toHaveTextContent('1')
+    expect(screen.getByTestId('messages-reason')).toHaveTextContent(
+      'Action required: Xero denied the autonomous shell command because argument `/Users/sn0w/Documents/dev/panda2` escapes the imported repository root.',
     )
   })
 
@@ -2281,6 +2428,96 @@ describe('useXeroDesktopState runtime-run hydration', () => {
     expect(screen.getByTestId('unread-completed-session-count')).toHaveTextContent('1')
     expect(screen.getByTestId('first-unread-completed-session-project')).toHaveTextContent('Xero')
     expect(screen.getByTestId('first-unread-completed-session-title')).toHaveTextContent('Main session')
+  })
+
+  it('keeps listening for owned-agent completion after project switch without an auth session', async () => {
+    const projectOneRunId = 'run-project-1'
+    const projectTwoRunId = 'run-project-2'
+    const setup = createMockAdapter({
+      listProjects: {
+        projects: [
+          makeProjectSummary('project-1', 'Xero'),
+          makeProjectSummary('project-2', 'Orchestra'),
+        ],
+      },
+      runtimeSessions: {
+        'project-1': makeRuntimeSession('project-1'),
+        'project-2': makeRuntimeSession('project-2'),
+      },
+      runtimeRuns: {
+        'project-1': makeRuntimeRun('project-1', {
+          runtimeKind: 'owned_agent',
+          runId: projectOneRunId,
+        }),
+        'project-2': makeRuntimeRun('project-2', {
+          runtimeKind: 'owned_agent',
+          runId: projectTwoRunId,
+        }),
+      },
+      subscribeResponses: {
+        'project-1': makeStreamResponse('project-1', {
+          runtimeKind: 'owned_agent',
+          runId: projectOneRunId,
+          sessionId: `owned-agent:${projectOneRunId}`,
+          flowId: null,
+        }),
+        'project-2': makeStreamResponse('project-2', {
+          runtimeKind: 'owned_agent',
+          runId: projectTwoRunId,
+          sessionId: `owned-agent:${projectTwoRunId}`,
+          flowId: null,
+        }),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('stream-run-id')).toHaveTextContent(projectOneRunId))
+    fireEvent.click(screen.getByRole('button', { name: 'Select project 2' }))
+
+    await waitFor(() => expect(screen.getByTestId('stream-run-id')).toHaveTextContent(projectTwoRunId))
+    await waitFor(() =>
+      expect(
+        setup.streamSubscriptions.some((subscription) =>
+          subscription.projectId === 'project-1' &&
+          subscription.active &&
+          subscription.itemKinds.join('|') === 'complete|failure',
+        ),
+      ).toBe(true),
+    )
+
+    const backgroundSubscriptionIndex = setup.streamSubscriptions.findIndex((subscription) =>
+      subscription.projectId === 'project-1' &&
+      subscription.active &&
+      subscription.itemKinds.join('|') === 'complete|failure',
+    )
+    expect(backgroundSubscriptionIndex).toBeGreaterThanOrEqual(0)
+
+    act(() => {
+      setup.emitRuntimeStream(
+        backgroundSubscriptionIndex,
+        makeRuntimeStreamEvent('project-1', {
+          runtimeKind: 'owned_agent',
+          runId: projectOneRunId,
+          sessionId: `owned-agent:${projectOneRunId}`,
+          flowId: null,
+          subscribedItemKinds: ['complete', 'failure'],
+          item: {
+            kind: 'complete',
+            runId: projectOneRunId,
+            sessionId: `owned-agent:${projectOneRunId}`,
+            flowId: null,
+            sequence: 10,
+            createdAt: '2026-04-16T13:30:10Z',
+          },
+        }),
+      )
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId('global-unread-completed-session-count')).toHaveTextContent('1'),
+    )
+    expect(screen.getByTestId('first-unread-completed-session-project')).toHaveTextContent('Xero')
   })
 
   it('projects MCP capability tool summaries into the agent tool lane projection', async () => {

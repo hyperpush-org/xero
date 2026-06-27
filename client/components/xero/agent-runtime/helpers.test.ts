@@ -5,6 +5,7 @@ import {
   getStreamStatusMeta,
   getToolCardTitle,
   getToolSummaryContext,
+  isAgentPaneWorking,
 } from '@/components/xero/agent-runtime/runtime-stream-helpers'
 import { displayValue, formatSequence } from '@/components/xero/agent-runtime/shared-helpers'
 import type { AgentPaneView } from '@/src/features/xero/use-xero-desktop-state'
@@ -398,5 +399,51 @@ describe('agent-runtime helpers', () => {
     )
 
     expect(meta.title).toBe('No agent run attached yet')
+  })
+
+  it('shows restored saved activity for a failed terminal run even when auth is signed out', () => {
+    const meta = getStreamStatusMeta(
+      makeAgent({
+        runtimeRun: {
+          runId: 'run-failed-1',
+          isTerminal: true,
+          isFailed: true,
+        } as never,
+        runtimeStream: {
+          status: 'live',
+          items: [{ kind: 'activity', sequence: 1 }],
+          activityItems: [{ kind: 'activity', sequence: 1 }],
+          toolCalls: [],
+          skillItems: [],
+          actionRequired: [],
+          completion: null,
+          failure: null,
+          lastIssue: null,
+        } as never,
+        messagesUnavailableReason: 'Live runtime activity is streaming for this project (1 item captured).',
+      }),
+      makeRuntimeSession(),
+    )
+
+    expect(meta.title).toBe('Saved failed run activity restored')
+    expect(meta.body).toBe('Live runtime activity is streaming for this project (1 item captured).')
+  })
+
+  it('does not mark an action-required run as still working', () => {
+    const agent = makeAgent({
+      runtimeRun: {
+        runId: 'run-action-required',
+        isActive: true,
+        isTerminal: false,
+      } as never,
+      runtimeStreamStatus: 'live',
+      actionRequiredItems: [
+        {
+          actionId: 'tool-call-command-probe',
+        } as never,
+      ],
+    })
+
+    expect(isAgentPaneWorking(agent)).toBe(false)
   })
 })

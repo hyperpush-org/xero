@@ -7,7 +7,7 @@
   "build": {
     "beforeDevCommand": "pnpm dev",
     "beforeBuildCommand": "pnpm build",
-    "devUrl": "http://localhost:3000",
+    "devUrl": "http://localhost:26100",
     "frontendDist": "../dist"
   },
   "app": {
@@ -42,10 +42,10 @@
         "base-uri": ["'self'"]
       },
       "devCsp": {
-        "default-src": ["'self'", "http://localhost:3000"],
-        "script-src": ["'self'", "'unsafe-eval'", "http://localhost:3000"],
-        "style-src": ["'self'", "'unsafe-inline'", "http://localhost:3000"],
-        "font-src": ["'self'", "data:", "http://localhost:3000"],
+        "default-src": ["'self'", "http://localhost:26100"],
+        "script-src": ["'self'", "'unsafe-eval'", "http://localhost:26100"],
+        "style-src": ["'self'", "'unsafe-inline'", "http://localhost:26100"],
+        "font-src": ["'self'", "data:", "http://localhost:26100"],
         "img-src": ["'self'", "data:", "blob:", "project-asset:", "emulator:", "https:", "http:"],
         "media-src": ["'self'", "blob:", "project-asset:"],
         "object-src": ["'self'", "blob:", "project-asset:"],
@@ -54,8 +54,8 @@
           "'self'",
           "ipc:",
           "http://ipc.localhost",
-          "http://localhost:3000",
-          "ws://localhost:3000"
+          "http://localhost:26100",
+          "ws://localhost:26100"
         ],
         "base-uri": ["'self'"]
       }

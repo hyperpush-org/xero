@@ -527,6 +527,8 @@ fn imported_repo_bridge_executes_repo_scoped_tool_operations_and_surfaces_git_ch
             path: Some("notes".into()),
             max_depth: None,
             max_results: None,
+            include_hidden: false,
+            include_ignored: false,
             cursor: None,
         })
         .expect("find imported repo files inside notes");

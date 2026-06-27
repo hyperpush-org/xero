@@ -342,6 +342,7 @@ pub fn built_in_environment_probe_catalog() -> Vec<EnvironmentProbeCatalogEntry>
         // Package managers (cross-language)
         entry("pnpm", PackageManager, "pnpm", &["--version"]),
         entry("npm", PackageManager, "npm", &["--version"]),
+        entry("npx", PackageManager, "npx", &["--version"]),
         entry("yarn", PackageManager, "yarn", &["--version"]),
         entry("bun", PackageManager, "bun", &["--version"]),
         entry("deno", PackageManager, "deno", &["--version"]),
@@ -1248,6 +1249,19 @@ mod tests {
                 "{id} should stay out of environment discovery while mobile emulator surfaces are disabled"
             );
         }
+    }
+
+    #[test]
+    fn built_in_catalog_includes_node_package_runner_aliases() {
+        let catalog = built_in_environment_probe_catalog();
+        let npx = catalog
+            .iter()
+            .find(|entry| entry.id == "npx")
+            .expect("npx probe entry");
+
+        assert_eq!(npx.category, EnvironmentToolCategory::PackageManager);
+        assert_eq!(npx.command, "npx");
+        assert_eq!(npx.args, vec!["--version".to_string()]);
     }
 
     #[test]

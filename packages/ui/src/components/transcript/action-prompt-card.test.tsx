@@ -107,6 +107,32 @@ describe('ActionPromptCard', () => {
     })
   })
 
+  it('submits multi-choice prompts as a JSON array of selected option ids', () => {
+    const { resolveActionPrompt } = renderPrompt({
+      actionType: 'user_input_required',
+      shape: 'multi_choice',
+      options: [
+        { id: 'tailwind', label: 'Tailwind', description: null },
+        { id: 'shadcn', label: 'ShadCN', description: 'Use component primitives.' },
+        { id: 'framer', label: 'Framer Motion', description: null },
+      ],
+      allowMultiple: true,
+    })
+
+    const submit = screen.getByRole('button', { name: 'Submit' })
+    expect(submit).toBeDisabled()
+
+    fireEvent.click(screen.getByText('Tailwind'))
+    fireEvent.click(screen.getByText('ShadCN'))
+    fireEvent.click(submit)
+
+    expect(resolveActionPrompt).toHaveBeenCalledWith('question-1', 'approve', {
+      actionType: 'user_input_required',
+      runId: null,
+      userAnswer: JSON.stringify(['tailwind', 'shadcn']),
+    })
+  })
+
   it('keeps sensitive values hidden by default and submits only entered fields', () => {
     const { resolveActionPrompt } = renderPrompt({
       actionType: 'sensitive_input_request',

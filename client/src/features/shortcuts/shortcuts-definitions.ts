@@ -34,19 +34,19 @@ export const SHORTCUT_CATEGORIES: ShortcutCategory[] = ['Views', 'Composer']
 
 export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
   {
-    id: 'view.phases',
-    label: 'Switch to Workflow',
-    description: 'Show the workflow / phases view.',
+    id: 'view.agent',
+    label: 'Switch to Chat',
+    description: 'Show the chat runtime view.',
     category: 'Views',
-    view: 'phases',
+    view: 'agent',
     defaultBinding: { mod: true, shift: false, alt: false, key: '1' },
   },
   {
-    id: 'view.agent',
-    label: 'Switch to Agent',
-    description: 'Show the agent runtime view.',
+    id: 'view.phases',
+    label: 'Switch to Create',
+    description: 'Show the create / stages view.',
     category: 'Views',
-    view: 'agent',
+    view: 'phases',
     defaultBinding: { mod: true, shift: false, alt: false, key: '2' },
   },
   {

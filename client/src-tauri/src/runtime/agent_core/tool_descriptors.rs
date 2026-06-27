@@ -31,6 +31,7 @@ const DESCRIPTOR_MAX_LIST_TREE_DEPTH: u64 = 8;
 const DESCRIPTOR_MAX_LIST_TREE_ENTRIES: u64 = 1_000;
 const DESCRIPTOR_MAX_DIRECTORY_DIGEST_FILES: u64 = 5_000;
 const DESCRIPTOR_MAX_HASH_FILES: u64 = 5_000;
+const DESCRIPTOR_MAX_COMMAND_TIMEOUT_MS: u64 = 120_000;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -687,6 +688,14 @@ fn subagent_delegation_fragment() -> &'static str {
     "Subagent delegation contract: use subagents for bounded parallel side work that materially advances the task while the parent keeps making useful progress. Prefer researcher, reviewer, or planner subagents for independent investigation, review, or sidecar planning. Use engineer or debugger subagents only when their writeSet ownership is explicit and disjoint from the parent's current edits. Do not delegate immediate blocking work when the parent cannot proceed without that result. After spawning, continue useful non-overlapping parent work; wait only when the result is needed. Before final response, resolve every subagent by waiting, cancelling, integrating with a parent decision, or closing with a parent decision, and include the relevant decisions in the final summary."
 }
 
+fn user_input_contract_fragment() -> &'static str {
+    "User-input contract: when a missing preference or bounded decision would materially change the implementation, plan, risk, scope, or user experience, use `action_required` instead of burying the decision in prose. Choose the smallest answer shape: `single_choice` for one option, `multi_choice` for independent selections, `short_text` or `long_text` for freeform answers, and `number` or `date` for typed values. Provide 2-5 high-quality options when possible, put the recommended option first when one exists, and explain tradeoffs in option descriptions. Do not ask when repository evidence, durable context, or a low-impact assumption is enough; proceed with a stated assumption. Never use `action_required` for secrets; use `request_sensitive_input`."
+}
+
+fn product_surface_stack_contract_fragment() -> &'static str {
+    "Product-surface technology contract: before creating or substantially changing a user-facing app, site, landing page, component library surface, or design system surface, inspect the existing stack, manifests, scripts, styling system, component library, and project instructions. Prefer the existing stack when it is coherent. If no stack exists, multiple viable stacks exist, or the choice would affect dependencies, maintainability, generated files, styling conventions, or verification, call `action_required` with `promptKind: \"technology_stack_selection\"` before the first implementation edit. Keep options technology-agnostic and evidence-based: include the existing stack when present, include mainstream framework/component/styling choices that fit the task, and include static HTML/CSS/JS only when it is explicitly requested or justified by constraints. Do not default to hand-written static UI for production product surfaces just because the repo is empty."
+}
+
 fn runtime_metadata_fragment(metadata: &RuntimeHostMetadata) -> String {
     format!(
         "Runtime metadata for this provider turn (authoritative Xero host facts):\n- Current date (UTC): {}\n- Host operating system: {} (`{}`)\n- Host architecture: `{}`\n- Host OS family: `{}`\nUse the current date when interpreting relative dates such as today, yesterday, tomorrow, latest, and current before answering or deciding which tools to call. Use the host facts when reasoning about commands, paths, and OS-specific tools. Do not request or rely on tools that are unavailable for this host operating system.",
@@ -741,6 +750,10 @@ pub(crate) fn base_policy_fragment(runtime_agent_id: RuntimeAgentIdDto) -> Strin
             "",
             "Planning interview contract: ask fewer, higher-quality questions. Prefer structured `action_required` prompts when the answer is bounded: one option, multiple constraints, risk tolerance, scope, readiness, short text, numeric values, or dates. Use ordinary assistant text for explanation, not for hiding decisions the UI can collect directly.",
             "",
+            user_input_contract_fragment(),
+            "",
+            product_surface_stack_contract_fragment(),
+            "",
             "Live plan contract: keep the conversation plan tray current with `todo` while drafting. Use stable slice ids such as `P0-S1`, include phase metadata when known, and preserve ids after first draft unless the user resets the plan. A normal flow should converge in one to four rounds unless genuinely ambiguous.",
             "",
             "Plan Pack contract: accepted plans must use schema `xero.plan_pack.v1` with this canonical section order: Goal, Non-Goals, Constraints, Context Used, Decisions, Build Strategy, Slices, Build Handoff, Risks, and Open Questions. The handoff must target Engineer, name a start slice, provide a deterministic bootstrap prompt, and mark whether plan mode is satisfied.",
@@ -767,6 +780,10 @@ pub(crate) fn base_policy_fragment(runtime_agent_id: RuntimeAgentIdDto) -> Strin
             "",
             "Plan and verification contract: Xero enforces an explicit run state machine (intake, context gather, plan, approval wait, execute, verify, summarize, blocked, complete). For multi-file, high-risk, or ambiguous work, establish and update a concise `todo` plan before editing. For code-changing work, do not finish without either a verification result or a clear, specific reason verification could not be run.",
             "",
+            user_input_contract_fragment(),
+            "",
+            product_surface_stack_contract_fragment(),
+            "",
             "Routing-suggestion contract: when the user's new prompt is better handled by another eligible built-in agent, emit this marker as a single line before any other content:",
             "",
             "<xero-routing-suggestion target=\"ask|plan|debug|generalist\" reason=\"short rationale\" summary=\"one-sentence carry-over summary for the new agent\"/>",
@@ -788,6 +805,10 @@ pub(crate) fn base_policy_fragment(runtime_agent_id: RuntimeAgentIdDto) -> Strin
             "Persistence and retrieval contract: Xero persists a context manifest before provider turns and keeps durable project context behind the `project_context` tool instead of preloading raw memory or project records. Use `project_context` to read context before prior-work-sensitive tasks and before investigating related symptoms, subsystems, errors, or paths with possible history. Use it to record/update context after durable findings, disproven hypotheses, root cause, fix rationale, verification, reusable troubleshooting facts, and blockers.",
             "",
             "Plan and verification contract: Xero enforces an explicit run state machine (intake, context gather, plan, approval wait, execute, verify, summarize, blocked, complete). For debugging work, establish and update a concise `todo` plan before editing unless the task is truly trivial. Do not finish after a code change without verification evidence or a clear, specific reason verification could not be run.",
+            "",
+            user_input_contract_fragment(),
+            "",
+            product_surface_stack_contract_fragment(),
             "",
             "Routing-suggestion contract: when the user's new prompt is no longer debugging work, emit this marker as a single line before any other content:",
             "",
@@ -839,6 +860,10 @@ pub(crate) fn base_policy_fragment(runtime_agent_id: RuntimeAgentIdDto) -> Strin
             "Operate like a production coding agent when handling work yourself: inspect before editing, respect a dirty worktree, keep changes scoped, prefer `rg` for search, run focused verification when behavior changes, and summarize concrete evidence before completion.",
             "",
             "Persistence and retrieval contract: Xero persists a context manifest before provider turns and keeps durable project context behind the `project_context` tool. Use it to read context before prior-work-sensitive tasks and to record context after durable findings.",
+            "",
+            user_input_contract_fragment(),
+            "",
+            product_surface_stack_contract_fragment(),
             "",
             subagent_delegation_fragment(),
             "",
@@ -972,7 +997,7 @@ fn workflow_structure_fragment(snapshot: Option<&JsonValue>) -> Option<PromptFra
                                 let todo_id =
                                     item.get("todoId").and_then(JsonValue::as_str)?;
                                 Some(format!(
-                                    "  Required gate: close todo `{todo_id}` (call the `todo` tool with id `{todo_id}` and status `completed`)."
+                                    "  Required gate: close todo `{todo_id}` (call the `todo` tool with action `complete` and id `{todo_id}`)."
                                 ))
                             }
                             "tool_succeeded" => {
@@ -1412,6 +1437,8 @@ fn tool_policy_fragment(
         browser_control_prompt_section(runtime_agent_id, browser_control_preference, tools);
     let tool_application_guidance =
         tool_application_prompt_section(runtime_agent_id, tool_application_policy, tools);
+    let command_tool_guidance = command_tool_prompt_section(tools);
+    let user_input_tool_guidance = user_input_tool_prompt_section(tools);
     match runtime_agent_id {
         RuntimeAgentIdDto::Ask => format!(
             "Available observe-only tools: {tool_names}\n\nBefore calling any observe-only tool, do prompt-first routing triage. If the user's wording already makes the next useful step outside Ask's read-only boundary, prefer emitting the routing marker instead of inspecting first. Use tools only to inspect project information needed to answer or to disambiguate whether Ask should stay active. Use `project_context_search` and `project_context_get` to read durable context; Ask's default surface does not expose durable-context writes. If the user explicitly asks to save a note, use only an approved context-write action when Xero exposes one for this turn. `tool_search` and `tool_access` are filtered to Ask-safe observe-only capabilities; do not ask for repo mutation, command, browser-control, MCP, skill, subagent, device, or external-service tools.{browser_control_guidance}"
@@ -1420,24 +1447,70 @@ fn tool_policy_fragment(
             "Available Computer Use tools: {tool_names}\n\nUse the smallest appropriate tool or tool group for the user's task, and follow each tool's schema, risk class, approval flow, and output contract. Prefer structured browser tools for browser tasks, command/process tools for shellable or process tasks, native desktop structured actions for app UI, and pointer/pixel input only when no more precise tool fits. Prefer observe/read actions before state-changing actions when context is missing. Use `tool_search` and `tool_access` to activate additional Computer Use capabilities when the current tool list is insufficient.{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::Plan => format!(
-            "Available planning tools: {tool_names}\n\nUse repository read/read_many/result_page/stat/search/find/list/list_tree/directory_digest/hash, safe git status/diff, workspace index, durable context search/get, tool discovery, and `todo` for runtime-owned planning state. Use context retrieval before drafting when prior plans, decisions, constraints, project facts, questions, or handoffs may matter. Use `project_context_record` only after explicit acceptance, with `recordKind: \"plan\"` and `contentJson.schema: \"xero.plan_pack.v1\"`; Plan cannot use it for generic notes, drafts, or non-plan records. `tool_search` and `tool_access` are filtered to planning-safe capabilities; do not ask for repo mutation, shell commands, browser-control, MCP, skill, subagent, device, network, external-service, branch, stash, commit, push, deploy, or other durable-context write tools.{browser_control_guidance}"
+            "Available planning tools: {tool_names}\n\nUse repository read/read_many/result_page/stat/search/find/list/list_tree/directory_digest/hash, safe git status/diff, workspace index, durable context search/get, tool discovery, `action_required` for bounded non-sensitive user input, and `todo` for runtime-owned planning state. Use context retrieval before drafting when prior plans, decisions, constraints, project facts, questions, or handoffs may matter. Use `project_context_record` only after explicit acceptance, with `recordKind: \"plan\"` and `contentJson.schema: \"xero.plan_pack.v1\"`; Plan cannot use it for generic notes, drafts, or non-plan records. `tool_search` and `tool_access` are filtered to planning-safe capabilities; do not ask for repo mutation, shell commands, browser-control, MCP, skill, subagent, device, network, external-service, branch, stash, commit, push, deploy, or other durable-context write tools.{user_input_tool_guidance}{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::Engineer => format!(
-            "Available tools: {tool_names}\n\nUse `project_context` to retrieve durable context before acting when prior decisions, constraints, handoffs, or reviewed memory may matter. If a relevant capability is not currently available, first call `tool_search` to find the smallest matching capability, then call `tool_access` to activate the smallest needed group or exact tool before proceeding. Use `todo` for meaningful multi-step planning state. Use `command_verify` for verification commands only (tests, lint, typecheck/type-check, build/check/fmt); package-manager mutation commands such as install/add/update must use reviewed command tooling and normal approval. If a package manifest changes, update lockfiles only via the package manager, never filesystem edits. If the `lsp` tool reports an `installSuggestion`, ask the user before running any candidate install command; use the command tool only after consent and normal operator approval.{tool_application_guidance}{browser_control_guidance}"
+            "Available tools: {tool_names}\n\nUse `project_context` to retrieve durable context before acting when prior decisions, constraints, handoffs, or reviewed memory may matter. If a relevant capability is not currently available, first call `tool_search` to find the smallest matching capability, then call `tool_access` to activate the smallest needed group or exact tool before proceeding. If Runtime-enforced Stages list the capability in a later Stage, satisfy the Stage gates instead of requesting that capability with `tool_access`. Use `todo` for meaningful multi-step planning state.{user_input_tool_guidance}{command_tool_guidance} If a package manifest changes, update lockfiles only via the package manager, never filesystem edits. If the `lsp` tool reports an `installSuggestion`, ask the user before running any candidate install command; use the command tool only after consent and normal operator approval.{tool_application_guidance}{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::Debug => format!(
-            "Available tools: {tool_names}\n\nUse `project_context` to retrieve prior debugging records, constraints, handoffs, and reviewed troubleshooting memory before investigating related symptoms. If a relevant diagnostic, inspection, verification, or editing capability is not currently available, first call `tool_search` to find the smallest matching capability, then call `tool_access` to activate the smallest needed group or exact tool before proceeding. Use `todo` with `mode=debug_evidence` for symptom, reproduction, hypothesis, experiment, root_cause, fix, and verification ledger entries. Prefer read-only experiments before mutation, and keep every command tied to a concrete hypothesis or verification need. Use `command_verify` for verification commands only (tests, lint, typecheck/type-check, build/check/fmt); package-manager mutation commands such as install/add/update must use reviewed command tooling and normal approval. If a package manifest changes, update lockfiles only via the package manager, never filesystem edits. If the `lsp` tool reports an `installSuggestion`, ask the user before running any candidate install command; use the command tool only after consent and normal operator approval.{tool_application_guidance}{browser_control_guidance}"
+            "Available tools: {tool_names}\n\nUse `project_context` to retrieve prior debugging records, constraints, handoffs, and reviewed troubleshooting memory before investigating related symptoms. If a relevant diagnostic, inspection, verification, or editing capability is not currently available, first call `tool_search` to find the smallest matching capability, then call `tool_access` to activate the smallest needed group or exact tool before proceeding. If Runtime-enforced Stages list the capability in a later Stage, satisfy the Stage gates instead of requesting that capability with `tool_access`. Use `todo` with `mode=debug_evidence` for symptom, reproduction, hypothesis, experiment, root_cause, fix, and verification ledger entries. Prefer read-only experiments before mutation, and keep every command tied to a concrete hypothesis or verification need.{user_input_tool_guidance}{command_tool_guidance} If a package manifest changes, update lockfiles only via the package manager, never filesystem edits. If the `lsp` tool reports an `installSuggestion`, ask the user before running any candidate install command; use the command tool only after consent and normal operator approval.{tool_application_guidance}{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::Crawl => format!(
             "Available repository reconnaissance tools: {tool_names}\n\nUse repository read/read_many/result_page/stat/search/find/list/list_tree/directory_digest/hash, safe git status/diff, workspace index, code intelligence, environment context, and system diagnostics only for local repository mapping. `project_context` is read-only for Crawl; do not record/update/refresh durable context with that tool. `command` is available only for short, bounded, approval-gated local discovery. `tool_search` and `tool_access` are filtered to Crawl-safe reconnaissance capabilities; do not ask for mutation, browser-control, MCP, skill, subagent, device, network, or external-service tools.{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::AgentCreate => format!(
-            "Available definition-design tools: {tool_names}\n\nUse tools only for read-only project context, tool-catalog inspection, or controlled agent-definition and Workflow-definition registry actions. `agent_definition` and `workflow_definition` are the only persistence tools Agent Create may use. When drafting Workflows and agent refs are not already known, list/get existing agents before composing nodes, pin the selected version, and run `workflow_definition` validation before asking for save/update approval. Agent save/update/archive/clone and Workflow save/update require explicit operator approval. Present a reviewable agent or Workflow draft with validation diagnostics before asking the user to approve persistence. Do not ask for repository mutation, command, browser-control, MCP, skill, subagent, device, or external-service tools.{browser_control_guidance}"
+            "Available definition-design tools: {tool_names}\n\nUse tools only for read-only project context, tool-catalog inspection, or controlled agent-definition and Workflow-definition registry actions. `agent_definition` and `workflow_definition` are the only persistence tools Agent Create may use. When drafting Workflows and agent refs are not already known, list/get existing agents before composing nodes, pin the selected version, and run `workflow_definition` validation before asking for save/update approval. Agent save/update/archive/clone and Workflow save/update require explicit operator approval. Present a reviewable agent-definition draft or Workflow draft with validation diagnostics before asking the user to approve persistence. Do not ask for repository mutation, command, browser-control, MCP, skill, subagent, device, or external-service tools.{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::Generalist => format!(
-            "Available tools: {tool_names}\n\nYou have the full engineering toolset. When the request fits a specialist's scope (Ask, Plan, Engineer, or Debug), emit the `<xero-routing-suggestion …/>` marker in your assistant message instead of starting the work. Use `project_context` to retrieve durable context before acting when prior decisions, constraints, or handoffs may matter. If a relevant capability is not currently available, first call `tool_search` and then `tool_access` before proceeding. Use `todo` for meaningful multi-step planning state. Use `command_verify` for verification commands only (tests, lint, typecheck/type-check, build/check/fmt); package-manager mutation commands such as install/add/update must use reviewed command tooling and normal approval. If a package manifest changes, update lockfiles only via the package manager, never filesystem edits.{tool_application_guidance}{browser_control_guidance}"
+            "Available tools: {tool_names}\n\nYou have the full engineering toolset. When the request fits a specialist's scope (Ask, Plan, Engineer, or Debug), emit the `<xero-routing-suggestion …/>` marker in your assistant message instead of starting the work. Use `project_context` to retrieve durable context before acting when prior decisions, constraints, or handoffs may matter. If a relevant capability is not currently available, first call `tool_search` and then `tool_access` before proceeding. If Runtime-enforced Stages list the capability in a later Stage, satisfy the Stage gates instead of requesting that capability with `tool_access`. Use `todo` for meaningful multi-step planning state.{user_input_tool_guidance}{command_tool_guidance} If a package manifest changes, update lockfiles only via the package manager, never filesystem edits.{tool_application_guidance}{browser_control_guidance}"
         ),
     }
+}
+
+fn command_tool_prompt_section(tools: &[AgentToolDescriptor]) -> String {
+    let has_command_verify = tool_descriptors_include(tools, AUTONOMOUS_TOOL_COMMAND_VERIFY);
+    let has_command_run = tool_descriptors_include(tools, AUTONOMOUS_TOOL_COMMAND_RUN);
+    let has_command_probe = tool_descriptors_include(tools, AUTONOMOUS_TOOL_COMMAND_PROBE);
+
+    if has_command_verify {
+        if has_command_run {
+            format!(
+                " Use `command_verify` for verification commands only (tests, lint, typecheck/type-check, build/check/fmt); package-manager mutation commands such as install/add/update must use `command_run`.{COMMAND_FIRST_MANAGED_ARTIFACT_CONTRACT}{AGENT_FRIENDLY_CLI_CONTRACT}"
+            )
+        } else {
+            format!(
+                " Use `command_verify` for verification commands only (tests, lint, typecheck/type-check, build/check/fmt); package-manager mutation commands such as install/add/update require reviewed command tooling, so request `command_run` only if needed and allowed by the current Stage.{COMMAND_FIRST_MANAGED_ARTIFACT_CONTRACT}{AGENT_FRIENDLY_CLI_CONTRACT}"
+            )
+        }
+    } else if has_command_run {
+        format!(
+            " `command_verify` is not available in the current tool list; do not wait for it in this Stage. Use `command_run` for setup, scaffolding, generators, package-manager create/install/add/update, and other reviewed repo-scoped commands.{COMMAND_FIRST_MANAGED_ARTIFACT_CONTRACT}{AGENT_FRIENDLY_CLI_CONTRACT} Run verification with `command_verify` after the current Stage or policy unlocks it."
+        )
+    } else if has_command_probe {
+        format!(
+            " `command_verify` is not available in the current tool list; use `command_probe` only for bounded read-only discovery, and satisfy the current Stage gates before verification commands. If a bootstrap/generator or managed-artifact command is the right next step, activate or request `command_run` instead of manually writing generated files when allowed by the current Stage.{AGENT_FRIENDLY_CLI_CONTRACT}"
+        )
+    } else {
+        format!(
+            " Command execution tools are not available in the current tool list; use `tool_search` and `tool_access` for the smallest command capability only when needed and allowed by the current Stage. If a canonical CLI would normally create or update the requested files, prefer activating command tooling over manual file synthesis when allowed.{AGENT_FRIENDLY_CLI_CONTRACT}"
+        )
+    }
+}
+
+fn user_input_tool_prompt_section(tools: &[AgentToolDescriptor]) -> String {
+    if tool_descriptors_include(tools, AUTONOMOUS_TOOL_ACTION_REQUIRED) {
+        " Use `action_required` as a standalone call when bounded non-sensitive user input is the next material blocker; after it returns pending, the run pauses until the user answers.".into()
+    } else {
+        " If bounded non-sensitive user input is the next material blocker, use `tool_search` and `tool_access` for `action_required` when allowed; otherwise ask one concise question in chat and stop.".into()
+    }
+}
+
+const COMMAND_FIRST_MANAGED_ARTIFACT_CONTRACT: &str = " Command-first managed-artifact contract: when a framework, package, registry, generator, codegen tool, migration tool, formatter, or package manager owns how files should be created or updated, first attempt the documented CLI command through `command_run` before hand-writing the resulting files. This applies during project bootstrap and later maintenance, including adding dependencies, framework tooling, generated clients, migrations, schemas, UI registry components, and component-library assets. For example, when a library documents adding components through its CLI, such as shadcn components, use that CLI rather than copying component files by hand. Manual file synthesis is only appropriate when the command is unavailable, incompatible with the existing project, unsafe, non-agent-friendly without a non-interactive form, or explicitly declined.";
+
+const AGENT_FRIENDLY_CLI_CONTRACT: &str = " Agent-friendly CLI contract: prefer finite, documented, non-interactive invocations with explicit flags and inputs, such as yes/CI/no-interactive flags and explicit component/name/path arguments. Avoid TUI, wizard, watch, dev-server, login, editor-opening, or prompt-driven commands through `command_run` unless they can be made non-interactive and bounded. Treat exposed environment/tool-stack facts as the user's available stack and inspect them first; use web docs for current syntax or changed generator behavior when web tools are available, not to rediscover tools that the harness already surfaced. If those facts show a bare CLI binary is missing but a JavaScript package manager is present, try the documented package-runner form before manual fallback: `pnpm dlx`, `npm exec` or `npx`, `yarn dlx`, or `bunx` as appropriate. Prefer normal package-manager caches outside the repository; do not create repo-local caches such as `.pnpm-store` unless the user or project explicitly requires them. If the canonical tool is interactive-only or would block waiting for terminal input the agent cannot provide, look for a documented non-interactive mode, explain the blocker, or ask the user before using a manual fallback.";
+
+fn tool_descriptors_include(tools: &[AgentToolDescriptor], tool_name: &str) -> bool {
+    tools.iter().any(|tool| tool.name == tool_name)
 }
 
 fn tool_application_prompt_section(
@@ -2418,6 +2491,96 @@ pub(crate) fn plan_tool_exposure_for_prompt(
     if contains_any(
         &lowered,
         &[
+            "scaffold",
+            "bootstrap",
+            "new project",
+            "new app",
+            "new site",
+            "new package",
+            "new workspace",
+            "initialize",
+            "initialise",
+            "init project",
+            "project init",
+            "set up",
+            "setup",
+            "starter",
+            "boilerplate",
+            "generator",
+            "generate app",
+            "generate component",
+            "add component",
+            "ui component",
+            "component library",
+            "component registry",
+            "registry component",
+            "shadcn add",
+            "add shadcn",
+            "shadcn component",
+            "shadcn ui",
+            "create vite",
+            "create-vite",
+            "create react",
+            "create next",
+            "create-next-app",
+            "create svelte",
+            "create sveltekit",
+            "create astro",
+            "create remix",
+            "create tauri",
+            "create tanstack",
+            "npm create",
+            "pnpm create",
+            "yarn create",
+            "bun create",
+            "npm install",
+            "pnpm install",
+            "yarn install",
+            "bun install",
+            "npm add",
+            "pnpm add",
+            "yarn add",
+            "bun add",
+            "install dependencies",
+            "vite",
+            "shadcn",
+            "tailwind",
+            "react app",
+            "react project",
+            "next app",
+            "next.js app",
+            "sveltekit",
+            "astro app",
+            "migration",
+            "generate migration",
+            "create migration",
+            "database migration",
+            "db migration",
+            "prisma generate",
+            "prisma migrate",
+            "drizzle generate",
+            "drizzle migrate",
+            "graphql codegen",
+            "openapi generate",
+            "openapi generator",
+            "generate client",
+            "generated client",
+            "codegen",
+            "protobuf",
+            "proto generate",
+        ],
+    ) {
+        plan.add_tool(
+            AUTONOMOUS_TOOL_COMMAND_RUN,
+            "planner_classification",
+            "package_scaffold_command_intent",
+            "Task text indicates scaffolding, package-manager setup, generators, dependency installation, component registry updates, migrations, or codegen that requires reviewed command_run rather than command_probe.",
+        );
+    }
+
+    if contains_any(
+        &lowered,
+        &[
             "implement",
             "continue",
             "fix",
@@ -2922,6 +3085,18 @@ fn add_startup_surface(plan: &mut ToolExposurePlan, options: &ToolRegistryOption
     );
     if tool_allowed_for_runtime_agent_with_policy(
         options.runtime_agent_id,
+        AUTONOMOUS_TOOL_ACTION_REQUIRED,
+        options.agent_tool_policy.as_ref(),
+    ) {
+        plan.add_tool(
+            AUTONOMOUS_TOOL_ACTION_REQUIRED,
+            "startup_core",
+            "user_input_prompt_allowed_for_agent",
+            "Selected agent may pause for bounded non-sensitive user input.",
+        );
+    }
+    if tool_allowed_for_runtime_agent_with_policy(
+        options.runtime_agent_id,
         AUTONOMOUS_TOOL_TODO,
         options.agent_tool_policy.as_ref(),
     ) {
@@ -3249,6 +3424,9 @@ fn explicit_tool_names_from_prompt(prompt: &str) -> BTreeSet<String> {
             line if line.starts_with("tool:request_sensitive_input ") => {
                 names.insert(AUTONOMOUS_TOOL_REQUEST_SENSITIVE_INPUT.into());
             }
+            line if line.starts_with("tool:action_required ") => {
+                names.insert(AUTONOMOUS_TOOL_ACTION_REQUIRED.into());
+            }
             line if line.starts_with("tool:todo_") => {
                 names.insert(AUTONOMOUS_TOOL_TODO.into());
             }
@@ -3328,14 +3506,14 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
     let mut descriptors = vec![
         descriptor(
             AUTONOMOUS_TOOL_READ,
-            "Read a repo-relative file as text, image preview, binary metadata, byte range, or line-hash anchored text.",
+            "Read a repo-relative file as text, image preview, binary metadata, byte range, line-hash anchored text, or a bounded directory listing.",
             object_schema(
                 &["path"],
                 &[
                     (
                         "path",
                         bounded_string_schema(
-                            "Repo-relative file path to read. Absolute paths require systemPath=true and operator approval.",
+                            "Repo-relative file or directory path to read. Use `.` for the imported repository root. Directory paths return a bounded listing. Absolute paths require systemPath=true and operator approval.",
                             DESCRIPTOR_MAX_PATH_CHARS,
                         ),
                     ),
@@ -3664,6 +3842,16 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                         ),
                     ),
                     (
+                        "includeHidden",
+                        boolean_schema("Include hidden dotfiles and dot-directories."),
+                    ),
+                    (
+                        "includeIgnored",
+                        boolean_schema(
+                            "Include generated or ignored directories such as .git, node_modules, target, dist, and build.",
+                        ),
+                    ),
+                    (
                         "cursor",
                         bounded_string_schema(
                             "Stable continuation cursor returned by a previous truncated find with the same pattern and options.",
@@ -3706,7 +3894,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                         "groups",
                         json!({
                             "type": "array",
-                            "description": "Optional tool groups to request. Prefer fine-grained groups when possible. Known groups include core, mutation, command_readonly, command_mutating, command_session, command, process_manager, runtime_wait, system_diagnostics_observe, system_diagnostics_privileged, system_diagnostics, macos, web_search_only, web_fetch, browser_observe, browser_control, web, emulator, solana, agent_ops, agent_builder, project_context_write, mcp_list, mcp_invoke, mcp, intelligence, notebook, powershell, environment, and skills.",
+                            "description": "Optional tool groups to request. Prefer fine-grained groups when possible. Known groups include core, mutation, command_readonly, command_mutating, command_session, command, process_manager, runtime_wait, system_diagnostics_observe, system_diagnostics_privileged, system_diagnostics, macos, web_search_only, web_fetch, browser_observe, browser_control, web, emulator, solana, agent_ops, agent_builder, project_context_write, mcp_list, mcp_invoke, mcp, intelligence, notebook, powershell, environment, and skills. The runtime_wait group includes runtime_wait and action_required.",
                             "minItems": 0,
                             "maxItems": 32,
                             "items": { "type": "string", "maxLength": 128 }
@@ -3741,52 +3929,8 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_EDIT,
-            "Apply an exact expected-text line-range edit with optional file and line hash anchors. Non-empty replacements may omit the final newline; Xero preserves the selected range's trailing line break when present.",
-            object_schema(
-                &["path", "startLine", "endLine", "expected", "replacement"],
-                &[
-                    (
-                        "path",
-                        bounded_string_schema(
-                            "Repo-relative file path to edit.",
-                            DESCRIPTOR_MAX_PATH_CHARS,
-                        ),
-                    ),
-                    (
-                        "startLine",
-                        integer_schema("1-based first line to replace."),
-                    ),
-                    ("endLine", integer_schema("1-based final line to replace.")),
-                    (
-                        "expected",
-                        string_schema("Exact current text expected in the selected range. Whitespace-only text is valid for blank-line edits; the string must not be empty."),
-                    ),
-                    (
-                        "replacement",
-                        string_schema("Replacement text for the selected range. For ordinary whole-line edits, the final newline may be omitted; non-empty replacements keep the selected range separated from the following line."),
-                    ),
-                    (
-                        "expectedHash",
-                        sha256_schema("Required lowercase SHA-256 expected current file hash for owned-agent applies; obtain it from read or file_hash."),
-                    ),
-                    (
-                        "startLineHash",
-                        sha256_schema(
-                            "Optional SHA-256 hash for the current start line, from read includeLineHashes.",
-                        ),
-                    ),
-                    (
-                        "endLineHash",
-                        sha256_schema(
-                            "Optional SHA-256 hash for the current end line, from read includeLineHashes.",
-                        ),
-                    ),
-                    (
-                        "preview",
-                        boolean_schema("Validate and return the planned edit without writing."),
-                    ),
-                ],
-            ),
+            "Apply an exact expected-text line-range edit. Applying an edit in an owned-agent run requires expectedHash from read or file_hash; preview=true may omit expectedHash. Non-empty replacements may omit the final newline; Xero preserves the selected range's trailing line break when present.",
+            edit_schema(),
         ),
         descriptor(
             AUTONOMOUS_TOOL_WRITE,
@@ -4195,7 +4339,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     (
                         "path",
                         bounded_string_schema(
-                            "Repo-relative file or directory path to digest.",
+                            "Repo-relative file or directory path to digest. Use `.` for the imported repository root.",
                             DESCRIPTOR_MAX_PATH_CHARS,
                         ),
                     ),
@@ -4242,7 +4386,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     (
                         "path",
                         bounded_string_schema(
-                            "Repo-relative file or directory path to hash.",
+                            "Repo-relative file or directory path to hash. Use `.` for the imported repository root.",
                             DESCRIPTOR_MAX_PATH_CHARS,
                         ),
                     ),
@@ -4287,17 +4431,17 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_COMMAND_PROBE,
-            "Run a narrowly allowlisted repo-scoped discovery command.",
+            "Run a narrowly allowlisted repo-scoped read-only discovery command. Do not use for package-manager create/install/add/update, scaffolding, generators, builds, or setup; use command_run or command_verify as appropriate.",
             command_schema(),
         ),
         descriptor(
             AUTONOMOUS_TOOL_COMMAND_VERIFY,
-            "Run a narrowly allowlisted repo-scoped verification command for tests, checks, lint, build, or format verification.",
+            "Run a narrowly allowlisted repo-scoped verification command for tests, checks, lint, build, or format verification. Do not use for package-manager create/install/add/update, scaffolding, generators, or setup; use command_run.",
             command_schema(),
         ),
         descriptor(
             AUTONOMOUS_TOOL_COMMAND_RUN,
-            "Run a repo-scoped command that is not covered by probe or verification policy.",
+            "Run a repo-scoped command that is not covered by probe or verification policy, including package-manager/framework scaffold, init, install/add/update, component-registry, migration, codegen, and generator commands. Prefer finite non-interactive CLI invocations with explicit flags and inputs.",
             command_schema(),
         ),
         descriptor(
@@ -4319,6 +4463,11 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
             AUTONOMOUS_TOOL_RUNTIME_WAIT,
             "Pause this owned-agent run for a bounded timer or durable process-poll wakeup. The run resumes automatically with runtime-provided context.",
             runtime_wait_schema(),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_ACTION_REQUIRED,
+            "Pause this owned-agent run and ask the user for bounded non-sensitive input through the transcript UI. Use this for material preferences, choices, short answers, numbers, or dates; use request_sensitive_input for secrets.",
+            action_required_schema(),
         ),
         descriptor(
             AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
@@ -4541,7 +4690,12 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                         "id",
                         string_schema("Todo id for update, complete, or delete."),
                     ),
-                    ("title", string_schema("Todo title for upsert.")),
+                    (
+                        "title",
+                        string_schema(
+                            "Todo title for creating a new upsert. Existing-id upserts may omit title to preserve the current title while updating status or metadata.",
+                        ),
+                    ),
                     ("notes", string_schema("Optional todo notes for upsert.")),
                     (
                         "status",
@@ -5137,6 +5291,70 @@ fn sha256_schema(description: &str) -> JsonValue {
     })
 }
 
+fn edit_schema() -> JsonValue {
+    let apply_properties = edit_schema_properties(boolean_schema(
+        "Validate and return the planned edit without writing.",
+    ));
+    let preview_properties = edit_schema_properties(json!({
+        "type": "boolean",
+        "enum": [true],
+        "description": "Set true to validate and return the planned edit without writing. Preview edits may omit expectedHash.",
+    }));
+
+    json!({
+        "type": "object",
+        "oneOf": [
+            object_schema(
+                &["path", "startLine", "endLine", "expected", "replacement", "expectedHash"],
+                &apply_properties,
+            ),
+            object_schema(
+                &["path", "startLine", "endLine", "expected", "replacement", "preview"],
+                &preview_properties,
+            ),
+        ]
+    })
+}
+
+fn edit_schema_properties(preview_schema: JsonValue) -> Vec<(&'static str, JsonValue)> {
+    vec![
+        (
+            "path",
+            bounded_string_schema(
+                "Repo-relative file path to edit.",
+                DESCRIPTOR_MAX_PATH_CHARS,
+            ),
+        ),
+        ("startLine", integer_schema("1-based first line to replace.")),
+        ("endLine", integer_schema("1-based final line to replace.")),
+        (
+            "expected",
+            string_schema("Exact current text expected in the selected range. Whitespace-only text is valid for blank-line edits; the string must not be empty."),
+        ),
+        (
+            "replacement",
+            string_schema("Replacement text for the selected range. For ordinary whole-line edits, the final newline may be omitted; non-empty replacements keep the selected range separated from the following line."),
+        ),
+        (
+            "expectedHash",
+            sha256_schema("Required lowercase SHA-256 expected current file hash for owned-agent applies; obtain it from read or file_hash. May be omitted only with preview=true."),
+        ),
+        (
+            "startLineHash",
+            sha256_schema(
+                "Optional SHA-256 hash for the current start line, from read includeLineHashes.",
+            ),
+        ),
+        (
+            "endLineHash",
+            sha256_schema(
+                "Optional SHA-256 hash for the current end line, from read includeLineHashes.",
+            ),
+        ),
+        ("preview", preview_schema),
+    ]
+}
+
 fn patch_schema() -> JsonValue {
     let operation_schema = json!({
         "type": "object",
@@ -5371,9 +5589,9 @@ fn command_schema() -> JsonValue {
             (
                 "timeoutMs",
                 bounded_integer_schema(
-                    "Optional timeout in milliseconds. Must be between 1 and 60000.",
+                    "Optional timeout in milliseconds. Must be between 1 and 120000.",
                     1,
-                    Some(60_000),
+                    Some(DESCRIPTOR_MAX_COMMAND_TIMEOUT_MS),
                 ),
             ),
         ],
@@ -6457,6 +6675,88 @@ fn runtime_wait_schema() -> JsonValue {
                     "description": "Small structured context to echo back when the scheduler resumes the run.",
                     "additionalProperties": true
                 }),
+            ),
+        ],
+    )
+}
+
+fn action_required_schema() -> JsonValue {
+    object_schema(
+        &["title", "detail", "answerShape"],
+        &[
+            (
+                "title",
+                bounded_string_schema("Short user-facing prompt title.", 120),
+            ),
+            (
+                "detail",
+                bounded_string_schema(
+                    "Explain why this input is needed and what decision it affects. Do not include secrets.",
+                    1_200,
+                ),
+            ),
+            (
+                "answerShape",
+                enum_schema(
+                    "Expected answer shape. Use single_choice for one option, multi_choice for multiple independent selections, short_text/long_text for freeform input, number/date for typed values, terminal_input only for terminal text, and plain_text only for acknowledgement.",
+                    &[
+                        "plain_text",
+                        "terminal_input",
+                        "single_choice",
+                        "multi_choice",
+                        "short_text",
+                        "long_text",
+                        "number",
+                        "date",
+                    ],
+                ),
+            ),
+            (
+                "promptKind",
+                bounded_string_schema(
+                    "Optional lowercase snake_case semantic kind such as technology_stack_selection or scope_choice.",
+                    80,
+                ),
+            ),
+            (
+                "options",
+                json!({
+                    "type": "array",
+                    "description": "Required for single_choice and multi_choice. Put the recommended option first when one exists.",
+                    "minItems": 0,
+                    "maxItems": 20,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["id", "label"],
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "Stable option id returned as the user answer.",
+                                "minLength": 1,
+                                "maxLength": 80
+                            },
+                            "label": {
+                                "type": "string",
+                                "description": "Short user-facing option label.",
+                                "minLength": 1,
+                                "maxLength": 120
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Optional one-sentence tradeoff or rationale.",
+                                "maxLength": 300
+                            }
+                        }
+                    }
+                }),
+            ),
+            (
+                "intendedUse",
+                bounded_string_schema(
+                    "Optional user-facing statement of how the answer will be used. Do not include secrets.",
+                    500,
+                ),
             ),
         ],
     )
@@ -8146,6 +8446,17 @@ mod tests {
         })
     }
 
+    fn descriptors_for_tools(tool_names: &[&str]) -> Vec<AgentToolDescriptor> {
+        builtin_tool_descriptors()
+            .into_iter()
+            .filter(|descriptor| {
+                tool_names
+                    .iter()
+                    .any(|tool_name| *tool_name == descriptor.name)
+            })
+            .collect()
+    }
+
     #[test]
     fn explicit_wait_prompt_exposes_runtime_wait_without_tool_access() {
         let mut controls = runtime_controls_from_request(None);
@@ -8185,6 +8496,72 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn edit_schema_requires_expected_hash_for_apply_but_not_preview() {
+        fn required_contains(branch: &JsonValue, field: &str) -> bool {
+            branch
+                .get("required")
+                .and_then(JsonValue::as_array)
+                .is_some_and(|required| required.iter().any(|value| value.as_str() == Some(field)))
+        }
+
+        let schema = edit_schema();
+        let branches = schema
+            .get("oneOf")
+            .and_then(JsonValue::as_array)
+            .expect("edit schema branches");
+        assert_eq!(branches.len(), 2);
+
+        let apply_branch = branches
+            .iter()
+            .find(|branch| {
+                required_contains(branch, "expectedHash") && !required_contains(branch, "preview")
+            })
+            .expect("apply branch requires expectedHash");
+        assert_eq!(
+            apply_branch
+                .get("properties")
+                .and_then(|properties| properties.get("expectedHash"))
+                .and_then(|expected_hash| expected_hash.get("pattern"))
+                .and_then(JsonValue::as_str),
+            Some("^[a-f0-9]{64}$")
+        );
+
+        let preview_branch = branches
+            .iter()
+            .find(|branch| {
+                required_contains(branch, "preview") && !required_contains(branch, "expectedHash")
+            })
+            .expect("preview branch may omit expectedHash");
+        assert_eq!(
+            preview_branch
+                .get("properties")
+                .and_then(|properties| properties.get("preview"))
+                .and_then(|preview| preview.get("enum")),
+            Some(&json!([true]))
+        );
+    }
+
+    #[test]
+    fn command_schema_allows_group_sized_timeout() {
+        let schema = command_schema();
+        let timeout_schema = schema
+            .get("properties")
+            .and_then(|properties| properties.get("timeoutMs"))
+            .expect("timeout schema");
+
+        assert_eq!(
+            timeout_schema.get("maximum").and_then(JsonValue::as_u64),
+            Some(DESCRIPTOR_MAX_COMMAND_TIMEOUT_MS)
+        );
+        assert_eq!(DESCRIPTOR_MAX_COMMAND_TIMEOUT_MS, 120_000);
+        assert!(timeout_schema
+            .get("description")
+            .and_then(JsonValue::as_str)
+            .expect("timeout description")
+            .contains("120000"));
     }
 
     #[test]
@@ -9036,6 +9413,7 @@ mod tests {
             AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
             AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
             AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+            AUTONOMOUS_TOOL_ACTION_REQUIRED,
             AUTONOMOUS_TOOL_LIST,
             AUTONOMOUS_TOOL_HASH,
             AUTONOMOUS_TOOL_TODO,
@@ -9099,6 +9477,10 @@ mod tests {
         assert!(compilation
             .prompt
             .contains("Use `project_context_record` only after explicit acceptance"));
+        assert!(compilation
+            .prompt
+            .contains("Product-surface technology contract"));
+        assert!(compilation.prompt.contains("technology_stack_selection"));
         assert!(compilation
             .prompt
             .contains("do not ask for repo mutation, shell commands"));
@@ -9180,17 +9562,83 @@ mod tests {
             let prompt = base_policy_fragment(runtime_agent_id);
             assert!(prompt.contains("Surface-scope contract:"));
             assert!(prompt.contains("Distinguish verified surfaces from skipped"));
+            assert!(prompt.contains("User-input contract:"));
+            assert!(prompt.contains("Product-surface technology contract:"));
+            assert!(prompt.contains("technology_stack_selection"));
+            assert!(prompt.contains("Do not default to hand-written static UI"));
 
             let policy = resolved_tool_application_policy(AgentToolApplicationStyleDto::Balanced);
+            let tools = descriptors_for_tools(&[
+                AUTONOMOUS_TOOL_ACTION_REQUIRED,
+                AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                AUTONOMOUS_TOOL_COMMAND_RUN,
+            ]);
             let tool_prompt = tool_policy_fragment(
                 runtime_agent_id,
                 BrowserControlPreferenceDto::Default,
                 &policy,
-                &[],
+                &tools,
             );
             assert!(tool_prompt.contains("Use `command_verify` for verification commands only"));
             assert!(tool_prompt.contains("typecheck/type-check"));
+            assert!(tool_prompt.contains("must use `command_run`"));
+            assert!(tool_prompt.contains("Command-first managed-artifact contract"));
+            assert!(tool_prompt.contains("shadcn components"));
+            assert!(tool_prompt.contains("before hand-writing the resulting files"));
+            assert!(tool_prompt.contains("Use `action_required` as a standalone call"));
+            assert!(tool_prompt.contains("Agent-friendly CLI contract"));
+            assert!(tool_prompt.contains("non-interactive"));
+            assert!(tool_prompt.contains("prompt-driven commands"));
+            assert!(tool_prompt.contains("Treat exposed environment/tool-stack facts"));
+            assert!(tool_prompt.contains("inspect them first"));
+            assert!(tool_prompt.contains("use web docs for current syntax"));
+            assert!(tool_prompt.contains("not to rediscover tools"));
+            assert!(tool_prompt.contains("`pnpm dlx`, `npm exec` or `npx`"));
+            assert!(tool_prompt.contains("do not create repo-local caches"));
             assert!(tool_prompt.contains("update lockfiles only via the package manager"));
+        }
+    }
+
+    #[test]
+    fn prompt_policy_does_not_claim_command_verify_is_available_when_current_stage_hides_it() {
+        let policy = resolved_tool_application_policy(AgentToolApplicationStyleDto::Balanced);
+        let tools = descriptors_for_tools(&[
+            AUTONOMOUS_TOOL_COMMAND_PROBE,
+            AUTONOMOUS_TOOL_COMMAND_RUN,
+            AUTONOMOUS_TOOL_TOOL_ACCESS,
+            AUTONOMOUS_TOOL_WRITE,
+            AUTONOMOUS_TOOL_MKDIR,
+        ]);
+
+        for runtime_agent_id in [
+            RuntimeAgentIdDto::Engineer,
+            RuntimeAgentIdDto::Debug,
+            RuntimeAgentIdDto::Generalist,
+        ] {
+            let tool_prompt = tool_policy_fragment(
+                runtime_agent_id,
+                BrowserControlPreferenceDto::Default,
+                &policy,
+                &tools,
+            );
+            assert!(
+                tool_prompt.contains("`command_verify` is not available in the current tool list")
+            );
+            assert!(tool_prompt.contains("satisfy the Stage gates instead of requesting"));
+            assert!(tool_prompt.contains("Use `command_run` for setup"));
+            assert!(tool_prompt.contains("Command-first managed-artifact contract"));
+            assert!(tool_prompt.contains("shadcn components"));
+            assert!(tool_prompt.contains("before hand-writing the resulting files"));
+            assert!(tool_prompt.contains("Agent-friendly CLI contract"));
+            assert!(tool_prompt.contains("non-interactive"));
+            assert!(tool_prompt.contains("prompt-driven commands"));
+            assert!(tool_prompt.contains("Treat exposed environment/tool-stack facts"));
+            assert!(tool_prompt.contains("inspect them first"));
+            assert!(tool_prompt.contains("use web docs for current syntax"));
+            assert!(tool_prompt.contains("not to rediscover tools"));
+            assert!(tool_prompt.contains("`pnpm dlx`, `npm exec` or `npx`"));
+            assert!(tool_prompt.contains("do not create repo-local caches"));
+            assert!(!tool_prompt.contains("Use `command_verify` for verification commands only"));
         }
     }
 
@@ -9808,6 +10256,112 @@ mod tests {
                 && entry.reasons.iter().any(|reason| {
                     reason.source == "planner_classification"
                         && reason.reason_code == "verification_expected"
+                })
+        }));
+    }
+
+    #[test]
+    fn capability_planner_exposes_command_run_for_frontend_scaffold_prompts() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let controls_input = RuntimeRunControlInputDto {
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: None,
+            agent_definition_version: None,
+            provider_profile_id: None,
+            model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            thinking_effort: None,
+            approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            plan_mode_required: false,
+            auto_compact_enabled: true,
+        };
+        let controls = runtime_controls_from_request(Some(&controls_input));
+        let registry = ToolRegistry::for_prompt(
+            root.path(),
+            "Create a PandaAI landing page. Use React, Vite, shadcn, and Tailwind.",
+            &controls,
+        );
+        let names = registry.descriptor_names();
+
+        assert!(names.contains(AUTONOMOUS_TOOL_COMMAND_PROBE));
+        assert!(names.contains(AUTONOMOUS_TOOL_COMMAND_VERIFY));
+        assert!(names.contains(AUTONOMOUS_TOOL_COMMAND_RUN));
+        assert!(registry.exposure_plan().entries.iter().any(|entry| {
+            entry.tool_name == AUTONOMOUS_TOOL_COMMAND_RUN
+                && entry.reasons.iter().any(|reason| {
+                    reason.source == "planner_classification"
+                        && reason.reason_code == "package_scaffold_command_intent"
+                })
+        }));
+    }
+
+    #[test]
+    fn capability_planner_exposes_command_run_for_generic_new_project_prompts() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let controls_input = RuntimeRunControlInputDto {
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: None,
+            agent_definition_version: None,
+            provider_profile_id: None,
+            model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            thinking_effort: None,
+            approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            plan_mode_required: false,
+            auto_compact_enabled: true,
+        };
+        let controls = runtime_controls_from_request(Some(&controls_input));
+        let registry = ToolRegistry::for_prompt(
+            root.path(),
+            "Start a new project and set up the app shell.",
+            &controls,
+        );
+        let names = registry.descriptor_names();
+
+        assert!(names.contains(AUTONOMOUS_TOOL_COMMAND_RUN));
+        assert!(registry.exposure_plan().entries.iter().any(|entry| {
+            entry.tool_name == AUTONOMOUS_TOOL_COMMAND_RUN
+                && entry.reasons.iter().any(|reason| {
+                    reason.source == "planner_classification"
+                        && reason.reason_code == "package_scaffold_command_intent"
+                })
+        }));
+        let command_run = registry
+            .descriptor(AUTONOMOUS_TOOL_COMMAND_RUN)
+            .expect("command_run descriptor");
+        assert!(command_run.description.contains("scaffold"));
+        assert!(command_run.description.contains("component-registry"));
+        assert!(command_run.description.contains("codegen"));
+        assert!(command_run.description.contains("generator commands"));
+        assert!(command_run.description.contains("non-interactive CLI"));
+    }
+
+    #[test]
+    fn capability_planner_exposes_command_run_for_shadcn_component_prompts() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let controls_input = RuntimeRunControlInputDto {
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: None,
+            agent_definition_version: None,
+            provider_profile_id: None,
+            model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            thinking_effort: None,
+            approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            plan_mode_required: false,
+            auto_compact_enabled: true,
+        };
+        let controls = runtime_controls_from_request(Some(&controls_input));
+        let registry = ToolRegistry::for_prompt(
+            root.path(),
+            "Add the shadcn dialog component to this website.",
+            &controls,
+        );
+        let names = registry.descriptor_names();
+
+        assert!(names.contains(AUTONOMOUS_TOOL_COMMAND_RUN));
+        assert!(registry.exposure_plan().entries.iter().any(|entry| {
+            entry.tool_name == AUTONOMOUS_TOOL_COMMAND_RUN
+                && entry.reasons.iter().any(|reason| {
+                    reason.source == "planner_classification"
+                        && reason.reason_code == "package_scaffold_command_intent"
                 })
         }));
     }

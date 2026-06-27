@@ -1436,6 +1436,7 @@ mod removed_test_agent_ci_runtime {
             run_id: TEST_AGENT_CI_RUN_ID.into(),
             prompt: "Run the built-in Test-agent CI harness.".into(),
             attachments: Vec::new(),
+            linked_paths: Vec::new(),
             controls: Some(controls_input),
             tool_runtime: tool_runtime.clone(),
             provider_config: AgentProviderConfig::Fake,

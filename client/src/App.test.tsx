@@ -2725,6 +2725,7 @@ describe('XeroApp current UI', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Skip setup' }))
 
+    fireEvent.click(await screen.findByRole('button', { name: 'Create' }))
     expect(await screen.findByRole('heading', { name: 'Add your first project' })).toBeVisible()
     await waitFor(() =>
       expect(signInReminderToastMock.mock.calls.at(-1)?.[0]).toEqual({ enabled: true }),
@@ -2753,6 +2754,7 @@ describe('XeroApp current UI', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Skip setup' }))
 
+    fireEvent.click(await screen.findByRole('button', { name: 'Create' }))
     expect(await screen.findByRole('heading', { name: 'Add your first project' })).toBeVisible()
     expect(screen.getAllByRole('button', { name: /Import repository/ }).length).toBeGreaterThanOrEqual(1)
     await waitFor(() => expect(startEnvironmentDiscovery).toHaveBeenCalledTimes(1))
@@ -2799,6 +2801,7 @@ describe('XeroApp current UI', () => {
     expect(await screen.findByRole('heading', { name: 'Early beta' })).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: 'Enter Xero' }))
 
+    fireEvent.click(await screen.findByRole('button', { name: 'Create' }))
     expect(await screen.findByRole('heading', { name: 'Add your first project' })).toBeVisible()
     await waitFor(() =>
       expect(writeAppUiState).toHaveBeenCalledWith({
@@ -2828,6 +2831,7 @@ describe('XeroApp current UI', () => {
 
     render(<XeroApp adapter={adapter} />)
 
+    fireEvent.click(await screen.findByRole('button', { name: 'Create' }))
     expect(await screen.findByRole('heading', { name: 'Add your first project' })).toBeVisible()
     expect(screen.queryByRole('heading', { name: /Welcome to Xero/i })).not.toBeInTheDocument()
     expect(readAppUiState).toHaveBeenCalledWith({ key: 'app.onboarding.completed.v1' })
@@ -2996,14 +3000,14 @@ describe('XeroApp current UI', () => {
     render(<XeroApp adapter={adapter} />)
 
     expect(screen.getByRole('status', { name: 'Loading' })).toBeVisible()
-    expect(screen.queryByRole('button', { name: 'Workflow' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Create' })).not.toBeInTheDocument()
 
     await act(async () => {
       resolveListProjects({ projects: [makeProjectSummary('project-1', 'Xero')] })
       await listProjectsPromise
     })
 
-    expect(await screen.findByRole('button', { name: 'Workflow' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Create' })).toBeVisible()
   })
 
   it('keeps the app shell visible while switching projects from the rail', async () => {
@@ -3025,14 +3029,14 @@ describe('XeroApp current UI', () => {
 
     render(<XeroApp adapter={adapter} />)
 
-    expect(await screen.findByRole('button', { name: 'Workflow' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Create' })).toBeVisible()
     expect(screen.queryByRole('status', { name: 'Loading' })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Open Orchestra' }))
 
     await waitFor(() => expect(adapter.getProjectSnapshot).toHaveBeenCalledWith('project-2'))
     expect(screen.queryByRole('status', { name: 'Loading' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Workflow' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Create' })).toBeVisible()
 
     await act(async () => {
       resolveProjectTwo(makeSnapshot('project-2', 'Orchestra'))
@@ -3053,8 +3057,8 @@ describe('XeroApp current UI', () => {
 
     render(<XeroApp adapter={adapter} />)
 
-    expect(await screen.findByRole('button', { name: 'Workflow' })).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+    expect(await screen.findByRole('button', { name: 'Create' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Chat' }))
     expect(await screen.findByLabelText('Agent conversation viewport')).toBeVisible()
     expect(screen.queryByRole('status', { name: 'Loading' })).not.toBeInTheDocument()
 
@@ -3082,7 +3086,7 @@ describe('XeroApp current UI', () => {
     await new Promise((resolve) => window.setTimeout(resolve, 180))
     expect(adapter.getProjectSnapshot).toHaveBeenCalledTimes(1)
     expect(screen.queryByRole('status', { name: 'Loading' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Workflow' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Create' })).toBeVisible()
     expect(screen.getByLabelText('Agent conversation viewport')).toBeVisible()
   })
 
@@ -3177,6 +3181,7 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
     fireEvent.click(screen.getByRole('button', { name: 'Create agent' }))
 
     // The "Create agent" affordance now opens a dialog so the user can pick
@@ -3226,7 +3231,7 @@ describe('XeroApp current UI', () => {
     expect(screen.getByRole('button', { name: 'Providers' })).not.toHaveAttribute('aria-current')
   })
 
-  it('defaults the agent dock composer to Agent Create when opened from Workflow', async () => {
+  it('defaults the agent dock composer to Agent Create when opened from Create', async () => {
     const { adapter } = createAdapter()
 
     render(<XeroApp adapter={adapter} />)
@@ -3235,6 +3240,7 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
     fireEvent.click(screen.getByRole('button', { name: 'Open agent dock' }))
 
     const dock = await screen.findByLabelText('Agent dock')
@@ -3292,6 +3298,7 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
     fireEvent.click(screen.getByRole('button', { name: 'Open Computer Use' }))
 
     const dock = await screen.findByLabelText('Agent dock')
@@ -3319,6 +3326,7 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
     fireEvent.click(screen.getByRole('button', { name: 'Open agent dock' }))
 
     const dock = await screen.findByLabelText('Agent dock')
@@ -3367,7 +3375,7 @@ describe('XeroApp current UI', () => {
     })
   })
 
-  it('lazy-activates the agent pane only after the Agent view is opened', async () => {
+  it('opens Chat as the default main view', async () => {
     const { adapter } = createAdapter()
 
     render(<XeroApp adapter={adapter} />)
@@ -3376,13 +3384,10 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
-    expect(screen.queryByLabelText('Agent conversation viewport')).not.toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
-
+    expect(screen.getByRole('button', { name: 'Chat' })).toHaveClass('bg-secondary')
     expect(await screen.findByLabelText('Agent conversation viewport')).toBeVisible()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Workflow' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
 
     await waitFor(() =>
       expect(screen.getByLabelText('Agent conversation viewport')).not.toBeVisible(),
@@ -3407,7 +3412,7 @@ describe('XeroApp current UI', () => {
     )
 
     expect(screen.getByRole('button', { name: 'Editor' })).toHaveClass('bg-secondary')
-    expect(screen.getByRole('button', { name: 'Workflow' })).not.toHaveClass('bg-secondary')
+    expect(screen.getByRole('button', { name: 'Create' })).not.toHaveClass('bg-secondary')
     expect(readAppUiState).toHaveBeenCalledWith({ key: 'app.activeView.v1' })
   })
 
@@ -3428,7 +3433,7 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Chat' }))
 
     await waitFor(() =>
       expect(writeAppUiState).toHaveBeenCalledWith({
@@ -3456,14 +3461,14 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Chat' }))
 
     expect(await screen.findByLabelText('Agent conversation viewport')).toBeVisible()
     expect(screen.getByText('New Session')).toBeVisible()
     expect(screen.getAllByText('Main session').length).toBeGreaterThan(0)
   })
 
-  it('closes the agent dock and keeps its session selected when opening the Agent view', async () => {
+  it('closes the agent dock and keeps its session selected when opening the Chat view', async () => {
     const { adapter } = createAdapter()
 
     render(<XeroApp adapter={adapter} />)
@@ -3472,6 +3477,7 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
     fireEvent.click(screen.getByRole('button', { name: 'Open agent dock' }))
 
     const dock = await screen.findByLabelText('Agent dock')
@@ -3482,7 +3488,7 @@ describe('XeroApp current UI', () => {
         .some((button) => button.getAttribute('aria-pressed') === 'true'),
     ).toBe(true)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Chat' }))
 
     await waitFor(() =>
       expect(screen.getByLabelText('Agent dock')).toHaveAttribute('aria-hidden', 'true'),
@@ -3511,7 +3517,7 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Chat' }))
     expect(await screen.findByLabelText('Agent conversation viewport')).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'Spawn agent pane' }))
@@ -3529,7 +3535,7 @@ describe('XeroApp current UI', () => {
     expect(screen.getAllByRole('button', { name: 'Close pane' })).toHaveLength(2)
   })
 
-  it('hides the collapsed sessions strip outside the Agent view', async () => {
+  it('hides the collapsed sessions strip outside the Chat view', async () => {
     window.localStorage.setItem('xero.explorer.collapsed', 'collapsed')
     const { adapter } = createAdapter()
 
@@ -3539,16 +3545,17 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
     expect(screen.queryByRole('button', { name: 'Show sessions sidebar' })).not.toBeInTheDocument()
 
     fireEvent.pointerEnter(screen.getByRole('complementary'))
     expect(screen.queryByRole('button', { name: 'Show sessions sidebar' })).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Chat' }))
     expect(await screen.findByRole('button', { name: 'Show sessions sidebar' })).toBeVisible()
     expect(document.querySelector('[data-session-collapse-ghost="true"]')).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Workflow' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: 'Show sessions sidebar' })).not.toBeInTheDocument(),
     )
@@ -3564,7 +3571,7 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Chat' }))
     expect(await screen.findByRole('button', { name: 'Show sessions sidebar' })).toBeVisible()
 
     const getProjectRail = () => document.querySelector('aside[data-collapsed]') as HTMLElement
@@ -3610,7 +3617,7 @@ describe('XeroApp current UI', () => {
     expect(await screen.findByRole('searchbox', { name: 'Search agents' })).toHaveValue('review')
   })
 
-  it('reveals the Workflow view when inspecting an agent from the library outside Workflow', async () => {
+  it('reveals the Create view when inspecting an agent from the library outside Create', async () => {
     const agentRef = {
       kind: 'built_in',
       runtimeAgentId: 'engineer',
@@ -3689,7 +3696,7 @@ describe('XeroApp current UI', () => {
     fireEvent.click(await within(library).findByLabelText('Inspect Engineer'))
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Workflow' })).toHaveClass('bg-secondary'),
+      expect(screen.getByRole('button', { name: 'Create' })).toHaveClass('bg-secondary'),
     )
     expect(screen.getByRole('button', { name: 'Editor' })).not.toHaveClass('bg-secondary')
     expect(getWorkflowAgentDetail).toHaveBeenCalledWith({ projectId: 'project-1', ref: agentRef })
@@ -3699,7 +3706,7 @@ describe('XeroApp current UI', () => {
     expect(library).toHaveAttribute('aria-hidden', 'false')
   })
 
-  it('uses an agent from the library menu in the Agent chat composer', async () => {
+  it('uses an agent from the library menu in the Chat composer', async () => {
     const agentRef = {
       kind: 'built_in',
       runtimeAgentId: 'engineer',
@@ -3741,7 +3748,7 @@ describe('XeroApp current UI', () => {
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Use in Chat' }))
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Agent' })).toHaveClass('bg-secondary'),
+      expect(screen.getByRole('button', { name: 'Chat' })).toHaveClass('bg-secondary'),
     )
     expect(screen.getByRole('button', { name: 'Editor' })).not.toHaveClass('bg-secondary')
     await waitFor(() =>
@@ -3893,7 +3900,8 @@ describe('XeroApp current UI', () => {
 
     render(<XeroApp adapter={adapter} />)
 
-    expect(await screen.findByRole('button', { name: 'Workflow' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Create' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
     await waitFor(() => expect(streamSubscriptions).toHaveLength(1))
     await act(async () => {
       await Promise.resolve()
@@ -3934,7 +3942,8 @@ describe('XeroApp current UI', () => {
 
     render(<XeroApp adapter={adapter} />)
 
-    expect(await screen.findByRole('button', { name: 'Workflow' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Create' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
     await waitFor(() => expect(streamSubscriptions).toHaveLength(1))
     expect(screen.getByLabelText('0 unread notifications')).toBeVisible()
 
@@ -4038,6 +4047,7 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
     const projectButton = screen.getByRole('button', { name: 'Open Xero (active)' })
     await waitFor(() => expect(projectButton).toHaveAttribute('data-agent-running', 'true'))
     expect(projectButton.querySelector('.xero-project-rail-activity-aura-field')).not.toBeNull()
@@ -4068,6 +4078,7 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
     const projectButton = screen.getByRole('button', { name: 'Open Xero (active)' })
     await waitFor(() => expect(projectButton).toHaveAttribute('data-agent-running', 'true'))
     await waitFor(() => expect(streamSubscriptions).toHaveLength(1))
@@ -4131,7 +4142,7 @@ describe('XeroApp current UI', () => {
     })
 
     await waitFor(() => {
-      expect(projectButton.querySelector('.xero-project-rail-completion-count-badge')).toHaveTextContent('1')
+      expect(projectButton.querySelector('.xero-project-rail-completion-count-badge')).toBeNull()
       expect(projectButton).toHaveAttribute('data-agent-running', 'true')
     })
 
@@ -4150,7 +4161,7 @@ describe('XeroApp current UI', () => {
     })
 
     await waitFor(() => {
-      expect(projectButton.querySelector('.xero-project-rail-completion-count-badge')).toHaveTextContent('2')
+      expect(projectButton.querySelector('.xero-project-rail-completion-count-badge')).toHaveTextContent('1')
       expect(projectButton).not.toHaveAttribute('data-agent-running')
     })
   })
@@ -4249,6 +4260,7 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
     const rail = document.querySelector('aside[data-collapsed]') as HTMLElement
 
     expect(screen.getByLabelText('Workflow canvas')).toBeInTheDocument()
@@ -4360,7 +4372,7 @@ describe('XeroApp current UI', () => {
     expect(screen.queryByText('Connect your GitHub account to identify this install.')).not.toBeInTheDocument()
   })
 
-  it('keeps the project rail compact in Editor and after returning to Workflow', async () => {
+  it('keeps the project rail compact in Editor and after returning to Create', async () => {
     const { adapter } = createAdapter()
 
     render(<XeroApp adapter={adapter} />)
@@ -4375,12 +4387,12 @@ describe('XeroApp current UI', () => {
 
     await waitFor(() => expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull())
 
-    fireEvent.click(screen.getByRole('button', { name: 'Workflow' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
 
     await waitFor(() => expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull())
   })
 
-  it('keeps the project rail compact after leaving Editor for Agent', async () => {
+  it('keeps the project rail compact after leaving Editor for Chat', async () => {
     const { adapter } = createAdapter()
 
     render(<XeroApp adapter={adapter} />)
@@ -4394,7 +4406,7 @@ describe('XeroApp current UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Editor' }))
     await waitFor(() => expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull())
 
-    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Chat' }))
     await waitFor(() => expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull())
   })
 
@@ -4463,7 +4475,7 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Chat' }))
 
     expect(screen.queryByRole('heading', { name: 'Recovered run snapshot' })).not.toBeInTheDocument()
     expect(
@@ -4543,7 +4555,7 @@ describe('XeroApp current UI', () => {
     expect(executionPane).toHaveAttribute('aria-hidden', 'false')
     fireEvent.change(editor, { target: { value: '# Draft changes\n' } })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Chat' }))
     await waitFor(() => expect(executionPane).toHaveAttribute('aria-hidden', 'true'))
     expect(screen.queryByText('No milestone assigned')).not.toBeInTheDocument()
     expect(screen.queryByText('Xero Desktop')).not.toBeInTheDocument()

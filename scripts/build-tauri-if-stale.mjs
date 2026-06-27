@@ -164,19 +164,23 @@ async function main() {
     CARGO_BUILD_JOBS: rootEnv.CARGO_BUILD_JOBS ?? '4',
   }
 
-  logger.log(`Building release desktop sidecar (${releaseDesktopSidecarPath()})...`)
-  await streamRun(
-    'cargo',
-    [
-      'build',
-      '--manifest-path',
-      resolve(clientDir, 'src-tauri', 'Cargo.toml'),
-      '--package',
-      'xero-desktop-sidecar',
-      '--release',
-    ],
-    { cwd: repoRoot, env },
-  )
+  if (releaseDesktopSidecarIsFresh()) {
+    logger.log(`Release desktop sidecar is fresh (${releaseDesktopSidecarPath()}).`)
+  } else {
+    logger.log(`Building release desktop sidecar (${releaseDesktopSidecarPath()})...`)
+    await streamRun(
+      'cargo',
+      [
+        'build',
+        '--manifest-path',
+        resolve(clientDir, 'src-tauri', 'Cargo.toml'),
+        '--package',
+        'xero-desktop-sidecar',
+        '--release',
+      ],
+      { cwd: repoRoot, env },
+    )
+  }
   if (!existsSync(releaseDesktopSidecarPath())) {
     logger.fail(`Sidecar build finished but no binary at ${releaseDesktopSidecarPath()}.`)
     process.exit(1)
@@ -250,4 +254,17 @@ function localTauriBuildArgs(env) {
 
   logger.log('No TAURI_SIGNING_PRIVATE_KEY set; skipping local updater artifacts.')
   return ['--config', JSON.stringify({ bundle: { createUpdaterArtifacts: false } })]
+}
+
+function releaseDesktopSidecarIsFresh() {
+  const binary = releaseDesktopSidecarPath()
+  if (!existsSync(binary)) return false
+
+  const binaryMtime = statSync(binary).mtimeMs
+  const sourceRoots = [
+    resolve(clientDir, 'src-tauri', 'crates', 'xero-desktop-sidecar'),
+    resolve(clientDir, 'src-tauri', 'crates', 'xero-desktop-control-ipc'),
+  ]
+
+  return sourceRoots.every((root) => newestMtime(root) <= binaryMtime)
 }

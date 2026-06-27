@@ -2106,8 +2106,13 @@ fn context_pressure_from_percent(percent: Option<u64>) -> SessionContextBudgetPr
 }
 
 fn built_in_context_limits(provider: &str, model: &str) -> Option<(u64, u64)> {
-    if provider == "xai" && is_supported_xai_context_model(model) {
-        return Some((1_000_000, DEFAULT_CONTEXT_LIMIT_MAX_OUTPUT_TOKENS));
+    if provider == "xai" {
+        if let Some(context_window_tokens) = xai_context_window_tokens(model) {
+            return Some((
+                context_window_tokens,
+                DEFAULT_CONTEXT_LIMIT_MAX_OUTPUT_TOKENS,
+            ));
+        }
     }
     if provider == "deepseek" && model.starts_with("deepseek-v4-") {
         return Some((
@@ -2155,14 +2160,18 @@ fn built_in_context_limits(provider: &str, model: &str) -> Option<(u64, u64)> {
     None
 }
 
-fn is_supported_xai_context_model(model: &str) -> bool {
+fn xai_context_window_tokens(model: &str) -> Option<u64> {
     let model = model
         .trim()
         .rsplit('/')
         .next()
         .unwrap_or(model)
         .to_ascii_lowercase();
-    matches!(model.as_str(), "grok-4.3" | "grok-4.3-latest")
+    match model.as_str() {
+        "grok-4.3" | "grok-4.3-latest" => Some(1_000_000),
+        "grok-build-0.1" => Some(256_000),
+        _ => None,
+    }
 }
 
 fn heuristic_context_window_tokens(provider: &str, model: &str) -> Option<u64> {
@@ -3308,6 +3317,17 @@ mod tests {
         assert_eq!(resolved.source, SessionContextLimitSourceDto::LiveCatalog);
         assert_eq!(resolved.confidence, SessionContextLimitConfidenceDto::High);
         assert_eq!(resolved.fetched_at.as_deref(), Some("2026-06-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn xai_context_limit_uses_model_specific_windows() {
+        let grok = resolve_context_limit("xai", "grok-4.3-latest");
+        let build = resolve_context_limit("xai", "grok-build-0.1");
+
+        assert_eq!(grok.context_window_tokens, Some(1_000_000));
+        assert_eq!(build.context_window_tokens, Some(256_000));
+        assert_eq!(build.source, SessionContextLimitSourceDto::BuiltInRegistry);
+        assert_eq!(build.confidence, SessionContextLimitConfidenceDto::Medium);
     }
 
     #[test]

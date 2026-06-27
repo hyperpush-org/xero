@@ -315,7 +315,7 @@ describe('buildComposerModelOptions', () => {
     expect(options[0].providerId).toBe('openrouter')
   })
 
-  it('only exposes supported xAI 4.3 text models to the composer', () => {
+  it('only exposes supported xAI text models to the composer', () => {
     const credentials = makeSnapshot([
       makeCredential({ providerId: 'xai', kind: 'oauth_session', readinessProof: 'oauth_session' }),
     ])
@@ -337,6 +337,7 @@ describe('buildComposerModelOptions', () => {
         { modelId: 'grok-imagine-video', displayName: 'grok-imagine-video' },
         { modelId: 'grok-latest', displayName: 'grok-latest', thinking: true },
         { modelId: 'grok-4.3-latest', displayName: 'grok-4.3-latest', thinking: true },
+        { modelId: 'grok-build-0.1', displayName: 'grok-build-0.1', thinking: true },
       ]),
     }
 
@@ -344,8 +345,10 @@ describe('buildComposerModelOptions', () => {
 
     expect(options.map((option) => option.displayName)).toEqual([
       'Grok 4.3 Latest',
+      'Grok Build 0.1',
     ])
     expect(options[0]?.thinkingEffortOptions).toEqual(['medium', 'high'])
+    expect(options[1]?.thinkingEffortOptions).toEqual(['medium', 'high'])
   })
 
   it('includes the Cursor SDK harness model when the Cursor credential and catalog exist', () => {

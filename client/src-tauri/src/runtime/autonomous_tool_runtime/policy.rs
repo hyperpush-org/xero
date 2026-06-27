@@ -4,6 +4,7 @@ use std::{
 };
 
 use super::{
+    filesystem::expand_system_path,
     repo_scope::{is_current_directory_path, normalize_relative_path},
     tool_allowed_for_runtime_agent_with_policy, AutonomousBrowserAction,
     AutonomousCommandPolicyOutcome, AutonomousCommandPolicyProfile, AutonomousCommandPolicyTrace,
@@ -14,11 +15,12 @@ use super::{
     AutonomousProjectContextAction, AutonomousSafetyApprovalGrant, AutonomousSafetyPolicyAction,
     AutonomousSafetyPolicyDecision, AutonomousSystemDiagnosticsAction,
     AutonomousSystemDiagnosticsPolicyTrace, AutonomousToolRequest, AutonomousToolRuntime,
-    AutonomousWorkflowDefinitionAction, AUTONOMOUS_TOOL_COMMAND_PROBE,
-    AUTONOMOUS_TOOL_COMMAND_VERIFY, AUTONOMOUS_TOOL_HOST_COMMAND, DEFAULT_COMMAND_TIMEOUT_MS,
+    AutonomousWorkflowDefinitionAction, AUTONOMOUS_TOOL_COMMAND, AUTONOMOUS_TOOL_COMMAND_PROBE,
+    AUTONOMOUS_TOOL_COMMAND_VERIFY, AUTONOMOUS_TOOL_HOST_COMMAND, AUTONOMOUS_TOOL_PROCESS_MANAGER,
+    DEFAULT_COMMAND_TIMEOUT_MS,
 };
 use crate::runtime::redaction::{
-    find_prohibited_persistence_content, is_sensitive_argument_name, render_command_for_persistence,
+    high_confidence_secret_text, is_sensitive_argument_name, render_command_for_persistence,
 };
 use crate::{
     auth::now_timestamp,
@@ -59,7 +61,13 @@ impl AutonomousToolRuntime {
         operator_approved: bool,
         input_sha256: &str,
     ) -> CommandResult<AutonomousSafetyPolicyDecision> {
-        let metadata = safety_policy_metadata(request);
+        let mut metadata = safety_policy_metadata(request);
+        if self.linked_context_system_read_without_approval(request) {
+            metadata.requires_approval = false;
+            metadata.require_approval_code = "policy_allowed_linked_context_system_read";
+            metadata.require_approval_reason =
+                "Reading an attached linked context path does not require operator approval.";
+        }
         let approval_mode = self
             .command_controls
             .as_ref()
@@ -97,12 +105,12 @@ impl AutonomousToolRuntime {
             ));
         }
 
-        if let Some(path) = repo_path_escape(request) {
+        if let Some(path) = self.repo_path_escape(request) {
             return Ok(safety_decision(
                 AutonomousSafetyPolicyAction::Deny,
                 "policy_denied_path_escape",
                 format!(
-                    "Xero denied the tool call because path `{path}` escapes the imported repository root."
+                    "Xero denied the tool call because path `{path}` escapes the imported repository root and linked context paths."
                 ),
                 &context,
             ));
@@ -167,6 +175,53 @@ impl AutonomousToolRuntime {
         ))
     }
 
+    fn linked_context_system_read_without_approval(&self, request: &AutonomousToolRequest) -> bool {
+        let AutonomousToolRequest::Read(request) = request else {
+            return false;
+        };
+        if !request.system_path {
+            return false;
+        }
+        let Ok(expanded) = expand_system_path(&request.path) else {
+            return false;
+        };
+        if !expanded.is_absolute() {
+            return false;
+        }
+        self.linked_absolute_tool_path_allowed(&expanded)
+    }
+
+    fn repo_path_escape(&self, request: &AutonomousToolRequest) -> Option<String> {
+        let allow_linked_read_paths = request_allows_linked_absolute_paths(request);
+        repo_relative_paths(request)
+            .into_iter()
+            .find(|path| {
+                let trimmed = path.trim();
+                if allow_linked_read_paths && should_treat_policy_path_as_absolute(trimmed) {
+                    let Ok(expanded) = expand_system_path(trimmed) else {
+                        return true;
+                    };
+                    return !self.linked_absolute_tool_path_allowed(&expanded);
+                }
+
+                matches!(
+                    normalize_relative_path(trimmed, "path"),
+                    Err(error) if error.class == CommandErrorClass::PolicyDenied
+                )
+            })
+            .map(str::to_owned)
+    }
+
+    fn linked_absolute_tool_path_allowed(&self, path: &Path) -> bool {
+        if !path.is_absolute() {
+            return false;
+        }
+        let Ok(resolved) = fs::canonicalize(path) else {
+            return false;
+        };
+        self.is_within_linked_read_root(&resolved)
+    }
+
     pub(super) fn enforce_mailbox_check_before_mutation(
         &self,
         tool_name: &str,
@@ -218,6 +273,14 @@ impl AutonomousToolRuntime {
         &self,
         prepared: PreparedCommandRequest,
     ) -> CommandResult<CommandPolicyDecision> {
+        self.evaluate_command_policy_for_tool(AUTONOMOUS_TOOL_COMMAND, prepared)
+    }
+
+    pub(super) fn evaluate_command_policy_for_tool(
+        &self,
+        tool_name: &str,
+        prepared: PreparedCommandRequest,
+    ) -> CommandResult<CommandPolicyDecision> {
         let control_state = self.command_controls.as_ref().ok_or_else(|| {
             CommandError::new(
                 "policy_denied_approval_snapshot_missing",
@@ -236,21 +299,7 @@ impl AutonomousToolRuntime {
             ));
         }
 
-        validate_repo_scoped_arguments(&prepared, active.approval_mode.clone())?;
-
-        if active.approval_mode != RuntimeRunApprovalModeDto::Yolo {
-            let policy = policy_trace(
-                AutonomousCommandPolicyOutcome::Escalated,
-                active.approval_mode.clone(),
-                AutonomousCommandPolicyProfile::GeneralExecution,
-                "policy_escalated_approval_mode",
-                format!(
-                    "Active approval mode `{}` requires operator review before autonomous shell commands can run.",
-                    approval_mode_label(&active.approval_mode)
-                ),
-            );
-            return Ok(CommandPolicyDecision::Escalate { prepared, policy });
-        }
+        self.validate_repo_scoped_arguments(&prepared, active.approval_mode.clone())?;
 
         let policy = match classify_command(&prepared) {
             CommandClassification::Safe { profile, reason } => policy_trace(
@@ -260,6 +309,25 @@ impl AutonomousToolRuntime {
                 "policy_allowed_repo_scoped_command",
                 reason,
             ),
+            CommandClassification::Escalated {
+                profile,
+                code,
+                reason,
+            } if active.approval_mode == RuntimeRunApprovalModeDto::Yolo
+                && tool_name != AUTONOMOUS_TOOL_PROCESS_MANAGER =>
+            {
+                policy_trace(
+                AutonomousCommandPolicyOutcome::Allowed,
+                active.approval_mode.clone(),
+                profile,
+                "policy_allowed_full_access_command",
+                format!(
+                    "Active approval mode `{}` allowed repo-scoped command `{}` without command-classifier restrictions. Classifier `{code}` was recorded for audit only: {reason}",
+                    approval_mode_label(&active.approval_mode),
+                    render_command_for_summary(&prepared.argv)
+                ),
+                )
+            }
             CommandClassification::Escalated {
                 profile,
                 code,
@@ -277,6 +345,26 @@ impl AutonomousToolRuntime {
                 });
             }
         };
+
+        if active.approval_mode != RuntimeRunApprovalModeDto::Yolo {
+            if command_tool_can_run_without_operator_review(tool_name, &prepared, &policy) {
+                return Ok(CommandPolicyDecision::Allow { prepared, policy });
+            }
+            if let Some(policy) = command_tool_scope_escalation(tool_name, &prepared, &policy) {
+                return Ok(CommandPolicyDecision::Escalate { prepared, policy });
+            }
+            let policy = policy_trace(
+                AutonomousCommandPolicyOutcome::Escalated,
+                active.approval_mode.clone(),
+                AutonomousCommandPolicyProfile::GeneralExecution,
+                "policy_escalated_approval_mode",
+                format!(
+                    "Active approval mode `{}` requires operator review before autonomous shell commands can run.",
+                    approval_mode_label(&active.approval_mode)
+                ),
+            );
+            return Ok(CommandPolicyDecision::Escalate { prepared, policy });
+        }
 
         Ok(CommandPolicyDecision::Allow { prepared, policy })
     }
@@ -1150,28 +1238,38 @@ fn command_family_policy_decision(
         return Ok(None);
     };
     let prepared = runtime.prepare_command_request(command_request)?;
-    Ok(Some(match runtime.evaluate_command_policy(prepared)? {
-        CommandPolicyDecision::Allow { prepared, policy } => {
-            if let Some(policy) = command_tool_scope_escalation(tool_name, &prepared, &policy) {
-                (
-                    AutonomousSafetyPolicyAction::RequireApproval,
-                    policy.code,
-                    policy.reason,
-                )
-            } else {
-                (
-                    AutonomousSafetyPolicyAction::Allow,
-                    policy.code,
-                    policy.reason,
-                )
+    Ok(Some(
+        match runtime.evaluate_command_policy_for_tool(tool_name, prepared)? {
+            CommandPolicyDecision::Allow { prepared, policy } => {
+                if let Some(policy) = command_tool_scope_escalation(tool_name, &prepared, &policy) {
+                    (
+                        AutonomousSafetyPolicyAction::RequireApproval,
+                        policy.code,
+                        policy.reason,
+                    )
+                } else {
+                    (
+                        AutonomousSafetyPolicyAction::Allow,
+                        policy.code,
+                        policy.reason,
+                    )
+                }
             }
-        }
-        CommandPolicyDecision::Escalate { policy, .. } => (
-            AutonomousSafetyPolicyAction::RequireApproval,
-            policy.code,
-            policy.reason,
-        ),
-    }))
+            CommandPolicyDecision::Escalate { policy, .. } => (
+                AutonomousSafetyPolicyAction::RequireApproval,
+                policy.code,
+                policy.reason,
+            ),
+        },
+    ))
+}
+
+fn command_tool_can_run_without_operator_review(
+    tool_name: &str,
+    prepared: &PreparedCommandRequest,
+    policy: &AutonomousCommandPolicyTrace,
+) -> bool {
+    matches!(tool_name, AUTONOMOUS_TOOL_COMMAND_PROBE) && command_probe_allows(prepared, policy)
 }
 
 pub(super) fn command_tool_scope_escalation(
@@ -1179,6 +1277,10 @@ pub(super) fn command_tool_scope_escalation(
     prepared: &PreparedCommandRequest,
     policy: &AutonomousCommandPolicyTrace,
 ) -> Option<AutonomousCommandPolicyTrace> {
+    if policy.approval_mode == RuntimeRunApprovalModeDto::Yolo {
+        return None;
+    }
+
     match tool_name {
         AUTONOMOUS_TOOL_COMMAND_PROBE if !command_probe_allows(prepared, policy) => {
             Some(policy_trace(
@@ -1225,8 +1327,13 @@ fn command_probe_allows(
                 "status" | "diff" | "log" | "show" | "rev-parse" | "grep" | "ls-files"
             )
         }),
-        "cargo" => git_subcommand(&prepared.argv)
-            .is_some_and(|subcommand| matches!(subcommand, "metadata" | "tree")),
+        "cargo" => {
+            git_subcommand(&prepared.argv)
+                .is_some_and(|subcommand| matches!(subcommand, "metadata" | "tree"))
+                || version_probe_allows(&prepared.argv)
+        }
+        "node" | "npm" | "npx" | "pnpm" | "yarn" | "bun" | "deno" | "python" | "python3"
+        | "rustc" | "go" | "tsc" | "vite" => version_probe_allows(&prepared.argv),
         _ => false,
     }
 }
@@ -1268,6 +1375,10 @@ fn command_verify_allows(
         }
         _ => false,
     }
+}
+
+fn version_probe_allows(argv: &[String]) -> bool {
+    argv.len() == 2 && matches!(argv[1].as_str(), "--version" | "-v" | "-V" | "version")
 }
 
 fn git_subcommand(argv: &[String]) -> Option<&str> {
@@ -1363,40 +1474,23 @@ fn secret_like_tool_input(value: &JsonValue) -> bool {
     }
 }
 
-fn high_confidence_secret_text(text: &str) -> bool {
-    let normalized = text.to_ascii_lowercase();
-    normalized.contains("bearer ")
-        || normalized.contains("sk-")
-        || normalized.contains("ghp_")
-        || normalized.contains("gho_")
-        || normalized.contains("ghu_")
-        || normalized.contains("ghs_")
-        || normalized.contains("github_pat_")
-        || normalized.contains("glpat-")
-        || normalized.contains("xoxb-")
-        || normalized.contains("xoxp-")
-        || normalized.contains("-----begin")
-        || normalized.contains("akia")
-        || normalized.contains("aiza")
-        || normalized.contains("ya29.")
-        || find_prohibited_persistence_content(text).is_some()
-            && (normalized.contains('=')
-                || normalized.contains(':')
-                || normalized.contains("token")
-                || normalized.contains("password")
-                || normalized.contains("private"))
+fn request_allows_linked_absolute_paths(request: &AutonomousToolRequest) -> bool {
+    matches!(
+        request,
+        AutonomousToolRequest::Read(request) if !request.system_path
+    ) || matches!(
+        request,
+        AutonomousToolRequest::ReadMany(_)
+            | AutonomousToolRequest::Stat(_)
+            | AutonomousToolRequest::Search(_)
+            | AutonomousToolRequest::Find(_)
+            | AutonomousToolRequest::List(_)
+            | AutonomousToolRequest::ListTree(_)
+    )
 }
 
-fn repo_path_escape(request: &AutonomousToolRequest) -> Option<String> {
-    repo_relative_paths(request)
-        .into_iter()
-        .find(|path| {
-            matches!(
-                normalize_relative_path(path, "path"),
-                Err(error) if error.class == CommandErrorClass::PolicyDenied
-            )
-        })
-        .map(str::to_owned)
+fn should_treat_policy_path_as_absolute(value: &str) -> bool {
+    Path::new(value).is_absolute() || value == "~" || value.starts_with("~/")
 }
 
 fn repo_relative_paths(request: &AutonomousToolRequest) -> Vec<&str> {
@@ -1691,33 +1785,87 @@ fn normalize_timeout_ms(timeout_ms: Option<u64>, max_timeout_ms: u64) -> Command
     Ok(timeout)
 }
 
-fn validate_repo_scoped_arguments(
-    prepared: &PreparedCommandRequest,
-    approval_mode: RuntimeRunApprovalModeDto,
-) -> CommandResult<()> {
-    for argument in prepared.argv.iter().skip(1) {
-        let Some(candidate) = extract_path_candidate(argument) else {
-            continue;
-        };
+impl AutonomousToolRuntime {
+    fn validate_repo_scoped_arguments(
+        &self,
+        prepared: &PreparedCommandRequest,
+        approval_mode: RuntimeRunApprovalModeDto,
+    ) -> CommandResult<()> {
+        for argument in prepared.argv.iter().skip(1) {
+            let Some(candidate) = extract_path_candidate(argument) else {
+                continue;
+            };
 
-        normalize_relative_path(candidate, "argv").map_err(|error| {
-            if error.class == CommandErrorClass::PolicyDenied {
-                CommandError::new(
-                    "policy_denied_argument_outside_repo",
-                    CommandErrorClass::PolicyDenied,
-                    format!(
-                        "Xero denied the autonomous shell command under active approval mode `{}` because argument `{candidate}` escapes the imported repository root.",
-                        approval_mode_label(&approval_mode)
-                    ),
-                    false,
-                )
-            } else {
-                error
-            }
-        })?;
+            self.validate_command_argument_path(candidate)
+                .map_err(|error| {
+                    if error.class == CommandErrorClass::PolicyDenied {
+                        CommandError::new(
+                            "policy_denied_argument_outside_repo",
+                            CommandErrorClass::PolicyDenied,
+                            format!(
+                                "Xero denied the autonomous shell command under active approval mode `{}` because argument `{candidate}` escapes the imported repository root and linked context paths.",
+                                approval_mode_label(&approval_mode)
+                            ),
+                            false,
+                        )
+                    } else {
+                        error
+                    }
+                })?;
+        }
+
+        Ok(())
     }
 
-    Ok(())
+    fn validate_command_argument_path(&self, candidate: &str) -> CommandResult<()> {
+        if is_current_directory_path(candidate.trim()) {
+            return Ok(());
+        }
+        let candidate_path = Path::new(candidate);
+        if candidate_path.is_absolute() {
+            return self.validate_absolute_command_argument_path(candidate_path);
+        }
+
+        normalize_relative_path(candidate, "argv").map(|_| ())
+    }
+
+    fn validate_absolute_command_argument_path(&self, candidate: &Path) -> CommandResult<()> {
+        let resolved = fs::canonicalize(candidate).map_err(|_| {
+            CommandError::new(
+                "autonomous_tool_path_denied",
+                CommandErrorClass::PolicyDenied,
+                format!(
+                    "Xero denied `{}` because autonomous command arguments must resolve inside the imported repository root or a linked context path.",
+                    candidate.display()
+                ),
+                false,
+            )
+        })?;
+
+        if resolved == self.repo_root || resolved.starts_with(&self.repo_root) {
+            return Ok(());
+        }
+
+        if self.linked_read_roots.iter().any(|root| {
+            if root.is_dir {
+                resolved == root.path || resolved.starts_with(&root.path)
+            } else {
+                resolved == root.path
+            }
+        }) {
+            return Ok(());
+        }
+
+        Err(CommandError::new(
+            "autonomous_tool_path_denied",
+            CommandErrorClass::PolicyDenied,
+            format!(
+                "Xero denied `{}` because it resolves outside the imported repository root and linked context paths.",
+                candidate.display()
+            ),
+            false,
+        ))
+    }
 }
 
 fn extract_path_candidate(argument: &str) -> Option<&str> {
@@ -1780,6 +1928,16 @@ enum CommandClassification {
 fn classify_command(prepared: &PreparedCommandRequest) -> CommandClassification {
     let argv = &prepared.argv;
     let program = executable_name(&argv[0]);
+
+    if version_probe_allows(argv) {
+        match program {
+            "node" | "npm" | "npx" | "pnpm" | "yarn" | "bun" | "deno" | "python" | "python3"
+            | "cargo" | "rustc" | "go" | "tsc" | "vite" => {
+                return safe_command(argv);
+            }
+            _ => {}
+        }
+    }
 
     if is_shell_wrapper(program) {
         if shell_wrapper_contains_sensitive_pattern(argv) {
@@ -2552,6 +2710,74 @@ mod tests {
     }
 
     #[test]
+    fn safety_policy_allows_oauth_invite_url_in_write_content() {
+        let tempdir = tempdir().expect("tempdir");
+        let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Yolo);
+        let content = "window.location.href = 'https://discord.com/oauth2/authorize?client_id=123456789012345678&permissions=8&scope=bot%20applications.commands';";
+        let request = AutonomousToolRequest::Write(super::super::AutonomousWriteRequest {
+            path: "index.html".into(),
+            content: content.into(),
+            expected_hash: None,
+            create_only: false,
+            overwrite: None,
+            preview: false,
+        });
+
+        let decision = runtime
+            .evaluate_safety_policy(
+                "write",
+                &json!({"path": "index.html", "content": content}),
+                &request,
+                false,
+                "input-hash",
+            )
+            .expect("policy");
+
+        assert_eq!(decision.action, AutonomousSafetyPolicyAction::Allow);
+        assert_eq!(decision.code, "policy_allowed_tool_call");
+    }
+
+    #[test]
+    fn safety_policy_allows_fs_transaction_with_css_mask_image_content() {
+        let tempdir = tempdir().expect("tempdir");
+        let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Yolo);
+        let content = ".grain::before { -webkit-mask-image: radial-gradient(circle, black, transparent); mask-image: linear-gradient(black, transparent); }";
+        let request =
+            AutonomousToolRequest::FsTransaction(super::super::AutonomousFsTransactionRequest {
+                operations: vec![super::super::AutonomousFsTransactionOperation {
+                    action: AutonomousFsTransactionAction::CreateFile,
+                    path: Some("src/index.css".into()),
+                    content: Some(content.into()),
+                    ..super::super::AutonomousFsTransactionOperation::default()
+                }],
+                preview: false,
+                stop_on_first_error: true,
+            });
+
+        let decision = runtime
+            .evaluate_safety_policy(
+                super::super::AUTONOMOUS_TOOL_FS_TRANSACTION,
+                &json!({
+                    "operations": [
+                        {
+                            "action": "create_file",
+                            "path": "src/index.css",
+                            "content": content,
+                        }
+                    ],
+                    "preview": false,
+                }),
+                &request,
+                false,
+                "input-hash",
+            )
+            .expect("policy");
+
+        assert_eq!(decision.action, AutonomousSafetyPolicyAction::Allow);
+        assert_eq!(decision.code, "policy_allowed_tool_call");
+    }
+
+    #[test]
     fn safety_policy_denies_repo_path_escape() {
         let tempdir = tempdir().expect("tempdir");
         let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Yolo);
@@ -2576,6 +2802,170 @@ mod tests {
 
         assert_eq!(decision.action, AutonomousSafetyPolicyAction::Deny);
         assert_eq!(decision.code, "policy_denied_path_escape");
+    }
+
+    #[test]
+    fn safety_policy_allows_linked_context_system_read_without_approval() {
+        let repo = tempdir().expect("repo");
+        let linked = tempdir().expect("linked");
+        let linked_file = linked.path().join("notes.txt");
+        fs::write(&linked_file, "linked context\n").expect("linked file");
+        let unlinked = tempdir().expect("unlinked");
+        let unlinked_file = unlinked.path().join("notes.txt");
+        fs::write(&unlinked_file, "unlinked context\n").expect("unlinked file");
+        let runtime = test_runtime(repo.path(), RuntimeRunApprovalModeDto::Yolo)
+            .with_linked_read_roots(vec![linked.path().to_path_buf()])
+            .expect("linked roots");
+
+        let linked_request = AutonomousToolRequest::Read(super::super::AutonomousReadRequest {
+            path: linked_file.display().to_string(),
+            system_path: true,
+            mode: Some(super::super::AutonomousReadMode::Text),
+            start_line: None,
+            line_count: None,
+            cursor: None,
+            around_pattern: None,
+            max_bytes_per_file: None,
+            byte_offset: None,
+            byte_count: None,
+            include_line_hashes: false,
+        });
+        let linked_decision = runtime
+            .evaluate_safety_policy(
+                super::super::AUTONOMOUS_TOOL_READ,
+                &json!({"path": linked_file.display().to_string(), "systemPath": true}),
+                &linked_request,
+                false,
+                "input-hash",
+            )
+            .expect("linked policy");
+        assert_eq!(linked_decision.action, AutonomousSafetyPolicyAction::Allow);
+
+        let unlinked_request = AutonomousToolRequest::Read(super::super::AutonomousReadRequest {
+            path: unlinked_file.display().to_string(),
+            system_path: true,
+            mode: Some(super::super::AutonomousReadMode::Text),
+            start_line: None,
+            line_count: None,
+            cursor: None,
+            around_pattern: None,
+            max_bytes_per_file: None,
+            byte_offset: None,
+            byte_count: None,
+            include_line_hashes: false,
+        });
+        let unlinked_decision = runtime
+            .evaluate_safety_policy(
+                super::super::AUTONOMOUS_TOOL_READ,
+                &json!({"path": unlinked_file.display().to_string(), "systemPath": true}),
+                &unlinked_request,
+                false,
+                "input-hash",
+            )
+            .expect("unlinked policy");
+        assert_eq!(
+            unlinked_decision.action,
+            AutonomousSafetyPolicyAction::RequireApproval
+        );
+        assert_eq!(
+            unlinked_decision.code,
+            "policy_requires_approval_system_read"
+        );
+    }
+
+    #[test]
+    fn safety_policy_allows_linked_context_list_without_approval() {
+        let repo = tempdir().expect("repo");
+        let linked = tempdir().expect("linked");
+        let unlinked = tempdir().expect("unlinked");
+        let runtime = test_runtime(repo.path(), RuntimeRunApprovalModeDto::Yolo)
+            .with_linked_read_roots(vec![linked.path().to_path_buf()])
+            .expect("linked roots");
+
+        let linked_request = AutonomousToolRequest::List(super::super::AutonomousListRequest {
+            path: Some(linked.path().display().to_string()),
+            max_depth: Some(2),
+            max_results: None,
+            sort_by: None,
+            sort_direction: None,
+            cursor: None,
+        });
+        let linked_decision = runtime
+            .evaluate_safety_policy(
+                super::super::AUTONOMOUS_TOOL_LIST,
+                &json!({"path": linked.path().display().to_string(), "maxDepth": 2}),
+                &linked_request,
+                false,
+                "input-hash",
+            )
+            .expect("linked list policy");
+        assert_eq!(linked_decision.action, AutonomousSafetyPolicyAction::Allow);
+
+        let search_request = AutonomousToolRequest::Search(super::super::AutonomousSearchRequest {
+            query: "Panda".into(),
+            path: Some(linked.path().display().to_string()),
+            regex: false,
+            ignore_case: false,
+            include_hidden: false,
+            include_ignored: false,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            context_lines: None,
+            max_results: None,
+            files_only: false,
+            cursor: None,
+        });
+        let search_decision = runtime
+            .evaluate_safety_policy(
+                super::super::AUTONOMOUS_TOOL_SEARCH,
+                &json!({"query": "Panda", "path": linked.path().display().to_string()}),
+                &search_request,
+                false,
+                "input-hash",
+            )
+            .expect("linked search policy");
+        assert_eq!(search_decision.action, AutonomousSafetyPolicyAction::Allow);
+
+        let find_request = AutonomousToolRequest::Find(super::super::AutonomousFindRequest {
+            pattern: "**/*.ts".into(),
+            mode: None,
+            path: Some(linked.path().display().to_string()),
+            max_depth: None,
+            max_results: None,
+            include_hidden: false,
+            include_ignored: false,
+            cursor: None,
+        });
+        let find_decision = runtime
+            .evaluate_safety_policy(
+                super::super::AUTONOMOUS_TOOL_FIND,
+                &json!({"pattern": "**/*.ts", "path": linked.path().display().to_string()}),
+                &find_request,
+                false,
+                "input-hash",
+            )
+            .expect("linked find policy");
+        assert_eq!(find_decision.action, AutonomousSafetyPolicyAction::Allow);
+
+        let unlinked_request = AutonomousToolRequest::List(super::super::AutonomousListRequest {
+            path: Some(unlinked.path().display().to_string()),
+            max_depth: Some(2),
+            max_results: None,
+            sort_by: None,
+            sort_direction: None,
+            cursor: None,
+        });
+        let unlinked_decision = runtime
+            .evaluate_safety_policy(
+                super::super::AUTONOMOUS_TOOL_LIST,
+                &json!({"path": unlinked.path().display().to_string(), "maxDepth": 2}),
+                &unlinked_request,
+                false,
+                "input-hash",
+            )
+            .expect("unlinked list policy");
+        assert_eq!(unlinked_decision.action, AutonomousSafetyPolicyAction::Deny);
+        assert_eq!(unlinked_decision.code, "policy_denied_path_escape");
     }
 
     #[test]
@@ -2787,6 +3177,268 @@ mod tests {
     }
 
     #[test]
+    fn safety_policy_allows_command_probe_under_linked_context_path() {
+        let tempdir = tempdir().expect("tempdir");
+        let repo_root = tempdir.path().join("repo");
+        let linked_root = tempdir.path().join("linked-project");
+        fs::create_dir_all(&repo_root).expect("repo root");
+        fs::create_dir_all(&linked_root).expect("linked root");
+        let runtime = test_runtime(&repo_root, RuntimeRunApprovalModeDto::Yolo)
+            .with_linked_read_roots(vec![linked_root.clone()])
+            .expect("linked roots");
+        let request = AutonomousToolRequest::Command(AutonomousCommandRequest {
+            argv: vec![
+                "ls".into(),
+                "-la".into(),
+                linked_root.to_string_lossy().into_owned(),
+            ],
+            cwd: None,
+            timeout_ms: Some(1_000),
+        });
+
+        let decision = runtime
+            .evaluate_safety_policy(
+                AUTONOMOUS_TOOL_COMMAND_PROBE,
+                &json!({}),
+                &request,
+                false,
+                "input",
+            )
+            .expect("decision");
+
+        assert_eq!(decision.action, AutonomousSafetyPolicyAction::Allow);
+        assert_eq!(decision.code, "policy_allowed_repo_scoped_command");
+    }
+
+    #[test]
+    fn safety_policy_allows_command_probe_in_suggest_mode_for_linked_context_path() {
+        let tempdir = tempdir().expect("tempdir");
+        let repo_root = tempdir.path().join("repo");
+        let linked_root = tempdir.path().join("linked-project");
+        fs::create_dir_all(&repo_root).expect("repo root");
+        fs::create_dir_all(&linked_root).expect("linked root");
+        let runtime = test_runtime(&repo_root, RuntimeRunApprovalModeDto::Suggest)
+            .with_linked_read_roots(vec![linked_root.clone()])
+            .expect("linked roots");
+        let request = AutonomousToolRequest::Command(AutonomousCommandRequest {
+            argv: vec![
+                "ls".into(),
+                "-la".into(),
+                linked_root.to_string_lossy().into_owned(),
+            ],
+            cwd: None,
+            timeout_ms: Some(1_000),
+        });
+
+        let decision = runtime
+            .evaluate_safety_policy(
+                AUTONOMOUS_TOOL_COMMAND_PROBE,
+                &json!({}),
+                &request,
+                false,
+                "input",
+            )
+            .expect("decision");
+
+        assert_eq!(decision.action, AutonomousSafetyPolicyAction::Allow);
+        assert_eq!(decision.code, "policy_allowed_repo_scoped_command");
+    }
+
+    #[test]
+    fn command_probe_executes_without_operator_review_in_suggest_mode_for_linked_context_path() {
+        let tempdir = tempdir().expect("tempdir");
+        let repo_root = tempdir.path().join("repo");
+        let linked_root = tempdir.path().join("linked-project");
+        fs::create_dir_all(&repo_root).expect("repo root");
+        fs::create_dir_all(&linked_root).expect("linked root");
+        fs::write(linked_root.join("README.md"), "linked project").expect("linked file");
+        let runtime = test_runtime(&repo_root, RuntimeRunApprovalModeDto::Suggest)
+            .with_linked_read_roots(vec![linked_root.clone()])
+            .expect("linked roots");
+
+        let result = runtime
+            .command_with_approval_for_tool(
+                AUTONOMOUS_TOOL_COMMAND_PROBE,
+                AutonomousCommandRequest {
+                    argv: vec!["ls".into(), linked_root.to_string_lossy().into_owned()],
+                    cwd: None,
+                    timeout_ms: Some(1_000),
+                },
+                false,
+            )
+            .expect("command_probe should run without operator approval");
+
+        let AutonomousToolOutput::Command(output) = result.output else {
+            panic!("expected command output");
+        };
+        assert!(output.spawned);
+        assert_eq!(output.exit_code, Some(0));
+        assert_eq!(
+            output.policy.outcome,
+            AutonomousCommandPolicyOutcome::Allowed
+        );
+        assert_eq!(output.policy.code, "policy_allowed_repo_scoped_command");
+    }
+
+    #[test]
+    fn command_probe_and_verify_scope_mismatches_are_model_fixable() {
+        let tempdir = tempdir().expect("tempdir");
+        let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Suggest);
+        let scaffold_request = AutonomousCommandRequest {
+            argv: vec![
+                "npm".into(),
+                "create".into(),
+                "vite@latest".into(),
+                ".".into(),
+                "--".into(),
+                "--template".into(),
+                "react-ts".into(),
+                "--yes".into(),
+            ],
+            cwd: Some(".".into()),
+            timeout_ms: Some(60_000),
+        };
+
+        let probe_error = runtime
+            .command_with_approval_for_tool(
+                AUTONOMOUS_TOOL_COMMAND_PROBE,
+                scaffold_request.clone(),
+                false,
+            )
+            .expect_err("scaffold command must not become a command_probe approval");
+        assert_eq!(
+            probe_error.code,
+            "autonomous_tool_command_probe_scope_invalid"
+        );
+        assert_eq!(probe_error.class, CommandErrorClass::UserFixable);
+        assert!(probe_error.message.contains("Use `command_run`"));
+
+        let verify_error = runtime
+            .command_with_approval_for_tool(AUTONOMOUS_TOOL_COMMAND_VERIFY, scaffold_request, false)
+            .expect_err("scaffold command must not become a command_verify approval");
+        assert_eq!(
+            verify_error.code,
+            "autonomous_tool_command_verify_scope_invalid"
+        );
+        assert_eq!(verify_error.class, CommandErrorClass::UserFixable);
+        assert!(verify_error.message.contains("Use `command_run`"));
+    }
+
+    #[test]
+    fn full_access_allows_scaffold_command_probe_without_review() {
+        let tempdir = tempdir().expect("tempdir");
+        let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Yolo);
+        let request = AutonomousToolRequest::Command(AutonomousCommandRequest {
+            argv: vec![
+                "npm".into(),
+                "create".into(),
+                "vite@latest".into(),
+                ".".into(),
+                "--".into(),
+                "--template".into(),
+                "react-ts".into(),
+                "--yes".into(),
+            ],
+            cwd: Some(".".into()),
+            timeout_ms: Some(60_000),
+        });
+
+        let decision = runtime
+            .evaluate_safety_policy(
+                AUTONOMOUS_TOOL_COMMAND_PROBE,
+                &json!({"argv": ["npm", "create", "vite@latest", ".", "--", "--template", "react-ts", "--yes"], "cwd": "."}),
+                &request,
+                false,
+                "input-hash",
+            )
+            .expect("full-access scaffold probe policy");
+
+        assert_eq!(decision.action, AutonomousSafetyPolicyAction::Allow);
+        assert_eq!(decision.code, "policy_allowed_full_access_command");
+        assert!(decision
+            .explanation
+            .contains("without command-classifier restrictions"));
+    }
+
+    #[test]
+    fn command_probe_allows_common_version_discovery_without_review() {
+        let tempdir = tempdir().expect("tempdir");
+        let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Suggest);
+
+        for argv in [
+            ["node", "--version"],
+            ["node", "-v"],
+            ["npm", "--version"],
+            ["npm", "-v"],
+            ["pnpm", "--version"],
+            ["yarn", "--version"],
+            ["bun", "--version"],
+            ["python3", "-V"],
+            ["cargo", "--version"],
+            ["rustc", "--version"],
+        ] {
+            let request = AutonomousToolRequest::Command(AutonomousCommandRequest {
+                argv: argv.into_iter().map(str::to_owned).collect(),
+                cwd: Some(".".into()),
+                timeout_ms: Some(5_000),
+            });
+
+            let decision = runtime
+                .evaluate_safety_policy(
+                    AUTONOMOUS_TOOL_COMMAND_PROBE,
+                    &json!({"argv": argv, "cwd": "."}),
+                    &request,
+                    false,
+                    "input-hash",
+                )
+                .expect("version probe policy");
+
+            assert_eq!(
+                decision.action,
+                AutonomousSafetyPolicyAction::Allow,
+                "{argv:?} should be allowed as command_probe discovery"
+            );
+            assert_eq!(decision.code, "policy_allowed_repo_scoped_command");
+        }
+    }
+
+    #[test]
+    fn safety_policy_denies_command_probe_outside_linked_context_path() {
+        let tempdir = tempdir().expect("tempdir");
+        let repo_root = tempdir.path().join("repo");
+        let linked_root = tempdir.path().join("linked-project");
+        let outside_root = tempdir.path().join("outside-project");
+        fs::create_dir_all(&repo_root).expect("repo root");
+        fs::create_dir_all(&linked_root).expect("linked root");
+        fs::create_dir_all(&outside_root).expect("outside root");
+        let runtime = test_runtime(&repo_root, RuntimeRunApprovalModeDto::Yolo)
+            .with_linked_read_roots(vec![linked_root])
+            .expect("linked roots");
+        let request = AutonomousToolRequest::Command(AutonomousCommandRequest {
+            argv: vec![
+                "ls".into(),
+                "-la".into(),
+                outside_root.to_string_lossy().into_owned(),
+            ],
+            cwd: None,
+            timeout_ms: Some(1_000),
+        });
+
+        let error = runtime
+            .evaluate_safety_policy(
+                AUTONOMOUS_TOOL_COMMAND_PROBE,
+                &json!({}),
+                &request,
+                false,
+                "input",
+            )
+            .expect_err("outside path should fail policy validation");
+
+        assert_eq!(error.code, "policy_denied_argument_outside_repo");
+        assert!(error.message.contains("linked context paths"));
+    }
+
+    #[test]
     fn safety_policy_keeps_command_probe_readonly_and_verify_scoped() {
         let tempdir = tempdir().expect("tempdir");
         fs::write(
@@ -2794,14 +3446,15 @@ mod tests {
             r#"{"scripts":{"type-check":"tsc --noEmit","type-check:ci":"tsc --noEmit"}}"#,
         )
         .expect("package");
-        let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Yolo);
+        let scoped_runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Suggest);
+        let full_access_runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Yolo);
         let probe_request = AutonomousToolRequest::Command(AutonomousCommandRequest {
             argv: vec!["cargo".into(), "test".into()],
             cwd: None,
             timeout_ms: None,
         });
 
-        let probe_decision = runtime
+        let probe_decision = scoped_runtime
             .evaluate_safety_policy(
                 AUTONOMOUS_TOOL_COMMAND_PROBE,
                 &json!({"argv": ["cargo", "test"]}),
@@ -2817,7 +3470,7 @@ mod tests {
         );
         assert_eq!(probe_decision.code, "policy_escalated_command_probe_scope");
 
-        let verify_decision = runtime
+        let verify_decision = full_access_runtime
             .evaluate_safety_policy(
                 AUTONOMOUS_TOOL_COMMAND_VERIFY,
                 &json!({"argv": ["cargo", "test"]}),
@@ -2834,7 +3487,7 @@ mod tests {
             cwd: Some(".".into()),
             timeout_ms: None,
         });
-        let root_cwd_verify_decision = runtime
+        let root_cwd_verify_decision = full_access_runtime
             .evaluate_safety_policy(
                 AUTONOMOUS_TOOL_COMMAND_VERIFY,
                 &json!({"argv": ["cargo", "test"], "cwd": "."}),
@@ -2859,7 +3512,7 @@ mod tests {
             cwd: None,
             timeout_ms: None,
         });
-        let type_check_decision = runtime
+        let type_check_decision = full_access_runtime
             .evaluate_safety_policy(
                 AUTONOMOUS_TOOL_COMMAND_VERIFY,
                 &json!({"argv": ["pnpm", "--filter", "client", "type-check"]}),
@@ -2879,7 +3532,7 @@ mod tests {
             cwd: None,
             timeout_ms: None,
         });
-        let type_check_variant_decision = runtime
+        let scoped_type_check_variant_decision = scoped_runtime
             .evaluate_safety_policy(
                 AUTONOMOUS_TOOL_COMMAND_VERIFY,
                 &json!({"argv": ["pnpm", "run", "type-check:ci"]}),
@@ -2890,8 +3543,27 @@ mod tests {
             .expect("type-check variant verify policy");
 
         assert_eq!(
-            type_check_variant_decision.action,
+            scoped_type_check_variant_decision.action,
             AutonomousSafetyPolicyAction::RequireApproval
+        );
+
+        let full_access_type_check_variant_decision = full_access_runtime
+            .evaluate_safety_policy(
+                AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                &json!({"argv": ["pnpm", "run", "type-check:ci"]}),
+                &type_check_variant_request,
+                false,
+                "input-hash",
+            )
+            .expect("full-access type-check variant verify policy");
+
+        assert_eq!(
+            full_access_type_check_variant_decision.action,
+            AutonomousSafetyPolicyAction::Allow
+        );
+        assert_eq!(
+            full_access_type_check_variant_decision.code,
+            "policy_allowed_full_access_command"
         );
     }
 

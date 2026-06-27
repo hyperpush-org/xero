@@ -859,7 +859,7 @@ mod tests {
     #[test]
     fn rejects_secret_like_output() {
         let mut payload = sample_payload();
-        payload.tools[0].version = Some("version sk-demo".into());
+        payload.tools[0].version = Some("version sk-demo-secret-value".into());
         let error =
             validate_environment_payload(&payload).expect_err("secret-like output is rejected");
         assert!(error.message.contains("secret-like"));

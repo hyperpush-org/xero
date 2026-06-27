@@ -324,9 +324,9 @@ describe("TerminalSidebar session lifetime", () => {
 
     await waitFor(() => {
       expect(detected.at(-1)).toMatchObject({
-        label: "web · 127.0.0.1:4100",
+        label: "web · localhost:4100",
         projectId: "project-a",
-        url: "http://127.0.0.1:4100/",
+        url: "http://localhost:4100/",
       })
     })
   })

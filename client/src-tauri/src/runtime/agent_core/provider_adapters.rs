@@ -29,7 +29,7 @@ use crate::{
         SessionContextEstimateSourceDto,
     },
     runtime::{
-        is_supported_xai_text_model_id,
+        is_supported_xai_reasoning_effort_model_id, is_supported_xai_text_model_id,
         process_tree::{
             cleanup_process_group_after_root_exit, configure_process_tree_root,
             terminate_process_tree,
@@ -327,7 +327,7 @@ impl XaiResponsesAdapter {
             return Err(CommandError::user_fixable(
                 "xai_model_not_supported_by_text_runtime",
                 format!(
-                    "Xero's xAI owned runtime currently supports Grok 4.3 text models only; `{}` is not available for agent turns.",
+                    "Xero's xAI owned runtime currently supports Grok 4.3 and Grok Build text models only; `{}` is not available for agent turns.",
                     config.model_id
                 ),
             ));
@@ -1243,7 +1243,7 @@ fn xai_responses_request_body(
         .thinking_effort
         .as_ref()
         .and_then(xai_reasoning_effort_value)
-        .filter(|_| is_supported_xai_text_model_id(model_id))
+        .filter(|_| is_supported_xai_reasoning_effort_model_id(model_id))
     {
         body.insert("reasoning".into(), json!({ "effort": effort }));
     }
@@ -3845,6 +3845,11 @@ mod tests {
         request.controls.active.thinking_effort = Some(ProviderModelThinkingEffortDto::High);
         let body = xai_responses_request_body(XAI_PROVIDER_ID, "grok-imagine-video", &request)
             .expect("xAI unsupported body preview");
+        assert!(body.get("reasoning").is_none());
+
+        let body = xai_responses_request_body(XAI_PROVIDER_ID, "grok-build-0.1", &request)
+            .expect("Grok Build body");
+        assert_eq!(body["model"], "grok-build-0.1");
         assert!(body.get("reasoning").is_none());
     }
 

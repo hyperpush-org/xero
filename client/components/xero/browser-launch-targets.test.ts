@@ -17,7 +17,7 @@ describe("browser launch targets", () => {
       extractBrowserSupportedDevServerUrls(
         "\u001b[32mVITE\u001b[0m ready\n  Local: http://localhost:5173/\n  API: http://127.0.0.1:4000/docs",
       ),
-    ).toEqual(["http://127.0.0.1:5173/", "http://127.0.0.1:4000/docs"])
+    ).toEqual(["http://localhost:5173/", "http://127.0.0.1:4000/docs"])
   })
 
   it("rejects non-local browser URLs for project launch targets", () => {
@@ -35,7 +35,7 @@ describe("browser launch targets", () => {
     expect(target).toMatchObject({
       id: "browser-app:http://127.0.0.1:5173/",
       label: "web",
-      url: "http://127.0.0.1:5173/",
+      url: "http://localhost:5173/",
       source: "vite",
     })
   })
@@ -157,9 +157,9 @@ describe("browser launch targets", () => {
     expect(browserLaunchTargetMatchesUrl(target!, "http://127.0.0.1:5174/")).toBe(false)
   })
 
-  it("normalizes ambiguous loopback hosts to IPv4 for embedded WebViews", () => {
+  it("preserves localhost while normalizing wildcard loopback hosts for embedded WebViews", () => {
     expect(normalizeLoopbackBrowserUrl("http://localhost:4200/path?q=1")).toBe(
-      "http://127.0.0.1:4200/path?q=1",
+      "http://localhost:4200/path?q=1",
     )
     expect(normalizeLoopbackBrowserUrl("http://0.0.0.0:4200/")).toBe(
       "http://127.0.0.1:4200/",

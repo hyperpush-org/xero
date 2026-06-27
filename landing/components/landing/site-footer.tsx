@@ -1,4 +1,5 @@
 import Link from "next/link"
+import Image from "next/image"
 import { Github } from "lucide-react"
 import { siteConfig } from "@/lib/site"
 
@@ -21,30 +22,30 @@ export function SiteFooter() {
       <div className="mx-auto w-full max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
         <div className="flex flex-col items-center justify-between gap-6 sm:flex-row">
           <div className="flex items-center gap-3">
-            <span
-              aria-hidden
-              className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-border/60 bg-secondary/40 font-mono text-[11px] font-semibold tracking-tighter text-primary"
-            >
-              X
-            </span>
+            <Image
+              src="/icon-logo.svg"
+              alt=""
+              width={24}
+              height={24}
+              className="h-6 w-6 opacity-95"
+            />
             <span className="text-xs text-muted-foreground/70">
-              © {new Date().getFullYear()} Xero Labs · Built in Rust, runs on your machine
+              © {new Date().getFullYear()} Xero Labs
             </span>
           </div>
 
-          <nav className="flex items-center gap-5" aria-label="Footer">
-            {links.map((l) => (
-              <Link
-                key={l.label}
-                href={l.href}
-                className="text-xs text-muted-foreground transition-colors hover:text-foreground"
-              >
-                {l.label}
-              </Link>
-            ))}
-          </nav>
-
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-4">
+            <nav className="flex items-center gap-5" aria-label="Footer">
+              {links.map((l) => (
+                <Link
+                  key={l.label}
+                  href={l.href}
+                  className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  {l.label}
+                </Link>
+              ))}
+            </nav>
             {social.map(({ icon: Icon, label, href }) => (
               <Link
                 key={label}

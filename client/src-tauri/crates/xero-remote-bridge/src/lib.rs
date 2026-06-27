@@ -106,7 +106,7 @@ pub struct BridgeConfig {
 }
 
 impl BridgeConfig {
-    pub const LOCAL_RELAY_URL: &'static str = "http://127.0.0.1:4000";
+    pub const LOCAL_RELAY_URL: &'static str = "http://127.0.0.1:26140";
     pub const PRODUCTION_RELAY_URL: &'static str = "https://api.xeroshell.com";
 
     pub fn local_default() -> Self {

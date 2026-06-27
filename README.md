@@ -40,7 +40,7 @@ It combines:
 
 - `client/`: production desktop app (`productName: Xero`, `identifier: com.hyperpush.xero`)
 - `cloud/`: browser/PWA surface for remote sessions, deployed to `cloud.xeroshell.com`
-- `landing/`: separate website, run on port `3001` in root dev workflow
+- `landing/`: separate website, run on port `26101` in root dev workflow
 - `server/`: Phoenix 1.8 service, local Postgres, GitHub auth callback/session support, Oban jobs
 
 ---
@@ -175,21 +175,22 @@ cd server && mix setup
 ### Root commands
 
 ```bash
-pnpm run dev          # Preflight, Postgres logs, Phoenix server, Tauri desktop, landing site, and cloud app
+pnpm run dev          # Preflight and desktop app only (Tauri dev)
+pnpm run dev:all      # Preflight, Postgres logs, Phoenix server, Tauri desktop, landing site, and cloud app
 pnpm run stop:all     # Stop Xero dev servers and the local Postgres container
 pnpm run dev:preflight
 pnpm run db:up
 pnpm run db:down
 pnpm run db:reset
 pnpm run server:setup
-pnpm run dev:server   # Phoenix server on localhost:4000
+pnpm run dev:server   # Phoenix server on localhost:26140
 pnpm run dev:tauri    # Desktop app only (Tauri dev)
 pnpm run dev:tui      # Real Xero agent TUI terminal client + required relay/Cloud dev services
-pnpm run dev:landing  # Landing site on port 3001
-pnpm run dev:cloud    # Cloud app on port 3002
+pnpm run dev:landing  # Landing site on port 26101
+pnpm run dev:cloud    # Cloud app on port 26102
 ```
 
-`dev` uses `concurrently` to start:
+`dev:all` uses `concurrently` to start:
 
 - `pnpm run dev:db:logs`
 - `pnpm run dev:server`
@@ -200,9 +201,9 @@ pnpm run dev:cloud    # Cloud app on port 3002
 ### Desktop app (`client/`) commands
 
 ```bash
-pnpm --dir client dev         # Vite dev server on :3000 (frontend only)
+pnpm --dir client dev         # Vite dev server on :26100 (frontend only)
 pnpm --dir client build       # Frontend production build
-pnpm --dir client preview     # Preview built frontend on :3000
+pnpm --dir client preview     # Preview built frontend on :26100
 pnpm --dir client test        # Vitest run
 pnpm --dir client test:watch  # Vitest watch mode
 pnpm --dir client lint        # ESLint
@@ -224,14 +225,14 @@ pnpm --dir client run tauri:dev -- --features emulator-live
 
 ```bash
 cargo check --manifest-path client/src-tauri/Cargo.toml
-cargo test  --manifest-path client/src-tauri/Cargo.toml
+cargo test  --manifest-path client/src-tauri/Cargo.toml --features tauri-test-support
 ```
 
 Target a specific integration suite:
 
 ```bash
-cargo test --manifest-path client/src-tauri/Cargo.toml --test runtime_supervisor
-cargo test --manifest-path client/src-tauri/Cargo.toml --test solana_workbench
+cargo test --manifest-path client/src-tauri/Cargo.toml --features tauri-test-support --test runtime_supervisor
+cargo test --manifest-path client/src-tauri/Cargo.toml --features tauri-test-support --test solana_workbench
 ```
 
 Prefer scoped Cargo checks/tests while iterating, and run only one Cargo command at a time so the target directory lock does not become the bottleneck.
@@ -239,7 +240,8 @@ Prefer scoped Cargo checks/tests while iterating, and run only one Cargo command
 Root helpers wrap the same policy:
 
 ```bash
-pnpm run rust:test
+pnpm run rust:test                 # fast default: desktop lib tests
+pnpm run rust:test:all             # full Rust test suite
 pnpm run rust:target:prune:dry-run
 pnpm run rust:target:prune
 ```
@@ -519,7 +521,7 @@ Cookie import helper supports detection/import from common browsers, including:
 - Ensure `pnpm --dir client install` completed
 - Ensure `protoc` is installed and visible on PATH
 - Ensure Tauri OS prerequisites are installed
-- Ensure port `3000` is free (Vite dev server is strict on this port)
+- Ensure port `26100` is free (Vite dev server is strict on this port)
 
 ### Root `pnpm run dev` fails before Tauri starts
 

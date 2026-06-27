@@ -457,34 +457,3 @@ pub(super) fn display_relative_or_root(root: &Path, path: &Path) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| ".".into())
 }
-
-pub(super) fn scope_relative_match_path(
-    repo_relative: &Path,
-    scope_relative: Option<&Path>,
-    scope_is_file: bool,
-) -> CommandResult<PathBuf> {
-    if scope_is_file {
-        return repo_relative
-            .file_name()
-            .map(PathBuf::from)
-            .ok_or_else(|| CommandError::invalid_request("path"));
-    }
-
-    match scope_relative {
-        Some(scope_relative) => repo_relative
-            .strip_prefix(scope_relative)
-            .map(|relative| relative.to_path_buf())
-            .map_err(|_| {
-                CommandError::new(
-                    "autonomous_tool_path_denied",
-                    CommandErrorClass::PolicyDenied,
-                    format!(
-                        "Xero denied access to `{}` because it escaped the scoped search root.",
-                        path_to_forward_slash(repo_relative)
-                    ),
-                    false,
-                )
-            }),
-        None => Ok(repo_relative.to_path_buf()),
-    }
-}

@@ -1198,11 +1198,13 @@ impl SandboxPathAccess {
         let mut access = Self::default();
         let extracted_paths = extract_path_values(&call.input);
 
+        let read_only_command =
+            matches!(descriptor.effect_class, ToolEffectClass::CommandExecution)
+                && descriptor.sandbox_requirement == ToolSandboxRequirement::ReadOnly;
         if descriptor.mutability == ToolMutability::Mutating
-            || matches!(
-                descriptor.effect_class,
-                ToolEffectClass::WorkspaceMutation | ToolEffectClass::CommandExecution
-            )
+            || matches!(descriptor.effect_class, ToolEffectClass::WorkspaceMutation)
+            || (matches!(descriptor.effect_class, ToolEffectClass::CommandExecution)
+                && !read_only_command)
         {
             access.write_paths.extend(extracted_paths);
         } else {
@@ -1669,6 +1671,28 @@ mod tests {
                 &ToolExecutionContext::default(),
             )
             .expect("workspace root cwd shorthand should be allowed");
+    }
+
+    #[test]
+    fn sandbox_treats_readonly_command_paths_as_read_access() {
+        let descriptor = descriptor(
+            "command_probe",
+            ToolEffectClass::CommandExecution,
+            ToolMutability::ReadOnly,
+            ToolSandboxRequirement::ReadOnly,
+        );
+
+        let metadata = sandbox()
+            .evaluate(
+                &descriptor,
+                &call(json!({ "path": "/linked/project" })),
+                &ToolExecutionContext::default(),
+            )
+            .expect("read-only command probe should be sandboxed as observation");
+
+        assert_eq!(metadata.profile, SandboxPermissionProfile::ReadOnly);
+        assert!(metadata.readable_paths.contains(&"/linked/project".into()));
+        assert!(metadata.writable_paths.is_empty());
     }
 
     #[test]

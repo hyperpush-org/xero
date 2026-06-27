@@ -869,7 +869,14 @@ export function browserTabTranslateX(
     | null
     | undefined,
 ): string | undefined {
-  return transform ? CSS.Translate.toString({ ...transform, y: 0 }) : undefined
+  return transform
+    ? CSS.Translate.toString({
+        x: transform.x,
+        y: 0,
+        scaleX: transform.scaleX ?? 1,
+        scaleY: transform.scaleY ?? 1,
+      })
+    : undefined
 }
 
 interface BrowserSortableTabProps {

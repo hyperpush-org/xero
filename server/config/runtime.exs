@@ -43,20 +43,40 @@ if System.get_env("PHX_SERVER") do
   config :xero, XeroWeb.Endpoint, server: true
 end
 
-config :xero, XeroWeb.Endpoint, http: [port: String.to_integer(System.get_env("PORT", "4000"))]
+default_endpoint_port =
+  case config_env() do
+    :dev -> "26140"
+    :test -> "26142"
+    _ -> "4000"
+  end
+
+config :xero, XeroWeb.Endpoint,
+  http: [port: String.to_integer(System.get_env("PORT", default_endpoint_port))]
 
 # --- CORS (cors_plug) ---
 # Comma-separated list of allowed origins. "*" is allowed for dev only.
 web_app_url = System.get_env("XERO_WEB_APP_URL", "https://cloud.xeroshell.com")
 
-default_cors_origins = [
-  "http://localhost:3000",
-  "http://127.0.0.1:3000",
-  "http://localhost:3002",
-  "http://127.0.0.1:3002",
-  "tauri://localhost",
-  web_app_url
-]
+default_cors_origins =
+  if config_env() == :prod do
+    [
+      "http://localhost:3000",
+      "http://127.0.0.1:3000",
+      "http://localhost:3002",
+      "http://127.0.0.1:3002",
+      "tauri://localhost",
+      web_app_url
+    ]
+  else
+    [
+      "http://localhost:26100",
+      "http://127.0.0.1:26100",
+      "http://localhost:26102",
+      "http://127.0.0.1:26102",
+      "tauri://localhost",
+      web_app_url
+    ]
+  end
 
 cors_origins =
   System.get_env("CORS_ORIGINS", "")

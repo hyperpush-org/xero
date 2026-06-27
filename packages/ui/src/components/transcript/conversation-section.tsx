@@ -22,6 +22,7 @@ import {
   Circle,
   Copy,
   FileText,
+  FolderOpen,
   GitBranch,
   History,
   ImageIcon,
@@ -353,17 +354,26 @@ const HANDOFF_COMPLETION_DETAIL_MARKER = 'handed off to a same-type target run'
 
 const BROWSER_TOOL_CONTEXT_HEADING_PATTERN =
   String.raw`Browser (?:sketch context|element inspection context)(?:\s*\(capture\s+\d+\))?:`
+const LINKED_CONTEXT_HEADING_PATTERN =
+  String.raw`Linked (?:project (?:file|folder)|folder) context:`
+const PROMPT_CONTEXT_HEADING_PATTERN =
+  String.raw`(?:${BROWSER_TOOL_CONTEXT_HEADING_PATTERN}|${LINKED_CONTEXT_HEADING_PATTERN})`
 const BROWSER_TOOL_CONTEXT_MARKER_PATTERN =
   /^Browser (sketch context|element inspection context)(?:\s*\(capture\s+\d+\))?:$/
-const BROWSER_TOOL_CONTEXT_BLOCK_PATTERN = new RegExp(
-  String.raw`(^|\n{2,})(${BROWSER_TOOL_CONTEXT_HEADING_PATTERN}\n[\s\S]*?)(?=\n{2,}${BROWSER_TOOL_CONTEXT_HEADING_PATTERN}\n|$)`,
+const LINKED_CONTEXT_MARKER_PATTERN =
+  /^Linked (?:(project) )?(file|folder) context:$/
+const PROMPT_CONTEXT_BLOCK_PATTERN = new RegExp(
+  String.raw`(^|\n{2,})(${PROMPT_CONTEXT_HEADING_PATTERN}\n[\s\S]*?)(?=\n{2,}${PROMPT_CONTEXT_HEADING_PATTERN}\n|$)`,
   'g',
 )
 
+type PromptContextKind = 'sketch' | 'element' | 'file' | 'folder'
+
 export interface BrowserToolPromptContext {
   id: string
-  kind: 'sketch' | 'element'
+  kind: PromptContextKind
   title: string
+  subtitle: string | null
   page: string | null
   lines: string[]
   rawText: string
@@ -425,14 +435,14 @@ export function splitBrowserToolPromptContext(text: string): BrowserToolPromptPa
   const visibleParts: string[] = []
   let cursor = 0
 
-  BROWSER_TOOL_CONTEXT_BLOCK_PATTERN.lastIndex = 0
-  let match = BROWSER_TOOL_CONTEXT_BLOCK_PATTERN.exec(text)
+  PROMPT_CONTEXT_BLOCK_PATTERN.lastIndex = 0
+  let match = PROMPT_CONTEXT_BLOCK_PATTERN.exec(text)
   while (match !== null) {
     visibleParts.push(text.slice(cursor, match.index))
 
     const separator = match[1] ?? ''
     const rawText = (match[2] ?? '').trim()
-    const context = parseBrowserToolPromptContext(rawText, contexts.length)
+    const context = parsePromptContext(rawText, contexts.length)
     if (context) {
       contexts.push(context)
       cursor = match.index + separator.length + (match[2] ?? '').length
@@ -441,7 +451,7 @@ export function splitBrowserToolPromptContext(text: string): BrowserToolPromptPa
       cursor = match.index + separator.length + (match[2] ?? '').length
     }
 
-    match = BROWSER_TOOL_CONTEXT_BLOCK_PATTERN.exec(text)
+    match = PROMPT_CONTEXT_BLOCK_PATTERN.exec(text)
   }
 
   visibleParts.push(text.slice(cursor))
@@ -456,33 +466,134 @@ export function userVisiblePromptText(text: string): string {
   return splitBrowserToolPromptContext(text).visibleText
 }
 
-function parseBrowserToolPromptContext(
+function parsePromptContext(
   rawText: string,
   index: number,
 ): BrowserToolPromptContext | null {
   const lines = rawText.split(/\r?\n/)
   const marker = lines[0]?.trim() ?? ''
   const markerMatch = BROWSER_TOOL_CONTEXT_MARKER_PATTERN.exec(marker)
-  if (!markerMatch) {
-    return null
+  if (markerMatch) {
+    return parseBrowserToolPromptContext(rawText, lines, markerMatch, index)
   }
 
+  const linkedMarkerMatch = LINKED_CONTEXT_MARKER_PATTERN.exec(marker)
+  if (linkedMarkerMatch) {
+    return parseLinkedPromptContext(rawText, lines, linkedMarkerMatch, index)
+  }
+
+  return null
+}
+
+function parseBrowserToolPromptContext(
+  rawText: string,
+  lines: string[],
+  markerMatch: RegExpExecArray,
+  index: number,
+): BrowserToolPromptContext {
   const kind = markerMatch[1] === 'sketch context' ? 'sketch' : 'element'
   const pageLine = lines.find((line) => line.trim().startsWith('Page: '))
   const page = pageLine ? pageLine.trim().replace(/^Page:\s*/, '') : null
   const bodyLines = lines
     .slice(1)
     .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.startsWith('Page: '))
+    .filter((line) => line.length > 0)
 
   return {
     id: `${kind}-${index}`,
     kind,
     title: kind === 'sketch' ? 'Browser sketch context' : 'Element context',
+    subtitle: browserPromptContextSubtitle(kind, page, bodyLines),
     page,
     lines: bodyLines,
     rawText,
   }
+}
+
+function parseLinkedPromptContext(
+  rawText: string,
+  lines: string[],
+  markerMatch: RegExpExecArray,
+  index: number,
+): BrowserToolPromptContext {
+  const kind: Extract<PromptContextKind, 'file' | 'folder'> =
+    markerMatch[2] === 'file' ? 'file' : 'folder'
+  const bodyLines = lines
+    .slice(1)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+  const pathText = bodyLines.find((line) => line.startsWith('- '))?.replace(/^-\s*/, '').trim() ?? ''
+  const linkedPath = parseLinkedContextPath(pathText)
+  const titlePath = linkedPath.displayPath || linkedPath.absolutePath || (kind === 'file' ? 'Attached file' : 'Attached folder')
+  const title = pathBaseName(titlePath)
+  const sourceLabel = markerMatch[1] === 'project' ? 'Project' : 'Linked'
+
+  return {
+    id: `${sourceLabel.toLowerCase()}-${kind}-${index}`,
+    kind,
+    title,
+    subtitle: compactPromptContextText(linkedPath.absolutePath || linkedPath.displayPath || sourceLabel),
+    page: null,
+    lines: bodyLines,
+    rawText,
+  }
+}
+
+function parseLinkedContextPath(value: string): {
+  displayPath: string | null
+  absolutePath: string | null
+} {
+  const normalized = value.trim()
+  if (!normalized) {
+    return { displayPath: null, absolutePath: null }
+  }
+
+  const pathWithAbsoluteMatch = /^(.*?)\s+\((.*)\)$/.exec(normalized)
+  if (pathWithAbsoluteMatch?.[1]?.trim() && pathWithAbsoluteMatch[2]?.trim()) {
+    return {
+      displayPath: pathWithAbsoluteMatch[1].trim(),
+      absolutePath: pathWithAbsoluteMatch[2].trim(),
+    }
+  }
+
+  return {
+    displayPath: normalized,
+    absolutePath: null,
+  }
+}
+
+function pathBaseName(path: string): string {
+  const parts = path.split(/[\\/]+/).filter(Boolean)
+  return parts.at(-1) ?? path
+}
+
+function compactPromptContextText(value: string | null | undefined, maxLength = 72): string | null {
+  const normalized = value?.replace(/\s+/g, ' ').trim()
+  if (!normalized) return null
+  return normalized.length <= maxLength
+    ? normalized
+    : `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`
+}
+
+function browserPromptContextSubtitle(
+  kind: Extract<PromptContextKind, 'sketch' | 'element'>,
+  page: string | null,
+  lines: readonly string[],
+): string | null {
+  if (kind === 'sketch') {
+    const drawingLine = lines.find((line) => line.startsWith('Drawing: '))
+    if (drawingLine) return compactPromptContextText(drawingLine.replace(/^Drawing:\s*/, ''))
+    const attachedImageLine = lines.find((line) => line.startsWith('Attached image: '))
+    if (attachedImageLine) return compactPromptContextText(attachedImageLine.replace(/^Attached image:\s*/, ''))
+  }
+
+  const sourceLine = lines.find((line) => line.startsWith('- Source: '))
+  if (sourceLine) {
+    const source = sourceLine.replace(/^- Source:\s*/, '').split('|')[0]?.trim() ?? ''
+    if (source) return compactPromptContextText(pathBaseName(source))
+  }
+
+  return compactPromptContextText(page) ?? `${lines.length} detail${lines.length === 1 ? '' : 's'}`
 }
 
 function visibleConversationCopyText(
@@ -2899,13 +3010,14 @@ function UserMessage({
 }: UserMessageProps) {
   const promptParts = useMemo(() => splitBrowserToolPromptContext(text), [text])
   const visibleText = promptParts.visibleText
-  const browserContexts = promptParts.contexts
-  const browserContextAttachments = useMemo(
-    () => pairBrowserToolContextAttachments(browserContexts, attachments),
-    [attachments, browserContexts],
+  const promptContexts = promptParts.contexts
+  const promptContextAttachments = useMemo(
+    () => pairBrowserToolContextAttachments(promptContexts, attachments),
+    [attachments, promptContexts],
   )
-  const visibleAttachments = browserContextAttachments.unpairedAttachments
+  const visibleAttachments = promptContextAttachments.unpairedAttachments
   const hasAttachments = Boolean(visibleAttachments?.length)
+  const hasPromptContexts = promptContexts.length > 0
   const isTouch = useIsTouchDevice()
   const [tapCopied, setTapCopied] = useState(false)
 
@@ -2945,16 +3057,6 @@ function UserMessage({
     <div className="group/user flex justify-end gap-2.5">
       <div className="flex min-w-0 max-w-[80%] flex-col items-end gap-1">
         <span className="sr-only">You</span>
-        {hasAttachments ? (
-          <div className="flex max-w-full flex-wrap justify-end gap-1.5">
-            {visibleAttachments?.map((attachment) => (
-              <AttachmentPreviewChip
-                key={attachment.id}
-                attachment={attachment}
-              />
-            ))}
-          </div>
-        ) : null}
         {visibleText.length > 0 ? (
           canTapCopy ? (
             <button
@@ -2971,13 +3073,19 @@ function UserMessage({
             <div className={bubbleClassName}>{visibleText}</div>
           )
         ) : null}
-        {browserContexts.length > 0 ? (
-          <div className="mt-2 flex w-full flex-col items-end gap-1.5">
-            {browserContexts.map((context) => (
-              <BrowserToolContextCard
+        {hasAttachments || hasPromptContexts ? (
+          <div className="mt-2 flex max-w-full flex-wrap justify-end gap-1.5">
+            {promptContexts.map((context) => (
+              <PromptContextCard
                 key={context.id}
                 context={context}
-                attachment={browserContextAttachments.pairedByContextId.get(context.id)}
+                attachment={promptContextAttachments.pairedByContextId.get(context.id)}
+              />
+            ))}
+            {visibleAttachments?.map((attachment) => (
+              <AttachmentPreviewChip
+                key={attachment.id}
+                attachment={attachment}
               />
             ))}
           </div>
@@ -3018,54 +3126,93 @@ function UserMessage({
   )
 }
 
-function BrowserToolContextCard({
+function PromptContextCard({
   attachment,
   context,
 }: {
   attachment?: ConversationMessageAttachment
   context: BrowserToolPromptContext
 }) {
-  const Icon = context.kind === 'sketch' ? PencilLine : MousePointer2
+  const [open, setOpen] = useState(false)
+  const Icon =
+    context.kind === 'sketch'
+      ? PencilLine
+      : context.kind === 'element'
+        ? MousePointer2
+        : context.kind === 'folder'
+          ? FolderOpen
+          : FileText
   const shouldShowAttachment = context.kind === 'sketch' && attachment?.kind === 'image'
+  const subtitle =
+    context.subtitle ??
+    context.page ??
+    `${context.lines.length} detail${context.lines.length === 1 ? '' : 's'}`
+  const hasDetails = context.lines.length > 0
+
   return (
-    <article
-      role="note"
-      aria-label={`${context.title} attached to prompt`}
-      className="w-full rounded-lg border border-border/50 bg-muted/30 px-3 py-2 text-left text-foreground shadow-sm"
-    >
-      <div className="flex items-start gap-2">
-        <Icon
-          aria-hidden="true"
-          className="mt-[2px] h-3.5 w-3.5 shrink-0 text-primary/80"
-        />
-        <div className="min-w-0 flex-1">
-          <p className="m-0 text-[12.5px] font-medium">{context.title}</p>
-          {context.page ? (
-            <p className="mt-0.5 truncate text-[11.5px] text-muted-foreground/80" title={context.page}>
-              {context.page}
-            </p>
-          ) : null}
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <article
+        role="note"
+        aria-label={`${context.title} attached to prompt`}
+        className="w-[260px] max-w-full overflow-hidden rounded-lg border border-border/50 bg-muted/30 text-left text-foreground shadow-sm"
+      >
+        <div className="flex items-center gap-2 p-1.5">
           {shouldShowAttachment && attachment ? (
-            <div className="mt-2">
+            <div className="shrink-0">
               <ImageAttachmentPreview
                 attachment={attachment}
-                className="max-w-[260px]"
-                variant="response"
+                className="h-12 w-16"
+                variant="card"
               />
             </div>
-          ) : null}
-          {context.lines.length > 0 ? (
-            <div className="mt-1.5 space-y-0.5 text-[12px] leading-relaxed text-muted-foreground">
+          ) : (
+            <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-background text-primary/80 ring-1 ring-border/40">
+              <Icon
+                aria-hidden="true"
+                className="h-4 w-4"
+              />
+            </span>
+          )}
+          <CollapsibleTrigger asChild>
+            <button
+              type="button"
+              className="flex min-w-0 flex-1 items-center gap-2 rounded-sm py-0.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label={`${open ? 'Collapse' : 'Expand'} ${context.title}`}
+              disabled={!hasDetails}
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[12px] font-medium leading-tight" title={context.title}>
+                  {context.title}
+                </span>
+                <span className="mt-0.5 block truncate text-[10.5px] leading-tight text-muted-foreground" title={subtitle}>
+                  {subtitle}
+                </span>
+              </span>
+              {hasDetails ? (
+                <ChevronDown
+                  aria-hidden="true"
+                  className={cn(
+                    'h-3.5 w-3.5 shrink-0 text-muted-foreground/70 transition-transform duration-150',
+                    open ? 'rotate-180' : 'rotate-0',
+                  )}
+                />
+              ) : null}
+            </button>
+          </CollapsibleTrigger>
+        </div>
+        {hasDetails ? (
+          <CollapsibleContent>
+            <div className="max-h-48 space-y-0.5 overflow-y-auto border-t border-border/40 px-2.5 py-2 text-[11.5px] leading-relaxed text-muted-foreground">
               {context.lines.map((line, index) => (
                 <p key={`${context.id}:line-${index}`} className="m-0 whitespace-pre-wrap break-words">
                   {line}
                 </p>
               ))}
             </div>
-          ) : null}
-        </div>
-      </div>
-    </article>
+          </CollapsibleContent>
+        ) : null}
+      </article>
+    </Collapsible>
   )
 }
 
@@ -3958,21 +4105,21 @@ function DenseMessageItem({
     [isUser, text],
   )
   const displayText = promptParts?.visibleText ?? text
-  const browserContexts = promptParts?.contexts ?? []
-  const browserContextAttachments = useMemo(
-    () => pairBrowserToolContextAttachments(browserContexts, attachments),
-    [attachments, browserContexts],
+  const promptContexts = promptParts?.contexts ?? []
+  const promptContextAttachments = useMemo(
+    () => pairBrowserToolContextAttachments(promptContexts, attachments),
+    [attachments, promptContexts],
   )
-  const visibleAttachments = browserContextAttachments.unpairedAttachments
+  const visibleAttachments = promptContextAttachments.unpairedAttachments
   const normalized = displayText.trim()
   const hasAttachments = Boolean(visibleAttachments && visibleAttachments.length > 0)
   const hasMore =
     normalized.length > 240 ||
     /\r?\n/.test(normalized) ||
     hasAttachments ||
-    browserContexts.length > 0
+    promptContexts.length > 0
   const summaryText =
-    normalized || (browserContexts.length > 0 ? browserContexts[0]?.title ?? 'Browser context' : '')
+    normalized || (promptContexts.length > 0 ? promptContexts[0]?.title ?? 'Prompt context' : '')
 
   return (
     <li
@@ -4030,13 +4177,13 @@ function DenseMessageItem({
           ) : (
             <Markdown messageId={`${id}:dense`} text={text} scale="dense" />
           )}
-          {browserContexts.length > 0 ? (
-            <div className="mt-1.5 flex flex-col gap-1.5">
-              {browserContexts.map((context) => (
-                <BrowserToolContextCard
+          {promptContexts.length > 0 ? (
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {promptContexts.map((context) => (
+                <PromptContextCard
                   key={`${id}:${context.id}`}
                   context={context}
-                  attachment={browserContextAttachments.pairedByContextId.get(context.id)}
+                  attachment={promptContextAttachments.pairedByContextId.get(context.id)}
                 />
               ))}
             </div>

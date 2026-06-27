@@ -177,7 +177,13 @@ interface RuntimeSubscriptionTarget {
   projectId: string
   agentSessionId: string
   runId: string
-  runtimeSession: RuntimeSessionView
+  runtimeSession: RuntimeSessionView | null
+  runtimeStreamSeed: {
+    runtimeKind: string
+    sessionId: string | null
+    flowId: string | null
+  }
+  replayOnly: boolean
 }
 
 function createRuntimeSubscriptionIdentity(
@@ -3903,15 +3909,15 @@ export function useXeroDesktopState(
     [activeProject, agentWorkspaceLayouts],
   )
   const activeRuntimeSubscriptionTargets = useMemo<RuntimeSubscriptionTarget[]>(() => {
-    if (
-      !activeProjectId ||
-      !activeProject ||
-      !activeRuntimeSubscriptionSession?.isAuthenticated ||
-      !activeRuntimeSubscriptionSession.sessionId
-    ) {
+    if (!activeProjectId || !activeProject) {
       return []
     }
 
+    const authenticatedRuntimeSession =
+      activeRuntimeSubscriptionSession?.isAuthenticated &&
+      activeRuntimeSubscriptionSession.sessionId
+        ? activeRuntimeSubscriptionSession
+        : null
     const seenSessionIds = new Set<string>()
     const slots = agentWorkspaceLayout?.paneSlots ?? [
       { id: createDefaultAgentWorkspacePaneId(activeProjectId), agentSessionId: activeAgentSessionId },
@@ -3929,27 +3935,39 @@ export function useXeroDesktopState(
         agentSessionId === activeAgentSessionId
           ? activeRuntimeRun
           : runtimeRunsBySessionRef.current[cacheKey] ?? null
-      const runId = runtimeRun?.runId ?? null
-      if (!runId) {
+      if (!runtimeRun?.runId) {
         return []
       }
+      const runtimeRunForSubscription = runtimeRun
+      const runId = runtimeRunForSubscription.runId
+      const replayOnly = !authenticatedRuntimeSession
 
-      const runtimeRunProjectionKey = getRuntimeRunProjectionKey(runtimeRun)
+      const runtimeKind = authenticatedRuntimeSession?.runtimeKind ?? runtimeRunForSubscription.runtimeKind
+      const sessionId = authenticatedRuntimeSession?.sessionId ?? `owned-agent:${runId}`
+      const flowId = authenticatedRuntimeSession?.flowId ?? null
+      const runtimeRunProjectionKey = getRuntimeRunProjectionKey(runtimeRunForSubscription)
       return [{
         key: [
           activeProjectId,
           agentSessionId,
-          activeRuntimeSubscriptionSession.runtimeKind,
-          activeRuntimeSubscriptionSession.sessionId,
-          activeRuntimeSubscriptionSession.flowId ?? 'none',
+          runtimeKind,
+          sessionId,
+          flowId ?? 'none',
           runId,
           runtimeRunProjectionKey,
+          replayOnly ? 'replay' : 'live',
           runtimeStreamRetryToken,
         ].join(':'),
         projectId: activeProjectId,
         agentSessionId,
         runId,
-        runtimeSession: activeRuntimeSubscriptionSession,
+        runtimeSession: authenticatedRuntimeSession,
+        runtimeStreamSeed: {
+          runtimeKind,
+          sessionId,
+          flowId,
+        },
+        replayOnly,
       }]
     })
   }, [
@@ -3982,14 +4000,16 @@ export function useXeroDesktopState(
 
     for (const previousTarget of previousRuntimeSubscriptionTargetsRef.current) {
       const targetId = createRuntimeSubscriptionIdentity(previousTarget)
-      if (activeTargetIds.has(targetId) || backgroundCleanups[targetId]) {
+      if (
+        activeTargetIds.has(targetId) ||
+        backgroundCleanups[targetId]
+      ) {
         continue
       }
 
       backgroundCleanups[targetId] = attachRuntimeCompletionNotificationSubscription({
         projectId: previousTarget.projectId,
         agentSessionId: previousTarget.agentSessionId,
-        runtimeSession: previousTarget.runtimeSession,
         runId: previousTarget.runId,
         adapter,
         recordRuntimeSessionCompletion,
@@ -4021,7 +4041,9 @@ export function useXeroDesktopState(
         projectId: target.projectId,
         agentSessionId: target.agentSessionId,
         runtimeSession: target.runtimeSession,
+        runtimeStreamSeed: target.runtimeStreamSeed,
         runId: target.runId,
+        replayOnly: target.replayOnly,
         forceFullReplay,
         adapter,
         runtimeActionRefreshKeysRef,

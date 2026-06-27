@@ -24,9 +24,9 @@ use super::{
     AutonomousCommandSessionStream, AutonomousHostCommandElevationAssessment,
     AutonomousHostCommandImpact, AutonomousHostCommandImpactSurface, AutonomousHostCommandRequest,
     AutonomousToolCommandResult, AutonomousToolOutput, AutonomousToolResult, AutonomousToolRuntime,
-    AUTONOMOUS_TOOL_COMMAND, AUTONOMOUS_TOOL_COMMAND_SESSION_READ,
+    AUTONOMOUS_TOOL_COMMAND, AUTONOMOUS_TOOL_COMMAND_PROBE, AUTONOMOUS_TOOL_COMMAND_SESSION_READ,
     AUTONOMOUS_TOOL_COMMAND_SESSION_START, AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
-    AUTONOMOUS_TOOL_HOST_COMMAND,
+    AUTONOMOUS_TOOL_COMMAND_VERIFY, AUTONOMOUS_TOOL_HOST_COMMAND,
 };
 
 use serde::{Deserialize, Serialize};
@@ -502,12 +502,18 @@ impl AutonomousToolRuntime {
             CommandPolicyDecision::Allow { prepared, policy } => {
                 self.spawn_command(tool_name, prepared, policy)
             }
-            CommandPolicyDecision::Escalate { prepared, policy } if operator_approved => {
-                let policy = operator_approved_policy(policy, &prepared.argv);
-                self.spawn_command(tool_name, prepared, policy)
-            }
             CommandPolicyDecision::Escalate { prepared, policy } => {
-                self.unspawned_command_approval_result(tool_name, prepared, policy)
+                if let Some(error) =
+                    command_scoped_tool_mismatch_error(tool_name, &prepared, &policy)
+                {
+                    return Err(error);
+                }
+                if operator_approved {
+                    let policy = operator_approved_policy(policy, &prepared.argv);
+                    self.spawn_command(tool_name, prepared, policy)
+                } else {
+                    self.unspawned_command_approval_result(tool_name, prepared, policy)
+                }
             }
         }
     }
@@ -525,12 +531,18 @@ impl AutonomousToolRuntime {
             CommandPolicyDecision::Allow { prepared, policy } => {
                 self.spawn_command_streaming(tool_name, prepared, policy, on_chunk)
             }
-            CommandPolicyDecision::Escalate { prepared, policy } if operator_approved => {
-                let policy = operator_approved_policy(policy, &prepared.argv);
-                self.spawn_command_streaming(tool_name, prepared, policy, on_chunk)
-            }
             CommandPolicyDecision::Escalate { prepared, policy } => {
-                self.unspawned_command_approval_result(tool_name, prepared, policy)
+                if let Some(error) =
+                    command_scoped_tool_mismatch_error(tool_name, &prepared, &policy)
+                {
+                    return Err(error);
+                }
+                if operator_approved {
+                    let policy = operator_approved_policy(policy, &prepared.argv);
+                    self.spawn_command_streaming(tool_name, prepared, policy, on_chunk)
+                } else {
+                    self.unspawned_command_approval_result(tool_name, prepared, policy)
+                }
             }
         }
     }
@@ -590,7 +602,8 @@ impl AutonomousToolRuntime {
         tool_name: &str,
         request: super::AutonomousCommandRequest,
     ) -> CommandResult<CommandPolicyDecision> {
-        let decision = self.evaluate_command_policy(self.prepare_command_request(request)?)?;
+        let decision = self
+            .evaluate_command_policy_for_tool(tool_name, self.prepare_command_request(request)?)?;
         Ok(match decision {
             CommandPolicyDecision::Allow { prepared, policy } => {
                 if let Some(policy) = command_tool_scope_escalation(tool_name, &prepared, &policy) {
@@ -2820,6 +2833,31 @@ fn command_suggested_next_actions(
         );
     }
     actions
+}
+
+fn command_scoped_tool_mismatch_error(
+    tool_name: &str,
+    prepared: &PreparedCommandRequest,
+    policy: &AutonomousCommandPolicyTrace,
+) -> Option<CommandError> {
+    let rendered = render_command_for_persistence(&prepared.argv);
+    match tool_name {
+        AUTONOMOUS_TOOL_COMMAND_PROBE => Some(CommandError::user_fixable(
+            "autonomous_tool_command_probe_scope_invalid",
+            format!(
+                "Invalid `command_probe` input: command_probe only accepts bounded read-only discovery commands such as pwd, ls, rg, find without delete, git status/diff/log/show/rev-parse/grep/ls-files, cargo metadata/tree, common tool version probes, and echo. Use `command_run` for setup, scaffold, package-manager create/install/add/update, generators, or other repo-scoped commands outside that discovery allowlist. Rejected command: `{rendered}`."
+            ),
+        )),
+        AUTONOMOUS_TOOL_COMMAND_VERIFY if policy.code != "policy_escalated_approval_mode" => {
+            Some(CommandError::user_fixable(
+                "autonomous_tool_command_verify_scope_invalid",
+                format!(
+                    "Invalid `command_verify` input: command_verify only accepts bounded verification commands such as tests, lint, typecheck/type-check, build, check, fmt, and known package-manager run scripts. Use `command_run` for setup, scaffold, package-manager create/install/add/update, generators, or other repo-scoped commands outside verification. Rejected command: `{rendered}`."
+                ),
+            ))
+        }
+        _ => None,
+    }
 }
 
 fn exit_classification_from_code(exit_code: Option<i32>) -> SandboxExitClassification {

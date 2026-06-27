@@ -1,13 +1,29 @@
 import * as SelectPrimitive from "@radix-ui/react-select";
-import { Activity, Brain, ChevronDown, Cpu, MessageCircle, Settings, ShieldCheck, Sparkles } from "lucide-react";
+import {
+	Activity,
+	Brain,
+	ChevronDown,
+	Cpu,
+	FilePlus2,
+	FileText,
+	FolderOpen,
+	FolderPlus,
+	MessageCircle,
+	Plus,
+	Settings,
+	ShieldCheck,
+	Sparkles,
+} from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
 	type ChangeEvent,
 	type CSSProperties,
+	type DragEvent,
 	Fragment,
 	type KeyboardEvent,
 	type ReactNode,
 	type RefObject,
+	type SyntheticEvent,
 	useCallback,
 	useEffect,
 	useId,
@@ -32,11 +48,18 @@ import {
 	DialogTitle,
 } from "../ui/dialog";
 import { Drawer, DrawerContent } from "../ui/drawer";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuTrigger,
+} from "../ui/dropdown-menu";
 import { Select, SelectContent, SelectItem } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { useIsMobile } from "../ui/use-mobile";
+import { Kbd } from "../ui/command";
 import {
 	ComposerAttachButton,
 	ComposerMicButton,
@@ -62,6 +85,15 @@ import {
 export type { ComposerSelectGroup, ComposerSelectOption } from "./composer-types";
 export type ComposerPendingAttachmentType = ComposerPendingAttachment;
 export type ComposerPendingContextType = ComposerPendingContext;
+
+export type ComposerContextMentionStatus = "idle" | "loading" | "ready" | "error";
+
+export interface ComposerContextMentionOption {
+	id: string;
+	kind: "file" | "folder";
+	title: string;
+	subtitle?: string;
+}
 
 export interface ComposerShortcutBinding {
 	/** "Mod" — Cmd on macOS, Ctrl on Windows/Linux. */
@@ -147,8 +179,14 @@ export interface ComposerProps {
 	pendingContexts?: readonly ComposerPendingContext[];
 	attachmentCompatibility?: AgentAttachmentCompatibilityProfile | null;
 	onAddFiles?: (files: File[]) => void;
+	onAddFolders?: () => void;
 	onRemoveAttachment?: (id: string) => void;
 	onRemoveContext?: (id: string) => void;
+	contextMentionOptions?: readonly ComposerContextMentionOption[];
+	contextMentionStatus?: ComposerContextMentionStatus;
+	contextMentionError?: string | null;
+	onContextMentionQueryChange?: (query: string | null) => void;
+	onSelectContextMention?: (option: ComposerContextMentionOption) => void;
 
 	dictation?: ComposerDictationLike;
 	/** Defaults to Cmd/Ctrl+Shift+D. Pass null to disable the composer-owned shortcut. */
@@ -179,6 +217,12 @@ const drawerSelectContentClassName =
 	"max-h-72 min-w-[min(20rem,90vw)] border-border/70 bg-card text-foreground shadow-xl";
 
 const WAVEFORM_BANDS = [0.58, 0.82, 0.46, 1, 0.64, 0.9, 0.52, 0.76, 0.42, 0.68, 0.95, 0.56];
+
+interface ComposerContextMentionToken {
+	start: number;
+	end: number;
+	query: string;
+}
 
 function parseCssPixelValue(value: string): number | null {
 	const parsed = Number.parseFloat(value);
@@ -248,9 +292,51 @@ function eventMatchesComposerShortcut(
 	return true;
 }
 
+function isExternalFileDrag(event: DragEvent<HTMLElement>): boolean {
+	const types = event.dataTransfer?.types;
+	if (!types) return false;
+	for (let index = 0; index < types.length; index += 1) {
+		if (types[index] === "Files") return true;
+	}
+	return false;
+}
+
 function clampAudioLevel(level: number | null | undefined): number {
 	if (level == null || !Number.isFinite(level)) return 0;
 	return Math.max(0, Math.min(1, level));
+}
+
+function isMentionBoundaryCharacter(value: string): boolean {
+	return value.trim().length === 0 || value === "(" || value === "[" || value === "{" || value === '"' || value === "'";
+}
+
+function findContextMentionToken(
+	value: string,
+	cursor: number | null | undefined,
+): ComposerContextMentionToken | null {
+	if (cursor == null || cursor < 0) return null;
+	const beforeCursor = value.slice(0, cursor);
+	const atIndex = beforeCursor.lastIndexOf("@");
+	if (atIndex < 0) return null;
+	const previous = atIndex > 0 ? value[atIndex - 1] : "";
+	if (previous && !isMentionBoundaryCharacter(previous)) return null;
+	const query = beforeCursor.slice(atIndex + 1);
+	if (/\s/.test(query)) return null;
+	return { start: atIndex, end: cursor, query };
+}
+
+function removeContextMentionToken(
+	value: string,
+	token: ComposerContextMentionToken,
+): { value: string; cursor: number } {
+	const before = value.slice(0, token.start);
+	let after = value.slice(token.end);
+	if (before.length === 0) {
+		after = after.replace(/^\s+/, "");
+	} else if (/\s$/.test(before) && /^\s/.test(after)) {
+		after = after.replace(/^\s+/, "");
+	}
+	return { value: `${before}${after}`, cursor: before.length };
 }
 
 function pendingAttachmentCompatibilityMessage(
@@ -307,8 +393,14 @@ export function Composer({
 	pendingContexts,
 	attachmentCompatibility,
 	onAddFiles,
+	onAddFolders,
 	onRemoveAttachment,
 	onRemoveContext,
+	contextMentionOptions = [],
+	contextMentionStatus = "idle",
+	contextMentionError = null,
+	onContextMentionQueryChange,
+	onSelectContextMention,
 	dictation: externalDictation,
 	dictationShortcut,
 	contextMeter,
@@ -323,14 +415,22 @@ export function Composer({
 	inSidebar = false,
 	className,
 }: ComposerProps) {
+	const composerRootRef = useRef<HTMLDivElement>(null);
 	const internalTextareaRef = useRef<HTMLTextAreaElement>(null);
 	const textareaRef = promptInputRef ?? internalTextareaRef;
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const autoCompactSwitchId = useId();
+	const contextMentionListId = useId();
+	const contextMentionOptionIdBase = useId();
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [classificationError, setClassificationError] = useState<string | null>(
 		null,
 	);
+	const [isComposerDragOver, setIsComposerDragOver] = useState(false);
+	const [contextMentionToken, setContextMentionToken] =
+		useState<ComposerContextMentionToken | null>(null);
+	const [highlightedContextMentionIndex, setHighlightedContextMentionIndex] =
+		useState(0);
 
 	const internalDictation = useComposerDictation({
 		draftPrompt,
@@ -363,7 +463,16 @@ export function Composer({
 	const sendDisabled =
 		isSendDisabled ||
 		Boolean(pendingAttachmentCompatibilityError) ||
-		(!hasText && !hasPendingAttachments);
+		(!hasText && !hasPendingAttachments && !hasPendingContexts);
+	const contextMentionOpen = Boolean(
+		contextMentionToken &&
+			!isPromptDisabled &&
+			onSelectContextMention &&
+			onContextMentionQueryChange,
+	);
+	const highlightedContextMention = contextMentionOpen
+		? contextMentionOptions[highlightedContextMentionIndex] ?? null
+		: null;
 
 	// Compact agent panes adopt the sidebar's flush, dense chrome.
 	const dense = inSidebar || density === "compact";
@@ -405,6 +514,20 @@ export function Composer({
 		setClassificationError(null);
 	}, [selectedModelId]);
 
+	useEffect(() => {
+		if (!onContextMentionQueryChange) return;
+		onContextMentionQueryChange(contextMentionOpen ? contextMentionToken?.query ?? "" : null);
+	}, [
+		contextMentionOpen,
+		contextMentionToken?.query,
+		onContextMentionQueryChange,
+	]);
+
+	useEffect(() => {
+		if (highlightedContextMentionIndex < contextMentionOptions.length) return;
+		setHighlightedContextMentionIndex(0);
+	}, [contextMentionOptions.length, highlightedContextMentionIndex]);
+
 	const handleTextareaChange = useCallback(
 		(value: string) => {
 			if (dictation.updateDraftPrompt) {
@@ -416,6 +539,50 @@ export function Composer({
 		[dictation, onDraftPromptChange],
 	);
 
+	const updateContextMentionToken = useCallback(
+		(value: string, cursor: number | null | undefined) => {
+			if (!onContextMentionQueryChange || !onSelectContextMention) {
+				setContextMentionToken(null);
+				return;
+			}
+			const nextToken = findContextMentionToken(value, cursor);
+			setContextMentionToken(nextToken);
+			setHighlightedContextMentionIndex(0);
+		},
+		[onContextMentionQueryChange, onSelectContextMention],
+	);
+
+	const updateContextMentionTokenFromTextarea = useCallback(
+		(textarea: HTMLTextAreaElement) => {
+			updateContextMentionToken(textarea.value, textarea.selectionStart);
+		},
+		[updateContextMentionToken],
+	);
+
+	const handleContextMentionSelect = useCallback(
+		(option: ComposerContextMentionOption) => {
+			const token = contextMentionToken;
+			if (!token || !onSelectContextMention) return;
+			const next = removeContextMentionToken(draftPrompt, token);
+			handleTextareaChange(next.value);
+			onSelectContextMention(option);
+			setContextMentionToken(null);
+			window.requestAnimationFrame(() => {
+				const textarea = textareaRef.current;
+				if (!textarea?.isConnected) return;
+				textarea.focus();
+				textarea.setSelectionRange(next.cursor, next.cursor);
+			});
+		},
+		[
+			contextMentionToken,
+			draftPrompt,
+			handleTextareaChange,
+			onSelectContextMention,
+			textareaRef,
+		],
+	);
+
 	const handleSubmit = useCallback(async () => {
 		// Only the browser-backed internal dictation returns the flushed draft.
 		// Platform-supplied controls (e.g. desktop) handle stop-before-submit in
@@ -425,13 +592,14 @@ export function Composer({
 			nextDraft = await internalDictation.stopBeforeSubmit();
 		}
 		const hasContent =
-			nextDraft.trim().length > 0 || hasPendingAttachments;
+			nextDraft.trim().length > 0 || hasPendingAttachments || hasPendingContexts;
 		if (isSendDisabled || !hasContent) return;
 		if (pendingAttachmentCompatibilityError) return;
 		onSubmit(nextDraft);
 	}, [
 		draftPrompt,
 		hasPendingAttachments,
+		hasPendingContexts,
 		internalDictation,
 		isSendDisabled,
 		onSubmit,
@@ -441,6 +609,28 @@ export function Composer({
 
 	const handleKeyDown = useCallback(
 		(event: KeyboardEvent<HTMLTextAreaElement>) => {
+			if (contextMentionOpen) {
+				if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+					event.preventDefault();
+					if (contextMentionOptions.length === 0) return;
+					setHighlightedContextMentionIndex((current) => {
+						const direction = event.key === "ArrowDown" ? 1 : -1;
+						return (current + direction + contextMentionOptions.length) %
+							contextMentionOptions.length;
+					});
+					return;
+				}
+				if (event.key === "Tab" && highlightedContextMention) {
+					event.preventDefault();
+					handleContextMentionSelect(highlightedContextMention);
+					return;
+				}
+				if (event.key === "Escape") {
+					event.preventDefault();
+					setContextMentionToken(null);
+					return;
+				}
+			}
 			if (event.key !== "Enter") return;
 			if (event.shiftKey) {
 				event.preventDefault();
@@ -461,13 +651,48 @@ export function Composer({
 			event.preventDefault();
 			if (!sendDisabled) void handleSubmit();
 		},
-		[handleSubmit, handleTextareaChange, isStopVisible, sendDisabled],
+		[
+			contextMentionOpen,
+			contextMentionOptions.length,
+			handleContextMentionSelect,
+			handleSubmit,
+			handleTextareaChange,
+			highlightedContextMention,
+			isStopVisible,
+			sendDisabled,
+		],
 	);
 
-	const handleFilesPicked = useCallback(
-		(event: ChangeEvent<HTMLInputElement>) => {
-			const files = Array.from(event.target.files ?? []);
-			event.target.value = "";
+	const handleTextareaSelect = useCallback(
+		(event: SyntheticEvent<HTMLTextAreaElement>) => {
+			updateContextMentionTokenFromTextarea(event.currentTarget);
+		},
+		[updateContextMentionTokenFromTextarea],
+	);
+
+	const handleTextareaKeyUp = useCallback(
+		(event: KeyboardEvent<HTMLTextAreaElement>) => {
+			if (event.key === "ArrowDown" || event.key === "ArrowUp") return;
+			handleTextareaSelect(event);
+		},
+		[handleTextareaSelect],
+	);
+
+	const handleTextareaBlur = useCallback(() => {
+		window.setTimeout(() => {
+			const activeElement = document.activeElement;
+			if (
+				activeElement &&
+				composerRootRef.current?.contains(activeElement)
+			) {
+				return;
+			}
+			setContextMentionToken(null);
+		}, 0);
+	}, []);
+
+	const handleFilesAdded = useCallback(
+		(files: File[]) => {
 			if (files.length === 0 || !onAddFiles) return;
 			const accepted: File[] = [];
 			const rejections: string[] = [];
@@ -498,12 +723,74 @@ export function Composer({
 		[attachmentCompatibility, onAddFiles],
 	);
 
+	const handleFilesPicked = useCallback(
+		(event: ChangeEvent<HTMLInputElement>) => {
+			const files = Array.from(event.target.files ?? []);
+			event.target.value = "";
+			handleFilesAdded(files);
+		},
+		[handleFilesAdded],
+	);
+
+	const handleComposerDragEnter = useCallback(
+		(event: DragEvent<HTMLDivElement>) => {
+			if (!onAddFiles || isPromptDisabled || !isExternalFileDrag(event)) return;
+			event.preventDefault();
+			event.stopPropagation();
+			setIsComposerDragOver(true);
+		},
+		[isPromptDisabled, onAddFiles],
+	);
+
+	const handleComposerDragOver = useCallback(
+		(event: DragEvent<HTMLDivElement>) => {
+			if (!onAddFiles || isPromptDisabled || !isExternalFileDrag(event)) return;
+			event.preventDefault();
+			event.stopPropagation();
+			if (event.dataTransfer) {
+				event.dataTransfer.dropEffect = "copy";
+			}
+			setIsComposerDragOver(true);
+		},
+		[isPromptDisabled, onAddFiles],
+	);
+
+	const handleComposerDragLeave = useCallback(
+		(event: DragEvent<HTMLDivElement>) => {
+			if (!onAddFiles || !isExternalFileDrag(event)) return;
+			const relatedTarget = event.relatedTarget;
+			if (
+				relatedTarget instanceof Node &&
+				event.currentTarget.contains(relatedTarget)
+			) {
+				return;
+			}
+			event.preventDefault();
+			event.stopPropagation();
+			setIsComposerDragOver(false);
+		},
+		[onAddFiles],
+	);
+
+	const handleComposerDrop = useCallback(
+		(event: DragEvent<HTMLDivElement>) => {
+			if (!onAddFiles || isPromptDisabled || !isExternalFileDrag(event)) return;
+			event.preventDefault();
+			event.stopPropagation();
+			setIsComposerDragOver(false);
+			handleFilesAdded(Array.from(event.dataTransfer?.files ?? []));
+		},
+		[handleFilesAdded, isPromptDisabled, onAddFiles],
+	);
+
 	const hasThinkingOptions = Boolean(thinkingOptions && thinkingOptions.length > 0);
 	const thinkingControlDisabled = Boolean(thinkingDisabled) || !hasThinkingOptions;
 	const showApproval = Boolean(
 		approvalOptions && approvalOptions.length > 1 && onApprovalChange,
 	);
-	const supportsAttachments = typeof onAddFiles === "function";
+	const supportsFileAttachments = typeof onAddFiles === "function";
+	const supportsFolderLinks = typeof onAddFolders === "function";
+	const supportsAttachments = supportsFileAttachments || supportsFolderLinks;
 	const supportsAutoCompact =
 		typeof onAutoCompactEnabledChange === "function" &&
 		typeof autoCompactEnabled === "boolean";
@@ -698,6 +985,49 @@ export function Composer({
 		/>
 	);
 
+	const attachmentControl = supportsAttachments ? (
+		supportsFolderLinks ? (
+			<DropdownMenu>
+				<DropdownMenuTrigger asChild>
+					<Button
+						type="button"
+						variant="ghost"
+						size="icon-sm"
+						className={cn(
+							actionDensity === "md" ? "h-8 w-8" : "h-7 w-7",
+							"rounded-md text-muted-foreground/80 hover:text-foreground",
+						)}
+						aria-label="Add context"
+						title="Add files or folders"
+					>
+						<Plus className="h-4 w-4" strokeWidth={2.25} />
+					</Button>
+				</DropdownMenuTrigger>
+				<DropdownMenuContent
+					align="start"
+					side="top"
+					className="min-w-40 border-border/70 bg-popover text-popover-foreground"
+				>
+					{supportsFileAttachments ? (
+						<DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
+							<FilePlus2 className="h-3.5 w-3.5" aria-hidden="true" />
+							File
+						</DropdownMenuItem>
+					) : null}
+					<DropdownMenuItem onSelect={() => onAddFolders?.()}>
+						<FolderPlus className="h-3.5 w-3.5" aria-hidden="true" />
+						Folder
+					</DropdownMenuItem>
+				</DropdownMenuContent>
+			</DropdownMenu>
+		) : (
+			<ComposerAttachButton
+				density={actionDensity}
+				onClick={() => fileInputRef.current?.click()}
+			/>
+		)
+	) : null;
+
 	const errorRow = error ? (
 		<div
 			className="border-t border-destructive/25 bg-destructive/5 px-3 py-2 text-[10px] leading-relaxed text-destructive/90"
@@ -727,23 +1057,57 @@ export function Composer({
 
 	return (
 		<div
+			ref={composerRootRef}
+			data-composer-drop-target="true"
+			onDragEnter={handleComposerDragEnter}
+			onDragOver={handleComposerDragOver}
+			onDragLeave={handleComposerDragLeave}
+			onDrop={handleComposerDrop}
 			className={cn(
 				"group/composer relative flex w-full max-w-full min-w-0 flex-col overflow-hidden bg-card/90 supports-[backdrop-filter]:bg-card/75",
 				dense
 					? "border-t border-border/60 transition-colors focus-within:border-primary/40"
 					: "agent-composer-glow rounded-xl border border-border/60 shadow-[0_8px_24px_-12px_rgba(15,23,42,0.12),0_1px_3px_-1px_rgba(15,23,42,0.06)] ring-1 ring-inset ring-foreground/[0.03] backdrop-blur hover:border-border focus-within:border-primary/40 focus-within:ring-primary/20 dark:shadow-[0_20px_60px_-20px_rgba(0,0,0,0.6),0_2px_8px_-2px_rgba(0,0,0,0.3)]",
+				isComposerDragOver &&
+					"border-primary/60 bg-primary/[0.04] ring-2 ring-primary/20",
 				dictationRunning && "pb-1.5",
 				className,
 			)}
 		>
+			{isComposerDragOver ? (
+				<div
+					aria-hidden="true"
+					className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-background/40 backdrop-blur-[1px]"
+				>
+					<span className="inline-flex items-center gap-2 rounded-md border border-primary/30 bg-background/90 px-3 py-1.5 text-[12px] font-medium text-foreground shadow-sm">
+						<FilePlus2 className="h-3.5 w-3.5 text-primary" />
+						Attach files
+					</span>
+				</div>
+			) : null}
 			{attachmentsRow}
 			<Textarea
 				ref={textareaRef}
 				value={draftPrompt}
-				onChange={(event) => handleTextareaChange(event.target.value)}
+				onChange={(event) => {
+					handleTextareaChange(event.target.value);
+					updateContextMentionToken(event.target.value, event.currentTarget.selectionStart);
+				}}
 				onKeyDown={handleKeyDown}
+				onClick={handleTextareaSelect}
+				onKeyUp={handleTextareaKeyUp}
+				onSelect={handleTextareaSelect}
+				onBlur={handleTextareaBlur}
 				placeholder={placeholder}
 				aria-label={promptInputLabel}
+				aria-autocomplete={onSelectContextMention ? "list" : undefined}
+				aria-controls={contextMentionOpen ? contextMentionListId : undefined}
+				aria-expanded={onSelectContextMention ? contextMentionOpen : undefined}
+				aria-activedescendant={
+					contextMentionOpen && highlightedContextMention
+						? `${contextMentionOptionIdBase}-${highlightedContextMention.id}`
+						: undefined
+				}
 				disabled={isPromptDisabled}
 				rows={1}
 				className={cn(
@@ -753,6 +1117,18 @@ export function Composer({
 						: "min-h-[32px] px-4 py-2.5 text-[15px]",
 				)}
 			/>
+			{contextMentionOpen ? (
+				<ComposerContextMentionList
+					id={contextMentionListId}
+					optionIdBase={contextMentionOptionIdBase}
+					options={contextMentionOptions}
+					status={contextMentionStatus}
+					error={contextMentionError}
+					highlightedIndex={highlightedContextMentionIndex}
+					onHighlight={setHighlightedContextMentionIndex}
+					onSelect={handleContextMentionSelect}
+				/>
+			) : null}
 			<div
 				className={cn(
 					"flex max-w-full min-w-0 items-center gap-1 overflow-hidden border-t border-border/40",
@@ -760,12 +1136,7 @@ export function Composer({
 				)}
 			>
 				<div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
-					{supportsAttachments ? (
-						<ComposerAttachButton
-							density={actionDensity}
-							onClick={() => fileInputRef.current?.click()}
-						/>
-					) : null}
+					{attachmentControl}
 					{showInlinePills ? inlinePills : null}
 					{useDrawer ? (
 						<Drawer open={settingsOpen} onOpenChange={setSettingsOpen}>
@@ -845,7 +1216,7 @@ export function Composer({
 					{classificationError ?? pendingAttachmentCompatibilityError}
 				</p>
 			) : null}
-			{supportsAttachments ? (
+			{supportsFileAttachments ? (
 				<input
 					ref={fileInputRef}
 					type="file"
@@ -860,6 +1231,131 @@ export function Composer({
 				<ComposerDictationWaveform level={dictationAudioLevel} />
 			) : null}
 		</div>
+	);
+}
+
+interface ComposerContextMentionListProps {
+	id: string;
+	optionIdBase: string;
+	options: readonly ComposerContextMentionOption[];
+	status: ComposerContextMentionStatus;
+	error: string | null;
+	highlightedIndex: number;
+	onHighlight: (index: number) => void;
+	onSelect: (option: ComposerContextMentionOption) => void;
+}
+
+function ComposerContextMentionList({
+	id,
+	optionIdBase,
+	options,
+	status,
+	error,
+	highlightedIndex,
+	onHighlight,
+	onSelect,
+}: ComposerContextMentionListProps) {
+	const showLoading = (status === "idle" || status === "loading") && options.length === 0;
+	const showError = status === "error" && options.length === 0;
+	const showEmpty = status === "ready" && options.length === 0;
+
+	return (
+		<div className="border-t border-border/40">
+			<div
+				id={id}
+				role="listbox"
+				aria-label="Project context suggestions"
+				className="max-h-60 overflow-y-auto px-1.5 py-1.5"
+			>
+				{showLoading ? (
+					<div className="px-2.5 py-1.5 text-[12px] text-muted-foreground" role="status">
+						Searching project paths…
+					</div>
+				) : null}
+				{showError ? (
+					<div className="px-2.5 py-1.5 text-[12px] text-destructive" role="status">
+						{error ?? "Project paths unavailable"}
+					</div>
+				) : null}
+				{showEmpty ? (
+					<div className="px-2.5 py-1.5 text-[12px] text-muted-foreground">
+						No matching project paths
+					</div>
+				) : null}
+				{options.map((option, index) => (
+					<ComposerContextMentionOptionRow
+						key={option.id}
+						id={`${optionIdBase}-${option.id}`}
+						option={option}
+						selected={index === highlightedIndex}
+						onHighlight={() => onHighlight(index)}
+						onSelect={() => onSelect(option)}
+					/>
+				))}
+			</div>
+			{options.length > 0 ? (
+				<div className="flex items-center gap-1.5 px-3 pb-1.5 pt-0.5 text-[10.5px] text-muted-foreground/70">
+					<Kbd className="h-4 min-w-4 text-[9.5px]">↑</Kbd>
+					<Kbd className="h-4 min-w-4 text-[9.5px]">↓</Kbd>
+					<span className="mr-1.5">select</span>
+					<Kbd className="h-4 min-w-7 text-[9.5px]">tab</Kbd>
+					<span>attach</span>
+				</div>
+			) : null}
+		</div>
+	);
+}
+
+interface ComposerContextMentionOptionRowProps {
+	id: string;
+	option: ComposerContextMentionOption;
+	selected: boolean;
+	onHighlight: () => void;
+	onSelect: () => void;
+}
+
+function ComposerContextMentionOptionRow({
+	id,
+	option,
+	selected,
+	onHighlight,
+	onSelect,
+}: ComposerContextMentionOptionRowProps) {
+	const Icon = option.kind === "folder" ? FolderOpen : FileText;
+
+	return (
+		<button
+			id={id}
+			type="button"
+			role="option"
+			aria-selected={selected}
+			className={cn(
+				"flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[12px] outline-none transition-colors",
+				selected
+					? "bg-accent text-accent-foreground"
+					: "text-popover-foreground/90 hover:bg-accent/60 hover:text-accent-foreground",
+			)}
+			onMouseEnter={onHighlight}
+			onMouseDown={(event) => event.preventDefault()}
+			onClick={onSelect}
+		>
+			<Icon
+				className={cn(
+					"h-4 w-4 shrink-0",
+					selected ? "text-accent-foreground" : "text-muted-foreground",
+				)}
+				aria-hidden="true"
+				strokeWidth={1.9}
+			/>
+			<span className="min-w-0 flex-1 truncate leading-tight">
+				<span className="font-medium">{option.title}</span>
+				{option.subtitle ? (
+					<span className="ml-2 text-[11px] text-muted-foreground/60">
+						{option.subtitle}
+					</span>
+				) : null}
+			</span>
+		</button>
 	);
 }
 

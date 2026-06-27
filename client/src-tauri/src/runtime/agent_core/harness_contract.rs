@@ -729,67 +729,67 @@ mod tests {
         let expected = vec![
             (
                 "generalist:base".to_string(),
-                "d5d4a96aa0fcdc4f59ab066b3da3b3f31c3936fb556ad926947a284e0ddc48bd",
+                "947f8a6e13281f729bbce97904cb524b9eaa065c555e080d2714aa67c451572b",
             ),
             (
                 "generalist:custom_policy_skill_process_coordination".to_string(),
-                "25f971fbb8b91a0f3942a2ec3484f7f600a978354d553158d014f1d8163ea195",
+                "4f4c7d467208b838c0a9f0f4a4fd6723a0f39c90d2d6a5c884c2b5428805153b",
             ),
             (
                 "ask:base".to_string(),
-                "0332900c901f7d3c06fd681f1415ed8db9429de032b4d9d771e31014d79d55cb",
+                "4b7b8f3895653a1ed29671995ace3883052457934b7fdc28ea39930db1447015",
             ),
             (
                 "ask:custom_policy_skill_process_coordination".to_string(),
-                "0cfbc2566d53a62a2c6b9be58e7b24b2589add2b980a662a68ec9a37318221a5",
+                "80c658943066feea21cde0f56dac03f099186c575b77c1d2328ddc2fd1ef1dc5",
             ),
             (
                 "computer_use:base".to_string(),
-                "fb36321d66cd184307409122d6c242b15f6803a23442f83e21ae74432fe95b55",
+                "98e3f7262180d8db89a578ac646c0bca2d8f00590dc814de9cb60f5261fd9f5b",
             ),
             (
                 "computer_use:custom_policy_skill_process_coordination".to_string(),
-                "47fa2edf9a77180c0e87bfc1332bb27e92ed07d8ba2c924eef3b6571922f6620",
+                "7860beaf12b391180ac25e6fe696c6f0a9a52195642294c15d44328b073e728f",
             ),
             (
                 "plan:base".to_string(),
-                "c17a622d124bf889d96865e6c8e0698ac64f1586028ba7a5ae35f9068a68cc6a",
+                "2e568477dc3ff2fb8e13423b49abf78e2d86c2ec6240e713263ca6d2af90af23",
             ),
             (
                 "plan:custom_policy_skill_process_coordination".to_string(),
-                "9b45c95a542fc9035e0bcb7ac974290e31f663758d10da63f47aec6f40288344",
+                "c17baab6455bfdaf97bdd9b80380ed96d3a3bec992b9b47d696e8009c9988f06",
             ),
             (
                 "engineer:base".to_string(),
-                "febe13286993e171422d885ef9e1605a0ce0583ae62f4fd567e66f6010999d0f",
+                "bcc09332e32c4a2d7a691e21fb0430653ce60a8b30449b1e88576752f65e60d4",
             ),
             (
                 "engineer:custom_policy_skill_process_coordination".to_string(),
-                "0c719e901962c7c3c7238a9a48f7d4b1d1b6970e48eed0ccd8375879341704bb",
+                "c9f25b71392ce356d1e9bd876fd26d5af9ed54a4a3eb8efeb65d918d0c045bfe",
             ),
             (
                 "debug:base".to_string(),
-                "b29f4bde0fde91b5d32094ba83efa84cc62d232e05a4ae9c6392f8649f42cab1",
+                "65986be6869bcb4d7f870e9dd9b00f1d0857082022b9da301af02eacb16df2d2",
             ),
             (
                 "debug:custom_policy_skill_process_coordination".to_string(),
-                "3cc4231acd37115e51f488dffa0c7d30ea9acc2b8f18b1dc861b3d55ac566df1",
+                "7939c0b3f3d8806d8b5230890ec48e152aff7fe880d3925fb95e780ea84516a8",
             ),
             (
                 "crawl:base".to_string(),
-                "d036b3bc6706fb2becdf0271b0b64b8fa68aee79872e20a536bf8b4b4fd3a8a0",
+                "c07fb649ab3a2b0d538070bd1d5f89e808c01d680b62b15703ac2add29e56a91",
             ),
             (
                 "crawl:custom_policy_skill_process_coordination".to_string(),
-                "6adc6fe0dccc2f5e21d98052fa5c0cbeffea373e04bf34eef21fe1c402cf1b6a",
+                "74fc56b12742680fad867299cb41c7d7aa6a571f973ba402a5a43ff93663f72c",
             ),
             (
                 "agent_create:base".to_string(),
-                "6ff2488060d6d10b91c3443102c50b43edae97e168386f924e3a63ded2e4e2a7",
+                "52d8a196ad50df447671eb898bb74492f5554e0dc54c416446bcebad68564e4e",
             ),
             (
                 "agent_create:custom_policy_skill_process_coordination".to_string(),
-                "5d0e705d863ed682c08fc757584754afeb12e7961bd6ad906aabc0e41968ba10",
+                "0f1cfcd521c15226be990f975bf85993ee5fdd209ed6e9c3b9e0edd08e62e415",
             ),
         ];
 
@@ -819,47 +819,47 @@ mod tests {
         let expected = vec![
             (
                 "generalist:builtin_full".to_string(),
-                "c7dd53959d7b82e4cfc676e6d6e918e4db1ed465515d2ee7613167abe6fabddf",
+                "4d6b36d126088b00b162e81218bb202be6a9501a9d4fdde55c71f595f226dbb3",
             ),
             (
                 "ask:builtin_full".to_string(),
-                "aef186525f35c25ffccb1a2bfec7a590d808392c2393f1ac1801cb097dde8c5a",
+                "2626f0a436d71bad279c5c89d5257a006c5465ec8587ce9e329a9ac0d955e67e",
             ),
             (
                 "computer_use:builtin_full".to_string(),
-                "f0103f9ca1b30e7b10245ea82480a7a706ca2a64c5c3793a5ae2c7efadc6e199",
+                "4d9d0ce4ca1df1419892b410ee5fb4765939f3602f0988f016bed645a3491188",
             ),
             (
                 "plan:builtin_full".to_string(),
-                "fb1ab69ace66e290f305d8fdb868e7475f87c7f11455273952e670df83817a28",
+                "b68d0e71011483b80e7f2366c2d736a648d4a693096c19ea92742600b6e8ff7a",
             ),
             (
                 "engineer:builtin_full".to_string(),
-                "c7dd53959d7b82e4cfc676e6d6e918e4db1ed465515d2ee7613167abe6fabddf",
+                "4d6b36d126088b00b162e81218bb202be6a9501a9d4fdde55c71f595f226dbb3",
             ),
             (
                 "debug:builtin_full".to_string(),
-                "c7dd53959d7b82e4cfc676e6d6e918e4db1ed465515d2ee7613167abe6fabddf",
+                "4d6b36d126088b00b162e81218bb202be6a9501a9d4fdde55c71f595f226dbb3",
             ),
             (
                 "crawl:builtin_full".to_string(),
-                "aed7dbbad9487edf8e81218df81fae38506e93dd3c8910d16764050249bdf8c1",
+                "35902ffeaad18675fce12007ebebd021d59f1385bb3494652ae583b4f5ccbba1",
             ),
             (
                 "agent_create:builtin_full".to_string(),
-                "16e20812354da997ce9cc5b3cbdf314b2be2bdaa51b275b77de16536e7b30833",
+                "414a6d65efbe70520e2a9a5f9cf40e5b49f1bc8a50add9df85414031a651d2fd",
             ),
             (
                 "engineer:custom_observe_only".to_string(),
-                "819cdc8696f0672487f8139e5e8f2e6528a37e28407f84b73577b5b73fe4ddde",
+                "321b0d44284616835babb4031664545ca1f4560ccd5123d009b5a77e80a2ffd8",
             ),
             (
                 "engineer:custom_engineering".to_string(),
-                "c7dd53959d7b82e4cfc676e6d6e918e4db1ed465515d2ee7613167abe6fabddf",
+                "4d6b36d126088b00b162e81218bb202be6a9501a9d4fdde55c71f595f226dbb3",
             ),
             (
                 "agent_create:custom_agent_builder".to_string(),
-                "16e20812354da997ce9cc5b3cbdf314b2be2bdaa51b275b77de16536e7b30833",
+                "414a6d65efbe70520e2a9a5f9cf40e5b49f1bc8a50add9df85414031a651d2fd",
             ),
         ];
 

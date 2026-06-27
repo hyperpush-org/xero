@@ -2174,7 +2174,10 @@ impl AutonomousToolRuntime {
             cwd: None,
             timeout_ms: None,
         };
-        let decision = self.evaluate_command_policy(self.prepare_command_request(request)?)?;
+        let decision = self.evaluate_command_policy_for_tool(
+            AUTONOMOUS_TOOL_PROCESS_MANAGER,
+            self.prepare_command_request(request)?,
+        )?;
         match decision {
             CommandPolicyDecision::Allow { .. } => Ok(None),
             CommandPolicyDecision::Escalate { prepared, policy } if operator_approved => {

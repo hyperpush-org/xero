@@ -94,7 +94,6 @@ const DEV_SERVER_MONITOR_INITIAL_DELAY: Duration = Duration::from_secs(2);
 const DEV_SERVER_MONITOR_INTERVAL: Duration = Duration::from_secs(2);
 const DEV_SERVER_MONITOR_CONNECT_TIMEOUT: Duration = Duration::from_millis(350);
 const DEV_SERVER_LIVENESS_CONNECT_TIMEOUT: Duration = Duration::from_millis(180);
-const DEV_SERVER_LIST_HTTP_PROBE_TIMEOUT: Duration = Duration::from_millis(220);
 const DEV_SERVER_MONITOR_FAILURE_THRESHOLD: u8 = 3;
 const DEV_SERVER_RECONCILER_INTERVAL: Duration = Duration::from_secs(2);
 const BROWSER_RESIZE_NUDGE_SCRIPT: &str = r#"
@@ -1827,7 +1826,7 @@ pub async fn browser_dev_server_running(url: String) -> CommandResult<bool> {
     }
 
     tauri::async_runtime::spawn_blocking(move || {
-        browser_dev_server_accepts_connections(&target, DEV_SERVER_LIVENESS_CONNECT_TIMEOUT)
+        browser_dev_server_responds_like_http(&target, DEV_SERVER_LIVENESS_CONNECT_TIMEOUT)
     })
     .await
     .map_err(|error| {
@@ -1939,7 +1938,7 @@ pub fn browser_reload<R: Runtime + 'static>(
     })?;
     let current = actions::parse_url(&current)?;
     if browser_dev_server_origin_key(&current).is_some()
-        && !browser_dev_server_accepts_connections(&current, DEV_SERVER_MONITOR_CONNECT_TIMEOUT)
+        && !browser_dev_server_responds_like_http(&current, DEV_SERVER_MONITOR_CONNECT_TIMEOUT)
     {
         if let Some(tab_id) = tabs.find_by_label(&label) {
             state.dev_server_monitor.cancel(&tab_id);
@@ -2643,7 +2642,7 @@ fn prune_unavailable_dev_server_tabs<R: Runtime>(
     timeout: Duration,
 ) {
     for snapshot in browser_dev_server_tab_snapshots(tabs) {
-        if browser_dev_server_accepts_connections(&snapshot.url, timeout) {
+        if browser_dev_server_responds_like_http(&snapshot.url, timeout) {
             continue;
         }
         close_unavailable_dev_server_tab(app, tabs, monitor, &snapshot.tab_id, &snapshot.url);
@@ -2702,7 +2701,7 @@ fn run_browser_dev_server_reconciler<R: Runtime + 'static>(
         failures.retain(|tab_id, _| live_tab_ids.contains(tab_id.as_str()));
 
         for snapshot in snapshots {
-            let running = browser_dev_server_accepts_connections(
+            let running = browser_dev_server_responds_like_http(
                 &snapshot.url,
                 DEV_SERVER_MONITOR_CONNECT_TIMEOUT,
             );
@@ -2829,7 +2828,7 @@ fn monitor_browser_dev_server_tab<R: Runtime + 'static>(
             return;
         }
 
-        if browser_dev_server_accepts_connections(&current, DEV_SERVER_MONITOR_CONNECT_TIMEOUT) {
+        if browser_dev_server_responds_like_http(&current, DEV_SERVER_MONITOR_CONNECT_TIMEOUT) {
             failures = 0;
             continue;
         }
@@ -2893,6 +2892,9 @@ fn list_running_browser_dev_servers_blocking() -> CommandResult<Vec<BrowserRunni
     let mut servers = Vec::new();
 
     for port in list_browser_system_ports()? {
+        if browser_system_port_is_known_non_browser_service(&port) {
+            continue;
+        }
         let Some(url) = browser_system_port_url(&port) else {
             continue;
         };
@@ -2905,10 +2907,6 @@ fn list_running_browser_dev_servers_blocking() -> CommandResult<Vec<BrowserRunni
         if !seen.insert(origin_key) {
             continue;
         }
-        if !browser_dev_server_responds_like_http(&target, DEV_SERVER_LIST_HTTP_PROBE_TIMEOUT) {
-            continue;
-        }
-
         servers.push(BrowserRunningDevServerDto {
             cwd: port.cwd.clone(),
             detected_at,
@@ -2986,6 +2984,14 @@ fn browser_system_port_url_host(local_addr: &str) -> Option<String> {
 }
 
 fn browser_dev_server_responds_like_http(url: &Url, timeout: Duration) -> bool {
+    match url.scheme() {
+        "http" => browser_http_dev_server_responds_like_http(url, timeout),
+        "https" => browser_https_dev_server_responds_like_http(url, timeout),
+        _ => false,
+    }
+}
+
+fn browser_http_dev_server_responds_like_http(url: &Url, timeout: Duration) -> bool {
     let Some((host, port)) = browser_dev_server_probe_target(url) else {
         return false;
     };
@@ -3019,6 +3025,61 @@ fn browser_dev_server_responds_like_http(url: &Url, timeout: Duration) -> bool {
     }
 
     false
+}
+
+fn browser_https_dev_server_responds_like_http(url: &Url, timeout: Duration) -> bool {
+    browser_dev_server_origin_key(url).is_some()
+        && reqwest::blocking::Client::builder()
+            .timeout(timeout)
+            .connect_timeout(timeout)
+            .danger_accept_invalid_certs(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .and_then(|client| {
+                client
+                    .get(url.as_str())
+                    .header(reqwest::header::CONNECTION, "close")
+                    .send()
+            })
+            .is_ok()
+}
+
+fn browser_system_port_is_known_non_browser_service(port: &BrowserSystemPortInfo) -> bool {
+    const KNOWN_NON_BROWSER_PORTS: &[u16] = &[
+        1883, 2181, 3306, 4369, 50051, 5432, 5433, 5671, 5672, 6379, 8883, 9092, 9093, 11211,
+        26132, 26379, 27017, 27018, 27019, 33060,
+    ];
+    if KNOWN_NON_BROWSER_PORTS.contains(&port.local_port) {
+        return true;
+    }
+
+    let Some(process_name) = port
+        .process_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+    else {
+        return false;
+    };
+
+    [
+        "epmd",
+        "kafka",
+        "mariadbd",
+        "memcached",
+        "mongod",
+        "mongos",
+        "mosquitto",
+        "mysqld",
+        "nats-server",
+        "postgres",
+        "postmaster",
+        "redis-server",
+        "zookeeper",
+    ]
+    .iter()
+    .any(|name| process_name.contains(name))
 }
 
 fn list_browser_system_ports() -> CommandResult<Vec<BrowserSystemPortInfo>> {
@@ -3303,25 +3364,13 @@ fn parse_browser_windows_addr_port(value: &str) -> Option<(String, u16)> {
     Some((addr.to_owned(), port.parse::<u16>().ok()?))
 }
 
-fn browser_dev_server_accepts_connections(url: &Url, timeout: Duration) -> bool {
-    let Some((host, port)) = browser_dev_server_probe_target(url) else {
-        return false;
-    };
-    let Ok(addrs) = (host.as_str(), port).to_socket_addrs() else {
-        return false;
-    };
-
-    addrs
-        .into_iter()
-        .any(|addr| TcpStream::connect_timeout(&addr, timeout).is_ok())
-}
-
 fn browser_dev_server_probe_target(url: &Url) -> Option<(String, u16)> {
     browser_dev_server_origin_key(url)?;
     let port = url.port_or_known_default()?;
     let host = url.host_str()?.to_ascii_lowercase();
     let host = match host.as_str() {
-        "localhost" | "0.0.0.0" => "127.0.0.1".to_string(),
+        "localhost" => "localhost".to_string(),
+        "0.0.0.0" => "127.0.0.1".to_string(),
         "::1" => "::1".to_string(),
         _ => host,
     };
@@ -3542,18 +3591,31 @@ mod tests {
             Some("http://127.0.0.1:3000"),
         );
         assert_eq!(browser_dev_server_origin_key(&google), None);
+        assert_eq!(
+            browser_dev_server_probe_target(&local)
+                .as_ref()
+                .map(|(host, _)| host.as_str()),
+            Some("localhost"),
+        );
     }
 
     #[test]
-    fn dev_server_liveness_probe_detects_open_loopback_port() {
+    fn dev_server_liveness_probe_rejects_open_non_http_port() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 128];
+            let _ = stream.read(&mut request);
+            stream.write_all(b"NOT HTTP\r\n").unwrap();
+        });
         let url = actions::parse_url(&format!("http://127.0.0.1:{port}/")).unwrap();
 
-        assert!(browser_dev_server_accepts_connections(
+        assert!(!browser_dev_server_responds_like_http(
             &url,
-            Duration::from_millis(100),
+            Duration::from_millis(500),
         ));
+        handle.join().unwrap();
     }
 
     #[test]
@@ -3617,6 +3679,37 @@ mod tests {
     }
 
     #[test]
+    fn running_dev_server_scan_skips_common_non_browser_services() {
+        let postgres = BrowserSystemPortInfo {
+            cwd: None,
+            local_addr: "127.0.0.1".into(),
+            local_port: 26132,
+            pid: Some(123),
+            process_name: Some("com.docker.backend".into()),
+        };
+        let custom_redis = BrowserSystemPortInfo {
+            cwd: None,
+            local_addr: "127.0.0.1".into(),
+            local_port: 17379,
+            pid: Some(124),
+            process_name: Some("redis-server".into()),
+        };
+        let phoenix = BrowserSystemPortInfo {
+            cwd: None,
+            local_addr: "127.0.0.1".into(),
+            local_port: 4000,
+            pid: Some(125),
+            process_name: Some("beam.smp".into()),
+        };
+
+        assert!(browser_system_port_is_known_non_browser_service(&postgres));
+        assert!(browser_system_port_is_known_non_browser_service(
+            &custom_redis
+        ));
+        assert!(!browser_system_port_is_known_non_browser_service(&phoenix));
+    }
+
+    #[test]
     fn dev_server_tab_snapshots_include_only_loopback_http_tabs() {
         let tabs = BrowserTabs::new();
         let (local_id, local_label) = tabs.new_tab_label();
@@ -3646,7 +3739,7 @@ mod tests {
 
         assert_eq!(snapshots.len(), 1);
         assert_eq!(snapshots[0].tab_id, local_id);
-        assert_eq!(snapshots[0].url.as_str(), "http://127.0.0.1:5173/dashboard");
+        assert_eq!(snapshots[0].url.as_str(), "http://localhost:5173/dashboard");
     }
 
     #[test]

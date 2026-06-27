@@ -95,6 +95,7 @@ pub(crate) fn update_runtime_run_controls_blocking<R: Runtime + 'static>(
             request.controls.clone(),
             request.prompt.clone(),
             request.attachments.clone(),
+            request.linked_paths.clone(),
         )?;
         emit_runtime_run_updated_if_changed(
             &app,
@@ -120,6 +121,7 @@ pub(crate) fn update_runtime_run_controls_blocking<R: Runtime + 'static>(
         request.controls.clone(),
         request.prompt.clone(),
         &request.attachments,
+        &request.linked_paths,
     )?;
     emit_runtime_run_updated_if_changed(
         &app,
@@ -148,6 +150,7 @@ pub(crate) fn update_runtime_run_controls_blocking<R: Runtime + 'static>(
             after.clone(),
             prompt,
             request.attachments.clone(),
+            request.linked_paths.clone(),
             auto_compact,
         );
     }
@@ -168,6 +171,18 @@ fn queued_attachments_as_staged(
             size_bytes: attachment.size_bytes,
             width: attachment.width,
             height: attachment.height,
+        })
+        .collect()
+}
+
+fn queued_linked_paths_as_dto(
+    linked_paths: &[project_store::RuntimeRunQueuedLinkedPathRecord],
+) -> Vec<crate::commands::RuntimeLinkedPathDto> {
+    linked_paths
+        .iter()
+        .map(|linked_path| crate::commands::RuntimeLinkedPathDto {
+            kind: linked_path.kind.clone(),
+            absolute_path: linked_path.absolute_path.clone(),
         })
         .collect()
 }
@@ -207,6 +222,7 @@ fn spawn_owned_runtime_prompt_drive_when_idle<R: Runtime + 'static>(
             return;
         };
         let attachments = queued_attachments_as_staged(&pending.queued_attachments);
+        let linked_paths = queued_linked_paths_as_dto(&pending.queued_linked_paths);
         let auto_compact = match derive_auto_compact_preference(&latest) {
             Ok(auto_compact) => auto_compact,
             Err(error) => {
@@ -237,6 +253,7 @@ fn spawn_owned_runtime_prompt_drive_when_idle<R: Runtime + 'static>(
             latest,
             prompt,
             attachments,
+            linked_paths,
             auto_compact,
         );
     });
@@ -279,6 +296,7 @@ fn spawn_owned_runtime_prompt_drive<R: Runtime + 'static>(
     snapshot: RuntimeRunSnapshotRecord,
     prompt: String,
     attachments: Vec<crate::commands::StagedAgentAttachmentDto>,
+    linked_paths: Vec<crate::commands::RuntimeLinkedPathDto>,
     auto_compact: Option<AgentAutoCompactPreference>,
 ) {
     thread::spawn(move || {
@@ -290,6 +308,7 @@ fn spawn_owned_runtime_prompt_drive<R: Runtime + 'static>(
             &snapshot,
             prompt,
             attachments,
+            linked_paths,
             auto_compact,
         ) {
             Ok(Some(rebound)) => {
@@ -348,6 +367,7 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
     snapshot: &RuntimeRunSnapshotRecord,
     prompt: String,
     attachments: Vec<crate::commands::StagedAgentAttachmentDto>,
+    linked_paths: Vec<crate::commands::RuntimeLinkedPathDto>,
     auto_compact: Option<AgentAutoCompactPreference>,
 ) -> CommandResult<Option<RuntimeRunSnapshotRecord>> {
     let agent_core = DesktopAgentCoreRuntime::new(state.agent_run_supervisor().clone());
@@ -409,6 +429,7 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
                     .iter()
                     .map(super::runtime_support::staged_attachment_dto_to_message_attachment)
                     .collect(),
+                linked_paths: linked_paths.clone(),
                 controls,
                 tool_runtime,
                 provider_config,
@@ -457,6 +478,7 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
                     .iter()
                     .map(super::runtime_support::staged_attachment_dto_to_message_attachment)
                     .collect(),
+                linked_paths,
                 controls,
                 tool_runtime,
                 provider_config,

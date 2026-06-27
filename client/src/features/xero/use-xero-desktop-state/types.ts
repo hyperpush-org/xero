@@ -45,6 +45,7 @@ import type {
   RuntimeRunView,
   RuntimeProviderIdDto,
   RuntimeSessionView,
+  RuntimeLinkedPathDto,
   RunDoctorReportRequestDto,
   RuntimeStreamActionRequiredItemView,
   RuntimeStreamActivityItemView,
@@ -131,6 +132,7 @@ export interface RuntimeRunControlMutationRequest {
   controls?: RuntimeRunControlInputDto | null
   prompt?: string | null
   attachments?: StagedAgentAttachmentDto[]
+  linkedPaths?: RuntimeLinkedPathDto[]
   autoCompact?: RuntimeAutoCompactPreferenceDto | null
 }
 

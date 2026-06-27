@@ -49,6 +49,8 @@ const RUNTIME_STREAM_IPC_MAX_BYTES: usize = 96 * 1024;
 const RUNTIME_STREAM_IPC_PATCH_PREVIEW_CHARS: usize = 4_000;
 const RUNTIME_STREAM_IPC_TIGHT_PREVIEW_CHARS: usize = 1_000;
 const RUNTIME_STREAM_IPC_TEXT_CHARS: usize = 2_000;
+const RUNTIME_STREAM_IPC_PATCH_PATH_LIMIT: usize = 48;
+const RUNTIME_STREAM_IPC_PATCH_HUNK_LIMIT: usize = 48;
 const RUNTIME_WAIT_SCHEDULED_CODE: &str = "owned_agent_runtime_wait_scheduled";
 const RUNTIME_WAIT_TOOL_NAME: &str = "runtime_wait";
 const SCHEDULED_WAIT_STATE: &str = "scheduled_wait";
@@ -1148,6 +1150,9 @@ fn runtime_stream_patch_payload_for_ipc(
     if estimated_ipc_payload_bytes(&item) > RUNTIME_STREAM_IPC_MAX_BYTES {
         compact_runtime_stream_item_for_ipc(&mut item, 0);
     }
+    if estimated_ipc_payload_bytes(&item) > RUNTIME_STREAM_IPC_MAX_BYTES {
+        hard_compact_runtime_stream_item_for_ipc(&mut item);
+    }
     runtime_stream_payload_value(item)
 }
 
@@ -1194,6 +1199,9 @@ fn runtime_stream_item_payload_for_ipc(
     }
 
     compact_runtime_stream_item_for_ipc(&mut compact_item, 0);
+    if estimated_ipc_payload_bytes(&compact_item) > RUNTIME_STREAM_IPC_MAX_BYTES {
+        hard_compact_runtime_stream_item_for_ipc(&mut compact_item);
+    }
     runtime_stream_payload_value(compact_item)
 }
 
@@ -1239,6 +1247,11 @@ fn compact_runtime_stream_items_for_ipc(items: &mut [RuntimeStreamItemDto], prev
 
 fn compact_runtime_stream_item_for_ipc(item: &mut RuntimeStreamItemDto, preview_max: usize) {
     truncate_optional_runtime_text(&mut item.tool_result_preview, preview_max);
+    if should_omit_patch_availability_from_runtime_item(item) || preview_max == 0 {
+        item.code_patch_availability = None;
+    } else if let Some(availability) = &mut item.code_patch_availability {
+        compact_code_patch_availability_for_ipc(availability);
+    }
     if item.kind != RuntimeStreamItemKind::Transcript {
         truncate_optional_runtime_text(&mut item.text, RUNTIME_STREAM_IPC_TEXT_CHARS);
         truncate_optional_runtime_text(&mut item.detail, RUNTIME_STREAM_IPC_TEXT_CHARS);
@@ -1262,6 +1275,44 @@ fn compact_runtime_stream_item_for_ipc(item: &mut RuntimeStreamItemDto, preview_
                 RUNTIME_STREAM_IPC_TEXT_CHARS,
             );
         }
+    }
+}
+
+fn hard_compact_runtime_stream_item_for_ipc(item: &mut RuntimeStreamItemDto) {
+    item.tool_result_preview = None;
+    item.code_patch_availability = None;
+    item.media_attachments.clear();
+    if !matches!(item.kind, RuntimeStreamItemKind::Transcript) {
+        truncate_optional_runtime_text(&mut item.text, RUNTIME_STREAM_IPC_TIGHT_PREVIEW_CHARS);
+        truncate_optional_runtime_text(&mut item.detail, RUNTIME_STREAM_IPC_TIGHT_PREVIEW_CHARS);
+        truncate_optional_runtime_text(&mut item.message, RUNTIME_STREAM_IPC_TIGHT_PREVIEW_CHARS);
+    }
+}
+
+fn should_omit_patch_availability_from_runtime_item(item: &RuntimeStreamItemDto) -> bool {
+    matches!(&item.kind, RuntimeStreamItemKind::Activity)
+        && item.code.as_deref() == Some("owned_agent_file_changed")
+}
+
+fn compact_code_patch_availability_for_ipc(availability: &mut CodePatchAvailabilityDto) {
+    let original_path_count = availability.affected_paths.len();
+    if original_path_count > RUNTIME_STREAM_IPC_PATCH_PATH_LIMIT {
+        availability
+            .affected_paths
+            .truncate(RUNTIME_STREAM_IPC_PATCH_PATH_LIMIT);
+        let omitted = original_path_count.saturating_sub(RUNTIME_STREAM_IPC_PATCH_PATH_LIMIT);
+        let note = format!(
+            "Runtime stream preview omitted {omitted} additional affected path(s); open code history for the full patch set."
+        );
+        availability.unavailable_reason = Some(match availability.unavailable_reason.take() {
+            Some(existing) if !existing.trim().is_empty() => format!("{existing} {note}"),
+            _ => note,
+        });
+    }
+    if availability.text_hunks.len() > RUNTIME_STREAM_IPC_PATCH_HUNK_LIMIT {
+        availability
+            .text_hunks
+            .truncate(RUNTIME_STREAM_IPC_PATCH_HUNK_LIMIT);
     }
 }
 
@@ -1442,11 +1493,16 @@ fn owned_agent_event_runtime_item(
                     .or_else(|| Some("Provider usage updated.".into()));
                 item.text = item.detail.clone();
             } else {
+                let summary = payload_verbatim_string(&payload, "summary")?;
+                let visible_summary = visible_reasoning_summary(&summary)?;
                 item.code = Some("owned_agent_reasoning".into());
                 item.title = Some("Reasoning".into());
-                item.text = payload_verbatim_string(&payload, "summary");
-                item.detail = payload_string(&payload, "summary")
-                    .or_else(|| Some("Owned agent reasoning summary updated.".into()));
+                item.text = Some(visible_summary.clone());
+                item.detail = if visible_summary.trim().is_empty() {
+                    Some("Owned agent reasoning summary updated.".into())
+                } else {
+                    Some(visible_summary)
+                };
             }
         }
         AgentRunEventKind::ToolStarted => {
@@ -1861,6 +1917,8 @@ fn owned_agent_event_runtime_item(
             let code = payload_string(&payload, "code");
             if code.as_deref() == Some("agent_run_cancelled") {
                 item.kind = RuntimeStreamItemKind::Complete;
+                item.code = Some("owned_agent_cancelled".into());
+                item.title = Some("Run cancelled".into());
                 item.detail = payload_string(&payload, "message")
                     .or_else(|| Some("Owned agent run was cancelled.".into()));
                 item.text = item.detail.clone();
@@ -2815,6 +2873,64 @@ fn payload_verbatim_string(payload: &serde_json::Value, key: &str) -> Option<Str
         .map(ToOwned::to_owned)
 }
 
+fn visible_reasoning_summary(summary: &str) -> Option<String> {
+    if reasoning_summary_exposes_internal_tool_deliberation(summary) {
+        None
+    } else {
+        Some(summary.to_owned())
+    }
+}
+
+fn reasoning_summary_exposes_internal_tool_deliberation(summary: &str) -> bool {
+    let normalized = summary.to_ascii_lowercase();
+    let strong_internal_marker = [
+        "tools are scoped",
+        "since i have tools",
+        "i have tools like",
+        "xero plan gate",
+        "plan gate",
+        "human message is cut off",
+        "the query seems meta",
+        "my role is",
+        "approval mode",
+        "operator review",
+        "developer message",
+        "system prompt",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker));
+    if strong_internal_marker {
+        return true;
+    }
+
+    let tool_marker = [
+        "toolset",
+        "tool call",
+        "tool calls",
+        "allowedtools",
+        "allowed tools",
+        "`todo`",
+        "`list_tree`",
+        "`command_probe`",
+        "command_probe",
+        "todo tool",
+        "using tools",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker));
+    let self_directive_marker = [
+        "i need to use",
+        "i need to plan",
+        "instructions for me",
+        "respond as a helpful assistant",
+        "using tools if needed",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker));
+
+    tool_marker && self_directive_marker
+}
+
 fn payload_bool(payload: &serde_json::Value, key: &str) -> Option<bool> {
     payload.get(key).and_then(|value| value.as_bool())
 }
@@ -3386,6 +3502,58 @@ mod tests {
     }
 
     #[test]
+    fn live_runtime_stream_strips_oversized_file_change_patch_availability() {
+        let affected_paths = (0..5_000)
+            .map(|index| format!(".pnpm-store/v10/files/{index:04}/generated-cache-entry"))
+            .collect::<Vec<_>>();
+        let item = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::FileChanged,
+                &serde_json::json!({
+                    "path": ".pnpm-store/v10/files/0000/generated-cache-entry",
+                    "operation": "create",
+                    "toolCallId": "call-install",
+                    "toolName": "command_run",
+                    "codeChangeGroupId": "code-change-install",
+                    "codeCommitId": "code-commit-install",
+                    "codeWorkspaceEpoch": 7,
+                    "codePatchAvailability": {
+                        "projectId": "project-1",
+                        "targetChangeGroupId": "code-change-install",
+                        "available": true,
+                        "affectedPaths": affected_paths,
+                        "fileChangeCount": 5_000,
+                        "textHunkCount": 0,
+                        "textHunks": [],
+                        "unavailableReason": null
+                    }
+                })
+                .to_string(),
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("file change item");
+        let channel_payload =
+            runtime_stream_item_payload_for_ipc(item).expect("encode live stream item");
+
+        assert!(
+            estimated_ipc_payload_bytes(&channel_payload) <= RUNTIME_STREAM_IPC_MAX_BYTES,
+            "file-change stream item should fit the frontend runtime-stream IPC budget"
+        );
+        assert_eq!(
+            channel_payload
+                .get("codeChangeGroupId")
+                .and_then(serde_json::Value::as_str),
+            Some("code-change-install")
+        );
+        assert!(
+            channel_payload.get("codePatchAvailability").is_none(),
+            "per-file activity items should not stream full change-group patch metadata"
+        );
+    }
+
+    #[test]
     fn owned_agent_event_projection_maps_tool_and_action_items() {
         let tool = owned_agent_event_runtime_item(
             event(
@@ -3527,7 +3695,7 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_owned_agent_run_projects_as_activity_not_failure() {
+    fn cancelled_owned_agent_run_projects_as_completion_not_failure() {
         let item = owned_agent_event_runtime_item(
             event(
                 AgentRunEventKind::RunFailed,
@@ -3538,15 +3706,19 @@ mod tests {
         )
         .expect("cancelled run item");
 
-        assert_eq!(item.kind, RuntimeStreamItemKind::Activity);
+        assert_eq!(item.kind, RuntimeStreamItemKind::Complete);
         assert_eq!(item.code.as_deref(), Some("owned_agent_cancelled"));
         assert_eq!(item.title.as_deref(), Some("Run cancelled"));
+        assert_eq!(
+            item.detail.as_deref(),
+            Some("Owned agent run was cancelled.")
+        );
         assert!(item.message.is_none());
         assert!(item.retryable.is_none());
 
         let mut projection = RuntimeStreamProjection::new(projection_context());
         projection.apply_item(item);
-        assert_eq!(projection.status, RuntimeStreamViewStatusDto::Live);
+        assert_eq!(projection.status, RuntimeStreamViewStatusDto::Complete);
         assert!(projection.failure.is_none());
         assert!(projection.last_issue.is_none());
     }
@@ -3717,6 +3889,19 @@ mod tests {
         assert_eq!(usage.kind, RuntimeStreamItemKind::Activity);
         assert_eq!(usage.code.as_deref(), Some("owned_agent_usage"));
         assert_eq!(usage.title.as_deref(), Some("Provider usage"));
+
+        let internal_reasoning = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ReasoningSummary,
+                r#"{"summary":"Since I have tools like `todo`, `list_tree`, etc., I need to use them."}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        );
+        assert!(
+            internal_reasoning.is_none(),
+            "internal tool-selection reasoning should not render into the timeline"
+        );
     }
 
     #[test]

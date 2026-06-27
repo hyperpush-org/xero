@@ -910,6 +910,23 @@ export const stagedAgentAttachmentSchema = z
   })
   .strict()
 
+export const runtimeLinkedPathKindSchema = z.enum(['file', 'folder'])
+
+export const runtimeLinkedPathSchema = z
+  .object({
+    kind: runtimeLinkedPathKindSchema,
+    absolutePath: z.string().trim().min(1),
+  })
+  .strict()
+
+export const stageAgentAttachmentPathRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    runId: z.string().trim().min(1),
+    absolutePath: z.string().trim().min(1),
+  })
+  .strict()
+
 export const startRuntimeRunRequestSchema = z
   .object({
     projectId: z.string().trim().min(1),
@@ -917,6 +934,7 @@ export const startRuntimeRunRequestSchema = z
     initialControls: runtimeRunControlInputSchema.nullable().optional(),
     initialPrompt: z.string().trim().min(1).nullable().optional(),
     initialAttachments: z.array(stagedAgentAttachmentSchema).default([]),
+    initialLinkedPaths: z.array(runtimeLinkedPathSchema).default([]),
   })
   .strict()
 
@@ -942,14 +960,20 @@ export const updateRuntimeRunControlsRequestSchema = z
     controls: runtimeRunControlInputSchema.nullable().optional(),
     prompt: z.string().trim().min(1).nullable().optional(),
     attachments: z.array(stagedAgentAttachmentSchema).default([]),
+    linkedPaths: z.array(runtimeLinkedPathSchema).default([]),
   })
   .strict()
   .superRefine((request, ctx) => {
-    if (!request.controls && !request.prompt) {
+    if (
+      !request.controls &&
+      !request.prompt &&
+      request.attachments.length === 0 &&
+      request.linkedPaths.length === 0
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['controls'],
-        message: 'Xero requires a prompt or control delta before it can queue runtime-run changes.',
+        message: 'Xero requires a prompt, attachment, or control delta before it can queue runtime-run changes.',
       })
     }
   })
@@ -1014,10 +1038,12 @@ export type RuntimeRunUpdatedPayloadDto = z.infer<typeof runtimeRunUpdatedPayloa
 export type GetRuntimeRunRequestDto = z.infer<typeof getRuntimeRunRequestSchema>
 export type StartRuntimeRunRequestDto = z.infer<typeof startRuntimeRunRequestSchema>
 export type StartRuntimeSessionRequestDto = z.infer<typeof startRuntimeSessionRequestSchema>
+export type RuntimeLinkedPathDto = z.infer<typeof runtimeLinkedPathSchema>
 export type UpdateRuntimeRunControlsRequestDto = z.infer<typeof updateRuntimeRunControlsRequestSchema>
 export type StopRuntimeRunRequestDto = z.infer<typeof stopRuntimeRunRequestSchema>
 export type AgentAttachmentKindDto = z.infer<typeof agentAttachmentKindSchema>
 export type StagedAgentAttachmentDto = z.infer<typeof stagedAgentAttachmentSchema>
+export type StageAgentAttachmentPathRequestDto = z.infer<typeof stageAgentAttachmentPathRequestSchema>
 
 export interface RuntimeSessionView {
   projectId: string

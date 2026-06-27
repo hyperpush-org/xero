@@ -103,7 +103,7 @@ defmodule Xero.RemoteFixtures do
       %{
         "GITHUB_CLIENT_ID" => "test-github-client",
         "GITHUB_CLIENT_SECRET" => "test-github-secret",
-        "GITHUB_REDIRECT_URI" => "http://127.0.0.1:4002/auth/github/callback"
+        "GITHUB_REDIRECT_URI" => "http://127.0.0.1:26142/auth/github/callback"
       },
       fun
     )

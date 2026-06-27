@@ -37,12 +37,13 @@ use crate::{
         ProviderCredentialsView,
     },
     runtime::{
-        is_supported_xai_text_model_id, ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID,
-        BEDROCK_PROVIDER_ID, CURSOR_AUTO_MODEL_ID, CURSOR_DEFAULT_MODEL_ID, CURSOR_PROVIDER_ID,
-        DEEPSEEK_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID, GITHUB_MODELS_PROVIDER_ID,
-        OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
-        OPENAI_CODEX_SUPPORTED_MODEL_IDS, OPENROUTER_PROVIDER_ID, VERTEX_PROVIDER_ID,
-        XAI_DEFAULT_MODEL_ID, XAI_PROVIDER_ID, XAI_SUPPORTED_TEXT_MODEL_IDS,
+        is_supported_xai_reasoning_effort_model_id, is_supported_xai_text_model_id,
+        ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID, CURSOR_AUTO_MODEL_ID,
+        CURSOR_DEFAULT_MODEL_ID, CURSOR_PROVIDER_ID, DEEPSEEK_PROVIDER_ID,
+        GEMINI_AI_STUDIO_PROVIDER_ID, GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID,
+        OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENAI_CODEX_SUPPORTED_MODEL_IDS,
+        OPENROUTER_PROVIDER_ID, VERTEX_PROVIDER_ID, XAI_DEFAULT_MODEL_ID, XAI_PROVIDER_ID,
+        XAI_SUPPORTED_TEXT_MODEL_IDS,
     },
     state::DesktopState,
 };
@@ -1141,6 +1142,7 @@ fn finalize_xai_models(mut normalized: Vec<ProviderModelRecord>) -> Vec<Provider
 fn xai_display_name(model_id: &str) -> String {
     match model_id {
         XAI_DEFAULT_MODEL_ID => "Grok 4.3".into(),
+        "grok-build-0.1" => "Grok Build 0.1".into(),
         other => {
             let parts = other
                 .split(['-', '_'])
@@ -1212,7 +1214,7 @@ fn normalize_xai_version_part(part: &str) -> String {
 }
 
 fn xai_thinking_capability(model_id: &str) -> ProviderModelThinkingCapability {
-    if is_supported_xai_text_model_id(model_id) {
+    if is_supported_xai_reasoning_effort_model_id(model_id) {
         supported_thinking_capability_with_default(
             vec![
                 ProviderModelThinkingEffort::None,
@@ -1228,7 +1230,17 @@ fn xai_thinking_capability(model_id: &str) -> ProviderModelThinkingCapability {
 }
 
 fn xai_context_window_tokens(model_id: &str) -> Option<u64> {
-    is_supported_xai_text_model_id(model_id).then_some(1_000_000)
+    let model_id = model_id
+        .trim()
+        .rsplit('/')
+        .next()
+        .unwrap_or(model_id)
+        .to_ascii_lowercase();
+    match model_id.as_str() {
+        "grok-build-0.1" => Some(256_000),
+        _ if is_supported_xai_text_model_id(&model_id) => Some(1_000_000),
+        _ => None,
+    }
 }
 
 fn openai_codex_thinking_capability(model_id: &str) -> ProviderModelThinkingCapability {
@@ -2442,7 +2454,7 @@ mod tests {
     }
 
     #[test]
-    fn xai_projection_seeds_grok_4_3_with_reasoning_and_context() {
+    fn xai_projection_seeds_grok_models_with_reasoning_and_context() {
         let models = xai_projection();
         let grok = models
             .iter()
@@ -2452,11 +2464,20 @@ mod tests {
             .iter()
             .find(|model| model.model_id == "grok-4.3-latest")
             .expect("grok-4.3-latest model choice");
+        let build = models
+            .iter()
+            .find(|model| model.model_id == "grok-build-0.1")
+            .expect("grok-build-0.1 model choice");
 
         assert_eq!(grok.display_name, "Grok 4.3");
         assert_eq!(grok.context_window_tokens, Some(1_000_000));
         assert_eq!(grok.input_modalities, vec!["image", "text"]);
         assert_eq!(latest.input_modalities, vec!["image", "text"]);
+        assert_eq!(build.display_name, "Grok Build 0.1");
+        assert_eq!(build.context_window_tokens, Some(256_000));
+        assert_eq!(build.input_modalities, vec!["image", "text"]);
+        assert!(!build.thinking.supported);
+        assert!(build.thinking.effort_options.is_empty());
         assert_eq!(
             grok.thinking.effort_options,
             vec![
@@ -2494,10 +2515,15 @@ mod tests {
             .iter()
             .find(|model| model.model_id == "grok-4.3-latest")
             .expect("projected latest grok model");
+        let build = models
+            .iter()
+            .find(|model| model.model_id == "grok-build-0.1")
+            .expect("projected grok build model");
 
         assert_eq!(grok.input_modalities, vec!["image", "text"]);
         assert_eq!(grok.input_modalities_source, "xai_text_runtime_default");
         assert_eq!(latest.input_modalities, vec!["image", "text"]);
+        assert_eq!(build.context_window_tokens, Some(256_000));
     }
 
     #[test]
@@ -2644,7 +2670,7 @@ mod tests {
     }
 
     #[test]
-    fn xai_catalog_only_exposes_grok_4_3_text_models() {
+    fn xai_catalog_only_exposes_supported_grok_text_models() {
         let models = normalize_xai_models(vec![
             XaiModelEntry {
                 id: "grok-4.20-0309-non-reasoning".into(),
@@ -2681,15 +2707,27 @@ mod tests {
                 aliases: Vec::new(),
                 input_modalities: vec!["text".into(), "image".into()],
             },
+            XaiModelEntry {
+                id: "grok-build-0.1".into(),
+                aliases: vec!["grok-code-fast".into()],
+                input_modalities: vec!["text".into(), "image".into()],
+            },
         ]);
 
         let model_ids = models
             .iter()
             .map(|model| model.model_id.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(model_ids, vec!["grok-4.3", "grok-4.3-latest"]);
+        assert_eq!(
+            model_ids,
+            vec!["grok-4.3", "grok-4.3-latest", "grok-build-0.1"]
+        );
         assert_eq!(models[0].input_modalities, vec!["image", "text"]);
         assert_eq!(models[1].input_modalities, vec!["image", "text"]);
+        assert_eq!(models[2].display_name, "Grok Build 0.1");
+        assert_eq!(models[2].context_window_tokens, Some(256_000));
+        assert!(!models[2].thinking.supported);
+        assert!(models[2].thinking.effort_options.is_empty());
         assert_eq!(
             models[1].thinking.effort_options,
             vec![

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { existsSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -22,6 +23,10 @@ const sidecarPath = resolve(
   'debug',
   desktopSidecarBinaryName(),
 )
+const sidecarSourceRoots = [
+  resolve(clientDir, 'src-tauri', 'crates', 'xero-desktop-sidecar'),
+  resolve(clientDir, 'src-tauri', 'crates', 'xero-desktop-control-ipc'),
+]
 
 const env = buildTauriDevEnv(rootEnv, { devAppDataDir, runner, sidecarPath })
 
@@ -38,19 +43,25 @@ export function buildTauriDevEnv(rootEnv, { devAppDataDir, runner, sidecarPath }
 }
 
 async function main() {
-  logger.log(`Building debug desktop sidecar (${sidecarPath})...`)
-  await streamRun(
-    'cargo',
-    [
-      'build',
-      '--manifest-path',
-      resolve(clientDir, 'src-tauri', 'Cargo.toml'),
-      '--package',
-      'xero-desktop-sidecar',
-    ],
-    { cwd: repoRoot, env },
-  )
-  await normalizeMacosDesktopSidecarLinkage(sidecarPath, env)
+  if (process.env.XERO_SKIP_DESKTOP_SIDECAR_BUILD === '1') {
+    logger.log('Skipping debug desktop sidecar build (XERO_SKIP_DESKTOP_SIDECAR_BUILD=1).')
+  } else if (sidecarIsFresh()) {
+    logger.log(`Debug desktop sidecar is fresh (${sidecarPath}).`)
+  } else {
+    logger.log(`Building debug desktop sidecar (${sidecarPath})...`)
+    await streamRun(
+      'cargo',
+      [
+        'build',
+        '--manifest-path',
+        resolve(clientDir, 'src-tauri', 'Cargo.toml'),
+        '--package',
+        'xero-desktop-sidecar',
+      ],
+      { cwd: repoRoot, env },
+    )
+    await normalizeMacosDesktopSidecarLinkage(sidecarPath, env)
+  }
 
   const command = process.platform === 'win32' ? 'tauri.cmd' : 'tauri'
   const child = spawn(command, tauriArgs, {
@@ -98,6 +109,42 @@ function defaultAppDataDir(directoryName) {
 
 function desktopSidecarBinaryName() {
   return process.platform === 'win32' ? 'xero-desktop-sidecar.exe' : 'xero-desktop-sidecar'
+}
+
+function sidecarIsFresh() {
+  if (!existsSync(sidecarPath)) return false
+
+  const binaryMtime = statMtime(sidecarPath)
+  if (binaryMtime === 0) return false
+
+  return sidecarSourceRoots.every((root) => newestMtime(root) <= binaryMtime)
+}
+
+function newestMtime(rootPath, currentMax = 0) {
+  let stat
+  try {
+    stat = statSync(rootPath)
+  } catch {
+    return currentMax
+  }
+
+  if (stat.isFile()) return Math.max(currentMax, stat.mtimeMs)
+  if (!stat.isDirectory()) return currentMax
+
+  let maxMtime = currentMax
+  for (const entry of readdirSync(rootPath, { withFileTypes: true })) {
+    if (entry.name === 'target' || entry.name === '.git') continue
+    maxMtime = newestMtime(resolve(rootPath, entry.name), maxMtime)
+  }
+  return maxMtime
+}
+
+function statMtime(path) {
+  try {
+    return statSync(path).mtimeMs
+  } catch {
+    return 0
+  }
 }
 
 async function normalizeMacosDesktopSidecarLinkage(path, env) {

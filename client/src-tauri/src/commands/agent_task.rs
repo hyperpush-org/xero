@@ -83,6 +83,7 @@ pub fn start_agent_task_blocking<R: Runtime + 'static>(
             .iter()
             .map(staged_attachment_dto_to_message_attachment)
             .collect(),
+        linked_paths: Vec::new(),
         controls: request.controls,
         tool_runtime,
         provider_config,
@@ -135,6 +136,7 @@ pub fn send_agent_message<R: Runtime + 'static>(
             .iter()
             .map(staged_attachment_dto_to_message_attachment)
             .collect(),
+        linked_paths: Vec::new(),
         controls: None,
         tool_runtime,
         provider_config,
@@ -228,6 +230,7 @@ pub fn resume_agent_run<R: Runtime + 'static>(
         run_id: request.run_id,
         prompt: request.response,
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: None,
         tool_runtime,
         provider_config,

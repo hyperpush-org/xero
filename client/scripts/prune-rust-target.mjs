@@ -8,6 +8,7 @@ const defaultTargetDir = resolve(clientDir, 'src-tauri', 'target')
 
 const options = {
   dryRun: false,
+  includeIncremental: process.env.XERO_RUST_TARGET_PRUNE_INCREMENTAL !== '0',
   maxAgeHours: Number.parseFloat(process.env.XERO_RUST_TARGET_MAX_AGE_HOURS ?? '6'),
   targetDir: process.env.CARGO_TARGET_DIR
     ? resolve(process.env.CARGO_TARGET_DIR)
@@ -15,8 +16,22 @@ const options = {
 }
 
 for (const arg of process.argv.slice(2)) {
+  if (arg === '--') {
+    continue
+  }
+
   if (arg === '--dry-run') {
     options.dryRun = true
+    continue
+  }
+
+  if (arg === '--include-incremental') {
+    options.includeIncremental = true
+    continue
+  }
+
+  if (arg === '--no-incremental') {
+    options.includeIncremental = false
     continue
   }
 
@@ -40,6 +55,7 @@ if (!Number.isFinite(options.maxAgeHours) || options.maxAgeHours < 0) {
 }
 
 const depsDir = join(options.targetDir, 'debug', 'deps')
+const incrementalDir = join(options.targetDir, 'debug', 'incremental')
 const cutoffMs = Date.now() - options.maxAgeHours * 60 * 60 * 1000
 
 const formatBytes = (bytes) => {
@@ -91,6 +107,37 @@ const removePath = async (path, size = 0) => {
   removedBytes += size
 }
 
+const pathSize = async (path) => {
+  let entryStat
+  try {
+    entryStat = await stat(path)
+  } catch (error) {
+    if (error.code === 'ENOENT') return 0
+    throw error
+  }
+
+  if (!entryStat.isDirectory()) return entryStat.size
+
+  let total = 0
+  let entries
+  try {
+    entries = await readdir(path, { withFileTypes: true })
+  } catch (error) {
+    if (error.code === 'ENOENT') return 0
+    throw error
+  }
+
+  for (const entry of entries) {
+    total += await pathSize(join(path, entry.name))
+  }
+  return total
+}
+
+const removeIfStale = async (path, entryStat) => {
+  if (entryStat.mtimeMs > cutoffMs) return
+  await removePath(path, await pathSize(path))
+}
+
 for (const entry of entries) {
   const path = join(depsDir, entry.name)
   let entryStat
@@ -123,8 +170,40 @@ for (const entry of entries) {
   }
 }
 
+for (const artifact of ['libxero_desktop_lib.a', 'libxero_desktop_lib.dylib']) {
+  const path = join(depsDir, artifact)
+  try {
+    const entryStat = await stat(path)
+    await removeIfStale(path, entryStat)
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+  }
+}
+
+if (options.includeIncremental) {
+  let incrementalEntries = []
+  try {
+    incrementalEntries = await readdir(incrementalDir, { withFileTypes: true })
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+  }
+
+  for (const entry of incrementalEntries) {
+    if (!entry.isDirectory()) continue
+    const path = join(incrementalDir, entry.name)
+    let entryStat
+    try {
+      entryStat = await stat(path)
+    } catch (error) {
+      if (error.code === 'ENOENT') continue
+      throw error
+    }
+    await removeIfStale(path, entryStat)
+  }
+}
+
 const action = options.dryRun ? 'Would remove' : 'Removed'
 console.log(
-  `${action} ${removedCount} stale Rust test artifact${removedCount === 1 ? '' : 's'} ` +
+  `${action} ${removedCount} stale Rust target artifact${removedCount === 1 ? '' : 's'} ` +
     `from ${depsDir} (${formatBytes(removedBytes)}).`
 )

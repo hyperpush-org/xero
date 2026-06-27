@@ -50,10 +50,10 @@ describe("getServerUrl", () => {
 	it("canonicalizes local cloud URLs to the server loopback host", () => {
 		expect(
 			getCanonicalLoopbackCloudUrl(
-				"http://localhost:3002/sessions?tab=active#top",
-				"http://127.0.0.1:4000",
+				"http://localhost:26102/sessions?tab=active#top",
+				"http://127.0.0.1:26140",
 			),
-		).toBe("http://127.0.0.1:3002/sessions?tab=active#top");
+		).toBe("http://127.0.0.1:26102/sessions?tab=active#top");
 	});
 
 	it("does not canonicalize non-loopback cloud URLs", () => {
@@ -69,7 +69,7 @@ describe("getServerUrl", () => {
 		expect(
 			getCanonicalLoopbackCloudUrl(
 				"https://cloud.xeroshell.com/sessions/desktop-1/session-1",
-				"http://127.0.0.1:4000",
+				"http://127.0.0.1:26140",
 			),
 		).toBeNull();
 	});

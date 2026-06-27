@@ -9,6 +9,8 @@ export type {
 } from "./context-indicator";
 export { Composer } from "./composer";
 export type {
+	ComposerContextMentionOption,
+	ComposerContextMentionStatus,
 	ComposerDictationLike,
 	ComposerPendingAttachmentType,
 	ComposerPendingContextType,

@@ -79,6 +79,7 @@ pub(crate) fn drive_provider_loop(
     for turn_index in 0..MAX_PROVIDER_TURNS {
         cancellation.check_cancelled()?;
         touch_agent_run_heartbeat(repo_root, project_id, run_id)?;
+        refresh_tool_registry_stage_allowlist(&mut tool_registry, tool_runtime)?;
         let owned_process_summary = tool_runtime.owned_process_lifecycle_summary()?;
         let skill_contexts = skill_contexts_from_provider_messages(&messages)?;
         let run_snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
@@ -606,13 +607,16 @@ pub(crate) fn drive_provider_loop(
                 });
 
                 if tool_calls.len() > 1
-                    && tool_calls
-                        .iter()
-                        .any(|tool_call| tool_call.tool_name == AUTONOMOUS_TOOL_RUNTIME_WAIT)
+                    && tool_calls.iter().any(|tool_call| {
+                        matches!(
+                            tool_call.tool_name.as_str(),
+                            AUTONOMOUS_TOOL_RUNTIME_WAIT | AUTONOMOUS_TOOL_ACTION_REQUIRED
+                        )
+                    })
                 {
                     return Err(CommandError::user_fixable(
-                        "runtime_wait_must_be_standalone",
-                        "The runtime_wait tool must be called by itself after any immediate tool work is complete.",
+                        "runtime_pause_tool_must_be_standalone",
+                        "Runtime pause tools must be called by themselves after any immediate tool work is complete.",
                     ));
                 }
 
@@ -639,10 +643,15 @@ pub(crate) fn drive_provider_loop(
                 }
                 let parent_assistant_message_id = provider_assistant_message_id(run_id, turn_index);
                 let mut scheduled_wait: Option<AutonomousRuntimeWaitOutput> = None;
+                let mut user_input_request: Option<AutonomousActionRequiredOutput> = None;
                 for mut result in batch.results {
                     cancellation.check_cancelled()?;
                     if result.tool_name == AUTONOMOUS_TOOL_RUNTIME_WAIT {
                         scheduled_wait = runtime_wait_output_from_tool_result(&result.output);
+                    }
+                    if result.tool_name == AUTONOMOUS_TOOL_ACTION_REQUIRED {
+                        user_input_request =
+                            action_required_output_from_tool_result(&result.output);
                     }
                     result.parent_assistant_message_id = Some(parent_assistant_message_id.clone());
                     let provider_content = serialize_model_visible_tool_result(&result)?;
@@ -674,6 +683,7 @@ pub(crate) fn drive_provider_loop(
                                 "grantedTools": granted_tools.clone(),
                             }),
                         )?;
+                        refresh_tool_registry_stage_allowlist(&mut tool_registry, tool_runtime)?;
                         tool_registry.expand_with_tool_names_from_runtime_for_reason(
                             granted_tools,
                             tool_runtime,
@@ -695,6 +705,15 @@ pub(crate) fn drive_provider_loop(
                         ),
                     ));
                 }
+                if let Some(request) = user_input_request {
+                    return Err(CommandError::retryable(
+                        AGENT_RUN_USER_INPUT_REQUIRED_CODE,
+                        format!(
+                            "Owned-agent run paused for user input `{}`: {}",
+                            request.action_id, request.title
+                        ),
+                    ));
+                }
             }
         }
     }
@@ -705,6 +724,14 @@ pub(crate) fn drive_provider_loop(
             "Xero stopped the owned-agent model loop after {MAX_PROVIDER_TURNS} provider turns to prevent an infinite tool loop."
         ),
     ))
+}
+
+fn refresh_tool_registry_stage_allowlist(
+    tool_registry: &mut ToolRegistry,
+    tool_runtime: &AutonomousToolRuntime,
+) -> CommandResult<()> {
+    tool_registry.refresh_stage_allowed_tools(tool_runtime.current_workflow_allowed_tools()?);
+    Ok(())
 }
 
 fn runtime_wait_output_from_tool_result(output: &JsonValue) -> Option<AutonomousRuntimeWaitOutput> {
@@ -720,6 +747,32 @@ fn runtime_wait_output_from_tool_result(output: &JsonValue) -> Option<Autonomous
         }
     }
     runtime_wait_output_from_value(output)
+}
+
+fn action_required_output_from_tool_result(
+    output: &JsonValue,
+) -> Option<AutonomousActionRequiredOutput> {
+    if let Some(output) = output
+        .get("output")
+        .and_then(action_required_output_from_value)
+    {
+        return Some(output);
+    }
+    if let Ok(result) = serde_json::from_value::<AutonomousToolResult>(output.clone()) {
+        if let AutonomousToolOutput::ActionRequired(output) = result.output {
+            return Some(output);
+        }
+    }
+    action_required_output_from_value(output)
+}
+
+fn action_required_output_from_value(output: &JsonValue) -> Option<AutonomousActionRequiredOutput> {
+    let mut candidate = output.clone();
+    if let Some(object) = candidate.as_object_mut() {
+        object.remove("kind");
+        object.remove("modelInstruction");
+    }
+    serde_json::from_value(candidate).ok()
 }
 
 fn runtime_wait_output_from_value(output: &JsonValue) -> Option<AutonomousRuntimeWaitOutput> {
@@ -5295,7 +5348,7 @@ fn record_provider_stream_event(
     run_id: &str,
     event: ProviderStreamEvent,
 ) -> CommandResult<()> {
-    match event {
+    let append_result = match event {
         ProviderStreamEvent::MessageDelta(text) => append_event(
             repo_root,
             project_id,
@@ -5316,18 +5369,23 @@ fn record_provider_stream_event(
             tool_call_id,
             tool_name,
             arguments_delta,
-        } => append_event(
-            repo_root,
-            project_id,
-            run_id,
-            AgentRunEventKind::ToolDelta,
-            json!({
-                "toolCallId": tool_call_id,
-                "toolName": tool_name,
-                "argumentsDelta": arguments_delta,
-            }),
-        )
-        .map(|_| ()),
+        } => {
+            let (arguments_delta, arguments_redacted) =
+                redact_tool_arguments_delta_for_persistence(&arguments_delta);
+            append_event(
+                repo_root,
+                project_id,
+                run_id,
+                AgentRunEventKind::ToolDelta,
+                json!({
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_name,
+                    "argumentsDelta": arguments_delta,
+                    "argumentsRedacted": arguments_redacted,
+                }),
+            )
+            .map(|_| ())
+        }
         ProviderStreamEvent::Usage(usage) => append_event(
             repo_root,
             project_id,
@@ -5339,7 +5397,38 @@ fn record_provider_stream_event(
             }),
         )
         .map(|_| ()),
+    };
+    append_result?;
+    touch_agent_run_heartbeat(repo_root, project_id, run_id)
+}
+
+fn redact_tool_arguments_delta_for_persistence(arguments_delta: &str) -> (String, bool) {
+    if arguments_delta.trim().is_empty() {
+        return (arguments_delta.into(), false);
     }
+
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(arguments_delta) {
+        let (redacted, changed) = crate::runtime::redaction::redact_json_for_persistence(&value);
+        if !changed {
+            return (arguments_delta.into(), false);
+        }
+        let serialized = serde_json::to_string(&redacted).unwrap_or_else(|_| "[REDACTED]".into());
+        return (serialized, true);
+    }
+
+    let as_string = serde_json::Value::String(arguments_delta.into());
+    let (redacted, changed) = crate::runtime::redaction::redact_json_for_persistence(&as_string);
+    if changed {
+        return (
+            redacted
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| "[REDACTED]".into()),
+            true,
+        );
+    }
+
+    (arguments_delta.into(), false)
 }
 
 fn record_missing_assistant_message_delta(
@@ -6211,12 +6300,13 @@ mod tests {
     use super::*;
     use rusqlite::{params, Connection};
     use std::{
-        collections::VecDeque,
+        collections::{BTreeSet, VecDeque},
         sync::{Mutex, OnceLock},
     };
 
     use crate::db::{configure_connection, database_path_for_repo, migrations::migrations};
     use crate::runtime::autonomous_tool_runtime::AutonomousRuntimeWaitKind;
+    use crate::runtime::AutonomousAgentWorkflowPolicy;
     use crate::runtime::DEEPSEEK_PROVIDER_ID;
 
     #[test]
@@ -6289,12 +6379,43 @@ mod tests {
         assert!(accumulator.flush().is_empty());
     }
 
+    #[test]
+    fn tool_argument_delta_redaction_allows_discord_oauth_invite_urls() {
+        let arguments = json!({
+            "path": "index.html",
+            "content": "window.location.href = 'https://discord.com/oauth2/authorize?client_id=123456789012345678&permissions=8&scope=bot%20applications.commands';"
+        })
+        .to_string();
+
+        let (persisted, redacted) = redact_tool_arguments_delta_for_persistence(&arguments);
+
+        assert!(!redacted);
+        assert_eq!(persisted, arguments);
+    }
+
+    #[test]
+    fn tool_argument_delta_redaction_redacts_secret_json_fields() {
+        let arguments = json!({
+            "path": "index.html",
+            "content": "api_key=sk-live-secret-value-that-is-long-enough"
+        })
+        .to_string();
+
+        let (persisted, redacted) = redact_tool_arguments_delta_for_persistence(&arguments);
+
+        assert!(redacted);
+        assert!(persisted.contains("index.html"));
+        assert!(persisted.contains("[REDACTED]"));
+        assert!(!persisted.contains("sk-live-secret-value"));
+    }
+
     struct ScriptedProvider {
         outcomes: Mutex<VecDeque<ProviderTurnOutcome>>,
         emit_message_deltas: bool,
         provider_id: &'static str,
         requests: Mutex<Vec<Vec<ProviderMessage>>>,
         system_prompts: Mutex<Vec<String>>,
+        tools: Mutex<Vec<Vec<AgentToolDescriptor>>>,
     }
 
     impl ScriptedProvider {
@@ -6305,6 +6426,7 @@ mod tests {
                 provider_id: OPENAI_CODEX_PROVIDER_ID,
                 requests: Mutex::new(Vec::new()),
                 system_prompts: Mutex::new(Vec::new()),
+                tools: Mutex::new(Vec::new()),
             }
         }
 
@@ -6324,6 +6446,13 @@ mod tests {
             self.system_prompts
                 .lock()
                 .expect("scripted provider system prompt lock")
+                .clone()
+        }
+
+        fn captured_tools(&self) -> Vec<Vec<AgentToolDescriptor>> {
+            self.tools
+                .lock()
+                .expect("scripted provider tools lock")
                 .clone()
         }
     }
@@ -6350,6 +6479,10 @@ mod tests {
                 .lock()
                 .expect("scripted provider request lock")
                 .push(request.messages.clone());
+            self.tools
+                .lock()
+                .expect("scripted provider tools lock")
+                .push(request.tools.clone());
             emit(ProviderStreamEvent::ReasoningSummary(format!(
                 "scripted harness turn {}",
                 request.turn_index
@@ -6659,6 +6792,51 @@ mod tests {
 
         assert_eq!(wait.wake_id, "wake-1");
         assert_eq!(wait.kind, AutonomousRuntimeWaitKind::Sleep);
+    }
+
+    #[test]
+    fn action_required_detector_accepts_persisted_tool_result_shape() {
+        let output = json!({
+            "toolName": AUTONOMOUS_TOOL_ACTION_REQUIRED,
+            "summary": "Requested user input: Choose a stack",
+            "commandResult": null,
+            "output": {
+                "kind": "action_required",
+                "actionId": "user-input-1234",
+                "actionType": "user_input_required",
+                "status": "pending_user_response",
+                "title": "Choose a stack",
+                "detail": "Select the technology stack before implementation starts.",
+                "answerShape": "single_choice",
+                "promptKind": "technology_stack_selection",
+                "options": [
+                    {
+                        "id": "existing",
+                        "label": "Existing stack",
+                        "description": "Follow the current project conventions."
+                    },
+                    {
+                        "id": "react-vite",
+                        "label": "React + Vite"
+                    }
+                ],
+                "allowMultiple": false,
+                "intendedUse": "Use the selected stack for the implementation plan.",
+                "summary": "Requested user input: Choose a stack"
+            }
+        });
+
+        let request = action_required_output_from_tool_result(&output)
+            .expect("detect persisted action-required prompt");
+
+        assert_eq!(request.action_id, "user-input-1234");
+        assert_eq!(request.action_type, "user_input_required");
+        assert_eq!(request.title, "Choose a stack");
+        assert_eq!(
+            request.answer_shape,
+            crate::runtime::AutonomousActionRequiredAnswerShape::SingleChoice
+        );
+        assert_eq!(request.options.len(), 2);
     }
 
     #[test]
@@ -9405,6 +9583,7 @@ mod tests {
             run_id: run_id.into(),
             prompt: "Trigger the Test harness.".into(),
             attachments: Vec::new(),
+            linked_paths: Vec::new(),
             controls: Some(controls_input),
             tool_runtime: tool_runtime.clone(),
             provider_config: AgentProviderConfig::Fake,
@@ -9434,6 +9613,13 @@ mod tests {
                 ..ToolRegistryOptions::default()
             },
         )
+    }
+
+    fn descriptor_name_set(tools: &[AgentToolDescriptor]) -> BTreeSet<String> {
+        tools
+            .iter()
+            .map(|descriptor| descriptor.name.clone())
+            .collect()
     }
 
     fn tool_call(id: &str, tool_name: &str, input: JsonValue) -> AgentToolCall {
@@ -9497,6 +9683,135 @@ mod tests {
             visible["output"]["recoveredFrom"],
             json!("agent_tool_calls")
         );
+    }
+
+    #[test]
+    fn provider_loop_refreshes_stage_allowlist_after_stage_gate_completes() {
+        let _guard = project_state_test_lock()
+            .lock()
+            .expect("project state test lock");
+        let run_id = "stage-tool-access-refresh";
+        let (_tempdir, repo_root, project_id, controls, tool_runtime, messages) =
+            setup_test_agent_provider_loop(run_id);
+        let workflow_policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&json!({
+            "workflowStructure": {
+                "startPhaseId": "inspect",
+                "phases": [
+                    {
+                        "id": "inspect",
+                        "title": "Inspect",
+                        "allowedTools": [
+                            AUTONOMOUS_TOOL_READ,
+                            AUTONOMOUS_TOOL_TOOL_ACCESS,
+                            AUTONOMOUS_TOOL_TODO
+                        ],
+                        "requiredChecks": [
+                            {"kind": "todo_completed", "todoId": "inspect_done"}
+                        ]
+                    },
+                    {
+                        "id": "edit",
+                        "title": "Edit",
+                        "allowedTools": [
+                            AUTONOMOUS_TOOL_WRITE,
+                            AUTONOMOUS_TOOL_TOOL_ACCESS,
+                            AUTONOMOUS_TOOL_TODO
+                        ]
+                    }
+                ]
+            }
+        }))
+        .expect("workflow policy");
+        let tool_runtime = tool_runtime.with_agent_workflow_policy(Some(workflow_policy));
+        let inspect_allowed_tools = [
+            AUTONOMOUS_TOOL_READ,
+            AUTONOMOUS_TOOL_TOOL_ACCESS,
+            AUTONOMOUS_TOOL_TODO,
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+        let registry = ToolRegistry::for_tool_names_with_options(
+            inspect_allowed_tools.clone(),
+            ToolRegistryOptions {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                stage_allowed_tools: Some(inspect_allowed_tools),
+                ..ToolRegistryOptions::default()
+            },
+        );
+        let provider = ScriptedProvider::new(vec![
+            ProviderTurnOutcome::ToolCalls {
+                message: "complete inspect gate".into(),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: vec![tool_call(
+                    "call-complete-inspect",
+                    AUTONOMOUS_TOOL_TODO,
+                    json!({
+                        "action": "upsert",
+                        "id": "inspect_done",
+                        "title": "Inspection gate satisfied",
+                        "status": "completed",
+                        "evidence": "Read required context.",
+                        "phaseId": "inspect",
+                        "phaseTitle": "Inspect"
+                    }),
+                )],
+                usage: Some(ProviderUsage::default()),
+            },
+            ProviderTurnOutcome::ToolCalls {
+                message: "request write access".into(),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: vec![tool_call(
+                    "call-request-write",
+                    AUTONOMOUS_TOOL_TOOL_ACCESS,
+                    json!({
+                        "action": "request",
+                        "tools": [AUTONOMOUS_TOOL_WRITE],
+                        "reason": "Need to create the requested project files."
+                    }),
+                )],
+                usage: Some(ProviderUsage::default()),
+            },
+            ProviderTurnOutcome::Complete {
+                message: harness_report(),
+                reasoning_content: None,
+                reasoning_details: None,
+                usage: Some(ProviderUsage::default()),
+            },
+        ]);
+
+        drive_provider_loop(
+            &provider,
+            messages,
+            controls,
+            registry,
+            &tool_runtime,
+            &repo_root,
+            &project_id,
+            run_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+            None,
+            &AgentRunCancellationToken::default(),
+        )
+        .expect("provider loop should expose granted write tool after stage refresh");
+
+        let captured_tools = provider.captured_tools();
+        assert_eq!(captured_tools.len(), 3);
+        let first_turn = descriptor_name_set(&captured_tools[0]);
+        assert!(first_turn.contains(AUTONOMOUS_TOOL_READ));
+        assert!(first_turn.contains(AUTONOMOUS_TOOL_TOOL_ACCESS));
+        assert!(!first_turn.contains(AUTONOMOUS_TOOL_WRITE));
+
+        let second_turn = descriptor_name_set(&captured_tools[1]);
+        assert!(!second_turn.contains(AUTONOMOUS_TOOL_READ));
+        assert!(second_turn.contains(AUTONOMOUS_TOOL_TOOL_ACCESS));
+        assert!(second_turn.contains(AUTONOMOUS_TOOL_WRITE));
+
+        let third_turn = descriptor_name_set(&captured_tools[2]);
+        assert!(third_turn.contains(AUTONOMOUS_TOOL_TOOL_ACCESS));
+        assert!(third_turn.contains(AUTONOMOUS_TOOL_WRITE));
     }
 
     fn harness_report() -> String {

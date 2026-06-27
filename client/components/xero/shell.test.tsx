@@ -80,6 +80,29 @@ describe('XeroShell', () => {
     expect(screen.getByRole('navigation')).toBeVisible()
   })
 
+  it('renders the main view tabs as Chat, Create, Editor', () => {
+    const onViewChange = vi.fn()
+    render(
+      <XeroShell
+        activeView="agent"
+        onViewChange={onViewChange}
+        platformOverride="macos"
+      >
+        <div>Body</div>
+      </XeroShell>,
+    )
+
+    const nav = screen.getByRole('navigation')
+    expect(within(nav).getAllByRole('button').map((button) => button.textContent)).toEqual([
+      'Chat',
+      'Create',
+      'Editor',
+    ])
+
+    fireEvent.click(within(nav).getByRole('button', { name: 'Create' }))
+    expect(onViewChange).toHaveBeenCalledWith('phases')
+  })
+
   it('keeps the brand icon in the macOS left titlebar slot and centers the project controls', () => {
     const { container } = render(
       <XeroShell

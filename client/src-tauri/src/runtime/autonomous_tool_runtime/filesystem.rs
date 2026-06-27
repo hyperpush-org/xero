@@ -21,8 +21,8 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use super::{
     expected_hash_required_error,
     repo_scope::{
-        build_glob_matcher, normalize_glob_pattern, normalize_optional_relative_path,
-        normalize_relative_path, path_to_forward_slash, scope_relative_match_path,
+        build_glob_matcher, is_current_directory_path, normalize_glob_pattern,
+        normalize_optional_relative_path, normalize_relative_path, path_to_forward_slash,
     },
     stale_file_error, AutonomousCopyOmissions, AutonomousCopyOperation, AutonomousCopyOutput,
     AutonomousCopyRequest, AutonomousDeleteOutput, AutonomousDeleteRequest,
@@ -100,6 +100,7 @@ const MAX_DIRECTORY_DIGEST_FILES: usize = 5_000;
 const DEFAULT_HASH_MAX_FILES: usize = 1_000;
 const MAX_HASH_FILES: usize = 5_000;
 const MAX_HASH_INLINE_FILES: usize = 50;
+const READ_DIRECTORY_LIST_MAX_RESULTS: usize = 100;
 const PACKAGE_MANAGER_LOCKFILE_NAMES: &[&str] = &[
     "Cargo.lock",
     "Gemfile.lock",
@@ -604,14 +605,13 @@ impl AutonomousToolRuntime {
                         format!("Xero could not resolve symlink {}: {error}", path.display()),
                     )
                 })?;
-                let repo_relative = self.repo_relative_path(&resolved)?;
                 let metadata = fs::metadata(&resolved).map_err(|error| {
                     CommandError::retryable(
                         "autonomous_tool_stat_metadata_failed",
                         format!("Xero could not inspect {}: {error}", resolved.display()),
                     )
                 })?;
-                (metadata, Some(path_to_forward_slash(&repo_relative)))
+                (metadata, Some(self.display_read_path(&resolved)?))
             } else {
                 (link_metadata, None)
             };
@@ -619,7 +619,7 @@ impl AutonomousToolRuntime {
         let kind = stat_kind(&metadata);
         let (sha256, hash_omitted_reason) =
             self.stat_hash(&path, &metadata, kind, request.include_hash)?;
-        let git_status = if request.include_git_status {
+        let git_status = if request.include_git_status && self.is_within_repo_root(&path) {
             self.git_status_for_path(&display_path, kind)?
         } else {
             Vec::new()
@@ -679,13 +679,7 @@ impl AutonomousToolRuntime {
             )
         })?;
         if metadata.is_dir() {
-            return Err(CommandError::user_fixable(
-                "autonomous_tool_read_directory",
-                format!(
-                    "Xero cannot read `{}` because it is a directory.",
-                    target.display_path
-                ),
-            ));
+            return self.read_directory_listing_result(request, target, metadata);
         }
         let read_metadata = read_file_metadata(&metadata);
 
@@ -789,8 +783,8 @@ impl AutonomousToolRuntime {
         max_total_bytes: usize,
         current_total_bytes: u64,
     ) -> ReadManyPathResult {
-        let relative_path = match normalize_relative_path(path, "paths[]") {
-            Ok(path) => path,
+        let target = match self.resolve_existing_read_target(path, "paths[]") {
+            Ok(target) => target,
             Err(error) => {
                 return ReadManyPathResult::Error(read_many_error_item(
                     path.to_string(),
@@ -799,13 +793,8 @@ impl AutonomousToolRuntime {
                 ));
             }
         };
-        let display_path = path_to_forward_slash(&relative_path);
-        let resolved_path = match self.resolve_existing_path(&relative_path) {
-            Ok(path) => path,
-            Err(error) => {
-                return ReadManyPathResult::Error(read_many_error_item(display_path, error, None));
-            }
-        };
+        let display_path = target.display_path;
+        let resolved_path = target.path;
         let metadata = match fs::metadata(&resolved_path) {
             Ok(metadata) => metadata,
             Err(error) => {
@@ -1046,6 +1035,92 @@ impl AutonomousToolRuntime {
         })
     }
 
+    fn read_directory_listing_result(
+        &self,
+        request: AutonomousReadRequest,
+        target: ReadTarget,
+        metadata: Metadata,
+    ) -> CommandResult<AutonomousToolResult> {
+        let list_result = self.list(AutonomousListRequest {
+            path: Some(target.display_path.clone()),
+            max_depth: Some(1),
+            max_results: Some(READ_DIRECTORY_LIST_MAX_RESULTS),
+            sort_by: Some(AutonomousListSortBy::Path),
+            sort_direction: Some(AutonomousListSortDirection::Asc),
+            cursor: None,
+        })?;
+        let list_output = match list_result.output {
+            AutonomousToolOutput::List(output) => output,
+            _ => {
+                return Err(CommandError::system_fault(
+                    "autonomous_tool_read_directory_unexpected_output",
+                    "Xero expected directory read fallback to return a list output.",
+                ));
+            }
+        };
+        let mut lines = vec![
+            format!("Directory: {}", list_output.path),
+            format!("Returned entries: {}", list_output.returned_entries),
+            format!("Total files: {}", list_output.file_count),
+            format!("Total directories: {}", list_output.directory_count),
+            format!("Total symlinks: {}", list_output.symlink_count),
+            format!("Truncated: {}", list_output.truncated),
+        ];
+        if list_output.truncated {
+            lines.push(format!(
+                "Omitted: depth={}, entryCap={}, ignoredDirectory={}, permission={}",
+                list_output.omitted.depth,
+                list_output.omitted.entry_cap,
+                list_output.omitted.ignored_directory,
+                list_output.omitted.permission
+            ));
+        }
+        lines.push("kind\tbytes\tpath".into());
+        for entry in &list_output.entries {
+            lines.push(format!(
+                "{}\t{}\t{}",
+                entry.kind,
+                entry
+                    .bytes
+                    .map(|bytes| bytes.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                entry.path
+            ));
+        }
+        let mut text = lines.join("\n");
+        text.push('\n');
+        let bytes = text.as_bytes().to_vec();
+        let total_bytes = bytes.len() as u64;
+        let decoded = DecodedText {
+            text,
+            raw_bytes: bytes.clone(),
+            raw_sha256: sha256_hex(&bytes),
+            has_bom: false,
+            line_ending: AutonomousLineEnding::Lf,
+        };
+        let mut result = self.text_read_result(
+            request,
+            target.display_path.clone(),
+            read_file_metadata(&metadata),
+            decoded,
+            total_bytes,
+        )?;
+        if let AutonomousToolOutput::Read(read) = &result.output {
+            result.summary = if read.truncated {
+                format!(
+                    "Read {} line(s) from directory listing `{}` starting at line {} (truncated from {} total lines).",
+                    read.line_count, target.display_path, read.start_line, read.total_lines
+                )
+            } else {
+                format!(
+                    "Read {} line(s) from directory listing `{}`.",
+                    read.line_count, target.display_path
+                )
+            };
+        }
+        Ok(result)
+    }
+
     pub fn search(&self, request: AutonomousSearchRequest) -> CommandResult<AutonomousToolResult> {
         validate_non_empty(&request.query, "query")?;
         if request.query.chars().count() > self.limits.max_search_query_chars {
@@ -1058,18 +1133,11 @@ impl AutonomousToolRuntime {
             ));
         }
 
-        let scope = normalize_optional_relative_path(request.path.as_deref(), "path")?;
-
-        let scope_path = match scope.as_ref() {
-            Some(scope) => self.resolve_existing_path(scope)?,
-            None => self.repo_root.clone(),
-        };
-
+        let target = self.resolve_optional_read_target(request.path.as_deref(), "path")?;
+        let scope_path = target.path;
+        let scope_string = (target.display_path != ".").then_some(target.display_path);
         let mut search_options =
             SearchOptions::from_request(&request, self.limits.max_search_results)?;
-        let scope_string = scope
-            .as_ref()
-            .map(|path| path_to_forward_slash(path.as_path()));
         let cursor_fingerprint = search_cursor_fingerprint(
             &request.query,
             scope_string.as_deref(),
@@ -1171,18 +1239,14 @@ impl AutonomousToolRuntime {
 
         let mode = request.mode.unwrap_or(AutonomousFindMode::Glob);
         let normalized_pattern = normalize_find_pattern(&request.pattern, mode)?;
-        let scope = normalize_optional_relative_path(request.path.as_deref(), "path")?;
-
-        let scope_path = match scope.as_ref() {
-            Some(scope) => self.resolve_existing_path(scope)?,
-            None => self.repo_root.clone(),
-        };
+        let target = self.resolve_optional_read_target(request.path.as_deref(), "path")?;
+        let scope_path = target.path;
+        let scope_string = (target.display_path != ".").then_some(target.display_path);
         let scope_is_file = scope_path.is_file();
-        let scope_relative = if scope_path == self.repo_root {
-            None
-        } else {
-            Some(self.repo_relative_path(&scope_path)?)
-        };
+        let scope_root = scope_string
+            .as_ref()
+            .filter(|_| !scope_is_file)
+            .map(|_| scope_path.clone());
         let max_depth = request
             .max_depth
             .map(|depth| depth.min(MAX_LIST_TREE_DEPTH));
@@ -1197,9 +1261,6 @@ impl AutonomousToolRuntime {
             ));
         }
 
-        let scope_string = scope
-            .as_ref()
-            .map(|path| path_to_forward_slash(path.as_path()));
         let mut options = FindOptions {
             mode,
             pattern: normalized_pattern.clone(),
@@ -1208,10 +1269,12 @@ impl AutonomousToolRuntime {
             } else {
                 None
             },
-            scope_relative,
+            scope_root,
             scope_is_file,
             max_depth,
             max_results,
+            include_hidden: request.include_hidden,
+            include_ignored: request.include_ignored,
             cursor_offset: 0,
         };
         let cursor_fingerprint = find_cursor_fingerprint(
@@ -1220,6 +1283,8 @@ impl AutonomousToolRuntime {
             scope_string.as_deref(),
             max_depth,
             max_results,
+            request.include_hidden,
+            request.include_ignored,
         );
         if let Some(cursor) = request.cursor.as_deref() {
             let (fingerprint, offset) = parse_find_cursor(cursor)?;
@@ -1299,6 +1364,12 @@ impl AutonomousToolRuntime {
 
     pub fn edit(&self, request: AutonomousEditRequest) -> CommandResult<AutonomousToolResult> {
         validate_non_empty(&request.path, "path")?;
+        validate_file_path_not_repo_root(
+            &request.path,
+            "path",
+            "autonomous_tool_edit_file_path_required",
+            "edit",
+        )?;
         validate_edit_expected_present(&request.expected)?;
         let relative_path = normalize_relative_path(&request.path, "path")?;
         let resolved_path = self.resolve_existing_path(&relative_path)?;
@@ -1436,6 +1507,12 @@ impl AutonomousToolRuntime {
 
     pub fn write(&self, request: AutonomousWriteRequest) -> CommandResult<AutonomousToolResult> {
         validate_non_empty(&request.path, "path")?;
+        validate_file_path_not_repo_root(
+            &request.path,
+            "path",
+            "autonomous_tool_write_file_path_required",
+            "write",
+        )?;
         let relative_path = normalize_relative_path(&request.path, "path")?;
         let display_path = path_to_forward_slash(&relative_path);
         validate_not_package_manager_lockfile_mutation(&display_path)?;
@@ -1672,6 +1749,18 @@ impl AutonomousToolRuntime {
     pub fn copy(&self, request: AutonomousCopyRequest) -> CommandResult<AutonomousToolResult> {
         validate_non_empty(&request.from, "from")?;
         validate_non_empty(&request.to, "to")?;
+        if is_current_directory_path(request.from.trim()) {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_copy_repo_root_refused",
+                "Xero refused to copy the imported repository root. Copy a specific file or subdirectory instead.",
+            ));
+        }
+        if is_current_directory_path(request.to.trim()) {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_copy_target_repo_root_refused",
+                "Xero refused to use the imported repository root as a copy target.",
+            ));
+        }
         let from_relative = normalize_relative_path(&request.from, "from")?;
         let to_relative = normalize_relative_path(&request.to, "to")?;
         let from_display = path_to_forward_slash(&from_relative);
@@ -2322,7 +2411,9 @@ impl AutonomousToolRuntime {
                 paths.push(output.to_path.clone());
             }
             AutonomousToolOutput::Mkdir(output) => {
-                if output.created_paths.is_empty() {
+                if !output.created {
+                    paths.clear();
+                } else if output.created_paths.is_empty() {
                     paths.push(output.path.clone());
                 } else {
                     paths.extend(output.created_paths.clone());
@@ -2436,6 +2527,12 @@ impl AutonomousToolRuntime {
         tool_name: &'static str,
     ) -> CommandResult<AutonomousToolResult> {
         validate_non_empty(&request.path, "path")?;
+        validate_file_path_not_repo_root(
+            &request.path,
+            "path",
+            "autonomous_tool_structured_edit_file_path_required",
+            "structured edit",
+        )?;
         if request.operations.is_empty()
             || request.operations.len() > MAX_STRUCTURED_EDIT_OPERATIONS
         {
@@ -2556,6 +2653,12 @@ impl AutonomousToolRuntime {
 
     pub fn delete(&self, request: AutonomousDeleteRequest) -> CommandResult<AutonomousToolResult> {
         validate_non_empty(&request.path, "path")?;
+        if is_current_directory_path(request.path.trim()) {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_delete_repo_root_refused",
+                "Xero refused to delete the imported repository root.",
+            ));
+        }
         let relative_path = normalize_relative_path(&request.path, "path")?;
         let display_path = path_to_forward_slash(&relative_path);
         validate_not_package_manager_lockfile_mutation(&display_path)?;
@@ -2770,6 +2873,18 @@ impl AutonomousToolRuntime {
     pub fn rename(&self, request: AutonomousRenameRequest) -> CommandResult<AutonomousToolResult> {
         validate_non_empty(&request.from_path, "fromPath")?;
         validate_non_empty(&request.to_path, "toPath")?;
+        if is_current_directory_path(request.from_path.trim()) {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_rename_repo_root_refused",
+                "Xero refused to rename the imported repository root.",
+            ));
+        }
+        if is_current_directory_path(request.to_path.trim()) {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_rename_target_repo_root_refused",
+                "Xero refused to use the imported repository root as a rename target.",
+            ));
+        }
         let from_relative = normalize_relative_path(&request.from_path, "fromPath")?;
         let to_relative = normalize_relative_path(&request.to_path, "toPath")?;
         let from_display = path_to_forward_slash(&from_relative);
@@ -2950,11 +3065,17 @@ impl AutonomousToolRuntime {
 
     pub fn mkdir(&self, request: AutonomousMkdirRequest) -> CommandResult<AutonomousToolResult> {
         validate_non_empty(&request.path, "path")?;
-        let relative_path = normalize_relative_path(&request.path, "path")?;
-        let resolved_path = self.resolve_writable_path(&relative_path)?;
         let parents = request.parents.unwrap_or(true);
         let exist_ok = request.exist_ok.unwrap_or(true);
-        let display_path = path_to_forward_slash(&relative_path);
+        let (display_path, resolved_path) = if is_current_directory_path(request.path.trim()) {
+            (".".to_string(), self.repo_root.clone())
+        } else {
+            let relative_path = normalize_relative_path(&request.path, "path")?;
+            (
+                path_to_forward_slash(&relative_path),
+                self.resolve_writable_path(&relative_path)?,
+            )
+        };
         if resolved_path.exists() {
             if !resolved_path.is_dir() {
                 return Err(CommandError::user_fixable(
@@ -3066,11 +3187,9 @@ impl AutonomousToolRuntime {
     }
 
     pub fn list(&self, request: AutonomousListRequest) -> CommandResult<AutonomousToolResult> {
-        let relative_path = normalize_optional_relative_path(request.path.as_deref(), "path")?;
-        let scope = match relative_path.as_ref() {
-            Some(path) => self.resolve_existing_path(path)?,
-            None => self.repo_root.clone(),
-        };
+        let target = self.resolve_optional_read_target(request.path.as_deref(), "path")?;
+        let scope = target.path;
+        let display_path = target.display_path;
         let max_depth = request.max_depth.unwrap_or(2).min(MAX_LIST_TREE_DEPTH);
         let max_results = request
             .max_results
@@ -3090,10 +3209,6 @@ impl AutonomousToolRuntime {
             max_depth,
             cursor_offset: 0,
         };
-        let display_path = relative_path
-            .as_ref()
-            .map(|path| path_to_forward_slash(path))
-            .unwrap_or_else(|| ".".into());
         let cursor_fingerprint = list_cursor_fingerprint(
             &display_path,
             max_depth,
@@ -3164,15 +3279,9 @@ impl AutonomousToolRuntime {
         &self,
         request: AutonomousListTreeRequest,
     ) -> CommandResult<AutonomousToolResult> {
-        let relative_path = normalize_optional_relative_path(request.path.as_deref(), "path")?;
-        let scope = match relative_path.as_ref() {
-            Some(path) => self.resolve_existing_path(path)?,
-            None => self.repo_root.clone(),
-        };
-        let display_path = relative_path
-            .as_ref()
-            .map(|path| path_to_forward_slash(path.as_path()))
-            .unwrap_or_else(|| ".".into());
+        let target = self.resolve_optional_read_target(request.path.as_deref(), "path")?;
+        let scope = target.path;
+        let display_path = target.display_path;
         let max_depth = request
             .max_depth
             .unwrap_or(DEFAULT_LIST_TREE_MAX_DEPTH)
@@ -3189,7 +3298,7 @@ impl AutonomousToolRuntime {
         }
         let include_globs = build_search_globset(&request.include_globs, "includeGlobs")?;
         let exclude_globs = build_search_globset(&request.exclude_globs, "excludeGlobs")?;
-        let git_status = if request.include_git_status {
+        let git_status = if request.include_git_status && self.is_within_repo_root(&scope) {
             self.git_status_for_path(&display_path, AutonomousStatKind::Directory)?
         } else {
             Vec::new()
@@ -3304,8 +3413,7 @@ impl AutonomousToolRuntime {
                 }
                 continue;
             }
-            let repo_relative = self.repo_relative_path(&child_path)?;
-            let child_display = path_to_forward_slash(&repo_relative);
+            let child_display = self.display_read_path(&child_path)?;
             if !list_tree_matches_filters(
                 child_display.as_str(),
                 entry
@@ -3342,10 +3450,9 @@ impl AutonomousToolRuntime {
         &self,
         request: AutonomousDirectoryDigestRequest,
     ) -> CommandResult<AutonomousToolResult> {
-        validate_non_empty(&request.path, "path")?;
-        let relative_path = normalize_relative_path(&request.path, "path")?;
-        let scope = self.resolve_existing_path(&relative_path)?;
-        let display_path = path_to_forward_slash(&relative_path);
+        let target = self.resolve_existing_repo_target_allow_root(&request.path, "path")?;
+        let scope = target.path;
+        let display_path = target.display_path;
         let max_files = request
             .max_files
             .unwrap_or(DEFAULT_DIRECTORY_DIGEST_MAX_FILES)
@@ -3531,9 +3638,9 @@ impl AutonomousToolRuntime {
     }
 
     pub fn hash(&self, request: AutonomousHashRequest) -> CommandResult<AutonomousToolResult> {
-        validate_non_empty(&request.path, "path")?;
-        let relative_path = normalize_relative_path(&request.path, "path")?;
-        let resolved_path = self.resolve_existing_path(&relative_path)?;
+        let target = self.resolve_existing_repo_target_allow_root(&request.path, "path")?;
+        let resolved_path = target.path;
+        let display_path = target.display_path;
         let metadata = fs::symlink_metadata(&resolved_path).map_err(|error| {
             CommandError::retryable(
                 "autonomous_tool_hash_metadata_failed",
@@ -3544,7 +3651,6 @@ impl AutonomousToolRuntime {
             )
         })?;
         let path_kind = stat_kind(&metadata);
-        let display_path = path_to_forward_slash(&relative_path);
         let max_files = request.max_files.unwrap_or(DEFAULT_HASH_MAX_FILES);
         if max_files == 0 || max_files > MAX_HASH_FILES {
             return Err(CommandError::user_fixable(
@@ -3833,8 +3939,7 @@ impl AutonomousToolRuntime {
                 continue;
             }
 
-            let repo_relative = self.repo_relative_path(path)?;
-            let display_path = path_to_forward_slash(&repo_relative);
+            let display_path = self.display_read_path(path)?;
             if let Some(globs) = include_globs {
                 if !globs.is_match(display_path.as_str()) {
                     result.omissions.filtered_files =
@@ -3950,8 +4055,16 @@ impl AutonomousToolRuntime {
             )
         })?;
         let path_kind = stat_kind(&metadata);
+        if should_skip_hidden_find_path(scope, depth, options.include_hidden) {
+            if metadata.is_dir() {
+                result.omissions.ignored_directories =
+                    result.omissions.ignored_directories.saturating_add(1);
+            }
+            return Ok(());
+        }
+
         if metadata.is_dir() {
-            if self.should_skip_directory(scope) {
+            if !options.include_ignored && self.should_skip_directory(scope) {
                 result.omissions.ignored_directories =
                     result.omissions.ignored_directories.saturating_add(1);
                 return Ok(());
@@ -3998,14 +4111,8 @@ impl AutonomousToolRuntime {
         if path_kind == AutonomousStatKind::Symlink {
             return Ok(());
         }
-        let repo_relative = self.repo_relative_path(path)?;
-        let display_path = path_to_forward_slash(&repo_relative);
-        let candidate = scope_relative_match_path(
-            repo_relative.as_path(),
-            options.scope_relative.as_deref(),
-            options.scope_is_file,
-        )
-        .map(|path| path_to_forward_slash(&path))?;
+        let display_path = self.display_read_path(path)?;
+        let candidate = find_candidate_display_path(path, &display_path, options)?;
         if !find_candidate_matches(&display_path, &candidate, path, options) {
             return Ok(());
         }
@@ -4073,7 +4180,7 @@ impl AutonomousToolRuntime {
             if collection.candidates.len() >= MAX_LIST_TREE_ENTRIES {
                 collection.omitted.entry_cap = collection.omitted.entry_cap.saturating_add(1);
             } else {
-                let display_path = path_to_forward_slash(&self.repo_relative_path(path)?);
+                let display_path = self.display_read_path(path)?;
                 let modified_at = metadata.modified().ok().and_then(system_time_to_rfc3339);
                 collection.candidates.push(ListCandidate {
                     name: path
@@ -4133,14 +4240,6 @@ impl AutonomousToolRuntime {
         operator_approved: bool,
     ) -> CommandResult<ReadTarget> {
         if request.system_path {
-            if !operator_approved {
-                return Err(CommandError::new(
-                    "autonomous_tool_system_read_requires_approval",
-                    CommandErrorClass::PolicyDenied,
-                    "Xero requires operator approval before reading an absolute system path outside the imported repository.",
-                    false,
-                ));
-            }
             let expanded = expand_system_path(&request.path)?;
             if !expanded.is_absolute() {
                 return Err(CommandError::user_fixable(
@@ -4157,13 +4256,87 @@ impl AutonomousToolRuntime {
                     ),
                 )
             })?;
+            if !operator_approved && !self.is_within_linked_read_root(&resolved) {
+                return Err(CommandError::new(
+                    "autonomous_tool_system_read_requires_approval",
+                    CommandErrorClass::PolicyDenied,
+                    "Xero requires operator approval before reading an absolute system path outside the imported repository or linked context paths.",
+                    false,
+                ));
+            }
             return Ok(ReadTarget {
                 display_path: resolved.display().to_string(),
                 path: resolved,
             });
         }
 
-        let relative_path = normalize_relative_path(&request.path, "path")?;
+        self.resolve_optional_read_target(Some(&request.path), "path")
+    }
+
+    pub(super) fn is_within_linked_read_root(&self, resolved_path: &Path) -> bool {
+        self.linked_read_roots.iter().any(|root| {
+            if root.is_dir {
+                resolved_path == root.path || resolved_path.starts_with(&root.path)
+            } else {
+                resolved_path == root.path
+            }
+        })
+    }
+
+    pub(super) fn linked_read_target_for_absolute_path(
+        &self,
+        value: &str,
+    ) -> CommandResult<ReadTarget> {
+        let expanded = expand_system_path(value)?;
+        if !expanded.is_absolute() {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_linked_context_path_invalid",
+                "Xero requires linked context paths to be absolute or `~`-relative.",
+            ));
+        }
+        let resolved = fs::canonicalize(&expanded).map_err(|error| {
+            CommandError::retryable(
+                "autonomous_tool_linked_context_resolve_failed",
+                format!(
+                    "Xero could not resolve linked context path {}: {error}",
+                    expanded.display()
+                ),
+            )
+        })?;
+        if !self.is_within_linked_read_root(&resolved) {
+            return Err(CommandError::new(
+                "autonomous_tool_path_denied",
+                CommandErrorClass::PolicyDenied,
+                format!(
+                    "Xero denied access to `{}` because it resolves outside the imported repository root and linked context paths.",
+                    value.trim()
+                ),
+                false,
+            ));
+        }
+        Ok(ReadTarget {
+            display_path: absolute_path_to_forward_slash(&resolved),
+            path: resolved,
+        })
+    }
+
+    fn resolve_existing_read_target(
+        &self,
+        value: &str,
+        field: &'static str,
+    ) -> CommandResult<ReadTarget> {
+        validate_non_empty(value, field)?;
+        let trimmed = value.trim();
+        if should_resolve_as_linked_absolute_path(trimmed) {
+            return self.linked_read_target_for_absolute_path(trimmed);
+        }
+
+        let Some(relative_path) = normalize_optional_relative_path(Some(trimmed), field)? else {
+            return Ok(ReadTarget {
+                display_path: ".".into(),
+                path: self.repo_root.clone(),
+            });
+        };
         let resolved_path = self.resolve_existing_path(&relative_path)?;
         Ok(ReadTarget {
             display_path: path_to_forward_slash(&relative_path),
@@ -4171,7 +4344,74 @@ impl AutonomousToolRuntime {
         })
     }
 
+    fn resolve_existing_repo_target_allow_root(
+        &self,
+        value: &str,
+        field: &'static str,
+    ) -> CommandResult<ReadTarget> {
+        validate_non_empty(value, field)?;
+        let Some(relative_path) = normalize_optional_relative_path(Some(value), field)? else {
+            return Ok(ReadTarget {
+                display_path: ".".into(),
+                path: self.repo_root.clone(),
+            });
+        };
+        let resolved_path = self.resolve_existing_path(&relative_path)?;
+        Ok(ReadTarget {
+            display_path: path_to_forward_slash(&relative_path),
+            path: resolved_path,
+        })
+    }
+
+    fn resolve_optional_read_target(
+        &self,
+        value: Option<&str>,
+        field: &'static str,
+    ) -> CommandResult<ReadTarget> {
+        let Some(trimmed) = value
+            .map(str::trim)
+            .filter(|path| !path.is_empty() && !is_current_directory_path(path))
+        else {
+            return Ok(ReadTarget {
+                display_path: ".".into(),
+                path: self.repo_root.clone(),
+            });
+        };
+
+        self.resolve_existing_read_target(trimmed, field)
+    }
+
+    fn display_read_path(&self, resolved_path: &Path) -> CommandResult<String> {
+        if self.is_within_repo_root(resolved_path) {
+            return Ok(resolved_path
+                .strip_prefix(&self.repo_root)
+                .ok()
+                .map(path_to_forward_slash)
+                .filter(|path| !path.is_empty())
+                .unwrap_or_else(|| ".".into()));
+        }
+        if self.is_within_linked_read_root(resolved_path) {
+            return Ok(absolute_path_to_forward_slash(resolved_path));
+        }
+        Err(CommandError::new(
+            "autonomous_tool_path_denied",
+            CommandErrorClass::PolicyDenied,
+            format!(
+                "Xero denied access to `{}` because it resolves outside the imported repository root and linked context paths.",
+                resolved_path.display()
+            ),
+            false,
+        ))
+    }
+
+    fn is_within_repo_root(&self, resolved_path: &Path) -> bool {
+        resolved_path == self.repo_root || resolved_path.starts_with(&self.repo_root)
+    }
+
     fn resolve_stat_target(&self, path: &str) -> CommandResult<ReadTarget> {
+        if should_resolve_as_linked_absolute_path(path.trim()) {
+            return self.linked_read_target_for_absolute_path(path);
+        }
         let relative_path = normalize_optional_relative_path(Some(path), "path")?;
         let Some(relative_path) = relative_path else {
             return Ok(ReadTarget {
@@ -5002,7 +5242,9 @@ fn fs_transaction_changed_paths_from_output(output: &AutonomousToolOutput) -> Ve
             .chain(std::iter::once(output.to_path.clone()))
             .collect(),
         AutonomousToolOutput::Mkdir(output) => {
-            if output.created_paths.is_empty() {
+            if !output.created {
+                Vec::new()
+            } else if output.created_paths.is_empty() {
                 vec![output.path.clone()]
             } else {
                 output.created_paths.clone()
@@ -5693,7 +5935,7 @@ fn list_tree_matches_filters(
 }
 
 #[derive(Debug, Clone)]
-struct ReadTarget {
+pub(super) struct ReadTarget {
     display_path: String,
     path: PathBuf,
 }
@@ -5824,10 +6066,12 @@ struct FindOptions {
     mode: AutonomousFindMode,
     pattern: String,
     glob_matcher: Option<GlobMatcher>,
-    scope_relative: Option<PathBuf>,
+    scope_root: Option<PathBuf>,
     scope_is_file: bool,
     max_depth: Option<usize>,
     max_results: usize,
+    include_hidden: bool,
+    include_ignored: bool,
     cursor_offset: usize,
 }
 
@@ -6253,16 +6497,65 @@ fn find_candidate_matches(
     }
 }
 
+fn find_candidate_display_path(
+    path: &Path,
+    display_path: &str,
+    options: &FindOptions,
+) -> CommandResult<String> {
+    if options.scope_is_file {
+        return path
+            .file_name()
+            .map(|file_name| file_name.to_string_lossy().into_owned())
+            .ok_or_else(|| CommandError::invalid_request("path"));
+    }
+
+    if let Some(scope_root) = options.scope_root.as_deref() {
+        return path
+            .strip_prefix(scope_root)
+            .map(path_to_forward_slash)
+            .map(|relative| {
+                if relative.is_empty() {
+                    ".".into()
+                } else {
+                    relative
+                }
+            })
+            .map_err(|_| {
+                CommandError::new(
+                    "autonomous_tool_path_denied",
+                    CommandErrorClass::PolicyDenied,
+                    format!(
+                        "Xero denied access to `{display_path}` because it escaped the scoped find root."
+                    ),
+                    false,
+                )
+            });
+    }
+
+    Ok(display_path.to_owned())
+}
+
+fn should_skip_hidden_find_path(path: &Path, depth: usize, include_hidden: bool) -> bool {
+    if include_hidden || depth == 0 {
+        return false;
+    }
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('.') && name != "." && name != "..")
+}
+
 fn find_cursor_fingerprint(
     pattern: &str,
     mode: AutonomousFindMode,
     scope: Option<&str>,
     max_depth: Option<usize>,
     max_results: usize,
+    include_hidden: bool,
+    include_ignored: bool,
 ) -> String {
     sha256_hex(
         format!(
-            "find:v1\0pattern={pattern}\0mode={mode:?}\0scope={}\0max_depth={}\0max_results={max_results}",
+            "find:v1\0pattern={pattern}\0mode={mode:?}\0scope={}\0max_depth={}\0max_results={max_results}\0include_hidden={include_hidden}\0include_ignored={include_ignored}",
             scope.unwrap_or("."),
             max_depth
                 .map(|value| value.to_string())
@@ -6860,7 +7153,7 @@ fn is_supported_image_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn expand_system_path(value: &str) -> CommandResult<PathBuf> {
+pub(super) fn expand_system_path(value: &str) -> CommandResult<PathBuf> {
     let trimmed = value.trim();
     if trimmed == "~" || trimmed.starts_with("~/") {
         let home = dirs::home_dir().ok_or_else(|| {
@@ -6875,6 +7168,15 @@ fn expand_system_path(value: &str) -> CommandResult<PathBuf> {
         return Ok(home.join(&trimmed[2..]));
     }
     Ok(PathBuf::from(trimmed))
+}
+
+fn should_resolve_as_linked_absolute_path(value: &str) -> bool {
+    let trimmed = value.trim();
+    Path::new(trimmed).is_absolute() || trimmed == "~" || trimmed.starts_with("~/")
+}
+
+fn absolute_path_to_forward_slash(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn should_skip_directory_for_root(repo_root: &Path, path: &Path) -> bool {
@@ -6903,6 +7205,23 @@ fn should_skip_search_file_error(error: &CommandError) -> bool {
             | "autonomous_tool_file_too_large"
             | "autonomous_tool_read_failed"
     )
+}
+
+fn validate_file_path_not_repo_root(
+    value: &str,
+    field: &'static str,
+    code: &'static str,
+    tool_label: &'static str,
+) -> CommandResult<()> {
+    if is_current_directory_path(value.trim()) {
+        return Err(CommandError::user_fixable(
+            code,
+            format!(
+                "Xero requires `{field}` for {tool_label} to name a file inside the imported repository, not the imported repository root."
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn normalize_patch_operations(
@@ -6943,6 +7262,12 @@ fn normalize_patch_operations(
         .enumerate()
         .map(|(index, operation)| {
             validate_non_empty(&operation.path, "path")?;
+            validate_file_path_not_repo_root(
+                &operation.path,
+                "path",
+                "autonomous_tool_patch_file_path_required",
+                "patch",
+            )?;
             validate_non_empty(&operation.search, "search")?;
             let relative_path = normalize_relative_path(&operation.path, "path")?;
             let display_path = path_to_forward_slash(&relative_path);
@@ -7474,10 +7799,167 @@ mod tests {
             path: Some(".".into()),
             max_depth: None,
             max_results: None,
+            include_hidden: false,
+            include_ignored: false,
             cursor: None,
         }));
         assert_eq!(find_output.scope, None);
         assert!(find_output.matches.iter().any(|path| path == "src/main.rs"));
+    }
+
+    #[test]
+    fn list_allows_linked_context_folder_absolute_path() {
+        let repo = tempdir().expect("repo");
+        let linked = tempdir().expect("linked");
+        fs::create_dir_all(linked.path().join("src")).expect("linked src");
+        fs::write(linked.path().join("src/main.ts"), "export {}\n").expect("linked source");
+        let linked_root = fs::canonicalize(linked.path()).expect("canonical linked root");
+        let linked_file =
+            fs::canonicalize(linked.path().join("src/main.ts")).expect("canonical linked file");
+        let runtime = AutonomousToolRuntime::new(repo.path())
+            .expect("runtime")
+            .with_linked_read_roots(vec![linked.path().to_path_buf()])
+            .expect("linked roots");
+
+        let output = list_output(runtime.list(AutonomousListRequest {
+            path: Some(linked.path().display().to_string()),
+            max_depth: Some(2),
+            max_results: None,
+            sort_by: None,
+            sort_direction: None,
+            cursor: None,
+        }));
+
+        assert_eq!(output.path, absolute_path_to_forward_slash(&linked_root));
+        assert!(output
+            .entries
+            .iter()
+            .any(|entry| entry.path == absolute_path_to_forward_slash(&linked_file)));
+    }
+
+    #[test]
+    fn list_tree_allows_linked_context_folder_absolute_path() {
+        let repo = tempdir().expect("repo");
+        let linked = tempdir().expect("linked");
+        fs::create_dir_all(linked.path().join("src")).expect("linked src");
+        fs::write(linked.path().join("src/main.ts"), "export {}\n").expect("linked source");
+        let linked_root = fs::canonicalize(linked.path()).expect("canonical linked root");
+        let linked_file =
+            fs::canonicalize(linked.path().join("src/main.ts")).expect("canonical linked file");
+        let runtime = AutonomousToolRuntime::new(repo.path())
+            .expect("runtime")
+            .with_linked_read_roots(vec![linked.path().to_path_buf()])
+            .expect("linked roots");
+
+        let result = runtime
+            .list_tree(AutonomousListTreeRequest {
+                path: Some(linked.path().display().to_string()),
+                max_depth: Some(2),
+                max_entries: None,
+                include_globs: Vec::new(),
+                exclude_globs: Vec::new(),
+                include_git_status: true,
+                show_omitted: true,
+            })
+            .expect("list tree");
+        let AutonomousToolOutput::ListTree(output) = result.output else {
+            panic!("unexpected output: {:?}", result.output);
+        };
+
+        assert_eq!(output.path, absolute_path_to_forward_slash(&linked_root));
+        assert_eq!(output.git_status, Vec::<RepositoryStatusEntryDto>::new());
+        assert!(output.root.children.iter().any(|child| {
+            child.path == absolute_path_to_forward_slash(&linked_root.join("src"))
+                && child.children.iter().any(|grandchild| {
+                    grandchild.path == absolute_path_to_forward_slash(&linked_file)
+                })
+        }));
+    }
+
+    #[test]
+    fn search_allows_linked_context_folder_absolute_path() {
+        let repo = tempdir().expect("repo");
+        let linked = tempdir().expect("linked");
+        fs::create_dir_all(linked.path().join("src")).expect("linked src");
+        fs::write(
+            linked.path().join("src/main.ts"),
+            "const project = 'Panda';\n",
+        )
+        .expect("linked source");
+        let linked_file =
+            fs::canonicalize(linked.path().join("src/main.ts")).expect("canonical linked file");
+        let runtime = AutonomousToolRuntime::new(repo.path())
+            .expect("runtime")
+            .with_linked_read_roots(vec![linked.path().to_path_buf()])
+            .expect("linked roots");
+
+        let output = search_output(runtime.search(AutonomousSearchRequest {
+            query: "Panda".into(),
+            path: Some(linked.path().display().to_string()),
+            regex: false,
+            ignore_case: false,
+            include_hidden: false,
+            include_ignored: false,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            context_lines: None,
+            max_results: None,
+            files_only: false,
+            cursor: None,
+        }));
+
+        assert_eq!(
+            output.scope.as_deref(),
+            Some(
+                absolute_path_to_forward_slash(
+                    &fs::canonicalize(linked.path()).expect("canonical linked root")
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(
+            output.matches[0].path,
+            absolute_path_to_forward_slash(&linked_file)
+        );
+    }
+
+    #[test]
+    fn find_allows_linked_context_folder_absolute_path() {
+        let repo = tempdir().expect("repo");
+        let linked = tempdir().expect("linked");
+        fs::create_dir_all(linked.path().join("src")).expect("linked src");
+        fs::write(linked.path().join("src/main.ts"), "export {}\n").expect("linked source");
+        let linked_file =
+            fs::canonicalize(linked.path().join("src/main.ts")).expect("canonical linked file");
+        let runtime = AutonomousToolRuntime::new(repo.path())
+            .expect("runtime")
+            .with_linked_read_roots(vec![linked.path().to_path_buf()])
+            .expect("linked roots");
+
+        let output = find_output(runtime.find(AutonomousFindRequest {
+            pattern: "**/*.ts".into(),
+            mode: None,
+            path: Some(linked.path().display().to_string()),
+            max_depth: None,
+            max_results: None,
+            include_hidden: false,
+            include_ignored: false,
+            cursor: None,
+        }));
+
+        assert_eq!(
+            output.scope.as_deref(),
+            Some(
+                absolute_path_to_forward_slash(
+                    &fs::canonicalize(linked.path()).expect("canonical linked root")
+                )
+                .as_str()
+            )
+        );
+        assert!(output
+            .matches
+            .iter()
+            .any(|path| path == &absolute_path_to_forward_slash(&linked_file)));
     }
 
     #[test]
@@ -7878,6 +8360,68 @@ mod tests {
             include_line_hashes: false,
         }));
         assert_eq!(approved.content, "outside\n");
+    }
+
+    #[test]
+    fn system_read_allows_linked_context_folder_without_operator_approval() {
+        let repo = tempdir().expect("repo");
+        let linked = tempdir().expect("linked");
+        let linked_file = linked.path().join("notes.txt");
+        fs::write(&linked_file, "linked context\n").expect("linked file");
+        let linked_file = fs::canonicalize(linked_file).expect("canonical linked file");
+        let runtime = AutonomousToolRuntime::new(repo.path())
+            .expect("runtime")
+            .with_linked_read_roots(vec![linked.path().to_path_buf()])
+            .expect("linked roots");
+
+        let output = read_output(runtime.read(AutonomousReadRequest {
+            path: linked_file.display().to_string(),
+            system_path: true,
+            mode: Some(AutonomousReadMode::Text),
+            start_line: None,
+            line_count: None,
+            cursor: None,
+            around_pattern: None,
+            max_bytes_per_file: None,
+            byte_offset: None,
+            byte_count: None,
+            include_line_hashes: false,
+        }));
+
+        assert_eq!(output.path, linked_file.display().to_string());
+        assert_eq!(output.content, "linked context\n");
+    }
+
+    #[test]
+    fn system_read_denies_unlinked_sibling_of_linked_context_folder() {
+        let repo = tempdir().expect("repo");
+        let linked = tempdir().expect("linked");
+        let sibling = tempdir().expect("sibling");
+        let sibling_file = sibling.path().join("notes.txt");
+        fs::write(&sibling_file, "not linked\n").expect("sibling file");
+        let runtime = AutonomousToolRuntime::new(repo.path())
+            .expect("runtime")
+            .with_linked_read_roots(vec![linked.path().to_path_buf()])
+            .expect("linked roots");
+
+        let denied = runtime
+            .read(AutonomousReadRequest {
+                path: sibling_file.display().to_string(),
+                system_path: true,
+                mode: Some(AutonomousReadMode::Text),
+                start_line: None,
+                line_count: None,
+                cursor: None,
+                around_pattern: None,
+                max_bytes_per_file: None,
+                byte_offset: None,
+                byte_count: None,
+                include_line_hashes: false,
+            })
+            .expect_err("unlinked sibling still needs approval");
+
+        assert_eq!(denied.class, CommandErrorClass::PolicyDenied);
+        assert_eq!(denied.code, "autonomous_tool_system_read_requires_approval");
     }
 
     #[test]

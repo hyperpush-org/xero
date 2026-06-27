@@ -442,6 +442,86 @@ describe("Composer", () => {
 		expect(screen.queryByRole("alert")).toBeNull();
 	});
 
+	it("adds files dropped on the composer surface", () => {
+		const onAddFiles = vi.fn();
+		renderComposer({ onAddFiles });
+
+		const composer = document.querySelector(
+			'[data-composer-drop-target="true"]',
+		) as HTMLElement;
+		const file = new File(["hello"], "notes.txt", { type: "text/plain" });
+
+		fireEvent.drop(composer, {
+			dataTransfer: {
+				files: [file],
+				types: ["Files"],
+				dropEffect: "copy",
+			},
+		});
+
+		expect(onAddFiles).toHaveBeenCalledWith([file]);
+	});
+
+	it("offers folders from the attachment menu when folder linking is available", () => {
+		const onAddFolders = vi.fn();
+		renderComposer({ onAddFiles: vi.fn(), onAddFolders });
+
+		fireEvent.pointerDown(screen.getByRole("button", { name: "Add context" }), {
+			button: 0,
+		});
+		fireEvent.click(screen.getByRole("menuitem", { name: "Folder" }));
+
+		expect(onAddFolders).toHaveBeenCalledTimes(1);
+	});
+
+	it("opens @ project context suggestions and attaches the highlighted option with Tab", async () => {
+		const onContextMentionQueryChange = vi.fn();
+		const onSelectContextMention = vi.fn();
+		renderComposer({
+			contextMentionStatus: "ready",
+			contextMentionOptions: [
+				{
+					id: "folder-app",
+					kind: "folder",
+					title: "app",
+					subtitle: "app",
+				},
+				{
+					id: "file-app",
+					kind: "file",
+					title: "App.tsx",
+					subtitle: "client/src/App.tsx",
+				},
+			],
+			onContextMentionQueryChange,
+			onSelectContextMention,
+		});
+
+		const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+		fireEvent.change(textarea, {
+			target: {
+				value: "@app",
+				selectionStart: 4,
+				selectionEnd: 4,
+			},
+		});
+
+		await waitFor(() => expect(onContextMentionQueryChange).toHaveBeenCalledWith("app"));
+		expect(screen.getByRole("listbox", { name: "Project context suggestions" })).toBeVisible();
+
+		fireEvent.keyDown(textarea, { key: "ArrowDown" });
+		fireEvent.keyUp(textarea, { key: "ArrowDown" });
+		fireEvent.keyDown(textarea, { key: "Tab" });
+
+		expect(onSelectContextMention).toHaveBeenCalledWith({
+			id: "file-app",
+			kind: "file",
+			title: "App.tsx",
+			subtitle: "client/src/App.tsx",
+		});
+		await waitFor(() => expect(textarea).toHaveValue(""));
+	});
+
 	it("blocks sending when a pending attachment is incompatible with the selected model", async () => {
 		const { onSubmit } = renderComposer({
 			initialDraft: "Describe this",
@@ -519,6 +599,25 @@ describe("Composer", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: "Remove Element context" }));
 		expect(onRemoveContext).toHaveBeenCalledWith("context-1");
+	});
+
+	it("allows pending context to be submitted without visible text", async () => {
+		const { onSubmit } = renderComposer({
+			pendingContexts: [
+				{
+					id: "context-1",
+					kind: "folder",
+					title: "src",
+					subtitle: "/tmp/project/src",
+				},
+			],
+		});
+
+		const sendButton = screen.getByRole("button", { name: "Send message" });
+		expect(sendButton).toBeEnabled();
+		fireEvent.click(sendButton);
+
+		await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(""));
 	});
 
 	it("renders a stop button that invokes onStop while a run is active", () => {

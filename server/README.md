@@ -20,14 +20,14 @@ mix setup
 mix phx.server
 ```
 
-The dev endpoint listens on `http://localhost:4000`.
+The dev endpoint listens on `http://localhost:26140`.
 
 ## Environment
 
 Copy `.env.example` to `.env` for local secrets or overrides. Dev defaults use:
 
-- `DATABASE_URL=ecto://postgres:postgres@localhost/xero_dev`
-- `PORT=4000`
+- `DATABASE_URL=ecto://postgres:postgres@localhost:26132/xero_dev`
+- `PORT=26140`
 - CORS origins for the Vite/Tauri dev frontend
 
 ## Commands

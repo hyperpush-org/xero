@@ -20,7 +20,7 @@ defmodule XeroWeb.GitHubAuthControllerTest do
 
       assert body["flowId"]
       assert body["kind"] == "desktop"
-      assert body["redirectUri"] == "http://127.0.0.1:4002/auth/github/callback"
+      assert body["redirectUri"] == "http://127.0.0.1:26142/auth/github/callback"
 
       uri = URI.parse(body["authorizationUrl"])
       query = URI.decode_query(uri.query)
@@ -29,7 +29,7 @@ defmodule XeroWeb.GitHubAuthControllerTest do
       assert uri.host == "github.com"
       assert uri.path == "/login/oauth/authorize"
       assert query["client_id"] == "test-github-client"
-      assert query["redirect_uri"] == "http://127.0.0.1:4002/auth/github/callback"
+      assert query["redirect_uri"] == "http://127.0.0.1:26142/auth/github/callback"
       assert query["scope"] == "read:user user:email"
       assert query["state"]
     end)
@@ -170,7 +170,7 @@ defmodule XeroWeb.GitHubAuthControllerTest do
   test "web callback sets persistent browser session cookies", %{conn: conn} do
     with_github_env(fn ->
       with_github_req_stub(fn ->
-        redirect_to = "http://127.0.0.1:3000/sessions"
+        redirect_to = "http://127.0.0.1:26102/sessions"
 
         start_conn =
           post(conn, ~p"/api/github/login", %{
@@ -211,7 +211,7 @@ defmodule XeroWeb.GitHubAuthControllerTest do
         start_conn =
           post(conn, ~p"/api/github/login", %{
             kind: "web",
-            redirectTo: "http://localhost:3000/sessions"
+            redirectTo: "http://localhost:26102/sessions"
           })
 
         start_body = json_response(start_conn, 200)
@@ -220,7 +220,7 @@ defmodule XeroWeb.GitHubAuthControllerTest do
         callback_conn =
           get(conn, ~p"/auth/github/callback?state=#{state_token}&code=callback-code")
 
-        assert redirected_to(callback_conn, 302) == "http://127.0.0.1:3000/sessions"
+        assert redirected_to(callback_conn, 302) == "http://127.0.0.1:26102/sessions"
       end)
     end)
   end
@@ -228,7 +228,7 @@ defmodule XeroWeb.GitHubAuthControllerTest do
   test "web cookie refresh survives cleared server memory", %{conn: conn} do
     with_github_env(fn ->
       with_github_req_stub(fn ->
-        redirect_to = "http://127.0.0.1:3000/sessions"
+        redirect_to = "http://127.0.0.1:26102/sessions"
 
         start_conn =
           post(conn, ~p"/api/github/login", %{

@@ -8,7 +8,7 @@ import { cn } from '../../lib/utils'
 import { ImageLightbox } from '../image-lightbox'
 import type { ConversationMessageAttachment } from './conversation-section'
 
-export type ImageAttachmentPreviewVariant = 'tool' | 'response'
+export type ImageAttachmentPreviewVariant = 'tool' | 'response' | 'card'
 
 export function ToolMediaAttachments({
   attachments,
@@ -54,24 +54,48 @@ export function AttachmentPreviewChip({
 }: {
   attachment: ConversationMessageAttachment
 }) {
+  const title = attachmentDisplayName(attachment)
   if (attachment.kind === 'image' && attachmentPreviewSrc(attachment)) {
     return (
-      <ImageAttachmentPreview
-        attachment={attachment}
-        className="max-w-[260px]"
-      />
+      <div
+        className="flex max-w-[240px] items-center gap-2 rounded-lg border border-border/50 bg-muted/30 p-1.5 text-left text-foreground shadow-sm"
+        title={title}
+      >
+        <ImageAttachmentPreview
+          attachment={attachment}
+          className="h-12 w-16 shrink-0"
+          variant="card"
+        />
+        <div className="min-w-0 flex-1">
+          <p className="m-0 truncate text-[12px] font-medium leading-tight">
+            {title}
+          </p>
+          <p className="m-0 mt-0.5 truncate text-[10.5px] leading-tight text-muted-foreground">
+            Image attachment
+          </p>
+        </div>
+      </div>
     )
   }
   return (
     <div
-      className="flex max-w-[260px] items-center gap-2 rounded-md border border-border/50 bg-muted/30 px-2 py-1 text-[11px] text-foreground"
-      title={attachment.originalName}
+      className="flex max-w-[240px] items-center gap-2 rounded-lg border border-border/50 bg-muted/30 p-1.5 text-left text-foreground shadow-sm"
+      title={title}
     >
-      <FileText
-        className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-        aria-hidden="true"
-      />
-      <span className="line-clamp-1 truncate">{attachment.originalName}</span>
+      <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-background text-muted-foreground ring-1 ring-border/40">
+        <FileText
+          className="h-4 w-4"
+          aria-hidden="true"
+        />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="m-0 truncate text-[12px] font-medium leading-tight">
+          {title}
+        </p>
+        <p className="m-0 mt-0.5 truncate text-[10.5px] leading-tight text-muted-foreground">
+          Attachment
+        </p>
+      </div>
     </div>
   )
 }
@@ -94,7 +118,9 @@ export function ImageAttachmentPreview({
       ? `${attachment.width} x ${attachment.height}`
       : null
   const thumbnailClass =
-    variant === 'response'
+    variant === 'card'
+      ? 'h-full w-full object-cover'
+      : variant === 'response'
       ? 'max-h-32 w-auto max-w-full object-contain'
       : 'max-h-44 w-auto max-w-full object-contain'
 

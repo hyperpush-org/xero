@@ -1411,40 +1411,6 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       };
     }
 
-    function readDocumentSize() {
-      var doc = document.documentElement || {};
-      var body = document.body || {};
-      var scrolling = document.scrollingElement || doc || body;
-      return {
-        width: Math.max(
-          1,
-          Math.ceil(
-            scrolling.scrollWidth ||
-            doc.scrollWidth ||
-            body.scrollWidth ||
-            scrolling.clientWidth ||
-            doc.clientWidth ||
-            body.clientWidth ||
-            window.innerWidth ||
-            1
-          )
-        ),
-        height: Math.max(
-          1,
-          Math.ceil(
-            scrolling.scrollHeight ||
-            doc.scrollHeight ||
-            body.scrollHeight ||
-            scrolling.clientHeight ||
-            doc.clientHeight ||
-            body.clientHeight ||
-            window.innerHeight ||
-            1
-          )
-        )
-      };
-    }
-
     function isDocumentScrollRoot(element) {
       return (
         !element ||
@@ -1538,45 +1504,53 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       return { x: 0, y: 0 };
     }
 
-    function readSurfaceSize() {
+    function readVisibleSurfaceRect() {
+      var viewport = readViewportSize();
+      var scroll = readSurfaceScrollPosition();
       if (penSurface.kind === "element" && penSurface.element) {
+        var rect = penSurface.element.getBoundingClientRect();
         return {
-          width: Math.max(
-            1,
-            Math.ceil(penSurface.element.scrollWidth || penSurface.element.clientWidth || 1)
-          ),
-          height: Math.max(
-            1,
-            Math.ceil(penSurface.element.scrollHeight || penSurface.element.clientHeight || 1)
-          )
+          x: round(scroll.x),
+          y: round(scroll.y),
+          left: round(rect.left),
+          top: round(rect.top),
+          width: Math.max(1, round(rect.width)),
+          height: Math.max(1, round(rect.height))
         };
       }
-      return readDocumentSize();
+      return {
+        x: round(scroll.x),
+        y: round(scroll.y),
+        left: 0,
+        top: 0,
+        width: viewport.width,
+        height: viewport.height
+      };
     }
 
     function syncLayerSize() {
-      var size = readSurfaceSize();
-      var viewport = readViewportSize();
-      var scroll = readSurfaceScrollPosition();
-      pageLayer.setAttribute("viewBox", "0 0 " + size.width + " " + size.height);
-      pageLayer.setAttribute("width", String(size.width));
-      pageLayer.setAttribute("height", String(size.height));
-      pageLayer.style.width = size.width + "px";
-      pageLayer.style.height = size.height + "px";
-      pageLayer.style.transform = "translate(" + round(-scroll.x) + "px, " + round(-scroll.y) + "px)";
+      var visible = readVisibleSurfaceRect();
+      pageLayer.setAttribute(
+        "viewBox",
+        visible.x + " " + visible.y + " " + visible.width + " " + visible.height
+      );
+      pageLayer.setAttribute("width", String(visible.width));
+      pageLayer.setAttribute("height", String(visible.height));
+      pageLayer.style.width = visible.width + "px";
+      pageLayer.style.height = visible.height + "px";
+      pageLayer.style.transform = "none";
 
       if (penSurface.kind === "element" && penSurface.element) {
-        var rect = penSurface.element.getBoundingClientRect();
-        pageFrame.style.left = round(rect.left) + "px";
-        pageFrame.style.top = round(rect.top) + "px";
-        pageFrame.style.width = Math.max(1, round(rect.width)) + "px";
-        pageFrame.style.height = Math.max(1, round(rect.height)) + "px";
+        pageFrame.style.left = visible.left + "px";
+        pageFrame.style.top = visible.top + "px";
+        pageFrame.style.width = visible.width + "px";
+        pageFrame.style.height = visible.height + "px";
         pageFrame.style.overflow = "visible";
       } else {
         pageFrame.style.left = "0px";
         pageFrame.style.top = "0px";
-        pageFrame.style.width = viewport.width + "px";
-        pageFrame.style.height = viewport.height + "px";
+        pageFrame.style.width = visible.width + "px";
+        pageFrame.style.height = visible.height + "px";
         pageFrame.style.overflow = "visible";
       }
     }
@@ -1990,6 +1964,7 @@ const BROWSER_TOOL_RUNTIME = String.raw`
     state.selectedElement = null;
 
     state.clearInspect = function () {
+      restoreSelectedElement();
       state.hoveredElement = null;
       state.selectedElement = null;
       state.selectedContext = null;
@@ -2017,35 +1992,102 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       return element;
     }
 
-    function showElement(element, selected) {
+    function showElement(element, existingContext) {
       if (!element) {
         highlight.style.display = "none";
-        return;
+        return null;
       }
-      var context = elementContext(element);
+      var context = existingContext || elementContext(element);
       var rect = context.rect;
       if (rect.width <= 0 && rect.height <= 0) {
         highlight.style.display = "none";
-        return;
+        return context;
       }
       highlight.style.display = "block";
       highlight.style.left = rect.x + "px";
       highlight.style.top = rect.y + "px";
       highlight.style.width = Math.max(1, rect.width) + "px";
       highlight.style.height = Math.max(1, rect.height) + "px";
-      highlight.setAttribute("data-selected", selected ? "true" : "false");
+      highlight.setAttribute("data-selected", "false");
       label.textContent = context.selector || context.tagName;
+      return context;
+    }
+
+    function readInlineStyle(element, property) {
+      return {
+        value: element.style.getPropertyValue(property),
+        priority: element.style.getPropertyPriority(property)
+      };
+    }
+
+    function restoreInlineStyle(element, property, snapshot) {
+      if (!snapshot || !snapshot.value) {
+        element.style.removeProperty(property);
+        return;
+      }
+      element.style.setProperty(property, snapshot.value, snapshot.priority || "");
+    }
+
+    function readAttribute(element, name) {
+      return {
+        present: element.hasAttribute(name),
+        value: element.getAttribute(name)
+      };
+    }
+
+    function restoreAttribute(element, name, snapshot) {
+      if (snapshot && snapshot.present) {
+        element.setAttribute(name, snapshot.value || "");
+        return;
+      }
+      element.removeAttribute(name);
+    }
+
+    function restoreSelectedElement() {
+      var restore = state.selectedElementRestore;
+      state.selectedElementRestore = null;
+      if (!restore || !restore.element || !restore.element.style) return;
+      restoreInlineStyle(restore.element, "outline", restore.outline);
+      restoreInlineStyle(restore.element, "outline-offset", restore.outlineOffset);
+      restoreAttribute(restore.element, "data-xero-browser-tool-selected", restore.selectedAttr);
+      restoreAttribute(restore.element, "data-xero-browser-tool-selected-label", restore.labelAttr);
+    }
+
+    function applySelectedElement(element, context) {
+      restoreSelectedElement();
+      if (!element || !element.style) return;
+      state.selectedElementRestore = {
+        element: element,
+        outline: readInlineStyle(element, "outline"),
+        outlineOffset: readInlineStyle(element, "outline-offset"),
+        selectedAttr: readAttribute(element, "data-xero-browser-tool-selected"),
+        labelAttr: readAttribute(element, "data-xero-browser-tool-selected-label")
+      };
+      element.setAttribute("data-xero-browser-tool-selected", "true");
+      element.setAttribute("data-xero-browser-tool-selected-label", context.selector || context.tagName);
+      element.style.setProperty("outline", "2px solid " + state.selectedOutlineColor, "important");
+      element.style.setProperty("outline-offset", "-2px", "important");
+    }
+
+    function refreshSelectedContext() {
+      if (!state.selectedElement) return state.selectedContext || null;
+      var context = elementContext(state.selectedElement);
+      state.selectedContext = context;
+      if (state.composer) {
+        state.composerAvoidRect = context.rect;
+      }
+      return context;
     }
 
     state.layer.addEventListener("pointermove", function (event) {
       if (state.captureMode || eventHitsChrome(event)) return;
       var element = elementAt(event.clientX, event.clientY);
       state.hoveredElement = element;
-      if (!state.selectedElement) showElement(element, false);
+      if (!state.selectedElement) showElement(element);
     });
 
     state.layer.addEventListener("pointerleave", function () {
-      if (!state.selectedElement) showElement(null, false);
+      if (!state.selectedElement) showElement(null);
     });
 
     state.layer.addEventListener("click", function (event) {
@@ -2057,7 +2099,8 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       var context = elementContext(element);
       state.selectedElement = element;
       state.selectedContext = context;
-      showElement(element, true);
+      showElement(null);
+      applySelectedElement(element, context);
       makeComposer(state, {
         title: "Element note",
         subtitle: (context.selector || context.tagName),
@@ -2067,6 +2110,7 @@ const BROWSER_TOOL_RUNTIME = String.raw`
         y: context.rect.y,
         avoidRect: context.rect,
         onSubmit: function (note) {
+          refreshSelectedContext();
           startCapture(state, {
             kind: "inspect",
             note: note,
@@ -2078,6 +2122,11 @@ const BROWSER_TOOL_RUNTIME = String.raw`
         }
       });
     }, true);
+
+    state.syncInspectLayer = refreshSelectedContext;
+    state.cleanups.push(function () {
+      restoreSelectedElement();
+    });
   }
 
   function installStyles(shadow) {
@@ -2181,11 +2230,14 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       pendingContext: null,
       captureMode: false,
       syncPenLayer: null,
+      syncInspectLayer: null,
       clearPen: null,
       strokes: [],
       hoveredElement: null,
       selectedElement: null,
-      selectedContext: null
+      selectedContext: null,
+      selectedElementRestore: null,
+      selectedOutlineColor: themeValue(theme, "primary")
     };
     makeToolbar(state, mode, pageLabel || null);
     return state;
@@ -2216,6 +2268,7 @@ const BROWSER_TOOL_RUNTIME = String.raw`
       }
       promoteToolLayers(state, true);
       if (typeof state.syncPenLayer === "function") state.syncPenLayer();
+      if (typeof state.syncInspectLayer === "function") state.syncInspectLayer();
       state.captureMode = true;
       if (state.root) state.root.setAttribute("data-capture", "true");
       return state.pendingContext || null;

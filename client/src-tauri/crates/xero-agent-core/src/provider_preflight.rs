@@ -1429,10 +1429,22 @@ fn xai_preflight_body(request: &XaiProviderPreflightProbeRequest) -> JsonValue {
         body.insert("tools".into(), json!([xai_preflight_tool_schema()]));
         body.insert("tool_choice".into(), json!("auto"));
     }
-    if request.required_features.reasoning_controls {
+    if request.required_features.reasoning_controls
+        && xai_model_supports_reasoning_effort(&request.model_id)
+    {
         body.insert("reasoning".into(), json!({ "effort": "low" }));
     }
     JsonValue::Object(body)
+}
+
+fn xai_model_supports_reasoning_effort(model_id: &str) -> bool {
+    let model_id = model_id
+        .trim()
+        .rsplit('/')
+        .next()
+        .unwrap_or(model_id)
+        .to_ascii_lowercase();
+    matches!(model_id.as_str(), "grok-4.3" | "grok-4.3-latest")
 }
 
 fn openai_compatible_preflight_supports_stream_options(provider_id: &str) -> bool {
@@ -1800,6 +1812,12 @@ mod tests {
             xai_preflight_responses_url("https://api.x.ai/v1").expect("url"),
             "https://api.x.ai/v1/responses"
         );
+
+        let mut build_request = request;
+        build_request.model_id = "grok-build-0.1".into();
+        let build_body = xai_preflight_body(&build_request);
+        assert_eq!(build_body["model"], "grok-build-0.1");
+        assert!(build_body.get("reasoning").is_none());
     }
 
     #[test]

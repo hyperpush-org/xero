@@ -119,7 +119,7 @@ function defaultThinkingEffortFor(
 
 export function isSelectableXaiComposerModelId(modelId: string): boolean {
   const normalized = modelId.trim().split('/').pop()?.toLowerCase() ?? ''
-  return normalized === 'grok-4.3' || normalized === 'grok-4.3-latest'
+  return ['grok-4.3', 'grok-4.3-latest', 'grok-build-0.1'].includes(normalized)
 }
 
 export function displayNameForProviderModel(
@@ -452,12 +452,59 @@ export function getAgentRuntimeRunUnavailableCredentialReason(
   return 'Xero recovered a Xero-owned agent run before the live runtime feed resumed.'
 }
 
+function getHydratedRuntimeStreamReason(
+  runtimeStream: RuntimeStreamView | null,
+  runtimeRun: RuntimeRunView | null,
+): string | null {
+  if (!runtimeStream) return null
+
+  const hasHydratedStream =
+    runtimeStream.status !== 'idle' ||
+    runtimeStream.items.length > 0 ||
+    runtimeStream.activityItems.length > 0 ||
+    runtimeStream.toolCalls.length > 0 ||
+    runtimeStream.skillItems.length > 0 ||
+    runtimeStream.actionRequired.length > 0 ||
+    Boolean(runtimeStream.completion || runtimeStream.failure || runtimeStream.lastIssue)
+
+  if (!hasHydratedStream) return null
+  if (runtimeStream.lastIssue?.message) return runtimeStream.lastIssue.message
+
+  const latestActionRequired = runtimeStream.actionRequired[runtimeStream.actionRequired.length - 1] ?? null
+  if (latestActionRequired) {
+    return `${latestActionRequired.title}: ${latestActionRequired.detail}`
+  }
+
+  if (runtimeStream.status === 'subscribing') {
+    return runtimeRun?.hasCheckpoints
+      ? 'Xero is reconnecting the live runtime stream for this selected project.'
+      : 'Xero is connecting the live runtime stream for this selected project.'
+  }
+  if (runtimeStream.status === 'replaying') {
+    return 'Xero is replaying recent run-scoped activity while the live runtime stream catches up for this selected project.'
+  }
+  if (runtimeStream.status === 'complete') {
+    return runtimeStream.completion?.detail ?? 'Xero completed the current runtime bootstrap stream for this project.'
+  }
+  if (runtimeStream.status === 'stale') {
+    return 'Xero marked the runtime stream as stale. Retry or reselect the project to resubscribe.'
+  }
+  if (runtimeStream.status === 'error') {
+    return runtimeStream.failure?.message ?? 'Xero could not keep the runtime stream connected for this project.'
+  }
+
+  return `Live runtime activity is streaming for this project (${runtimeStream.items.length} item${runtimeStream.items.length === 1 ? '' : 's'} captured).`
+}
+
 export function getAgentMessagesUnavailableCredentialReason(
   runtimeSession: RuntimeSessionView | null,
   runtimeStream: RuntimeStreamView | null,
   runtimeRun: RuntimeRunView | null,
   agentRuntimeBlocked: boolean,
 ): string {
+  const hydratedStreamReason = getHydratedRuntimeStreamReason(runtimeStream, runtimeRun)
+  if (hydratedStreamReason) return hydratedStreamReason
+
   if (agentRuntimeBlocked) {
     return runtimeRun
       ? 'Xero recovered durable agent-run state, but live streaming requires a provider credential. Add one in Settings to resume the stream.'
@@ -485,30 +532,6 @@ export function getAgentMessagesUnavailableCredentialReason(
       : 'Xero authenticated this project, but the live runtime stream has not started yet.'
   }
 
-  if (runtimeStream.lastIssue?.message) return runtimeStream.lastIssue.message
-
-  const latestActionRequired = runtimeStream.actionRequired[runtimeStream.actionRequired.length - 1] ?? null
-  if (latestActionRequired) {
-    return `${latestActionRequired.title}: ${latestActionRequired.detail}`
-  }
-
-  if (runtimeStream.status === 'subscribing') {
-    return runtimeRun?.hasCheckpoints
-      ? 'Xero is reconnecting the live runtime stream for this selected project.'
-      : 'Xero is connecting the live runtime stream for this selected project.'
-  }
-  if (runtimeStream.status === 'replaying') {
-    return 'Xero is replaying recent run-scoped activity while the live runtime stream catches up for this selected project.'
-  }
-  if (runtimeStream.status === 'complete') {
-    return runtimeStream.completion?.detail ?? 'Xero completed the current runtime bootstrap stream for this project.'
-  }
-  if (runtimeStream.status === 'stale') {
-    return 'Xero marked the runtime stream as stale. Retry or reselect the project to resubscribe.'
-  }
-  if (runtimeStream.status === 'error') {
-    return runtimeStream.failure?.message ?? 'Xero could not keep the runtime stream connected for this project.'
-  }
-
-  return `Live runtime activity is streaming for this project (${runtimeStream.items.length} item${runtimeStream.items.length === 1 ? '' : 's'} captured).`
+  return getHydratedRuntimeStreamReason(runtimeStream, runtimeRun)
+    ?? `Live runtime activity is streaming for this project (${runtimeStream.items.length} item${runtimeStream.items.length === 1 ? '' : 's'} captured).`
 }

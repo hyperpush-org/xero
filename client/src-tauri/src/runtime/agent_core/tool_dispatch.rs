@@ -44,13 +44,21 @@ const AUTONOMOUS_TOOL_EDIT_EXPECTED_TEXT_MISMATCH_CODE: &str =
 const AUTONOMOUS_TOOL_EDIT_LINE_HASH_MISMATCH_CODE: &str =
     "autonomous_tool_edit_line_hash_mismatch";
 const AUTONOMOUS_TOOL_EDIT_EXPECTED_EMPTY_CODE: &str = "autonomous_tool_edit_expected_empty";
+const AUTONOMOUS_TOOL_COMMAND_PROBE_SCOPE_INVALID_CODE: &str =
+    "autonomous_tool_command_probe_scope_invalid";
+const AUTONOMOUS_TOOL_COMMAND_VERIFY_SCOPE_INVALID_CODE: &str =
+    "autonomous_tool_command_verify_scope_invalid";
+const AGENT_TOOL_INPUT_INVALID_CODE: &str = "agent_tool_input_invalid";
 
 const MODEL_RECOVERABLE_TOOL_ERROR_CODES: &[&str] = &[
+    AGENT_TOOL_INPUT_INVALID_CODE,
     AUTONOMOUS_TOOL_STALE_FILE_ERROR_CODE,
     AUTONOMOUS_TOOL_EXPECTED_HASH_REQUIRED_CODE,
     AUTONOMOUS_TOOL_EDIT_EXPECTED_TEXT_MISMATCH_CODE,
     AUTONOMOUS_TOOL_EDIT_LINE_HASH_MISMATCH_CODE,
     AUTONOMOUS_TOOL_EDIT_EXPECTED_EMPTY_CODE,
+    AUTONOMOUS_TOOL_COMMAND_PROBE_SCOPE_INVALID_CODE,
+    AUTONOMOUS_TOOL_COMMAND_VERIFY_SCOPE_INVALID_CODE,
 ];
 
 #[allow(clippy::too_many_arguments)]
@@ -1816,6 +1824,7 @@ fn persist_tool_dispatch_failure(
     original_calls: &BTreeMap<String, AgentToolCall>,
     failure_log_context: &AgentToolFailureLogContext,
 ) -> CommandResult<(CommandError, AgentToolResult)> {
+    let failure = normalize_model_recoverable_dispatch_failure(failure);
     let command_error = tool_execution_error_ref_to_command_error(&failure.error);
     let dispatch = dispatch_failure_metadata_json(
         &failure,
@@ -1851,6 +1860,18 @@ fn persist_tool_dispatch_failure(
     )?;
     let result = failed_agent_tool_result_from_dispatch_failure(failure, dispatch);
     Ok((command_error, result))
+}
+
+fn normalize_model_recoverable_dispatch_failure(
+    mut failure: ToolDispatchFailure,
+) -> ToolDispatchFailure {
+    if model_can_recover_from_tool_execution_error(&failure.error) {
+        failure.error.retryable = true;
+        if let Some(model_message) = model_recovery_message_for_tool_error(&failure.error) {
+            failure.error.model_message = model_message.into();
+        }
+    }
+    failure
 }
 
 fn failed_agent_tool_result_from_dispatch_failure(
@@ -2108,11 +2129,46 @@ fn tool_execution_error_json(error: &ToolExecutionError) -> JsonValue {
 }
 
 fn model_can_recover_from_tool_error(error: &CommandError) -> bool {
-    model_can_recover_from_tool_error_code(&error.code)
+    error.retryable || model_can_recover_from_tool_error_code(&error.code)
 }
 
 fn model_can_recover_from_tool_error_code(code: &str) -> bool {
     MODEL_RECOVERABLE_TOOL_ERROR_CODES.contains(&code)
+}
+
+fn model_can_recover_from_tool_execution_error(error: &ToolExecutionError) -> bool {
+    error.retryable
+        || model_can_recover_from_tool_error_code(&error.code)
+        || matches!(
+            error.category,
+            ToolErrorCategory::InvalidInput
+                | ToolErrorCategory::ExternalDependencyMissing
+                | ToolErrorCategory::ToolUnavailable
+                | ToolErrorCategory::RetryableProviderToolFailure
+                | ToolErrorCategory::Timeout
+                | ToolErrorCategory::BudgetExceeded
+        )
+}
+
+fn model_recovery_message_for_tool_error(error: &ToolExecutionError) -> Option<&'static str> {
+    model_recovery_message_for_tool_error_code(&error.code).or_else(|| match error.category {
+        ToolErrorCategory::InvalidInput => Some(
+            "Read the tool error, correct the input or choose the better observation tool, then retry. For directory or repository-root inspection use path `.` with read/list/list_tree/stat; for missing files, list or search before reading.",
+        ),
+        ToolErrorCategory::ExternalDependencyMissing => Some(
+            "The tool depends on local state that is not available. Inspect the environment or use an available fallback before retrying.",
+        ),
+        ToolErrorCategory::ToolUnavailable => Some(
+            "The requested tool is unavailable in the active registry. Use tool_search/tool_access if available, open the required surface, or choose another tool.",
+        ),
+        ToolErrorCategory::RetryableProviderToolFailure | ToolErrorCategory::Timeout => Some(
+            "Retry with narrower inputs or gather fresh context before calling the tool again.",
+        ),
+        ToolErrorCategory::BudgetExceeded => Some(
+            "Retry with a smaller scope, lower limits, pagination, or a more targeted query.",
+        ),
+        _ => None,
+    })
 }
 
 fn model_recovery_message_for_tool_error_code(code: &str) -> Option<&'static str> {
@@ -2129,6 +2185,15 @@ fn model_recovery_message_for_tool_error_code(code: &str) -> Option<&'static str
         ),
         AUTONOMOUS_TOOL_EDIT_EXPECTED_EMPTY_CODE => Some(
             "Retry the edit with the exact current text in expected; for a blank line, use its line ending such as \\n.",
+        ),
+        AUTONOMOUS_TOOL_COMMAND_PROBE_SCOPE_INVALID_CODE => Some(
+            "Choose the right command tool and retry: command_probe is only for bounded read-only discovery; use command_run for setup, scaffolding, package-manager create/install/add/update, generators, or other repo-scoped commands outside that allowlist.",
+        ),
+        AUTONOMOUS_TOOL_COMMAND_VERIFY_SCOPE_INVALID_CODE => Some(
+            "Choose the right command tool and retry: command_verify is only for tests, lint, typecheck/type-check, build, check, fmt, and known verification scripts; use command_run for setup, scaffolding, package-manager create/install/add/update, or generators.",
+        ),
+        AGENT_TOOL_INPUT_INVALID_CODE => Some(
+            "Correct the input to match the tool schema, then retry. If a file mutation requires a current hash, read or hash the file first. If a command timeout is too large, use the advertised maximum or omit timeoutMs.",
         ),
         _ => None,
     }
@@ -2153,7 +2218,12 @@ fn command_error_to_tool_execution_error(error: CommandError) -> ToolExecutionEr
             "The tool input was invalid or unavailable in the active runtime.",
         ),
     };
-    let retryable = error.retryable || model_can_recover_from_tool_error_code(&error.code);
+    let retryable = error.retryable
+        || matches!(
+            error.class,
+            CommandErrorClass::UserFixable | CommandErrorClass::Retryable
+        )
+        || model_can_recover_from_tool_error_code(&error.code);
     let model_message =
         model_recovery_message_for_tool_error_code(&error.code).unwrap_or(model_message);
     ToolExecutionError::new(
@@ -2493,6 +2563,33 @@ mod tests {
     }
 
     #[test]
+    fn generic_invalid_input_dispatch_failure_is_model_recoverable() {
+        let failure = normalize_model_recoverable_dispatch_failure(ToolDispatchFailure {
+            tool_call_id: "call-read".into(),
+            tool_name: AUTONOMOUS_TOOL_READ.into(),
+            error: ToolExecutionError::invalid_input(
+                "autonomous_tool_path_not_found",
+                "Xero could not find `package.json` inside the imported repository.",
+            ),
+            doom_loop_signal: None,
+            rollback_payload: None,
+            rollback_error: None,
+            pre_hook_payload: json!({}),
+            post_hook_payload: json!({}),
+            elapsed_ms: 9,
+            sandbox_metadata: None,
+        });
+
+        assert!(failure.error.retryable);
+        assert!(failure
+            .error
+            .model_message
+            .contains("missing files, list or search before reading"));
+        let command_error = tool_execution_error_ref_to_command_error(&failure.error);
+        assert!(model_can_recover_from_tool_error(&command_error));
+    }
+
+    #[test]
     fn model_recoverable_edit_guard_failure_does_not_fail_batch() {
         let tempdir = tempfile::tempdir().expect("temp dir");
         let repo_root = tempdir.path().join("repo");
@@ -2622,6 +2719,130 @@ mod tests {
                 .as_ref()
                 .map(|error| error.code.as_str()),
             Some(AUTONOMOUS_TOOL_EDIT_EXPECTED_TEXT_MISMATCH_CODE)
+        );
+    }
+
+    #[test]
+    fn model_recoverable_schema_input_failure_does_not_fail_batch() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "project-recoverable-schema-failure";
+        let run_id = "run-recoverable-schema-failure";
+        create_project_database(&repo_root, project_id);
+        let session = project_store::create_agent_session(
+            &repo_root,
+            &project_store::AgentSessionCreateRecord {
+                project_id: project_id.into(),
+                title: "Recoverable schema failure".into(),
+                summary: String::new(),
+                selected: true,
+                session_kind: project_store::AgentSessionKind::Standard,
+            },
+        )
+        .expect("create agent session");
+        project_store::insert_agent_run(
+            &repo_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: None,
+                agent_definition_version: None,
+                project_id: project_id.into(),
+                agent_session_id: session.agent_session_id,
+                run_id: run_id.into(),
+                provider_id: "test-provider".into(),
+                model_id: "test-model".into(),
+                prompt: "Run verification.".into(),
+                system_prompt: "Engineer test prompt.".into(),
+                now: "2026-06-05T00:00:00Z".into(),
+            },
+        )
+        .expect("insert run");
+
+        let tool_call = AgentToolCall {
+            tool_call_id: "call-command-verify".into(),
+            tool_name: AUTONOMOUS_TOOL_COMMAND_VERIFY.into(),
+            input: json!({
+                "argv": ["npm", "run", "lint"],
+                "cwd": ".",
+                "timeoutMs": 120001,
+            }),
+        };
+        record_started_tool_call(&repo_root, project_id, run_id, &tool_call, false)
+            .expect("record started tool call");
+
+        let report = ToolBatchDispatchReport {
+            groups: vec![xero_agent_core::ToolGroupDispatchReport {
+                mode: ToolGroupExecutionMode::SequentialMutating,
+                elapsed_ms: 1,
+                outcomes: vec![ToolDispatchOutcome::Failed(ToolDispatchFailure {
+                    tool_call_id: tool_call.tool_call_id.clone(),
+                    tool_name: tool_call.tool_name.clone(),
+                    error: ToolExecutionError::invalid_input(
+                        AGENT_TOOL_INPUT_INVALID_CODE,
+                        "Tool `command_verify` input at `$.timeoutMs` must be less than or equal to 120000.",
+                    ),
+                    doom_loop_signal: None,
+                    rollback_payload: None,
+                    rollback_error: None,
+                    pre_hook_payload: json!({}),
+                    post_hook_payload: json!({ "ok": false }),
+                    elapsed_ms: 1,
+                    sandbox_metadata: None,
+                })],
+                timeout_error: None,
+            }],
+        };
+        let budget = ToolBudget::default();
+        let original_calls = BTreeMap::from([(tool_call.tool_call_id.clone(), tool_call.clone())]);
+        let run_record = project_store::load_agent_run_record(&repo_root, project_id, run_id)
+            .expect("load run record");
+        let failure_log_context = AgentToolFailureLogContext::from_run_record(
+            &run_record,
+            3,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        );
+
+        let batch = persist_tool_batch_report(
+            &repo_root,
+            project_id,
+            run_id,
+            report,
+            &budget,
+            &original_calls,
+            &failure_log_context,
+        )
+        .expect("persist recoverable schema failure");
+
+        assert!(batch.failure.is_none());
+        assert_eq!(batch.results.len(), 1);
+        let result = &batch.results[0];
+        assert!(!result.ok);
+        assert_eq!(
+            result.output["error"]["code"],
+            json!(AGENT_TOOL_INPUT_INVALID_CODE)
+        );
+        assert_eq!(result.output["error"]["retryable"], json!(true));
+        assert!(result.output["error"]["modelMessage"]
+            .as_str()
+            .expect("model message")
+            .contains("tool schema"));
+
+        let snapshot =
+            project_store::load_agent_run(&repo_root, project_id, run_id).expect("load run");
+        let persisted_call = snapshot
+            .tool_calls
+            .iter()
+            .find(|call| call.tool_call_id == "call-command-verify")
+            .expect("persisted tool call");
+        assert_eq!(persisted_call.state, AgentToolCallState::Failed);
+        assert_eq!(
+            persisted_call
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some(AGENT_TOOL_INPUT_INVALID_CODE)
         );
     }
 

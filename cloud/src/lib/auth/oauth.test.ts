@@ -9,11 +9,11 @@ describe("getDefaultOAuthReturnUrl", () => {
 
 	it("keeps localhost and 127.0.0.1 aligned so dev cookies survive the OAuth redirect", () => {
 		vi.stubGlobal("window", {
-			location: new URL("http://localhost:3002/?from=login#top"),
+			location: new URL("http://localhost:26102/?from=login#top"),
 		});
 
-		expect(getDefaultOAuthReturnUrl("http://127.0.0.1:4000")).toBe(
-			"http://127.0.0.1:3002/sessions",
+		expect(getDefaultOAuthReturnUrl("http://127.0.0.1:26140")).toBe(
+			"http://127.0.0.1:26102/sessions",
 		);
 	});
 

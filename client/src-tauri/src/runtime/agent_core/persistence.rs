@@ -1,6 +1,7 @@
 use super::*;
 use crate::runtime::{
-    autonomous_tool_runtime::AutonomousSensitiveInputOutput, AutonomousFsTransactionRequest,
+    autonomous_tool_runtime::{AutonomousActionRequiredOutput, AutonomousSensitiveInputOutput},
+    AutonomousFsTransactionAction, AutonomousFsTransactionOutput, AutonomousFsTransactionRequest,
     AutonomousSubagentWriteScope,
 };
 use std::{
@@ -196,6 +197,7 @@ pub(crate) fn touch_agent_run_heartbeat(
 ) -> CommandResult<()> {
     let timestamp = now_timestamp();
     project_store::touch_agent_run_heartbeat(repo_root, project_id, run_id, &timestamp)?;
+    project_store::touch_runtime_run_heartbeat(repo_root, project_id, run_id, &timestamp)?;
     project_store::heartbeat_agent_coordination(repo_root, project_id, run_id, &timestamp)
 }
 
@@ -3074,12 +3076,17 @@ pub(crate) fn record_file_change_event(
             }
             for operation in &output.operations {
                 if operation.action == "copy_file" {
+                    let operation_kind = if operation.overwritten {
+                        "write"
+                    } else {
+                        "create"
+                    };
                     record_single_file_change_event(
                         repo_root,
                         project_id,
                         run_id,
                         FileChangeEvent {
-                            operation: "copy",
+                            operation: operation_kind,
                             path: operation.to_path.as_str(),
                             to_path: None,
                             old_hash: None,
@@ -3098,13 +3105,14 @@ pub(crate) fn record_file_change_event(
             if !output.applied {
                 return Ok(());
             }
-            for path in &output.changed_paths {
+            let mapped_changes = fs_transaction_file_change_events(output);
+            for (path, operation) in &mapped_changes {
                 record_single_file_change_event(
                     repo_root,
                     project_id,
                     run_id,
                     FileChangeEvent {
-                        operation: "fs_transaction",
+                        operation,
                         path: path.as_str(),
                         to_path: None,
                         old_hash: old_hash_for_path(write_observations, path),
@@ -3129,8 +3137,8 @@ pub(crate) fn record_file_change_event(
         AutonomousToolOutput::Edit(output) => ("edit", output.path.as_str()),
         AutonomousToolOutput::JsonEdit(output)
         | AutonomousToolOutput::TomlEdit(output)
-        | AutonomousToolOutput::YamlEdit(output) => ("structured_edit", output.path.as_str()),
-        AutonomousToolOutput::NotebookEdit(output) => ("notebook_edit", output.path.as_str()),
+        | AutonomousToolOutput::YamlEdit(output) => ("edit", output.path.as_str()),
+        AutonomousToolOutput::NotebookEdit(output) => ("edit", output.path.as_str()),
         AutonomousToolOutput::Delete(output) => ("delete", output.path.as_str()),
         AutonomousToolOutput::Rename(output) => ("rename", output.from_path.as_str()),
         AutonomousToolOutput::Mkdir(output) => ("mkdir", output.path.as_str()),
@@ -3235,6 +3243,44 @@ fn agent_file_change_operation_for_code_operation(
     }
 }
 
+fn fs_transaction_file_change_events(
+    output: &AutonomousFsTransactionOutput,
+) -> Vec<(String, &'static str)> {
+    let mut seen_paths = BTreeSet::new();
+    let mut changes = Vec::new();
+    for result in output.results.iter().filter(|result| result.ok) {
+        let operation = agent_file_change_operation_for_fs_transaction_action(result.action);
+        for path in &result.changed_paths {
+            if seen_paths.insert(path.clone()) {
+                changes.push((path.clone(), operation));
+            }
+        }
+    }
+
+    if changes.is_empty() {
+        for path in &output.changed_paths {
+            if seen_paths.insert(path.clone()) {
+                changes.push((path.clone(), "unknown"));
+            }
+        }
+    }
+    changes
+}
+
+fn agent_file_change_operation_for_fs_transaction_action(
+    action: AutonomousFsTransactionAction,
+) -> &'static str {
+    match action {
+        AutonomousFsTransactionAction::CreateFile => "create",
+        AutonomousFsTransactionAction::ReplaceFile | AutonomousFsTransactionAction::Copy => "write",
+        AutonomousFsTransactionAction::EditFile => "edit",
+        AutonomousFsTransactionAction::DeleteFile
+        | AutonomousFsTransactionAction::DeleteDirectory => "delete",
+        AutonomousFsTransactionAction::Rename => "rename",
+        AutonomousFsTransactionAction::Mkdir => "mkdir",
+    }
+}
+
 struct FileChangeEvent<'a> {
     operation: &'a str,
     path: &'a str,
@@ -3300,7 +3346,6 @@ fn record_single_file_change_event(
             "codeChangeGroupId": change.code_change_group_id,
             "codeCommitId": change.history_metadata.and_then(|metadata| metadata.commit_id.as_deref()),
             "codeWorkspaceEpoch": change.history_metadata.and_then(|metadata| metadata.workspace_epoch),
-            "codePatchAvailability": change.history_metadata.map(|metadata| &metadata.patch_availability),
             "projectId": project_id,
             "traceId": stored_change.trace_id,
             "topLevelRunId": stored_change.top_level_run_id,
@@ -3897,10 +3942,58 @@ pub(crate) fn record_command_output_event(
                 }),
             )?;
         }
+        AutonomousToolOutput::ActionRequired(output) => {
+            let action = record_action_request(
+                repo_root,
+                project_id,
+                run_id,
+                &output.action_id,
+                &output.action_type,
+                &output.title,
+                &output.detail,
+            )?;
+            append_event(
+                repo_root,
+                project_id,
+                run_id,
+                AgentRunEventKind::ActionRequired,
+                json!({
+                    "actionId": action.action_id,
+                    "actionType": output.action_type,
+                    "answerShape": output.answer_shape.as_str(),
+                    "title": output.title,
+                    "detail": output.detail,
+                    "code": "agent_user_input_required",
+                    "status": output.status,
+                    "promptKind": output.prompt_kind,
+                    "options": action_required_options_metadata(output),
+                    "allowMultiple": output.allow_multiple,
+                    "intendedUse": output.intended_use,
+                    "stopReason": AgentRunStopReason::WaitingForApproval.as_str(),
+                    "state": AgentRunState::ApprovalWait.as_str(),
+                }),
+            )?;
+        }
         _ => {}
     }
 
     Ok(())
+}
+
+fn action_required_options_metadata(output: &AutonomousActionRequiredOutput) -> Vec<JsonValue> {
+    output
+        .options
+        .iter()
+        .map(|option| {
+            let mut metadata = JsonMap::new();
+            metadata.insert("id".into(), json!(option.id));
+            metadata.insert("label".into(), json!(option.label));
+            if let Some(description) = &option.description {
+                metadata.insert("description".into(), json!(description));
+            }
+            JsonValue::Object(metadata)
+        })
+        .collect()
 }
 
 fn sensitive_input_field_metadata(output: &AutonomousSensitiveInputOutput) -> Vec<JsonValue> {
@@ -4762,7 +4855,9 @@ mod tests {
         runtime::{
             AutonomousAgentCoordinationAction, AutonomousAgentCoordinationOutput,
             AutonomousCommandOutput, AutonomousCommandPolicyOutcome,
-            AutonomousCommandPolicyProfile, AutonomousCommandPolicyTrace, AutonomousLineEnding,
+            AutonomousCommandPolicyProfile, AutonomousCommandPolicyTrace,
+            AutonomousFsTransactionOperationResult, AutonomousFsTransactionRollbackStatus,
+            AutonomousFsTransactionValidationSummary, AutonomousLineEnding,
             AutonomousPatchOperation, AutonomousPatchRequest, AutonomousReadContentKind,
             AutonomousReadOutput, AutonomousSearchMatch, AutonomousSearchOmissions,
             AutonomousSearchOutput, AutonomousStatKind, FakeProviderAdapter,
@@ -5943,5 +6038,313 @@ Repository map captured.
         guard
             .validate_write_intent(&canonical_root, &request, false)
             .expect("current file evidence lets write preflight continue");
+    }
+
+    #[test]
+    fn fs_transaction_file_change_events_normalizes_actions_to_stored_operations() {
+        let output = AutonomousFsTransactionOutput {
+            applied: true,
+            preview: false,
+            operation_count: 7,
+            validation: AutonomousFsTransactionValidationSummary {
+                ok: true,
+                validated_operations: 7,
+                errors: Vec::new(),
+            },
+            changed_paths: Vec::new(),
+            planned_operations: Vec::new(),
+            rollback_status: AutonomousFsTransactionRollbackStatus {
+                attempted: false,
+                succeeded: false,
+                attempts: Vec::new(),
+            },
+            results: vec![
+                fs_transaction_test_result(
+                    0,
+                    AutonomousFsTransactionAction::CreateFile,
+                    "src/new.ts",
+                ),
+                fs_transaction_test_result(
+                    1,
+                    AutonomousFsTransactionAction::ReplaceFile,
+                    "src/replace.ts",
+                ),
+                fs_transaction_test_result(
+                    2,
+                    AutonomousFsTransactionAction::EditFile,
+                    "src/edit.ts",
+                ),
+                fs_transaction_test_result(
+                    3,
+                    AutonomousFsTransactionAction::DeleteFile,
+                    "src/delete.ts",
+                ),
+                fs_transaction_test_result(
+                    4,
+                    AutonomousFsTransactionAction::Rename,
+                    "src/renamed.ts",
+                ),
+                fs_transaction_test_result(5, AutonomousFsTransactionAction::Mkdir, "src/ui"),
+                fs_transaction_test_result(6, AutonomousFsTransactionAction::Copy, "src/copy.ts"),
+            ],
+            diff: None,
+        };
+
+        assert_eq!(
+            fs_transaction_file_change_events(&output),
+            vec![
+                ("src/new.ts".into(), "create"),
+                ("src/replace.ts".into(), "write"),
+                ("src/edit.ts".into(), "edit"),
+                ("src/delete.ts".into(), "delete"),
+                ("src/renamed.ts".into(), "rename"),
+                ("src/ui".into(), "mkdir"),
+                ("src/copy.ts".into(), "write"),
+            ]
+        );
+    }
+
+    #[test]
+    fn record_file_change_event_persists_fs_transaction_create_file_as_create_operation() {
+        let _guard = PROJECT_DB_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tempdir = tempdir().expect("tempdir");
+        let app_data_dir = tempdir.path().join("app-data");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("repo dir");
+        fs::write(repo_root.join("package.json"), "{}\n").expect("created package file");
+        let canonical_root = fs::canonicalize(&repo_root).expect("canonical repo root");
+        let project_id = "project-fs-transaction-file-change";
+        let run_id = "run-fs-transaction-file-change";
+
+        db::configure_project_database_paths(&app_data_dir.join("global.db"));
+        db::import_project(
+            &CanonicalRepository {
+                project_id: project_id.into(),
+                repository_id: format!("repo-{project_id}"),
+                root_path: canonical_root.clone(),
+                root_path_string: canonical_root.to_string_lossy().into_owned(),
+                common_git_dir: canonical_root.join(".git"),
+                display_name: "repo".into(),
+                branch_name: Some("main".into()),
+                head_sha: Some("abc123".into()),
+                branch: None,
+                last_commit: None,
+                status_entries: Vec::new(),
+                has_staged_changes: false,
+                has_unstaged_changes: false,
+                has_untracked_changes: false,
+                additions: 0,
+                deletions: 0,
+            },
+            DesktopState::default().import_failpoints(),
+        )
+        .expect("import project");
+        project_store::insert_agent_run(
+            &canonical_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: None,
+                agent_definition_version: None,
+                project_id: project_id.into(),
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: run_id.into(),
+                provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                prompt: "Create files with fs_transaction.".into(),
+                system_prompt: "system".into(),
+                now: "2026-06-27T00:00:00Z".into(),
+            },
+        )
+        .expect("insert run");
+
+        let output = AutonomousToolOutput::FsTransaction(AutonomousFsTransactionOutput {
+            applied: true,
+            preview: false,
+            operation_count: 1,
+            validation: AutonomousFsTransactionValidationSummary {
+                ok: true,
+                validated_operations: 1,
+                errors: Vec::new(),
+            },
+            changed_paths: vec!["package.json".into()],
+            planned_operations: Vec::new(),
+            rollback_status: AutonomousFsTransactionRollbackStatus {
+                attempted: false,
+                succeeded: false,
+                attempts: Vec::new(),
+            },
+            results: vec![fs_transaction_test_result(
+                0,
+                AutonomousFsTransactionAction::CreateFile,
+                "package.json",
+            )],
+            diff: None,
+        });
+
+        record_file_change_event(
+            &canonical_root,
+            project_id,
+            run_id,
+            "call-create-package",
+            "fs_transaction",
+            &[],
+            &output,
+            None,
+        )
+        .expect("fs_transaction file change persists with normalized operation");
+
+        let file_changes =
+            project_store::load_agent_file_changes(&canonical_root, project_id, run_id)
+                .expect("load file changes");
+        assert_eq!(file_changes.len(), 1);
+        assert_eq!(file_changes[0].path, "package.json");
+        assert_eq!(file_changes[0].operation, "create");
+        assert!(file_changes[0].new_hash.is_some());
+    }
+
+    #[test]
+    fn file_changed_event_omits_full_change_group_patch_availability() {
+        let _guard = PROJECT_DB_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tempdir = tempdir().expect("tempdir");
+        let app_data_dir = tempdir.path().join("app-data");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("repo dir");
+        let canonical_root = fs::canonicalize(&repo_root).expect("canonical repo root");
+        let project_id = "project-file-change-payload";
+        let run_id = "run-file-change-payload";
+
+        db::configure_project_database_paths(&app_data_dir.join("global.db"));
+        db::import_project(
+            &CanonicalRepository {
+                project_id: project_id.into(),
+                repository_id: format!("repo-{project_id}"),
+                root_path: canonical_root.clone(),
+                root_path_string: canonical_root.to_string_lossy().into_owned(),
+                common_git_dir: canonical_root.join(".git"),
+                display_name: "repo".into(),
+                branch_name: Some("main".into()),
+                head_sha: Some("abc123".into()),
+                branch: None,
+                last_commit: None,
+                status_entries: Vec::new(),
+                has_staged_changes: false,
+                has_unstaged_changes: false,
+                has_untracked_changes: false,
+                additions: 0,
+                deletions: 0,
+            },
+            DesktopState::default().import_failpoints(),
+        )
+        .expect("import project");
+        project_store::insert_agent_run(
+            &canonical_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: None,
+                agent_definition_version: None,
+                project_id: project_id.into(),
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: run_id.into(),
+                provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                prompt: "Run npm install.".into(),
+                system_prompt: "system".into(),
+                now: "2026-06-27T00:00:00Z".into(),
+            },
+        )
+        .expect("insert run");
+
+        let history_metadata = project_store::CodeChangeGroupHistoryMetadataRecord {
+            project_id: project_id.into(),
+            target_change_group_id: "code-change-install".into(),
+            commit_id: Some("code-commit-install".into()),
+            workspace_epoch: Some(9),
+            patch_availability: project_store::CodePatchAvailabilityRecord {
+                project_id: project_id.into(),
+                target_change_group_id: "code-change-install".into(),
+                available: true,
+                affected_paths: (0..5_000)
+                    .map(|index| format!(".npm-cache/_cacache/{index:04}"))
+                    .collect(),
+                file_change_count: 5_000,
+                text_hunk_count: 0,
+                text_hunks: Vec::new(),
+                unavailable_reason: None,
+            },
+        };
+        let group = project_store::CompletedCodeChangeGroup {
+            project_id: project_id.into(),
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            run_id: run_id.into(),
+            change_group_id: "code-change-install".into(),
+            before_snapshot_id: "before".into(),
+            after_snapshot_id: "after".into(),
+            file_version_count: 1,
+            affected_files: vec![project_store::CompletedCodeChangeFile {
+                path_before: None,
+                path_after: Some("package-lock.json".into()),
+                operation: project_store::CodeFileOperation::Create,
+                before_hash: None,
+                after_hash: Some("a".repeat(64)),
+                explicitly_edited: false,
+            }],
+            history_metadata: Some(history_metadata),
+        };
+
+        record_code_change_group_file_change_events(
+            &canonical_root,
+            project_id,
+            run_id,
+            "call-install",
+            "command_run",
+            &group,
+        )
+        .expect("record code change file event");
+
+        let snapshot = project_store::load_agent_run(&canonical_root, project_id, run_id)
+            .expect("load run snapshot");
+        let event = snapshot
+            .events
+            .iter()
+            .find(|event| event.event_kind == AgentRunEventKind::FileChanged)
+            .expect("file changed event");
+        let payload: JsonValue =
+            serde_json::from_str(&event.payload_json).expect("decode file changed payload");
+        assert_eq!(payload["codeChangeGroupId"], json!("code-change-install"));
+        assert_eq!(payload["codeCommitId"], json!("code-commit-install"));
+        assert_eq!(payload["codeWorkspaceEpoch"], json!(9));
+        assert!(
+            payload.get("codePatchAvailability").is_none(),
+            "per-file events must not persist full change-group patch metadata"
+        );
+        assert!(
+            event.payload_json.len() < 2_000,
+            "file-change payload should stay small; got {} bytes",
+            event.payload_json.len()
+        );
+    }
+
+    fn fs_transaction_test_result(
+        index: usize,
+        action: AutonomousFsTransactionAction,
+        path: &str,
+    ) -> AutonomousFsTransactionOperationResult {
+        AutonomousFsTransactionOperationResult {
+            index,
+            id: None,
+            action,
+            ok: true,
+            status: "applied".into(),
+            summary: format!("Applied operation to `{path}`."),
+            changed_paths: vec![path.into()],
+            diff: None,
+            digest: None,
+            source_digest: None,
+            error: None,
+        }
     }
 }

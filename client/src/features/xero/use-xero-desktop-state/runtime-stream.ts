@@ -122,7 +122,13 @@ interface AttachRuntimeStreamSubscriptionArgs {
   projectId: string | null
   agentSessionId: string | null
   runtimeSession: RuntimeSessionView | null
+  runtimeStreamSeed?: {
+    runtimeKind: string
+    sessionId: string | null
+    flowId: string | null
+  } | null
   runId: string | null
+  replayOnly?: boolean
   forceFullReplay?: boolean
   adapter: XeroDesktopAdapter
   runtimeActionRefreshKeysRef: MutableRefObject<Record<string, Set<string>>>
@@ -135,7 +141,6 @@ interface AttachRuntimeStreamSubscriptionArgs {
 interface AttachRuntimeCompletionNotificationSubscriptionArgs {
   projectId: string
   agentSessionId: string
-  runtimeSession: RuntimeSessionView
   runId: string
   adapter: XeroDesktopAdapter
   recordRuntimeSessionCompletion?: RuntimeStreamEventBufferArgs['onRuntimeSessionCompleted']
@@ -1056,15 +1061,12 @@ export async function attachDesktopRuntimeListeners({
 export function attachRuntimeCompletionNotificationSubscription({
   projectId,
   agentSessionId,
-  runtimeSession,
   runId,
   adapter,
   recordRuntimeSessionCompletion,
 }: AttachRuntimeCompletionNotificationSubscriptionArgs): () => void {
   if (
     !recordRuntimeSessionCompletion ||
-    !runtimeSession.isAuthenticated ||
-    !runtimeSession.sessionId ||
     typeof adapter.subscribeRuntimeStream !== 'function'
   ) {
     return () => undefined
@@ -1146,7 +1148,9 @@ export function attachRuntimeStreamSubscription({
   projectId,
   agentSessionId,
   runtimeSession,
+  runtimeStreamSeed = null,
   runId,
+  replayOnly = false,
   forceFullReplay = false,
   adapter,
   runtimeActionRefreshKeysRef,
@@ -1159,12 +1163,28 @@ export function attachRuntimeStreamSubscription({
     return () => undefined
   }
 
-  if (!runtimeSession?.isAuthenticated || !runtimeSession.sessionId) {
+  if (!runId) {
     updateRuntimeStream(projectId, agentSessionId, () => null)
     return () => undefined
   }
 
-  if (!runId) {
+  const authenticatedSession =
+    runtimeSession?.isAuthenticated && runtimeSession.sessionId
+      ? runtimeSession
+      : null
+  if (!authenticatedSession && !replayOnly) {
+    updateRuntimeStream(projectId, agentSessionId, () => null)
+    return () => undefined
+  }
+
+  const streamSeed = authenticatedSession
+    ? {
+        runtimeKind: authenticatedSession.runtimeKind,
+        sessionId: authenticatedSession.sessionId,
+        flowId: authenticatedSession.flowId,
+      }
+    : runtimeStreamSeed
+  if (!streamSeed?.runtimeKind) {
     updateRuntimeStream(projectId, agentSessionId, () => null)
     return () => undefined
   }
@@ -1197,10 +1217,10 @@ export function attachRuntimeStreamSubscription({
       applyRuntimeStreamIssue(currentStream, {
         projectId,
         agentSessionId,
-        runtimeKind: runtimeSession.runtimeKind,
+        runtimeKind: streamSeed.runtimeKind,
         runId,
-        sessionId: runtimeSession.sessionId,
-        flowId: runtimeSession.flowId,
+        sessionId: streamSeed.sessionId,
+        flowId: streamSeed.flowId,
         subscribedItemKinds: ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
         code: 'runtime_stream_adapter_missing',
         message: 'Xero desktop adapter does not expose runtime stream subscriptions for this environment.',
@@ -1221,9 +1241,9 @@ export function attachRuntimeStreamSubscription({
       return {
         ...currentStream,
         agentSessionId,
-        runtimeKind: runtimeSession.runtimeKind,
-        sessionId: runtimeSession.sessionId,
-        flowId: runtimeSession.flowId,
+        runtimeKind: streamSeed.runtimeKind,
+        sessionId: streamSeed.sessionId,
+        flowId: streamSeed.flowId,
         subscribedItemKinds: ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
         status: currentStream.items.length > 0 ? 'replaying' : 'subscribing',
       }
@@ -1233,10 +1253,10 @@ export function attachRuntimeStreamSubscription({
     return createRuntimeStreamView({
       projectId,
       agentSessionId,
-      runtimeKind: runtimeSession.runtimeKind,
+      runtimeKind: streamSeed.runtimeKind,
       runId,
-      sessionId: runtimeSession.sessionId,
-      flowId: runtimeSession.flowId,
+      sessionId: streamSeed.sessionId,
+      flowId: streamSeed.flowId,
       subscribedItemKinds: ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
       status: 'subscribing',
     })
@@ -1245,10 +1265,10 @@ export function attachRuntimeStreamSubscription({
   const streamEventBuffer = createRuntimeStreamEventBuffer({
     projectId,
     agentSessionId,
-    runtimeKind: runtimeSession.runtimeKind,
+    runtimeKind: streamSeed.runtimeKind,
     runId,
-    sessionId: runtimeSession.sessionId,
-    flowId: runtimeSession.flowId,
+    sessionId: streamSeed.sessionId,
+    flowId: streamSeed.flowId,
     subscribedItemKinds: ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
     runtimeActionRefreshKeysRef,
     updateRuntimeStream,
@@ -1350,10 +1370,10 @@ export function attachRuntimeStreamSubscription({
         applyRuntimeStreamIssue(currentStream, {
           projectId,
           agentSessionId,
-          runtimeKind: runtimeSession.runtimeKind,
+          runtimeKind: streamSeed.runtimeKind,
           runId,
-          sessionId: runtimeSession.sessionId,
-          flowId: runtimeSession.flowId,
+          sessionId: streamSeed.sessionId,
+          flowId: streamSeed.flowId,
           subscribedItemKinds: ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
           code: issue.code,
           message: issue.message,

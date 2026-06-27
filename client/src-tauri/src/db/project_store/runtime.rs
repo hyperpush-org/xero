@@ -9,7 +9,7 @@ use crate::{
         default_runtime_agent_approval_mode, default_runtime_agent_id,
         runtime_agent_allows_approval_mode, AgentAttachmentKindDto, CommandError,
         OperatorApprovalDto, ProviderModelThinkingEffortDto, RuntimeAgentIdDto, RuntimeAuthPhase,
-        RuntimeRunApprovalModeDto,
+        RuntimeLinkedPathKindDto, RuntimeRunApprovalModeDto,
     },
     db::database_path_for_repo,
     runtime::XeroAttachedSkillResolutionSnapshot,
@@ -131,6 +131,8 @@ pub struct RuntimeRunPendingControlSnapshotRecord {
     pub queued_prompt_at: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queued_attachments: Vec<RuntimeRunQueuedAttachmentRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queued_linked_paths: Vec<RuntimeRunQueuedLinkedPathRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -145,6 +147,13 @@ pub struct RuntimeRunQueuedAttachmentRecord {
     pub width: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeRunQueuedLinkedPathRecord {
+    pub kind: RuntimeLinkedPathKindDto,
+    pub absolute_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -725,6 +734,42 @@ pub fn upsert_runtime_run(
             ),
         )
     })
+}
+
+pub fn touch_runtime_run_heartbeat(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    timestamp: &str,
+) -> Result<(), CommandError> {
+    validate_non_empty_text(project_id, "projectId", "runtime_run_heartbeat_invalid")?;
+    validate_non_empty_text(run_id, "runId", "runtime_run_heartbeat_invalid")?;
+    validate_non_empty_text(timestamp, "timestamp", "runtime_run_heartbeat_invalid")?;
+
+    let database_path = database_path_for_repo(repo_root);
+    let connection = open_runtime_database(repo_root, &database_path)?;
+    connection
+        .execute(
+            r#"
+            UPDATE runtime_runs
+            SET last_heartbeat_at = ?3,
+                transport_liveness = 'reachable',
+                updated_at = ?3
+            WHERE project_id = ?1
+              AND run_id = ?2
+              AND status IN ('starting', 'running', 'stale')
+            "#,
+            params![project_id, run_id, timestamp],
+        )
+        .map_err(|error| {
+            map_runtime_run_write_error(
+                "runtime_run_heartbeat_update_failed",
+                &database_path,
+                error,
+                "Xero could not refresh the durable runtime-run heartbeat.",
+            )
+        })?;
+    Ok(())
 }
 
 pub fn persist_runtime_attached_skill_snapshot(
@@ -1909,6 +1954,14 @@ fn validate_runtime_run_pending_control_snapshot(
         }
     }
 
+    for linked_path in &pending.queued_linked_paths {
+        validate_non_empty_text(
+            &linked_path.absolute_path,
+            "control_state.pending.queued_linked_paths.absolute_path",
+            "runtime_run_request_invalid",
+        )?;
+    }
+
     Ok(())
 }
 
@@ -2056,6 +2109,7 @@ pub fn build_runtime_run_control_state_with_profile(
             queued_prompt: Some(prompt.to_owned()),
             queued_prompt_at: Some(timestamp.to_owned()),
             queued_attachments: Vec::new(),
+            queued_linked_paths: Vec::new(),
         }),
         Some(_) => return Err(CommandError::invalid_request("initialPrompt")),
         None => None,

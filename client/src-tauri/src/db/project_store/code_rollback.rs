@@ -58,17 +58,105 @@ const DEFAULT_TEXT_HUNK_PAYLOAD_BYTES: usize = 256 * 1024;
 static CODE_RESTORE_LOCKS: LazyLock<Mutex<BTreeMap<String, Arc<Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
-const DEFAULT_SKIPPED_DIRS: &[&str] = &[
+const GENERATED_ARTIFACT_DIR_NAMES: &[&str] = &[
     ".git",
+    ".hg",
+    ".svn",
+    ".xero",
     "node_modules",
+    "bower_components",
+    "jspm_packages",
     "target",
     "dist",
     "build",
+    "out",
     ".next",
+    ".nuxt",
     ".turbo",
+    ".yarn",
+    ".npm",
+    ".npm-cache",
+    ".pnpm-store",
+    ".cache",
+    ".parcel-cache",
+    ".vite",
     ".svelte-kit",
+    ".angular",
+    ".expo",
+    ".gradle",
+    ".mvn",
+    ".venv",
+    "venv",
+    "__pypackages__",
+    "__pycache__",
+    ".tox",
+    ".nox",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pyre",
+    ".hypothesis",
+    ".ipynb_checkpoints",
+    ".dart_tool",
+    ".pub-cache",
+    ".build",
+    ".swiftpm",
+    "DerivedData",
+    "Carthage",
+    "Pods",
+    ".bundle",
+    "vendor",
+    "site-packages",
+    "_build",
+    "deps",
+    "obj",
+    "CMakeFiles",
+    ".cmake",
+    "buck-out",
+    ".buckd",
+    ".terraform",
+    ".serverless",
+    ".aws-sam",
+    ".nyc_output",
     "coverage",
-    ".xero",
+];
+
+const GENERATED_ARTIFACT_DIR_PREFIXES: &[&str] = &["cmake-build-", "bazel-", ".tox-", ".nox-"];
+
+const GENERATED_ARTIFACT_DIR_SUFFIXES: &[&str] =
+    &[".egg-info", ".dist-info", ".dSYM", ".xcarchive"];
+
+const GENERATED_ARTIFACT_FILE_NAMES: &[&str] = &[
+    ".DS_Store",
+    "Thumbs.db",
+    ".coverage",
+    "coverage.xml",
+    "lcov.info",
+    ".eslintcache",
+    ".stylelintcache",
+    ".parcel-cache",
+    ".tsbuildinfo",
+];
+
+const GENERATED_ARTIFACT_FILE_SUFFIXES: &[&str] = &[
+    ".pyc",
+    ".pyo",
+    ".class",
+    ".o",
+    ".obj",
+    ".a",
+    ".so",
+    ".dylib",
+    ".dll",
+    ".exe",
+    ".rlib",
+    ".rmeta",
+    ".profraw",
+    ".profdata",
+    ".gcda",
+    ".gcno",
+    ".tsbuildinfo",
+    ".map",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -7526,6 +7614,9 @@ fn scan_project_manifest(
             break;
         }
         let relative_path = repo_relative_path(repo_root, entry.path())?;
+        if is_generated_or_ignored_path(&relative_path) {
+            continue;
+        }
         visited_paths.insert(relative_path.clone());
         if let Some(snapshot_entry) = capture_manifest_entry_with_budget(
             repo_root,
@@ -9318,7 +9409,7 @@ fn should_include_walk_entry(entry: &DirEntry) -> bool {
     let Some(name) = entry.path().file_name().and_then(|name| name.to_str()) else {
         return true;
     };
-    !DEFAULT_SKIPPED_DIRS.contains(&name)
+    !is_generated_or_ignored_dir_name(name)
 }
 
 fn normalize_targets(
@@ -9562,8 +9653,42 @@ fn path_to_forward_slash(path: &Path) -> String {
 }
 
 fn is_generated_or_ignored_path(path: &str) -> bool {
-    path.split('/')
-        .any(|segment| DEFAULT_SKIPPED_DIRS.contains(&segment))
+    let segments = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    if segments
+        .iter()
+        .any(|segment| is_generated_or_ignored_dir_name(segment))
+    {
+        return true;
+    }
+    if segments
+        .windows(2)
+        .any(|window| matches!(window, ["pkg", "mod"] | ["tmp", "cache"] | ["var", "cache"]))
+    {
+        return true;
+    }
+    segments
+        .last()
+        .is_some_and(|name| is_generated_or_ignored_file_name(name))
+}
+
+fn is_generated_or_ignored_dir_name(name: &str) -> bool {
+    GENERATED_ARTIFACT_DIR_NAMES.contains(&name)
+        || GENERATED_ARTIFACT_DIR_PREFIXES
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+        || GENERATED_ARTIFACT_DIR_SUFFIXES
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
+}
+
+fn is_generated_or_ignored_file_name(name: &str) -> bool {
+    GENERATED_ARTIFACT_FILE_NAMES.contains(&name)
+        || GENERATED_ARTIFACT_FILE_SUFFIXES
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
 }
 
 #[cfg(test)]
@@ -10329,12 +10454,71 @@ mod tests {
     }
 
     #[test]
+    fn generated_artifact_classifier_covers_common_dev_ecosystems() {
+        for path in [
+            "node_modules/react/index.js",
+            ".npm-cache/_cacache/content-v2/sha512/aa/cache",
+            ".pnpm-store/v10/files/00/cache",
+            "target/debug/app",
+            ".gradle/caches/modules-2/files-2.1/lib.jar",
+            ".venv/lib/python3.12/site-packages/pkg/__init__.py",
+            "src/__pycache__/module.cpython-312.pyc",
+            "src/module.pyc",
+            "classes/App.class",
+            "cmake-build-debug/CMakeFiles/app.dir/main.o",
+            "pkg/mod/example.com/lib@v1.0.0/file.go",
+            "vendor/composer/installed.json",
+            ".dart_tool/package_config.json",
+            ".swiftpm/xcode/package.xcworkspace",
+            "_build/dev/lib/app/ebin/app.beam",
+            "coverage/lcov.info",
+            ".terraform/providers/registry.terraform.io/hashicorp/aws",
+        ] {
+            assert!(
+                is_generated_or_ignored_path(path),
+                "expected `{path}` to be classified as generated"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_artifact_classifier_keeps_source_and_lockfiles() {
+        for path in [
+            "src/app.rs",
+            "src/bin/server.rs",
+            "src/build_config.rs",
+            "src/vendorized/parser.ts",
+            "client/package-lock.json",
+            "Cargo.lock",
+            "go.sum",
+            "poetry.lock",
+            "gradle/libs.versions.toml",
+        ] {
+            assert!(
+                !is_generated_or_ignored_path(path),
+                "expected `{path}` to remain capturable source/project state"
+            );
+        }
+    }
+
+    #[test]
     fn broad_capture_large_repository_records_single_diff_and_skips_generated_dirs() {
         let _guard = PROJECT_DB_LOCK.lock().expect("project db lock");
         let project = TestProject::new("rollback_large_broad");
         let root = &project.repo_root;
         fs::create_dir_all(root.join("src")).expect("src");
         fs::create_dir_all(root.join("node_modules/pkg")).expect("node_modules");
+        fs::create_dir_all(root.join(".npm-cache/_cacache/content-v2/sha512/aa"))
+            .expect("npm cache");
+        fs::create_dir_all(root.join(".pnpm-store/v10/files/00")).expect("pnpm store");
+        fs::create_dir_all(root.join(".venv/lib/python3.12/site-packages/pkg"))
+            .expect("python venv");
+        fs::create_dir_all(root.join("target/debug/deps")).expect("rust target");
+        fs::create_dir_all(root.join(".gradle/caches/modules-2")).expect("gradle cache");
+        fs::create_dir_all(root.join("cmake-build-debug/CMakeFiles/app.dir"))
+            .expect("cmake output");
+        fs::create_dir_all(root.join("vendor/composer")).expect("vendor deps");
+        fs::create_dir_all(root.join("src/__pycache__")).expect("python bytecode cache");
         for index in 0..300 {
             fs::write(
                 root.join(format!("src/file-{index:03}.txt")),
@@ -10343,6 +10527,42 @@ mod tests {
             .expect("fixture file");
         }
         fs::write(root.join("node_modules/pkg/generated.txt"), "ignored\n").expect("ignored");
+        fs::write(
+            root.join(".pnpm-store/v10/files/00/cache.txt"),
+            "ignored cache\n",
+        )
+        .expect("ignored cache");
+        fs::write(
+            root.join(".npm-cache/_cacache/content-v2/sha512/aa/cache.txt"),
+            "ignored npm cache\n",
+        )
+        .expect("ignored npm cache");
+        fs::write(
+            root.join(".venv/lib/python3.12/site-packages/pkg/generated.py"),
+            "ignored python venv\n",
+        )
+        .expect("ignored python venv");
+        fs::write(root.join("target/debug/app"), "ignored rust target\n")
+            .expect("ignored rust target");
+        fs::write(
+            root.join(".gradle/caches/modules-2/generated.bin"),
+            "ignored gradle cache\n",
+        )
+        .expect("ignored gradle cache");
+        fs::write(
+            root.join("cmake-build-debug/CMakeFiles/app.dir/main.o"),
+            "ignored cmake object\n",
+        )
+        .expect("ignored cmake object");
+        fs::write(
+            root.join("vendor/composer/installed.json"),
+            "ignored vendor deps\n",
+        )
+        .expect("ignored vendor deps");
+        fs::write(root.join("src/__pycache__/module.pyc"), "ignored pyc\n")
+            .expect("ignored pycache file");
+        fs::write(root.join("src/generated.pyc"), "ignored pyc\n").expect("ignored generated pyc");
+        fs::write(root.join("src/App.class"), "ignored class\n").expect("ignored class");
 
         let handle = begin_broad_capture(
             root,
@@ -10363,6 +10583,50 @@ mod tests {
             "ignored changed\n",
         )
         .expect("ignored changed");
+        fs::write(
+            root.join(".pnpm-store/v10/files/00/cache.txt"),
+            "ignored cache changed\n",
+        )
+        .expect("ignored cache changed");
+        fs::write(
+            root.join(".npm-cache/_cacache/content-v2/sha512/aa/cache.txt"),
+            "ignored npm cache changed\n",
+        )
+        .expect("ignored npm cache changed");
+        fs::write(
+            root.join(".venv/lib/python3.12/site-packages/pkg/generated.py"),
+            "ignored python venv changed\n",
+        )
+        .expect("ignored python venv changed");
+        fs::write(
+            root.join("target/debug/app"),
+            "ignored rust target changed\n",
+        )
+        .expect("ignored rust target changed");
+        fs::write(
+            root.join(".gradle/caches/modules-2/generated.bin"),
+            "ignored gradle cache changed\n",
+        )
+        .expect("ignored gradle cache changed");
+        fs::write(
+            root.join("cmake-build-debug/CMakeFiles/app.dir/main.o"),
+            "ignored cmake object changed\n",
+        )
+        .expect("ignored cmake object changed");
+        fs::write(
+            root.join("vendor/composer/installed.json"),
+            "ignored vendor deps changed\n",
+        )
+        .expect("ignored vendor deps changed");
+        fs::write(
+            root.join("src/__pycache__/module.pyc"),
+            "ignored pyc changed\n",
+        )
+        .expect("ignored pycache file changed");
+        fs::write(root.join("src/generated.pyc"), "ignored pyc changed\n")
+            .expect("ignored generated pyc changed");
+        fs::write(root.join("src/App.class"), "ignored class changed\n")
+            .expect("ignored class changed");
 
         let completed = complete_broad_capture(root, handle).expect("complete broad");
 
@@ -10383,6 +10647,38 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.path.starts_with("node_modules/")));
+        assert!(!after_manifest
+            .entries
+            .iter()
+            .any(|entry| entry.path.starts_with(".npm-cache/")));
+        assert!(!after_manifest
+            .entries
+            .iter()
+            .any(|entry| entry.path.starts_with(".pnpm-store/")));
+        assert!(!after_manifest
+            .entries
+            .iter()
+            .any(|entry| entry.path.starts_with(".venv/")));
+        assert!(!after_manifest
+            .entries
+            .iter()
+            .any(|entry| entry.path.starts_with("target/")));
+        assert!(!after_manifest
+            .entries
+            .iter()
+            .any(|entry| entry.path.starts_with(".gradle/")));
+        assert!(!after_manifest
+            .entries
+            .iter()
+            .any(|entry| entry.path.starts_with("cmake-build-debug/")));
+        assert!(!after_manifest
+            .entries
+            .iter()
+            .any(|entry| entry.path.starts_with("vendor/")));
+        assert!(!after_manifest
+            .entries
+            .iter()
+            .any(|entry| { entry.path.ends_with(".pyc") || entry.path.ends_with(".class") }));
     }
 
     #[test]

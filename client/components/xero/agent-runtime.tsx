@@ -49,6 +49,7 @@ import type {
   RuntimeAgentProjectOrigin,
   RuntimeAutoCompactPreferenceDto,
   ProviderAuthSessionView,
+  ProjectFileIndexEntryDto,
   RuntimeSessionView,
   RuntimeStreamActionRequiredItemView,
   RuntimeStreamActivityItemView,
@@ -65,6 +66,7 @@ import {
   getRuntimeAgentLabel,
   getRuntimeRunThinkingEffortLabel,
   type AgentDefaultModelDto,
+  type RuntimeLinkedPathDto,
   type RuntimeRunControlInputDto,
   type StagedAgentAttachmentDto,
 } from '@/src/lib/xero-model'
@@ -99,6 +101,7 @@ import {
 } from '@xero/ui/components/transcript/routing-suggestion-card'
 import {
   ComposerDock,
+  type ComposerContextMentionOption,
   type ComposerPendingAttachment,
   type ComposerPendingContext,
 } from './agent-runtime/composer-dock'
@@ -168,7 +171,10 @@ export type AgentRuntimeDesktopAdapter = SpeechDictationAdapter &
       | 'getSessionContextSnapshot'
       | 'getSessionTranscript'
       | 'stageAgentAttachment'
+      | 'stageAgentAttachmentPath'
       | 'discardAgentAttachment'
+      | 'pickComposerFolders'
+      | 'listProjectFileIndex'
       | 'resumeAgentRun'
       | 'rejectAgentAction'
       | 'getAgentHandoffContextSummary'
@@ -189,11 +195,13 @@ export interface AgentRuntimeProps {
     controls?: RuntimeRunControlInputDto | null
     prompt?: string | null
     attachments?: StagedAgentAttachmentDto[]
+    linkedPaths?: RuntimeLinkedPathDto[]
   }) => Promise<RuntimeRunView | null>
   onUpdateRuntimeRunControls?: (request?: {
     controls?: RuntimeRunControlInputDto | null
     prompt?: string | null
     attachments?: StagedAgentAttachmentDto[]
+    linkedPaths?: RuntimeLinkedPathDto[]
   }) => Promise<RuntimeRunView | null>
   onComposerControlsChange?: (controls: RuntimeRunControlInputDto | null) => void
   onStartRuntimeSession?: (options?: { providerProfileId?: string | null }) => Promise<RuntimeSessionView | null>
@@ -321,6 +329,7 @@ const OWNED_AGENT_ACTION_PROMPT_TYPES = new Set([
   'review_plan',
   'safety_boundary',
   'subagent_resolution_required',
+  'user_input_required',
   'verification_required',
 ])
 
@@ -1027,6 +1036,12 @@ interface TurnRoutingContext {
   actionTurnIndexByToolCallId: Map<string, number>
 }
 
+type ComposerPendingLinkedPath = {
+  id: string
+  kind: RuntimeLinkedPathDto['kind']
+  absolutePath: string
+}
+
 function createTurnRoutingContext(): TurnRoutingContext {
   return {
     turns: [],
@@ -1597,6 +1612,190 @@ function pendingComposerAttachmentsToConversation(
     previewSrc: pendingComposerAttachmentPreviewSrc(attachment),
     absolutePath: attachment.absolutePath,
   }))
+}
+
+function composerPathName(absolutePath: string): string {
+  const parts = absolutePath.split(/[\\/]+/).filter(Boolean)
+  return parts.at(-1) ?? absolutePath
+}
+
+function projectPathName(path: string): string {
+  const parts = path.split('/').filter(Boolean)
+  return parts.at(-1) ?? path
+}
+
+function projectPathDisplay(path: string): string {
+  return path.split('/').filter(Boolean).join('/') || '/'
+}
+
+function projectVirtualPathToAbsolutePath(rootPath: string | null | undefined, path: string): string | null {
+  const root = rootPath?.trim()
+  if (!root) return null
+  const segments = path.split('/').filter(Boolean)
+  if (segments.length === 0) return root
+  const separator = root.includes('\\') ? '\\' : '/'
+  return `${root.replace(/[\\/]+$/, '')}${separator}${segments.join(separator)}`
+}
+
+function composerContextIdForPath(absolutePath: string): string {
+  let hash = 0
+  for (let index = 0; index < absolutePath.length; index += 1) {
+    hash = ((hash << 5) - hash + absolutePath.charCodeAt(index)) | 0
+  }
+  return `linked-folder-${Math.abs(hash).toString(36)}`
+}
+
+function composerContextIdForProjectPath(projectId: string, kind: 'file' | 'folder', path: string): string {
+  return `linked-project-${kind}-${composerContextHash(`${projectId}:${kind}:${path}`)}`
+}
+
+function composerContextHash(value: string): string {
+  let hash = 0
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0
+  }
+  return Math.abs(hash).toString(36)
+}
+
+function linkedFolderHiddenPrompt(absolutePath: string): string {
+  return [
+    'Linked folder context:',
+    `- ${absolutePath}`,
+    'The user attached this folder for the agent to inspect if it is relevant to the request.',
+  ].join('\n')
+}
+
+function linkedProjectPathHiddenPrompt(input: {
+  kind: 'file' | 'folder'
+  path: string
+  absolutePath: string | null
+}): string {
+  const label = input.kind === 'folder' ? 'folder' : 'file'
+  const displayPath = projectPathDisplay(input.path)
+  const absolutePath = input.absolutePath ? ` (${input.absolutePath})` : ''
+  return [
+    `Linked project ${label} context:`,
+    `- ${displayPath}${absolutePath}`,
+    `The user attached this ${label} for the agent to inspect if it is relevant to the request.`,
+  ].join('\n')
+}
+
+interface ComposerProjectPathCandidate {
+  id: string
+  kind: 'file' | 'folder'
+  path: string
+  title: string
+}
+
+function buildComposerProjectPathCandidates(
+  projectId: string,
+  files: readonly ProjectFileIndexEntryDto[],
+): ComposerProjectPathCandidate[] {
+  const foldersByPath = new Map<string, ComposerProjectPathCandidate>()
+  const candidates: ComposerProjectPathCandidate[] = []
+
+  const addFolder = (path: string) => {
+    if (path === '/' || foldersByPath.has(path)) return
+    foldersByPath.set(path, {
+      id: composerContextIdForProjectPath(projectId, 'folder', path),
+      kind: 'folder',
+      path,
+      title: projectPathName(path),
+    })
+  }
+
+  for (const file of files) {
+    candidates.push({
+      id: composerContextIdForProjectPath(projectId, 'file', file.path),
+      kind: 'file',
+      path: file.path,
+      title: file.name,
+    })
+
+    const parts = file.parentPath.split('/').filter(Boolean)
+    for (let length = 1; length <= parts.length; length += 1) {
+      addFolder(`/${parts.slice(0, length).join('/')}`)
+    }
+  }
+
+  return [
+    ...foldersByPath.values(),
+    ...candidates,
+  ].sort((left, right) => left.path.localeCompare(right.path))
+}
+
+function rankComposerProjectPathCandidates(
+  candidates: readonly ComposerProjectPathCandidate[],
+  query: string,
+): ComposerContextMentionOption[] {
+  const normalizedQuery = query.trim().replace(/^\/+/, '').toLowerCase()
+  const ranked = candidates
+    .map((candidate) => ({
+      candidate,
+      score: composerProjectPathCandidateScore(candidate, normalizedQuery),
+    }))
+    .filter((entry): entry is { candidate: ComposerProjectPathCandidate; score: number } =>
+      Number.isFinite(entry.score),
+    )
+    .sort((left, right) => {
+      if (left.score !== right.score) return left.score - right.score
+      if (left.candidate.kind !== right.candidate.kind) {
+        return left.candidate.kind === 'folder' ? -1 : 1
+      }
+      return left.candidate.path.localeCompare(right.candidate.path)
+    })
+
+  return ranked.slice(0, 12).map(({ candidate }) => ({
+    id: candidate.id,
+    kind: candidate.kind,
+    title: candidate.title,
+    subtitle: projectPathDisplay(candidate.path),
+  }))
+}
+
+function composerProjectPathCandidateScore(
+  candidate: ComposerProjectPathCandidate,
+  query: string,
+): number {
+  if (!query) {
+    return (candidate.kind === 'folder' ? 0 : 2) + candidate.path.length * 0.01
+  }
+
+  const name = candidate.title.toLowerCase()
+  const path = projectPathDisplay(candidate.path).toLowerCase()
+  if (name === query) return 0
+  if (path === query) return 0.1
+  if (name.startsWith(query)) return 1 + name.length * 0.01
+  if (path.startsWith(query)) return 2 + path.length * 0.01
+  if (name.includes(query)) return 3 + name.indexOf(query) * 0.05
+  if (path.includes(query)) return 4 + path.indexOf(query) * 0.05
+
+  const fuzzyName = composerFuzzyScore(query, name)
+  const fuzzyPath = composerFuzzyScore(query, path)
+  const fuzzy = Math.min(fuzzyName ?? Number.POSITIVE_INFINITY, fuzzyPath ?? Number.POSITIVE_INFINITY)
+  return Number.isFinite(fuzzy) ? 6 + fuzzy : Number.POSITIVE_INFINITY
+}
+
+function composerFuzzyScore(query: string, candidate: string): number | null {
+  let queryIndex = 0
+  let score = candidate.length * 0.01
+  let lastMatch = -1
+
+  for (let index = 0; index < candidate.length && queryIndex < query.length; index += 1) {
+    if (candidate[index] !== query[queryIndex]) continue
+    score += lastMatch >= 0 ? Math.max(0, index - lastMatch - 1) : index * 0.15
+    if (lastMatch + 1 === index) score -= 0.25
+    lastMatch = index
+    queryIndex += 1
+  }
+
+  return queryIndex === query.length ? score : null
+}
+
+function isPathDirectoryAttachmentError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const code = (error as { code?: unknown }).code
+  return code === 'agent_attachment_source_not_file'
 }
 
 function getConversationTurnRunIdFromId(id: string): string | null {
@@ -2692,14 +2891,84 @@ export const AgentRuntime = memo(function AgentRuntime({
 
   const [pendingAttachments, setPendingAttachments] = useState<ComposerPendingAttachment[]>([])
   const [pendingContextCards, setPendingContextCards] = useState<ComposerPendingContext[]>([])
+  const [pendingLinkedPaths, setPendingLinkedPaths] = useState<ComposerPendingLinkedPath[]>([])
+  const [composerContextMentionQuery, setComposerContextMentionQuery] = useState<string | null>(null)
+  const [composerPathIndexState, setComposerPathIndexState] = useState<{
+    status: 'idle' | 'loading' | 'ready' | 'error'
+    files: ProjectFileIndexEntryDto[]
+    error: string | null
+  }>({ status: 'idle', files: [], error: null })
   const pendingAttachmentsRef = useRef<ComposerPendingAttachment[]>([])
   pendingAttachmentsRef.current = pendingAttachments
+  const pendingLinkedPathsRef = useRef<ComposerPendingLinkedPath[]>([])
+  pendingLinkedPathsRef.current = pendingLinkedPaths
   const consumedComposerInsertIdsRef = useRef<Set<string>>(new Set())
+  const composerPathIndexStatusRef = useRef(composerPathIndexState.status)
+  composerPathIndexStatusRef.current = composerPathIndexState.status
 
   const stageAgentAttachment = desktopAdapter?.stageAgentAttachment
+  const stageAgentAttachmentPath = desktopAdapter?.stageAgentAttachmentPath
   const discardAgentAttachment = desktopAdapter?.discardAgentAttachment
+  const pickComposerFolders = desktopAdapter?.pickComposerFolders
+  const listProjectFileIndex = desktopAdapter?.listProjectFileIndex
   const projectIdForAttachments = agent.project.id
   const runIdForAttachments = renderableRuntimeRun?.runId ?? 'pending'
+
+  useEffect(() => {
+    setComposerContextMentionQuery(null)
+    setComposerPathIndexState({ status: 'idle', files: [], error: null })
+  }, [projectIdForAttachments])
+
+  useEffect(() => {
+    if (composerContextMentionQuery === null || !listProjectFileIndex) return
+    if (
+      composerPathIndexStatusRef.current === 'loading' ||
+      composerPathIndexStatusRef.current === 'ready'
+    ) return
+
+    let cancelled = false
+    setComposerPathIndexState((current) => ({ ...current, status: 'loading', error: null }))
+    void listProjectFileIndex({
+      projectId: projectIdForAttachments,
+      includeHidden: false,
+      limit: 6000,
+    })
+      .then((response) => {
+        if (cancelled) return
+        setComposerPathIndexState({ status: 'ready', files: response.files, error: null })
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        setComposerPathIndexState({
+          status: 'error',
+          files: [],
+          error: error instanceof Error ? error.message : 'Project paths unavailable',
+        })
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    composerContextMentionQuery,
+    listProjectFileIndex,
+    projectIdForAttachments,
+  ])
+
+  const composerContextMentionCandidates = useMemo(
+    () => buildComposerProjectPathCandidates(projectIdForAttachments, composerPathIndexState.files),
+    [composerPathIndexState.files, projectIdForAttachments],
+  )
+  const composerContextMentionOptions = useMemo(
+    () =>
+      composerContextMentionQuery === null
+        ? []
+        : rankComposerProjectPathCandidates(
+            composerContextMentionCandidates,
+            composerContextMentionQuery,
+          ),
+    [composerContextMentionCandidates, composerContextMentionQuery],
+  )
 
   const handleAddFiles = useCallback(
     (files: File[]) => {
@@ -2870,8 +3139,16 @@ export const AgentRuntime = memo(function AgentRuntime({
       }))
   }, [])
 
+  const getPendingLinkedPaths = useCallback((): RuntimeLinkedPathDto[] => {
+    return pendingLinkedPathsRef.current.map((path) => ({
+      kind: path.kind,
+      absolutePath: path.absolutePath,
+    }))
+  }, [])
+
   const handleSubmitAttachmentsSettled = useCallback(() => {
     setPendingContextCards([])
+    setPendingLinkedPaths([])
     setPendingAttachments((prev) => {
       for (const attachment of prev) {
         if (attachment.previewUrl && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
@@ -2932,15 +3209,172 @@ export const AgentRuntime = memo(function AgentRuntime({
     onResolveOperatorAction,
     onResumeOperatorRun,
     getPendingAttachments,
+    getPendingLinkedPaths,
     onSubmitAttachmentsSettled: handleSubmitAttachmentsSettled,
   })
 
   const handleRemoveContextCard = useCallback(
     (id: string) => {
       setPendingContextCards((prev) => prev.filter((context) => context.id !== id))
+      setPendingLinkedPaths((prev) => prev.filter((path) => path.id !== id))
       controller.handleRemoveHiddenDraftPrompt(id)
     },
     [controller],
+  )
+
+  const handleAddLinkedFolders = useCallback(
+    (paths: readonly string[]) => {
+      const folders = paths
+        .map((path) => path.trim())
+        .filter((path) => path.length > 0)
+        .map((path) => ({
+          id: composerContextIdForPath(path),
+          path,
+          name: composerPathName(path),
+        }))
+      if (folders.length === 0) return
+
+      for (const folder of folders) {
+        controller.handleAppendHiddenDraftPrompt(linkedFolderHiddenPrompt(folder.path), folder.id)
+      }
+
+      setPendingLinkedPaths((prev) => {
+        const existingIds = new Set(prev.map((path) => path.id))
+        const additions = folders
+          .filter((folder) => !existingIds.has(folder.id))
+          .map((folder): ComposerPendingLinkedPath => ({
+            id: folder.id,
+            kind: 'folder',
+            absolutePath: folder.path,
+          }))
+        return additions.length > 0 ? [...prev, ...additions] : prev
+      })
+
+      setPendingContextCards((prev) => {
+        const existingIds = new Set(prev.map((context) => context.id))
+        const additions = folders
+          .filter((folder) => !existingIds.has(folder.id))
+          .map((folder): ComposerPendingContext => ({
+            id: folder.id,
+            kind: 'folder',
+            title: folder.name,
+            subtitle: folder.path,
+          }))
+        return additions.length > 0 ? [...prev, ...additions] : prev
+      })
+    },
+    [controller],
+  )
+
+  const handleSelectComposerContextMention = useCallback(
+    (option: ComposerContextMentionOption) => {
+      const candidate = composerContextMentionCandidates.find((item) => item.id === option.id)
+      if (!candidate) return
+
+      const absolutePath = projectVirtualPathToAbsolutePath(agent.repositoryPath, candidate.path)
+      controller.handleAppendHiddenDraftPrompt(
+        linkedProjectPathHiddenPrompt({
+          kind: candidate.kind,
+          path: candidate.path,
+          absolutePath,
+        }),
+        candidate.id,
+      )
+
+      if (absolutePath) {
+        setPendingLinkedPaths((prev) => {
+          if (prev.some((path) => path.id === candidate.id)) return prev
+          return [
+            ...prev,
+            {
+              id: candidate.id,
+              kind: candidate.kind,
+              absolutePath,
+            },
+          ]
+        })
+      }
+
+      setPendingContextCards((prev) => {
+        if (prev.some((context) => context.id === candidate.id)) return prev
+        return [
+          ...prev,
+          {
+            id: candidate.id,
+            kind: candidate.kind,
+            title: candidate.title,
+            subtitle: candidate.path,
+          },
+        ]
+      })
+    },
+    [agent.repositoryPath, composerContextMentionCandidates, controller],
+  )
+
+  const handlePickComposerFolders = useCallback(() => {
+    if (!pickComposerFolders) return
+    void pickComposerFolders()
+      .then((paths) => handleAddLinkedFolders(paths))
+      .catch((error: unknown) => {
+        console.warn(error instanceof Error ? error.message : 'Folder selection failed')
+      })
+  }, [handleAddLinkedFolders, pickComposerFolders])
+
+  const handleDroppedPaths = useCallback(
+    (paths: string[]) => {
+      if (!stageAgentAttachmentPath) {
+        handleAddLinkedFolders(paths)
+        return
+      }
+
+      for (const rawPath of paths) {
+        const absolutePath = rawPath.trim()
+        if (absolutePath.length === 0) continue
+
+        void stageAgentAttachmentPath({
+          projectId: projectIdForAttachments,
+          runId: runIdForAttachments,
+          absolutePath,
+        })
+          .then((staged) => {
+            const id = `attachment-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+            let previewUrl: string | undefined
+            if (staged.kind === 'image') {
+              try {
+                previewUrl = convertFileSrc(staged.absolutePath)
+              } catch {
+                previewUrl = undefined
+              }
+            }
+            setPendingAttachments((prev) => [
+              ...prev,
+              {
+                id,
+                kind: staged.kind,
+                originalName: staged.originalName,
+                mediaType: staged.mediaType,
+                sizeBytes: staged.sizeBytes,
+                status: 'ready',
+                absolutePath: staged.absolutePath,
+                previewUrl,
+              },
+            ])
+          })
+          .catch((error: unknown) => {
+            if (isPathDirectoryAttachmentError(error)) {
+              handleAddLinkedFolders([absolutePath])
+              return
+            }
+            console.warn(error instanceof Error ? error.message : 'Path attachment failed')
+          })
+      }
+    },
+    [
+      handleAddLinkedFolders,
+      projectIdForAttachments,
+      runIdForAttachments,
+      stageAgentAttachmentPath,
+    ],
   )
 
   useEffect(() => {
@@ -4188,8 +4622,9 @@ export const AgentRuntime = memo(function AgentRuntime({
 
   return (
     <AgentPaneDropOverlay
-      enabled={Boolean(stageAgentAttachment)}
+      enabled={Boolean(stageAgentAttachment || stageAgentAttachmentPath)}
       onFilesDropped={handleAddFiles}
+      onPathsDropped={stageAgentAttachmentPath ? handleDroppedPaths : undefined}
     >
       <div ref={paneRootRef} className="flex min-h-0 min-w-0 flex-1">
         <div className="relative flex min-w-0 flex-1 flex-col">
@@ -4560,8 +4995,14 @@ export const AgentRuntime = memo(function AgentRuntime({
           pendingContexts={pendingContextCards}
           attachmentCompatibility={selectedComposerModel}
           onAddFiles={handleAddFiles}
+          onAddFolders={pickComposerFolders ? handlePickComposerFolders : undefined}
           onRemoveAttachment={handleRemoveAttachment}
           onRemoveContext={handleRemoveContextCard}
+          contextMentionOptions={composerContextMentionOptions}
+          contextMentionStatus={composerPathIndexState.status}
+          contextMentionError={composerPathIndexState.error}
+          onContextMentionQueryChange={listProjectFileIndex ? setComposerContextMentionQuery : undefined}
+          onSelectContextMention={listProjectFileIndex ? handleSelectComposerContextMention : undefined}
           pendingRuntimeRunAction={pendingRuntimeRunAction}
           placeholder={composerPlaceholder}
           promptInputRef={controller.promptInputRef}

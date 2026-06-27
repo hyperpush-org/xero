@@ -42,17 +42,17 @@ export function AppShell({ children, activeView, onViewChange }: AppShellProps) 
         {/* Center navigation */}
         <div className="flex items-center gap-1 bg-muted rounded-md p-0.5">
           <NavButton
-            icon={Workflow}
-            label="Workflow"
-            active={activeView === "workflow"}
-            onClick={() => onViewChange("workflow")}
+            icon={Bot}
+            label="Chat"
+            active={activeView === "agent"}
+            onClick={() => onViewChange("agent")}
             shortcut="1"
           />
           <NavButton
-            icon={Bot}
-            label="Agent"
-            active={activeView === "agent"}
-            onClick={() => onViewChange("agent")}
+            icon={Workflow}
+            label="Create"
+            active={activeView === "workflow"}
+            onClick={() => onViewChange("workflow")}
             shortcut="2"
           />
           <NavButton

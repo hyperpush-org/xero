@@ -96,6 +96,20 @@ const OPERATOR_ACTION_ANSWER_SHAPES: Record<string, OperatorApprovalAnswerShapeM
       'Pick one or more options from the list provided by the agent. Xero submits the chosen option ids as a JSON array.',
     placeholder: 'Choose one or more options to resume the agent run.',
   },
+  user_input_required: {
+    kind: 'short_text',
+    label: 'User input',
+    guidance:
+      'Provide the requested non-sensitive answer so the agent can continue with the selected approach.',
+    placeholder: 'Enter the requested answer.',
+  },
+  technology_stack_selection: {
+    kind: 'single_choice',
+    label: 'Technology stack selection',
+    guidance:
+      'Choose the stack option the agent should use. Xero submits the chosen option id as the user answer.',
+    placeholder: 'Choose one technology stack.',
+  },
   short_text_required: {
     kind: 'short_text',
     label: 'Short-text response',

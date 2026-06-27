@@ -1,5 +1,9 @@
 import Config
 
+postgres_port =
+  System.get_env("XERO_POSTGRES_PORT", "26132")
+  |> String.to_integer()
+
 # Configure your database
 #
 # The MIX_TEST_PARTITION environment variable can be used
@@ -9,6 +13,7 @@ config :xero, Xero.Repo,
   username: "postgres",
   password: "postgres",
   hostname: "localhost",
+  port: postgres_port,
   database: "xero_test#{System.get_env("MIX_TEST_PARTITION")}",
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
@@ -16,7 +21,7 @@ config :xero, Xero.Repo,
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :xero, XeroWeb.Endpoint,
-  http: [ip: {127, 0, 0, 1}, port: 4002],
+  http: [ip: {127, 0, 0, 1}, port: 26142],
   secret_key_base: "Fd6kr8FeCax/SV9VgVawLwO3Un2m0PmlJ57NVASjxrE+PliF5ZogoRULjC95qCap",
   server: false
 
@@ -45,4 +50,4 @@ config :xero, Xero.Remote.Jwt, signing_key: "test-remote-jwt-signing-key"
 config :xero,
   web_session_cookie_domain: nil,
   web_session_cookie_secure: false,
-  web_app_url: "http://127.0.0.1:3000"
+  web_app_url: "http://127.0.0.1:26102"

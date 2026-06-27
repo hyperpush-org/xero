@@ -78,14 +78,16 @@ fn compile_dictation_shim() {
         return;
     }
 
+    if std::env::var_os("CARGO_FEATURE_DICTATION_NATIVE").is_none()
+        || std::env::var_os("XERO_SKIP_DICTATION_SHIM").is_some()
+    {
+        return;
+    }
+
     println!("cargo:rustc-link-lib=framework=Speech");
     println!("cargo:rustc-link-lib=framework=AVFoundation");
     println!("cargo:rustc-link-lib=framework=Foundation");
     println!("cargo:rustc-link-lib=framework=Security");
-
-    if std::env::var_os("XERO_SKIP_DICTATION_SHIM").is_some() {
-        return;
-    }
 
     let Some(swiftc) = xcrun_find("swiftc") else {
         println!(
@@ -198,7 +200,9 @@ fn compile_ios_helper() {
     println!("cargo:rerun-if-changed=native/ios-helper/AccessibilityBridge.swift");
     println!("cargo:rerun-if-env-changed=XERO_SKIP_IOS_HELPER");
 
-    if std::env::var_os("XERO_SKIP_IOS_HELPER").is_some() {
+    if std::env::var_os("CARGO_FEATURE_IOS_HELPER").is_none()
+        || std::env::var_os("XERO_SKIP_IOS_HELPER").is_some()
+    {
         return;
     }
 
@@ -762,6 +766,10 @@ fn fetch_idb_companion() {
     println!("cargo:rerun-if-env-changed={SKIP_SIDECAR_FETCH_ENV}");
     println!("cargo:rerun-if-env-changed={SKIP_IDB_COMPANION_FETCH_ENV}");
     println!("cargo:rerun-if-changed={}", sentinel.display());
+
+    if std::env::var_os("CARGO_FEATURE_IOS_GRPC").is_none() {
+        return;
+    }
 
     if std::env::var_os(SKIP_SIDECAR_FETCH_ENV).is_some()
         || std::env::var_os(SKIP_IDB_COMPANION_FETCH_ENV).is_some()

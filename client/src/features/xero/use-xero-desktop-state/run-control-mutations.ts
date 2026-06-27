@@ -6,6 +6,7 @@ import {
   mapRuntimeRun,
   selectAgentSessionId,
   type RuntimeAutoCompactPreferenceDto,
+  type RuntimeLinkedPathDto,
   type RuntimeRunControlInputDto,
   type RuntimeRunView,
   type StagedAgentAttachmentDto,
@@ -337,7 +338,12 @@ export function useRunControlMutations({
     ],
   )
 
-  const startRuntimeRun = useCallback(async (options?: { controls?: RuntimeRunControlInputDto | null; prompt?: string | null; attachments?: StagedAgentAttachmentDto[] }) => {
+  const startRuntimeRun = useCallback(async (options?: {
+    controls?: RuntimeRunControlInputDto | null
+    prompt?: string | null
+    attachments?: StagedAgentAttachmentDto[]
+    linkedPaths?: RuntimeLinkedPathDto[]
+  }) => {
     const projectId = getActiveProjectId(
       activeProjectIdRef,
       'Select an imported project before starting a Xero-owned agent run.',
@@ -358,6 +364,7 @@ export function useRunControlMutations({
         initialControls: options?.controls ?? null,
         initialPrompt: options?.prompt ?? null,
         initialAttachments: options?.attachments ?? [],
+        initialLinkedPaths: options?.linkedPaths ?? [],
       })
       const runtimeRun = mapRuntimeRun(response)
       scheduleRuntimeRunProjectionUpdate(() => {
@@ -414,6 +421,7 @@ export function useRunControlMutations({
       controls?: RuntimeRunControlInputDto | null
       prompt?: string | null
       attachments?: StagedAgentAttachmentDto[]
+      linkedPaths?: RuntimeLinkedPathDto[]
       autoCompact?: RuntimeAutoCompactPreferenceDto | null
     } = {}) => {
       const projectId = getActiveProjectId(
@@ -457,6 +465,7 @@ export function useRunControlMutations({
           controls: request.controls ?? null,
           prompt: request.prompt ?? null,
           attachments: request.attachments ?? [],
+          linkedPaths: request.linkedPaths ?? [],
         }
         const response = await adapter.updateRuntimeRunControls(updateRequest)
         const runtimeRun = mapRuntimeRun(response)

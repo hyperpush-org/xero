@@ -478,6 +478,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::logout_runtime_session::logout_runtime_session,
             commands::start_autonomous_run::start_autonomous_run,
             commands::stage_agent_attachment::stage_agent_attachment,
+            commands::stage_agent_attachment::stage_agent_attachment_path,
             commands::stage_agent_attachment::discard_agent_attachment,
             commands::start_runtime_run::start_runtime_run,
             commands::update_runtime_run_controls::update_runtime_run_controls,
@@ -666,6 +667,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
 
 fn updater_plugin<R: tauri::Runtime + 'static>(
 ) -> tauri::plugin::TauriPlugin<R, tauri_plugin_updater::Config> {
+    #[cfg(feature = "tauri-test-support")]
     if std::any::TypeId::of::<R>() == std::any::TypeId::of::<tauri::test::MockRuntime>() {
         return tauri::plugin::Builder::<R, tauri_plugin_updater::Config>::new("updater").build();
     }

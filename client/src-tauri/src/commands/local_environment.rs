@@ -201,7 +201,7 @@ fn parse_config(contents: &str, env_file: &Path) -> LocalEnvironmentConfig {
         launch_mode: env::var(LAUNCH_MODE_ENV).ok().filter(|s| !s.is_empty()),
         env_file_path: Some(env_file.display().to_string()),
         phx_host: parse_env_value(contents, "PHX_HOST").unwrap_or_else(|| "127.0.0.1".to_string()),
-        port: parse_env_value(contents, "PORT").unwrap_or_else(|| "4000".to_string()),
+        port: parse_env_value(contents, "PORT").unwrap_or_else(|| "26140".to_string()),
         database_url: parse_env_value(contents, "DATABASE_URL").unwrap_or_default(),
         cors_origins: parse_env_value(contents, "CORS_ORIGINS").unwrap_or_default(),
         pool_size: parse_env_value(contents, "POOL_SIZE").unwrap_or_else(|| "10".to_string()),
@@ -263,13 +263,13 @@ mod tests {
     const SAMPLE: &str = "\
 # header comment
 PHX_HOST=127.0.0.1
-PORT=4000
+PORT=26140
 SECRET_KEY_BASE=abc123==
-DATABASE_URL=ecto://postgres:postgres@localhost/xero_prod
+DATABASE_URL=ecto://postgres:postgres@localhost:26132/xero_prod
 POOL_SIZE=10
 ECTO_IPV6=
 DNS_CLUSTER_QUERY=
-CORS_ORIGINS=http://localhost:3000,tauri://localhost
+CORS_ORIGINS=http://localhost:26100,http://127.0.0.1:26100,http://localhost:26102,http://127.0.0.1:26102,tauri://localhost
 RATE_LIMIT_PER_MINUTE=60
 OBAN_QUEUES=default:10,mailers:5
 ";
@@ -279,7 +279,7 @@ OBAN_QUEUES=default:10,mailers:5
         let env_file = Path::new("/tmp/sample.env");
         let cfg = parse_config(SAMPLE, env_file);
         assert_eq!(cfg.phx_host, "127.0.0.1");
-        assert_eq!(cfg.port, "4000");
+        assert_eq!(cfg.port, "26140");
         assert_eq!(cfg.pool_size, "10");
         assert_eq!(cfg.rate_limit_per_minute, "60");
         assert!(cfg.has_secret_key_base);
@@ -314,7 +314,7 @@ OBAN_QUEUES=default:10,mailers:5
         let next = apply_updates(SAMPLE, &[("SECRET_KEY_BASE", "new-secret")]);
         assert!(next.contains("\nSECRET_KEY_BASE=new-secret\n"));
         // Other keys untouched.
-        assert!(next.contains("\nPORT=4000\n"));
+        assert!(next.contains("\nPORT=26140\n"));
     }
 
     #[test]
@@ -335,7 +335,7 @@ OBAN_QUEUES=default:10,mailers:5
     fn validate_save_request_rejects_newlines() {
         let result = validate_save_request(&SaveLocalEnvironmentConfigRequest {
             phx_host: "127.0.0.1".into(),
-            port: "4000".into(),
+            port: "26140".into(),
             database_url: "ecto://x\nINJECT=1".into(),
             cors_origins: "*".into(),
             pool_size: "10".into(),

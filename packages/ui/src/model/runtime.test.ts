@@ -79,6 +79,32 @@ describe('runtime run control schemas', () => {
     expect(runtimeProviderIdSchema.parse('external_cursor_sdk')).toBe('external_cursor_sdk')
   })
 
+  it('accepts attachment-only runtime-run updates', () => {
+    expect(
+      updateRuntimeRunControlsRequestSchema.parse({
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
+        runId: 'run-1',
+        attachments: [
+          {
+            kind: 'text',
+            absolutePath: '/tmp/context.txt',
+            mediaType: 'text/plain',
+            originalName: 'context.txt',
+            sizeBytes: 128,
+          },
+        ],
+      }),
+    ).toMatchObject({
+      attachments: [
+        {
+          kind: 'text',
+          absolutePath: '/tmp/context.txt',
+        },
+      ],
+    })
+  })
+
   it('rejects the Cursor Auto sentinel for generic runtime settings providers', () => {
     expect(() =>
       runtimeSettingsSchema.parse({

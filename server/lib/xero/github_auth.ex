@@ -677,8 +677,16 @@ defmodule Xero.GitHubAuth do
         String.trim_trailing(value, "/")
 
       _ ->
-        "http://127.0.0.1:#{System.get_env("PORT", "4000")}"
+        "http://127.0.0.1:#{System.get_env("PORT", default_server_port())}"
     end
+  end
+
+  defp default_server_port do
+    :xero
+    |> Application.get_env(XeroWeb.Endpoint, [])
+    |> Keyword.get(:http, [])
+    |> Keyword.get(:port, 4000)
+    |> to_string()
   end
 
   defp authorization_url(config, state_token) do

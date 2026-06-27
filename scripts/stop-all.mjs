@@ -18,11 +18,12 @@ const skipDb = args.has('--no-db')
 const currentPid = process.pid
 
 const ports = [
-  { port: 3000, label: 'client Vite/Tauri dev server' },
-  { port: 3001, label: 'landing Next dev server' },
-  { port: 3002, label: 'cloud Vite dev server' },
-  { port: 3003, label: 'video Remotion Studio' },
-  { port: 4000, label: 'Phoenix relay server' },
+  { port: 26100, label: 'client Vite/Tauri dev server' },
+  { port: 26101, label: 'landing Next dev server' },
+  { port: 26102, label: 'cloud Vite dev server' },
+  { port: 26103, label: 'main video Remotion Studio' },
+  { port: 26104, label: 'Solana video Remotion Studio' },
+  { port: 26140, label: 'Phoenix relay server' },
 ]
 
 const stopPatterns = [
@@ -62,8 +63,8 @@ const stopPatterns = [
     label: 'Vite dev server',
     test: (command) =>
       /\bvite(?:\.js)?\b/.test(command) &&
-      (/\b--port(?:=|\s+)3000\b/.test(command) ||
-        /\b--port(?:=|\s+)3002\b/.test(command) ||
+      (/\b--port(?:=|\s+)26100\b/.test(command) ||
+        /\b--port(?:=|\s+)26102\b/.test(command) ||
         /\bvite\s+dev\b/.test(command)),
   },
   {

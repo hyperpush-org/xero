@@ -1,6 +1,7 @@
 import {
 	AlertTriangle,
 	FileText,
+	FolderOpen,
 	Image as ImageIcon,
 	LoaderCircle,
 	Maximize2,
@@ -28,7 +29,7 @@ export interface ComposerPendingAttachment {
 
 export interface ComposerPendingContext {
 	id: string;
-	kind: "element" | "sketch";
+	kind: "element" | "file" | "folder" | "sketch";
 	title: string;
 	subtitle?: string;
 }
@@ -117,7 +118,14 @@ function ComposerContextChip({
 	onRemove,
 }: ComposerContextChipProps) {
 	const subtitle = context.subtitle?.trim() || "Metadata attached";
-	const Icon = context.kind === "sketch" ? PencilLine : SquareDashedMousePointer;
+	const Icon =
+		context.kind === "sketch"
+			? PencilLine
+			: context.kind === "file"
+				? FileText
+			: context.kind === "folder"
+				? FolderOpen
+				: SquareDashedMousePointer;
 	const truncatedTitle =
 		context.title.length > 24
 			? `${context.title.slice(0, 21)}…`

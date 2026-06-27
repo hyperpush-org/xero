@@ -34,7 +34,7 @@ pub fn parse_url(input: &str) -> CommandResult<Url> {
 
 fn normalize_loopback_url(mut url: Url) -> Url {
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
-    if matches!(host.as_str(), "localhost" | "0.0.0.0") {
+    if host == "0.0.0.0" {
         let _ = url.set_host(Some("127.0.0.1"));
     }
     url
@@ -1764,9 +1764,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_url_normalizes_ambiguous_loopback_hosts_to_ipv4() {
+    fn parse_url_preserves_localhost_and_normalizes_wildcard_loopback() {
         let localhost = parse_url("http://localhost:4200/path?q=1").unwrap();
-        assert_eq!(localhost.as_str(), "http://127.0.0.1:4200/path?q=1");
+        assert_eq!(localhost.as_str(), "http://localhost:4200/path?q=1");
 
         let any_addr = parse_url("http://0.0.0.0:4200/").unwrap();
         assert_eq!(any_addr.as_str(), "http://127.0.0.1:4200/");

@@ -33,6 +33,8 @@ import { cn } from '@/lib/utils'
 import type { AgentAttachmentCompatibilityProfile } from '@/lib/agent-attachments'
 import {
   Composer,
+  type ComposerContextMentionOption,
+  type ComposerContextMentionStatus,
   type ComposerPendingContext,
   type ComposerSelectGroup,
   type ComposerSelectOption,
@@ -49,7 +51,10 @@ import type { SpeechDictationPhase } from './use-speech-dictation'
 export type { ComposerPendingAttachment } from '@xero/ui/components/composer'
 import type { ComposerPendingAttachment } from '@xero/ui/components/composer'
 export type ComposerAttachmentKind = ComposerPendingAttachment['kind']
-export type { ComposerPendingContext } from '@xero/ui/components/composer'
+export type {
+  ComposerContextMentionOption,
+  ComposerPendingContext,
+} from '@xero/ui/components/composer'
 
 interface ComposerDictationControl {
   audioLevel?: number
@@ -107,8 +112,14 @@ interface ComposerDockProps {
   pendingContexts?: ComposerPendingContext[]
   attachmentCompatibility?: AgentAttachmentCompatibilityProfile | null
   onAddFiles?: (files: File[]) => void
+  onAddFolders?: () => void
   onRemoveAttachment?: (id: string) => void
   onRemoveContext?: (id: string) => void
+  contextMentionOptions?: readonly ComposerContextMentionOption[]
+  contextMentionStatus?: ComposerContextMentionStatus
+  contextMentionError?: string | null
+  onContextMentionQueryChange?: (query: string | null) => void
+  onSelectContextMention?: (option: ComposerContextMentionOption) => void
   onOpenDiagnostics?: () => void
   onDraftPromptChange: (value: string) => void
   onSubmitDraftPrompt: () => void
@@ -204,8 +215,14 @@ export function ComposerDock({
   pendingContexts,
   attachmentCompatibility,
   onAddFiles,
+  onAddFolders,
   onRemoveAttachment,
   onRemoveContext,
+  contextMentionOptions,
+  contextMentionStatus,
+  contextMentionError,
+  onContextMentionQueryChange,
+  onSelectContextMention,
   onOpenDiagnostics,
   onDraftPromptChange,
   onSubmitDraftPrompt,
@@ -388,8 +405,14 @@ export function ComposerDock({
       pendingContexts={pendingContexts}
       attachmentCompatibility={attachmentCompatibility}
       onAddFiles={onAddFiles}
+      onAddFolders={onAddFolders}
       onRemoveAttachment={onRemoveAttachment}
       onRemoveContext={onRemoveContext}
+      contextMentionOptions={contextMentionOptions}
+      contextMentionStatus={contextMentionStatus}
+      contextMentionError={contextMentionError}
+      onContextMentionQueryChange={onContextMentionQueryChange}
+      onSelectContextMention={onSelectContextMention}
       dictation={hideDictation ? { ...dictation, isVisible: false } : dictation}
       dictationShortcut={bindings['composer.dictation']}
       contextMeter={hideContextMeter ? undefined : contextMeter}

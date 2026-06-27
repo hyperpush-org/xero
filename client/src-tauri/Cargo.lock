@@ -11938,6 +11938,7 @@ dependencies = [
  "xero-agent-core",
  "xero-cli",
  "xero-desktop-control-ipc",
+ "xero-redaction",
  "xero-remote-bridge",
  "zip",
 ]
@@ -11981,6 +11982,13 @@ dependencies = [
  "windows 0.54.0",
  "xcap",
  "xero-desktop-control-ipc",
+]
+
+[[package]]
+name = "xero-redaction"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

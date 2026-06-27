@@ -8,6 +8,7 @@ import type {
   AgentDefaultModelDto,
   ProviderModelThinkingEffortDto,
   RuntimeAgentIdDto,
+  RuntimeLinkedPathDto,
   RuntimeRunApprovalModeDto,
   RuntimeRunControlInputDto,
   RuntimeRunView,
@@ -97,15 +98,19 @@ interface UseAgentRuntimeControllerOptions {
     controls?: RuntimeRunControlInputDto | null
     prompt?: string | null
     attachments?: StagedAgentAttachmentDto[]
+    linkedPaths?: RuntimeLinkedPathDto[]
   }) => Promise<RuntimeRunView | null>
   onStartRuntimeSession?: (options?: { providerProfileId?: string | null }) => Promise<RuntimeSessionView | null>
   onUpdateRuntimeRunControls?: (request?: {
     controls?: RuntimeRunControlInputDto | null
     prompt?: string | null
     attachments?: StagedAgentAttachmentDto[]
+    linkedPaths?: RuntimeLinkedPathDto[]
   }) => Promise<RuntimeRunView | null>
   /** Returns the staged attachments that should be sent with the next prompt. */
   getPendingAttachments?: () => StagedAgentAttachmentDto[]
+  /** Returns linked local paths that should be readable for the next prompt. */
+  getPendingLinkedPaths?: () => RuntimeLinkedPathDto[]
   /** Called after a prompt+attachments submission succeeds, so the caller can clear chips. */
   onSubmitAttachmentsSettled?: () => void
   onComposerControlsChange?: (controls: RuntimeRunControlInputDto | null) => void
@@ -434,6 +439,7 @@ export function useAgentRuntimeController({
   onResolveOperatorAction,
   onResumeOperatorRun,
   getPendingAttachments,
+  getPendingLinkedPaths,
   onSubmitAttachmentsSettled,
 }: UseAgentRuntimeControllerOptions) {
   const initialComposerSettingsRef = useRef<InitialComposerSettings | null>(null)
@@ -508,6 +514,7 @@ export function useAgentRuntimeController({
   const lastSeenRuntimeRunIdRef = useRef<string | null>(renderableRuntimeRun?.runId ?? null)
   const draftPromptRef = useRef(draftPrompt)
   const hiddenDraftPromptsRef = useRef<HiddenDraftPromptEntry[]>([])
+  const [hiddenDraftPromptCount, setHiddenDraftPromptCount] = useState(0)
   const lastReportedComposerControlsRef = useRef<RuntimeRunControlInputDto | null | undefined>(undefined)
   const hasUserComposerSettingsRef = useRef(getInitialComposerSettings().fromStoredControls)
 
@@ -553,6 +560,7 @@ export function useAgentRuntimeController({
   )
 
   const trimmedDraftPrompt = draftPrompt.trim()
+  const hasHiddenDraftPrompts = hiddenDraftPromptCount > 0
   const hasReadyPendingAttachments = (getPendingAttachments?.() ?? []).some(
     (attachment) => attachment.absolutePath != null,
   )
@@ -586,7 +594,7 @@ export function useAgentRuntimeController({
   const canSubmitPrompt = Boolean(
     !runtimeMutationInFlight &&
       !hasQueuedPrompt &&
-      (trimmedDraftPrompt.length > 0 || hasReadyPendingAttachments) &&
+      (trimmedDraftPrompt.length > 0 || hasReadyPendingAttachments || hasHiddenDraftPrompts) &&
       (canStartNewRuntimeRun ||
         (activeRuntimeRun &&
           onUpdateRuntimeRunControls)),
@@ -802,6 +810,7 @@ export function useAgentRuntimeController({
       lastSeenRuntimeRunIdRef.current = renderableRuntimeRun?.runId ?? null
       setDraftPrompt('')
       hiddenDraftPromptsRef.current = []
+      setHiddenDraftPromptCount(0)
       setQueuedDraftAcknowledgement(null)
       setRecentRunReplacement(null)
       return
@@ -874,6 +883,7 @@ export function useAgentRuntimeController({
   function clearSubmittedDraft() {
     draftPromptRef.current = ''
     hiddenDraftPromptsRef.current = []
+    setHiddenDraftPromptCount(0)
     setDraftPrompt('')
   }
 
@@ -930,10 +940,12 @@ export function useAgentRuntimeController({
       const attachmentsToSubmit = (getPendingAttachments?.() ?? []).filter(
         (attachment) => attachment.absolutePath != null,
       )
+      const linkedPathsToSubmit = getPendingLinkedPaths?.() ?? []
       await onStartRuntimeRun({
         controls: selectedControlInput,
         prompt: promptToSubmit.length > 0 ? promptToSubmit : null,
         attachments: attachmentsToSubmit.length > 0 ? attachmentsToSubmit : undefined,
+        linkedPaths: linkedPathsToSubmit.length > 0 ? linkedPathsToSubmit : undefined,
       })
       if (promptToSubmit.length > 0 || attachmentsToSubmit.length > 0) {
         clearSubmittedDraft()
@@ -963,8 +975,9 @@ export function useAgentRuntimeController({
     const attachmentsToSubmit = (getPendingAttachments?.() ?? []).filter(
       (attachment) => attachment.absolutePath != null,
     )
+    const linkedPathsToSubmit = getPendingLinkedPaths?.() ?? []
     if (
-      (trimmedDraftPrompt.length === 0 && attachmentsToSubmit.length === 0) ||
+      (trimmedDraftPrompt.length === 0 && attachmentsToSubmit.length === 0 && !hasHiddenDraftPrompts) ||
       hasQueuedPrompt ||
       runtimeRunActionStatus === 'running'
     ) {
@@ -987,6 +1000,7 @@ export function useAgentRuntimeController({
       await onUpdateRuntimeRunControls({
         ...(promptToSubmit.length > 0 ? { prompt: promptToSubmit } : {}),
         ...(attachmentsToSubmit.length > 0 ? { attachments: attachmentsToSubmit } : {}),
+        ...(linkedPathsToSubmit.length > 0 ? { linkedPaths: linkedPathsToSubmit } : {}),
       })
       clearSubmittedDraft()
       if (promptToSubmit.length > 0) {
@@ -1124,10 +1138,12 @@ export function useAgentRuntimeController({
       ...hiddenDraftPromptsRef.current.filter((entry) => entry.id !== nextEntry.id),
       nextEntry,
     ]
+    setHiddenDraftPromptCount(hiddenDraftPromptsRef.current.length)
   }
 
   function handleRemoveHiddenDraftPrompt(id: string) {
     hiddenDraftPromptsRef.current = hiddenDraftPromptsRef.current.filter((entry) => entry.id !== id)
+    setHiddenDraftPromptCount(hiddenDraftPromptsRef.current.length)
   }
 
   function handleAutoCompactEnabledChange(value: boolean) {

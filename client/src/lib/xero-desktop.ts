@@ -358,6 +358,7 @@ import {
   agentSessionSchema,
   listAgentSessionsRequestSchema,
   listAgentSessionsResponseSchema,
+  stageAgentAttachmentPathRequestSchema,
   stagedAgentAttachmentSchema,
   startRuntimeSessionRequestSchema,
   startRuntimeRunRequestSchema,
@@ -382,7 +383,9 @@ import {
   type RuntimeAgentIdDto,
   type ProviderAuthSessionDto,
   type RuntimeUpdatedPayloadDto,
+  type RuntimeLinkedPathDto,
   type StagedAgentAttachmentDto,
+  type StageAgentAttachmentPathRequestDto,
   type StartRuntimeRunRequestDto,
   type StartRuntimeSessionRequestDto,
   type StopRuntimeRunRequestDto,
@@ -789,6 +792,7 @@ const COMMANDS = {
   submitOpenAiCallback: 'submit_openai_callback',
   startAutonomousRun: 'start_autonomous_run',
   stageAgentAttachment: 'stage_agent_attachment',
+  stageAgentAttachmentPath: 'stage_agent_attachment_path',
   discardAgentAttachment: 'discard_agent_attachment',
   startRuntimeRun: 'start_runtime_run',
   updateRuntimeRunControls: 'update_runtime_run_controls',
@@ -1128,6 +1132,7 @@ export interface StartRuntimeRunOptions {
   initialControls?: RuntimeRunControlInputDto | null
   initialPrompt?: string | null
   initialAttachments?: StagedAgentAttachmentDto[]
+  initialLinkedPaths?: RuntimeLinkedPathDto[]
 }
 
 export interface StageAgentAttachmentInput {
@@ -1137,6 +1142,8 @@ export interface StageAgentAttachmentInput {
   mediaType: string
   bytes: Uint8Array
 }
+
+export type StageAgentAttachmentPathInput = StageAgentAttachmentPathRequestDto
 
 export interface StartRuntimeSessionOptions {
   providerProfileId?: string | null
@@ -1191,6 +1198,7 @@ export interface XeroDesktopAdapter {
   isDesktopRuntime(): boolean
   pickRepositoryFolder(): Promise<string | null>
   pickParentFolder(): Promise<string | null>
+  pickComposerFolders?(): Promise<string[]>
   importRepository(path: string): Promise<ImportRepositoryResponseDto>
   createRepository(parentPath: string, name: string): Promise<ImportRepositoryResponseDto>
   listProjects(): Promise<ListProjectsResponseDto>
@@ -1500,6 +1508,9 @@ export interface XeroDesktopAdapter {
     options?: StartRuntimeRunOptions,
   ): Promise<RuntimeRunDto>
   stageAgentAttachment(input: StageAgentAttachmentInput): Promise<StagedAgentAttachmentDto>
+  stageAgentAttachmentPath?(
+    input: StageAgentAttachmentPathInput,
+  ): Promise<StagedAgentAttachmentDto>
   discardAgentAttachment(projectId: string, absolutePath: string): Promise<void>
   updateRuntimeRunControls(request: UpdateRuntimeRunControlsRequestDto): Promise<RuntimeRunDto>
   startRuntimeSession(projectId: string, options?: StartRuntimeSessionOptions): Promise<RuntimeSessionDto>
@@ -2407,6 +2418,26 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
       return typeof path === 'string' && path.trim().length > 0 ? path : null
     } catch (error) {
       throw normalizeError(error, 'Project create')
+    }
+  },
+
+  async pickComposerFolders() {
+    ensureDesktopRuntime('Composer folder attachment')
+
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: true,
+      })
+
+      if (selected === null) {
+        return []
+      }
+
+      const paths = Array.isArray(selected) ? selected : [selected]
+      return paths.filter((path): path is string => typeof path === 'string' && path.trim().length > 0)
+    } catch (error) {
+      throw normalizeError(error, 'Composer folder attachment')
     }
   },
 
@@ -3682,6 +3713,7 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
       initialControls: options?.initialControls ?? null,
       initialPrompt: options?.initialPrompt ?? null,
       initialAttachments: options?.initialAttachments ?? [],
+      initialLinkedPaths: options?.initialLinkedPaths ?? [],
     })
 
     return invokeTyped(COMMANDS.startRuntimeRun, runtimeRunSchema, {
@@ -3698,6 +3730,13 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
       bytes: Array.from(input.bytes),
     }
     return invokeTyped(COMMANDS.stageAgentAttachment, stagedAgentAttachmentSchema, {
+      request,
+    })
+  },
+
+  stageAgentAttachmentPath(input) {
+    const request = stageAgentAttachmentPathRequestSchema.parse(input)
+    return invokeTyped(COMMANDS.stageAgentAttachmentPath, stagedAgentAttachmentSchema, {
       request,
     })
   },

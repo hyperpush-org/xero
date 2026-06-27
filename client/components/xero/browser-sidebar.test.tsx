@@ -313,8 +313,8 @@ function createDictationAdapter(options: {
     isDesktopRuntime: () => true,
     speechDictationStatus: vi.fn(async () => options.status ?? makeDictationStatus()),
     speechDictationSettings: vi.fn(async () => ({
-      enginePreference: "automatic",
-      privacyMode: "on_device_preferred",
+      enginePreference: "automatic" as const,
+      privacyMode: "on_device_preferred" as const,
       locale: "en_US",
       updatedAt: null,
     })),
@@ -783,7 +783,7 @@ describe("BrowserSidebar", () => {
     })
   })
 
-  it("submits localhost URLs as IPv4 loopback for the embedded WebView", async () => {
+  it("preserves localhost URLs for the embedded WebView", async () => {
     registerInvoke("browser_tab_list", async () => [])
     const shownUrls: string[] = []
     registerInvoke("browser_show", async (args) => {
@@ -809,7 +809,7 @@ describe("BrowserSidebar", () => {
     fireEvent.submit(form)
 
     await waitFor(() => {
-      expect(shownUrls).toEqual(["http://127.0.0.1:4200/"])
+      expect(shownUrls).toEqual(["http://localhost:4200/"])
     })
   })
 
@@ -839,7 +839,7 @@ describe("BrowserSidebar", () => {
     fireEvent.submit(form)
 
     await waitFor(() => {
-      expect(shownUrls).toEqual(["http://127.0.0.1:4200/"])
+      expect(shownUrls).toEqual(["http://localhost:4200"])
     })
   })
 
@@ -1267,7 +1267,7 @@ describe("BrowserSidebar", () => {
     )
 
     await waitFor(() => {
-      expect(shownUrls).toEqual(["http://127.0.0.1:5173/"])
+      expect(shownUrls).toEqual(["http://localhost:5173/"])
       expect(onConsumed).toHaveBeenCalledWith("open-1")
     })
   })
@@ -1309,7 +1309,7 @@ describe("BrowserSidebar", () => {
     expect(shownUrls).toEqual([])
 
     await waitFor(() => {
-      expect(shownUrls).toEqual(["http://127.0.0.1:5173/"])
+      expect(shownUrls).toEqual(["http://localhost:5173/"])
       expect(onConsumed).toHaveBeenCalledWith("open-while-closed")
     })
   })
@@ -3396,6 +3396,10 @@ describe("BrowserSidebar", () => {
     const target = document.createElement("button")
     target.textContent = "Launch"
     target.setAttribute("aria-label", "Launch")
+    target.setAttribute("data-xero-browser-tool-selected", "existing-marker")
+    target.setAttribute("data-xero-browser-tool-selected-label", "existing-label")
+    target.style.setProperty("outline", "1px dotted red", "important")
+    target.style.setProperty("outline-offset", "3px", "important")
     document.body.appendChild(target)
     vi.spyOn(target, "getBoundingClientRect").mockReturnValue(
       rect({
@@ -3434,13 +3438,23 @@ describe("BrowserSidebar", () => {
       dispatchPointer(layer!, "click", { clientX: 80, clientY: 80 })
 
       expect(shadow?.querySelector(".composer")).toBeTruthy()
-      expect(shadow?.querySelector(".inspect-highlight")?.getAttribute("data-selected")).toBe(
-        "true",
+      expect(target.getAttribute("data-xero-browser-tool-selected")).toBe("true")
+      expect(target.getAttribute("data-xero-browser-tool-selected-label")).toContain("button")
+      expect(target.style.getPropertyValue("outline")).toContain("2px solid")
+      expect(target.style.getPropertyPriority("outline")).toBe("important")
+      expect((shadow?.querySelector(".inspect-highlight") as HTMLElement | null)?.style.display).toBe(
+        "none",
       )
 
       clear!.click()
 
       expect(shadow?.querySelector(".composer")).toBeNull()
+      expect(target.getAttribute("data-xero-browser-tool-selected")).toBe("existing-marker")
+      expect(target.getAttribute("data-xero-browser-tool-selected-label")).toBe("existing-label")
+      expect(target.style.getPropertyValue("outline")).toBe("1px dotted red")
+      expect(target.style.getPropertyPriority("outline")).toBe("important")
+      expect(target.style.getPropertyValue("outline-offset")).toBe("3px")
+      expect(target.style.getPropertyPriority("outline-offset")).toBe("important")
       expect((shadow?.querySelector(".inspect-highlight") as HTMLElement | null)?.style.display).toBe(
         "none",
       )
@@ -3452,6 +3466,120 @@ describe("BrowserSidebar", () => {
         Object.defineProperty(document, "elementFromPoint", originalElementFromPoint)
       } else {
         delete (document as unknown as { elementFromPoint?: unknown }).elementFromPoint
+      }
+    }
+  })
+
+  it("binds the selected inspect outline to the element and refreshes submitted metadata after scroll", async () => {
+    const originalElementFromPoint = Object.getOwnPropertyDescriptor(
+      document,
+      "elementFromPoint",
+    )
+    const originalTauriInternals = Object.getOwnPropertyDescriptor(
+      window,
+      "__TAURI_INTERNALS__",
+    )
+    const invoke = vi.fn(async (_command: string, _args?: Record<string, unknown>) => null)
+    const target = document.createElement("section")
+    target.id = "projects"
+    target.textContent = "Projects"
+    document.body.appendChild(target)
+    let currentRect = rect({
+      bottom: 460,
+      height: 180,
+      left: 40,
+      right: 340,
+      top: 280,
+      width: 300,
+    })
+    vi.spyOn(target, "getBoundingClientRect").mockImplementation(() => currentRect)
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn(() => target),
+    })
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: { invoke },
+    })
+
+    try {
+      const script = buildBrowserToolActivationScript({
+        mode: "inspect",
+        pageLabel: "Local App",
+        theme: browserToolTestTheme(),
+      })
+      new Function(script)()
+
+      const toolHost = document.getElementById("__xero-browser-tool-root")
+      const shadow = toolHost?.shadowRoot
+      const layer = shadow?.querySelector<HTMLElement>(".layer")
+      const highlight = shadow?.querySelector<HTMLElement>(".inspect-highlight")
+      expect(layer).toBeTruthy()
+      expect(highlight).toBeTruthy()
+
+      dispatchPointer(layer!, "pointermove", { clientX: 80, clientY: 300 })
+      dispatchPointer(layer!, "click", { clientX: 80, clientY: 300 })
+
+      expect(target.getAttribute("data-xero-browser-tool-selected")).toBe("true")
+      expect(target.getAttribute("data-xero-browser-tool-selected-label")).toBe("#projects")
+      expect(target.style.getPropertyValue("outline")).toContain("2px solid")
+      expect(target.style.getPropertyPriority("outline")).toBe("important")
+      expect(highlight?.style.display).toBe("none")
+
+      currentRect = rect({
+        bottom: 220,
+        height: 180,
+        left: 40,
+        right: 340,
+        top: 40,
+        width: 300,
+      })
+      window.dispatchEvent(new Event("scroll"))
+      expect(target.getAttribute("data-xero-browser-tool-selected")).toBe("true")
+      expect(highlight?.style.display).toBe("none")
+
+      const textarea = shadow?.querySelector<HTMLTextAreaElement>(".composer-input")
+      const send = shadow?.querySelector<HTMLButtonElement>(".send-button")
+      expect(textarea).toBeTruthy()
+      expect(send).toBeTruthy()
+      textarea!.value = "Tighten this section"
+      send!.click()
+
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith(
+          "browser_internal_event",
+          expect.objectContaining({
+            kind: "tool_context",
+            payload: expect.any(String),
+          }),
+        ),
+      )
+      const contextCall = invoke.mock.calls.find(
+        ([command, args]) =>
+          command === "browser_internal_event" &&
+          (args as { kind?: unknown } | undefined)?.kind === "tool_context",
+      )
+      const payload = JSON.parse(
+        String((contextCall?.[1] as { payload?: unknown } | undefined)?.payload ?? "{}"),
+      ) as {
+        element?: { rect?: { x?: number; y?: number; width?: number; height?: number } }
+        kind?: unknown
+      }
+      expect(payload.kind).toBe("inspect")
+      expect(payload.element?.rect).toMatchObject({ x: 40, y: 40, width: 300, height: 180 })
+    } finally {
+      ;(window as unknown as { __xeroBrowserTool?: { deactivate: () => void } })
+        .__xeroBrowserTool?.deactivate()
+      target.remove()
+      if (originalElementFromPoint) {
+        Object.defineProperty(document, "elementFromPoint", originalElementFromPoint)
+      } else {
+        delete (document as unknown as { elementFromPoint?: unknown }).elementFromPoint
+      }
+      if (originalTauriInternals) {
+        Object.defineProperty(window, "__TAURI_INTERNALS__", originalTauriInternals)
+      } else {
+        delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
       }
     }
   })
@@ -3672,7 +3800,7 @@ describe("BrowserSidebar", () => {
     }
   })
 
-  it("commits pen strokes into one document-space SVG layer without resize scaling", async () => {
+  it("keeps the pen SVG viewport-sized while preserving document-space strokes", async () => {
     const originalWidth = window.innerWidth
     const originalHeight = window.innerHeight
     let restoreDocumentSize = () => {}
@@ -3728,10 +3856,10 @@ describe("BrowserSidebar", () => {
       expect(documentFrame?.style.overflow).toBe("visible")
       expect(documentLayer?.getAttribute("data-xero-browser-tool-document-layer")).toBe("true")
       expect(overlay?.getAttribute("viewBox")).toBe("0 0 800 600")
-      expect(documentLayer?.getAttribute("viewBox")).toBe("0 0 1200 1600")
-      expect(documentLayer?.getAttribute("width")).toBe("1200")
-      expect((documentLayer as SVGSVGElement | null)?.style.width).toBe("1200px")
-      expect(documentLayer?.style.transform).toBe("translate(0px, 0px)")
+      expect(documentLayer?.getAttribute("viewBox")).toBe("0 0 800 600")
+      expect(documentLayer?.getAttribute("width")).toBe("800")
+      expect((documentLayer as SVGSVGElement | null)?.style.width).toBe("800px")
+      expect(documentLayer?.style.transform).toBe("none")
       expect(documentFrame?.style.width).toBe("800px")
       expect(documentFrame?.style.height).toBe("600px")
 
@@ -3753,8 +3881,8 @@ describe("BrowserSidebar", () => {
       })
 
       expect(overlay?.getAttribute("viewBox")).toBe("0 0 400 600")
-      expect(documentLayer?.getAttribute("viewBox")).toBe("0 0 900 1600")
-      expect(documentLayer?.getAttribute("width")).toBe("900")
+      expect(documentLayer?.getAttribute("viewBox")).toBe("0 0 400 600")
+      expect(documentLayer?.getAttribute("width")).toBe("400")
       expect(documentFrame?.style.width).toBe("400px")
       expect(documentFrame?.style.height).toBe("600px")
       expect(path?.getAttribute("d")).toContain("M 100 100")
@@ -3904,7 +4032,8 @@ describe("BrowserSidebar", () => {
       dispatchPointer(overlay!, "pointerup", { clientX: 760, clientY: 340 })
 
       const path = documentLayer?.querySelector(".xero-document-pen-path")
-      expect(documentLayer?.style.transform).toBe("translate(0px, -300px)")
+      expect(documentLayer?.getAttribute("viewBox")).toBe("0 300 800 600")
+      expect(documentLayer?.style.transform).toBe("none")
       expect(path?.getAttribute("d")).toContain("M 680 620")
       expect(path?.getAttribute("d")).toContain("L 760 640")
 
@@ -3914,7 +4043,8 @@ describe("BrowserSidebar", () => {
         await new Promise((resolve) => window.requestAnimationFrame(resolve))
       })
 
-      expect(documentLayer?.style.transform).toBe("translate(0px, -520px)")
+      expect(documentLayer?.getAttribute("viewBox")).toBe("0 520 800 600")
+      expect(documentLayer?.style.transform).toBe("none")
       expect(path?.getAttribute("d")).toContain("M 680 620")
       expect(path?.getAttribute("d")).toContain("L 760 640")
     } finally {
@@ -4007,8 +4137,8 @@ describe("BrowserSidebar", () => {
       expect(documentFrame?.style.height).toBe("240px")
       expect(documentFrame?.style.overflow).toBe("visible")
       expect(scroller.style.position).toBe("")
-      expect(documentLayer?.getAttribute("viewBox")).toBe("0 0 320 1000")
-      expect(documentLayer?.style.transform).toBe("translate(0px, -200px)")
+      expect(documentLayer?.getAttribute("viewBox")).toBe("0 200 320 240")
+      expect(documentLayer?.style.transform).toBe("none")
 
       const path = documentLayer?.querySelector(".xero-document-pen-path")
       expect(path?.getAttribute("d")).toContain("M 50 250")
@@ -4022,7 +4152,8 @@ describe("BrowserSidebar", () => {
 
       expect(documentFrame?.style.left).toBe("50px")
       expect(documentFrame?.style.top).toBe("100px")
-      expect(documentLayer?.style.transform).toBe("translate(0px, -320px)")
+      expect(documentLayer?.getAttribute("viewBox")).toBe("0 320 320 240")
+      expect(documentLayer?.style.transform).toBe("none")
       expect(path?.getAttribute("d")).toContain("M 50 250")
       expect(path?.getAttribute("d")).toContain("L 130 275")
     } finally {

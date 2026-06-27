@@ -21,7 +21,10 @@ use xero_agent_core::domain_tool_pack_ids_for_tool;
 use super::{
     deferred_tool_catalog, expected_hash_required_error, persist_subagent_task_for_parent,
     process::apply_sanitized_command_environment,
-    repo_scope::{normalize_relative_path, path_to_forward_slash, WalkErrorCodes, WalkState},
+    repo_scope::{
+        is_current_directory_path, normalize_optional_relative_path, normalize_relative_path,
+        path_to_forward_slash, WalkErrorCodes, WalkState,
+    },
     stale_file_error, tool_allowed_for_runtime_agent, tool_available_on_current_host,
     tool_catalog_activation_groups, tool_effect_class, validate_sha256_hash,
     AutonomousCodeDiagnostic, AutonomousCodeIntelAction, AutonomousCodeIntelOutput,
@@ -223,44 +226,85 @@ impl AutonomousToolRuntime {
         match request.action {
             AutonomousTodoAction::List => {}
             AutonomousTodoAction::Upsert => {
-                let title = request
-                    .title
-                    .as_deref()
-                    .ok_or_else(|| CommandError::invalid_request("title"))?;
-                validate_non_empty(title, "title")?;
-                let mode = request.mode.unwrap_or(AutonomousTodoMode::Plan);
-                if mode == AutonomousTodoMode::DebugEvidence && request.debug_stage.is_none() {
+                let requested_id = request.id.as_deref().map(normalize_todo_id).transpose()?;
+                let existing_item = requested_id.as_ref().and_then(|id| todos.get(id)).cloned();
+                let preserve_existing = request.title.is_none() && existing_item.is_some();
+                let title = match request.title.as_deref() {
+                    Some(title) => {
+                        validate_non_empty(title, "title")?;
+                        title.trim().to_owned()
+                    }
+                    None => existing_item
+                        .as_ref()
+                        .map(|item| item.title.clone())
+                        .ok_or_else(|| CommandError::invalid_request("title"))?,
+                };
+                let mode = request
+                    .mode
+                    .or_else(|| existing_item.as_ref().map(|item| item.mode))
+                    .unwrap_or(AutonomousTodoMode::Plan);
+                let debug_stage = request.debug_stage.or_else(|| {
+                    existing_item
+                        .as_ref()
+                        .filter(|item| preserve_existing && item.mode == mode)
+                        .and_then(|item| item.debug_stage)
+                });
+                if mode == AutonomousTodoMode::DebugEvidence && debug_stage.is_none() {
                     return Err(CommandError::user_fixable(
                         "autonomous_tool_todo_debug_stage_required",
                         "debug_evidence todo items require debugStage.",
                     ));
                 }
-                let id = request
-                    .id
-                    .as_deref()
-                    .map(normalize_todo_id)
-                    .transpose()?
-                    .unwrap_or_else(|| next_todo_id(&todos));
+                let id = requested_id.unwrap_or_else(|| next_todo_id(&todos));
                 let item = AutonomousTodoItem {
                     id: id.clone(),
-                    title: title.trim().into(),
-                    notes: normalize_optional_text(request.notes),
-                    status: request.status.unwrap_or(AutonomousTodoStatus::Pending),
+                    title,
+                    notes: normalize_optional_text_or_existing(
+                        request.notes,
+                        existing_item.as_ref().and_then(|item| item.notes.clone()),
+                        preserve_existing,
+                    ),
+                    status: request
+                        .status
+                        .or_else(|| existing_item.as_ref().map(|item| item.status))
+                        .unwrap_or(AutonomousTodoStatus::Pending),
                     mode,
-                    debug_stage: request.debug_stage,
-                    evidence: normalize_optional_text(request.evidence),
-                    phase_id: request
-                        .phase_id
-                        .as_deref()
-                        .map(normalize_todo_id)
-                        .transpose()?,
-                    phase_title: normalize_optional_text(request.phase_title),
-                    slice_id: request
-                        .slice_id
-                        .as_deref()
-                        .map(normalize_todo_id)
-                        .transpose()?,
-                    handoff_note: normalize_optional_text(request.handoff_note),
+                    debug_stage,
+                    evidence: normalize_optional_text_or_existing(
+                        request.evidence,
+                        existing_item
+                            .as_ref()
+                            .and_then(|item| item.evidence.clone()),
+                        preserve_existing,
+                    ),
+                    phase_id: normalize_optional_todo_id_or_existing(
+                        request.phase_id.as_deref(),
+                        existing_item
+                            .as_ref()
+                            .and_then(|item| item.phase_id.clone()),
+                        preserve_existing,
+                    )?,
+                    phase_title: normalize_optional_text_or_existing(
+                        request.phase_title,
+                        existing_item
+                            .as_ref()
+                            .and_then(|item| item.phase_title.clone()),
+                        preserve_existing,
+                    ),
+                    slice_id: normalize_optional_todo_id_or_existing(
+                        request.slice_id.as_deref(),
+                        existing_item
+                            .as_ref()
+                            .and_then(|item| item.slice_id.clone()),
+                        preserve_existing,
+                    )?,
+                    handoff_note: normalize_optional_text_or_existing(
+                        request.handoff_note,
+                        existing_item
+                            .as_ref()
+                            .and_then(|item| item.handoff_note.clone()),
+                        preserve_existing,
+                    ),
                     updated_at: now_timestamp(),
                 };
                 todos.insert(id, item.clone());
@@ -999,6 +1043,12 @@ impl AutonomousToolRuntime {
         request: AutonomousNotebookEditRequest,
     ) -> CommandResult<AutonomousToolResult> {
         validate_non_empty(&request.path, "path")?;
+        validate_file_path_not_repo_root(
+            &request.path,
+            "path",
+            "autonomous_tool_notebook_file_path_required",
+            "notebook edit",
+        )?;
         let relative_path = normalize_relative_path(&request.path, "path")?;
         let display_path = path_to_forward_slash(&relative_path);
         if !display_path.ends_with(".ipynb") {
@@ -1210,11 +1260,7 @@ impl AutonomousToolRuntime {
             request.query.as_deref(),
             limit,
         )?;
-        let scope_path = request
-            .path
-            .as_deref()
-            .map(|path| normalize_relative_path(path, "path"))
-            .transpose()?
+        let scope_path = normalize_optional_relative_path(request.path.as_deref(), "path")?
             .map(|path| self.resolve_existing_path(&path))
             .transpose()?;
         let descriptor =
@@ -1303,9 +1349,7 @@ impl AutonomousToolRuntime {
         query: Option<&str>,
         limit: usize,
     ) -> CommandResult<CodeIntelScan> {
-        let scope = path
-            .map(|path| normalize_relative_path(path, "path"))
-            .transpose()?;
+        let scope = normalize_optional_relative_path(path, "path")?;
         let scope_path = match scope.as_ref() {
             Some(path) => self.resolve_existing_path(path)?,
             None => self.repo_root.clone(),
@@ -2987,6 +3031,30 @@ fn normalize_optional_text(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn normalize_optional_text_or_existing(
+    value: Option<String>,
+    existing: Option<String>,
+    preserve_existing: bool,
+) -> Option<String> {
+    match value {
+        Some(value) => normalize_optional_text(Some(value)),
+        None if preserve_existing => existing,
+        None => None,
+    }
+}
+
+fn normalize_optional_todo_id_or_existing(
+    value: Option<&str>,
+    existing: Option<String>,
+    preserve_existing: bool,
+) -> CommandResult<Option<String>> {
+    match value {
+        Some(value) => normalize_todo_id(value).map(Some),
+        None if preserve_existing => Ok(existing),
+        None => Ok(None),
+    }
+}
+
 fn normalize_todo_id(value: &str) -> CommandResult<String> {
     let id = value.trim();
     validate_non_empty(id, "id")?;
@@ -3008,10 +3076,33 @@ fn required_normalized_id(value: Option<&str>, field: &'static str) -> CommandRe
     normalize_todo_id(value)
 }
 
+fn validate_file_path_not_repo_root(
+    value: &str,
+    field: &'static str,
+    code: &'static str,
+    tool_label: &'static str,
+) -> CommandResult<()> {
+    if is_current_directory_path(value.trim()) {
+        return Err(CommandError::user_fixable(
+            code,
+            format!(
+                "Xero requires `{field}` for {tool_label} to name a file inside the imported repository, not the imported repository root."
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn normalize_subagent_write_set(paths: Vec<String>) -> CommandResult<Vec<String>> {
     paths
         .into_iter()
         .map(|path| {
+            if is_current_directory_path(path.trim()) {
+                return Err(CommandError::user_fixable(
+                    "autonomous_tool_subagent_write_set_repo_root_refused",
+                    "Xero requires subagent writeSet entries to name specific files or directories, not the imported repository root.",
+                ));
+            }
             normalize_relative_path(&path, "writeSet").map(|path| path_to_forward_slash(&path))
         })
         .collect::<CommandResult<std::collections::BTreeSet<_>>>()

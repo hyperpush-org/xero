@@ -34,9 +34,9 @@ use crate::{
         self, build_runtime_run_control_state_with_profile, RuntimeRunActiveControlSnapshotRecord,
         RuntimeRunCheckpointKind, RuntimeRunCheckpointRecord, RuntimeRunControlStateRecord,
         RuntimeRunDiagnosticRecord, RuntimeRunPendingControlSnapshotRecord,
-        RuntimeRunQueuedAttachmentRecord, RuntimeRunRecord, RuntimeRunSnapshotRecord,
-        RuntimeRunStatus, RuntimeRunTransportLiveness, RuntimeRunTransportRecord,
-        RuntimeRunUpsertRecord,
+        RuntimeRunQueuedAttachmentRecord, RuntimeRunQueuedLinkedPathRecord, RuntimeRunRecord,
+        RuntimeRunSnapshotRecord, RuntimeRunStatus, RuntimeRunTransportLiveness,
+        RuntimeRunTransportRecord, RuntimeRunUpsertRecord,
     },
     runtime::{
         create_owned_agent_run, drive_owned_agent_run, normalize_openai_codex_model_id,
@@ -82,6 +82,7 @@ pub(crate) struct OwnedRuntimePromptStart {
     pub(crate) accepted_snapshot: RuntimeRunSnapshotRecord,
     pub(crate) prompt: String,
     pub(crate) attachments: Vec<crate::commands::StagedAgentAttachmentDto>,
+    pub(crate) linked_paths: Vec<crate::commands::RuntimeLinkedPathDto>,
 }
 
 pub(crate) fn load_persisted_runtime_run(
@@ -226,6 +227,7 @@ pub(crate) fn launch_or_reconnect_runtime_run<R: Runtime + 'static>(
     requested_controls: Option<RuntimeRunControlInputDto>,
     initial_prompt: Option<String>,
     initial_attachments: Vec<crate::commands::StagedAgentAttachmentDto>,
+    initial_linked_paths: Vec<crate::commands::RuntimeLinkedPathDto>,
 ) -> CommandResult<RuntimeRunLaunchOutcome> {
     launch_owned_runtime_run(
         app,
@@ -235,6 +237,7 @@ pub(crate) fn launch_or_reconnect_runtime_run<R: Runtime + 'static>(
         requested_controls,
         initial_prompt,
         initial_attachments,
+        initial_linked_paths,
     )
 }
 
@@ -246,6 +249,7 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
     requested_controls: Option<RuntimeRunControlInputDto>,
     initial_prompt: Option<String>,
     initial_attachments: Vec<crate::commands::StagedAgentAttachmentDto>,
+    initial_linked_paths: Vec<crate::commands::RuntimeLinkedPathDto>,
 ) -> CommandResult<RuntimeRunLaunchOutcome> {
     let repo_root = resolve_project_root(app, state, project_id)?;
     let agent_session =
@@ -328,6 +332,7 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
         initial_prompt.as_deref(),
     )?;
     attach_queued_runtime_attachments(&mut run_controls, &initial_attachments);
+    attach_queued_runtime_linked_paths(&mut run_controls, &initial_linked_paths);
     let run_id = generate_runtime_run_id();
     let prompt = initial_prompt.and_then(|prompt| {
         let trimmed = prompt.trim();
@@ -371,6 +376,7 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
                     accepted_snapshot: snapshot.clone(),
                     prompt,
                     attachments: initial_attachments,
+                    linked_paths: initial_linked_paths,
                 },
             );
         }
@@ -533,6 +539,7 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
             .iter()
             .map(staged_attachment_dto_to_message_attachment)
             .collect(),
+        linked_paths: task.linked_paths,
         controls,
         tool_runtime,
         provider_config,
@@ -1580,6 +1587,7 @@ pub(crate) fn update_owned_runtime_run_controls(
     controls: Option<RuntimeRunControlInputDto>,
     prompt: Option<String>,
     attachments: &[crate::commands::StagedAgentAttachmentDto],
+    linked_paths: &[crate::commands::RuntimeLinkedPathDto],
 ) -> CommandResult<RuntimeRunSnapshotRecord> {
     let agent_session = project_store::ensure_agent_session_active(
         repo_root,
@@ -1713,6 +1721,7 @@ pub(crate) fn update_owned_runtime_run_controls(
             queued_prompt,
             queued_prompt_at,
             queued_attachments: queued_runtime_attachments(attachments),
+            queued_linked_paths: queued_runtime_linked_paths(linked_paths),
         }),
     };
 
@@ -2133,6 +2142,15 @@ fn attach_queued_runtime_attachments(
     }
 }
 
+fn attach_queued_runtime_linked_paths(
+    controls: &mut RuntimeRunControlStateRecord,
+    linked_paths: &[crate::commands::RuntimeLinkedPathDto],
+) {
+    if let Some(pending) = controls.pending.as_mut() {
+        pending.queued_linked_paths = queued_runtime_linked_paths(linked_paths);
+    }
+}
+
 fn queued_runtime_attachments(
     attachments: &[crate::commands::StagedAgentAttachmentDto],
 ) -> Vec<RuntimeRunQueuedAttachmentRecord> {
@@ -2146,6 +2164,18 @@ fn queued_runtime_attachments(
             size_bytes: attachment.size_bytes,
             width: attachment.width,
             height: attachment.height,
+        })
+        .collect()
+}
+
+fn queued_runtime_linked_paths(
+    linked_paths: &[crate::commands::RuntimeLinkedPathDto],
+) -> Vec<RuntimeRunQueuedLinkedPathRecord> {
+    linked_paths
+        .iter()
+        .map(|linked_path| RuntimeRunQueuedLinkedPathRecord {
+            kind: linked_path.kind.clone(),
+            absolute_path: linked_path.absolute_path.clone(),
         })
         .collect()
 }
@@ -2183,6 +2213,9 @@ mod tests {
         let repo_dir = tempfile::tempdir().expect("temp repo");
         let repo_root = repo_dir.path().to_path_buf();
         let project_id = format!("project-{}", project_store::generate_agent_session_id());
+        crate::db::configure_project_database_paths(
+            &repo_root.join("app-data").join("xero-test.db"),
+        );
         let root_path_string = repo_root.to_string_lossy().into_owned();
         let repository = CanonicalRepository {
             project_id: project_id.clone(),
@@ -2204,6 +2237,10 @@ mod tests {
         };
         let imported =
             import_project(&repository, &ImportFailpoints::default()).expect("import project");
+        assert!(
+            imported.database_path.exists(),
+            "import should create isolated project state database"
+        );
 
         TestProject {
             _repo_dir: repo_dir,
@@ -2242,6 +2279,49 @@ mod tests {
             expires_at,
             updated_at: "2026-04-29T18:14:27Z".into(),
         }
+    }
+
+    #[test]
+    fn runtime_run_heartbeat_touch_refreshes_owned_run_liveness() {
+        let project = import_test_project();
+        let run_id = "run-heartbeat-refresh";
+        let controls = test_runtime_controls();
+        persist_owned_runtime_run(
+            &project.repo_root,
+            &project.project_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+            run_id,
+            OPENAI_CODEX_PROVIDER_ID,
+            &controls,
+            RuntimeRunStatus::Running,
+            None,
+            "Owned agent runtime started.",
+            1,
+            None,
+        )
+        .expect("persist owned runtime run");
+
+        let heartbeat_at = now_timestamp();
+        project_store::touch_runtime_run_heartbeat(
+            &project.repo_root,
+            &project.project_id,
+            run_id,
+            &heartbeat_at,
+        )
+        .expect("touch runtime heartbeat");
+
+        let snapshot = project_store::load_runtime_run(
+            &project.repo_root,
+            &project.project_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+        )
+        .expect("load runtime run")
+        .expect("runtime run exists");
+        assert_eq!(snapshot.run.status, RuntimeRunStatus::Running);
+        assert_eq!(
+            snapshot.run.last_heartbeat_at.as_deref(),
+            Some(heartbeat_at.as_str())
+        );
     }
 
     fn definition_selection(

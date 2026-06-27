@@ -9,7 +9,8 @@ use tauri::{AppHandle, Runtime, State};
 use crate::{
     commands::{
         validate_non_empty, AgentAttachmentKindDto, CommandError, CommandResult,
-        DiscardAgentAttachmentRequestDto, StageAgentAttachmentRequestDto, StagedAgentAttachmentDto,
+        DiscardAgentAttachmentRequestDto, StageAgentAttachmentPathRequestDto,
+        StageAgentAttachmentRequestDto, StagedAgentAttachmentDto,
     },
     db::project_app_data_dir_for_repo,
     state::DesktopState,
@@ -44,6 +45,31 @@ pub fn stage_agent_attachment_blocking<R: Runtime>(
             media_type: request.media_type,
             bytes: request.bytes,
         },
+    )
+}
+
+#[tauri::command]
+pub fn stage_agent_attachment_path<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: StageAgentAttachmentPathRequestDto,
+) -> CommandResult<StagedAgentAttachmentDto> {
+    stage_agent_attachment_path_blocking(&app, state.inner(), request)
+}
+
+pub fn stage_agent_attachment_path_blocking<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    request: StageAgentAttachmentPathRequestDto,
+) -> CommandResult<StagedAgentAttachmentDto> {
+    validate_non_empty(&request.project_id, "projectId")?;
+    validate_non_empty(&request.absolute_path, "absolutePath")?;
+
+    let repo_root = resolve_project_root(app, state, &request.project_id)?;
+    stage_agent_attachment_path_for_repo(
+        &repo_root,
+        request.run_id,
+        &PathBuf::from(request.absolute_path),
     )
 }
 

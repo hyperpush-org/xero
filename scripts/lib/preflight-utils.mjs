@@ -465,6 +465,13 @@ export async function ensureMixBootstrapTools(logger) {
   }
 }
 
+const requiredMixDependencyFiles = [
+  {
+    name: 'phoenix_live_dashboard',
+    files: ['dist/css/app.css', 'dist/js/app.js'],
+  },
+]
+
 function depsLooksPopulated(serverDir) {
   const depsDir = resolve(serverDir, 'deps')
   if (!existsSync(depsDir)) return false
@@ -475,8 +482,28 @@ function depsLooksPopulated(serverDir) {
   }
 }
 
+function missingRequiredMixDependencyFiles(serverDir) {
+  const depsDir = resolve(serverDir, 'deps')
+
+  return requiredMixDependencyFiles.flatMap(({ name, files }) =>
+    files
+      .filter((file) => !existsSync(resolve(depsDir, name, file)))
+      .map((file) => `${name}/${file}`),
+  )
+}
+
+function incompleteMixDependencyNames(serverDir) {
+  const depsDir = resolve(serverDir, 'deps')
+
+  return requiredMixDependencyFiles
+    .filter(({ name }) => existsSync(resolve(depsDir, name)))
+    .filter(({ name, files }) => files.some((file) => !existsSync(resolve(depsDir, name, file))))
+    .map(({ name }) => name)
+}
+
 function mixDepsNeedFetch(serverDir) {
   if (!depsLooksPopulated(serverDir)) return true
+  if (missingRequiredMixDependencyFiles(serverDir).length > 0) return true
 
   const depsMtime = statMtimeMs(resolve(serverDir, 'deps'))
   const mixExsMtime = statMtimeMs(resolve(serverDir, 'mix.exs'))
@@ -485,14 +512,28 @@ function mixDepsNeedFetch(serverDir) {
 }
 
 export async function ensureMixDeps(logger, { serverDir, mixEnv }) {
+  const env = { ...process.env, MIX_ENV: mixEnv ?? process.env.MIX_ENV ?? 'dev' }
+
   if (!mixDepsNeedFetch(serverDir)) {
     logger.log('Mix deps already populated — skipping `mix deps.get`.')
     return
   }
+
+  const incompleteDeps = incompleteMixDependencyNames(serverDir)
+  if (incompleteDeps.length > 0) {
+    logger.warn(`Refreshing incomplete Mix deps: ${incompleteDeps.join(', ')}.`)
+    for (const dep of incompleteDeps) {
+      await streamRun('mix', ['deps.clean', dep], {
+        cwd: serverDir,
+        env,
+      })
+    }
+  }
+
   logger.log('Fetching mix deps (`mix deps.get`)...')
   await streamRun('mix', ['deps.get'], {
     cwd: serverDir,
-    env: { ...process.env, MIX_ENV: mixEnv ?? process.env.MIX_ENV ?? 'dev' },
+    env,
   })
 }
 

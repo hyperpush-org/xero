@@ -29,11 +29,14 @@ export function isAgentPaneWorking(agent: AgentPaneView): boolean {
   const renderableRuntimeRun = hasUsableRuntimeRunId(runtimeRun) ? runtimeRun : null
   const runtimeStream = agent.runtimeStream ?? null
   const streamStatus = agent.runtimeStreamStatus ?? runtimeStream?.status ?? 'idle'
+  const hasActionRequired =
+    (agent.actionRequiredItems?.length ?? runtimeStream?.actionRequired.length ?? 0) > 0
 
   return Boolean(
     renderableRuntimeRun?.isActive &&
       streamStatus !== 'complete' &&
       streamStatus !== 'error' &&
+      !hasActionRequired &&
       !runtimeStream?.failure,
   )
 }
@@ -634,12 +637,31 @@ export function getStreamRunId(
   return 'No active run'
 }
 
+function hasHydratedRuntimeStream(
+  runtimeStream: AgentPaneView['runtimeStream'] | null,
+  streamStatus: RuntimeStreamStatus,
+): boolean {
+  return Boolean(
+    runtimeStream &&
+      (streamStatus !== 'idle' ||
+        runtimeStream.items.length > 0 ||
+        runtimeStream.activityItems.length > 0 ||
+        runtimeStream.toolCalls.length > 0 ||
+        runtimeStream.skillItems.length > 0 ||
+        runtimeStream.actionRequired.length > 0 ||
+        runtimeStream.completion ||
+        runtimeStream.failure ||
+        runtimeStream.lastIssue),
+  )
+}
+
 export function getStreamStatusMeta(agent: AgentPaneView, runtimeSession: RuntimeSessionView | null) {
   const runtimeStream = agent.runtimeStream ?? null
   const runtimeRun = hasUsableRuntimeRunId(agent.runtimeRun ?? null) ? agent.runtimeRun : null
   const streamStatus = runtimeStream?.status ?? 'idle'
+  const streamHydrated = hasHydratedRuntimeStream(runtimeStream, streamStatus)
 
-  if (!runtimeSession) {
+  if (!runtimeSession && !streamHydrated) {
     return {
       eyebrow: 'Agent feed',
       title: 'Authenticate to view live agent activity',
@@ -648,7 +670,7 @@ export function getStreamStatusMeta(agent: AgentPaneView, runtimeSession: Runtim
     }
   }
 
-  if (!runtimeSession.isAuthenticated) {
+  if (runtimeSession && !runtimeSession.isAuthenticated && !streamHydrated) {
     if (runtimeSession.isLoginInProgress) {
       return {
         eyebrow: 'Agent feed',
@@ -684,10 +706,19 @@ export function getStreamStatusMeta(agent: AgentPaneView, runtimeSession: Runtim
     }
   }
 
-  if (runtimeRun?.isTerminal && runtimeRun.isFailed) {
+  if (runtimeRun?.isTerminal && runtimeRun.isFailed && !streamHydrated) {
     return {
       eyebrow: 'Agent feed',
       title: 'Latest saved run failed',
+      body: agent.messagesUnavailableReason,
+      badgeVariant: 'destructive' as const,
+    }
+  }
+
+  if (runtimeRun?.isTerminal && runtimeRun.isFailed && streamHydrated) {
+    return {
+      eyebrow: 'Agent feed',
+      title: 'Saved failed run activity restored',
       body: agent.messagesUnavailableReason,
       badgeVariant: 'destructive' as const,
     }

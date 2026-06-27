@@ -37,6 +37,7 @@ import { PhaseView } from '@/components/xero/phase-view'
 import { ProjectAddDialog } from '@/components/xero/project-add-dialog'
 import { ProjectRail } from '@/components/xero/project-rail'
 import { UpdateScreen } from '@/components/xero/update-screen'
+import { createSafeTauriUnlisten } from '@/src/lib/tauri-events'
 import {
   XeroShell,
   detectPlatform,
@@ -71,6 +72,7 @@ import {
 import {
   mapAgentSession,
   type RuntimeAgentIdDto,
+  type RuntimeLinkedPathDto,
   type RuntimeRunControlInputDto,
   type StagedAgentAttachmentDto,
 } from '@/src/lib/xero-model/runtime'
@@ -1530,7 +1532,7 @@ export function AppBootLoadingOverlay({ active }: { active: boolean }) {
 
 export function XeroApp({ adapter }: XeroAppProps) {
   const resolvedAdapter = adapter ?? DefaultXeroDesktopAdapter
-  const [activeView, setActiveViewRaw] = useState<View>('phases')
+  const [activeView, setActiveViewRaw] = useState<View>('agent')
   const [activeViewHydrated, setActiveViewHydrated] = useState(() => !resolvedAdapter.readAppUiState)
 
   // Tab switches simultaneously trigger the cross-fade of view panes AND the
@@ -1816,11 +1818,12 @@ export function XeroApp({ adapter }: XeroAppProps) {
         }),
       )
       .then((nextUnlisten) => {
+        const safeUnlisten = createSafeTauriUnlisten(nextUnlisten)
         if (disposed) {
-          nextUnlisten()
+          safeUnlisten()
           return
         }
-        unlisten = nextUnlisten
+        unlisten = safeUnlisten
       })
       .catch(() => undefined)
 
@@ -4673,6 +4676,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
       controls?: RuntimeRunControlInputDto | null
       prompt?: string | null
       attachments?: StagedAgentAttachmentDto[]
+      linkedPaths?: RuntimeLinkedPathDto[]
     }) => {
       const isPromptSubmission =
         Boolean(options?.prompt?.trim()) || Boolean(options?.attachments?.length)
@@ -4691,6 +4695,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
             initialControls: options?.controls ?? null,
             initialPrompt: options?.prompt ?? null,
             initialAttachments: options?.attachments ?? [],
+            initialLinkedPaths: options?.linkedPaths ?? [],
           },
         )
         const runtimeRun = mapRuntimeRun(response)
@@ -4720,6 +4725,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
       controls?: RuntimeRunControlInputDto | null
       prompt?: string | null
       attachments?: StagedAgentAttachmentDto[]
+      linkedPaths?: RuntimeLinkedPathDto[]
     } = {}) => {
       const isPromptSubmission =
         Boolean(request.prompt?.trim()) || Boolean(request.attachments?.length)
@@ -4744,6 +4750,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
           controls: request.controls ?? null,
           prompt: request.prompt ?? null,
           attachments: request.attachments ?? [],
+          linkedPaths: request.linkedPaths ?? [],
         })
         const runtimeRun = mapRuntimeRun(response)
         setComputerUseRuntimeRun(runtimeRun)

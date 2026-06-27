@@ -41,7 +41,17 @@ async function main() {
   const command = process.platform === 'win32' ? 'cargo.exe' : 'cargo'
   const child = spawn(
     command,
-    ['run', '--package', 'xero-desktop', '--bin', 'xero', '--', ...xeroTuiArgs],
+    [
+      'run',
+      '--package',
+      'xero-desktop',
+      '--bin',
+      'xero',
+      '--features',
+      'tauri-test-support',
+      '--',
+      ...xeroTuiArgs,
+    ],
     {
       cwd: tauriDir,
       env,
@@ -85,12 +95,12 @@ function resolveRelayUrl() {
     rootEnv.XERO_REMOTE_RELAY_URL ||
     rootEnv.XERO_SERVER_URL ||
     rootEnv.VITE_XERO_SERVER_URL ||
-    'http://127.0.0.1:4000'
+    'http://127.0.0.1:26140'
   return raw.replace(/\/+$/, '')
 }
 
 function resolveCloudUrl() {
-  const raw = rootEnv.XERO_CLOUD_DEV_URL || 'http://127.0.0.1:3002'
+  const raw = rootEnv.XERO_CLOUD_DEV_URL || 'http://127.0.0.1:26102'
   return raw.replace(/\/+$/, '')
 }
 

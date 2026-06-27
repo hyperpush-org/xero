@@ -209,6 +209,12 @@ pub fn create_owned_agent_run(
         request.prompt.clone(),
         initial_attachment_inputs,
     )?;
+    record_linked_path_grants(
+        &request.repo_root,
+        &request.project_id,
+        &request.run_id,
+        &request.linked_paths,
+    )?;
     append_event(
         &request.repo_root,
         &request.project_id,
@@ -452,6 +458,82 @@ fn initial_workflow_allowed_tools_for_runtime_agent(
         .and_then(|policy| policy.initial_allowed_tools())
 }
 
+pub(crate) fn record_linked_path_grants(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    linked_paths: &[RuntimeLinkedPathDto],
+) -> CommandResult<()> {
+    let paths = linked_paths
+        .iter()
+        .filter_map(|linked_path| {
+            let absolute_path = linked_path.absolute_path.trim();
+            (!absolute_path.is_empty()).then(|| {
+                json!({
+                    "kind": linked_path_kind_label(&linked_path.kind),
+                    "absolutePath": absolute_path,
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    if paths.is_empty() {
+        return Ok(());
+    }
+
+    append_event(
+        repo_root,
+        project_id,
+        run_id,
+        AgentRunEventKind::ToolPermissionGrant,
+        json!({
+            "schema": "xero.linked_context_paths.v1",
+            "grantKind": "linked_context_paths",
+            "paths": paths,
+        }),
+    )
+    .map(|_| ())
+}
+
+fn linked_path_kind_label(kind: &crate::commands::RuntimeLinkedPathKindDto) -> &'static str {
+    match kind {
+        crate::commands::RuntimeLinkedPathKindDto::File => "file",
+        crate::commands::RuntimeLinkedPathKindDto::Folder => "folder",
+    }
+}
+
+fn linked_read_roots_from_snapshot(snapshot: &AgentRunSnapshotRecord) -> Vec<PathBuf> {
+    snapshot
+        .events
+        .iter()
+        .filter(|event| event.event_kind == AgentRunEventKind::ToolPermissionGrant)
+        .filter_map(|event| serde_json::from_str::<JsonValue>(&event.payload_json).ok())
+        .filter(|payload| {
+            payload
+                .get("schema")
+                .and_then(JsonValue::as_str)
+                .is_some_and(|schema| schema == "xero.linked_context_paths.v1")
+                && payload
+                    .get("grantKind")
+                    .and_then(JsonValue::as_str)
+                    .is_some_and(|kind| kind == "linked_context_paths")
+        })
+        .flat_map(|payload| {
+            payload
+                .get("paths")
+                .and_then(JsonValue::as_array)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter_map(|path| {
+            path.get("absolutePath")
+                .and_then(JsonValue::as_str)
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from)
+        })
+        .collect()
+}
+
 fn attached_skill_resolution_report_error(
     _repo_root: &Path,
     run_id: &str,
@@ -529,7 +611,9 @@ pub fn drive_owned_agent_run(
             &request.project_id,
             &snapshot.run.agent_session_id,
             &request.run_id,
-        )
+        );
+    let base_tool_runtime = base_tool_runtime
+        .with_linked_read_roots(linked_read_roots_from_snapshot(&snapshot))?
         .with_cancellation_token(cancellation.clone());
     let base_tool_runtime = base_tool_runtime.with_durable_subagent_tasks_for_run(
         &request.repo_root,
@@ -814,7 +898,9 @@ pub fn prepare_owned_agent_continuation_for_drive(
                 &request.project_id,
                 &before.run.agent_session_id,
                 &request.run_id,
-            )
+            );
+        let replay_tool_runtime = replay_tool_runtime
+            .with_linked_read_roots(linked_read_roots_from_snapshot(&before))?
             .with_durable_subagent_tasks_for_run(
                 &request.repo_root,
                 &request.project_id,
@@ -881,7 +967,9 @@ pub fn prepare_owned_agent_continuation_for_drive(
                 &request.project_id,
                 &before.run.agent_session_id,
                 &request.run_id,
-            )
+            );
+        let replay_tool_runtime = replay_tool_runtime
+            .with_linked_read_roots(linked_read_roots_from_snapshot(&before))?
             .with_durable_subagent_tasks_for_run(
                 &request.repo_root,
                 &request.project_id,
@@ -937,6 +1025,12 @@ pub fn prepare_owned_agent_continuation_for_drive(
             &request.run_id,
             request.prompt.clone(),
             continuation_attachment_inputs,
+        )?;
+        record_linked_path_grants(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+            &request.linked_paths,
         )?;
         append_event(
             &request.repo_root,
@@ -2696,6 +2790,7 @@ fn request_for_handoff_target(
         run_id: target_run_id.to_string(),
         prompt: request.prompt.clone(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(handoff_control_input_for_target(
             request,
             source_snapshot,
@@ -3096,7 +3191,9 @@ pub fn drive_owned_agent_continuation(
             &request.project_id,
             &snapshot.run.agent_session_id,
             &request.run_id,
-        )
+        );
+    let base_tool_runtime = base_tool_runtime
+        .with_linked_read_roots(linked_read_roots_from_snapshot(&snapshot))?
         .with_cancellation_token(cancellation.clone());
     let base_tool_runtime = base_tool_runtime.with_durable_subagent_tasks_for_run(
         &request.repo_root,
@@ -3501,6 +3598,7 @@ fn finish_owned_agent_drive_error(
     let stop_reason = stop_reason_for_error(&error);
     if error_should_pause(&current_snapshot, &error) {
         let scheduled_wait = error.code == AGENT_RUN_SCHEDULED_WAIT_CODE;
+        let user_input_required = error.code == AGENT_RUN_USER_INPUT_REQUIRED_CODE;
         let pause_state = if scheduled_wait {
             AgentRunState::ScheduledWait
         } else {
@@ -3543,6 +3641,8 @@ fn finish_owned_agent_drive_error(
                 to: pause_state,
                 reason: if scheduled_wait {
                     "Owned-agent run paused for a scheduled wakeup."
+                } else if user_input_required {
+                    "Owned-agent run paused for user input."
                 } else {
                     "Owned-agent run paused at a harness boundary."
                 },
@@ -3908,6 +4008,7 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
             run_id: child_run_id.clone(),
             prompt,
             attachments: Vec::new(),
+            linked_paths: Vec::new(),
             controls: Some(RuntimeRunControlInputDto {
                 runtime_agent_id: self.controls.active.runtime_agent_id,
                 agent_definition_id: self.controls.active.agent_definition_id.clone(),
@@ -4069,6 +4170,7 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
             run_id: child_run_id.to_owned(),
             prompt: text.into(),
             attachments: Vec::new(),
+            linked_paths: Vec::new(),
             controls: Some(RuntimeRunControlInputDto {
                 runtime_agent_id: child_snapshot.run.runtime_agent_id,
                 agent_definition_id: Some(child_snapshot.run.agent_definition_id.clone()),
@@ -5112,6 +5214,7 @@ mod tests {
             run_id: source_run_id.into(),
             prompt: "Remove the Command-K UI.".into(),
             attachments: Vec::new(),
+            linked_paths: Vec::new(),
             controls: Some(custom_controls(
                 RuntimeAgentIdDto::Ask,
                 "ask",
@@ -5138,6 +5241,7 @@ mod tests {
             ]
             .join("\n\n"),
             attachments: Vec::new(),
+            linked_paths: Vec::new(),
             controls: Some(custom_controls(
                 RuntimeAgentIdDto::Engineer,
                 "engineer",
@@ -5192,12 +5296,17 @@ mod tests {
     #[test]
     fn s54_handoff_bundle_redacts_secret_like_values_across_context_surfaces() {
         let secret = "api_key=sk-s54-handoff-secret-value";
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "project-s54-handoff-redaction";
+        create_project_database(&repo_root, project_id);
         let snapshot = project_store::AgentRunSnapshotRecord {
             run: project_store::AgentRunRecord {
                 runtime_agent_id: RuntimeAgentIdDto::Engineer,
                 agent_definition_id: "engineer".into(),
                 agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
-                project_id: "project-s54-handoff-redaction".into(),
+                project_id: project_id.into(),
                 agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
                 run_id: "run-s54-handoff-source".into(),
                 trace_id: "trace-s54-handoff-source".into(),
@@ -5310,7 +5419,7 @@ mod tests {
 
         let target = same_agent_handoff_target(&snapshot);
         let bundle = build_handoff_bundle(
-            Path::new("/tmp"),
+            &repo_root,
             &snapshot,
             &target,
             &format!("Continue pending task with {secret}."),
@@ -5648,7 +5757,8 @@ mod tests {
     }
 
     #[test]
-    fn phase4_custom_engineering_agent_runs_with_definition_prompt_and_mutation_tools() {
+    fn phase4_custom_engineering_agent_runs_with_definition_prompt_mutation_and_verification_tools()
+    {
         let tempdir = tempfile::tempdir().expect("temp dir");
         let repo_root = tempdir.path().join("repo");
         fs::create_dir_all(&repo_root).expect("create repo root");
@@ -5661,8 +5771,9 @@ mod tests {
             project_id: project_id.into(),
             agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
             run_id: "phase4-builder-run".into(),
-            prompt: "Apply the custom policy.\ntool:write phase4-output.txt phase4-ok\ntool:command_echo phase4-verification".into(),
+            prompt: "Apply the custom policy.\ntool:write phase4-output.txt phase4-ok".into(),
             attachments: Vec::new(),
+            linked_paths: Vec::new(),
             controls: Some(custom_controls(
                 RuntimeAgentIdDto::Engineer,
                 "phase4_builder",
@@ -5697,7 +5808,7 @@ mod tests {
             call.tool_name == AUTONOMOUS_TOOL_WRITE && call.state == AgentToolCallState::Succeeded
         }));
         assert!(snapshot.tool_calls.iter().any(|call| {
-            call.tool_name == AUTONOMOUS_TOOL_COMMAND_PROBE
+            call.tool_name == AUTONOMOUS_TOOL_COMMAND_VERIFY
                 && call.state == AgentToolCallState::Succeeded
         }));
     }
@@ -5729,6 +5840,7 @@ mod tests {
             run_id: "s3-attached-skill-run".into(),
             prompt: "Summarize the configured guidance.".into(),
             attachments: Vec::new(),
+            linked_paths: Vec::new(),
             controls: Some(custom_controls(
                 RuntimeAgentIdDto::Engineer,
                 "phase4_attached_observer",
@@ -5843,6 +5955,7 @@ mod tests {
             run_id: "s8-persisted-attached-run".into(),
             prompt: "Summarize the persisted guidance.".into(),
             attachments: Vec::new(),
+            linked_paths: Vec::new(),
             controls: Some(custom_controls(
                 RuntimeAgentIdDto::Engineer,
                 "phase4_persisted_observer",
@@ -5922,6 +6035,7 @@ mod tests {
             run_id: "phase4-observer-run".into(),
             prompt: "Attempt a forbidden mutation.\ntool:write blocked.txt nope".into(),
             attachments: Vec::new(),
+            linked_paths: Vec::new(),
             controls: Some(custom_controls(
                 RuntimeAgentIdDto::Engineer,
                 "phase4_observer",

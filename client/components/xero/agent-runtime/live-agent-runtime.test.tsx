@@ -290,11 +290,13 @@ describe('useHistoricalConversationTurns', () => {
     expect(screen.getByTestId('agent-runtime')).toHaveAttribute('data-project-id', PROJECT_ID)
     expect(screen.getByTestId('agent-runtime')).toHaveAttribute('data-session-id', SESSION_ID)
 
-    let resolveNextTranscript: ((transcript: SessionTranscriptDto) => void) | null = null
+    const resolveNextTranscriptRef: { current: ((transcript: SessionTranscriptDto) => void) | null } = {
+      current: null,
+    }
     const getSessionTranscript = vi.fn(
       () =>
         new Promise<SessionTranscriptDto>((resolve) => {
-          resolveNextTranscript = resolve
+          resolveNextTranscriptRef.current = resolve
         }),
     )
     const nextAdapter = {
@@ -328,7 +330,7 @@ describe('useHistoricalConversationTurns', () => {
       'false',
     )
 
-    resolveNextTranscript?.(
+    resolveNextTranscriptRef.current?.(
       makeTranscript({
         projectId: 'project-next',
         sessionId: 'agent-session-next',

@@ -153,8 +153,8 @@ interface XeroShellProps {
 type WindowAction = "close" | "minimize" | "toggle-maximize"
 
 const NAV_ITEMS: { id: View; label: string }[] = [
-  { id: "phases", label: "Workflow" },
-  { id: "agent", label: "Agent" },
+  { id: "agent", label: "Chat" },
+  { id: "phases", label: "Create" },
   { id: "execution", label: "Editor" },
 ]
 
@@ -719,7 +719,7 @@ export function XeroShell({
     </Tooltip>
   )
 
-  const agentDockTooltip = agentDockDisabled ? "Already in Agent view" : "Agent"
+  const agentDockTooltip = agentDockDisabled ? "Already in Chat view" : "Agent"
   const AgentDockBtn = (
     <Tooltip>
       <TooltipTrigger asChild>

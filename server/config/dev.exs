@@ -1,10 +1,15 @@
 import Config
 
+postgres_port =
+  System.get_env("XERO_POSTGRES_PORT", "26132")
+  |> String.to_integer()
+
 # Configure your database
 config :xero, Xero.Repo,
   username: "postgres",
   password: "postgres",
   hostname: "localhost",
+  port: postgres_port,
   database: "xero_dev",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
@@ -77,7 +82,7 @@ config :xero, dev_routes: true
 config :xero,
   web_session_cookie_domain: nil,
   web_session_cookie_secure: false,
-  web_app_url: System.get_env("XERO_WEB_APP_URL", "http://127.0.0.1:3002")
+  web_app_url: System.get_env("XERO_WEB_APP_URL", "http://127.0.0.1:26102")
 
 # Do not include metadata nor timestamps in development logs
 config :logger, :default_formatter, format: "[$level] $message\n"

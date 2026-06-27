@@ -3463,10 +3463,107 @@ describe('AgentRuntime current UI', () => {
     expect(
       within(updatedConversation).getByRole('note', { name: /element context attached to prompt/i }),
     ).toBeVisible()
-    expect(within(updatedConversation).getByText('Element context')).toBeVisible()
-    expect(within(updatedConversation).getByText('Local App')).toBeVisible()
-    expect(within(updatedConversation).getByText('- Source: /app/src/Hero.tsx:42')).toBeVisible()
+    const elementCard = within(updatedConversation).getByRole('note', {
+      name: /element context attached to prompt/i,
+    })
+    expect(within(elementCard).getByText('Element context')).toBeVisible()
+    expect(within(elementCard).getByText('Hero.tsx:42')).toBeVisible()
+    expect(within(elementCard).queryByText('Page: Local App')).toBeNull()
+    fireEvent.click(within(elementCard).getByRole('button', { name: /expand element context/i }))
+    expect(within(elementCard).getByText('Page: Local App')).toBeVisible()
+    expect(within(elementCard).getByText('- Source: /app/src/Hero.tsx:42')).toBeVisible()
     expect(within(updatedConversation).queryByText('Browser element inspection context:')).not.toBeInTheDocument()
+  })
+
+  it('renders mixed submitted context as separate compact prompt items', () => {
+    const visiblePrompt = 'Add the Panda project to the portfolio.'
+    const elementContext = [
+      'Browser element inspection context:',
+      'Page: Local App',
+      'Selected element (for locating code; no screenshot):',
+      '- Source: /app/src/Projects.tsx:42',
+      '- Element: <section>',
+      '- Selector: #projects',
+      'Use these identifiers to find the implementation before editing.',
+    ].join('\n')
+    const linkedFileContext = [
+      'Linked project file context:',
+      '- public/panda.svg (/Users/sn0w/Documents/dev/portfolio/public/panda.svg)',
+      'The user attached this file for the agent to inspect if it is relevant to the request.',
+    ].join('\n')
+    const linkedFolderContext = [
+      'Linked folder context:',
+      '- /Users/sn0w/Documents',
+      'The user attached this folder for the agent to inspect if it is relevant to the request.',
+    ].join('\n')
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamItems: [
+            makeTranscriptItem({
+              sequence: 2,
+              role: 'user',
+              text: [
+                visiblePrompt,
+                elementContext,
+                linkedFileContext,
+                linkedFolderContext,
+              ].join('\n\n'),
+              mediaAttachments: [
+                {
+                  id: 'panda-logo-media',
+                  kind: 'image',
+                  mediaType: 'image/png',
+                  title: 'panda-logo.png',
+                  alt: 'Panda logo',
+                  sizeBytes: 68,
+                  width: 1,
+                  height: 1,
+                  source: {
+                    kind: 'data_url',
+                    dataUrl:
+                      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
+                  },
+                  renderUrl: null,
+                },
+              ],
+            }),
+          ],
+        })}
+      />,
+    )
+
+    const conversation = screen.getByRole('list', { name: 'Agent conversation turns' })
+    expect(within(conversation).getByText(visiblePrompt)).toBeVisible()
+
+    const elementCard = within(conversation).getByRole('note', {
+      name: /element context attached to prompt/i,
+    })
+    const fileCard = within(conversation).getByRole('note', {
+      name: /panda\.svg attached to prompt/i,
+    })
+    const folderCard = within(conversation).getByRole('note', {
+      name: /documents attached to prompt/i,
+    })
+
+    expect(within(elementCard).getByText('Element context')).toBeVisible()
+    expect(within(elementCard).getByText('Projects.tsx:42')).toBeVisible()
+    expect(within(elementCard).queryByText(/panda\.svg/)).toBeNull()
+    expect(within(fileCard).getByText('panda.svg')).toBeVisible()
+    expect(within(folderCard).getByText('Documents')).toBeVisible()
+    expect(within(conversation).getByText('panda-logo.png')).toBeVisible()
+    expect(
+      within(conversation).getByRole('button', {
+        name: /open image preview for panda-logo\.png/i,
+      }),
+    ).toBeVisible()
+    expect(within(conversation).queryByText('Linked folder context:')).not.toBeInTheDocument()
+
+    fireEvent.click(within(folderCard).getByRole('button', { name: /expand documents/i }))
+    expect(within(folderCard).getByText('- /Users/sn0w/Documents')).toBeVisible()
   })
 
   it('keeps the first submitted prompt row mounted when the started run echoes it', async () => {
@@ -6065,6 +6162,131 @@ describe('AgentRuntime current UI', () => {
     )
   })
 
+  it('links composer folders through the add menu as hidden prompt context', async () => {
+    const dictation = createDictationAdapter()
+    const folderPath = '/tmp/xero-linked-folder'
+    const pickComposerFolders = vi.fn(async () => [folderPath])
+    const onUpdateRuntimeRunControls = vi.fn(async () => makeRuntimeRun())
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun(),
+        })}
+        desktopAdapter={{
+          ...dictation.adapter,
+          pickComposerFolders,
+        }}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+      />,
+    )
+
+    fireEvent.pointerDown(await screen.findByRole('button', { name: 'Add context' }), {
+      button: 0,
+    })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Folder' }))
+
+    await waitFor(() => expect(pickComposerFolders).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByText('xero-linked-folder')).toBeVisible())
+    expect(screen.getByText(folderPath)).toBeVisible()
+
+    const sendButton = screen.getByRole('button', { name: 'Send message' })
+    await waitFor(() => expect(sendButton).toBeEnabled())
+    fireEvent.click(sendButton)
+
+    await waitFor(() =>
+      expect(onUpdateRuntimeRunControls).toHaveBeenCalledWith({
+        prompt: [
+          'Linked folder context:',
+          `- ${folderPath}`,
+          'The user attached this folder for the agent to inspect if it is relevant to the request.',
+        ].join('\n'),
+        linkedPaths: [{ kind: 'folder', absolutePath: folderPath }],
+      }),
+    )
+  })
+
+  it('links @ project path mentions as hidden prompt context', async () => {
+    const dictation = createDictationAdapter()
+    const listProjectFileIndex = vi.fn(async () => ({
+      projectId: 'project-1',
+      files: [
+        {
+          path: '/app/page.tsx',
+          name: 'page.tsx',
+          parentPath: '/app',
+          hidden: false,
+        },
+        {
+          path: '/client/src/App.tsx',
+          name: 'App.tsx',
+          parentPath: '/client/src',
+          hidden: false,
+        },
+      ],
+      totalFiles: 2,
+      truncated: false,
+      payloadBudget: null,
+    }))
+    const onUpdateRuntimeRunControls = vi.fn(async () => makeRuntimeRun())
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun(),
+        })}
+        desktopAdapter={{
+          ...dictation.adapter,
+          listProjectFileIndex,
+        }}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+      />,
+    )
+
+    const input = screen.getByLabelText('Agent input') as HTMLTextAreaElement
+    fireEvent.change(input, {
+      target: {
+        value: '@app',
+        selectionStart: 4,
+        selectionEnd: 4,
+      },
+    })
+
+    await waitFor(() =>
+      expect(listProjectFileIndex).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        includeHidden: false,
+        limit: 6000,
+      }),
+    )
+    await waitFor(() =>
+      expect(screen.getByRole('listbox', { name: 'Project context suggestions' })).toBeVisible(),
+    )
+
+    fireEvent.keyDown(input, { key: 'Tab' })
+
+    await waitFor(() => expect(screen.getByText('app')).toBeVisible())
+    expect(screen.getByText('/app')).toBeVisible()
+    await waitFor(() => expect(input).toHaveValue(''))
+
+    const sendButton = screen.getByRole('button', { name: 'Send message' })
+    await waitFor(() => expect(sendButton).toBeEnabled())
+    fireEvent.click(sendButton)
+
+    await waitFor(() =>
+      expect(onUpdateRuntimeRunControls).toHaveBeenCalledWith({
+        prompt: [
+          'Linked project folder context:',
+          '- app (/tmp/Xero/app)',
+          'The user attached this folder for the agent to inspect if it is relevant to the request.',
+        ].join('\n'),
+        linkedPaths: [{ kind: 'folder', absolutePath: '/tmp/Xero/app' }],
+      }),
+    )
+  })
+
   it('renders browser sketch image attachments inside the sent context card', async () => {
     const hiddenContext = [
       'Browser sketch context (capture 1):',
@@ -6115,8 +6337,10 @@ describe('AgentRuntime current UI', () => {
       name: /browser sketch context attached to prompt/i,
     })
     expect(within(sketchCard).getByText('Browser sketch context')).toBeVisible()
-    expect(within(sketchCard).getByText(/App: Web app/)).toBeVisible()
     expect(within(sketchCard).getByRole('img', { name: 'Browser pen sketch' })).toBeVisible()
+    expect(within(sketchCard).queryByText(/App: Web app/)).toBeNull()
+    fireEvent.click(within(sketchCard).getByRole('button', { name: /expand browser sketch context/i }))
+    expect(within(sketchCard).getByText(/App: Web app/)).toBeVisible()
     expect(
       within(conversation).getAllByRole('button', {
         name: /open image preview for browser-pen\.png/i,

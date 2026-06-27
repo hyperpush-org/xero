@@ -1129,6 +1129,8 @@ pub struct StartRuntimeRunRequestDto {
     pub initial_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub initial_attachments: Vec<StagedAgentAttachmentDto>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub initial_linked_paths: Vec<RuntimeLinkedPathDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1165,6 +1167,14 @@ pub struct StageAgentAttachmentRequestDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StageAgentAttachmentPathRequestDto {
+    pub project_id: String,
+    pub run_id: String,
+    pub absolute_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DiscardAgentAttachmentRequestDto {
     pub project_id: String,
     pub absolute_path: String,
@@ -1190,6 +1200,22 @@ pub struct UpdateRuntimeRunControlsRequestDto {
     pub prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<StagedAgentAttachmentDto>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub linked_paths: Vec<RuntimeLinkedPathDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeLinkedPathKindDto {
+    File,
+    Folder,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeLinkedPathDto {
+    pub kind: RuntimeLinkedPathKindDto,
+    pub absolute_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -9,11 +9,11 @@ use super::{
     deferred_tool_catalog, tool_access_all_known_tools, tool_access_group_tools,
     tool_allowed_for_runtime_agent, tool_available_on_current_host, tool_effect_class,
     AutonomousAgentToolPolicy, AutonomousToolCatalogEntry, AutonomousToolEffectClass,
-    AutonomousToolOutput, AutonomousToolResult, AutonomousToolRuntime, AUTONOMOUS_TOOL_CODE_INTEL,
-    AUTONOMOUS_TOOL_COMMAND_PROBE, AUTONOMOUS_TOOL_DIRECTORY_DIGEST,
-    AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT, AUTONOMOUS_TOOL_FIND, AUTONOMOUS_TOOL_GIT_DIFF,
-    AUTONOMOUS_TOOL_GIT_STATUS, AUTONOMOUS_TOOL_HARNESS_RUNNER, AUTONOMOUS_TOOL_HASH,
-    AUTONOMOUS_TOOL_LIST, AUTONOMOUS_TOOL_LIST_TREE, AUTONOMOUS_TOOL_LSP,
+    AutonomousToolOutput, AutonomousToolResult, AutonomousToolRuntime,
+    AUTONOMOUS_TOOL_ACTION_REQUIRED, AUTONOMOUS_TOOL_CODE_INTEL, AUTONOMOUS_TOOL_COMMAND_PROBE,
+    AUTONOMOUS_TOOL_DIRECTORY_DIGEST, AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT, AUTONOMOUS_TOOL_FIND,
+    AUTONOMOUS_TOOL_GIT_DIFF, AUTONOMOUS_TOOL_GIT_STATUS, AUTONOMOUS_TOOL_HARNESS_RUNNER,
+    AUTONOMOUS_TOOL_HASH, AUTONOMOUS_TOOL_LIST, AUTONOMOUS_TOOL_LIST_TREE, AUTONOMOUS_TOOL_LSP,
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET, AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH, AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_READ_MANY,
     AUTONOMOUS_TOOL_SEARCH, AUTONOMOUS_TOOL_SKILL, AUTONOMOUS_TOOL_STAT, AUTONOMOUS_TOOL_SUBAGENT,
@@ -3943,6 +3943,7 @@ fn planning_tool_allowed(tool: &str) -> bool {
             | AUTONOMOUS_TOOL_GIT_DIFF
             | AUTONOMOUS_TOOL_TOOL_ACCESS
             | AUTONOMOUS_TOOL_TOOL_SEARCH
+            | AUTONOMOUS_TOOL_ACTION_REQUIRED
             | AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH
             | AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET
             | AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD
@@ -5875,7 +5876,9 @@ mod tests {
             "writes": "not-an-array",
             "encouraged": []
         });
-        definition["handoffPolicy"] = JsonValue::Null;
+        definition["handoffPolicy"] = json!({
+            "allowedTargets": ["not-a-target"]
+        });
         definition["workflowStructure"] = json!({
             "startPhaseId": "missing",
             "phases": [
@@ -5930,7 +5933,7 @@ mod tests {
             "agent_definition_output_sections_required",
             "agent_definition_db_touchpoint_text_required",
             "agent_definition_db_touchpoint_triggers_required",
-            "agent_definition_handoff_policy_invalid",
+            "agent_definition_handoff_policy_target_invalid",
             "agent_definition_workflow_start_phase_unknown",
             "agent_definition_workflow_tool_unknown",
             "agent_definition_workflow_branch_target_unknown",

@@ -45,7 +45,9 @@ pub const OPENAI_CODEX_DEFAULT_MODEL_ID: &str = "gpt-5.5";
 pub const XAI_DEFAULT_MODEL_ID: &str = "grok-4.3";
 pub const CURSOR_DEFAULT_MODEL_ID: &str = "composer-latest";
 pub const CURSOR_AUTO_MODEL_ID: &str = "cursor-auto";
-pub const XAI_SUPPORTED_TEXT_MODEL_IDS: &[&str] = &["grok-4.3", "grok-4.3-latest"];
+pub const XAI_SUPPORTED_TEXT_MODEL_IDS: &[&str] =
+    &["grok-4.3", "grok-4.3-latest", "grok-build-0.1"];
+pub const XAI_REASONING_EFFORT_MODEL_IDS: &[&str] = &["grok-4.3", "grok-4.3-latest"];
 pub const OPENAI_CODEX_SUPPORTED_MODEL_IDS: &[&str] = &[
     "gpt-5.2",
     "gpt-5.3-codex",
@@ -57,15 +59,26 @@ const CURSOR_API_KEY_SESSION_ID: &str = "cursor-api-key";
 const CURSOR_API_KEY_ACCOUNT_ID: &str = "cursor-api-key";
 
 pub fn is_supported_xai_text_model_id(model_id: &str) -> bool {
-    let model_id = model_id
+    let model_id = normalize_xai_model_id_for_match(model_id);
+    XAI_SUPPORTED_TEXT_MODEL_IDS
+        .iter()
+        .any(|supported| model_id == *supported)
+}
+
+pub fn is_supported_xai_reasoning_effort_model_id(model_id: &str) -> bool {
+    let model_id = normalize_xai_model_id_for_match(model_id);
+    XAI_REASONING_EFFORT_MODEL_IDS
+        .iter()
+        .any(|supported| model_id == *supported)
+}
+
+fn normalize_xai_model_id_for_match(model_id: &str) -> String {
+    model_id
         .trim()
         .rsplit('/')
         .next()
         .unwrap_or(model_id)
-        .to_ascii_lowercase();
-    XAI_SUPPORTED_TEXT_MODEL_IDS
-        .iter()
-        .any(|supported| model_id == *supported)
+        .to_ascii_lowercase()
 }
 
 pub fn normalize_openai_codex_model_id(model_id: &str) -> String {

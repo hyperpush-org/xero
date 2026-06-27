@@ -26,7 +26,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, Runtime};
@@ -182,6 +182,7 @@ pub const AUTONOMOUS_TOOL_COMMAND_SESSION: &str = "command_session";
 pub const AUTONOMOUS_TOOL_HOST_COMMAND: &str = "host_command";
 pub const AUTONOMOUS_TOOL_PROCESS_MANAGER: &str = "process_manager";
 pub const AUTONOMOUS_TOOL_RUNTIME_WAIT: &str = "runtime_wait";
+pub const AUTONOMOUS_TOOL_ACTION_REQUIRED: &str = "action_required";
 pub const AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS: &str = "system_diagnostics";
 pub const AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE: &str = "system_diagnostics_observe";
 pub const AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED: &str = "system_diagnostics_privileged";
@@ -310,7 +311,7 @@ const MAX_SEARCH_QUERY_CHARS: usize = 256;
 const MAX_SEARCH_RESULTS: usize = 100;
 const MAX_SEARCH_PREVIEW_CHARS: usize = 200;
 pub(super) const DEFAULT_COMMAND_TIMEOUT_MS: u64 = 5_000;
-const MAX_COMMAND_TIMEOUT_MS: u64 = 60_000;
+const MAX_COMMAND_TIMEOUT_MS: u64 = 120_000;
 const MAX_COMMAND_CAPTURE_BYTES: usize = 8 * 1024;
 const MAX_COMMAND_EXCERPT_CHARS: usize = 2_000;
 const DEFAULT_SUBAGENT_MAX_CHILD_AGENTS: usize = 6;
@@ -325,6 +326,8 @@ const MAX_RUNTIME_WAIT_DELAY_MS: u64 = 30 * 60 * 1_000;
 const MAX_RUNTIME_WAIT_DEADLINE_MS: u64 = 6 * 60 * 60 * 1_000;
 const MAX_RUNTIME_WAIT_REASON_BYTES: usize = 400;
 const MAX_RUNTIME_WAIT_RESUME_CONTEXT_BYTES: usize = 8 * 1024;
+const MAX_ACTION_REQUIRED_DETAIL_BYTES: usize = 1_200;
+const MAX_ACTION_REQUIRED_OPTIONS: usize = 20;
 
 const TOOL_ACCESS_CORE_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_READ,
@@ -337,6 +340,8 @@ const TOOL_ACCESS_CORE_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_GIT_DIFF,
     AUTONOMOUS_TOOL_TOOL_ACCESS,
     AUTONOMOUS_TOOL_TOOL_SEARCH,
+    AUTONOMOUS_TOOL_ACTION_REQUIRED,
+    AUTONOMOUS_TOOL_REQUEST_SENSITIVE_INPUT,
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
     AUTONOMOUS_TOOL_WORKSPACE_INDEX,
@@ -367,7 +372,10 @@ const TOOL_ACCESS_COMMAND_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_COMMAND_SESSION,
 ];
 const TOOL_ACCESS_PROCESS_MANAGER_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_PROCESS_MANAGER];
-const TOOL_ACCESS_RUNTIME_WAIT_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_RUNTIME_WAIT];
+const TOOL_ACCESS_RUNTIME_WAIT_TOOLS: &[&str] = &[
+    AUTONOMOUS_TOOL_RUNTIME_WAIT,
+    AUTONOMOUS_TOOL_ACTION_REQUIRED,
+];
 const TOOL_ACCESS_SYSTEM_DIAGNOSTICS_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
     AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED,
@@ -402,6 +410,7 @@ const TOOL_ACCESS_REPOSITORY_RECON_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_GIT_DIFF,
     AUTONOMOUS_TOOL_TOOL_ACCESS,
     AUTONOMOUS_TOOL_TOOL_SEARCH,
+    AUTONOMOUS_TOOL_ACTION_REQUIRED,
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
     AUTONOMOUS_TOOL_WORKSPACE_INDEX,
@@ -426,6 +435,7 @@ const TOOL_ACCESS_PLANNING_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_GIT_DIFF,
     AUTONOMOUS_TOOL_TOOL_ACCESS,
     AUTONOMOUS_TOOL_TOOL_SEARCH,
+    AUTONOMOUS_TOOL_ACTION_REQUIRED,
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
@@ -575,7 +585,7 @@ const TOOL_ACCESS_GROUP_DEFINITIONS: &[ToolAccessGroupDefinition] = &[
     },
     ToolAccessGroupDefinition {
         name: "runtime_wait",
-        description: "Pause an owned-agent run for a bounded timer or durable process-poll wakeup.",
+        description: "Pause an owned-agent run for a bounded timer, durable process-poll wakeup, or bounded user-input prompt.",
         tools: TOOL_ACCESS_RUNTIME_WAIT_TOOLS,
         risk_class: "runtime_state",
     },
@@ -1610,7 +1620,10 @@ impl AutonomousAgentWorkflowPhase {
             || self.allowed_tools.contains(tool_name)
             || matches!(
                 tool_name,
-                AUTONOMOUS_TOOL_TODO | AUTONOMOUS_TOOL_TOOL_SEARCH | AUTONOMOUS_TOOL_TOOL_ACCESS
+                AUTONOMOUS_TOOL_ACTION_REQUIRED
+                    | AUTONOMOUS_TOOL_TODO
+                    | AUTONOMOUS_TOOL_TOOL_SEARCH
+                    | AUTONOMOUS_TOOL_TOOL_ACCESS
             )
     }
 
@@ -1619,6 +1632,7 @@ impl AutonomousAgentWorkflowPhase {
             return None;
         }
         let mut allowed_tools = self.allowed_tools.clone();
+        allowed_tools.insert(AUTONOMOUS_TOOL_ACTION_REQUIRED.to_owned());
         allowed_tools.insert(AUTONOMOUS_TOOL_TODO.to_owned());
         allowed_tools.insert(AUTONOMOUS_TOOL_TOOL_SEARCH.to_owned());
         allowed_tools.insert(AUTONOMOUS_TOOL_TOOL_ACCESS.to_owned());
@@ -1950,6 +1964,7 @@ pub fn tool_effect_class(tool_name: &str) -> AutonomousToolEffectClass {
         | AUTONOMOUS_TOOL_DESKTOP_OBSERVE
         | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE => AutonomousToolEffectClass::Observe,
         AUTONOMOUS_TOOL_TOOL_ACCESS
+        | AUTONOMOUS_TOOL_ACTION_REQUIRED
         | AUTONOMOUS_TOOL_TODO
         | AUTONOMOUS_TOOL_REQUEST_SENSITIVE_INPUT
         | AUTONOMOUS_TOOL_RUNTIME_WAIT
@@ -2108,8 +2123,16 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_READ,
             "core",
-            "Read a repo-relative file as text, image preview, binary metadata, byte range, or line-hash anchored text.",
-            &["file", "inspect", "read", "line_hash", "image", "binary"],
+            "Read a repo-relative file or bounded directory listing as text, image preview, binary metadata, byte range, or line-hash anchored text.",
+            &[
+                "file",
+                "directory",
+                "inspect",
+                "read",
+                "line_hash",
+                "image",
+                "binary",
+            ],
             &[
                 "path",
                 "systemPath",
@@ -2123,6 +2146,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             ],
             &[
                 "Read src/lib.rs with line hashes before editing.",
+                "Read . to inspect the imported repository root.",
                 "Inspect an image preview in the imported repo.",
             ],
             "observe",
@@ -2219,6 +2243,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
                 "hashMode",
             ],
             &[
+                "Compute a metadata-only digest for . before a repo-wide recursive operation.",
                 "Compute a metadata-only digest for src before a recursive operation.",
                 "Compute a content-hash digest for a generated file set.",
             ],
@@ -2252,7 +2277,13 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             "core",
             "Find glob/pattern matches in repo-scoped files with optional bounded recursion depth.",
             &["file", "glob", "find", "tree"],
-            &["pattern", "path", "maxDepth"],
+            &[
+                "pattern",
+                "path",
+                "maxDepth",
+                "includeHidden",
+                "includeIgnored",
+            ],
             &[
                 "Find **/*.rs files under src-tauri.",
                 "Find top-level package manifests with maxDepth 2.",
@@ -2560,6 +2591,34 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             "observe",
         ),
         catalog_entry(
+            AUTONOMOUS_TOOL_ACTION_REQUIRED,
+            "core",
+            "Pause the owned-agent run and ask the user for bounded non-sensitive input through the transcript UI.",
+            &[
+                "user input",
+                "clarify",
+                "choice",
+                "single choice",
+                "multi choice",
+                "technology stack",
+                "preference",
+                "question",
+            ],
+            &[
+                "title",
+                "detail",
+                "answerShape",
+                "promptKind",
+                "options",
+                "intendedUse",
+            ],
+            &[
+                "Ask the user to choose one technology stack before implementation.",
+                "Ask for multiple independent preferences when a design choice is material.",
+            ],
+            "runtime_state",
+        ),
+        catalog_entry(
             AUTONOMOUS_TOOL_REQUEST_SENSITIVE_INPUT,
             "core",
             "Request secrets or sensitive configuration from the user through the dedicated redacted input flow.",
@@ -2591,10 +2650,13 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_HASH,
             "core",
-            "Hash a repo-relative file with SHA-256.",
-            &["file", "hash", "sha256", "stale_write"],
-            &["path"],
-            &["Hash a file before guarded mutation."],
+            "Hash a repo-relative file, directory, or matched file set with SHA-256.",
+            &["file", "directory", "hash", "sha256", "stale_write"],
+            &["path", "recursive", "includeGlobs", "excludeGlobs", "maxFiles"],
+            &[
+                "Hash a file before guarded mutation.",
+                "Hash . as a file-set digest before repo-wide planning.",
+            ],
             "observe",
         ),
         catalog_entry(
@@ -2771,7 +2833,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_COMMAND_PROBE,
             "command",
-            "Run a narrowly allowlisted repo-scoped discovery command.",
+            "Run a narrowly allowlisted repo-scoped read-only discovery command. Use command_run, not command_probe, for package-manager create/install/add/update, scaffolding, generators, builds, or setup.",
             &["command", "probe", "diagnostic", "git", "rg", "metadata"],
             &["argv", "cwd", "timeoutMs"],
             &["Run git status or cargo metadata for local discovery."],
@@ -2780,7 +2842,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_COMMAND_VERIFY,
             "command",
-            "Run a narrowly allowlisted repo-scoped verification command for tests, checks, lint, build, or formatting verification.",
+            "Run a narrowly allowlisted repo-scoped verification command for tests, checks, lint, build, or formatting verification. Use command_run for setup, scaffolding, generators, and package-manager create/install/add/update commands.",
             &[
                 "command", "verify", "test", "lint", "build", "cargo", "npm", "pnpm",
             ],
@@ -2795,9 +2857,23 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             AUTONOMOUS_TOOL_COMMAND_RUN,
             "command",
             "Run a repo-scoped command that is not covered by probe or verification policy.",
-            &["command", "shell", "run", "script"],
+            &[
+                "command",
+                "shell",
+                "run",
+                "script",
+                "setup",
+                "scaffold",
+                "vite",
+                "npm",
+                "pnpm",
+                "install",
+            ],
             &["argv", "cwd", "timeoutMs"],
-            &["Run a one-off repo-scoped helper after approval policy allows it."],
+            &[
+                "Run a one-off repo-scoped helper after approval policy allows it.",
+                "Run npm create vite@latest or another scaffold command with normal command approval.",
+            ],
             "command",
         ),
         catalog_entry(
@@ -4355,6 +4431,7 @@ pub struct AutonomousToolRuntime {
     pub(super) agent_workflow_policy: Option<AutonomousAgentWorkflowPolicy>,
     pub(super) agent_workflow_state: Arc<Mutex<AutonomousAgentWorkflowRuntimeState>>,
     pub(super) agent_run_context: Option<AutonomousAgentRunContext>,
+    pub(super) linked_read_roots: Vec<AutonomousLinkedReadRoot>,
     pub(super) context_access_ledger: Arc<Mutex<ContextAccessLedger>>,
     pub(super) tool_application_policy: ResolvedAgentToolApplicationStyleDto,
     pub(super) browser_control_preference: BrowserControlPreferenceDto,
@@ -4389,6 +4466,7 @@ impl std::fmt::Debug for AutonomousToolRuntime {
             .field("agent_tool_policy", &self.agent_tool_policy)
             .field("agent_workflow_policy", &self.agent_workflow_policy)
             .field("agent_run_context", &self.agent_run_context)
+            .field("linked_read_roots", &self.linked_read_roots)
             .field("tool_application_policy", &self.tool_application_policy)
             .field(
                 "browser_control_preference",
@@ -4415,6 +4493,12 @@ pub struct AutonomousAgentRunContext {
     pub project_id: String,
     pub agent_session_id: String,
     pub run_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AutonomousLinkedReadRoot {
+    pub(super) path: PathBuf,
+    pub(super) is_dir: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -4487,6 +4571,58 @@ pub trait AutonomousSubagentExecutor: Send + Sync {
     fn export_subagent_trace(&self, task: &AutonomousSubagentTask) -> CommandResult<JsonValue>;
 }
 
+fn canonical_linked_read_roots<I>(roots: I) -> CommandResult<Vec<AutonomousLinkedReadRoot>>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    let mut linked_roots = Vec::<AutonomousLinkedReadRoot>::new();
+    for root in roots {
+        let trimmed = root.to_string_lossy().trim().to_string();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let canonical = fs::canonicalize(&root).map_err(|error| {
+            CommandError::user_fixable(
+                "linked_context_path_unavailable",
+                format!(
+                    "Xero could not access linked context path `{}`: {error}",
+                    root.display()
+                ),
+            )
+        })?;
+        let metadata = fs::metadata(&canonical).map_err(|error| {
+            CommandError::user_fixable(
+                "linked_context_path_unavailable",
+                format!(
+                    "Xero could not inspect linked context path `{}`: {error}",
+                    canonical.display()
+                ),
+            )
+        })?;
+        let is_dir = metadata.is_dir();
+        if !is_dir && !metadata.is_file() {
+            return Err(CommandError::user_fixable(
+                "linked_context_path_unsupported",
+                format!(
+                    "Xero can only grant linked context read access for files and folders; `{}` is neither.",
+                    canonical.display()
+                ),
+            ));
+        }
+        if linked_roots
+            .iter()
+            .any(|existing| existing.path == canonical && existing.is_dir == is_dir)
+        {
+            continue;
+        }
+        linked_roots.push(AutonomousLinkedReadRoot {
+            path: canonical,
+            is_dir,
+        });
+    }
+    Ok(linked_roots)
+}
+
 impl AutonomousToolRuntime {
     pub fn new(repo_root: impl AsRef<Path>) -> CommandResult<Self> {
         Self::with_limits_and_web_config(
@@ -4541,6 +4677,7 @@ impl AutonomousToolRuntime {
                 AutonomousAgentWorkflowRuntimeState::default(),
             )),
             agent_run_context: None,
+            linked_read_roots: Vec::new(),
             context_access_ledger: Arc::new(Mutex::new(ContextAccessLedger::default())),
             tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
             browser_control_preference: BrowserControlPreferenceDto::Default,
@@ -4768,6 +4905,14 @@ impl AutonomousToolRuntime {
         }
         self.agent_run_context = Some(next_context);
         self
+    }
+
+    pub fn with_linked_read_roots<I>(mut self, roots: I) -> CommandResult<Self>
+    where
+        I: IntoIterator<Item = PathBuf>,
+    {
+        self.linked_read_roots = canonical_linked_read_roots(roots)?;
+        Ok(self)
     }
 
     pub fn with_durable_subagent_tasks_for_run(
@@ -5112,6 +5257,7 @@ impl AutonomousToolRuntime {
             AutonomousToolRequest::HostCommand(request) => self.host_command(request),
             AutonomousToolRequest::ProcessManager(request) => self.process_manager(request),
             AutonomousToolRequest::RuntimeWait(request) => self.runtime_wait(request),
+            AutonomousToolRequest::ActionRequired(request) => self.action_required(request),
             AutonomousToolRequest::SystemDiagnostics(request) => self.system_diagnostics(request),
             AutonomousToolRequest::MacosAutomation(request) => self.macos_automation(request),
             AutonomousToolRequest::DesktopObserve(request) => self.desktop_observe(request),
@@ -5302,6 +5448,47 @@ impl AutonomousToolRuntime {
                     })
                     .collect(),
                 redacted: !approved,
+                summary,
+            }),
+        })
+    }
+
+    fn action_required(
+        &self,
+        request: AutonomousActionRequiredRequest,
+    ) -> CommandResult<AutonomousToolResult> {
+        self.check_cancelled()?;
+        validate_action_required_request(&request)?;
+        let context = self.agent_run_context.as_ref().ok_or_else(|| {
+            CommandError::system_fault(
+                "action_required_missing_run_context",
+                "Xero cannot ask for user input without an active owned-agent run context.",
+            )
+        })?;
+        let action_id = action_required_action_id(context, &request)?;
+        let allow_multiple =
+            request.answer_shape == AutonomousActionRequiredAnswerShape::MultiChoice;
+        let title = request.title.trim().to_string();
+        let detail = request.detail.trim().to_string();
+        let intended_use = request.intended_use.map(|value| value.trim().to_string());
+        let prompt_kind = request.prompt_kind.map(|value| value.trim().to_string());
+        let summary = format!("Requested user input: {title}");
+
+        Ok(AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_ACTION_REQUIRED.into(),
+            summary: summary.clone(),
+            command_result: None,
+            output: AutonomousToolOutput::ActionRequired(AutonomousActionRequiredOutput {
+                action_id,
+                action_type: "user_input_required".into(),
+                status: "pending_user_response".into(),
+                title,
+                detail,
+                answer_shape: request.answer_shape,
+                prompt_kind,
+                options: request.options,
+                allow_multiple,
+                intended_use,
                 summary,
             }),
         })
@@ -6149,6 +6336,7 @@ pub enum AutonomousToolRequest {
     HostCommand(AutonomousHostCommandRequest),
     ProcessManager(AutonomousProcessManagerRequest),
     RuntimeWait(AutonomousRuntimeWaitRequest),
+    ActionRequired(AutonomousActionRequiredRequest),
     SystemDiagnostics(AutonomousSystemDiagnosticsRequest),
     MacosAutomation(AutonomousMacosAutomationRequest),
     DesktopObserve(AutonomousDesktopObserveRequest),
@@ -6245,6 +6433,80 @@ pub struct AutonomousSensitiveInputOutput {
     pub allow_partial: bool,
     pub fields: Vec<AutonomousSensitiveInputFieldOutput>,
     pub redacted: bool,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousActionRequiredAnswerShape {
+    PlainText,
+    TerminalInput,
+    SingleChoice,
+    MultiChoice,
+    ShortText,
+    LongText,
+    Number,
+    Date,
+}
+
+impl AutonomousActionRequiredAnswerShape {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PlainText => "plain_text",
+            Self::TerminalInput => "terminal_input",
+            Self::SingleChoice => "single_choice",
+            Self::MultiChoice => "multi_choice",
+            Self::ShortText => "short_text",
+            Self::LongText => "long_text",
+            Self::Number => "number",
+            Self::Date => "date",
+        }
+    }
+
+    const fn requires_options(self) -> bool {
+        matches!(self, Self::SingleChoice | Self::MultiChoice)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousActionRequiredOption {
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousActionRequiredRequest {
+    pub title: String,
+    pub detail: String,
+    pub answer_shape: AutonomousActionRequiredAnswerShape,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<AutonomousActionRequiredOption>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intended_use: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousActionRequiredOutput {
+    pub action_id: String,
+    pub action_type: String,
+    pub status: String,
+    pub title: String,
+    pub detail: String,
+    pub answer_shape: AutonomousActionRequiredAnswerShape,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<AutonomousActionRequiredOption>,
+    pub allow_multiple: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intended_use: Option<String>,
     pub summary: String,
 }
 
@@ -6353,6 +6615,137 @@ fn sensitive_input_value_to_string(value: &JsonValue) -> String {
         .as_str()
         .map(str::to_string)
         .unwrap_or_else(|| value.to_string())
+}
+
+fn validate_action_required_request(
+    request: &AutonomousActionRequiredRequest,
+) -> CommandResult<()> {
+    validate_action_required_text(&request.title, "title", 3, 120)?;
+    validate_action_required_text(
+        &request.detail,
+        "detail",
+        8,
+        MAX_ACTION_REQUIRED_DETAIL_BYTES,
+    )?;
+    if let Some(prompt_kind) = request.prompt_kind.as_deref() {
+        validate_action_required_key(prompt_kind, "promptKind")?;
+    }
+    if let Some(intended_use) = request.intended_use.as_deref() {
+        validate_action_required_text(intended_use, "intendedUse", 8, 500)?;
+    }
+
+    if request.answer_shape.requires_options() {
+        if request.options.len() < 2 || request.options.len() > MAX_ACTION_REQUIRED_OPTIONS {
+            return Err(CommandError::user_fixable(
+                "action_required_options_invalid",
+                format!(
+                    "Choice prompts must include between 2 and {MAX_ACTION_REQUIRED_OPTIONS} options."
+                ),
+            ));
+        }
+    } else if !request.options.is_empty() {
+        return Err(CommandError::user_fixable(
+            "action_required_options_unexpected",
+            "`options` can be provided only for single_choice and multi_choice prompts.",
+        ));
+    }
+
+    let mut ids = BTreeSet::new();
+    for option in &request.options {
+        validate_action_required_option_id(&option.id)?;
+        validate_action_required_text(&option.label, "option.label", 1, 120)?;
+        if let Some(description) = option.description.as_deref() {
+            validate_action_required_text(description, "option.description", 1, 300)?;
+        }
+        if !ids.insert(option.id.trim().to_string()) {
+            return Err(CommandError::user_fixable(
+                "action_required_option_duplicate",
+                format!(
+                    "Choice prompt contains duplicate option id `{}`.",
+                    option.id
+                ),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_action_required_text(
+    value: &str,
+    field: &'static str,
+    min_chars: usize,
+    max_chars: usize,
+) -> CommandResult<()> {
+    let trimmed = value.trim();
+    if trimmed.len() < min_chars || trimmed.len() > max_chars {
+        return Err(CommandError::user_fixable(
+            "action_required_request_invalid",
+            format!(
+                "`{field}` must be between {min_chars} and {max_chars} UTF-8 bytes after trimming."
+            ),
+        ));
+    }
+    if find_prohibited_persistence_content(trimmed).is_some() {
+        return Err(CommandError::user_fixable(
+            "action_required_metadata_secret_like",
+            format!("`{field}` must describe the prompt without embedding secret values."),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_action_required_key(value: &str, field: &'static str) -> CommandResult<()> {
+    let trimmed = value.trim();
+    let valid = !trimmed.is_empty()
+        && trimmed.len() <= 80
+        && trimmed
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
+    if valid {
+        Ok(())
+    } else {
+        Err(CommandError::user_fixable(
+            "action_required_key_invalid",
+            format!("`{field}` must be a lowercase snake_case identifier up to 80 bytes."),
+        ))
+    }
+}
+
+fn validate_action_required_option_id(id: &str) -> CommandResult<()> {
+    let trimmed = id.trim();
+    let valid = !trimmed.is_empty()
+        && trimmed.len() <= 80
+        && trimmed
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
+    if valid {
+        Ok(())
+    } else {
+        Err(CommandError::user_fixable(
+            "action_required_option_id_invalid",
+            "Choice option ids must contain only ASCII letters, numbers, hyphen, underscore, or dot, up to 80 bytes.",
+        ))
+    }
+}
+
+fn action_required_action_id(
+    context: &AutonomousAgentRunContext,
+    request: &AutonomousActionRequiredRequest,
+) -> CommandResult<String> {
+    let bytes = serde_json::to_vec(request).map_err(|error| {
+        CommandError::system_fault(
+            "action_required_hash_failed",
+            format!("Xero could not hash action-required request metadata: {error}"),
+        )
+    })?;
+    let mut hasher = Sha256::new();
+    hasher.update(context.project_id.as_bytes());
+    hasher.update(context.agent_session_id.as_bytes());
+    hasher.update(context.run_id.as_bytes());
+    hasher.update(bytes);
+    let digest = format!("{:x}", hasher.finalize());
+    Ok(format!("user-input-{}", &digest[..16]))
 }
 
 fn validate_runtime_wait_request(request: &AutonomousRuntimeWaitRequest) -> CommandResult<()> {
@@ -6573,6 +6966,7 @@ impl AutonomousToolRequest {
             Self::HostCommand(_) => AUTONOMOUS_TOOL_HOST_COMMAND,
             Self::ProcessManager(_) => AUTONOMOUS_TOOL_PROCESS_MANAGER,
             Self::RuntimeWait(_) => AUTONOMOUS_TOOL_RUNTIME_WAIT,
+            Self::ActionRequired(_) => AUTONOMOUS_TOOL_ACTION_REQUIRED,
             Self::SystemDiagnostics(_) => AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS,
             Self::MacosAutomation(_) => AUTONOMOUS_TOOL_MACOS_AUTOMATION,
             Self::DesktopObserve(_) => AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
@@ -6911,6 +7305,10 @@ pub struct AutonomousFindRequest {
     pub max_depth: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_results: Option<usize>,
+    #[serde(default)]
+    pub include_hidden: bool,
+    #[serde(default)]
+    pub include_ignored: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
 }
@@ -7284,6 +7682,7 @@ pub struct AutonomousHashRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousCommandRequest {
+    #[serde(deserialize_with = "deserialize_command_argv")]
     pub argv: Vec<String>,
     pub cwd: Option<String>,
     pub timeout_ms: Option<u64>,
@@ -7292,9 +7691,132 @@ pub struct AutonomousCommandRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousCommandSessionStartRequest {
+    #[serde(deserialize_with = "deserialize_command_argv")]
     pub argv: Vec<String>,
     pub cwd: Option<String>,
     pub timeout_ms: Option<u64>,
+}
+
+fn deserialize_command_argv<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = JsonValue::deserialize(deserializer)?;
+    command_argv_from_json_value(value).map_err(de::Error::custom)
+}
+
+fn command_argv_from_json_value(value: JsonValue) -> Result<Vec<String>, String> {
+    match value {
+        JsonValue::Array(items) => command_argv_from_json_array(items),
+        JsonValue::String(raw) => command_argv_from_string(&raw),
+        other => Err(format!(
+            "argv must be array or string, got {}",
+            json_value_type_name(&other)
+        )),
+    }
+}
+
+fn command_argv_from_json_array(items: Vec<JsonValue>) -> Result<Vec<String>, String> {
+    items
+        .into_iter()
+        .enumerate()
+        .map(|(index, item)| match item {
+            JsonValue::String(value) => Ok(value),
+            other => Err(format!(
+                "argv[{index}] must be string, got {}",
+                json_value_type_name(&other)
+            )),
+        })
+        .collect()
+}
+
+fn command_argv_from_string(raw: &str) -> Result<Vec<String>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("argv string cannot be empty".into());
+    }
+
+    if trimmed.starts_with('[') {
+        let json_array = command_argv_json_array_prefix(trimmed).unwrap_or(trimmed);
+        return serde_json::from_str::<Vec<String>>(json_array).map_err(|error| {
+            format!("argv string must contain a JSON string array or plain argv tokens: {error}")
+        });
+    }
+
+    if trimmed.chars().any(|character| {
+        matches!(
+            character,
+            '\n' | '\r'
+                | '"'
+                | '\''
+                | '\\'
+                | '|'
+                | '&'
+                | ';'
+                | '<'
+                | '>'
+                | '`'
+                | '$'
+                | '('
+                | ')'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+        )
+    }) {
+        return Err("argv string contains shell syntax; pass argv as a JSON array instead".into());
+    }
+
+    Ok(trimmed
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect::<Vec<_>>())
+}
+
+fn command_argv_json_array_prefix(input: &str) -> Option<&str> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (index, character) in input.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if in_string {
+            match character {
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match character {
+            '"' => in_string = true,
+            '[' => depth += 1,
+            ']' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(&input[..index + character.len_utf8()]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn json_value_type_name(value: &JsonValue) -> &'static str {
+    match value {
+        JsonValue::Null => "null",
+        JsonValue::Bool(_) => "boolean",
+        JsonValue::Number(_) => "number",
+        JsonValue::String(_) => "string",
+        JsonValue::Array(_) => "array",
+        JsonValue::Object(_) => "object",
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -8385,6 +8907,7 @@ pub enum AutonomousToolOutput {
     CommandSession(AutonomousCommandSessionOutput),
     ProcessManager(AutonomousProcessManagerOutput),
     RuntimeWait(AutonomousRuntimeWaitOutput),
+    ActionRequired(AutonomousActionRequiredOutput),
     SystemDiagnostics(AutonomousSystemDiagnosticsOutput),
     MacosAutomation(AutonomousMacosAutomationOutput),
     DesktopObserve(AutonomousDesktopToolOutput),
@@ -10357,6 +10880,71 @@ mod tests {
     }
 
     #[test]
+    fn action_required_validation_enforces_bounded_safe_prompts() {
+        validate_action_required_request(&AutonomousActionRequiredRequest {
+            title: "Choose a stack".into(),
+            detail: "Select the technology stack before implementation starts.".into(),
+            answer_shape: AutonomousActionRequiredAnswerShape::SingleChoice,
+            prompt_kind: Some("technology_stack_selection".into()),
+            options: vec![
+                AutonomousActionRequiredOption {
+                    id: "existing".into(),
+                    label: "Existing stack".into(),
+                    description: Some("Follow the current project conventions.".into()),
+                },
+                AutonomousActionRequiredOption {
+                    id: "react-vite".into(),
+                    label: "React + Vite".into(),
+                    description: None,
+                },
+            ],
+            intended_use: Some("Use the selected stack for the implementation plan.".into()),
+        })
+        .expect("valid bounded choice prompt");
+
+        let missing_options = validate_action_required_request(&AutonomousActionRequiredRequest {
+            title: "Choose a stack".into(),
+            detail: "Select the technology stack before implementation starts.".into(),
+            answer_shape: AutonomousActionRequiredAnswerShape::SingleChoice,
+            prompt_kind: None,
+            options: Vec::new(),
+            intended_use: None,
+        })
+        .expect_err("choice prompts require options");
+        assert_eq!(missing_options.code, "action_required_options_invalid");
+
+        let unexpected_options =
+            validate_action_required_request(&AutonomousActionRequiredRequest {
+                title: "Name it".into(),
+                detail: "Provide a short display name for this plan.".into(),
+                answer_shape: AutonomousActionRequiredAnswerShape::ShortText,
+                prompt_kind: None,
+                options: vec![AutonomousActionRequiredOption {
+                    id: "one".into(),
+                    label: "One".into(),
+                    description: None,
+                }],
+                intended_use: None,
+            })
+            .expect_err("text prompts cannot include options");
+        assert_eq!(
+            unexpected_options.code,
+            "action_required_options_unexpected"
+        );
+
+        let secret_detail = validate_action_required_request(&AutonomousActionRequiredRequest {
+            title: "Choose a stack".into(),
+            detail: "Use api_key=sk-test-secret for this selection.".into(),
+            answer_shape: AutonomousActionRequiredAnswerShape::ShortText,
+            prompt_kind: None,
+            options: Vec::new(),
+            intended_use: None,
+        })
+        .expect_err("prompt metadata must not contain secrets");
+        assert_eq!(secret_detail.code, "action_required_metadata_secret_like");
+    }
+
+    #[test]
     fn crawl_runtime_agent_uses_exact_repository_recon_tool_allowlist() {
         let expected: BTreeSet<&str> = TOOL_ACCESS_REPOSITORY_RECON_TOOLS.iter().copied().collect();
         let observed: BTreeSet<&str> = deferred_tool_catalog(true)
@@ -10452,6 +11040,7 @@ mod tests {
             AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
             AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
             AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+            AUTONOMOUS_TOOL_ACTION_REQUIRED,
             AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
         ] {
             assert!(
@@ -10499,6 +11088,7 @@ mod tests {
             AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
             AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
             AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+            AUTONOMOUS_TOOL_ACTION_REQUIRED,
             AUTONOMOUS_TOOL_TODO,
         ] {
             assert!(

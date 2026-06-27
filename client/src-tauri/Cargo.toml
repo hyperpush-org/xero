@@ -6,6 +6,7 @@ members = [
     "crates/xero-cursor-sidecar",
     "crates/xero-desktop-control-ipc",
     "crates/xero-desktop-sidecar",
+    "crates/xero-redaction",
     "crates/xero-remote-bridge",
 ]
 exclude = ["crates/cookie-importer"]
@@ -34,10 +35,10 @@ path = "src/bin/tool_harness.rs"
 [[bin]]
 name = "xero"
 path = "src/bin/xero_tui.rs"
+required-features = ["tauri-test-support"]
 
 [lib]
 name = "xero_desktop_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
 doctest = false
 
 [build-dependencies]
@@ -49,12 +50,9 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 tar = "0.4"
 
 [features]
-# ios-grpc is default so touch/swipe/HID input works out of the box
-# via idb_companion. The Swift helper (ScreenCaptureKit + IndigoHID) is
-# the primary input path; ios-grpc is the fallback when the helper is
-# unavailable. Without ios-grpc, touch and swipe fall back to
-# AppleScript click-only which can't handle drag gestures.
-default = ["ios-grpc"]
+# Keep local builds lean by default. Expensive native/device integrations are
+# opt-in through the dev scripts or explicit Cargo features.
+default = []
 # When enabled, `emulator_start` spins up a color-cycling frame generator
 # instead of launching a real device. Used for end-to-end testing of the
 # frame pipeline without an Android SDK / Xcode.
@@ -66,6 +64,9 @@ emulator-synthetic = []
 # Gated because `openh264-sys2` requires a C++ toolchain and adds ~30 MB to
 # the build artifact.
 emulator-live = ["dep:openh264", "ios-grpc"]
+# Enables the native macOS dictation shim. Off by default so ordinary backend
+# tests and desktop builds do not invoke Swift unless dictation work needs it.
+dictation-native = []
 # Compiles the vendored `proto/idb.proto` with `tonic-build` and links the
 # resulting gRPC client. Required for real iOS streaming, touch/swipe HID,
 # and accessibility-tree/log RPCs; builds without this feature fall back to
@@ -76,6 +77,9 @@ ios-grpc = ["dep:tonic", "dep:tonic-build", "dep:protoc-bin-vendored", "dep:pros
 # IndigoHID for reliable input injection. Runtime detection works regardless
 # of this feature — if the binary exists on disk, the session will use it.
 ios-helper = []
+# Enables Tauri's MockRuntime helpers for the desktop-backed TUI binary and
+# integration tests that bootstrap the app without a real webview.
+tauri-test-support = ["tauri/test"]
 
 [dependencies]
 arc-swap = "1"
@@ -112,7 +116,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
-tauri = { version = "2", features = ["macos-private-api", "test", "unstable"] }
+tauri = { version = "2", features = ["macos-private-api", "unstable"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2.5.3"
 tempfile = "3"
@@ -129,6 +133,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 xero-agent-core = { path = "crates/xero-agent-core" }
 xero-cli = { path = "crates/xero-cli" }
 xero-desktop-control-ipc = { path = "crates/xero-desktop-control-ipc" }
+xero-redaction = { path = "crates/xero-redaction" }
 xero-remote-bridge = { path = "crates/xero-remote-bridge" }
 tauri-plugin-updater = { version = "2.10", default-features = false, features = ["rustls-tls"] }
 tauri-plugin-process = "2.3"
@@ -158,3 +163,11 @@ windows = { version = "0.61.3", features = [
 
 [dev-dependencies]
 tempfile = "3"
+tauri = { version = "2", features = ["test"] }
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false

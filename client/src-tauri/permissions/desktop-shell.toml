@@ -214,6 +214,7 @@ commands.allow = [
   "logout_runtime_session",
   "start_autonomous_run",
   "stage_agent_attachment",
+  "stage_agent_attachment_path",
   "discard_agent_attachment",
   "start_runtime_run",
   "update_runtime_run_controls",

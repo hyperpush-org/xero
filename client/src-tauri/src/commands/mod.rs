@@ -145,8 +145,7 @@ pub use browser::{
     browser_show, browser_stop, browser_storage_clear, browser_storage_read, browser_storage_write,
     browser_tab_close, browser_tab_focus, browser_tab_list, browser_tab_reorder, browser_type,
     browser_wait_for_load, browser_wait_for_selector, BrowserControlPreferenceDto,
-    BrowserControlSettingsDto,
-    BrowserRunningDevServerDto, BrowserState, BrowserTabMetadata,
+    BrowserControlSettingsDto, BrowserRunningDevServerDto, BrowserState, BrowserTabMetadata,
     UpsertBrowserControlSettingsRequestDto, BROWSER_CONSOLE_EVENT, BROWSER_DIALOG_EVENT,
     BROWSER_DOWNLOAD_EVENT, BROWSER_LOAD_STATE_EVENT, BROWSER_OCCLUSION_CLICK_EVENT,
     BROWSER_TAB_PREFIX, BROWSER_TAB_UPDATED_EVENT, BROWSER_URL_CHANGED_EVENT,
@@ -310,7 +309,9 @@ pub use soul_settings::{
     soul_settings, soul_update_settings, SoulIdDto, SoulPresetDto, SoulSettingsDto,
     UpsertSoulSettingsRequestDto,
 };
-pub use stage_agent_attachment::{discard_agent_attachment, stage_agent_attachment};
+pub use stage_agent_attachment::{
+    discard_agent_attachment, stage_agent_attachment, stage_agent_attachment_path,
+};
 pub use start_autonomous_run::start_autonomous_run;
 pub use start_oauth_login::start_oauth_login;
 pub use start_openai_login::start_openai_login;

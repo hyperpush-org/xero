@@ -40,6 +40,7 @@ pub(crate) fn start_runtime_run_blocking<R: Runtime + 'static>(
         request.initial_controls,
         request.initial_prompt,
         request.initial_attachments,
+        request.initial_linked_paths,
     )?;
 
     Ok(runtime_run_dto_from_snapshot(&outcome.snapshot))

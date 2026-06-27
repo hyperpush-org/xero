@@ -1,4 +1,4 @@
-const DEFAULT_SERVER_URL = "http://127.0.0.1:4000";
+const DEFAULT_SERVER_URL = "http://127.0.0.1:26140";
 const RUNTIME_CONFIG_KEY = "__XERO_RUNTIME_CONFIG__";
 export const RUNTIME_SERVER_URL_META_NAME = "xero-server-url";
 

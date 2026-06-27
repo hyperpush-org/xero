@@ -509,6 +509,7 @@ fn resume_scheduled_wakeup<R: Runtime + 'static>(
         run_id: record.run_id.clone(),
         prompt,
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: None,
         tool_runtime,
         provider_config,

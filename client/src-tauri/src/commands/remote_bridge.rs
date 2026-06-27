@@ -1279,6 +1279,7 @@ fn route_start_session<R: Runtime + 'static>(
                     initial_controls: controls,
                     initial_prompt: Some(prompt.to_string()),
                     initial_attachments,
+                    initial_linked_paths: Vec::new(),
                 },
             )?)
         }
@@ -1377,6 +1378,7 @@ fn route_start_computer_use_session<R: Runtime + 'static>(
                             controls,
                             prompt: Some(prompt.to_string()),
                             attachments,
+                            linked_paths: Vec::new(),
                         },
                     )?
                 }
@@ -1408,6 +1410,7 @@ fn route_start_computer_use_session<R: Runtime + 'static>(
                             initial_controls: controls,
                             initial_prompt: Some(prompt.to_string()),
                             initial_attachments: attachments,
+                            initial_linked_paths: Vec::new(),
                         },
                     )?
                 }
@@ -1503,6 +1506,7 @@ fn route_send_message<R: Runtime + 'static>(
                     controls,
                     prompt: Some(message.to_string()),
                     attachments,
+                    linked_paths: Vec::new(),
                 },
             )?
         }
@@ -1534,6 +1538,7 @@ fn route_send_message<R: Runtime + 'static>(
                     initial_controls: controls,
                     initial_prompt: Some(message.to_string()),
                     initial_attachments: attachments,
+                    initial_linked_paths: Vec::new(),
                 },
             )?
         }
@@ -1590,6 +1595,7 @@ fn route_update_session_controls<R: Runtime + 'static>(
                 controls,
                 prompt: None,
                 attachments: Vec::new(),
+                linked_paths: Vec::new(),
             },
         )?;
         return send_command_ok(

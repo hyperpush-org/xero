@@ -1,0 +1,11 @@
+[package]
+name = "xero-redaction"
+version = "0.1.0"
+edition = "2021"
+description = "Shared Xero redaction and secret-detection utilities"
+
+[lib]
+doctest = false
+
+[dependencies]
+serde_json = "1"

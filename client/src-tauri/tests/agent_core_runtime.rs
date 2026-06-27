@@ -710,6 +710,7 @@ fn desktop_facade_reject_action_persists_decision_and_trace() {
                 run_id: run_id.into(),
                 prompt: "Prepare a paused run for rejection.".into(),
                 attachments: Vec::new(),
+                linked_paths: Vec::new(),
                 controls: Some(yolo_controls_input()),
                 tool_runtime,
                 provider_config: AgentProviderConfig::Fake,
@@ -823,6 +824,7 @@ fn desktop_facade_fork_session_copies_lineage_and_context_manifests() {
         run_id: source_run_id.into(),
         prompt: "Create durable context for a fork.\ntool:read src/tracked.txt".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -940,6 +942,7 @@ fn provider_preflight_manifest_binding() {
         prompt: "Bind provider preflight to the context manifest.\ntool:read src/tracked.txt"
             .into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -1017,6 +1020,7 @@ fn canonical_trace_passes_production_gates() {
         run_id: "canonical-trace-production-gates".into(),
         prompt: "Read the tracked file.\ntool:read src/tracked.txt".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::OpenAiCompatible(OpenAiCompatibleProviderConfig {
@@ -1101,6 +1105,7 @@ fn desktop_facade_compact_session_persists_artifact_and_trace() {
         run_id: run_id.into(),
         prompt: "Create compactable history.\ntool:read src/tracked.txt".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -2025,6 +2030,7 @@ fn owned_agent_file_tools_cover_patch_hash_mkdir_rename_and_delete() {
         ]
         .join("\n"),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -2184,6 +2190,7 @@ fn owned_agent_priority_one_tools_dispatch_and_persist_journal() {
         ]
         .join("\n"),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -2318,6 +2325,7 @@ fn owned_agent_loop_dispatches_tools_and_persists_journal() {
         run_id: "owned-run-1".into(),
         prompt: "Please inspect the file.\ntool:read src/tracked.txt".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: None,
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -2507,6 +2515,7 @@ fn workspace_index_required_blocks_lifecycle() {
         prompt: "Find related tests for the runtime lifecycle using semantic workspace search."
             .into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime: AutonomousToolRuntime::for_project(
             &app.handle().clone(),
@@ -2540,6 +2549,7 @@ fn workspace_index_required_blocks_lifecycle() {
         run_id: "owned-run-workspace-index-optional".into(),
         prompt: "Summarize the current project instructions.".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime: AutonomousToolRuntime::for_project(
             &app.handle().clone(),
@@ -2572,6 +2582,7 @@ fn workspace_index_required_blocks_lifecycle() {
         run_id: "owned-run-workspace-index-stale".into(),
         prompt: "Use semantic workspace search to find related tests for lifecycle.".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime: AutonomousToolRuntime::for_project(
             &app.handle().clone(),
@@ -2602,6 +2613,7 @@ fn workspace_index_required_blocks_lifecycle() {
         run_id: "owned-run-workspace-index-ready".into(),
         prompt: "Use semantic workspace search to find related tests for lifecycle.".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime: AutonomousToolRuntime::for_project(
             &app.handle().clone(),
@@ -2668,6 +2680,7 @@ fn owned_agent_provider_loop_dispatches_read_only_batches_through_tool_registry_
         ]
         .join("\n"),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -2759,6 +2772,7 @@ fn tool_registry_v2_enforces_sandbox_denial() {
         run_id: "owned-run-tool-registry-v2-sandbox-denial".into(),
         prompt: "Try to write legacy state.\ntool:write .xero/blocked.txt forbidden\n".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -2833,6 +2847,7 @@ fn owned_agent_heartbeat_touch_updates_running_run_liveness() {
         run_id: run_id.into(),
         prompt: "Prepare a heartbeat-only run.".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: None,
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -2862,6 +2877,7 @@ fn owned_agent_queues_user_messages_until_environment_ready() {
         run_id: run_id.into(),
         prompt: "Start the run after lifecycle.".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: None,
         tool_runtime: AutonomousToolRuntime::for_project(
             &app.handle().clone(),
@@ -2906,6 +2922,7 @@ fn owned_agent_queues_user_messages_until_environment_ready() {
         run_id: run_id.into(),
         prompt: "Queued while setup finishes.".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: None,
         tool_runtime: AutonomousToolRuntime::for_project(
             &app.handle().clone(),
@@ -2916,6 +2933,7 @@ fn owned_agent_queues_user_messages_until_environment_ready() {
         provider_config: AgentProviderConfig::Fake,
         provider_preflight: None,
         answer_pending_actions: false,
+        answer_pending_action_id: None,
         auto_compact: None,
         internal_resume: None,
     })
@@ -3002,6 +3020,7 @@ fn owned_agent_continuation_blocks_context_handoff_without_mutating_messages() {
         run_id: run_id.into(),
         prompt: "Prepare a budget-guarded run.".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: None,
         tool_runtime: create_tool_runtime,
         provider_config: provider_config.clone(),
@@ -3040,11 +3059,13 @@ fn owned_agent_continuation_blocks_context_handoff_without_mutating_messages() {
         run_id: run_id.into(),
         prompt: huge_prompt.clone(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: None,
         tool_runtime: continue_tool_runtime,
         provider_config,
         provider_preflight: None,
         answer_pending_actions: false,
+        answer_pending_action_id: None,
         auto_compact: None,
         internal_resume: None,
     })
@@ -3084,6 +3105,7 @@ fn owned_agent_continuation_replays_compacted_history_with_raw_tail() {
         run_id: run_id.into(),
         prompt: "Inspect before compact.\ntool:read src/tracked.txt".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: None,
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -3125,11 +3147,13 @@ fn owned_agent_continuation_replays_compacted_history_with_raw_tail() {
         run_id: run_id.into(),
         prompt: "Continue after compaction.".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: None,
         tool_runtime: continue_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
         provider_preflight: None,
         answer_pending_actions: false,
+        answer_pending_action_id: None,
         auto_compact: None,
         internal_resume: None,
     })
@@ -3164,6 +3188,7 @@ fn provider_history_replay_preserves_tool_call_ids() {
         run_id: run_id.into(),
         prompt: "Inspect before resume.\ntool:read src/tracked.txt".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: None,
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -3203,11 +3228,13 @@ fn provider_history_replay_preserves_tool_call_ids() {
         run_id: run_id.into(),
         prompt: "Continue from replayable provider history.".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: None,
         tool_runtime: continue_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
         provider_preflight: None,
         answer_pending_actions: false,
+        answer_pending_action_id: None,
         auto_compact: None,
         internal_resume: None,
     })
@@ -3238,6 +3265,7 @@ fn owned_agent_compacted_replay_rejects_changed_covered_source() {
         run_id: run_id.into(),
         prompt: "Inspect before tamper.\ntool:read src/tracked.txt".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: None,
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -3286,11 +3314,13 @@ fn owned_agent_compacted_replay_rejects_changed_covered_source() {
         run_id: run_id.into(),
         prompt: "Continue after tamper.".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: None,
         tool_runtime: continue_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
         provider_preflight: None,
         answer_pending_actions: false,
+        answer_pending_action_id: None,
         auto_compact: None,
         internal_resume: None,
     })
@@ -3324,6 +3354,7 @@ fn owned_agent_auto_compacts_before_continuation_when_threshold_is_reached() {
         run_id: run_id.into(),
         prompt: "Prepare an auto-compact source run.".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: None,
         tool_runtime: create_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -3363,11 +3394,13 @@ fn owned_agent_auto_compacts_before_continuation_when_threshold_is_reached() {
         run_id: run_id.into(),
         prompt: "Continue after automatic compaction.".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: None,
         tool_runtime: continue_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
         provider_preflight: None,
         answer_pending_actions: false,
+        answer_pending_action_id: None,
         auto_compact: Some(AgentAutoCompactPreference {
             enabled: true,
             threshold_percent: Some(1),
@@ -3491,6 +3524,7 @@ fn owned_agent_auto_compact_provider_failure_does_not_mutate_history() {
         run_id: run_id.into(),
         prompt: "This should not be appended.".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: None,
         tool_runtime: continue_tool_runtime,
         provider_config: AgentProviderConfig::OpenAiCompatible(OpenAiCompatibleProviderConfig {
@@ -3503,6 +3537,7 @@ fn owned_agent_auto_compact_provider_failure_does_not_mutate_history() {
         }),
         provider_preflight: None,
         answer_pending_actions: false,
+        answer_pending_action_id: None,
         auto_compact: Some(AgentAutoCompactPreference {
             enabled: true,
             threshold_percent: Some(1),
@@ -3549,6 +3584,7 @@ fn owned_agent_plan_mode_allows_read_only_tool_call() {
         run_id: "owned-plan-run-1".into(),
         prompt: "Please inspect the file.\ntool:read src/tracked.txt".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(RuntimeRunControlInputDto {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
             agent_definition_id: None,
@@ -3596,6 +3632,7 @@ fn owned_agent_write_tools_persist_file_change_hashes() {
         run_id: "owned-run-write-1".into(),
         prompt: "Please update the tracked file.\ntool:read src/tracked.txt\ntool:write src/tracked.txt gamma\n".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -3773,6 +3810,7 @@ fn owned_agent_command_mutation_records_broad_code_change_group() {
         prompt: "Seed an explicit generated path.\ntool:mkdir target\ntool:write target/explicit.txt seed\n"
             .into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime: seed_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -3806,6 +3844,7 @@ fn owned_agent_command_mutation_records_broad_code_change_group() {
         ]
         .join("\n"),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -4024,6 +4063,7 @@ fn owned_agent_verification_command_write_is_recovered_mutation() {
         run_id: "owned-run-recovered-mutation-1".into(),
         prompt: "Run focused verification.\ntool:command_verify npm test".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -4076,6 +4116,7 @@ fn owned_agent_omits_sensitive_file_content_from_rollback_checkpoints() {
         run_id: "owned-run-sensitive-rollback-1".into(),
         prompt: "Please update the env file.\ntool:read .env\ntool:write .env REDACTED=1\n".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -4120,6 +4161,7 @@ fn owned_agent_refuses_unobserved_existing_file_writes() {
         run_id: "owned-run-unobserved-write-1".into(),
         prompt: "Please update the tracked file.\ntool:write src/tracked.txt gamma\n".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -4168,6 +4210,7 @@ fn owned_agent_resume_replays_answered_file_safety_tool_call() {
         run_id: "owned-run-approved-replay-1".into(),
         prompt: "Please update the tracked file.\ntool:write src/tracked.txt gamma\n".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -4193,11 +4236,13 @@ fn owned_agent_resume_replays_answered_file_safety_tool_call() {
         run_id: "owned-run-approved-replay-1".into(),
         prompt: "Approved. Continue.".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime: approved_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
         provider_preflight: None,
         answer_pending_actions: true,
+        answer_pending_action_id: None,
         auto_compact: None,
         internal_resume: None,
     })
@@ -4266,6 +4311,7 @@ fn owned_agent_refuses_stale_file_writes_after_observation_changes() {
         run_id: "owned-run-stale-write-1".into(),
         prompt: "Please inspect before updating.\ntool:read src/tracked.txt\n".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -4291,11 +4337,13 @@ fn owned_agent_refuses_stale_file_writes_after_observation_changes() {
         run_id: "owned-run-stale-write-1".into(),
         prompt: "Now update safely.\ntool:write src/tracked.txt gamma\n".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime: continued_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
         provider_preflight: None,
         answer_pending_actions: false,
+        answer_pending_action_id: None,
         auto_compact: None,
         internal_resume: None,
     })
@@ -4339,6 +4387,7 @@ fn owned_agent_resume_marks_interrupted_tool_calls_before_continuation() {
         run_id: run_id.into(),
         prompt: "Initial interrupted run.".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: None,
         tool_runtime: create_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -4371,11 +4420,13 @@ fn owned_agent_resume_marks_interrupted_tool_calls_before_continuation() {
         run_id: run_id.into(),
         prompt: "Continue after restart.".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: None,
         tool_runtime: continue_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
         provider_preflight: None,
         answer_pending_actions: false,
+        answer_pending_action_id: None,
         auto_compact: None,
         internal_resume: None,
     })
@@ -4427,6 +4478,7 @@ fn owned_agent_command_tools_emit_command_output_events() {
         run_id: "owned-run-command-1".into(),
         prompt: "Please prove command output streaming.\ntool:command_sh printf hello-xero".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -4491,6 +4543,7 @@ fn owned_agent_resume_replays_answered_command_approval_tool_call() {
         run_id: "owned-run-command-approval-replay-1".into(),
         prompt: "Please run an approved command.\ntool:command_sh printf approved > approved-command.txt".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(controls.clone()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -4519,11 +4572,13 @@ fn owned_agent_resume_replays_answered_command_approval_tool_call() {
         run_id: "owned-run-command-approval-replay-1".into(),
         prompt: "Approved. Run it now.".into(),
         attachments: Vec::new(),
+        linked_paths: Vec::new(),
         controls: Some(controls),
         tool_runtime: approved_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
         provider_preflight: None,
         answer_pending_actions: true,
+        answer_pending_action_id: None,
         auto_compact: None,
         internal_resume: None,
     })
@@ -4871,6 +4926,7 @@ fn start_runtime_run_defaults_to_owned_agent_runtime() {
             initial_controls: None,
             initial_prompt: None,
             initial_attachments: Vec::new(),
+            initial_linked_paths: Vec::new(),
         },
     ))
     .expect("start runtime run should create owned agent runtime");
@@ -4905,6 +4961,7 @@ fn start_runtime_run_initial_prompt_runs_owned_agent_task() {
             initial_controls: None,
             initial_prompt: Some("Inspect the tracked file.\ntool:read src/tracked.txt".into()),
             initial_attachments: Vec::new(),
+            initial_linked_paths: Vec::new(),
         },
     ))
     .expect("start runtime run should execute owned agent task from initial prompt");
@@ -4942,6 +4999,7 @@ fn archive_agent_session_stops_idle_runtime_run_after_interaction() {
             initial_controls: None,
             initial_prompt: Some("Inspect the tracked file.\ntool:read src/tracked.txt".into()),
             initial_attachments: Vec::new(),
+            initial_linked_paths: Vec::new(),
         },
     ))
     .expect("start runtime run should execute owned agent task from initial prompt");
@@ -4992,6 +5050,7 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
             initial_controls: None,
             initial_prompt: None,
             initial_attachments: Vec::new(),
+            initial_linked_paths: Vec::new(),
         },
     ))
     .expect("start runtime run should create owned agent runtime");
@@ -5006,6 +5065,7 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
             controls: None,
             prompt: Some("Inspect the tracked file.\ntool:read src/tracked.txt".into()),
             attachments: Vec::new(),
+            linked_paths: Vec::new(),
         },
     ))
     .expect("runtime prompt should start owned agent run");
@@ -5033,6 +5093,7 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
             controls: None,
             prompt: Some("Thanks, summarize the result.".into()),
             attachments: Vec::new(),
+            linked_paths: Vec::new(),
         },
     ))
     .expect("runtime prompt should continue owned agent run");
@@ -5075,6 +5136,7 @@ fn update_runtime_run_controls_queues_runtime_agent_switch_for_next_boundary() {
             }),
             initial_prompt: None,
             initial_attachments: Vec::new(),
+            initial_linked_paths: Vec::new(),
         },
     ))
     .expect("start runtime run should create owned agent runtime");
@@ -5099,6 +5161,7 @@ fn update_runtime_run_controls_queues_runtime_agent_switch_for_next_boundary() {
             }),
             prompt: None,
             attachments: Vec::new(),
+            linked_paths: Vec::new(),
         },
     ))
     .expect("runtime agent switch should queue as pending controls");
@@ -5127,6 +5190,7 @@ fn update_runtime_run_controls_queues_runtime_agent_switch_for_next_boundary() {
             controls: None,
             prompt: Some("Summarize the tracked file.".into()),
             attachments: Vec::new(),
+            linked_paths: Vec::new(),
         },
     ))
     .expect("queued runtime agent switch should apply at the next prompt boundary");
@@ -5168,6 +5232,7 @@ fn update_runtime_run_controls_queues_provider_profile_switch_for_next_prompt() 
             }),
             initial_prompt: Some("Inspect the tracked file.\ntool:read src/tracked.txt".into()),
             initial_attachments: Vec::new(),
+            initial_linked_paths: Vec::new(),
         },
     ))
     .expect("start runtime run should execute the initial prompt");
@@ -5200,6 +5265,7 @@ fn update_runtime_run_controls_queues_provider_profile_switch_for_next_prompt() 
             }),
             prompt: None,
             attachments: Vec::new(),
+            linked_paths: Vec::new(),
         },
     ))
     .expect("provider profile switch should queue as pending controls");
@@ -5229,6 +5295,7 @@ fn update_runtime_run_controls_queues_provider_profile_switch_for_next_prompt() 
             controls: None,
             prompt: Some("Thanks, continue with the newly selected provider.".into()),
             attachments: Vec::new(),
+            linked_paths: Vec::new(),
         },
     ))
     .expect("queued provider profile switch should apply at the next prompt boundary");

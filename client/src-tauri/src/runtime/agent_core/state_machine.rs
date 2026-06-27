@@ -2,6 +2,7 @@ use super::*;
 
 pub(crate) const PLAN_REVIEW_ACTION_ID: &str = "plan-mode-before-execution";
 pub(crate) const AGENT_RUN_SCHEDULED_WAIT_CODE: &str = "agent_run_scheduled_wait";
+pub(crate) const AGENT_RUN_USER_INPUT_REQUIRED_CODE: &str = "agent_user_input_required";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -611,6 +612,9 @@ pub(crate) fn stop_reason_for_error(error: &CommandError) -> AgentRunStopReason 
     if error.code == AGENT_RUN_SCHEDULED_WAIT_CODE {
         return AgentRunStopReason::ScheduledWait;
     }
+    if error.code == AGENT_RUN_USER_INPUT_REQUIRED_CODE {
+        return AgentRunStopReason::WaitingForApproval;
+    }
     if error.code == "agent_tool_boundary_violation" {
         return AgentRunStopReason::Blocked;
     }
@@ -634,7 +638,9 @@ pub(crate) fn error_should_pause(snapshot: &AgentRunSnapshotRecord, error: &Comm
     }
     matches!(
         error.code.as_str(),
-        "agent_verification_required" | AGENT_RUN_SCHEDULED_WAIT_CODE
+        "agent_verification_required"
+            | AGENT_RUN_SCHEDULED_WAIT_CODE
+            | AGENT_RUN_USER_INPUT_REQUIRED_CODE
     )
 }
 
@@ -669,6 +675,7 @@ fn is_execution_tool(tool_name: &str) -> bool {
             | AUTONOMOUS_TOOL_HASH
             | AUTONOMOUS_TOOL_TOOL_ACCESS
             | AUTONOMOUS_TOOL_TOOL_SEARCH
+            | AUTONOMOUS_TOOL_ACTION_REQUIRED
             | AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH
             | AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET
             | AUTONOMOUS_TOOL_WORKSPACE_INDEX

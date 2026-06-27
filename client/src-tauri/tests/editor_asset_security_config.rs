@@ -31,7 +31,7 @@ fn tauri_csp_allows_project_asset_previews_only_in_preview_directives() {
         csp_sources(security, "csp", "connect-src").contains(&"http://ipc.localhost".to_owned())
     );
     assert!(
-        csp_sources(security, "devCsp", "connect-src").contains(&"ws://localhost:3000".to_owned())
+        csp_sources(security, "devCsp", "connect-src").contains(&"ws://localhost:26100".to_owned())
     );
 }
 

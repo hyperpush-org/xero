@@ -66,7 +66,7 @@ export function normalizeLoopbackBrowserUrl(value: string): string {
     const url = new URL(trimmed)
     if (url.protocol !== "http:" && url.protocol !== "https:") return value
     const host = url.hostname.toLowerCase()
-    if (host === "localhost" || host === "0.0.0.0") {
+    if (host === "0.0.0.0") {
       url.hostname = "127.0.0.1"
       return url.toString()
     }
@@ -76,16 +76,32 @@ export function normalizeLoopbackBrowserUrl(value: string): string {
   }
 }
 
+function canonicalLoopbackBrowserUrl(value: string): string {
+  const normalized = normalizeLoopbackBrowserUrl(value)
+  try {
+    const url = new URL(normalized)
+    if (url.protocol !== "http:" && url.protocol !== "https:") return normalized
+    const host = url.hostname.toLowerCase()
+    if (host === "localhost" || host === "0.0.0.0") {
+      url.hostname = "127.0.0.1"
+      return url.toString()
+    }
+    return normalized
+  } catch {
+    return normalized
+  }
+}
+
 export function browserLaunchTargetId(url: string): string {
   const normalized = normalizeBrowserLaunchUrl(url) ?? url.trim()
-  return `browser-app:${normalized.toLowerCase()}`
+  return `browser-app:${canonicalLoopbackBrowserUrl(normalized).toLowerCase()}`
 }
 
 function browserLaunchOriginKey(value: string): string | null {
   const normalized = normalizeBrowserLaunchUrl(value)
   if (!normalized) return null
   try {
-    const url = new URL(normalized)
+    const url = new URL(canonicalLoopbackBrowserUrl(normalized))
     return url.origin.toLowerCase()
   } catch {
     return null

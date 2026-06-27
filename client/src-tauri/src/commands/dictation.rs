@@ -967,10 +967,10 @@ struct NativeSessionRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(
-    any(
+    not(any(
         target_os = "windows",
-        not(any(test, all(target_os = "macos", xero_dictation_native_shim)))
-    ),
+        all(target_os = "macos", xero_dictation_native_shim)
+    )),
     allow(dead_code)
 )]
 struct NativeOperationResponse {
@@ -1019,10 +1019,10 @@ impl NativeStartError {
 }
 
 #[cfg_attr(
-    any(
+    not(any(
         target_os = "windows",
-        not(any(test, all(target_os = "macos", xero_dictation_native_shim)))
-    ),
+        all(target_os = "macos", xero_dictation_native_shim)
+    )),
     allow(dead_code)
 )]
 fn native_operation_result(

@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: xero_dev
     ports:
-      - "5432:5432"
+      - "26132:5432"
     volumes:
       - xero_postgres_data:/var/lib/postgresql/data
     healthcheck:
