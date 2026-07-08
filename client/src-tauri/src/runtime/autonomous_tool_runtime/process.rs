@@ -697,6 +697,9 @@ impl AutonomousToolRuntime {
             output_artifact.as_ref(),
             changed_files.len(),
             changed_files_truncated,
+            Some(&prepared.argv),
+            stdout_excerpt.text.as_deref(),
+            stderr_excerpt.text.as_deref(),
         );
         let command_result = AutonomousToolCommandResult {
             exit_code,
@@ -930,6 +933,9 @@ impl AutonomousToolRuntime {
             output_artifact.as_ref(),
             changed_files.len(),
             changed_files_truncated,
+            Some(&prepared.argv),
+            stdout_excerpt.text.as_deref(),
+            stderr_excerpt.text.as_deref(),
         );
         let command_result = AutonomousToolCommandResult {
             exit_code,
@@ -1002,8 +1008,18 @@ impl AutonomousToolRuntime {
             "Command `{}` requires operator review before Xero can run it.",
             render_command_for_summary(&prepared.argv)
         );
-        let suggested_next_actions =
-            command_suggested_next_actions(false, None, &policy, false, None, 0, false);
+        let suggested_next_actions = command_suggested_next_actions(
+            false,
+            None,
+            &policy,
+            false,
+            None,
+            0,
+            false,
+            Some(&prepared.argv),
+            None,
+            None,
+        );
 
         Ok(AutonomousToolResult {
             tool_name: tool_name.into(),
@@ -1197,8 +1213,18 @@ impl AutonomousToolRuntime {
                 render_command_for_summary(&prepared.argv)
             )
         };
-        let mut suggested_next_actions =
-            command_suggested_next_actions(false, None, &policy, false, None, 0, false);
+        let mut suggested_next_actions = command_suggested_next_actions(
+            false,
+            None,
+            &policy,
+            false,
+            None,
+            0,
+            false,
+            Some(&prepared.argv),
+            None,
+            None,
+        );
         if let Some(token) = preview_token.as_deref() {
             suggested_next_actions.insert(
                 0,
@@ -1333,6 +1359,9 @@ impl AutonomousToolRuntime {
             output_artifact.as_ref(),
             0,
             false,
+            Some(&prepared.argv),
+            stdout_excerpt.text.as_deref(),
+            stderr_excerpt.text.as_deref(),
         );
         suggested_next_actions.push(host_command_os_prompt_next_action());
         let host_command_impact = host_command_impact_assessment(&prepared, &mode)?;
@@ -2802,18 +2831,36 @@ fn command_suggested_next_actions(
     output_artifact: Option<&AutonomousCommandOutputArtifact>,
     changed_file_count: usize,
     changed_files_truncated: bool,
+    argv: Option<&[String]>,
+    stdout: Option<&str>,
+    stderr: Option<&str>,
 ) -> Vec<String> {
     let mut actions = Vec::new();
     if !spawned {
-        actions.push(
-            "Request operator approval or choose a narrower native tool before retrying.".into(),
-        );
+        if command_policy_allows_non_interactive_recovery(policy) {
+            actions.push("Before requesting operator approval, ensure web research is available: if `web_search`/`web_fetch` are not listed, call `tool_access` for `web_search_only` and `web_fetch`, then research the tool's documented CI/non-interactive flags or package-runner form against official or primary docs rather than guessing package-manager separator syntax; package-manager help/create commands belong in command_run, not command_probe.".into());
+            actions.push("Then retry a finite command_run that supplies all choices explicitly. Ask the user only after no safe documented non-interactive invocation exists.".into());
+            actions.push("Do not hand-write generated scaffold or package-manager-owned files as a workaround for command approval; ask the user only after no safe non-interactive invocation exists.".into());
+        } else {
+            actions.push(
+                "Request operator approval or choose a narrower native tool before retrying."
+                    .into(),
+            );
+        }
         return actions;
     }
     if !matches!(exit_code, Some(0)) {
-        actions.push(
-            "Use the compact stdout/stderr evidence to fix the failure, then rerun a focused command_verify.".into(),
-        );
+        if command_looks_like_package_manager_bootstrap(argv) {
+            actions.push("Before retrying or hand-writing scaffold/package files, ensure web research is available: if `web_search`/`web_fetch` are not listed, call `tool_access` for `web_search_only` and `web_fetch`, then research the generator's current documented non-interactive syntax against official or primary docs; verify flags such as template/install/yes and do not reuse undocumented flags unless the docs confirm them.".into());
+            if command_output_mentions_cache_permission_failure(stdout, stderr) {
+                actions.push("The output indicates package-manager cache permissions. Retry through command_run with a per-command temporary cache/home, for example via `sh -lc` setting `npm_config_cache`, `NPM_CONFIG_CACHE`, and/or `PNPM_HOME` to mktemp directories outside the repo before invoking the documented bootstrap command; if no outside-repo temp/cache location is writable, report that blocker instead of creating repo-local cache directories.".into());
+            }
+            actions.push("Retry the documented bootstrap/install form with command_run. Use command_verify only after scaffold/install succeeds, and do not hand-write generated framework or package-manager-owned scaffold unless official docs show no safe non-interactive path or the user explicitly approves.".into());
+        } else {
+            actions.push(
+                "Use the compact stdout/stderr evidence to fix the failure, then rerun a focused command_verify.".into(),
+            );
+        }
     }
     if output_artifact.is_some() || stream_truncated {
         actions.push(
@@ -2833,6 +2880,84 @@ fn command_suggested_next_actions(
         );
     }
     actions
+}
+
+fn command_looks_like_package_manager_bootstrap(argv: Option<&[String]>) -> bool {
+    let Some(argv) = argv else {
+        return false;
+    };
+    if argv.is_empty() {
+        return false;
+    }
+    let first = executable_name(argv[0].as_str());
+    let joined = argv.join(" ").to_ascii_lowercase();
+    let padded_joined = format!(" {joined} ");
+    match first.as_str() {
+        "npm" | "pnpm" | "yarn" | "bun" => argv.iter().skip(1).any(|arg| {
+            let arg = arg.to_ascii_lowercase();
+            matches!(arg.as_str(), "create" | "init" | "dlx" | "exec") || arg.starts_with("create-")
+        }),
+        "npx" | "bunx" => argv
+            .iter()
+            .skip(1)
+            .any(|arg| arg.to_ascii_lowercase().starts_with("create-")),
+        "sh" | "bash" | "zsh" => {
+            padded_joined.contains(" npm create ")
+                || padded_joined.contains(" npm exec ")
+                || padded_joined.contains(" pnpm create ")
+                || padded_joined.contains(" pnpm dlx ")
+                || padded_joined.contains(" yarn create ")
+                || padded_joined.contains(" yarn dlx ")
+                || padded_joined.contains(" bun create ")
+                || padded_joined.contains(" npx create-")
+                || padded_joined.contains(" bunx create-")
+        }
+        _ => false,
+    }
+}
+
+fn command_output_mentions_cache_permission_failure(
+    stdout: Option<&str>,
+    stderr: Option<&str>,
+) -> bool {
+    let combined = [stdout.unwrap_or_default(), stderr.unwrap_or_default()]
+        .join("\n")
+        .to_ascii_lowercase();
+    let permission_error = [
+        "eperm",
+        "eacces",
+        "permission denied",
+        "operation not permitted",
+    ]
+    .iter()
+    .any(|needle| combined.contains(needle));
+    let cache_surface = [
+        "cache",
+        "_cacache",
+        "root-owned files",
+        "library/caches/pnpm",
+        "/.npm/",
+        "pnpm/dlx",
+    ]
+    .iter()
+    .any(|needle| combined.contains(needle));
+    permission_error && cache_surface
+}
+
+fn executable_name(value: &str) -> String {
+    Path::new(value)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(value)
+        .to_ascii_lowercase()
+}
+
+fn command_policy_allows_non_interactive_recovery(policy: &AutonomousCommandPolicyTrace) -> bool {
+    !policy.code.contains("host_command")
+        && !matches!(
+            policy.profile,
+            AutonomousCommandPolicyProfile::DestructiveOperation
+        )
 }
 
 fn command_scoped_tool_mismatch_error(
@@ -2947,4 +3072,165 @@ fn truncate_chars(value: &str, limit: usize) -> String {
         .take(limit.saturating_sub(1))
         .collect::<String>();
     format!("{truncated}…")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::RuntimeRunApprovalModeDto;
+
+    fn allowed_command_policy() -> AutonomousCommandPolicyTrace {
+        AutonomousCommandPolicyTrace {
+            outcome: AutonomousCommandPolicyOutcome::Allowed,
+            approval_mode: RuntimeRunApprovalModeDto::Yolo,
+            profile: AutonomousCommandPolicyProfile::GeneralExecution,
+            code: "policy_allowed_full_access_command".into(),
+            reason: "full access command allowed for test".into(),
+        }
+    }
+
+    #[test]
+    fn failed_package_manager_bootstrap_guidance_requires_web_research_and_command_run_retry() {
+        let argv = vec![
+            "npm".into(),
+            "create".into(),
+            "astro@latest".into(),
+            ".".into(),
+            "--".into(),
+            "--template".into(),
+            "minimal".into(),
+            "--install".into(),
+            "--no-git".into(),
+            "--yes".into(),
+            "--typescript".into(),
+            "strict".into(),
+        ];
+        let policy = allowed_command_policy();
+        let actions = command_suggested_next_actions(
+            true,
+            Some(1),
+            &policy,
+            false,
+            None,
+            0,
+            false,
+            Some(&argv),
+            None,
+            Some(
+                "npm error code EPERM\nnpm error Your cache folder contains root-owned files\nnpm error path /Users/sn0w/.npm/_cacache/tmp/cfa357fa",
+            ),
+        );
+
+        assert!(actions.iter().any(|action| action.contains("web_search")));
+        assert!(actions.iter().any(|action| action.contains("web_fetch")));
+        assert!(actions.iter().any(|action| action.contains("tool_access")));
+        assert!(actions
+            .iter()
+            .any(|action| action.contains("web_search_only")));
+        assert!(actions.iter().any(|action| action.contains("web_fetch")));
+        assert!(actions
+            .iter()
+            .any(|action| action.contains("official or primary docs")));
+        assert!(actions.iter().any(|action| action.contains("sh -lc")));
+        assert!(actions
+            .iter()
+            .any(|action| action.contains("npm_config_cache")));
+        assert!(actions.iter().any(|action| action.contains("command_run")));
+        assert!(actions
+            .iter()
+            .any(|action| action.contains("do not hand-write generated")));
+        assert!(!actions
+            .iter()
+            .any(|action| action == "Use the compact stdout/stderr evidence to fix the failure, then rerun a focused command_verify."));
+    }
+
+    #[test]
+    fn shell_wrapped_package_manager_bootstrap_gets_web_research_guidance() {
+        let argv = vec![
+            "sh".into(),
+            "-lc".into(),
+            "TMPDIR_BASE=$(mktemp -d) PNPM_HOME=\"$TMPDIR_BASE/pnpm-home\" pnpm dlx create-astro@latest . --template minimal --install --no-git --yes".into(),
+        ];
+        let policy = allowed_command_policy();
+        let actions = command_suggested_next_actions(
+            true,
+            Some(255),
+            &policy,
+            false,
+            None,
+            0,
+            false,
+            Some(&argv),
+            None,
+            Some("ERR_PNPM_DLX_MULTIPLE_BINS Could not determine executable to run"),
+        );
+
+        assert!(actions.iter().any(|action| action.contains("tool_access")));
+        assert!(actions
+            .iter()
+            .any(|action| action.contains("official or primary docs")));
+        assert!(actions.iter().any(|action| action.contains("command_run")));
+        assert!(!actions
+            .iter()
+            .any(|action| action == "Use the compact stdout/stderr evidence to fix the failure, then rerun a focused command_verify."));
+    }
+
+    #[test]
+    fn unspawned_command_recovery_guidance_mentions_web_tool_access() {
+        let argv = vec![
+            "pnpm".into(),
+            "create".into(),
+            "astro@latest".into(),
+            ".".into(),
+            "--template".into(),
+            "minimal".into(),
+        ];
+        let policy = allowed_command_policy();
+        let actions = command_suggested_next_actions(
+            false,
+            None,
+            &policy,
+            false,
+            None,
+            0,
+            false,
+            Some(&argv),
+            None,
+            None,
+        );
+
+        assert!(actions.iter().any(|action| action.contains("tool_access")));
+        assert!(actions
+            .iter()
+            .any(|action| action.contains("web_search_only")));
+        assert!(actions.iter().any(|action| action.contains("web_fetch")));
+        assert!(actions
+            .iter()
+            .any(|action| action.contains("official or primary docs")));
+    }
+
+    #[test]
+    fn generic_failed_command_guidance_still_uses_verification_retry() {
+        let argv = vec!["cargo".into(), "test".into(), "-p".into(), "xero".into()];
+        let policy = allowed_command_policy();
+        let actions = command_suggested_next_actions(
+            true,
+            Some(101),
+            &policy,
+            false,
+            None,
+            0,
+            false,
+            Some(&argv),
+            None,
+            Some("test failed"),
+        );
+
+        assert!(actions
+            .iter()
+            .any(|action| action.contains("rerun a focused command_verify")));
+        assert!(!actions
+            .iter()
+            .any(|action| action.contains("web_search/web_fetch")));
+    }
 }

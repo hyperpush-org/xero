@@ -106,6 +106,7 @@ interface UseAgentRuntimeControllerOptions {
     prompt?: string | null
     attachments?: StagedAgentAttachmentDto[]
     linkedPaths?: RuntimeLinkedPathDto[]
+    actionId?: string | null
   }) => Promise<RuntimeRunView | null>
   /** Returns the staged attachments that should be sent with the next prompt. */
   getPendingAttachments?: () => StagedAgentAttachmentDto[]
@@ -1383,7 +1384,7 @@ export function useAgentRuntimeController({
     setPendingOperatorIntent({ actionId, kind: 'resume' })
 
     try {
-      await onUpdateRuntimeRunControls({ prompt: userAnswer })
+      await onUpdateRuntimeRunControls({ prompt: userAnswer, actionId })
     } catch (error) {
       setRuntimeRunActionMessage(getErrorMessage(error, 'Xero could not send the owned-agent response.'))
     } finally {

@@ -299,6 +299,15 @@ impl AutonomousToolRuntime {
             ));
         }
 
+        if let Some((code, explanation)) = repo_local_package_cache_policy_denial(&prepared) {
+            return Err(CommandError::new(
+                code,
+                CommandErrorClass::PolicyDenied,
+                explanation,
+                false,
+            ));
+        }
+
         self.validate_repo_scoped_arguments(&prepared, active.approval_mode.clone())?;
 
         let policy = match classify_command(&prepared) {
@@ -1238,6 +1247,13 @@ fn command_family_policy_decision(
         return Ok(None);
     };
     let prepared = runtime.prepare_command_request(command_request)?;
+    if let Some((code, explanation)) = repo_local_package_cache_policy_denial(&prepared) {
+        return Ok(Some((
+            AutonomousSafetyPolicyAction::Deny,
+            code.into(),
+            explanation,
+        )));
+    }
     Ok(Some(
         match runtime.evaluate_command_policy_for_tool(tool_name, prepared)? {
             CommandPolicyDecision::Allow { prepared, policy } => {
@@ -1783,6 +1799,81 @@ fn normalize_timeout_ms(timeout_ms: Option<u64>, max_timeout_ms: u64) -> Command
         ));
     }
     Ok(timeout)
+}
+
+const REPO_LOCAL_PACKAGE_CACHE_DENIAL_CODE: &str = "policy_denied_repo_local_package_cache";
+const REPO_LOCAL_PACKAGE_CACHE_DIRS: &[&str] = &[".xero-cache", ".npm-cache", ".pnpm-store"];
+const PACKAGE_CACHE_CONTROL_MARKERS: &[&str] = &[
+    "npm_config_cache",
+    "npm_config_store_dir",
+    "npm_cache",
+    "pnpm_home",
+    "pnpm_store_dir",
+    "corepack_home",
+    "xdg_cache_home",
+    "--cache",
+    "--store-dir",
+];
+const PACKAGE_MANAGER_TEXT_MARKERS: &[&str] =
+    &[" npm ", " npx ", " pnpm ", " yarn ", " bun ", " corepack "];
+
+fn repo_local_package_cache_policy_denial(
+    prepared: &PreparedCommandRequest,
+) -> Option<(&'static str, String)> {
+    let normalized = format!(
+        " {} ",
+        prepared
+            .argv
+            .iter()
+            .map(|argument| argument.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let repo_cache_dir = REPO_LOCAL_PACKAGE_CACHE_DIRS
+        .iter()
+        .find(|cache_dir| normalized.contains(**cache_dir))?;
+    if !command_routes_package_cache_into_repo(&normalized, prepared) {
+        return None;
+    }
+
+    Some((
+        REPO_LOCAL_PACKAGE_CACHE_DENIAL_CODE,
+        format!(
+            "Xero denied `{}` because it routes package-manager cache/home/store state into repo-local `{repo_cache_dir}`. Use a writable OS temp or app-data cache outside the repository; if none is writable, report that blocker instead of creating repository cache artifacts.",
+            render_command_for_summary(&prepared.argv)
+        ),
+    ))
+}
+
+fn command_routes_package_cache_into_repo(
+    normalized_command: &str,
+    prepared: &PreparedCommandRequest,
+) -> bool {
+    let program = executable_name(&prepared.argv[0]).to_ascii_lowercase();
+    let package_manager_program = matches!(
+        program.as_str(),
+        "npm" | "npx" | "pnpm" | "yarn" | "bun" | "corepack"
+    );
+    let shell_wrapper = is_shell_wrapper(&program);
+    if !package_manager_program && !shell_wrapper {
+        return false;
+    }
+
+    let package_cache_control = PACKAGE_CACHE_CONTROL_MARKERS
+        .iter()
+        .any(|marker| normalized_command.contains(marker));
+    if package_manager_program {
+        return package_cache_control;
+    }
+
+    let invokes_package_manager = PACKAGE_MANAGER_TEXT_MARKERS
+        .iter()
+        .any(|marker| normalized_command.contains(marker));
+    let mkdirs_repo_cache = normalized_command.contains(" mkdir")
+        && REPO_LOCAL_PACKAGE_CACHE_DIRS
+            .iter()
+            .any(|cache_dir| normalized_command.contains(cache_dir));
+    invokes_package_manager && (package_cache_control || mkdirs_repo_cache)
 }
 
 impl AutonomousToolRuntime {
@@ -2439,7 +2530,7 @@ mod tests {
     use crate::commands::{
         RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto, RuntimeRunControlStateDto,
     };
-    use crate::runtime::AutonomousToolOutput;
+    use crate::runtime::{AutonomousToolOutput, AUTONOMOUS_TOOL_COMMAND_RUN};
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -3325,6 +3416,56 @@ mod tests {
     }
 
     #[test]
+    fn command_run_approval_result_guides_non_interactive_recovery() {
+        let tempdir = tempdir().expect("tempdir");
+        let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Suggest);
+        let result = runtime
+            .command_with_approval_for_tool(
+                AUTONOMOUS_TOOL_COMMAND_RUN,
+                AutonomousCommandRequest {
+                    argv: vec![
+                        "pnpm".into(),
+                        "create".into(),
+                        "vite".into(),
+                        ".".into(),
+                        "--template".into(),
+                        "react".into(),
+                    ],
+                    cwd: Some(".".into()),
+                    timeout_ms: Some(60_000),
+                },
+                false,
+            )
+            .expect("approval result");
+
+        let AutonomousToolOutput::Command(output) = result.output else {
+            panic!("expected command output");
+        };
+        assert!(!output.spawned);
+        assert_eq!(output.exit_code, None);
+        assert!(output
+            .suggested_next_actions
+            .iter()
+            .any(|action| action.contains("web_search/web_fetch")));
+        assert!(output
+            .suggested_next_actions
+            .iter()
+            .any(|action| action.contains("command_run, not command_probe")));
+        assert!(output
+            .suggested_next_actions
+            .iter()
+            .any(|action| action.contains("no safe documented non-interactive invocation")));
+        assert!(output
+            .suggested_next_actions
+            .iter()
+            .any(|action| action.contains("CI/non-interactive flags")));
+        assert!(output
+            .suggested_next_actions
+            .iter()
+            .any(|action| action.contains("Do not hand-write generated scaffold")));
+    }
+
+    #[test]
     fn full_access_allows_scaffold_command_probe_without_review() {
         let tempdir = tempdir().expect("tempdir");
         let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Yolo);
@@ -3358,6 +3499,122 @@ mod tests {
         assert!(decision
             .explanation
             .contains("without command-classifier restrictions"));
+    }
+
+    #[test]
+    fn full_access_allows_scaffold_command_run_without_review() {
+        let tempdir = tempdir().expect("tempdir");
+        let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Yolo);
+        let request = AutonomousToolRequest::Command(AutonomousCommandRequest {
+            argv: vec![
+                "pnpm".into(),
+                "dlx".into(),
+                "create-astro@latest".into(),
+                ".".into(),
+                "--template".into(),
+                "minimal".into(),
+                "--install".into(),
+                "--no-git".into(),
+                "--yes".into(),
+            ],
+            cwd: Some(".".into()),
+            timeout_ms: Some(120_000),
+        });
+
+        let decision = runtime
+            .evaluate_safety_policy(
+                AUTONOMOUS_TOOL_COMMAND_RUN,
+                &json!({
+                    "argv": [
+                        "pnpm",
+                        "dlx",
+                        "create-astro@latest",
+                        ".",
+                        "--template",
+                        "minimal",
+                        "--install",
+                        "--no-git",
+                        "--yes"
+                    ],
+                    "cwd": ".",
+                }),
+                &request,
+                false,
+                "input-hash",
+            )
+            .expect("full-access scaffold command_run policy");
+
+        assert_eq!(decision.action, AutonomousSafetyPolicyAction::Allow);
+        assert_eq!(decision.code, "policy_allowed_full_access_command");
+        assert!(decision
+            .explanation
+            .contains("without command-classifier restrictions"));
+    }
+
+    #[test]
+    fn full_access_denies_repo_local_package_cache_scaffold_command() {
+        let tempdir = tempdir().expect("tempdir");
+        let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Yolo);
+        let request = AutonomousToolRequest::Command(AutonomousCommandRequest {
+            argv: vec![
+                "sh".into(),
+                "-lc".into(),
+                "mkdir -p .xero-cache/npm .xero-cache/pnpm-home && export npm_config_cache=\"$PWD/.xero-cache/npm\" PNPM_HOME=\"$PWD/.xero-cache/pnpm-home\"; pnpm create astro . --template minimal --install --yes --no-git".into(),
+            ],
+            cwd: Some(".".into()),
+            timeout_ms: Some(120_000),
+        });
+
+        let decision = runtime
+            .evaluate_safety_policy(
+                AUTONOMOUS_TOOL_COMMAND_RUN,
+                &json!({
+                    "argv": [
+                        "sh",
+                        "-lc",
+                        "mkdir -p .xero-cache/npm .xero-cache/pnpm-home && export npm_config_cache=\"$PWD/.xero-cache/npm\" PNPM_HOME=\"$PWD/.xero-cache/pnpm-home\"; pnpm create astro . --template minimal --install --yes --no-git"
+                    ],
+                    "cwd": ".",
+                }),
+                &request,
+                false,
+                "input-hash",
+            )
+            .expect("repo-local cache scaffold policy");
+
+        assert_eq!(decision.action, AutonomousSafetyPolicyAction::Deny);
+        assert_eq!(decision.code, "policy_denied_repo_local_package_cache");
+        assert!(decision.explanation.contains(".xero-cache"));
+        assert!(decision.explanation.contains("outside the repository"));
+    }
+
+    #[test]
+    fn command_run_refuses_repo_local_package_cache_before_spawn() {
+        let tempdir = tempdir().expect("tempdir");
+        let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Yolo);
+
+        let error = runtime
+            .command_with_approval_for_tool(
+                AUTONOMOUS_TOOL_COMMAND_RUN,
+                AutonomousCommandRequest {
+                    argv: vec![
+                        "npm".into(),
+                        "--cache".into(),
+                        ".npm-cache".into(),
+                        "create".into(),
+                        "astro@latest".into(),
+                        ".".into(),
+                    ],
+                    cwd: Some(".".into()),
+                    timeout_ms: Some(120_000),
+                },
+                false,
+            )
+            .expect_err("repo-local cache command should be policy denied");
+
+        assert_eq!(error.code, "policy_denied_repo_local_package_cache");
+        assert_eq!(error.class, CommandErrorClass::PolicyDenied);
+        assert!(error.message.contains(".npm-cache"));
     }
 
     #[test]
@@ -3706,6 +3963,10 @@ mod tests {
         };
         assert!(!output.spawned);
         assert_eq!(output.policy.code, "policy_requires_host_command_preview");
+        assert!(!output
+            .suggested_next_actions
+            .iter()
+            .any(|action| action.contains("CI/non-interactive")));
         assert!(output.preview_token.is_none());
         let impact = output
             .host_command_impact

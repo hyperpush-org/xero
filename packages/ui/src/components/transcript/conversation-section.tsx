@@ -2018,9 +2018,16 @@ function CodeUndoMenu({
 
   useEffect(() => {
     const availableIds = new Set(textHunks.map((hunk) => hunk.hunkId))
-    setSelectedHunkIds((current) =>
-      current.filter((hunkId) => availableIds.has(hunkId)),
-    )
+    setSelectedHunkIds((current) => {
+      const next = current.filter((hunkId) => availableIds.has(hunkId))
+      if (
+        next.length === current.length &&
+        next.every((hunkId, index) => hunkId === current[index])
+      ) {
+        return current
+      }
+      return next
+    })
   }, [textHunks])
 
   const toggleSelectedHunk = useCallback((hunkId: string, checked: boolean) => {

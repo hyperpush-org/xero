@@ -3990,6 +3990,7 @@ mod tests {
                 project_id: project_id.into(),
                 repository_id: repository_id.into(),
                 root_path: repo_root.to_string_lossy().into_owned(),
+                is_git_repo: true,
             },
             project: ProjectSummaryDto {
                 id: project_id.into(),
@@ -4500,11 +4501,13 @@ mod tests {
                     project_id: HARNESS_FIXTURE_PROJECT_ID.into(),
                     repository_id: "repo-fixture".into(),
                     root_path: fixture_root.to_string_lossy().into_owned(),
+                    is_git_repo: true,
                 },
                 RegistryProjectRecord {
                     project_id: "project-visible".into(),
                     repository_id: "repo-visible".into(),
                     root_path: visible_root.to_string_lossy().into_owned(),
+                    is_git_repo: true,
                 },
             ],
         )

@@ -75,15 +75,6 @@ export const upsertProviderCredentialRequestSchema = z
       })
     }
 
-    if (payload.providerId === 'xai') {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['providerId'],
-        message:
-          'Xero persists xAI credentials through the sign-in flow, not the credential upsert command.',
-      })
-    }
-
     if (payload.kind === 'oauth_session') {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

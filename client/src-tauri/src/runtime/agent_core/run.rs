@@ -1,7 +1,9 @@
 use super::*;
-use crate::runtime::AutonomousAgentWorkflowPolicy;
+use crate::runtime::{
+    AutonomousAgentWorkflowPolicy, AutonomousAgentWorkflowReplay, AutonomousTodoItem,
+};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use xero_agent_core::{
     production_runtime_trace_metadata, validate_production_runtime_contract,
     ProductionRuntimeContract, RuntimeStoreDescriptor,
@@ -38,7 +40,7 @@ pub fn run_owned_agent_task(
     request: OwnedAgentRunRequest,
 ) -> CommandResult<AgentRunSnapshotRecord> {
     create_owned_agent_run(&request)?;
-    drive_owned_agent_run(request, AgentRunCancellationToken::default())
+    drive_owned_agent_run(request, AgentRunCancellationToken::default(), None)
 }
 
 pub fn create_owned_agent_run(
@@ -450,6 +452,45 @@ fn workflow_policy_for_runtime_agent(
     AutonomousAgentWorkflowPolicy::from_definition_snapshot(definition_snapshot)
 }
 
+fn workflow_replay_from_snapshot(
+    snapshot: &AgentRunSnapshotRecord,
+) -> AutonomousAgentWorkflowReplay {
+    let mut tool_successes = BTreeMap::new();
+    for tool_call in &snapshot.tool_calls {
+        if tool_call.state == AgentToolCallState::Succeeded {
+            *tool_successes
+                .entry(tool_call.tool_name.clone())
+                .or_default() += 1;
+        }
+    }
+
+    AutonomousAgentWorkflowReplay {
+        todo_items: latest_todo_items_from_snapshot(snapshot),
+        tool_successes,
+    }
+}
+
+fn latest_todo_items_from_snapshot(
+    snapshot: &AgentRunSnapshotRecord,
+) -> BTreeMap<String, AutonomousTodoItem> {
+    snapshot
+        .events
+        .iter()
+        .rev()
+        .filter(|event| event.event_kind == AgentRunEventKind::PlanUpdated)
+        .filter_map(|event| serde_json::from_str::<JsonValue>(&event.payload_json).ok())
+        .find_map(|payload| {
+            let items = payload.get("items")?.as_array()?;
+            let mut todo_items = BTreeMap::new();
+            for item in items {
+                let todo = serde_json::from_value::<AutonomousTodoItem>(item.clone()).ok()?;
+                todo_items.insert(todo.id.clone(), todo);
+            }
+            Some(todo_items)
+        })
+        .unwrap_or_default()
+}
+
 fn initial_workflow_allowed_tools_for_runtime_agent(
     runtime_agent_id: RuntimeAgentIdDto,
     definition_snapshot: &JsonValue,
@@ -534,6 +575,67 @@ fn linked_read_roots_from_snapshot(snapshot: &AgentRunSnapshotRecord) -> Vec<Pat
         .collect()
 }
 
+fn runtime_controls_for_owned_agent_run(
+    repo_root: &Path,
+    run: &project_store::AgentRunRecord,
+    requested_controls: Option<&RuntimeRunControlInputDto>,
+    allowed_approval_modes: &[RuntimeRunApprovalModeDto],
+    default_approval_mode: RuntimeRunApprovalModeDto,
+) -> CommandResult<RuntimeRunControlStateDto> {
+    let persisted_controls = if requested_controls.is_none() {
+        project_store::load_runtime_run(repo_root, &run.project_id, &run.agent_session_id)?
+            .filter(|snapshot| snapshot.run.run_id == run.run_id)
+            .map(|snapshot| runtime_run_control_state_dto_from_record(&snapshot.controls))
+    } else {
+        None
+    };
+
+    Ok(runtime_controls_for_agent_run_with_state(
+        run,
+        requested_controls,
+        persisted_controls.as_ref(),
+        allowed_approval_modes,
+        default_approval_mode,
+    ))
+}
+
+fn runtime_run_control_state_dto_from_record(
+    controls: &project_store::RuntimeRunControlStateRecord,
+) -> RuntimeRunControlStateDto {
+    RuntimeRunControlStateDto {
+        active: RuntimeRunActiveControlSnapshotDto {
+            runtime_agent_id: controls.active.runtime_agent_id,
+            agent_definition_id: controls.active.agent_definition_id.clone(),
+            agent_definition_version: controls.active.agent_definition_version,
+            provider_profile_id: controls.active.provider_profile_id.clone(),
+            model_id: controls.active.model_id.clone(),
+            thinking_effort: controls.active.thinking_effort.clone(),
+            approval_mode: controls.active.approval_mode.clone(),
+            plan_mode_required: controls.active.plan_mode_required,
+            auto_compact_enabled: controls.active.auto_compact_enabled,
+            revision: controls.active.revision,
+            applied_at: controls.active.applied_at.clone(),
+        },
+        pending: controls.pending.as_ref().map(|pending| {
+            crate::commands::RuntimeRunPendingControlSnapshotDto {
+                runtime_agent_id: pending.runtime_agent_id,
+                agent_definition_id: pending.agent_definition_id.clone(),
+                agent_definition_version: pending.agent_definition_version,
+                provider_profile_id: pending.provider_profile_id.clone(),
+                model_id: pending.model_id.clone(),
+                thinking_effort: pending.thinking_effort.clone(),
+                approval_mode: pending.approval_mode.clone(),
+                plan_mode_required: pending.plan_mode_required,
+                auto_compact_enabled: pending.auto_compact_enabled,
+                revision: pending.revision,
+                queued_at: pending.queued_at.clone(),
+                queued_prompt: pending.queued_prompt.clone(),
+                queued_prompt_at: pending.queued_prompt_at.clone(),
+            }
+        }),
+    }
+}
+
 fn attached_skill_resolution_report_error(
     _repo_root: &Path,
     run_id: &str,
@@ -579,6 +681,7 @@ fn attached_skill_resolution_diagnostic_summary(
 pub fn drive_owned_agent_run(
     request: OwnedAgentRunRequest,
     cancellation: AgentRunCancellationToken,
+    supervisor: Option<AgentRunSupervisor>,
 ) -> CommandResult<AgentRunSnapshotRecord> {
     cancellation.check_cancelled()?;
     let snapshot =
@@ -590,12 +693,13 @@ pub fn drive_owned_agent_run(
             &definition_snapshot,
             snapshot.run.runtime_agent_id,
         );
-    let controls = runtime_controls_for_agent_run(
+    let controls = runtime_controls_for_owned_agent_run(
+        &request.repo_root,
         &snapshot.run,
         request.controls.as_ref(),
         &allowed_approval_modes,
         default_approval_mode,
-    );
+    )?;
     let agent_tool_policy =
         effective_agent_tool_policy(&definition_snapshot, &request.tool_runtime);
     let agent_workflow_policy =
@@ -607,6 +711,7 @@ pub fn drive_owned_agent_run(
         .with_runtime_run_controls(controls.clone())
         .with_agent_tool_policy(agent_tool_policy.clone())
         .with_agent_workflow_policy(agent_workflow_policy)
+        .with_agent_workflow_replay(workflow_replay_from_snapshot(&snapshot))
         .with_agent_run_context(
             &request.project_id,
             &snapshot.run.agent_session_id,
@@ -653,6 +758,7 @@ pub fn drive_owned_agent_run(
         controls.clone(),
         request.provider_config.clone(),
         cancellation.clone(),
+        supervisor.clone(),
     );
     let environment = match start_owned_agent_environment(
         &request.repo_root,
@@ -697,6 +803,21 @@ pub fn drive_owned_agent_run(
         &cancellation,
     ) {
         Ok(()) => {
+            // A cancellation can land between the provider loop returning and this
+            // finalization. Route it through the error/cancel path so the run is recorded as
+            // cancelled rather than writing a spurious completion (the status write is also
+            // guarded against overwriting a terminal state at the DB layer).
+            if let Err(error) = cancellation.check_cancelled() {
+                return finish_owned_agent_drive_error(
+                    &request.repo_root,
+                    &request.project_id,
+                    &request.run_id,
+                    error,
+                    provider.as_ref(),
+                    request.provider_config.clone(),
+                    &cancellation,
+                );
+            }
             append_event(
                 &request.repo_root,
                 &request.project_id,
@@ -729,6 +850,7 @@ pub fn drive_owned_agent_run(
             &request.run_id,
             error,
             provider.as_ref(),
+            request.provider_config.clone(),
             &cancellation,
         ),
     }
@@ -773,7 +895,11 @@ pub fn continue_owned_agent_run(
     if !prepared.drive_required {
         return Ok(prepared.snapshot);
     }
-    drive_owned_agent_continuation(prepared.drive_request, AgentRunCancellationToken::default())
+    drive_owned_agent_continuation(
+        prepared.drive_request,
+        AgentRunCancellationToken::default(),
+        None,
+    )
 }
 
 pub fn prepare_owned_agent_continuation(
@@ -878,12 +1004,13 @@ pub fn prepare_owned_agent_continuation_for_drive(
                 &definition_snapshot,
                 before.run.runtime_agent_id,
             );
-        let controls = runtime_controls_for_agent_run(
+        let controls = runtime_controls_for_owned_agent_run(
+            &request.repo_root,
             &before.run,
             request.controls.as_ref(),
             &allowed_approval_modes,
             default_approval_mode,
-        );
+        )?;
         let agent_tool_policy =
             effective_agent_tool_policy(&definition_snapshot, &request.tool_runtime);
         let agent_workflow_policy =
@@ -894,6 +1021,7 @@ pub fn prepare_owned_agent_continuation_for_drive(
             .with_runtime_run_controls(controls.clone())
             .with_agent_tool_policy(agent_tool_policy.clone())
             .with_agent_workflow_policy(agent_workflow_policy)
+            .with_agent_workflow_replay(workflow_replay_from_snapshot(&before))
             .with_agent_run_context(
                 &request.project_id,
                 &before.run.agent_session_id,
@@ -947,12 +1075,13 @@ pub fn prepare_owned_agent_continuation_for_drive(
                 &definition_snapshot,
                 before.run.runtime_agent_id,
             );
-        let controls = runtime_controls_for_agent_run(
+        let controls = runtime_controls_for_owned_agent_run(
+            &request.repo_root,
             &before.run,
             request.controls.as_ref(),
             &allowed_approval_modes,
             default_approval_mode,
-        );
+        )?;
         let agent_tool_policy =
             effective_agent_tool_policy(&definition_snapshot, &request.tool_runtime);
         let agent_workflow_policy =
@@ -963,6 +1092,7 @@ pub fn prepare_owned_agent_continuation_for_drive(
             .with_runtime_run_controls(controls.clone())
             .with_agent_tool_policy(agent_tool_policy.clone())
             .with_agent_workflow_policy(agent_workflow_policy)
+            .with_agent_workflow_replay(workflow_replay_from_snapshot(&before))
             .with_agent_run_context(
                 &request.project_id,
                 &before.run.agent_session_id,
@@ -1199,15 +1329,31 @@ fn maybe_auto_compact_before_continuation(
         &request.repo_root,
         &snapshot.run.project_id,
         &snapshot.run.agent_session_id,
-    )?;
-    if active_compaction.is_some() {
-        return Ok(());
+    )?
+    .filter(|compaction| {
+        compaction.covered_run_ids.len() == 1 && compaction.covers_run(&snapshot.run.run_id)
+    });
+    // A compaction that still protects the turn (its raw tail hasn't regrown past the intended
+    // window) is left in place. A stale one is treated as absent so the policy can recompact:
+    // `insert_agent_compaction` supersedes the prior active compaction transactionally, so this
+    // does not leave two active compactions behind.
+    if let Some(compaction) = active_compaction.as_ref() {
+        if project_store::agent_compaction_is_current(
+            &request.repo_root,
+            &snapshot.run.project_id,
+            &snapshot.run.run_id,
+            compaction,
+        )? {
+            return Ok(());
+        }
     }
     let estimate = estimate_continuation_context_tokens(request, provider, snapshot)?;
     let decision = evaluate_compaction_policy(SessionCompactionPolicyInput {
         manual_requested: false,
         auto_enabled: true,
         provider_supports_compaction: true,
+        // Treat a stale compaction as absent so the threshold check can trigger CompactNow;
+        // the insert below supersedes it.
         active_compaction_present: false,
         estimated_tokens: estimate.estimate.tokens,
         budget_tokens: estimate.budget_tokens,
@@ -1259,7 +1405,19 @@ fn maybe_handoff_before_continuation(
         &request.repo_root,
         &snapshot.run.project_id,
         &snapshot.run.agent_session_id,
-    )?;
+    )?
+    .filter(|compaction| {
+        compaction.covered_run_ids.len() == 1 && compaction.covers_run(&snapshot.run.run_id)
+    });
+    let compaction_current = match active_compaction.as_ref() {
+        None => true,
+        Some(compaction) => project_store::agent_compaction_is_current(
+            &request.repo_root,
+            &snapshot.run.project_id,
+            &snapshot.run.run_id,
+            compaction,
+        )?,
+    };
     let decision =
         project_store::evaluate_agent_context_policy(project_store::AgentContextPolicyInput {
             runtime_agent_id: snapshot.run.runtime_agent_id,
@@ -1267,7 +1425,7 @@ fn maybe_handoff_before_continuation(
             budget_tokens: estimate.budget_tokens,
             provider_supports_compaction: true,
             active_compaction_present: active_compaction.is_some(),
-            compaction_current: active_compaction.is_some(),
+            compaction_current,
             settings,
         });
 
@@ -1850,12 +2008,13 @@ fn estimate_continuation_context_tokens(
             &definition_snapshot,
             snapshot.run.runtime_agent_id,
         );
-    let controls = runtime_controls_for_agent_run(
+    let controls = runtime_controls_for_owned_agent_run(
+        &request.repo_root,
         &snapshot.run,
         request.controls.as_ref(),
         &allowed_approval_modes,
         default_approval_mode,
-    );
+    )?;
     let tool_runtime = request
         .tool_runtime
         .clone()
@@ -1866,7 +2025,8 @@ fn estimate_continuation_context_tokens(
         .with_agent_workflow_policy(workflow_policy_for_runtime_agent(
             snapshot.run.runtime_agent_id,
             &definition_snapshot,
-        ));
+        ))
+        .with_agent_workflow_replay(workflow_replay_from_snapshot(snapshot));
     let tool_registry = tool_registry_for_snapshot(
         &request.repo_root,
         snapshot,
@@ -3141,6 +3301,7 @@ fn agent_specific_handoff(
 pub fn drive_owned_agent_continuation(
     request: ContinueOwnedAgentRunRequest,
     cancellation: AgentRunCancellationToken,
+    supervisor: Option<AgentRunSupervisor>,
 ) -> CommandResult<AgentRunSnapshotRecord> {
     cancellation.check_cancelled()?;
     let before =
@@ -3170,12 +3331,13 @@ pub fn drive_owned_agent_continuation(
             &definition_snapshot,
             snapshot.run.runtime_agent_id,
         );
-    let controls = runtime_controls_for_agent_run(
+    let controls = runtime_controls_for_owned_agent_run(
+        &request.repo_root,
         &snapshot.run,
         request.controls.as_ref(),
         &allowed_approval_modes,
         default_approval_mode,
-    );
+    )?;
     let agent_tool_policy =
         effective_agent_tool_policy(&definition_snapshot, &request.tool_runtime);
     let agent_workflow_policy =
@@ -3187,6 +3349,7 @@ pub fn drive_owned_agent_continuation(
         .with_runtime_run_controls(controls.clone())
         .with_agent_tool_policy(agent_tool_policy.clone())
         .with_agent_workflow_policy(agent_workflow_policy)
+        .with_agent_workflow_replay(workflow_replay_from_snapshot(&snapshot))
         .with_agent_run_context(
             &request.project_id,
             &snapshot.run.agent_session_id,
@@ -3217,6 +3380,7 @@ pub fn drive_owned_agent_continuation(
         controls.clone(),
         provider_config,
         cancellation.clone(),
+        supervisor.clone(),
     );
     match drive_provider_loop(
         provider.as_ref(),
@@ -3232,6 +3396,17 @@ pub fn drive_owned_agent_continuation(
         &cancellation,
     ) {
         Ok(()) => {
+            if let Err(error) = cancellation.check_cancelled() {
+                return finish_owned_agent_drive_error(
+                    &request.repo_root,
+                    &request.project_id,
+                    &request.run_id,
+                    error,
+                    provider.as_ref(),
+                    request.provider_config.clone(),
+                    &cancellation,
+                );
+            }
             append_event(
                 &request.repo_root,
                 &request.project_id,
@@ -3264,6 +3439,7 @@ pub fn drive_owned_agent_continuation(
             &request.run_id,
             error,
             provider.as_ref(),
+            request.provider_config.clone(),
             &cancellation,
         ),
     }
@@ -3588,6 +3764,7 @@ fn finish_owned_agent_drive_error(
     run_id: &str,
     error: CommandError,
     provider: &dyn ProviderAdapter,
+    provider_config: AgentProviderConfig,
     cancellation: &AgentRunCancellationToken,
 ) -> CommandResult<AgentRunSnapshotRecord> {
     if cancellation.is_cancelled() || error.code == AGENT_RUN_CANCELLED_CODE {
@@ -3676,7 +3853,11 @@ fn finish_owned_agent_drive_error(
             Some(diagnostic),
             &now_timestamp(),
         )?;
-        capture_pause_artifacts_best_effort(repo_root, &snapshot, provider);
+        capture_pause_artifacts_best_effort_async(
+            repo_root.to_path_buf(),
+            snapshot.clone(),
+            provider_config,
+        );
         return Ok(project_store::load_agent_run(repo_root, project_id, run_id).unwrap_or(snapshot));
     }
 
@@ -3722,29 +3903,48 @@ fn finish_owned_agent_drive_error(
     Ok(snapshot)
 }
 
-fn capture_pause_artifacts_best_effort(
-    repo_root: &Path,
-    snapshot: &AgentRunSnapshotRecord,
-    provider: &dyn ProviderAdapter,
+fn capture_pause_artifacts_best_effort_async(
+    repo_root: PathBuf,
+    snapshot: AgentRunSnapshotRecord,
+    provider_config: AgentProviderConfig,
 ) {
-    if let Err(error) = capture_project_record_for_run(repo_root, snapshot) {
-        record_nonfatal_artifact_capture_error(
-            repo_root,
-            snapshot,
-            "pause",
-            "project_record_capture",
-            &error,
-        );
-    }
-    if let Err(error) = capture_memory_candidates_for_run(repo_root, snapshot, provider, "pause") {
-        record_nonfatal_artifact_capture_error(
-            repo_root,
-            snapshot,
-            "pause",
-            "memory_candidate_capture",
-            &error,
-        );
-    }
+    std::thread::spawn(move || {
+        if let Err(error) = capture_project_record_for_run(&repo_root, &snapshot) {
+            record_nonfatal_artifact_capture_error(
+                &repo_root,
+                &snapshot,
+                "pause",
+                "project_record_capture",
+                &error,
+            );
+        }
+
+        let provider = match create_provider_adapter(provider_config) {
+            Ok(provider) => provider,
+            Err(error) => {
+                record_nonfatal_artifact_capture_error(
+                    &repo_root,
+                    &snapshot,
+                    "pause",
+                    "memory_candidate_capture",
+                    &error,
+                );
+                return;
+            }
+        };
+
+        if let Err(error) =
+            capture_memory_candidates_for_run(&repo_root, &snapshot, provider.as_ref(), "pause")
+        {
+            record_nonfatal_artifact_capture_error(
+                &repo_root,
+                &snapshot,
+                "pause",
+                "memory_candidate_capture",
+                &error,
+            );
+        }
+    });
 }
 
 fn capture_completion_artifacts_best_effort(
@@ -3898,8 +4098,19 @@ fn mark_owned_agent_run_cancelled(
     project_id: &str,
     run_id: &str,
 ) -> CommandResult<AgentRunSnapshotRecord> {
+    // Do not re-cancel a run that has already reached any terminal state. Appending another
+    // RunFailed(cancelled) event and re-writing status would corrupt the terminal record
+    // (e.g. NULL a completed run's `completed_at`) and pollute the event log. The status
+    // write itself is also guarded at the DB layer, but short-circuiting here avoids the
+    // spurious terminal event entirely.
     if let Ok(snapshot) = project_store::load_agent_run(repo_root, project_id, run_id) {
-        if snapshot.run.status == AgentRunStatus::Cancelled {
+        if matches!(
+            snapshot.run.status,
+            AgentRunStatus::Cancelled
+                | AgentRunStatus::Completed
+                | AgentRunStatus::HandedOff
+                | AgentRunStatus::Failed
+        ) {
             return Ok(snapshot);
         }
     }
@@ -3927,6 +4138,7 @@ fn mark_owned_agent_run_cancelled(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn tool_runtime_with_subagent_executor(
     tool_runtime: AutonomousToolRuntime,
     repo_root: &Path,
@@ -3936,6 +4148,7 @@ fn tool_runtime_with_subagent_executor(
     controls: RuntimeRunControlStateDto,
     provider_config: AgentProviderConfig,
     cancellation: AgentRunCancellationToken,
+    supervisor: Option<AgentRunSupervisor>,
 ) -> AutonomousToolRuntime {
     if tool_runtime.subagent_execution_depth > 0 {
         return tool_runtime;
@@ -3954,6 +4167,7 @@ fn tool_runtime_with_subagent_executor(
         tool_runtime: child_tool_runtime,
         cancellation,
         subagent_tokens: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+        supervisor,
     }))
 }
 
@@ -3968,6 +4182,11 @@ struct OwnedAgentSubagentExecutor {
     tool_runtime: AutonomousToolRuntime,
     cancellation: AgentRunCancellationToken,
     subagent_tokens: Arc<std::sync::Mutex<BTreeMap<String, AgentRunCancellationToken>>>,
+    /// Shared run supervisor used to acquire an exclusive lease on a child run before driving
+    /// it, so a `send_subagent_input` drive and a scheduled-wakeup resume of the same paused
+    /// child cannot interleave. `None` in paths that do not have a supervisor (e.g. some
+    /// tests); those retain the prior unguarded behavior.
+    supervisor: Option<AgentRunSupervisor>,
 }
 
 impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
@@ -4207,6 +4426,9 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
         let prepared = prepare_owned_agent_continuation_for_drive(&request)?;
         let mut updated_task = task.clone();
         let snapshot = if prepared.drive_required {
+            // Serialize with any concurrent scheduled-wakeup resume of this child run.
+            let child_run_id = prepared.drive_request.run_id.clone();
+            let _child_lease = self.acquire_child_run_lease(&child_run_id)?;
             let child_token = self.cancellation.linked_child();
             {
                 let mut tokens = self.subagent_tokens.lock().map_err(|_| {
@@ -4217,7 +4439,11 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
                 })?;
                 tokens.insert(task.subagent_id.clone(), child_token.clone());
             }
-            let result = drive_owned_agent_continuation(prepared.drive_request, child_token);
+            let result = drive_owned_agent_continuation(
+                prepared.drive_request,
+                child_token,
+                self.supervisor.clone(),
+            );
             if let Ok(mut tokens) = self.subagent_tokens.lock() {
                 tokens.remove(&task.subagent_id);
             }
@@ -4312,6 +4538,22 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
 }
 
 impl OwnedAgentSubagentExecutor {
+    /// Acquire an exclusive lease on `child_run_id` if a supervisor is available. Returns the
+    /// held lease (dropped by the caller when the drive finishes) or `None` when no supervisor
+    /// is wired. Propagates `agent_run_already_active` when another driver (e.g. a scheduled
+    /// wakeup) already holds the lease, so the two never drive the child concurrently.
+    fn acquire_child_run_lease(
+        &self,
+        child_run_id: &str,
+    ) -> CommandResult<Option<AgentRunLease>> {
+        match self.supervisor.as_ref() {
+            Some(supervisor) => supervisor
+                .begin(&self.project_id, &self.agent_session_id, child_run_id)
+                .map(Some),
+            None => Ok(None),
+        }
+    }
+
     fn drive_subagent_background(
         &self,
         request: OwnedAgentRunRequest,
@@ -4346,7 +4588,10 @@ impl OwnedAgentSubagentExecutor {
                 &task,
                 "running",
             );
-            drive_owned_agent_run(request, cancellation)
+            // Hold an exclusive lease on the child run for the duration of the drive so a
+            // scheduled-wakeup resume of the same run cannot drive it concurrently.
+            let _child_lease = self.acquire_child_run_lease(&run_id)?;
+            drive_owned_agent_run(request, cancellation, self.supervisor.clone())
         });
 
         let mut child_snapshot: Option<AgentRunSnapshotRecord> = None;
@@ -4442,7 +4687,21 @@ fn forward_child_events_to_parent(
     task: &AutonomousSubagentTask,
     snapshot: &AgentRunSnapshotRecord,
 ) {
+    // Only forward child events not already mirrored into the parent. Without this watermark,
+    // every interaction (initial drive plus each `send_subagent_input`) re-forwarded the
+    // child's whole event history, duplicating events quadratically in the parent log and
+    // re-triggering the parent's FileChanged-keyed completion gate.
+    let watermark = project_store::max_forwarded_child_event_id(
+        repo_root,
+        project_id,
+        parent_run_id,
+        &task.subagent_id,
+    )
+    .unwrap_or(None);
     for event in &snapshot.events {
+        if watermark.is_some_and(|id| event.id <= id) {
+            continue;
+        }
         if matches!(
             event.event_kind,
             AgentRunEventKind::RunStarted
@@ -4479,6 +4738,8 @@ fn forward_child_events_to_parent(
                 "subagentRoleLabel".into(),
                 JsonValue::String(task.role_label.clone()),
             );
+            // Source id so subsequent forwards can skip this event (see the watermark above).
+            map.insert("sourceChildEventId".into(), JsonValue::from(event.id));
         }
         let _ = append_event(
             repo_root,
@@ -4715,6 +4976,39 @@ mod tests {
 
     use crate::db::{configure_connection, database_path_for_repo, migrations::migrations};
 
+    struct PanicMemoryProvider;
+
+    impl ProviderAdapter for PanicMemoryProvider {
+        fn provider_id(&self) -> &str {
+            "panic-memory-provider"
+        }
+
+        fn model_id(&self) -> &str {
+            "panic-memory-model"
+        }
+
+        fn stream_turn(
+            &self,
+            _request: &ProviderTurnRequest,
+            _emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
+        ) -> CommandResult<ProviderTurnOutcome> {
+            Ok(ProviderTurnOutcome::Complete {
+                message: String::new(),
+                reasoning_content: None,
+                reasoning_details: None,
+                usage: None,
+            })
+        }
+
+        fn extract_memory_candidates(
+            &self,
+            _request: &ProviderMemoryExtractionRequest,
+            _emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
+        ) -> CommandResult<ProviderMemoryExtractionOutcome> {
+            panic!("pause artifact capture must not use the drive provider synchronously")
+        }
+    }
+
     fn create_project_database(repo_root: &Path, project_id: &str) {
         crate::db::configure_project_database_paths(
             &repo_root
@@ -4771,6 +5065,179 @@ mod tests {
 
     fn save_custom_definition(repo_root: &Path, definition_id: &str, profile: &str) {
         save_custom_definition_with_attached(repo_root, definition_id, profile, json!([]));
+    }
+
+    #[test]
+    fn user_input_pause_returns_before_pause_artifact_capture() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "pause-artifact-handoff";
+        let run_id = "pause-artifact-run";
+        create_project_database(&repo_root, project_id);
+        project_store::insert_agent_run(
+            &repo_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: None,
+                agent_definition_version: None,
+                project_id: project_id.into(),
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: run_id.into(),
+                provider_id: "fake".into(),
+                model_id: "test".into(),
+                prompt: "Choose a landing page stack.".into(),
+                system_prompt: "system".into(),
+                now: "2026-05-01T12:00:00Z".into(),
+            },
+        )
+        .expect("insert agent run");
+        append_message(
+            &repo_root,
+            project_id,
+            run_id,
+            AgentMessageRole::Assistant,
+            "Waiting for user input.".into(),
+        )
+        .expect("append assistant message");
+
+        let snapshot = finish_owned_agent_drive_error(
+            &repo_root,
+            project_id,
+            run_id,
+            CommandError::user_fixable(
+                AGENT_RUN_USER_INPUT_REQUIRED_CODE,
+                "Owned-agent run paused for user input.",
+            ),
+            &PanicMemoryProvider,
+            AgentProviderConfig::Fake,
+            &AgentRunCancellationToken::default(),
+        )
+        .expect("pause run");
+
+        assert_eq!(snapshot.run.status, AgentRunStatus::Paused);
+        assert!(snapshot
+            .run
+            .last_error
+            .as_ref()
+            .is_some_and(|diagnostic| { diagnostic.code == AGENT_RUN_USER_INPUT_REQUIRED_CODE }));
+    }
+
+    #[test]
+    fn owned_agent_controls_reuse_persisted_full_auto_when_request_controls_missing() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "persisted-full-auto-controls";
+        let run_id = "run-persisted-full-auto";
+        create_project_database(&repo_root, project_id);
+        let agent_snapshot = project_store::insert_agent_run(
+            &repo_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: None,
+                agent_definition_version: None,
+                project_id: project_id.into(),
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: run_id.into(),
+                provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                model_id: "gpt-5.5".into(),
+                prompt: "Build the app.".into(),
+                system_prompt: "system".into(),
+                now: "2026-06-28T04:13:52Z".into(),
+            },
+        )
+        .expect("insert agent run");
+        let persisted_controls = project_store::build_runtime_run_control_state_with_profile(
+            RuntimeAgentIdDto::Engineer,
+            Some(&agent_snapshot.run.agent_definition_id),
+            Some(agent_snapshot.run.agent_definition_version),
+            Some("openai_codex-default"),
+            "gpt-5.5",
+            None,
+            RuntimeRunApprovalModeDto::Yolo,
+            false,
+            "2026-06-28T04:13:52Z",
+            None,
+        )
+        .expect("build runtime controls");
+        project_store::upsert_runtime_run(
+            &repo_root,
+            &project_store::RuntimeRunUpsertRecord {
+                run: project_store::RuntimeRunRecord {
+                    project_id: project_id.into(),
+                    agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                    run_id: run_id.into(),
+                    runtime_kind: OWNED_AGENT_RUNTIME_KIND.into(),
+                    provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                    supervisor_kind: OWNED_AGENT_SUPERVISOR_KIND.into(),
+                    status: project_store::RuntimeRunStatus::Running,
+                    transport: project_store::RuntimeRunTransportRecord {
+                        kind: "internal".into(),
+                        endpoint: "xero://owned-agent".into(),
+                        liveness: project_store::RuntimeRunTransportLiveness::Reachable,
+                    },
+                    started_at: "2026-06-28T04:13:52Z".into(),
+                    last_heartbeat_at: Some("2026-06-28T04:13:52Z".into()),
+                    stopped_at: None,
+                    last_error: None,
+                    updated_at: "2026-06-28T04:13:52Z".into(),
+                },
+                checkpoint: None,
+                control_state: Some(persisted_controls),
+            },
+        )
+        .expect("persist runtime run");
+
+        let allowed = [
+            RuntimeRunApprovalModeDto::Suggest,
+            RuntimeRunApprovalModeDto::AutoEdit,
+            RuntimeRunApprovalModeDto::Yolo,
+        ];
+        let controls = runtime_controls_for_owned_agent_run(
+            &repo_root,
+            &agent_snapshot.run,
+            None,
+            &allowed,
+            RuntimeRunApprovalModeDto::Suggest,
+        )
+        .expect("resolve controls");
+        assert_eq!(
+            controls.active.approval_mode,
+            RuntimeRunApprovalModeDto::Yolo
+        );
+        assert_eq!(
+            controls.active.provider_profile_id.as_deref(),
+            Some("openai_codex-default")
+        );
+
+        let requested = RuntimeRunControlInputDto {
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: Some(agent_snapshot.run.agent_definition_id.clone()),
+            agent_definition_version: Some(agent_snapshot.run.agent_definition_version),
+            provider_profile_id: Some("openai_codex-explicit".into()),
+            model_id: "gpt-5.5".into(),
+            thinking_effort: None,
+            approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            plan_mode_required: false,
+            auto_compact_enabled: true,
+        };
+        let explicit = runtime_controls_for_owned_agent_run(
+            &repo_root,
+            &agent_snapshot.run,
+            Some(&requested),
+            &allowed,
+            RuntimeRunApprovalModeDto::Suggest,
+        )
+        .expect("resolve explicit controls");
+        assert_eq!(
+            explicit.active.approval_mode,
+            RuntimeRunApprovalModeDto::Suggest
+        );
+        assert_eq!(
+            explicit.active.provider_profile_id.as_deref(),
+            Some("openai_codex-explicit")
+        );
     }
 
     #[test]
@@ -5132,6 +5599,106 @@ mod tests {
             checkpoints: Vec::new(),
             action_requests: Vec::new(),
         }
+    }
+
+    #[test]
+    fn workflow_replay_from_snapshot_restores_latest_plan_and_success_counts() {
+        let mut snapshot =
+            snapshot_for_handoff_source(RuntimeAgentIdDto::Engineer, "workflow_replay");
+        snapshot.events = vec![
+            project_store::AgentEventRecord {
+                id: 1,
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                event_kind: AgentRunEventKind::PlanUpdated,
+                payload_json: json!({
+                    "action": "upsert",
+                    "items": [{
+                        "id": "implementation_plan",
+                        "title": "Implementation plan",
+                        "notes": null,
+                        "status": "in_progress",
+                        "mode": "plan",
+                        "updatedAt": "2026-06-28T02:05:30Z"
+                    }]
+                })
+                .to_string(),
+                created_at: "2026-06-28T02:05:30Z".into(),
+            },
+            project_store::AgentEventRecord {
+                id: 2,
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                event_kind: AgentRunEventKind::PlanUpdated,
+                payload_json: json!({
+                    "action": "complete",
+                    "items": [{
+                        "id": "implementation_plan",
+                        "title": "Implementation plan",
+                        "notes": "Stack selected and implementation plan closed.",
+                        "status": "completed",
+                        "mode": "plan",
+                        "phaseId": "plan",
+                        "phaseTitle": "Plan",
+                        "sliceId": "P0-S1",
+                        "updatedAt": "2026-06-28T02:05:35Z"
+                    }]
+                })
+                .to_string(),
+                created_at: "2026-06-28T02:05:35Z".into(),
+            },
+        ];
+        snapshot.tool_calls = vec![
+            project_store::AgentToolCallRecord {
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                tool_call_id: "read-1".into(),
+                tool_name: AUTONOMOUS_TOOL_READ.into(),
+                input_json: "{}".into(),
+                state: AgentToolCallState::Succeeded,
+                result_json: Some("{}".into()),
+                error: None,
+                started_at: "2026-06-28T02:04:00Z".into(),
+                completed_at: Some("2026-06-28T02:04:01Z".into()),
+            },
+            project_store::AgentToolCallRecord {
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                tool_call_id: "read-2".into(),
+                tool_name: AUTONOMOUS_TOOL_READ.into(),
+                input_json: "{}".into(),
+                state: AgentToolCallState::Succeeded,
+                result_json: Some("{}".into()),
+                error: None,
+                started_at: "2026-06-28T02:04:10Z".into(),
+                completed_at: Some("2026-06-28T02:04:11Z".into()),
+            },
+            project_store::AgentToolCallRecord {
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                tool_call_id: "read-failed".into(),
+                tool_name: AUTONOMOUS_TOOL_READ.into(),
+                input_json: "{}".into(),
+                state: AgentToolCallState::Failed,
+                result_json: None,
+                error: None,
+                started_at: "2026-06-28T02:04:20Z".into(),
+                completed_at: Some("2026-06-28T02:04:21Z".into()),
+            },
+        ];
+
+        let replay = workflow_replay_from_snapshot(&snapshot);
+
+        assert_eq!(
+            replay.tool_successes.get(AUTONOMOUS_TOOL_READ).copied(),
+            Some(2)
+        );
+        let implementation_plan = replay
+            .todo_items
+            .get("implementation_plan")
+            .expect("latest persisted plan todo");
+        assert_eq!(implementation_plan.status, AutonomousTodoStatus::Completed);
+        assert_eq!(implementation_plan.phase_id.as_deref(), Some("plan"));
     }
 
     #[test]
@@ -5993,7 +6560,7 @@ mod tests {
         )
         .expect("mutate attached skill after run creation");
 
-        let snapshot = drive_owned_agent_run(request, AgentRunCancellationToken::default())
+        let snapshot = drive_owned_agent_run(request, AgentRunCancellationToken::default(), None)
             .expect("drive run from persisted attached snapshot");
 
         assert_eq!(snapshot.run.status, AgentRunStatus::Completed);

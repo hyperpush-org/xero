@@ -685,8 +685,15 @@ impl ProviderAdapter for VertexAnthropicAdapter {
 }
 
 fn provider_http_client(timeout_ms: u64) -> CommandResult<Client> {
+    let timeout = Duration::from_millis(normalize_timeout(timeout_ms));
     Client::builder()
-        .timeout(Duration::from_millis(normalize_timeout(timeout_ms)))
+        // A single total-request `.timeout()` aborts a healthy long-running SSE stream once it
+        // exceeds the deadline, even while deltas are still flowing (common for high-effort
+        // reasoning turns and long completions). The blocking client has no per-read timeout,
+        // so instead bound only connection setup and rely on TCP keepalive to detect a dead
+        // peer, letting a healthy stream run as long as it keeps delivering bytes.
+        .connect_timeout(timeout)
+        .tcp_keepalive(Duration::from_secs(30))
         .build()
         .map_err(|error| {
             CommandError::system_fault(
@@ -916,17 +923,29 @@ fn sanitize_provider_wire_request_for_estimate(
                 .map(|item| sanitize_provider_wire_request_for_estimate(item, sanitization))
                 .collect(),
         ),
-        JsonValue::Object(object) => JsonValue::Object(
-            object
-                .into_iter()
-                .map(|(key, value)| {
-                    (
-                        key,
-                        sanitize_provider_wire_request_for_estimate(value, sanitization),
-                    )
-                })
-                .collect(),
-        ),
+        JsonValue::Object(object) => {
+            // Anthropic-family attachment blocks carry raw base64 (no `data:` prefix) in
+            // `source.data` alongside `type: "base64"`. Omit that payload from the estimate so
+            // a multi-MB image/PDF is not counted as text.
+            let is_base64_source = object.get("type").and_then(JsonValue::as_str) == Some("base64")
+                && object.get("data").and_then(JsonValue::as_str).is_some();
+            JsonValue::Object(
+                object
+                    .into_iter()
+                    .map(|(key, value)| {
+                        if is_base64_source && key == "data" {
+                            if let JsonValue::String(payload) = &value {
+                                return (key, sanitize_base64_payload_for_estimate(payload, sanitization));
+                            }
+                        }
+                        (
+                            key,
+                            sanitize_provider_wire_request_for_estimate(value, sanitization),
+                        )
+                    })
+                    .collect(),
+            )
+        }
         JsonValue::String(value) => {
             sanitize_provider_wire_string_for_estimate(&value, sanitization)
                 .map(JsonValue::String)
@@ -941,6 +960,30 @@ fn sanitize_provider_wire_string_for_estimate(
     sanitization: &mut ProviderWireEstimateSanitization,
 ) -> Option<String> {
     let (media_type, encoded_payload) = image_data_url_payload(value)?;
+    let (encoded_bytes, estimated_tokens) =
+        account_base64_estimate(encoded_payload, sanitization);
+    Some(format!(
+        "data:{media_type};base64,<omitted {encoded_bytes} encoded bytes; estimated_tokens={estimated_tokens}>"
+    ))
+}
+
+/// Replace a raw base64 payload (e.g. Anthropic `source.data`) with a bounded placeholder and
+/// account its estimated token cost, so the fail-closed budget gate does not treat the encoded
+/// bytes as ~1 token per 4 characters.
+fn sanitize_base64_payload_for_estimate(
+    payload: &str,
+    sanitization: &mut ProviderWireEstimateSanitization,
+) -> JsonValue {
+    let (encoded_bytes, estimated_tokens) = account_base64_estimate(payload, sanitization);
+    JsonValue::String(format!(
+        "<omitted {encoded_bytes} encoded bytes; estimated_tokens={estimated_tokens}>"
+    ))
+}
+
+fn account_base64_estimate(
+    encoded_payload: &str,
+    sanitization: &mut ProviderWireEstimateSanitization,
+) -> (u64, u64) {
     let encoded_bytes = encoded_payload.len() as u64;
     let decoded_bytes = estimated_base64_decoded_bytes(encoded_payload);
     let estimated_tokens = estimate_inline_image_tokens(decoded_bytes);
@@ -951,14 +994,16 @@ fn sanitize_provider_wire_string_for_estimate(
     sanitization.image_data_url_estimated_tokens = sanitization
         .image_data_url_estimated_tokens
         .saturating_add(estimated_tokens);
-    Some(format!(
-        "data:{media_type};base64,<omitted {encoded_bytes} encoded image bytes; estimated_image_tokens={estimated_tokens}>"
-    ))
+    (encoded_bytes, estimated_tokens)
 }
 
 fn image_data_url_payload(value: &str) -> Option<(&str, &str)> {
     let lower = value.to_ascii_lowercase();
-    if !lower.starts_with("data:image/") {
+    // Match any base64 data URL, not just images: PDF/document attachments
+    // (`data:application/pdf;base64,...`) were previously counted as raw text at ~1 token / 4
+    // chars, wildly over-estimating and tripping the fail-closed context-budget gate on
+    // requests the provider would accept.
+    if !lower.starts_with("data:") {
         return None;
     }
     let marker = ";base64,";
@@ -1778,7 +1823,15 @@ fn anthropic_request_body(
     }
     body.insert("system".into(), json!(request.system_prompt));
     body.insert("max_tokens".into(), json!(DEFAULT_MAX_OUTPUT_TOKENS));
-    body.insert("stream".into(), json!(stream));
+    // Bedrock (InvokeModel) and Vertex (rawPredict/streamRawPredict) select streaming via the
+    // API operation, not a body field, and their strict Anthropic-on-* schema rejects an
+    // extraneous `stream` key with a ValidationException. Only the native Anthropic Messages
+    // API takes `stream` in the body.
+    let is_native_anthropic =
+        !anthropic_version.starts_with("bedrock-") && !anthropic_version.starts_with("vertex-");
+    if is_native_anthropic {
+        body.insert("stream".into(), json!(stream));
+    }
     body.insert(
         "messages".into(),
         JsonValue::Array(anthropic_messages(request)?),
@@ -1787,7 +1840,7 @@ fn anthropic_request_body(
         "tools".into(),
         JsonValue::Array(request.tools.iter().map(anthropic_tool).collect()),
     );
-    if anthropic_version.starts_with("bedrock-") || anthropic_version.starts_with("vertex-") {
+    if !is_native_anthropic {
         body.insert("anthropic_version".into(), json!(anthropic_version));
     }
     Ok(JsonValue::Object(body))
@@ -2067,12 +2120,19 @@ struct OpenAiChatChunk {
     choices: Vec<OpenAiChatChoice>,
     #[serde(default)]
     usage: Option<OpenAiUsage>,
+    // OpenRouter and some compatible gateways deliver a mid-stream `{"error": {...}}` frame
+    // instead of an SSE `error` event. Capture it so it is surfaced rather than silently
+    // parsed as a chunk with no choices.
+    #[serde(default)]
+    error: Option<JsonValue>,
 }
 
 #[derive(Debug, Deserialize)]
 struct OpenAiChatChoice {
     #[serde(default)]
     delta: OpenAiChatDelta,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -2138,6 +2198,7 @@ fn parse_openai_chat_sse(
     let mut reasoning_details_buffer = Vec::<JsonValue>::new();
     let mut partial_calls = BTreeMap::<usize, PartialToolCall>::new();
     let mut usage = None;
+    let mut finish_reason: Option<String> = None;
 
     for line in BufReader::new(response).lines() {
         let line = line.map_err(|error| {
@@ -2162,6 +2223,9 @@ fn parse_openai_chat_sse(
                 format!("Xero could not decode a {provider_id} stream chunk: {error}"),
             )
         })?;
+        if let Some(error) = chunk.error.as_ref() {
+            return Err(anthropic_stream_error(provider_id, &json!({ "error": error })));
+        }
         if let Some(next_usage) = chunk.usage {
             let mapped = openai_provider_usage(
                 next_usage.prompt_tokens,
@@ -2175,6 +2239,9 @@ fn parse_openai_chat_sse(
             usage = Some(mapped);
         }
         for choice in chunk.choices {
+            if let Some(reason) = choice.finish_reason {
+                finish_reason = Some(reason);
+            }
             let OpenAiChatDelta {
                 content,
                 reasoning,
@@ -2220,6 +2287,9 @@ fn parse_openai_chat_sse(
         }
     }
 
+    // `tool_calls` and `stop`/`end_turn` are normal; only `length` signals the model was cut
+    // off at the output-token limit. Surface truncation instead of returning partial text.
+    ensure_provider_output_not_truncated(provider_id, finish_reason.as_deref())?;
     let reasoning_content = provider_replays_openai_reasoning_content(provider_id)
         .then(|| reasoning_content_buffer.trim().to_owned())
         .filter(|reasoning| !reasoning.is_empty());
@@ -2330,6 +2400,35 @@ fn parse_openai_responses_sse(
                     emit(ProviderStreamEvent::Usage(mapped.clone()))?;
                     usage = Some(mapped);
                 }
+            }
+            // The response ended without finishing (most often reasoning + output exhausted
+            // `max_output_tokens`). Record usage, then surface it rather than returning the
+            // partial (possibly empty) output as a complete turn.
+            "response.incomplete" => {
+                if let Some(mapped) = value
+                    .get("response")
+                    .and_then(|response| response.get("usage"))
+                    .map(openai_responses_usage)
+                {
+                    emit(ProviderStreamEvent::Usage(mapped.clone()))?;
+                }
+                let reason = value
+                    .get("response")
+                    .and_then(|response| response.get("incomplete_details"))
+                    .and_then(|details| details.get("reason"))
+                    .and_then(JsonValue::as_str);
+                let normalized = match reason {
+                    Some("max_output_tokens") => Some("max_tokens"),
+                    other => other,
+                };
+                ensure_provider_output_not_truncated(provider_id, normalized)?;
+                return Err(CommandError::user_fixable(
+                    "agent_provider_output_incomplete",
+                    format!(
+                        "The {provider_id} response ended before completing ({}).",
+                        reason.unwrap_or("unknown reason")
+                    ),
+                ));
             }
             _ => {}
         }
@@ -2552,6 +2651,7 @@ fn parse_anthropic_sse(
     let mut message = String::new();
     let mut partial_calls = BTreeMap::<usize, PartialToolCall>::new();
     let mut usage = ProviderUsage::default();
+    let mut stop_reason: Option<String> = None;
 
     for line in BufReader::new(response).lines() {
         let line = line.map_err(|error| {
@@ -2663,6 +2763,13 @@ fn parse_anthropic_sse(
                 }
             }
             "message_delta" => {
+                if let Some(reason) = value
+                    .get("delta")
+                    .and_then(|delta| delta.get("stop_reason"))
+                    .and_then(JsonValue::as_str)
+                {
+                    stop_reason = Some(reason.to_string());
+                }
                 if let Some(usage_node) = value.get("usage") {
                     usage.output_tokens = usage_node
                         .get("output_tokens")
@@ -2682,10 +2789,17 @@ fn parse_anthropic_sse(
                     }
                 }
             }
+            // Anthropic can deliver a mid-stream `error` event (e.g. `overloaded_error`).
+            // Surface it as a retryable failure instead of silently returning a truncated,
+            // "successful" turn.
+            "error" => {
+                return Err(anthropic_stream_error(provider_id, &value));
+            }
             "message_stop" => {}
             _ => {}
         }
     }
+    ensure_provider_output_not_truncated(provider_id, stop_reason.as_deref())?;
     usage.billable_input_tokens = usage.input_tokens;
     usage.input_tokens = usage
         .input_tokens
@@ -2792,7 +2906,52 @@ fn parse_anthropic_json_response(
     if let Some(usage) = usage.as_ref() {
         emit(ProviderStreamEvent::Usage(usage.clone()))?;
     }
+    ensure_provider_output_not_truncated(
+        provider_id,
+        value.get("stop_reason").and_then(JsonValue::as_str),
+    )?;
     finish_provider_turn(provider_id, message, None, None, partial_calls, usage)
+}
+
+/// Fail when a provider stopped generating because it hit the output-token limit. Without
+/// this, the harness accepts the truncated text (or a mid-object tool-call JSON) as the final
+/// answer. `max_tokens` is Anthropic's reason; `length` is the OpenAI-family equivalent.
+fn ensure_provider_output_not_truncated(
+    provider_id: &str,
+    stop_reason: Option<&str>,
+) -> CommandResult<()> {
+    if matches!(stop_reason, Some("max_tokens") | Some("length")) {
+        return Err(CommandError::user_fixable(
+            "agent_provider_output_truncated",
+            format!(
+                "The {provider_id} response stopped at the output token limit before finishing (stop reason `{}`). Ask for a shorter response or raise the model's max output tokens.",
+                stop_reason.unwrap_or_default()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Convert an Anthropic mid-stream `error` event into a retryable failure. These are
+/// transient conditions (e.g. `overloaded_error`) that must not be dropped, which would leave
+/// the loop treating a partial stream as a complete turn.
+fn anthropic_stream_error(provider_id: &str, value: &JsonValue) -> CommandError {
+    let error_node = value.get("error");
+    let error_type = error_node
+        .and_then(|error| error.get("type"))
+        .and_then(JsonValue::as_str)
+        .unwrap_or("error");
+    let message = error_node
+        .and_then(|error| error.get("message"))
+        .and_then(JsonValue::as_str)
+        .unwrap_or("The provider reported a streaming error.");
+    CommandError::retryable(
+        "agent_provider_stream_error",
+        format!(
+            "The {provider_id} stream returned an error ({error_type}): {}",
+            redact_provider_error_body(message)
+        ),
+    )
 }
 
 fn finish_provider_turn(
@@ -4050,12 +4209,15 @@ mod tests {
             .expect("bedrock body");
         assert!(bedrock.get("model").is_none());
         assert_eq!(bedrock["anthropic_version"], BEDROCK_ANTHROPIC_VERSION);
-        assert_eq!(bedrock["stream"], false);
+        // Bedrock's InvokeModel body must not carry a `stream` key (its strict Anthropic-on-*
+        // schema rejects it); streaming is selected by the API operation instead.
+        assert!(bedrock.get("stream").is_none());
 
         let vertex = anthropic_request_body(None, VERTEX_ANTHROPIC_VERSION, &request, false)
             .expect("vertex body");
         assert!(vertex.get("model").is_none());
         assert_eq!(vertex["anthropic_version"], VERTEX_ANTHROPIC_VERSION);
+        assert!(vertex.get("stream").is_none());
     }
 
     #[test]

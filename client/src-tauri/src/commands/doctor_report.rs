@@ -1934,6 +1934,7 @@ mod tests {
             project_id: project_id.into(),
             repository_id: format!("repo-{project_id}"),
             root_path: format!("/tmp/{project_id}"),
+            is_git_repo: true,
         }
     }
 

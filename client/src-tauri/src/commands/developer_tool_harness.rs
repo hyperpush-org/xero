@@ -1266,6 +1266,7 @@ fn ensure_harness_fixture_registered(
             project_id: imported.project.id.clone(),
             repository_id: imported.repository.id.clone(),
             root_path: imported.repository.root_path.clone(),
+            is_git_repo: imported.repository.is_git_repo,
         },
         &Default::default(),
     )?;

@@ -2430,7 +2430,8 @@ impl HeadlessProductionToolRuntime {
         timeout_ms: Option<u64>,
     ) -> Result<HeadlessCommandOutput, ToolExecutionError> {
         validate_headless_argv(&argv)?;
-        let mut child = Command::new(&argv[0])
+        let mut command = Command::new(&argv[0]);
+        command
             .args(argv.iter().skip(1))
             .current_dir(&cwd)
             .stdin(if stdin.is_some() {
@@ -2439,30 +2440,23 @@ impl HeadlessProductionToolRuntime {
                 Stdio::null()
             })
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| {
-                ToolExecutionError::retryable(
-                    "agent_core_headless_command_spawn_failed",
-                    format!("Xero could not launch `{}`: {error}", argv[0]),
-                )
-            })?;
+            .stderr(Stdio::piped());
+        // Run in its own process group so a timeout/kill terminates the whole tree, not just the
+        // direct child. Otherwise a backgrounded grandchild keeps the stdout pipe open and the
+        // capture-thread join below blocks forever, hanging the tool call and the agent run.
+        crate::sandbox::configure_sandboxed_process_group(&mut command);
+        let mut child = command.spawn().map_err(|error| {
+            ToolExecutionError::retryable(
+                "agent_core_headless_command_spawn_failed",
+                format!("Xero could not launch `{}`: {error}", argv[0]),
+            )
+        })?;
+        let child_id = child.id();
 
-        if let Some(bytes) = stdin {
-            let mut child_stdin = child.stdin.take().ok_or_else(|| {
-                ToolExecutionError::retryable(
-                    "agent_core_headless_command_stdin_missing",
-                    "Xero could not open stdin for the command.",
-                )
-            })?;
-            child_stdin.write_all(bytes).map_err(|error| {
-                ToolExecutionError::retryable(
-                    "agent_core_headless_command_stdin_failed",
-                    format!("Xero could not write command stdin: {error}"),
-                )
-            })?;
-        }
-
+        // Take the pipes and start draining stdout/stderr BEFORE writing stdin. Writing the full
+        // stdin payload first (as before) deadlocks when the child emits more than one pipe
+        // buffer (~64 KB) of output while we are still blocked on the stdin write — the child
+        // blocks writing stdout and we block writing stdin.
         let stdout = child.stdout.take().ok_or_else(|| {
             ToolExecutionError::retryable(
                 "agent_core_headless_command_stdout_missing",
@@ -2479,6 +2473,25 @@ impl HeadlessProductionToolRuntime {
             thread::spawn(move || read_limited_output(stdout, MAX_TOOL_OUTPUT_BYTES));
         let stderr_handle =
             thread::spawn(move || read_limited_output(stderr, MAX_TOOL_OUTPUT_BYTES));
+
+        if let Some(bytes) = stdin {
+            let mut child_stdin = child.stdin.take().ok_or_else(|| {
+                crate::sandbox::cleanup_sandboxed_process_group(child_id);
+                ToolExecutionError::retryable(
+                    "agent_core_headless_command_stdin_missing",
+                    "Xero could not open stdin for the command.",
+                )
+            })?;
+            child_stdin.write_all(bytes).map_err(|error| {
+                crate::sandbox::cleanup_sandboxed_process_group(child_id);
+                ToolExecutionError::retryable(
+                    "agent_core_headless_command_stdin_failed",
+                    format!("Xero could not write command stdin: {error}"),
+                )
+            })?;
+            // Close stdin so the child sees EOF (dropping `child_stdin`).
+        }
+
         let started_at = Instant::now();
         let timeout =
             Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_HEADLESS_COMMAND_TIMEOUT_MS));
@@ -2488,7 +2501,7 @@ impl HeadlessProductionToolRuntime {
                 Ok(Some(status)) => break status,
                 Ok(None) if started_at.elapsed() >= timeout => {
                     timed_out = true;
-                    let _ = child.kill();
+                    crate::sandbox::cleanup_sandboxed_process_group(child_id);
                     break child.wait().map_err(|error| {
                         ToolExecutionError::retryable(
                             "agent_core_headless_command_wait_failed",
@@ -2498,7 +2511,7 @@ impl HeadlessProductionToolRuntime {
                 }
                 Ok(None) => thread::sleep(Duration::from_millis(10)),
                 Err(error) => {
-                    let _ = child.kill();
+                    crate::sandbox::cleanup_sandboxed_process_group(child_id);
                     return Err(ToolExecutionError::retryable(
                         "agent_core_headless_command_wait_failed",
                         format!("Xero could not observe command execution: {error}"),
@@ -2506,6 +2519,9 @@ impl HeadlessProductionToolRuntime {
                 }
             }
         };
+        // Reap any surviving grandchildren so their inherited stdout write-ends close and the
+        // capture threads below can reach EOF and join instead of hanging.
+        crate::sandbox::cleanup_sandboxed_process_group(child_id);
         let stdout = stdout_handle.join().map_err(|_| {
             ToolExecutionError::retryable(
                 "agent_core_headless_command_stdout_failed",
@@ -4036,9 +4052,12 @@ fn resolve_workspace_path_for_root(
     if requested_path
         .components()
         .any(|component| match component {
-            Component::Normal(value) => value
-                .to_str()
-                .is_some_and(|part| matches!(part, ".git" | ".xero")),
+            // Compare case-insensitively: on macOS's default case-insensitive filesystem
+            // `.GIT`/`.Xero` resolve to the same protected directories, so an exact match would
+            // let a write slip through the guard while still landing in `.git`/`.xero`.
+            Component::Normal(value) => value.to_str().is_some_and(|part| {
+                part.eq_ignore_ascii_case(".git") || part.eq_ignore_ascii_case(".xero")
+            }),
             _ => false,
         })
     {
@@ -4046,6 +4065,18 @@ fn resolve_workspace_path_for_root(
             "agent_core_headless_path_protected",
             format!("Path `{requested}` targets protected workspace state."),
         ));
+    }
+    // Reject an existing symlink leaf. In `allow_missing_leaf` mode only the nearest existing
+    // ancestor is canonicalized below, so a symlink at the leaf (e.g. a checked-in
+    // `deploy.cfg -> ~/.ssh/authorized_keys`) would otherwise be followed by `fs::write`,
+    // escaping the workspace. Reads/deletes canonicalize the leaf itself and are unaffected.
+    if let Ok(metadata) = fs::symlink_metadata(&joined) {
+        if metadata.file_type().is_symlink() {
+            return Err(CoreError::invalid_request(
+                "agent_core_headless_path_denied",
+                format!("Path `{requested}` resolves through a symlink and is not allowed."),
+            ));
+        }
     }
     let check_path = if allow_missing_leaf {
         let mut candidate = joined.parent().unwrap_or(root.as_path()).to_path_buf();

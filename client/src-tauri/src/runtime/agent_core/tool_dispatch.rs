@@ -48,6 +48,8 @@ const AUTONOMOUS_TOOL_COMMAND_PROBE_SCOPE_INVALID_CODE: &str =
     "autonomous_tool_command_probe_scope_invalid";
 const AUTONOMOUS_TOOL_COMMAND_VERIFY_SCOPE_INVALID_CODE: &str =
     "autonomous_tool_command_verify_scope_invalid";
+const AUTONOMOUS_WEB_FETCH_ACCESS_DENIED_CODE: &str = "autonomous_web_fetch_access_denied";
+const AUTONOMOUS_WEB_FETCH_MAX_CHARS_INVALID_CODE: &str = "autonomous_web_fetch_max_chars_invalid";
 const AGENT_TOOL_INPUT_INVALID_CODE: &str = "agent_tool_input_invalid";
 
 const MODEL_RECOVERABLE_TOOL_ERROR_CODES: &[&str] = &[
@@ -59,6 +61,8 @@ const MODEL_RECOVERABLE_TOOL_ERROR_CODES: &[&str] = &[
     AUTONOMOUS_TOOL_EDIT_EXPECTED_EMPTY_CODE,
     AUTONOMOUS_TOOL_COMMAND_PROBE_SCOPE_INVALID_CODE,
     AUTONOMOUS_TOOL_COMMAND_VERIFY_SCOPE_INVALID_CODE,
+    AUTONOMOUS_WEB_FETCH_ACCESS_DENIED_CODE,
+    AUTONOMOUS_WEB_FETCH_MAX_CHARS_INVALID_CODE,
 ];
 
 #[allow(clippy::too_many_arguments)]
@@ -2187,13 +2191,19 @@ fn model_recovery_message_for_tool_error_code(code: &str) -> Option<&'static str
             "Retry the edit with the exact current text in expected; for a blank line, use its line ending such as \\n.",
         ),
         AUTONOMOUS_TOOL_COMMAND_PROBE_SCOPE_INVALID_CODE => Some(
-            "Choose the right command tool and retry: command_probe is only for bounded read-only discovery; use command_run for setup, scaffolding, package-manager create/install/add/update, generators, or other repo-scoped commands outside that allowlist.",
+            "Choose the right tool and retry: command_probe is only for bounded read-only discovery. Do not use command_probe for package-manager help/create/install/add/update, scaffolding, generators, or setup. Use web_search/web_fetch for official docs when available, then use command_run for the finite documented command or ask the user only after no safe form exists.",
         ),
         AUTONOMOUS_TOOL_COMMAND_VERIFY_SCOPE_INVALID_CODE => Some(
             "Choose the right command tool and retry: command_verify is only for tests, lint, typecheck/type-check, build, check, fmt, and known verification scripts; use command_run for setup, scaffolding, package-manager create/install/add/update, or generators.",
         ),
         AGENT_TOOL_INPUT_INVALID_CODE => Some(
             "Correct the input to match the tool schema, then retry. If a file mutation requires a current hash, read or hash the file first. If a command timeout is too large, use the advertised maximum or omit timeoutMs.",
+        ),
+        AUTONOMOUS_WEB_FETCH_MAX_CHARS_INVALID_CODE => Some(
+            "Retry web_fetch with maxChars at or below the advertised maximum, or omit maxChars to use Xero's bounded default.",
+        ),
+        AUTONOMOUS_WEB_FETCH_ACCESS_DENIED_CODE => Some(
+            "Do not retry the same blocked URL. Use web_search results or another official/primary source URL, then call web_fetch on that alternate source.",
         ),
         _ => None,
     }
@@ -2856,6 +2866,27 @@ mod tests {
         assert!(tool_error.retryable);
         assert_eq!(tool_error.code, AUTONOMOUS_TOOL_EDIT_EXPECTED_EMPTY_CODE);
         assert!(tool_error.model_message.contains("blank line"));
+    }
+
+    #[test]
+    fn web_fetch_failures_have_specific_model_recovery_guidance() {
+        let max_chars_error = command_error_to_tool_execution_error(CommandError::user_fixable(
+            AUTONOMOUS_WEB_FETCH_MAX_CHARS_INVALID_CODE,
+            "Xero requires web fetch maxChars to be between 1 and 12000.",
+        ));
+        assert!(max_chars_error.retryable);
+        assert!(max_chars_error
+            .model_message
+            .contains("maxChars at or below the advertised maximum"));
+
+        let blocked_error = command_error_to_tool_execution_error(CommandError::user_fixable(
+            AUTONOMOUS_WEB_FETCH_ACCESS_DENIED_CODE,
+            "Xero received HTTP 403 while fetching the requested URL.",
+        ));
+        assert!(blocked_error.retryable);
+        assert!(blocked_error
+            .model_message
+            .contains("Do not retry the same blocked URL"));
     }
 
     #[test]

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { MutableRefObject } from 'react'
 import {
   ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
+  attachRuntimeCompletionNotificationSubscription,
   attachRuntimeStreamSubscription,
   createRuntimeStreamEventBuffer,
   createRuntimeRunUpdateBuffer,
@@ -1304,6 +1305,91 @@ describe('runtime stream event coalescing', () => {
     expect(currentStream()?.lastIssue).toBeNull()
 
     cleanup()
+  })
+
+  it('swallows async unsubscribe rejections while cleaning up runtime stream subscriptions', async () => {
+    let stream: RuntimeStreamView | null = null
+    const unsubscribe = vi.fn(
+      () => Promise.reject(new TypeError("undefined is not an object (evaluating 'listeners[eventId].handlerId')")),
+    ) as unknown as () => void
+    const adapter = {
+      subscribeRuntimeStream: vi.fn(
+        async (projectId, agentSessionId, itemKinds) => ({
+          response: {
+            projectId,
+            agentSessionId,
+            runtimeKind: 'openai_codex',
+            runId: 'run-1',
+            sessionId: 'runtime-session-1',
+            flowId: 'flow-1',
+            subscribedItemKinds: itemKinds,
+          },
+          unsubscribe,
+        }),
+      ),
+    } as Pick<XeroDesktopAdapter, 'subscribeRuntimeStream'> as XeroDesktopAdapter
+    const updateRuntimeStream = vi.fn(
+      (
+        _projectId: string,
+        _agentSessionId: string,
+        updater: (current: RuntimeStreamView | null) => RuntimeStreamView | null,
+      ) => {
+        stream = updater(stream)
+      },
+    )
+
+    const cleanup = attachRuntimeStreamSubscription({
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      runtimeSession: makeRuntimeSession(),
+      runId: 'run-1',
+      adapter,
+      runtimeActionRefreshKeysRef: { current: {} },
+      updateRuntimeStream,
+      scheduleRuntimeMetadataRefresh: vi.fn(),
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    cleanup()
+    await Promise.resolve()
+
+    expect(unsubscribe).toHaveBeenCalledTimes(1)
+  })
+
+  it('swallows async unsubscribe rejections while cleaning up completion subscriptions', async () => {
+    const unsubscribe = vi.fn(
+      () => Promise.reject(new TypeError("undefined is not an object (evaluating 'listeners[eventId].handlerId')")),
+    ) as unknown as () => void
+    const adapter = {
+      subscribeRuntimeStream: vi.fn(
+        async (projectId, agentSessionId, itemKinds) => ({
+          response: {
+            projectId,
+            agentSessionId,
+            runtimeKind: 'openai_codex',
+            runId: 'run-1',
+            sessionId: 'runtime-session-1',
+            flowId: 'flow-1',
+            subscribedItemKinds: itemKinds,
+          },
+          unsubscribe,
+        }),
+      ),
+    } as Pick<XeroDesktopAdapter, 'subscribeRuntimeStream'> as XeroDesktopAdapter
+
+    const cleanup = attachRuntimeCompletionNotificationSubscription({
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      runId: 'run-1',
+      adapter,
+      recordRuntimeSessionCompletion: vi.fn(),
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    cleanup()
+    await Promise.resolve()
+
+    expect(unsubscribe).toHaveBeenCalledTimes(1)
   })
 
   it('surfaces a retryable issue when runtime stream subscription never settles', () => {

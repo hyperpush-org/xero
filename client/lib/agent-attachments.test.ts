@@ -132,6 +132,30 @@ describe('checkAttachmentModelCompatibility', () => {
         { kind: 'image', mediaType: 'image/png' },
         {
           providerId: 'xai',
+          modelId: 'grok-4.5',
+          label: 'Grok 4.5',
+          inputModalities: [],
+        },
+      ),
+    ).toEqual({ supported: true })
+
+    expect(
+      checkAttachmentModelCompatibility(
+        { kind: 'image', mediaType: 'image/png' },
+        {
+          providerId: 'xai',
+          modelId: 'grok-latest',
+          label: 'Grok Latest',
+          inputModalities: [],
+        },
+      ),
+    ).toEqual({ supported: true })
+
+    expect(
+      checkAttachmentModelCompatibility(
+        { kind: 'image', mediaType: 'image/png' },
+        {
+          providerId: 'xai',
           modelId: 'grok-4.3-latest',
           label: 'Grok 4.3 Latest',
           inputModalities: [],

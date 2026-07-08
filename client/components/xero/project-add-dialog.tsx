@@ -19,6 +19,7 @@ export interface ProjectAddDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   isImporting: boolean
+  errorMessage?: string | null
   onSelectExisting: () => Promise<boolean | void> | boolean | void
   onPickParentFolder: () => Promise<string | null>
   onCreate: (parentPath: string, name: string) => Promise<boolean>
@@ -28,6 +29,7 @@ export function ProjectAddDialog({
   open,
   onOpenChange,
   isImporting,
+  errorMessage,
   onSelectExisting,
   onPickParentFolder,
   onCreate,
@@ -48,6 +50,12 @@ export function ProjectAddDialog({
     }
   }, [open])
 
+  useEffect(() => {
+    if (open && errorMessage) {
+      setError(errorMessage)
+    }
+  }, [errorMessage, open])
+
   const trimmedName = name.trim()
   const canCreate = trimmedName.length > 0 && parentPath !== null && !busy
 
@@ -55,8 +63,10 @@ export function ProjectAddDialog({
     setBusy(true)
     setError(null)
     try {
-      await onSelectExisting()
-      onOpenChange(false)
+      const ok = await onSelectExisting()
+      if (ok !== false) {
+        onOpenChange(false)
+      }
     } finally {
       setBusy(false)
     }
@@ -136,7 +146,7 @@ export function ProjectAddDialog({
             </div>
             <DialogDescription className="text-[12.5px] leading-relaxed">
               {mode === 'choose'
-                ? 'Open an existing repository or scaffold a brand-new project.'
+                ? 'Open an existing folder or scaffold a brand-new project.'
                 : 'Choose where the new project folder should live and give it a name.'}
             </DialogDescription>
           </DialogHeader>
@@ -198,7 +208,7 @@ export function ProjectAddDialog({
               <ChoiceCard
                 icon={<FolderOpen className="h-4 w-4" />}
                 title="Open existing"
-                description="Pick a folder that already contains a Git repository."
+                description="Pick any folder to use as a project."
                 disabled={dialogBusy}
                 loading={dialogBusy}
                 onClick={() => void handleSelectExisting()}
@@ -206,7 +216,7 @@ export function ProjectAddDialog({
               <ChoiceCard
                 icon={<FolderPlus className="h-4 w-4" />}
                 title="Create new"
-                description="Make a new folder and initialize it as a Git repository."
+                description="Make a new local project folder."
                 disabled={dialogBusy}
                 onClick={() => setMode('create')}
               />
@@ -272,13 +282,16 @@ export function ProjectAddDialog({
                   </p>
                 ) : null}
               </div>
-              {error ? (
-                <p className="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-[12px] text-destructive">
-                  {error}
-                </p>
-              ) : null}
             </div>
           )}
+          {error ? (
+            <p
+              role="alert"
+              className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-[12px] text-destructive"
+            >
+              {error}
+            </p>
+          ) : null}
         </div>
     </BaseDialog>
   )

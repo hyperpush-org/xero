@@ -68,7 +68,11 @@ pub(crate) fn drive_provider_loop(
 ) -> CommandResult<()> {
     let mut workspace_guard =
         AgentWorkspaceGuard::new(tool_runtime.subagent_write_scope().cloned());
-    let mut usage_total = ProviderUsage::default();
+    // Seed the running total from any usage already persisted for this run so that a
+    // continuation (user resume, wakeup, approval replay) accumulates onto prior segments
+    // instead of overwriting the `agent_usage` row with only this drive's tokens. Cost is
+    // recomputed from the cumulative token totals on each persist.
+    let mut usage_total = seed_usage_total_from_persisted(repo_root, project_id, run_id)?;
     let task_classification =
         classify_agent_task(&provider_messages_task_text(&messages), &controls);
     let mut verification_gate_prompt_count = 0_u8;
@@ -435,14 +439,16 @@ pub(crate) fn drive_provider_loop(
                         &[],
                     )?;
                 }
-                persist_provider_usage(
-                    repo_root,
-                    project_id,
-                    run_id,
-                    provider.provider_id(),
-                    provider.model_id(),
-                    &usage_total,
-                )?;
+                if provider_usage_has_tokens(&usage_total) {
+                    persist_provider_usage(
+                        repo_root,
+                        project_id,
+                        run_id,
+                        provider.provider_id(),
+                        provider.model_id(),
+                        &usage_total,
+                    )?;
+                }
                 record_state_transition(
                     repo_root,
                     project_id,
@@ -5441,9 +5447,14 @@ fn record_missing_assistant_message_delta(
     if final_message.is_empty() || streamed_assistant_message == final_message {
         return Ok(());
     }
-    let missing_delta = final_message
-        .strip_prefix(streamed_assistant_message)
-        .unwrap_or(final_message);
+    // Only emit the tail that extends what was already streamed. If the streamed text is not
+    // a prefix of the final message (provider normalized/trimmed/retried), we cannot express
+    // the difference as an additive delta — the live consumer concatenates deltas, so
+    // appending the whole final message here would double-render it. The durable assistant
+    // message row already holds the correct final text, so skip the live delta in that case.
+    let Some(missing_delta) = final_message.strip_prefix(streamed_assistant_message) else {
+        return Ok(());
+    };
     if missing_delta.is_empty() {
         return Ok(());
     }
@@ -5586,13 +5597,22 @@ pub(crate) fn provider_messages_from_snapshot(
                 let provider_content = serialize_model_visible_tool_result(&result)?;
                 if let Some(tool_call) = tool_calls_by_id.get(&result.tool_call_id).cloned() {
                     match messages.last_mut() {
+                        // The preceding assistant already declares this tool call (the
+                        // normal case: assistant tool calls are persisted in provider
+                        // metadata and replayed above). Leave it untouched — pushing here
+                        // would emit a duplicate `tool_use`/`tool_call` id that Anthropic
+                        // and OpenAI-compatible providers reject.
                         Some(ProviderMessage::Assistant { tool_calls, .. })
-                            if !tool_calls
+                            if tool_calls
                                 .iter()
-                                .any(|call| call.tool_call_id == result.tool_call_id) =>
-                        {
+                                .any(|call| call.tool_call_id == result.tool_call_id) => {}
+                        // The assistant carrier is present but this call is missing from it
+                        // (e.g. metadata lost for one call in a batch): attach it.
+                        Some(ProviderMessage::Assistant { tool_calls, .. }) => {
                             tool_calls.push(tool_call);
                         }
+                        // No assistant carrier at all (missing metadata): synthesize one so
+                        // the tool result is preceded by a matching tool call.
                         _ => messages.push(ProviderMessage::Assistant {
                             content: String::new(),
                             reasoning_content: None,
@@ -6262,6 +6282,27 @@ fn provider_usage_cost_micros(provider_id: &str, model_id: &str, usage: &Provide
     })
 }
 
+fn seed_usage_total_from_persisted(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> CommandResult<ProviderUsage> {
+    let Some(record) = project_store::load_agent_usage(repo_root, project_id, run_id)? else {
+        return Ok(ProviderUsage::default());
+    };
+    Ok(ProviderUsage {
+        input_tokens: record.input_tokens,
+        billable_input_tokens: record.billable_input_tokens,
+        output_tokens: record.output_tokens,
+        total_tokens: record.total_tokens,
+        cache_read_tokens: record.cache_read_tokens,
+        cache_creation_tokens: record.cache_creation_tokens,
+        // Cost is re-derived from the cumulative token totals on each persist; do not seed a
+        // reported cost here so provider-reported costs for this drive's segments still win.
+        reported_cost_micros: None,
+    })
+}
+
 fn persist_provider_usage(
     repo_root: &Path,
     project_id: &str,
@@ -6271,14 +6312,17 @@ fn persist_provider_usage(
     usage: &ProviderUsage,
 ) -> CommandResult<()> {
     let estimated_cost_micros = provider_usage_cost_micros(provider_id, model_id, usage);
-    let run_snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
+    // Only the run row's definition id/version are needed here; loading the full snapshot (all
+    // messages, events, tool calls, checkpoints) on every usage persist was O(run size) per
+    // streamed segment.
+    let run_record = project_store::load_agent_run_record(repo_root, project_id, run_id)?;
     project_store::upsert_agent_usage(
         repo_root,
         &project_store::AgentUsageRecord {
             project_id: project_id.into(),
             run_id: run_id.into(),
-            agent_definition_id: run_snapshot.run.agent_definition_id,
-            agent_definition_version: run_snapshot.run.agent_definition_version,
+            agent_definition_id: run_record.agent_definition_id,
+            agent_definition_version: run_record.agent_definition_version,
             provider_id: provider_id.into(),
             model_id: model_id.into(),
             input_tokens: usage.input_tokens,
@@ -10005,6 +10049,145 @@ mod tests {
         assert_eq!(
             reloaded_assistant.2[0].tool_call_id,
             "call-tool-search-reasoning-replay"
+        );
+    }
+
+    #[test]
+    fn provider_replay_does_not_duplicate_assistant_tool_call_message() {
+        use crate::db::project_store::{
+            AgentMessageRecord, AgentRunRecord, AgentRunSnapshotRecord, AgentRunStatus,
+            AgentToolCallRecord, AgentToolCallState,
+        };
+        let _guard = project_state_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "replay-dup-project".to_string();
+        let run_id = "replay-dup-run".to_string();
+        create_project_database(&repo_root, &project_id);
+
+        let tool_call_id = "call-replay-dup".to_string();
+        let tool_name = AUTONOMOUS_TOOL_TOOL_SEARCH.to_string();
+        let assistant_metadata = xero_agent_core::RuntimeMessageProviderMetadata::assistant_turn(
+            "assistant-1".to_string(),
+            None,
+            None,
+            vec![xero_agent_core::RuntimeProviderToolCallMetadata {
+                tool_call_id: tool_call_id.clone(),
+                provider_tool_name: tool_name.clone(),
+                arguments: json!({ "query": "registry", "limit": 10 }),
+            }],
+        );
+        let tool_result = AgentToolResult {
+            tool_call_id: tool_call_id.clone(),
+            tool_name: tool_name.clone(),
+            ok: true,
+            summary: "ok".into(),
+            output: json!({ "results": [] }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let now = "2026-05-01T12:00:00Z".to_string();
+        let message = |id: i64, role: AgentMessageRole, content: String, meta: Option<String>| {
+            AgentMessageRecord {
+                id,
+                project_id: project_id.clone(),
+                run_id: run_id.clone(),
+                role,
+                content,
+                provider_metadata_json: meta,
+                created_at: now.clone(),
+                attachments: Vec::new(),
+            }
+        };
+        let snapshot = AgentRunSnapshotRecord {
+            run: AgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: "engineer".into(),
+                agent_definition_version: 1,
+                project_id: project_id.clone(),
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: run_id.clone(),
+                trace_id: "trace-1".into(),
+                lineage_kind: "root".into(),
+                parent_run_id: None,
+                parent_trace_id: None,
+                parent_subagent_id: None,
+                subagent_role: None,
+                provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                status: AgentRunStatus::Running,
+                prompt: "do a thing".into(),
+                system_prompt: "system".into(),
+                started_at: now.clone(),
+                last_heartbeat_at: None,
+                completed_at: None,
+                cancelled_at: None,
+                last_error: None,
+                updated_at: now.clone(),
+            },
+            messages: vec![
+                message(1, AgentMessageRole::User, "do a thing".into(), None),
+                message(
+                    2,
+                    AgentMessageRole::Assistant,
+                    "calling a tool".into(),
+                    Some(serde_json::to_string(&assistant_metadata).unwrap()),
+                ),
+                message(
+                    3,
+                    AgentMessageRole::Tool,
+                    serde_json::to_string(&tool_result).unwrap(),
+                    None,
+                ),
+            ],
+            events: Vec::new(),
+            tool_calls: vec![AgentToolCallRecord {
+                project_id: project_id.clone(),
+                run_id: run_id.clone(),
+                tool_call_id: tool_call_id.clone(),
+                tool_name: tool_name.clone(),
+                input_json: json!({ "query": "registry", "limit": 10 }).to_string(),
+                state: AgentToolCallState::Succeeded,
+                result_json: Some(serde_json::to_string(&tool_result).unwrap()),
+                error: None,
+                started_at: now.clone(),
+                completed_at: Some(now.clone()),
+            }],
+            file_changes: Vec::new(),
+            checkpoints: Vec::new(),
+            action_requests: Vec::new(),
+        };
+
+        let reloaded =
+            provider_messages_from_snapshot(&repo_root, &snapshot).expect("rebuild provider state");
+
+        // Exactly one assistant message, carrying the single tool call, must precede the
+        // tool result — no duplicate `tool_use` id (see the replay match in
+        // `provider_messages_from_snapshot`).
+        let assistants: Vec<_> = reloaded
+            .iter()
+            .filter_map(|message| match message {
+                ProviderMessage::Assistant { tool_calls, .. } => Some(tool_calls),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            assistants.len(),
+            1,
+            "expected exactly one replayed assistant, got {reloaded:#?}"
+        );
+        assert_eq!(assistants[0].len(), 1);
+        assert_eq!(assistants[0][0].tool_call_id, tool_call_id);
+        assert_eq!(
+            reloaded
+                .iter()
+                .filter(|message| matches!(message, ProviderMessage::Tool { .. }))
+                .count(),
+            1
         );
     }
 }

@@ -543,6 +543,34 @@ function createMockAdapter(options?: {
       throw new Error('not used in runtime-run tests')
     },
   )
+  const resumeAgentRun = vi.fn(
+    async (
+      runId: string,
+      _response: string,
+      _options?: { actionId?: string | null; autoCompact?: unknown },
+    ) => {
+      const projectId = Object.keys(runtimeRuns).find((candidate) => runtimeRuns[candidate]?.runId === runId)
+      if (projectId) {
+        const currentRun = runtimeRuns[projectId] ?? makeRuntimeRun(projectId, { runId })
+        runtimeRuns[projectId] = {
+          ...currentRun,
+          lastCheckpointSequence: 3,
+          lastCheckpointAt: '2026-04-15T20:00:08Z',
+          updatedAt: '2026-04-15T20:00:08Z',
+          checkpoints: [
+            ...currentRun.checkpoints,
+            {
+              sequence: 3,
+              kind: 'state',
+              summary: 'Owned-agent action response accepted.',
+              createdAt: '2026-04-15T20:00:08Z',
+            },
+          ],
+        }
+      }
+      return {} as never
+    },
+  )
 
   const getProjectSnapshot = vi.fn(async (projectId: string) => snapshots[projectId])
   const providerProfiles = options?.providerProfiles ?? makeProviderProfiles()
@@ -905,6 +933,7 @@ function createMockAdapter(options?: {
     logoutRuntimeSession: vi.fn(async (projectId: string) => makeRuntimeSession(projectId)),
     resolveOperatorAction: resolveOperatorAction as never,
     resumeOperatorRun: resumeOperatorRun as never,
+    resumeAgentRun: resumeAgentRun as never,
     subscribeRuntimeStream: vi.fn(
       async (
         projectId: string,
@@ -973,6 +1002,7 @@ function createMockAdapter(options?: {
     autoNameAgentSession,
     updateAgentSession,
     updateRuntimeRunControls: adapter.updateRuntimeRunControls,
+    resumeAgentRun,
     resumeOperatorRun,
     subscribeRuntimeStream: adapter.subscribeRuntimeStream,
     streamSubscriptions,
@@ -1182,6 +1212,19 @@ function Harness({ adapter }: { adapter: XeroDesktopAdapter }) {
         type="button"
       >
         Queue runtime controls only
+      </button>
+      <button
+        onClick={() =>
+          void state
+            .updateRuntimeRunControls({
+              prompt: 'Approved.',
+              actionId: 'command-pnpm-create-astro-latest',
+            })
+            .catch(() => undefined)
+        }
+        type="button"
+      >
+        Resolve runtime action
       </button>
       <button onClick={() => void state.startAutonomousRun().catch(() => undefined)} type="button">
         Start autonomous run
@@ -1436,6 +1479,71 @@ describe('useXeroDesktopState runtime-run hydration', () => {
     expect(setup.updateRuntimeRunControls).toHaveBeenCalledTimes(1)
   })
 
+  it('resumes owned-agent action responses through the runtime run and refreshes the run snapshot', async () => {
+    const setup = createMockAdapter({
+      runtimeRuns: {
+        'project-1': makeRuntimeRun('project-1'),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('runtime-run-id')).toHaveTextContent('run-project-1'))
+    await waitFor(() => expect(setup.subscribeRuntimeStream).toHaveBeenCalledTimes(1))
+    act(() => {
+      setup.emitRuntimeStream(
+        0,
+        makeRuntimeStreamEvent('project-1', {
+          item: {
+            sequence: 5,
+            text: 'Waiting for a stack choice.',
+          },
+        }),
+      )
+    })
+    await waitFor(() => expect(screen.getByTestId('stream-last-sequence')).toHaveTextContent('5'))
+    const initialRuntimeRunCalls = setup.getRuntimeRun.mock.calls.length
+
+    fireEvent.click(screen.getByRole('button', { name: 'Resolve runtime action' }))
+
+    await waitFor(() => expect(setup.resumeAgentRun).toHaveBeenCalledTimes(1))
+    expect(setup.resumeAgentRun).toHaveBeenCalledWith('run-project-1', 'Approved.', {
+      actionId: 'command-pnpm-create-astro-latest',
+      autoCompact: null,
+    })
+    expect(setup.updateRuntimeRunControls).not.toHaveBeenCalled()
+    await waitFor(() =>
+      expect(screen.getByTestId('runtime-run-last-checkpoint-summary')).toHaveTextContent(
+        'Owned-agent action response accepted.',
+      ),
+    )
+    await waitFor(() => expect(setup.subscribeRuntimeStream).toHaveBeenCalledTimes(2))
+    expect(setup.streamSubscriptions[0]?.unsubscribe).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(setup.subscribeRuntimeStream).mock.calls.at(-1)?.[5]).toEqual({
+      afterSequence: 5,
+      replayLimit: 200,
+    })
+    act(() => {
+      setup.emitRuntimeStream(
+        1,
+        makeRuntimeStreamEvent('project-1', {
+          item: {
+            kind: 'action_required',
+            sequence: 6,
+            actionId: 'command-pnpm-create-astro-latest-review',
+            actionType: 'command_run',
+            title: 'Command requires review',
+            detail: 'Approve the package manager command.',
+          },
+        }),
+      )
+    })
+    await waitFor(() => expect(screen.getByTestId('stream-last-sequence')).toHaveTextContent('6'))
+    expect(screen.getByTestId('stream-action-required-count')).toHaveTextContent('1')
+    expect(screen.getByTestId('runtime-run-action-error')).toHaveTextContent('none')
+    expect(setup.getRuntimeRun.mock.calls.length).toBeGreaterThan(initialRuntimeRunCalls)
+  })
+
   it('updates pending runtime-run controls without dropping an already queued prompt', async () => {
     const setup = createMockAdapter({
       runtimeRuns: {
@@ -1656,6 +1764,45 @@ describe('useXeroDesktopState runtime-run hydration', () => {
     expect(screen.getByTestId('messages-reason')).toHaveTextContent(
       'Live runtime activity is streaming for this project (0 items captured).',
     )
+  })
+
+  it('does not resubscribe the live runtime stream after ordinary stream events', async () => {
+    const setup = createMockAdapter({
+      runtimeSessions: {
+        'project-1': makeRuntimeSession('project-1', {
+          phase: 'authenticated',
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          accountId: 'acct-1',
+          lastErrorCode: null,
+          lastError: null,
+        }),
+      },
+      runtimeRuns: {
+        'project-1': makeRuntimeRun('project-1', { runId: 'run-project-1' }),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('stream-status')).toHaveTextContent('live'))
+    expect(setup.subscribeRuntimeStream).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      setup.emitRuntimeStream(0, makeRuntimeStreamEvent('project-1', {
+        runId: 'run-project-1',
+        item: {
+          kind: 'transcript',
+          runId: 'run-project-1',
+          sequence: 1,
+          text: 'Still on the original stream.',
+        },
+      }))
+    })
+
+    await waitFor(() => expect(screen.getByTestId('stream-item-count')).toHaveTextContent('1'))
+    expect(setup.subscribeRuntimeStream).toHaveBeenCalledTimes(1)
+    expect(setup.streamSubscriptions[0]?.unsubscribe).not.toHaveBeenCalled()
   })
 
   it('replays saved failed runtime stream history without requiring an active auth session', async () => {
@@ -1890,6 +2037,46 @@ describe('useXeroDesktopState runtime-run hydration', () => {
       afterSequence: 9,
       replayLimit: 200,
     })
+
+    act(() => {
+      setup.emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        run: makeRuntimeRun('project-1', {
+          runId: 'run-project-1',
+          updatedAt: '2026-04-15T20:02:00Z',
+          lastCheckpointSequence: 4,
+          lastCheckpointAt: '2026-04-15T20:02:00Z',
+          checkpoints: [
+            ...initialRun.checkpoints,
+            {
+              sequence: 4,
+              kind: 'state',
+              summary: 'Owned agent runtime recorded ordinary progress.',
+              createdAt: '2026-04-15T20:02:00Z',
+            },
+          ],
+          controls: {
+            active: initialRun.controls.active,
+            pending: {
+              providerProfileId: initialRun.controls.active.providerProfileId,
+              runtimeAgentId: initialRun.controls.active.runtimeAgentId,
+              modelId: initialRun.controls.active.modelId,
+              thinkingEffort: initialRun.controls.active.thinkingEffort,
+              approvalMode: initialRun.controls.active.approvalMode,
+              planModeRequired: initialRun.controls.active.planModeRequired,
+              autoCompactEnabled: true,
+              revision: 2,
+              queuedAt: '2026-04-15T20:01:00Z',
+              queuedPrompt: 'What is 1+1?',
+              queuedPromptAt: '2026-04-15T20:01:00Z',
+            },
+          },
+        }),
+      })
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(setup.subscribeRuntimeStream).toHaveBeenCalledTimes(2)
   })
 
   it('hydrates gate-linked pending approvals from durable snapshot truth on project:updated refresh', async () => {

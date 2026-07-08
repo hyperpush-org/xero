@@ -1733,7 +1733,11 @@ pub fn update_agent_run_status(
     validate_non_empty_text(run_id, "runId")?;
     let status_value = agent_run_status_sql_value(&status);
     let connection = open_agent_database(repo_root)?;
-    connection
+    // Never overwrite a terminal run. Terminal statuses are final in this app (continuations
+    // create new runs), so the first writer to reach a terminal state wins. This closes the
+    // cancel/complete race where a late cancel could flip an already-completed run to
+    // cancelled (and NULL its `completed_at`), or a late completion could clobber a cancel.
+    let rows = connection
         .execute(
             r#"
             UPDATE agent_runs
@@ -1746,6 +1750,7 @@ pub fn update_agent_run_status(
                 updated_at = ?4
             WHERE project_id = ?1
               AND run_id = ?2
+              AND status NOT IN ('completed', 'handed_off', 'failed', 'cancelled')
             "#,
             params![
                 project_id,
@@ -1759,6 +1764,10 @@ pub fn update_agent_run_status(
         .map_err(|error| {
             map_agent_store_write_error(repo_root, "agent_run_status_update_failed", error)
         })?;
+    // Zero rows means the run is already terminal (or absent). Return the current snapshot so
+    // callers observe the winning terminal state rather than the state they tried to write;
+    // `read_agent_run_snapshot` surfaces a not-found error if the run truly does not exist.
+    let _ = rows;
     read_agent_run_snapshot(&connection, repo_root, project_id, run_id)
 }
 
@@ -1798,6 +1807,88 @@ pub fn load_agent_run_record(
     validate_non_empty_text(run_id, "runId")?;
     let connection = open_agent_database(repo_root)?;
     read_agent_run_record(&connection, repo_root, project_id, run_id)
+}
+
+/// Count messages in `run_id` whose id is greater than `after_message_id`. Used by the
+/// context policy to decide whether an active compaction still protects the turn: once the
+/// uncovered raw tail regrows past the intended window, the compaction is stale.
+pub fn count_agent_run_messages_after_id(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    after_message_id: i64,
+) -> Result<u64, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    let connection = open_agent_database(repo_root)?;
+    let count: i64 = connection
+        .query_row(
+            r#"
+            SELECT COUNT(*)
+            FROM agent_messages
+            WHERE project_id = ?1
+              AND run_id = ?2
+              AND id > ?3
+            "#,
+            params![project_id, run_id, after_message_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_run_message_count_failed", error)
+        })?;
+    Ok(count.max(0) as u64)
+}
+
+/// The highest child event id already forwarded into `parent_run_id` for `subagent_id`.
+/// Forwarded events embed their source child event id in `payload_json.sourceChildEventId`;
+/// this lets `forward_child_events_to_parent` skip events it already mirrored instead of
+/// re-appending the child's entire event history on every interaction.
+pub fn max_forwarded_child_event_id(
+    repo_root: &Path,
+    project_id: &str,
+    parent_run_id: &str,
+    subagent_id: &str,
+) -> Result<Option<i64>, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(parent_run_id, "runId")?;
+    let connection = open_agent_database(repo_root)?;
+    let watermark: Option<i64> = connection
+        .query_row(
+            r#"
+            SELECT MAX(CAST(json_extract(payload_json, '$.sourceChildEventId') AS INTEGER))
+            FROM agent_events
+            WHERE project_id = ?1
+              AND run_id = ?2
+              AND json_extract(payload_json, '$.subagentId') = ?3
+              AND json_extract(payload_json, '$.sourceChildEventId') IS NOT NULL
+            "#,
+            params![project_id, parent_run_id, subagent_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_forwarded_event_watermark_failed", error)
+        })?;
+    Ok(watermark)
+}
+
+/// Whether an active compaction still protects the current turn. A compaction is "current"
+/// only while the raw tail beyond its coverage boundary stays within the intended
+/// `raw_tail_message_count`; once new turns push the tail past that window (or the compaction
+/// recorded no coverage boundary), it is stale and the context policy should recompact.
+pub fn agent_compaction_is_current(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    compaction: &super::AgentCompactionRecord,
+) -> Result<bool, CommandError> {
+    match compaction.covered_message_end_id {
+        Some(end_id) => {
+            let tail_beyond_coverage =
+                count_agent_run_messages_after_id(repo_root, project_id, run_id, end_id)?;
+            Ok(tail_beyond_coverage <= u64::from(compaction.raw_tail_message_count))
+        }
+        None => Ok(false),
+    }
 }
 
 fn read_agent_run_record(

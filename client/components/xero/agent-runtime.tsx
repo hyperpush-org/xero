@@ -202,6 +202,7 @@ export interface AgentRuntimeProps {
     prompt?: string | null
     attachments?: StagedAgentAttachmentDto[]
     linkedPaths?: RuntimeLinkedPathDto[]
+    actionId?: string | null
   }) => Promise<RuntimeRunView | null>
   onComposerControlsChange?: (controls: RuntimeRunControlInputDto | null) => void
   onStartRuntimeSession?: (options?: { providerProfileId?: string | null }) => Promise<RuntimeSessionView | null>
@@ -598,6 +599,10 @@ function ownedAgentActionResponse(
     return trimmed
   }
   return decision === 'approve' || decision === 'resume' ? 'Approved.' : null
+}
+
+function ownedAgentActionPromptKey(runId: string, actionId: string): string {
+  return `${runId}:${actionId}`
 }
 
 function getRuntimeActionErrorMessage(error: unknown, fallback: string): string {
@@ -2765,6 +2770,41 @@ export const AgentRuntime = memo(function AgentRuntime({
     () => filterInternalRoutingContinuationTurns(visibleTurnsWithPersistedRoutingResolutions),
     [visibleTurnsWithPersistedRoutingResolutions],
   )
+  const [optimisticResolvedOwnedActionPrompts, setOptimisticResolvedOwnedActionPrompts] = useState<
+    ReadonlySet<string>
+  >(() => new Set())
+  const visibleTurnsWithOwnedActionPromptState = useMemo(() => {
+    if (optimisticResolvedOwnedActionPrompts.size === 0) {
+      return visibleTurnsWithPendingPrompt
+    }
+
+    let changed = false
+    const turns = visibleTurnsWithPendingPrompt.map((turn) => {
+      if (
+        turn.kind !== 'action_prompt' ||
+        !turn.runId ||
+        turn.isResolved ||
+        !optimisticResolvedOwnedActionPrompts.has(
+          ownedAgentActionPromptKey(turn.runId, turn.actionId),
+        )
+      ) {
+        return turn
+      }
+
+      changed = true
+      return {
+        ...turn,
+        isResolved: true,
+      }
+    })
+
+    return changed ? turns : visibleTurnsWithPendingPrompt
+  }, [optimisticResolvedOwnedActionPrompts, visibleTurnsWithPendingPrompt])
+  useEffect(() => {
+    setOptimisticResolvedOwnedActionPrompts((current) =>
+      current.size === 0 ? current : new Set(),
+    )
+  }, [conversationSessionKey])
   const hasUserMessage =
     visibleTurnsWithPendingPrompt.some((turn) => turn.kind === 'message' && turn.role === 'user')
   const selectedAgentSession = (agent.project.selectedAgentSession ?? null) as AgentSessionView | null
@@ -3775,13 +3815,39 @@ export const AgentRuntime = memo(function AgentRuntime({
         if (isOwnedAgentActionPrompt(runId, actionType)) {
           setPendingOwnedAgentActionIntent({ actionId, kind: decision })
           setOwnedAgentActionPromptError(null)
+          const resolvedActionKey = ownedAgentActionPromptKey(runId, actionId)
+          let optimisticPromptId: string | null = null
           try {
             const response = ownedAgentActionResponse(decision, options?.userAnswer ?? null)
+            setOptimisticResolvedOwnedActionPrompts((current) => {
+              if (current.has(resolvedActionKey)) {
+                return current
+              }
+              const next = new Set(current)
+              next.add(resolvedActionKey)
+              return next
+            })
+            if (response) {
+              optimisticPromptId = `owned-action:${resolvedActionKey}:${Date.now()}`
+              setOptimisticPromptTurn({
+                id: optimisticPromptId,
+                text: response,
+                queuedAt: new Date().toISOString(),
+              })
+            }
             if (decision === 'reject') {
               if (!desktopAdapter?.rejectAgentAction) {
                 throw new Error('Xero cannot reject this owned-agent action in the current runtime.')
               }
               await desktopAdapter.rejectAgentAction(runId, actionId, { response })
+              setOwnedAgentActionPromptError(null)
+              return
+            }
+            if (onUpdateRuntimeRunControls) {
+              await onUpdateRuntimeRunControls({
+                prompt: response ?? 'Approved.',
+                actionId,
+              })
               setOwnedAgentActionPromptError(null)
               return
             }
@@ -3798,6 +3864,19 @@ export const AgentRuntime = memo(function AgentRuntime({
                 'Xero could not resolve this owned-agent action.',
               ),
             })
+            setOptimisticResolvedOwnedActionPrompts((current) => {
+              if (!current.has(resolvedActionKey)) {
+                return current
+              }
+              const next = new Set(current)
+              next.delete(resolvedActionKey)
+              return next
+            })
+            if (optimisticPromptId) {
+              setOptimisticPromptTurn((current) =>
+                current?.id === optimisticPromptId ? null : current,
+              )
+            }
           } finally {
             setPendingOwnedAgentActionIntent((current) =>
               current?.actionId === actionId && current.kind === decision ? null : current,
@@ -3826,6 +3905,7 @@ export const AgentRuntime = memo(function AgentRuntime({
     controller.handleResumeOperatorRun,
     controller.handleResumeLiveActionRequired,
     desktopAdapter,
+    onUpdateRuntimeRunControls,
     agent.operatorActionStatus,
     latestActionPromptError,
     pendingOwnedAgentActionIntent,
@@ -3873,6 +3953,15 @@ export const AgentRuntime = memo(function AgentRuntime({
   const followUpAnchorSpacerHeightRef = useRef(0)
   const shouldAutoFollowRef = useRef(true)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
+  const showJumpToLatestRef = useRef(false)
+  const setConversationJumpToLatest = useCallback((nextValue: boolean) => {
+    if (showJumpToLatestRef.current === nextValue) {
+      return
+    }
+
+    showJumpToLatestRef.current = nextValue
+    setShowJumpToLatest(nextValue)
+  }, [])
   const [followUpAnchorTurnId, setFollowUpAnchorTurnId] = useState<string | null>(null)
   const [followUpAnchorSpacerHeight, setFollowUpAnchorSpacerHeightState] = useState(0)
   const setFollowUpAnchorSpacerHeight = useCallback((height: number) => {
@@ -3929,12 +4018,12 @@ export const AgentRuntime = memo(function AgentRuntime({
     }
     if (!sessionChanged && followUpAnchorTurnId) {
       shouldAutoFollowRef.current = false
-      setShowJumpToLatest(false)
+      setConversationJumpToLatest(false)
       return
     }
 
     shouldAutoFollowRef.current = true
-    setShowJumpToLatest(false)
+    setConversationJumpToLatest(false)
     const viewport = scrollViewportRef.current
     if (viewport) {
       viewport.scrollTop = viewport.scrollHeight
@@ -3944,6 +4033,7 @@ export const AgentRuntime = memo(function AgentRuntime({
     conversationRunScrollKey,
     conversationSessionScrollKey,
     followUpAnchorTurnId,
+    setConversationJumpToLatest,
   ])
   const scrollToLatest = useCallback((behavior: ScrollBehavior = 'auto', options: { defer?: boolean } = {}) => {
     const run = () => {
@@ -4070,18 +4160,18 @@ export const AgentRuntime = memo(function AgentRuntime({
       if (isNearBottom && followUpAnchorSpacerHeightRef.current === 0) {
         clearFollowUpAnchor()
         shouldAutoFollowRef.current = true
-        setShowJumpToLatest(false)
+        setConversationJumpToLatest(false)
         return
       }
 
       shouldAutoFollowRef.current = false
-      setShowJumpToLatest(hasConversationViewportContent && !isNearBottom)
+      setConversationJumpToLatest(hasConversationViewportContent && !isNearBottom)
       return
     }
 
     shouldAutoFollowRef.current = isNearBottom
-    setShowJumpToLatest(hasConversationViewportContent && !isNearBottom)
-  }, [clearFollowUpAnchor, followUpAnchorTurnId, hasConversationViewportContent])
+    setConversationJumpToLatest(hasConversationViewportContent && !isNearBottom)
+  }, [clearFollowUpAnchor, followUpAnchorTurnId, hasConversationViewportContent, setConversationJumpToLatest])
   const scheduleConversationScrollStateSync = useCallback(() => {
     if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
       syncConversationScrollState()
@@ -4147,8 +4237,6 @@ export const AgentRuntime = memo(function AgentRuntime({
             scheduleConversationLayoutSettledSync()
           })
     mutationObserver?.observe(content, {
-      attributes: true,
-      attributeFilter: ['aria-expanded', 'data-state', 'style'],
       childList: true,
       subtree: true,
     })
@@ -4178,8 +4266,8 @@ export const AgentRuntime = memo(function AgentRuntime({
     }
 
     shouldAutoFollowRef.current = false
-    setShowJumpToLatest(true)
-  }, [hasConversationViewportContent])
+    setConversationJumpToLatest(true)
+  }, [hasConversationViewportContent, setConversationJumpToLatest])
   const preserveConversationScrollPosition = useCallback(() => {
     const viewport = scrollViewportRef.current
     if (!viewport) {
@@ -4201,7 +4289,7 @@ export const AgentRuntime = memo(function AgentRuntime({
         nextViewport.scrollTop = Math.min(scrollTop, maxScrollTop)
         const isNearBottom = isRuntimeConversationNearBottom(nextViewport)
         shouldAutoFollowRef.current = wasAutoFollowing && isNearBottom
-        setShowJumpToLatest(hasConversationViewportContent && !isNearBottom)
+        setConversationJumpToLatest(hasConversationViewportContent && !isNearBottom)
       }
 
       if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
@@ -4211,7 +4299,7 @@ export const AgentRuntime = memo(function AgentRuntime({
 
       restore()
     }
-  }, [hasConversationViewportContent])
+  }, [hasConversationViewportContent, setConversationJumpToLatest])
   const handleUndoCodeChange = useCallback(async ({
     targetKind,
     changeGroupId,
@@ -4398,10 +4486,10 @@ export const AgentRuntime = memo(function AgentRuntime({
   const handleJumpToLatest = useCallback(() => {
     const hadFollowUpAnchor = followUpAnchorTurnId !== null
     shouldAutoFollowRef.current = true
-    setShowJumpToLatest(false)
+    setConversationJumpToLatest(false)
     clearFollowUpAnchor()
     scrollToLatest('smooth', hadFollowUpAnchor ? { defer: true } : {})
-  }, [clearFollowUpAnchor, followUpAnchorTurnId, scrollToLatest])
+  }, [clearFollowUpAnchor, followUpAnchorTurnId, scrollToLatest, setConversationJumpToLatest])
   const handleSubmitDraftPrompt = useCallback(() => {
     if (promptSubmissionPending) {
       return
@@ -4430,13 +4518,13 @@ export const AgentRuntime = memo(function AgentRuntime({
 
     if (shouldAnchorSubmittedPrompt && followUpAnchorId) {
       shouldAutoFollowRef.current = false
-      setShowJumpToLatest(false)
+      setConversationJumpToLatest(false)
       followUpAnchorPendingBehaviorRef.current = 'smooth'
       setFollowUpAnchorTurnId(followUpAnchorId)
     } else {
       clearFollowUpAnchor()
       shouldAutoFollowRef.current = true
-      setShowJumpToLatest(false)
+      setConversationJumpToLatest(false)
       scrollToLatest('auto', { defer: true })
     }
     setPromptSubmissionPending(true)
@@ -4481,6 +4569,7 @@ export const AgentRuntime = memo(function AgentRuntime({
     hasUserMessage,
     promptSubmissionPending,
     scrollToLatest,
+    setConversationJumpToLatest,
     setFollowUpAnchorSpacerHeight,
   ])
 
@@ -4513,7 +4602,7 @@ export const AgentRuntime = memo(function AgentRuntime({
     ) {
       clearFollowUpAnchor()
       shouldAutoFollowRef.current = true
-      setShowJumpToLatest(false)
+      setConversationJumpToLatest(false)
       scrollToLatest('auto', { defer: true })
       return
     }
@@ -4547,6 +4636,7 @@ export const AgentRuntime = memo(function AgentRuntime({
     promptSubmissionPending,
     scrollToLatest,
     scrollToFollowUpAnchor,
+    setConversationJumpToLatest,
     setFollowUpAnchorSpacerHeight,
     visibleTurnsWithPendingPrompt,
   ])
@@ -4558,7 +4648,7 @@ export const AgentRuntime = memo(function AgentRuntime({
 
     if (!hasConversationViewportContent) {
       shouldAutoFollowRef.current = true
-      setShowJumpToLatest(false)
+      setConversationJumpToLatest(false)
       return
     }
 
@@ -4566,25 +4656,26 @@ export const AgentRuntime = memo(function AgentRuntime({
       shouldAutoFollowRef.current = false
       const viewport = scrollViewportRef.current
       const isNearBottom = viewport ? isRuntimeConversationNearBottom(viewport) : false
-      setShowJumpToLatest(hasConversationViewportContent && !isNearBottom)
+      setConversationJumpToLatest(hasConversationViewportContent && !isNearBottom)
       return
     }
 
     if (shouldAutoFollowRef.current) {
       scrollToLatest('auto', { defer: true })
-      setShowJumpToLatest(false)
+      setConversationJumpToLatest(false)
       return
     }
 
     const viewport = scrollViewportRef.current
     const isNearBottom = viewport ? isRuntimeConversationNearBottom(viewport) : false
-    setShowJumpToLatest(hasConversationViewportContent && !isNearBottom)
+    setConversationJumpToLatest(hasConversationViewportContent && !isNearBottom)
   }, [
     conversationScrollKey,
     followUpAnchorTurnId,
     foregroundWorkReady,
     hasConversationViewportContent,
     scrollToLatest,
+    setConversationJumpToLatest,
   ])
 
   const isCompact = effectiveDensity === 'compact'
@@ -4883,7 +4974,7 @@ export const AgentRuntime = memo(function AgentRuntime({
                   <RoutingSuggestionDispatchProvider value={routingSuggestionDispatchValue}>
                     <ConversationSection
                       runtimeRun={renderableRuntimeRun}
-                      visibleTurns={applyRoutingResolutions(visibleTurnsWithPendingPrompt)}
+                      visibleTurns={applyRoutingResolutions(visibleTurnsWithOwnedActionPromptState)}
                       streamIssue={streamIssue}
                       streamFailure={runtimeStream?.failure ?? null}
                       showActivityIndicator={showAgentActivityIndicator}

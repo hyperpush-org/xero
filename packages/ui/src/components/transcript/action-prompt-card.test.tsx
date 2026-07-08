@@ -36,7 +36,7 @@ function renderPrompt(
     </ActionPromptDispatchProvider>,
   )
 
-  return { resolveActionPrompt }
+  return { resolveActionPrompt: dispatch.resolveActionPrompt }
 }
 
 describe('ActionPromptCard', () => {
@@ -86,7 +86,7 @@ describe('ActionPromptCard', () => {
     expect(screen.queryByText('This belongs to another prompt.')).not.toBeInTheDocument()
   })
 
-  it('renders compact single-choice prompts as command buttons without stale radio state', () => {
+  it('submits single-choice prompts as radio options after an explicit confirm', () => {
     const { resolveActionPrompt } = renderPrompt({
       actionType: 'single_choice_required',
       shape: 'single_choice',
@@ -96,10 +96,120 @@ describe('ActionPromptCard', () => {
       ],
     })
 
-    expect(screen.queryByRole('radio')).not.toBeInTheDocument()
+    const submit = screen.getByRole('button', { name: 'Submit' })
+    expect(submit).toBeDisabled()
 
-    fireEvent.click(screen.getByRole('button', { name: /Large/ }))
+    // Selecting an option arms submit but does not resolve on its own.
+    fireEvent.click(screen.getByRole('radio', { name: /Large/ }))
+    expect(resolveActionPrompt).not.toHaveBeenCalled()
+    expect(submit).toBeEnabled()
 
+    // Changing the selection keeps only the latest pick (no stale state).
+    fireEvent.click(screen.getByRole('radio', { name: /Small/ }))
+    fireEvent.click(submit)
+
+    expect(resolveActionPrompt).toHaveBeenCalledTimes(1)
+    expect(resolveActionPrompt).toHaveBeenCalledWith('question-1', 'approve', {
+      actionType: 'single_choice_required',
+      runId: null,
+      userAnswer: 'small',
+    })
+  })
+
+  it('appends an optional note to a single-choice answer', () => {
+    const { resolveActionPrompt } = renderPrompt({
+      actionType: 'single_choice_required',
+      shape: 'single_choice',
+      options: [
+        { id: 'small', label: 'Small', description: null },
+        { id: 'large', label: 'Large', description: 'Broader scope.' },
+      ],
+    })
+
+    fireEvent.click(screen.getByRole('radio', { name: /Large/ }))
+    fireEvent.change(screen.getByLabelText('Add a note'), {
+      target: { value: 'Keep the dependency surface minimal.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+
+    expect(resolveActionPrompt).toHaveBeenCalledWith('question-1', 'approve', {
+      actionType: 'single_choice_required',
+      runId: null,
+      userAnswer: 'large\n\nNote: Keep the dependency surface minimal.',
+    })
+  })
+
+  it('selects single-choice options from text rows without native label forwarding', () => {
+    const { resolveActionPrompt } = renderPrompt({
+      actionType: 'single_choice_required',
+      shape: 'single_choice',
+      options: [
+        { id: 'small', label: 'Small', description: null },
+        { id: 'large', label: 'Large', description: 'Broader scope.' },
+      ],
+    })
+
+    fireEvent.click(screen.getByText('Broader scope.'))
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+
+    expect(screen.getByRole('radio', { name: /Large/ }).closest('label')).toBeNull()
+    expect(resolveActionPrompt).toHaveBeenCalledWith('question-1', 'approve', {
+      actionType: 'single_choice_required',
+      runId: null,
+      userAnswer: 'large',
+    })
+  })
+
+  it('submits a user-provided custom answer when "Something else" is chosen', () => {
+    const { resolveActionPrompt } = renderPrompt({
+      actionType: 'single_choice_required',
+      shape: 'single_choice',
+      options: [
+        { id: 'small', label: 'Small', description: null },
+        { id: 'large', label: 'Large', description: 'Broader scope.' },
+      ],
+    })
+
+    const submit = screen.getByRole('button', { name: 'Submit' })
+    fireEvent.click(screen.getByRole('radio', { name: /Something else/ }))
+    // Selecting the custom option alone is not enough to submit.
+    expect(submit).toBeDisabled()
+
+    fireEvent.change(screen.getByLabelText('Your own answer'), {
+      target: { value: 'SvelteKit' },
+    })
+    expect(submit).toBeEnabled()
+    fireEvent.click(submit)
+
+    expect(resolveActionPrompt).toHaveBeenCalledWith('question-1', 'approve', {
+      actionType: 'single_choice_required',
+      runId: null,
+      userAnswer: 'SvelteKit',
+    })
+  })
+
+  it('ignores duplicate single-choice submits while the first answer is in flight', () => {
+    const resolveActionPrompt = vi.fn(() => new Promise(() => undefined))
+    renderPrompt(
+      {
+        actionType: 'single_choice_required',
+        shape: 'single_choice',
+        options: [
+          { id: 'small', label: 'Small', description: null },
+          { id: 'large', label: 'Large', description: 'Broader scope.' },
+        ],
+      },
+      {
+        resolveActionPrompt,
+      },
+    )
+
+    fireEvent.click(screen.getByRole('radio', { name: /Large/ }))
+    const submit = screen.getByRole('button', { name: 'Submit' })
+    fireEvent.click(submit)
+    fireEvent.click(submit)
+
+    expect(resolveActionPrompt).toHaveBeenCalledTimes(1)
     expect(resolveActionPrompt).toHaveBeenCalledWith('question-1', 'approve', {
       actionType: 'single_choice_required',
       runId: null,
@@ -130,6 +240,34 @@ describe('ActionPromptCard', () => {
       actionType: 'user_input_required',
       runId: null,
       userAnswer: JSON.stringify(['tailwind', 'shadcn']),
+    })
+  })
+
+  it('combines listed option ids, a custom answer, and a note for multi-choice prompts', () => {
+    const { resolveActionPrompt } = renderPrompt({
+      actionType: 'user_input_required',
+      shape: 'multi_choice',
+      options: [
+        { id: 'tailwind', label: 'Tailwind', description: null },
+        { id: 'shadcn', label: 'ShadCN', description: 'Use component primitives.' },
+      ],
+      allowMultiple: true,
+    })
+
+    fireEvent.click(screen.getByText('Tailwind'))
+    fireEvent.click(screen.getByRole('checkbox', { name: /Something else/ }))
+    fireEvent.change(screen.getByLabelText('Your own answer'), {
+      target: { value: 'Panda CSS' },
+    })
+    fireEvent.change(screen.getByLabelText('Add a note'), {
+      target: { value: 'Prefer zero-runtime styling.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+
+    expect(resolveActionPrompt).toHaveBeenCalledWith('question-1', 'approve', {
+      actionType: 'user_input_required',
+      runId: null,
+      userAnswer: `${JSON.stringify(['tailwind', 'Panda CSS'])}\n\nNote: Prefer zero-runtime styling.`,
     })
   })
 

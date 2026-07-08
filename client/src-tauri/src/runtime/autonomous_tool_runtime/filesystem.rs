@@ -101,6 +101,25 @@ const DEFAULT_HASH_MAX_FILES: usize = 1_000;
 const MAX_HASH_FILES: usize = 5_000;
 const MAX_HASH_INLINE_FILES: usize = 50;
 const READ_DIRECTORY_LIST_MAX_RESULTS: usize = 100;
+const NON_INFORMATIVE_FILE_NAMES: &[&str] = &[
+    ".DS_Store",
+    ".Spotlight-V100",
+    ".TemporaryItems",
+    ".Trashes",
+    ".directory",
+    ".eslintcache",
+    ".stylelintcache",
+    "Desktop.ini",
+    "Thumbs.db",
+    "ehthumbs.db",
+    "npm-debug.log",
+    "yarn-debug.log",
+    "yarn-error.log",
+];
+const NON_INFORMATIVE_FILE_PREFIXES: &[&str] = &["._", ".nfs", ".swo", ".swp", ".~lock.", "~$"];
+const NON_INFORMATIVE_FILE_SUFFIXES: &[&str] = &[
+    ".pyc", ".pyo", ".swp", ".swo", ".swn", ".tmp", ".temp", ".bak", ".orig", ".rej", ".icloud",
+];
 const PACKAGE_MANAGER_LOCKFILE_NAMES: &[&str] = &[
     "Cargo.lock",
     "Gemfile.lock",
@@ -116,6 +135,7 @@ const PACKAGE_MANAGER_LOCKFILE_NAMES: &[&str] = &[
     "uv.lock",
     "yarn.lock",
 ];
+const COMMAND_FIRST_BOOTSTRAP_MANIFEST_NAMES: &[&str] = &["package.json"];
 
 enum ReadManyPathResult {
     Read {
@@ -684,6 +704,13 @@ impl AutonomousToolRuntime {
         let read_metadata = read_file_metadata(&metadata);
 
         let mode = request.mode.unwrap_or(AutonomousReadMode::Auto);
+        if should_skip_non_informative_file(&target.path) {
+            return Ok(Self::non_informative_file_result(
+                target.display_path,
+                read_metadata,
+                metadata.len(),
+            ));
+        }
         if request.byte_offset.is_some() || request.byte_count.is_some() {
             return self.read_byte_range(request, target, read_metadata, metadata.len(), mode);
         }
@@ -816,6 +843,19 @@ impl AutonomousToolRuntime {
         } else {
             0
         };
+        if metadata.is_file() && should_skip_non_informative_file(&resolved_path) {
+            return ReadManyPathResult::Omitted {
+                item: read_many_error_item(
+                    display_path,
+                    CommandError::user_fixable(
+                        "autonomous_tool_non_informative_file_skipped",
+                        "Xero skipped this file because it is an OS/editor/cache sidecar with no useful project context.",
+                    ),
+                    Some(source_bytes),
+                ),
+                source_bytes,
+            };
+        }
         if metadata.is_file() && source_bytes > max_bytes_per_file as u64 {
             return ReadManyPathResult::Omitted {
                 item: read_many_error_item(
@@ -1577,6 +1617,11 @@ impl AutonomousToolRuntime {
             }
             None
         };
+        validate_not_command_first_bootstrap_manifest_creation(
+            &display_path,
+            existing_bytes.is_some(),
+            self.agent_run_context.is_some(),
+        )?;
         let created = existing_bytes.is_none();
         let new_bytes = request.content.as_bytes().to_vec();
         let new_hash = sha256_hex(&new_bytes);
@@ -3413,6 +3458,12 @@ impl AutonomousToolRuntime {
                 }
                 continue;
             }
+            if child_path.is_file() && should_skip_non_informative_file(&child_path) {
+                if state.show_omitted {
+                    state.omitted.filtered = state.omitted.filtered.saturating_add(1);
+                }
+                continue;
+            }
             let child_display = self.display_read_path(&child_path)?;
             if !list_tree_matches_filters(
                 child_display.as_str(),
@@ -3551,6 +3602,10 @@ impl AutonomousToolRuntime {
         let path_kind = stat_kind(&metadata);
         match path_kind {
             AutonomousStatKind::File => {
+                if should_skip_non_informative_file(path) {
+                    state.omitted.filtered = state.omitted.filtered.saturating_add(1);
+                    return Ok(());
+                }
                 if !list_tree_matches_filters(
                     display_path,
                     false,
@@ -3765,6 +3820,10 @@ impl AutonomousToolRuntime {
         let path_kind = stat_kind(&metadata);
         match path_kind {
             AutonomousStatKind::File => {
+                if state.recursive && should_skip_non_informative_file(path) {
+                    state.omitted.filtered = state.omitted.filtered.saturating_add(1);
+                    return Ok(());
+                }
                 if !list_tree_matches_filters(
                     display_path,
                     false,
@@ -3938,6 +3997,10 @@ impl AutonomousToolRuntime {
             {
                 continue;
             }
+            if should_skip_non_informative_file(path) {
+                result.omissions.filtered_files = result.omissions.filtered_files.saturating_add(1);
+                continue;
+            }
 
             let display_path = self.display_read_path(path)?;
             if let Some(globs) = include_globs {
@@ -4096,6 +4159,9 @@ impl AutonomousToolRuntime {
         }
 
         if metadata.is_file() {
+            if should_skip_non_informative_file(scope) {
+                return Ok(());
+            }
             result.scanned_files = result.scanned_files.saturating_add(1);
         }
         self.record_find_candidate(scope, path_kind, options, result)
@@ -4162,6 +4228,9 @@ impl AutonomousToolRuntime {
         }
 
         let kind = stat_kind(&metadata);
+        if !is_root && kind == AutonomousStatKind::File && should_skip_non_informative_file(path) {
+            return Ok(());
+        }
         if !is_root {
             match kind {
                 AutonomousStatKind::File => {
@@ -4719,6 +4788,49 @@ impl AutonomousToolRuntime {
                 preview_base64: None,
                 preview_bytes: None,
                 binary_excerpt_base64: excerpt,
+            }),
+        }
+    }
+
+    fn non_informative_file_result(
+        display_path: String,
+        metadata: ReadResultMetadata,
+        total_bytes: u64,
+    ) -> AutonomousToolResult {
+        AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_READ.into(),
+            summary: format!(
+                "Skipped `{display_path}` because it is an OS/editor/cache sidecar with no useful project context."
+            ),
+            command_result: None,
+            output: AutonomousToolOutput::Read(AutonomousReadOutput {
+                path: display_path,
+                path_kind: metadata.path_kind,
+                size: metadata.size,
+                modified_at: metadata.modified_at,
+                start_line: 0,
+                line_count: 0,
+                total_lines: 0,
+                truncated: false,
+                content: String::new(),
+                cursor: None,
+                next_cursor: None,
+                content_omitted_reason: Some("non_informative_artifact".into()),
+                content_kind: Some(AutonomousReadContentKind::BinaryMetadata),
+                total_bytes: Some(total_bytes),
+                byte_offset: None,
+                byte_count: None,
+                sha256: None,
+                line_hashes: Vec::new(),
+                encoding: None,
+                line_ending: None,
+                has_bom: None,
+                media_type: None,
+                image_width: None,
+                image_height: None,
+                preview_base64: None,
+                preview_bytes: None,
+                binary_excerpt_base64: None,
             }),
         }
     }
@@ -7134,6 +7246,32 @@ fn package_manager_lockfile_name(display_path: &str) -> Option<&str> {
         .filter(|name| PACKAGE_MANAGER_LOCKFILE_NAMES.contains(name))
 }
 
+fn command_first_bootstrap_manifest_name(display_path: &str) -> Option<&str> {
+    Path::new(display_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| COMMAND_FIRST_BOOTSTRAP_MANIFEST_NAMES.contains(name))
+}
+
+fn validate_not_command_first_bootstrap_manifest_creation(
+    display_path: &str,
+    target_exists: bool,
+    has_agent_run_context: bool,
+) -> CommandResult<()> {
+    if target_exists || !has_agent_run_context {
+        return Ok(());
+    }
+    if command_first_bootstrap_manifest_name(display_path).is_some() {
+        return Err(CommandError::user_fixable(
+            "autonomous_tool_command_first_bootstrap_required",
+            format!(
+                "Xero refused to create `{display_path}` by hand during an owned-agent run. Project bootstrap manifests must be created by the documented scaffold/init/package-manager command through command_run, or the agent must ask the user before using a manual fallback."
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn line_content_without_ending(text: &str, line: usize) -> CommandResult<&str> {
     let (start, end) = line_byte_range(text, line, line)?;
     Ok(text[start..end]
@@ -7151,6 +7289,25 @@ fn is_supported_image_path(path: &Path) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+fn should_skip_non_informative_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if NON_INFORMATIVE_FILE_NAMES
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+    {
+        return true;
+    }
+    let lower_name = name.to_ascii_lowercase();
+    NON_INFORMATIVE_FILE_PREFIXES
+        .iter()
+        .any(|prefix| lower_name.starts_with(&prefix.to_ascii_lowercase()))
+        || NON_INFORMATIVE_FILE_SUFFIXES
+            .iter()
+            .any(|suffix| lower_name.ends_with(&suffix.to_ascii_lowercase()))
 }
 
 pub(super) fn expand_system_path(value: &str) -> CommandResult<PathBuf> {
@@ -7181,21 +7338,22 @@ fn absolute_path_to_forward_slash(path: &Path) -> String {
 
 fn should_skip_directory_for_root(repo_root: &Path, path: &Path) -> bool {
     path != repo_root
-        && path.file_name().is_some_and(|name| {
-            [
-                ".git",
-                "node_modules",
-                "target",
-                ".next",
-                "dist",
-                "build",
-                "coverage",
-                ".turbo",
-                ".yarn",
-                ".pnpm-store",
-            ]
-            .contains(&name.to_string_lossy().as_ref())
-        })
+        && (should_skip_non_informative_file(path)
+            || path.file_name().is_some_and(|name| {
+                [
+                    ".git",
+                    "node_modules",
+                    "target",
+                    ".next",
+                    "dist",
+                    "build",
+                    "coverage",
+                    ".turbo",
+                    ".yarn",
+                    ".pnpm-store",
+                ]
+                .contains(&name.to_string_lossy().as_ref())
+            }))
 }
 
 fn should_skip_search_file_error(error: &CommandError) -> bool {
@@ -7236,16 +7394,26 @@ fn normalize_patch_operations(
         ));
     }
 
+    let default_expected_hash = request.expected_hash.clone();
     let operations = if request.operations.is_empty() {
         vec![AutonomousPatchOperation {
             path: required_patch_field(request.path, "path")?,
             search: required_patch_field(request.search, "search")?,
             replace: request.replace.unwrap_or_default(),
             replace_all: request.replace_all,
-            expected_hash: request.expected_hash,
+            expected_hash: default_expected_hash,
         }]
     } else {
-        request.operations
+        request
+            .operations
+            .into_iter()
+            .map(|mut operation| {
+                if operation.expected_hash.is_none() {
+                    operation.expected_hash = default_expected_hash.clone();
+                }
+                operation
+            })
+            .collect()
     };
 
     if operations.is_empty() || operations.len() > MAX_PATCH_OPERATIONS {
@@ -7699,6 +7867,135 @@ mod tests {
         assert_eq!(output.matches.len(), 0);
         assert_eq!(output.omissions.binary_files, 1);
         assert!(summary.contains("omitted 1 binary file(s)"));
+    }
+
+    #[test]
+    fn discovery_and_reads_omit_non_informative_sidecar_artifacts() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        fs::create_dir_all(root.join("src")).expect("src dir");
+        fs::write(
+            root.join("src/main.rs"),
+            "fn main() { let needle = true; }\n",
+        )
+        .expect("source");
+        fs::write(root.join(".env.example"), "EXAMPLE=true\nneedle\n").expect("hidden useful");
+        fs::write(root.join(".DS_Store"), [0, 1, 2, 3]).expect("finder metadata");
+        fs::write(root.join("._main.rs"), [0, 5, 6]).expect("appledouble metadata");
+        fs::write(
+            root.join("npm-debug.log"),
+            "needle from package manager noise\n",
+        )
+        .expect("debug log");
+
+        let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+
+        let skipped = read_output(runtime.read(read_request(".DS_Store")));
+        assert_eq!(
+            skipped.content_omitted_reason.as_deref(),
+            Some("non_informative_artifact")
+        );
+        assert_eq!(skipped.binary_excerpt_base64, None);
+
+        let mut explicit_binary = read_request(".DS_Store");
+        explicit_binary.mode = Some(AutonomousReadMode::BinaryMetadata);
+        let binary_skipped = read_output(runtime.read(explicit_binary));
+        assert_eq!(
+            binary_skipped.content_omitted_reason.as_deref(),
+            Some("non_informative_artifact")
+        );
+        assert_eq!(binary_skipped.binary_excerpt_base64, None);
+
+        let list = list_output(runtime.list(AutonomousListRequest {
+            path: None,
+            max_depth: Some(1),
+            max_results: None,
+            sort_by: None,
+            sort_direction: None,
+            cursor: None,
+        }));
+        let listed_paths = list
+            .entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(listed_paths.contains(".env.example"));
+        assert!(listed_paths.contains("src"));
+        assert!(!listed_paths.contains(".DS_Store"));
+        assert!(!listed_paths.contains("._main.rs"));
+        assert!(!listed_paths.contains("npm-debug.log"));
+
+        let search = search_output(runtime.search(AutonomousSearchRequest {
+            query: "needle".into(),
+            path: None,
+            regex: false,
+            ignore_case: false,
+            include_hidden: true,
+            include_ignored: true,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            context_lines: None,
+            max_results: None,
+            files_only: false,
+            cursor: None,
+        }));
+        let matched_paths = search
+            .matches
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(matched_paths.contains(".env.example"));
+        assert!(matched_paths.contains("src/main.rs"));
+        assert!(!matched_paths.contains("npm-debug.log"));
+        assert!(search.omissions.filtered_files >= 3);
+
+        let find = find_output(runtime.find(AutonomousFindRequest {
+            pattern: "**/*".into(),
+            mode: None,
+            path: None,
+            max_depth: Some(2),
+            max_results: None,
+            include_hidden: true,
+            include_ignored: true,
+            cursor: None,
+        }));
+        let found_paths = find
+            .matches
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        assert!(found_paths.contains(".env.example"));
+        assert!(found_paths.contains("src/main.rs"));
+        assert!(!found_paths.contains(".DS_Store"));
+        assert!(!found_paths.contains("._main.rs"));
+        assert!(!found_paths.contains("npm-debug.log"));
+
+        let tree = runtime
+            .list_tree(AutonomousListTreeRequest {
+                path: None,
+                max_depth: Some(2),
+                max_entries: None,
+                include_globs: Vec::new(),
+                exclude_globs: Vec::new(),
+                include_git_status: false,
+                show_omitted: true,
+            })
+            .expect("list tree");
+        let AutonomousToolOutput::ListTree(tree) = tree.output else {
+            panic!("unexpected output: {:?}", tree.output);
+        };
+        let child_paths = tree
+            .root
+            .children
+            .iter()
+            .map(|child| child.path.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(child_paths.contains(".env.example"));
+        assert!(child_paths.contains("src"));
+        assert!(!child_paths.contains(".DS_Store"));
+        assert!(!child_paths.contains("._main.rs"));
+        assert!(!child_paths.contains("npm-debug.log"));
+        assert!(tree.omitted.filtered >= 3);
     }
 
     #[test]
@@ -8495,6 +8792,43 @@ mod tests {
     }
 
     #[test]
+    fn patch_uses_top_level_expected_hash_as_default_for_operations() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        fs::write(root.join("main.tsx"), "import React from 'react';\n").expect("main");
+        let expected_hash = sha256_hex(b"import React from 'react';\n");
+
+        let runtime = AutonomousToolRuntime::new(root)
+            .expect("runtime")
+            .with_agent_run_context("project-1", "session-1", "run-1");
+        let output = patch_output(runtime.patch(AutonomousPatchRequest {
+            path: None,
+            search: None,
+            replace: None,
+            replace_all: false,
+            expected_hash: Some(expected_hash.clone()),
+            preview: false,
+            operations: vec![AutonomousPatchOperation {
+                path: "main.tsx".into(),
+                search: "import React from 'react';\n".into(),
+                replace: "import React, { useEffect } from 'react';\n".into(),
+                replace_all: false,
+                expected_hash: None,
+            }],
+        }));
+
+        assert!(output.applied);
+        assert_eq!(
+            output.files[0].guard_status.expected_hashes,
+            vec![expected_hash]
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("main.tsx")).unwrap(),
+            "import React, { useEffect } from 'react';\n"
+        );
+    }
+
+    #[test]
     fn patch_reports_exact_operation_diagnostics() {
         let tempdir = tempdir().expect("tempdir");
         let root = tempdir.path();
@@ -8648,6 +8982,57 @@ mod tests {
         assert_eq!(
             copy_error.code,
             "autonomous_tool_lockfile_direct_mutation_denied"
+        );
+    }
+
+    #[test]
+    fn owned_agent_rejects_manual_package_json_bootstrap_creation() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        let runtime = AutonomousToolRuntime::new(root)
+            .expect("runtime")
+            .with_agent_run_context("project-1", "session-1", "run-1");
+
+        let write_error = runtime
+            .write(AutonomousWriteRequest {
+                path: "package.json".into(),
+                content: "{\"scripts\":{}}\n".into(),
+                expected_hash: None,
+                create_only: true,
+                overwrite: Some(false),
+                preview: false,
+            })
+            .expect_err("manual package bootstrap should be denied");
+        assert_eq!(
+            write_error.code,
+            "autonomous_tool_command_first_bootstrap_required"
+        );
+        assert!(write_error.message.contains("command_run"));
+
+        let result = runtime
+            .fs_transaction(AutonomousFsTransactionRequest {
+                operations: vec![AutonomousFsTransactionOperation {
+                    id: Some("manual-package-bootstrap".into()),
+                    action: AutonomousFsTransactionAction::CreateFile,
+                    path: Some("package.json".into()),
+                    content: Some("{\"scripts\":{}}\n".into()),
+                    ..AutonomousFsTransactionOperation::default()
+                }],
+                preview: false,
+                stop_on_first_error: true,
+            })
+            .expect("fs_transaction returns structured validation output");
+        let AutonomousToolOutput::FsTransaction(output) = result.output else {
+            panic!("expected fs_transaction output");
+        };
+
+        assert!(!output.applied);
+        assert_eq!(
+            output.validation.errors[0]
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("autonomous_tool_command_first_bootstrap_required")
         );
     }
 

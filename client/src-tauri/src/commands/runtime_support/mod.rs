@@ -11,7 +11,7 @@ pub(crate) use cursor::{drive_cursor_runtime_prompt, is_cursor_runtime_provider}
 pub(crate) use project::{emit_project_updated, resolve_project_root};
 pub(crate) use run::{
     agent_provider_config_identity, apply_owned_runtime_run_pending_controls_with_status,
-    bind_owned_runtime_run_to_agent_handoff, emit_runtime_run_updated,
+    bind_owned_runtime_run_to_agent_handoff, emit_owned_runtime_progress, emit_runtime_run_updated,
     emit_runtime_run_updated_if_changed, ensure_owned_runtime_provider_turn_capabilities,
     fail_owned_runtime_run, generate_runtime_run_id, launch_or_reconnect_runtime_run,
     load_persisted_runtime_run, load_runtime_run_status, resolve_owned_agent_provider_config,

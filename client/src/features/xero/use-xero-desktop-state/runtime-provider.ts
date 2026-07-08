@@ -119,7 +119,7 @@ function defaultThinkingEffortFor(
 
 export function isSelectableXaiComposerModelId(modelId: string): boolean {
   const normalized = modelId.trim().split('/').pop()?.toLowerCase() ?? ''
-  return ['grok-4.3', 'grok-4.3-latest', 'grok-build-0.1'].includes(normalized)
+  return ['grok-4.5', 'grok-latest', 'grok-4.3', 'grok-4.3-latest', 'grok-build-0.1'].includes(normalized)
 }
 
 export function displayNameForProviderModel(

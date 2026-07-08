@@ -180,7 +180,7 @@ describe('resolveSelectedModel', () => {
 
   it('uses the selected control profile to resolve cross-provider model changes on an existing run', () => {
     const credentials = makeSnapshot([
-      makeCredential({ providerId: 'xai', kind: 'oauth_session', readinessProof: 'oauth_session' }),
+      makeCredential({ providerId: 'xai' }),
       makeCredential({ providerId: 'openai_codex', kind: 'oauth_session', readinessProof: 'oauth_session' }),
     ])
     const options = buildComposerModelOptions(credentials, {
@@ -317,7 +317,7 @@ describe('buildComposerModelOptions', () => {
 
   it('only exposes supported xAI text models to the composer', () => {
     const credentials = makeSnapshot([
-      makeCredential({ providerId: 'xai', kind: 'oauth_session', readinessProof: 'oauth_session' }),
+      makeCredential({ providerId: 'xai' }),
     ])
     const catalogs = {
       'xai-default': makeCatalog('xai', [
@@ -335,6 +335,7 @@ describe('buildComposerModelOptions', () => {
         },
         { modelId: 'grok-imagine-image-quality', displayName: 'grok-imagine-image-quality' },
         { modelId: 'grok-imagine-video', displayName: 'grok-imagine-video' },
+        { modelId: 'grok-4.5', displayName: 'grok-4.5', thinking: true },
         { modelId: 'grok-latest', displayName: 'grok-latest', thinking: true },
         { modelId: 'grok-4.3-latest', displayName: 'grok-4.3-latest', thinking: true },
         { modelId: 'grok-build-0.1', displayName: 'grok-build-0.1', thinking: true },
@@ -345,10 +346,14 @@ describe('buildComposerModelOptions', () => {
 
     expect(options.map((option) => option.displayName)).toEqual([
       'Grok 4.3 Latest',
+      'Grok 4.5',
       'Grok Build 0.1',
+      'Grok Latest',
     ])
     expect(options[0]?.thinkingEffortOptions).toEqual(['medium', 'high'])
     expect(options[1]?.thinkingEffortOptions).toEqual(['medium', 'high'])
+    expect(options[2]?.thinkingEffortOptions).toEqual(['medium', 'high'])
+    expect(options[3]?.thinkingEffortOptions).toEqual(['medium', 'high'])
   })
 
   it('includes the Cursor SDK harness model when the Cursor credential and catalog exist', () => {

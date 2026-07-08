@@ -150,19 +150,23 @@ function installManualResizeObserverMock(): {
 }
 
 function installManualMutationObserverMock(): {
+  getObserveOptions: () => MutationObserverInit[]
   restore: () => void
   trigger: () => void
 } {
   const previousWindowMutationObserver = window.MutationObserver
   const previousGlobalMutationObserver = globalThis.MutationObserver
   const instances: Array<{ trigger: () => void }> = []
+  const observeOptions: MutationObserverInit[] = []
 
   class MockMutationObserver implements MutationObserver {
     constructor(private readonly callback: MutationCallback) {
       instances.push(this)
     }
 
-    observe(): void {}
+    observe(_target: Node, options?: MutationObserverInit): void {
+      observeOptions.push(options ?? {})
+    }
     disconnect(): void {}
     takeRecords(): MutationRecord[] {
       return []
@@ -185,6 +189,7 @@ function installManualMutationObserverMock(): {
   })
 
   return {
+    getObserveOptions: () => observeOptions,
     restore: () => {
       Object.defineProperty(window, 'MutationObserver', {
         configurable: true,
@@ -689,6 +694,7 @@ function createDictationAdapter(options: {
 }
 
 function makeTranscriptItem(options: {
+  createdAt?: string
   mediaAttachments?: RuntimeStreamMediaAttachmentDto[]
   sequence: number
   role?: 'user' | 'assistant'
@@ -701,7 +707,7 @@ function makeTranscriptItem(options: {
     kind: 'transcript' as const,
     runId,
     sequence: options.sequence,
-    createdAt: `2026-04-29T00:48:${String(options.sequence).padStart(2, '0')}Z`,
+    createdAt: options.createdAt ?? `2026-04-29T00:48:${String(options.sequence).padStart(2, '0')}Z`,
     mediaAttachments: options.mediaAttachments ?? [],
     role: options.role ?? 'assistant',
     text: options.text,
@@ -962,6 +968,256 @@ describe('AgentRuntime current UI', () => {
       })
     })
     expect(resolveOperatorAction).not.toHaveBeenCalled()
+    expect(await screen.findByText('Approved.')).toBeInTheDocument()
+    expect(screen.getByText('Resolved')).toBeInTheDocument()
+  })
+
+  it('routes owned-agent action approvals through runtime-run state updates when available', async () => {
+    const resumeAgentRun = vi.fn(async () => ({}))
+    const onUpdateRuntimeRunControls = vi.fn(async () => makeRuntimeRun())
+
+    renderRuntimeStreamItems(
+      [
+        {
+          id: 'action_required:run-1:command-pnpm-create-astro-latest',
+          kind: 'action_required',
+          runId: 'run-1',
+          sequence: 1,
+          createdAt: '2026-06-05T03:40:29Z',
+          mediaAttachments: [],
+          actionId: 'command-pnpm-create-astro-latest',
+          boundaryId: null,
+          actionType: 'command_approval',
+          title: 'Command requires review',
+          detail: 'pnpm create astro@latest --help',
+          answerShape: 'plain_text',
+          options: null,
+          allowMultiple: null,
+          sensitiveFields: null,
+          intendedUse: null,
+        },
+      ],
+      {
+        desktopAdapter: {
+          isDesktopRuntime: () => false,
+          resumeAgentRun,
+        } as unknown as AgentRuntimeDesktopAdapter,
+        onUpdateRuntimeRunControls,
+      },
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+
+    await waitFor(() => {
+      expect(onUpdateRuntimeRunControls).toHaveBeenCalledWith({
+        prompt: 'Approved.',
+        actionId: 'command-pnpm-create-astro-latest',
+      })
+    })
+    expect(resumeAgentRun).not.toHaveBeenCalled()
+  })
+
+  it('routes active owned-agent single-choice prompts through runtime-run state updates with the option id', async () => {
+    const resumeAgentRun = vi.fn(async () => ({}))
+    const onUpdateRuntimeRunControls = vi.fn(async () => makeRuntimeRun())
+
+    renderRuntimeStreamItems(
+      [
+        {
+          id: 'action_required:run-1:user-input-stack-choice',
+          kind: 'action_required',
+          runId: 'run-1',
+          sequence: 1,
+          createdAt: '2026-06-28T18:14:22Z',
+          mediaAttachments: [],
+          actionId: 'user-input-stack-choice',
+          boundaryId: null,
+          actionType: 'user_input_required',
+          title: 'Choose the landing page stack',
+          detail: 'Pick one technology stack before implementation starts.',
+          answerShape: 'single_choice',
+          options: [
+            {
+              id: 'vite_react_css',
+              label: 'Vite + React + plain CSS',
+              description: 'Recommended for a lightweight landing page.',
+            },
+            {
+              id: 'next_react_css',
+              label: 'Next.js + React + CSS Modules/plain CSS',
+              description: 'Best for larger apps.',
+            },
+            {
+              id: 'astro_css',
+              label: 'Astro + CSS',
+              description: 'Strong for content-focused static marketing sites.',
+            },
+            {
+              id: 'static_html_css_js',
+              label: 'Static HTML + CSS + JS',
+              description: 'Smallest dependency footprint.',
+            },
+          ],
+          allowMultiple: false,
+          sensitiveFields: null,
+          intendedUse: null,
+        },
+      ],
+      {
+        desktopAdapter: {
+          isDesktopRuntime: () => false,
+          resumeAgentRun,
+        } as unknown as AgentRuntimeDesktopAdapter,
+        onUpdateRuntimeRunControls,
+      },
+    )
+
+    fireEvent.click(screen.getByRole('radio', { name: /Astro \+ CSS/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+
+    await waitFor(() => {
+      expect(onUpdateRuntimeRunControls).toHaveBeenCalledWith({
+        prompt: 'astro_css',
+        actionId: 'user-input-stack-choice',
+      })
+    })
+    expect(resumeAgentRun).not.toHaveBeenCalled()
+    expect(screen.getByText('Resolved')).toBeInTheDocument()
+  })
+
+  it('keeps rendering after an owned-agent custom single-choice answer is resumed into the transcript', async () => {
+    const onUpdateRuntimeRunControls = vi.fn(async () => makeRuntimeRun())
+    const runtimeSession = makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false })
+    const runtimeRun = makeRuntimeRun({ runId: 'run-1' })
+    const actionRequiredItem = {
+      id: 'action_required:run-1:user-input-stack-choice',
+      kind: 'action_required' as const,
+      runId: 'run-1',
+      sequence: 16,
+      createdAt: '2026-06-28T21:11:04.343Z',
+      mediaAttachments: [],
+      actionId: 'user-input-stack-choice',
+      boundaryId: null,
+      actionType: 'user_input_required',
+      title: 'Choose landing page stack',
+      detail: 'Please choose the stack you want me to create.',
+      answerShape: 'single_choice' as const,
+      options: [
+        {
+          id: 'vite_react_css',
+          label: 'Vite + React + plain CSS',
+          description: 'Recommended for a polished production landing page.',
+        },
+        {
+          id: 'tailwind_css',
+          label: 'Vite + React + Tailwind CSS',
+          description: 'Good if you want utility-first styling.',
+        },
+      ],
+      allowMultiple: false,
+      sensitiveFields: null,
+      intendedUse: null,
+    }
+
+    const { rerender } = render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession,
+          runtimeRun,
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [actionRequiredItem],
+        })}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('radio', { name: /Something else/ }))
+    fireEvent.change(screen.getByLabelText('Your own answer'), {
+      target: { value: 'astro and tailwind' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+
+    await waitFor(() => {
+      expect(onUpdateRuntimeRunControls).toHaveBeenCalledWith({
+        prompt: 'astro and tailwind',
+        actionId: 'user-input-stack-choice',
+      })
+    })
+
+    const resumedTranscriptCreatedAt = new Date(Date.now() + 1_000).toISOString()
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession,
+          runtimeRun: makeRuntimeRun({
+            runId: 'run-1',
+            lastCheckpointSequence: 5,
+            lastCheckpointAt: '2026-06-28T21:13:06.210Z',
+            updatedAt: '2026-06-28T21:13:06.210Z',
+          }),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [
+            actionRequiredItem,
+            makeTranscriptItem({
+              runId: 'run-1',
+              sequence: 17,
+              role: 'user',
+              text: 'astro and tailwind',
+              createdAt: resumedTranscriptCreatedAt,
+            }),
+            makeTranscriptItem({
+              runId: 'run-1',
+              sequence: 18,
+              role: 'assistant',
+              text: '',
+              createdAt: resumedTranscriptCreatedAt,
+            }),
+            makeReasoningItem({
+              sequence: 19,
+              text: '**Retrieving project context**\n\nI need to inspect the project state and package manager before scaffolding.',
+            }),
+            makeToolItem({
+              sequence: 20,
+              toolCallId: 'call-project-record-1',
+              toolName: 'project_context_get',
+              toolState: 'running',
+              detail: '{"action":"get_project_record","recordId":"project-record-933ee5cc431995ff"}',
+            }),
+            makeToolItem({
+              sequence: 21,
+              toolCallId: 'call-project-record-2',
+              toolName: 'project_context_get',
+              toolState: 'running',
+              detail: '{"action":"get_project_record","recordId":"project-record-48d143e1cdbd80c1"}',
+            }),
+            makeToolItem({
+              sequence: 22,
+              toolCallId: 'call-package-manager',
+              toolName: 'environment_context',
+              toolState: 'running',
+              detail: '{"action":"category","category":"package_manager"}',
+            }),
+            makeToolItem({
+              sequence: 23,
+              toolCallId: 'call-language-runtime',
+              toolName: 'environment_context',
+              toolState: 'running',
+              detail: '{"action":"category","category":"language_runtime"}',
+            }),
+          ],
+        })}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+      />,
+    )
+
+    expect(screen.getAllByText('astro and tailwind')).toHaveLength(1)
+    expect(screen.getByText('Resolved')).toBeInTheDocument()
+    expect(screen.getByText(/Retrieving project context/)).toBeVisible()
+    expect(screen.getAllByText(/get_project_record/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/package_manager/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/language_runtime/).length).toBeGreaterThan(0)
   })
 
   it('surfaces owned-agent action failures inline and in the composer', async () => {
@@ -2029,6 +2285,82 @@ describe('AgentRuntime current UI', () => {
         expectedWorkspaceEpoch: 7,
       }),
     )
+  })
+
+  it('keeps file-change hunk state stable across stream rerenders', async () => {
+    const applySelectiveUndo = vi.fn(async () => makeCodeUndoResponse())
+    const dictation = createDictationAdapter()
+    const desktopAdapter: AgentRuntimeDesktopAdapter = {
+      ...dictation.adapter,
+      applySelectiveUndo,
+    }
+    const fileChangeItem = makeFileChangeItem({
+      sequence: 2,
+      detail: 'modify: client/src/file.ts',
+      codeChangeGroupId: 'code-change-1',
+      codeWorkspaceEpoch: 7,
+      codePatchAvailability: {
+        projectId: 'project-1',
+        targetChangeGroupId: 'code-change-1',
+        available: true,
+        affectedPaths: ['client/src/file.ts'],
+        fileChangeCount: 1,
+        textHunkCount: 2,
+        textHunks: [
+          {
+            hunkId: 'hunk-first',
+            patchFileId: 'patch-file-1',
+            filePath: 'client/src/file.ts',
+            hunkIndex: 0,
+            baseStartLine: 10,
+            baseLineCount: 2,
+            resultStartLine: 12,
+            resultLineCount: 2,
+          },
+          {
+            hunkId: 'hunk-second',
+            patchFileId: 'patch-file-1',
+            filePath: 'client/src/file.ts',
+            hunkIndex: 1,
+            baseStartLine: 30,
+            baseLineCount: 1,
+            resultStartLine: 33,
+            resultLineCount: 1,
+          },
+        ],
+        unavailableReason: null,
+      },
+    })
+
+    const { rerender } = render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [fileChangeItem],
+        })}
+        desktopAdapter={desktopAdapter}
+      />,
+    )
+
+    for (let index = 0; index < 3; index += 1) {
+      rerender(
+        <AgentRuntime
+          agent={makeAgent({
+            runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+            runtimeRun: makeRuntimeRun(),
+            runtimeStreamStatus: 'live',
+            runtimeStreamStatusLabel: 'Live stream',
+            runtimeStreamItems: [{ ...fileChangeItem }],
+          })}
+          desktopAdapter={desktopAdapter}
+        />,
+      )
+    }
+
+    expect(screen.getByRole('button', { name: 'Open undo menu for client/src/file.ts' })).toBeEnabled()
   })
 
   it('shows undo success and refreshes after undo resolves', async () => {
@@ -3964,7 +4296,7 @@ describe('AgentRuntime current UI', () => {
     }
   })
 
-  it('hides the latest button after collapsed tool content finishes animating out', () => {
+  it('hides the latest button after transcript mutation layout settles', () => {
     vi.useFakeTimers()
     const mutationObserver = installManualMutationObserverMock()
     const originalRequestAnimationFrame = Object.getOwnPropertyDescriptor(window, 'requestAnimationFrame')
@@ -4057,6 +4389,52 @@ describe('AgentRuntime current UI', () => {
         Reflect.deleteProperty(window, 'cancelAnimationFrame')
       }
       vi.useRealTimers()
+    }
+  })
+
+  it('does not observe transcript attribute churn for scroll state sync', () => {
+    const mutationObserver = installManualMutationObserverMock()
+
+    try {
+      render(
+        <AgentRuntime
+          agent={makeAgent({
+            runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+            runtimeRun: makeRuntimeRun(),
+            runtimeStreamStatus: 'live',
+            runtimeStreamStatusLabel: 'Live stream',
+            runtimeStreamItems: [
+              makeTranscriptItem({ sequence: 1, role: 'user', text: 'Choose a stack.' }),
+              makeToolItem({
+                sequence: 2,
+                toolCallId: 'call-project-record',
+                toolName: 'project_context_get',
+                toolState: 'running',
+                detail: '{"action":"get_project_record"}',
+              }),
+            ],
+          })}
+        />,
+      )
+
+      expect(mutationObserver.getObserveOptions()).toEqual([
+        expect.objectContaining({
+          childList: true,
+          subtree: true,
+        }),
+      ])
+      expect(mutationObserver.getObserveOptions()).toEqual([
+        expect.not.objectContaining({
+          attributes: true,
+        }),
+      ])
+      expect(mutationObserver.getObserveOptions()).toEqual([
+        expect.not.objectContaining({
+          attributeFilter: expect.arrayContaining(['style', 'data-state']),
+        }),
+      ])
+    } finally {
+      mutationObserver.restore()
     }
   })
 

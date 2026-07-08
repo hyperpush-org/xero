@@ -3285,6 +3285,55 @@ describe('XeroApp current UI', () => {
     expect(screen.getAllByText('mesh-lang')[0]).toBeVisible()
   })
 
+  it('keeps the Computer Use runtime stream subscription stable while live events arrive', async () => {
+    const computerUseRuntimeSession = makeRuntimeSession(GLOBAL_COMPUTER_USE_PROJECT_ID)
+    const computerUseRuntimeRun = makeRuntimeRun(GLOBAL_COMPUTER_USE_PROJECT_ID, {
+      agentSessionId: GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
+      runId: 'run-computer-use-1',
+    })
+    const { adapter, emitRuntimeStream, streamSubscriptions } = createAdapter({
+      projects: [makeProjectSummary('project-1', 'mesh-lang')],
+      snapshot: makeSnapshot('project-1', 'mesh-lang'),
+      status: makeStatus('project-1', 'mesh-lang'),
+      runtimeSession: computerUseRuntimeSession,
+      runtimeRun: computerUseRuntimeRun,
+    })
+    const subscribeRuntimeStream = vi.spyOn(adapter, 'subscribeRuntimeStream')
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Computer Use' }))
+
+    const dock = await screen.findByLabelText('Agent dock')
+    await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'false'))
+    await waitFor(() => expect(streamSubscriptions).toHaveLength(1))
+    expect(subscribeRuntimeStream).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      emitRuntimeStream(
+        0,
+        makeRuntimeCompletionEvent(GLOBAL_COMPUTER_USE_PROJECT_ID, {
+          agentSessionId: GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
+          runId: 'run-computer-use-1',
+          item: {
+            kind: 'transcript',
+            sequence: 2,
+            text: 'Inspecting the current page.',
+            transcriptRole: 'assistant',
+          },
+        }),
+      )
+    })
+
+    await waitFor(() => expect(screen.getByText('Inspecting the current page.')).toBeInTheDocument())
+    expect(streamSubscriptions).toHaveLength(1)
+    expect(subscribeRuntimeStream).toHaveBeenCalledTimes(1)
+  })
+
   it('animates the sidebar closed before switching from Computer Use to the agent dock', async () => {
     const { adapter } = createAdapter({
       projects: [makeProjectSummary('project-1', 'mesh-lang')],

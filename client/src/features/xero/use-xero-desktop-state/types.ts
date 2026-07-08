@@ -134,6 +134,7 @@ export interface RuntimeRunControlMutationRequest {
   attachments?: StagedAgentAttachmentDto[]
   linkedPaths?: RuntimeLinkedPathDto[]
   autoCompact?: RuntimeAutoCompactPreferenceDto | null
+  actionId?: string | null
 }
 
 export interface AgentRunControlSelectionView {

@@ -1471,6 +1471,12 @@ pub(super) struct AutonomousAgentWorkflowRuntimeState {
     phase_failures: BTreeMap<String, usize>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AutonomousAgentWorkflowReplay {
+    pub todo_items: BTreeMap<String, AutonomousTodoItem>,
+    pub tool_successes: BTreeMap<String, usize>,
+}
+
 impl AutonomousAgentWorkflowPolicy {
     pub fn from_definition_snapshot(snapshot: &JsonValue) -> Option<Self> {
         let object = snapshot.get("workflowStructure")?.as_object()?;
@@ -2123,7 +2129,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_READ,
             "core",
-            "Read a repo-relative file or bounded directory listing as text, image preview, binary metadata, byte range, or line-hash anchored text.",
+            "Read a repo-relative file or bounded directory listing as text, image preview, binary metadata, byte range, or line-hash anchored text; non-informative sidecars are skipped.",
             &[
                 "file",
                 "directory",
@@ -2154,7 +2160,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_READ_MANY,
             "core",
-            "Read a bounded ordered set of small repo-relative files with per-file errors and total byte caps.",
+            "Read a bounded ordered set of small repo-relative files with per-file errors, total byte caps, and non-informative sidecar omissions.",
             &["file", "inspect", "read", "batch", "line_hash"],
             &[
                 "paths",
@@ -2213,7 +2219,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_LIST_TREE,
             "core",
-            "Return a compact deterministic repo-relative directory tree with depth, entry, ignore, and permission omission counts.",
+            "Return a compact deterministic repo-relative directory tree with depth, entry, ignore, permission, filter, and sidecar omission counts.",
             &["directory", "tree", "inspect", "list", "git"],
             &[
                 "path",
@@ -2233,7 +2239,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_DIRECTORY_DIGEST,
             "core",
-            "Compute a deterministic digest for a repo-relative directory or file set with omission counts and a compact manifest.",
+            "Compute a deterministic digest for a repo-relative directory or file set with omission counts, sidecar filtering, and a compact manifest.",
             &["directory", "digest", "hash", "guard", "manifest"],
             &[
                 "path",
@@ -2252,7 +2258,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_SEARCH,
             "core",
-            "Search repo-scoped files with regex or literal matching, globs, context lines, hidden/ignored controls, and deterministic capped results.",
+            "Search repo-scoped files with regex or literal matching, globs, context lines, hidden/ignored controls, sidecar filtering, and deterministic capped results.",
             &["file", "search", "regex", "grep", "ripgrep", "code"],
             &[
                 "query",
@@ -2275,7 +2281,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_FIND,
             "core",
-            "Find glob/pattern matches in repo-scoped files with optional bounded recursion depth.",
+            "Find glob/pattern matches in repo-scoped files with optional bounded recursion depth and sidecar filtering.",
             &["file", "glob", "find", "tree"],
             &[
                 "pattern",
@@ -2641,7 +2647,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_LIST,
             "core",
-            "List repo-scoped files.",
+            "List repo-scoped files while omitting non-informative OS/editor/cache sidecars.",
             &["file", "list", "tree", "directory"],
             &["path", "maxDepth"],
             &["List top-level project directories."],
@@ -2650,7 +2656,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_HASH,
             "core",
-            "Hash a repo-relative file, directory, or matched file set with SHA-256.",
+            "Hash a repo-relative file, directory, or matched file set with SHA-256, excluding non-informative sidecars in file-set mode.",
             &["file", "directory", "hash", "sha256", "stale_write"],
             &["path", "recursive", "includeGlobs", "excludeGlobs", "maxFiles"],
             &[
@@ -4881,6 +4887,21 @@ impl AutonomousToolRuntime {
             .map(AutonomousAgentWorkflowPolicy::initial_state)
             .unwrap_or_default();
         self.agent_workflow_policy = policy;
+        self.agent_workflow_state = Arc::new(Mutex::new(state));
+        self
+    }
+
+    pub fn with_agent_workflow_replay(mut self, replay: AutonomousAgentWorkflowReplay) -> Self {
+        self.todo_items = Arc::new(Mutex::new(replay.todo_items.clone()));
+        let mut state = self
+            .agent_workflow_policy
+            .as_ref()
+            .map(AutonomousAgentWorkflowPolicy::initial_state)
+            .unwrap_or_default();
+        state.tool_successes = replay.tool_successes;
+        if let Some(policy) = self.agent_workflow_policy.as_ref() {
+            policy.advance_state(&mut state, &replay.todo_items);
+        }
         self.agent_workflow_state = Arc::new(Mutex::new(state));
         self
     }
@@ -12822,6 +12843,145 @@ mod tests {
             vec![AUTONOMOUS_TOOL_PATCH.to_string()]
         );
         assert!(granted.denied_tools.is_empty());
+    }
+
+    #[test]
+    fn s22_tool_access_grants_web_when_current_workflow_stage_allows_it() {
+        let policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&json!({
+            "workflowStructure": {
+                "startPhaseId": "implement",
+                "phases": [
+                    {
+                        "id": "implement",
+                        "title": "Implement",
+                        "allowedTools": [
+                            AUTONOMOUS_TOOL_TOOL_ACCESS,
+                            AUTONOMOUS_TOOL_WEB_SEARCH,
+                            AUTONOMOUS_TOOL_WEB_FETCH,
+                            AUTONOMOUS_TOOL_TODO
+                        ]
+                    }
+                ]
+            }
+        }))
+        .expect("workflow policy");
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let runtime = AutonomousToolRuntime::new(tempdir.path())
+            .expect("runtime")
+            .with_runtime_run_controls(engineer_runtime_controls())
+            .with_agent_workflow_policy(Some(policy));
+
+        let granted = tool_access_output(runtime.tool_access(AutonomousToolAccessRequest {
+            action: AutonomousToolAccessAction::Request,
+            groups: vec!["web_search_only".into(), "web_fetch".into()],
+            tools: Vec::new(),
+            reason: Some("research documented scaffold command".into()),
+        }));
+
+        assert!(granted
+            .granted_tools
+            .contains(&AUTONOMOUS_TOOL_WEB_SEARCH.to_string()));
+        assert!(granted
+            .granted_tools
+            .contains(&AUTONOMOUS_TOOL_WEB_FETCH.to_string()));
+        assert!(granted.denied_tools.is_empty());
+    }
+
+    #[test]
+    fn s22_workflow_replay_restores_stage_gates_after_resume() {
+        let policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&json!({
+            "workflowStructure": {
+                "startPhaseId": "survey",
+                "phases": [
+                    {
+                        "id": "survey",
+                        "title": "Survey",
+                        "allowedTools": [
+                            AUTONOMOUS_TOOL_READ,
+                            AUTONOMOUS_TOOL_TOOL_ACCESS,
+                            AUTONOMOUS_TOOL_TODO
+                        ],
+                        "requiredChecks": [
+                            {
+                                "kind": "tool_succeeded",
+                                "toolName": AUTONOMOUS_TOOL_READ,
+                                "minCount": 2
+                            }
+                        ]
+                    },
+                    {
+                        "id": "plan",
+                        "title": "Plan",
+                        "allowedTools": [
+                            AUTONOMOUS_TOOL_TODO,
+                            AUTONOMOUS_TOOL_TOOL_ACCESS
+                        ],
+                        "requiredChecks": [
+                            {
+                                "kind": "todo_completed",
+                                "todoId": "implementation_plan"
+                            }
+                        ]
+                    },
+                    {
+                        "id": "implement",
+                        "title": "Implement",
+                        "allowedTools": [
+                            AUTONOMOUS_TOOL_WRITE,
+                            AUTONOMOUS_TOOL_MKDIR,
+                            AUTONOMOUS_TOOL_TOOL_ACCESS,
+                            AUTONOMOUS_TOOL_TODO
+                        ]
+                    }
+                ]
+            }
+        }))
+        .expect("workflow policy");
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let mut todo_items = BTreeMap::new();
+        todo_items.insert(
+            "implementation_plan".into(),
+            AutonomousTodoItem {
+                id: "implementation_plan".into(),
+                title: "Implementation plan".into(),
+                notes: Some("Selected stack and planned the landing page.".into()),
+                status: AutonomousTodoStatus::Completed,
+                mode: AutonomousTodoMode::Plan,
+                debug_stage: None,
+                evidence: None,
+                phase_id: Some("plan".into()),
+                phase_title: Some("Plan".into()),
+                slice_id: Some("P0-S1".into()),
+                handoff_note: None,
+                updated_at: "2026-06-28T02:05:35Z".into(),
+            },
+        );
+        let mut tool_successes = BTreeMap::new();
+        tool_successes.insert(AUTONOMOUS_TOOL_READ.into(), 2);
+
+        let runtime = AutonomousToolRuntime::new(tempdir.path())
+            .expect("runtime")
+            .with_runtime_run_controls(engineer_runtime_controls())
+            .with_agent_workflow_policy(Some(policy))
+            .with_agent_workflow_replay(AutonomousAgentWorkflowReplay {
+                todo_items,
+                tool_successes,
+            });
+
+        let granted = tool_access_output(runtime.tool_access(AutonomousToolAccessRequest {
+            action: AutonomousToolAccessAction::Request,
+            groups: Vec::new(),
+            tools: vec![AUTONOMOUS_TOOL_WRITE.into(), AUTONOMOUS_TOOL_MKDIR.into()],
+            reason: Some("continue implementation after user input".into()),
+        }));
+
+        assert!(granted.denied_tools.is_empty());
+        assert!(granted
+            .granted_tools
+            .contains(&AUTONOMOUS_TOOL_WRITE.to_string()));
+        assert!(granted
+            .granted_tools
+            .contains(&AUTONOMOUS_TOOL_MKDIR.to_string()));
     }
 
     #[test]

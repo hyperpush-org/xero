@@ -84,6 +84,12 @@ impl AutonomousWebRuntime {
 
 fn map_fetch_status_error(status: u16) -> CommandError {
     match status {
+        401 | 403 => CommandError::user_fixable(
+            "autonomous_web_fetch_access_denied",
+            format!(
+                "Xero received HTTP {status} while fetching the requested URL. The host may block direct HTTP fetches; use web_search to choose another official or primary source URL."
+            ),
+        ),
         408 | 429 => CommandError::retryable(
             "autonomous_web_fetch_rate_limited",
             format!("Xero received HTTP {status} while fetching the requested URL."),

@@ -80,6 +80,7 @@ mod tests {
             project_id: project_id.into(),
             repository_id: repository_id.into(),
             root_path: root_path.to_string_lossy().into_owned(),
+            is_git_repo: true,
         }
     }
 

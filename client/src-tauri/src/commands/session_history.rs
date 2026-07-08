@@ -3645,7 +3645,7 @@ fn collect_project_code_map(
 fn should_skip_code_map_path(name: &str) -> bool {
     matches!(
         name,
-        ".git" | "node_modules" | "target" | ".next" | "dist" | "build" | ".xero"
+        ".git" | ".xero" | ".xero-cache" | "node_modules" | "target" | ".next" | "dist" | "build"
     )
 }
 

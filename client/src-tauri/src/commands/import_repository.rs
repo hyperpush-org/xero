@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use tauri::{AppHandle, Emitter, Runtime, State};
 
 use crate::{
@@ -7,7 +9,7 @@ use crate::{
         PROJECT_UPDATED_EVENT, REPOSITORY_STATUS_CHANGED_EVENT,
     },
     db,
-    git::repository::resolve_repository,
+    git::{repository::resolve_repository, status},
     registry::{self, RegistryProjectRecord},
     state::DesktopState,
 };
@@ -20,17 +22,32 @@ pub fn import_repository<R: Runtime>(
 ) -> CommandResult<ImportRepositoryResponseDto> {
     validate_non_empty(&request.path, "path")?;
 
-    let repository = resolve_repository(&request.path)?;
     let registry_path = state.global_db_path(&app)?;
     db::configure_project_database_paths(&registry_path);
 
-    let imported = db::import_project(&repository, state.import_failpoints())?;
+    let (imported, repository_status) = match resolve_repository(&request.path) {
+        Ok(repository) => (
+            db::import_project(&repository, state.import_failpoints())?,
+            repository.repository_status(),
+        ),
+        Err(error) if error.code == "git_repository_not_found" => {
+            let imported = db::import_project_directory(
+                Path::new(request.path.trim()),
+                state.import_failpoints(),
+            )?;
+            let repository_status = status::empty_repository_status(imported.repository.clone());
+            (imported, repository_status)
+        }
+        Err(error) => return Err(error),
+    };
+
     let _registry_snapshot = registry::upsert_project(
         &registry_path,
         RegistryProjectRecord {
             project_id: imported.project.id.clone(),
             repository_id: imported.repository.id.clone(),
             root_path: imported.repository.root_path.clone(),
+            is_git_repo: imported.repository.is_git_repo,
         },
         state.import_failpoints(),
     )?;
@@ -44,7 +61,7 @@ pub fn import_repository<R: Runtime>(
             crate::commands::CommandError::retryable(
                 "project_updated_emit_failed",
                 format!(
-                    "Xero imported the repo but could not emit the project update event: {error}"
+                    "Xero imported the project but could not emit the project update event: {error}"
                 ),
             )
         })?;
@@ -52,14 +69,14 @@ pub fn import_repository<R: Runtime>(
     let repository_status_payload = RepositoryStatusChangedPayloadDto {
         project_id: imported.project.id.clone(),
         repository_id: imported.repository.id.clone(),
-        status: repository.repository_status(),
+        status: repository_status,
     };
     app.emit(REPOSITORY_STATUS_CHANGED_EVENT, &repository_status_payload)
         .map_err(|error| {
             crate::commands::CommandError::retryable(
                 "repository_status_emit_failed",
                 format!(
-                    "Xero imported the repo but could not emit the repository status event: {error}"
+                    "Xero imported the project but could not emit the repository status event: {error}"
                 ),
             )
         })?;

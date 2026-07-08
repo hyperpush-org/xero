@@ -157,6 +157,7 @@ export function useRunControlMutations({
     syncRuntimeRun,
     syncAutonomousRun,
     applyRuntimeRunUpdate,
+    restartRuntimeStream,
     applyAutonomousRunStateUpdate,
   } = operations
 
@@ -423,6 +424,7 @@ export function useRunControlMutations({
       attachments?: StagedAgentAttachmentDto[]
       linkedPaths?: RuntimeLinkedPathDto[]
       autoCompact?: RuntimeAutoCompactPreferenceDto | null
+      actionId?: string | null
     } = {}) => {
       const projectId = getActiveProjectId(
         activeProjectIdRef,
@@ -449,6 +451,7 @@ export function useRunControlMutations({
         throw new Error('Xero cannot queue runtime-run controls until a Xero-owned agent run exists for this project.')
       }
       const resolvedRunId = runId
+      const actionId = request.actionId?.trim() ?? ''
       const isPromptSubmission = hasPromptPayload(request.prompt) || hasAttachmentPayload(request.attachments)
 
       if (!isPromptSubmission) {
@@ -458,6 +461,24 @@ export function useRunControlMutations({
       }
 
       try {
+        if (actionId) {
+          if (!adapter.resumeAgentRun) {
+            throw new Error('Xero cannot resume this owned-agent action in the current runtime.')
+          }
+          await adapter.resumeAgentRun(
+            resolvedRunId,
+            request.prompt?.trim() || 'Approved.',
+            {
+              actionId,
+              autoCompact: request.autoCompact ?? null,
+            },
+          )
+          restartRuntimeStream(projectId)
+          const runtimeRun = await syncRuntimeRun(projectId)
+          setRuntimeRunActionError(null)
+          return runtimeRun
+        }
+
         const updateRequest: UpdateRuntimeRunControlsRequestDto = {
           projectId,
           agentSessionId,
@@ -512,6 +533,7 @@ export function useRunControlMutations({
       adapter,
       applyRuntimeRunUpdate,
       refreshSessionTitleFromPrompt,
+      restartRuntimeStream,
       setPendingRuntimeRunAction,
       setRuntimeRunActionError,
       setRuntimeRunActionStatus,

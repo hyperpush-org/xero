@@ -49,6 +49,7 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(MIGRATION_033_AGENT_RUN_WAKEUPS_SQL),
             M::up(MIGRATION_034_ENGINEER_MUTATION_STAGE_TOOLS_SQL),
             M::up(MIGRATION_035_ENGINEER_CORE_STAGE_TOOLS_SQL),
+            M::up(MIGRATION_036_ENGINEER_WEB_STAGE_TOOLS_SQL),
         ])
     });
 
@@ -56,6 +57,46 @@ pub fn migrations() -> &'static Migrations<'static> {
 }
 
 const NOOP_SCHEMA_VERSION_MARKER_SQL: &str = "";
+
+const MIGRATION_036_ENGINEER_WEB_STAGE_TOOLS_SQL: &str = r#"
+    INSERT OR IGNORE INTO agent_definition_versions (
+        definition_id,
+        version,
+        snapshot_json,
+        validation_report_json,
+        created_at
+    )
+    SELECT
+        'engineer',
+        5,
+        json_insert(
+            json_set(
+                snapshot_json,
+                '$.version', 5,
+                '$.description', 'Implement repository changes with the complete repository observation, web research, and mutation toolset plus safety gates.'
+            ),
+            '$.workflowStructure.phases[0].allowedTools[#]', 'web_search',
+            '$.workflowStructure.phases[0].allowedTools[#]', 'web_fetch',
+            '$.workflowStructure.phases[1].allowedTools[#]', 'web_search',
+            '$.workflowStructure.phases[1].allowedTools[#]', 'web_fetch',
+            '$.workflowStructure.phases[2].allowedTools[#]', 'web_search',
+            '$.workflowStructure.phases[2].allowedTools[#]', 'web_fetch',
+            '$.workflowStructure.phases[3].allowedTools[#]', 'web_search',
+            '$.workflowStructure.phases[3].allowedTools[#]', 'web_fetch'
+        ),
+        '{"status":"valid","source":"seed"}',
+        '2026-06-28T06:10:00Z'
+    FROM agent_definition_versions
+    WHERE definition_id = 'engineer'
+      AND version = 4;
+
+    UPDATE agent_definitions
+    SET current_version = 5,
+        description = 'Implement repository changes with the complete repository observation, web research, and mutation toolset plus safety gates.',
+        updated_at = '2026-06-28T06:10:00Z'
+    WHERE definition_id = 'engineer'
+      AND current_version < 5;
+"#;
 
 const MIGRATION_035_ENGINEER_CORE_STAGE_TOOLS_SQL: &str = r#"
     INSERT OR IGNORE INTO agent_definition_versions (
@@ -3740,7 +3781,7 @@ mod tests {
                 FROM agent_definition_versions adv,
                      json_each(adv.snapshot_json, '$.workflowStructure.phases[2].allowedTools') tools
                 WHERE adv.definition_id = 'engineer'
-                  AND adv.version = 4
+                  AND adv.version = 5
                   AND tools.value = 'patch'
                 "#,
                 [],
@@ -3756,7 +3797,7 @@ mod tests {
                 FROM agent_definition_versions adv,
                      json_each(adv.snapshot_json, '$.workflowStructure.phases[2].allowedTools') tools
                 WHERE adv.definition_id = 'engineer'
-                  AND adv.version = 4
+                  AND adv.version = 5
                   AND tools.value = 'list_tree'
                 "#,
                 [],
@@ -3772,7 +3813,7 @@ mod tests {
                 FROM agent_definition_versions adv,
                      json_each(adv.snapshot_json, '$.workflowStructure.phases[2].requiredChecks[0].toolNames') tools
                 WHERE adv.definition_id = 'engineer'
-                  AND adv.version = 4
+                  AND adv.version = 5
                   AND tools.value = 'patch'
                 "#,
                 [],
@@ -3788,7 +3829,7 @@ mod tests {
                 FROM agent_definition_versions adv,
                      json_each(adv.snapshot_json, '$.workflowStructure.phases[3].allowedTools') tools
                 WHERE adv.definition_id = 'engineer'
-                  AND adv.version = 4
+                  AND adv.version = 5
                   AND tools.value = 'patch'
                 "#,
                 [],
@@ -3796,5 +3837,50 @@ mod tests {
             )
             .expect("count engineer verify patch tools");
         assert_eq!(verify_patch_tools, 1);
+
+        let implement_web_search_tools: i64 = connection
+            .query_row(
+                r#"
+                SELECT COUNT(*)
+                FROM agent_definition_versions adv,
+                     json_each(adv.snapshot_json, '$.workflowStructure.phases[2].allowedTools') tools
+                WHERE adv.definition_id = 'engineer'
+                  AND adv.version = 5
+                  AND tools.value = 'web_search'
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .expect("count engineer implement web_search tools");
+        assert_eq!(implement_web_search_tools, 1);
+
+        let implement_web_fetch_tools: i64 = connection
+            .query_row(
+                r#"
+                SELECT COUNT(*)
+                FROM agent_definition_versions adv,
+                     json_each(adv.snapshot_json, '$.workflowStructure.phases[2].allowedTools') tools
+                WHERE adv.definition_id = 'engineer'
+                  AND adv.version = 5
+                  AND tools.value = 'web_fetch'
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .expect("count engineer implement web_fetch tools");
+        assert_eq!(implement_web_fetch_tools, 1);
+
+        let current_engineer_version: i64 = connection
+            .query_row(
+                r#"
+                SELECT current_version
+                FROM agent_definitions
+                WHERE definition_id = 'engineer'
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .expect("read engineer current version");
+        assert_eq!(current_engineer_version, 5);
     }
 }

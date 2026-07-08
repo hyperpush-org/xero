@@ -270,6 +270,23 @@ function getRuntimeRunProjectionKey(runtimeRun: RuntimeRunView | null | undefine
   ].join('\u0000')
 }
 
+function getRuntimeRunSubscriptionKey(runtimeRun: RuntimeRunView | null | undefined): string {
+  if (!runtimeRun) {
+    return 'none'
+  }
+
+  const pendingControls = runtimeRun.controls.pending
+  return [
+    runtimeRun.projectId,
+    runtimeRun.agentSessionId,
+    runtimeRun.runId,
+    runtimeRun.runtimeKind,
+    runtimeRun.status,
+    pendingControls?.revision ?? '',
+    pendingControls?.queuedPromptAt ?? '',
+  ].join('\u0000')
+}
+
 function isRunningAgentRuntimeRun(
   runtimeRun: RuntimeRunView | null | undefined,
 ): runtimeRun is RuntimeRunView {
@@ -1777,6 +1794,21 @@ export function useXeroDesktopState(
         }
 
         const nextKey = createRuntimeStreamStoreKey(projectId, nextStream.agentSessionId)
+        if (
+          nextStream === currentStream &&
+          currentStreams[nextKey] === nextStream &&
+          (
+            nextStream.agentSessionId !== activeAgentSessionId ||
+            currentStreams[projectId] === nextStream
+          ) &&
+          (
+            nextStream.agentSessionId === activeAgentSessionId ||
+            currentStreams[projectId]?.agentSessionId !== nextStream.agentSessionId
+          )
+        ) {
+          return currentStreams
+        }
+
         runtimeStreamsBySessionRef.current[
           createAgentSessionStateKey(projectId, nextStream.agentSessionId)
         ] = nextStream
@@ -3028,6 +3060,13 @@ export function useXeroDesktopState(
     },
     [loadProject],
   )
+  const restartRuntimeStream = useCallback((projectId: string) => {
+    if (activeProjectIdRef.current !== projectId) {
+      return
+    }
+
+    setRuntimeStreamRetryToken((current) => current + 1)
+  }, [])
 
   useEffect(() => {
     return () => {
@@ -3113,6 +3152,19 @@ export function useXeroDesktopState(
       }
 
       disposeListeners = nextDispose
+    }).catch((error) => {
+      if (effectDisposed) {
+        return
+      }
+
+      handleAdapterEventError(
+        error instanceof XeroDesktopError
+          ? error
+          : new XeroDesktopError({
+              message: getDesktopErrorMessage(error),
+              cause: error,
+            }),
+      )
     })
 
     return () => {
@@ -3460,6 +3512,7 @@ export function useXeroDesktopState(
       hydrateAgentSessionRuntimeState,
       applyRuntimeSessionUpdate,
       applyRuntimeRunUpdate,
+      restartRuntimeStream,
       applyAutonomousRunStateUpdate,
     },
     providerCredentialsLoadStatus,
@@ -3945,7 +3998,7 @@ export function useXeroDesktopState(
       const runtimeKind = authenticatedRuntimeSession?.runtimeKind ?? runtimeRunForSubscription.runtimeKind
       const sessionId = authenticatedRuntimeSession?.sessionId ?? `owned-agent:${runId}`
       const flowId = authenticatedRuntimeSession?.flowId ?? null
-      const runtimeRunProjectionKey = getRuntimeRunProjectionKey(runtimeRunForSubscription)
+      const runtimeRunSubscriptionKey = getRuntimeRunSubscriptionKey(runtimeRunForSubscription)
       return [{
         key: [
           activeProjectId,
@@ -3954,7 +4007,7 @@ export function useXeroDesktopState(
           sessionId,
           flowId ?? 'none',
           runId,
-          runtimeRunProjectionKey,
+          runtimeRunSubscriptionKey,
           replayOnly ? 'replay' : 'live',
           runtimeStreamRetryToken,
         ].join(':'),

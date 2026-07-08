@@ -42,12 +42,18 @@ pub const CURSOR_RUNTIME_KIND: &str = "cursor_sdk";
 pub const GEMINI_RUNTIME_KIND: &str = "gemini";
 pub const ANTHROPIC_RUNTIME_KIND: &str = ANTHROPIC_PROVIDER_ID;
 pub const OPENAI_CODEX_DEFAULT_MODEL_ID: &str = "gpt-5.5";
-pub const XAI_DEFAULT_MODEL_ID: &str = "grok-4.3";
+pub const XAI_DEFAULT_MODEL_ID: &str = "grok-4.5";
 pub const CURSOR_DEFAULT_MODEL_ID: &str = "composer-latest";
 pub const CURSOR_AUTO_MODEL_ID: &str = "cursor-auto";
-pub const XAI_SUPPORTED_TEXT_MODEL_IDS: &[&str] =
-    &["grok-4.3", "grok-4.3-latest", "grok-build-0.1"];
-pub const XAI_REASONING_EFFORT_MODEL_IDS: &[&str] = &["grok-4.3", "grok-4.3-latest"];
+pub const XAI_SUPPORTED_TEXT_MODEL_IDS: &[&str] = &[
+    "grok-4.5",
+    "grok-latest",
+    "grok-4.3",
+    "grok-4.3-latest",
+    "grok-build-0.1",
+];
+pub const XAI_REASONING_EFFORT_MODEL_IDS: &[&str] =
+    &["grok-4.5", "grok-latest", "grok-4.3", "grok-4.3-latest"];
 pub const OPENAI_CODEX_SUPPORTED_MODEL_IDS: &[&str] = &[
     "gpt-5.2",
     "gpt-5.3-codex",
@@ -57,6 +63,8 @@ pub const OPENAI_CODEX_SUPPORTED_MODEL_IDS: &[&str] = &[
 ];
 const CURSOR_API_KEY_SESSION_ID: &str = "cursor-api-key";
 const CURSOR_API_KEY_ACCOUNT_ID: &str = "cursor-api-key";
+const XAI_API_KEY_SESSION_ID: &str = "xai-api-key";
+const XAI_API_KEY_ACCOUNT_ID: &str = "xai-api-key";
 
 pub fn is_supported_xai_text_model_id(model_id: &str) -> bool {
     let model_id = normalize_xai_model_id_for_match(model_id);
@@ -693,6 +701,14 @@ fn bind_xai_runtime_session<R: Runtime>(
             }
             Ok(RuntimeProviderBindOutcome::Ready(binding))
         }
+        Some(ProviderCredentialLink::ApiKey { updated_at }) => Ok(
+            RuntimeProviderBindOutcome::Ready(binding_from_stored_xai_session(
+                provider,
+                XAI_API_KEY_SESSION_ID,
+                XAI_API_KEY_ACCOUNT_ID,
+                updated_at,
+            )),
+        ),
         _ => Ok(RuntimeProviderBindOutcome::SignedOut(
             invalid_xai_profile_diagnostic(),
         )),
@@ -734,6 +750,14 @@ fn reconcile_xai_runtime_session<R: Runtime>(
                 ),
             ))
         }
+        Some(ProviderCredentialLink::ApiKey { updated_at }) => Ok(
+            RuntimeProviderReconcileOutcome::Authenticated(binding_from_stored_xai_session(
+                provider,
+                XAI_API_KEY_SESSION_ID,
+                XAI_API_KEY_ACCOUNT_ID,
+                updated_at,
+            )),
+        ),
         _ => Ok(RuntimeProviderReconcileOutcome::SignedOut(
             invalid_xai_profile_diagnostic(),
         )),
@@ -946,7 +970,7 @@ fn missing_xai_session_diagnostic() -> AuthDiagnostic {
     AuthDiagnostic {
         code: "auth_session_not_found".into(),
         message:
-            "Xero does not have an app-local xAI credential. Sign in to xAI from Providers settings."
+            "Xero does not have an app-local xAI credential. Save an xAI API key in Providers settings."
                 .into(),
         retryable: false,
     }
@@ -956,7 +980,7 @@ fn invalid_xai_profile_diagnostic() -> AuthDiagnostic {
     AuthDiagnostic {
         code: "provider_credentials_invalid".into(),
         message:
-            "Xero rejected the active xAI provider profile because it does not contain an xAI sign-in session."
+            "Xero rejected the active xAI provider profile because it does not contain an xAI API key or sign-in session."
                 .into(),
         retryable: false,
     }

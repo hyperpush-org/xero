@@ -4,7 +4,7 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    commands::{CommandError, ProjectOriginDto, ProjectSummaryDto},
+    commands::{CommandError, ProjectOriginDto, ProjectSummaryDto, RepositorySummaryDto},
     global_db::open_global_database,
     state::ImportFailpoints,
 };
@@ -15,6 +15,22 @@ pub struct RegistryProjectRecord {
     pub project_id: String,
     pub repository_id: String,
     pub root_path: String,
+    #[serde(default = "default_is_git_repo")]
+    pub is_git_repo: bool,
+}
+
+impl RegistryProjectRecord {
+    pub fn repository_summary(&self) -> RepositorySummaryDto {
+        RepositorySummaryDto {
+            id: self.repository_id.clone(),
+            project_id: self.project_id.clone(),
+            root_path: self.root_path.clone(),
+            display_name: derive_display_name(&self.root_path),
+            branch: None,
+            head_sha: None,
+            is_git_repo: self.is_git_repo,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -41,12 +57,16 @@ impl Default for ProjectRegistry {
 
 const REGISTRY_VERSION: u32 = 1;
 
+fn default_is_git_repo() -> bool {
+    true
+}
+
 pub fn read_registry(path: &Path) -> Result<ProjectRegistry, CommandError> {
     let connection = open_global_database(path)?;
 
     let mut stmt = connection
         .prepare(
-            "SELECT repositories.id, repositories.project_id, repositories.root_path \
+            "SELECT repositories.id, repositories.project_id, repositories.root_path, repositories.is_git_repo \
              FROM repositories JOIN projects ON projects.id = repositories.project_id \
              ORDER BY repositories.root_path",
         )
@@ -63,6 +83,7 @@ pub fn read_registry(path: &Path) -> Result<ProjectRegistry, CommandError> {
                 repository_id: row.get(0)?,
                 project_id: row.get(1)?,
                 root_path: row.get(2)?,
+                is_git_repo: row.get::<_, i64>(3)? == 1,
             })
         })
         .map_err(|error| {
@@ -100,6 +121,7 @@ pub fn read_project_summaries(
                 repositories.id,
                 repositories.project_id,
                 repositories.root_path,
+                repositories.is_git_repo,
                 projects.name,
                 projects.description,
                 projects.milestone,
@@ -128,19 +150,20 @@ pub fn read_project_summaries(
                     repository_id: row.get(0)?,
                     project_id: row.get(1)?,
                     root_path: row.get(2)?,
+                    is_git_repo: row.get::<_, i64>(3)? == 1,
                 },
                 project: ProjectSummaryDto {
                     id: row.get(1)?,
-                    name: row.get(3)?,
-                    description: row.get(4)?,
-                    milestone: row.get(5)?,
+                    name: row.get(4)?,
+                    description: row.get(5)?,
+                    milestone: row.get(6)?,
                     project_origin: ProjectOriginDto::Unknown,
-                    total_phases: row.get::<_, u32>(6)?,
-                    completed_phases: row.get::<_, u32>(7)?,
-                    active_phase: row.get::<_, u32>(8)?,
-                    branch: row.get(9)?,
-                    runtime: row.get(10)?,
-                    start_targets: serde_json::from_str(&row.get::<_, String>(11)?)
+                    total_phases: row.get::<_, u32>(7)?,
+                    completed_phases: row.get::<_, u32>(8)?,
+                    active_phase: row.get::<_, u32>(9)?,
+                    branch: row.get(10)?,
+                    runtime: row.get(11)?,
+                    start_targets: serde_json::from_str(&row.get::<_, String>(12)?)
                         .unwrap_or_default(),
                 },
             })
@@ -173,7 +196,7 @@ pub fn read_project_records(
 
     let mut stmt = connection
         .prepare(
-            "SELECT repositories.id, repositories.project_id, repositories.root_path \
+            "SELECT repositories.id, repositories.project_id, repositories.root_path, repositories.is_git_repo \
              FROM repositories JOIN projects ON projects.id = repositories.project_id \
              WHERE repositories.project_id = ?1 \
              ORDER BY repositories.root_path",
@@ -191,6 +214,7 @@ pub fn read_project_records(
                 repository_id: row.get(0)?,
                 project_id: row.get(1)?,
                 root_path: row.get(2)?,
+                is_git_repo: row.get::<_, i64>(3)? == 1,
             })
         })
         .map_err(|error| {
@@ -251,18 +275,20 @@ pub fn upsert_project(
     )
     .map_err(map_write_error)?;
     tx.execute(
-        "INSERT INTO repositories (id, project_id, root_path, display_name)
-         VALUES (?1, ?2, ?3, ?4)
+        "INSERT INTO repositories (id, project_id, root_path, display_name, is_git_repo)
+         VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(id) DO UPDATE SET
             project_id = excluded.project_id,
             root_path = excluded.root_path,
             display_name = excluded.display_name,
+            is_git_repo = excluded.is_git_repo,
             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
         params![
             entry.repository_id,
             entry.project_id,
             entry.root_path,
             display_name,
+            if entry.is_git_repo { 1 } else { 0 },
         ],
     )
     .map_err(map_write_error)?;
@@ -305,13 +331,14 @@ pub fn replace_projects(
         )
         .map_err(map_write_error)?;
         tx.execute(
-            "INSERT INTO repositories (id, project_id, root_path, display_name)
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO repositories (id, project_id, root_path, display_name, is_git_repo)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 entry.repository_id,
                 entry.project_id,
                 entry.root_path,
                 display_name,
+                if entry.is_git_repo { 1 } else { 0 },
             ],
         )
         .map_err(map_write_error)?;
@@ -356,6 +383,7 @@ mod tests {
             project_id: project_id.into(),
             repository_id: repository_id.into(),
             root_path: root_path.into(),
+            is_git_repo: true,
         }
     }
 
@@ -421,5 +449,26 @@ mod tests {
         let target_records =
             read_project_records(&registry_path, "project-missing").expect("read target records");
         assert!(target_records.is_empty());
+    }
+
+    #[test]
+    fn registry_preserves_non_git_project_records() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let registry_path = tempdir.path().join("xero.db");
+        let mut record = registry_record(
+            "project-plain-folder",
+            "repo-plain-folder",
+            tempdir.path().join("plain-folder").display().to_string(),
+        );
+        record.is_git_repo = false;
+
+        replace_projects(&registry_path, vec![record.clone()]).expect("seed registry");
+
+        let all_records = read_registry(&registry_path).expect("read all records");
+        assert_eq!(all_records.projects, vec![record.clone()]);
+
+        let project_records =
+            read_project_records(&registry_path, "project-plain-folder").expect("read project");
+        assert_eq!(project_records, vec![record]);
     }
 }

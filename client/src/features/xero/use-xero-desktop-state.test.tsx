@@ -4610,6 +4610,19 @@ describe('useXeroDesktopState', () => {
     expect(screen.getByTestId('branch')).toHaveTextContent('No branch')
   })
 
+  it('handles desktop listener registration failures without blocking startup project load', async () => {
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Xero')] },
+    })
+    setup.onRepositoryStatusChanged.mockRejectedValueOnce(new Error('listener attach failed'))
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+    await waitFor(() => expect(setup.projectUnlisten).toHaveBeenCalledTimes(1))
+    expect(screen.getByTestId('active-project')).toHaveTextContent('Xero')
+  })
+
   it('preserves the newly selected project when runtime loading fails after project selection', async () => {
     const setup = createMockAdapter({
       listProjects: { projects: [makeProjectSummary('project-1', 'Xero'), makeProjectSummary('project-2', 'orchestra')] },

@@ -140,18 +140,24 @@ fn handle_project_command(state_dir: &Path, args: &[String]) -> Result<JsonValue
             let path = option_value(&args[1..], "--path").unwrap_or_else(|| ".".into());
             let registry_path = global_database_path_for_tui_state(state_dir);
             configure_project_store_paths(state_dir);
-            let repository = resolve_repository(&path)?;
-            let imported = db::import_project_with_origin(
-                &repository,
-                db::ProjectOrigin::Brownfield,
-                &Default::default(),
-            )?;
+            let imported = match resolve_repository(&path) {
+                Ok(repository) => db::import_project_with_origin(
+                    &repository,
+                    db::ProjectOrigin::Brownfield,
+                    &Default::default(),
+                )?,
+                Err(error) if error.code == "git_repository_not_found" => {
+                    db::import_project_directory(Path::new(path.trim()), &Default::default())?
+                }
+                Err(error) => return Err(error),
+            };
             registry::upsert_project(
                 &registry_path,
                 registry::RegistryProjectRecord {
                     project_id: imported.project.id.clone(),
                     repository_id: imported.repository.id.clone(),
                     root_path: imported.repository.root_path.clone(),
+                    is_git_repo: imported.repository.is_git_repo,
                 },
                 &Default::default(),
             )?;

@@ -957,6 +957,7 @@ mod tests {
                 project_id: "project-1".into(),
                 repository_id: "repository-1".into(),
                 root_path: project_root.to_string_lossy().into_owned(),
+                is_git_repo: true,
             },
             &crate::state::ImportFailpoints::default(),
         )

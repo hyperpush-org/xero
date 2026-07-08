@@ -283,7 +283,7 @@ function providerModelSupportsAttachmentModality(
 	if (
 		requiredModality === "image" &&
 		providerId === "xai" &&
-		["grok-4.3", "grok-4.3-latest", "grok-build-0.1"].includes(
+		["grok-4.5", "grok-latest", "grok-4.3", "grok-4.3-latest", "grok-build-0.1"].includes(
 			modelId.split("/").pop() ?? modelId,
 		)
 	) {

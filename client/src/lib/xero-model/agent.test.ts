@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  AGENT_RUN_EVENT_KINDS,
   agentTraceExportSchema,
   agentRunSummarySchema,
   agentRunSchema,
@@ -11,6 +12,7 @@ import {
   startAgentTaskRequestSchema,
   subscribeAgentStreamResponseSchema,
 } from './agent'
+import { runtimeProtocolEventKindSchema } from './runtime-protocol'
 
 function makeAgentRunDto(overrides: Record<string, unknown> = {}) {
   return {
@@ -152,6 +154,27 @@ describe('owned agent run schemas', () => {
       path: 'src/main.rs',
       operation: 'edit',
     })
+  })
+
+  it('accepts every durable agent event kind returned by owned-agent commands', () => {
+    const eventKinds = [...runtimeProtocolEventKindSchema.options, 'subagent_lifecycle'] as const
+
+    expect(AGENT_RUN_EVENT_KINDS).toEqual(eventKinds)
+
+    const parsed = agentRunSchema.parse(
+      makeAgentRunDto({
+        events: eventKinds.map((eventKind, index) => ({
+          id: index + 1,
+          projectId: 'project-1',
+          runId: 'run-agent-1',
+          eventKind,
+          payload: { kind: eventKind },
+          createdAt: '2026-04-24T12:00:02Z',
+        })),
+      }),
+    )
+
+    expect(parsed.events.map((event) => event.eventKind)).toEqual(eventKinds)
   })
 
   it('accepts durable tool registry snapshot events', () => {

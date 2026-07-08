@@ -1,4 +1,9 @@
-use std::{path::Path, path::PathBuf, str::FromStr, thread, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    str::FromStr,
+    thread,
+    time::{Duration, Instant},
+};
 
 use tauri::{
     ipc::{Channel, JavaScriptChannelId},
@@ -26,10 +31,14 @@ use crate::{
 use xero_agent_core::ApprovalDecisionRequest;
 
 use super::runtime_support::{
-    agent_provider_config_identity, ensure_owned_runtime_provider_turn_capabilities,
-    generate_runtime_run_id, resolve_owned_agent_provider_config, resolve_project_root,
+    agent_provider_config_identity, emit_owned_runtime_progress,
+    ensure_owned_runtime_provider_turn_capabilities, generate_runtime_run_id,
+    load_persisted_runtime_run, resolve_owned_agent_provider_config, resolve_project_root,
     staged_attachment_dto_to_message_attachment,
 };
+
+const ACTION_PROMPT_ACTIVE_RUN_HANDOFF_TIMEOUT: Duration = Duration::from_millis(1_500);
+const ACTION_PROMPT_ACTIVE_RUN_HANDOFF_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[tauri::command]
 pub fn start_agent_task<R: Runtime + 'static>(
@@ -191,7 +200,7 @@ pub fn reject_agent_action<R: Runtime>(
         project_id,
         ..
     } = locate_agent_run(&app, state.inner(), &request.run_id)?;
-    ensure_agent_run_not_active(state.inner(), &request.run_id)?;
+    wait_for_agent_run_to_release_action_prompt_lease(state.inner(), &request.run_id)?;
     let runtime = DesktopAgentCoreRuntime::new(state.inner().agent_run_supervisor().clone());
     Ok(agent_run_dto(runtime.reject_action(
         repo_root,
@@ -218,16 +227,23 @@ pub fn resume_agent_run<R: Runtime + 'static>(
     let LocatedAgentRun {
         repo_root,
         project_id,
+        snapshot: located_snapshot,
         ..
     } = locate_agent_run(&app, state.inner(), &request.run_id)?;
-    ensure_agent_run_not_active(state.inner(), &request.run_id)?;
+    if request.action_id.is_some() {
+        wait_for_agent_run_to_release_action_prompt_lease(state.inner(), &request.run_id)?;
+    } else {
+        ensure_agent_run_not_active(state.inner(), &request.run_id)?;
+    }
     let provider_config = resolve_owned_agent_provider_config(&app, state.inner(), None)?;
     let tool_runtime =
         tool_runtime_for_provider(&app, state.inner(), &project_id, &provider_config)?;
+    let resume_run_id = request.run_id.clone();
+    let resume_action_id = request.action_id.clone();
     let continuation = ContinueOwnedAgentRunRequest {
-        repo_root,
+        repo_root: repo_root.clone(),
         project_id: project_id.clone(),
-        run_id: request.run_id,
+        run_id: resume_run_id.clone(),
         prompt: request.response,
         attachments: Vec::new(),
         linked_paths: Vec::new(),
@@ -235,15 +251,70 @@ pub fn resume_agent_run<R: Runtime + 'static>(
         tool_runtime,
         provider_config,
         provider_preflight: None,
-        answer_pending_actions: request.action_id.is_none(),
-        answer_pending_action_id: request.action_id.clone(),
+        answer_pending_actions: resume_action_id.is_none(),
+        answer_pending_action_id: resume_action_id.clone(),
         auto_compact: auto_compact_preference(request.auto_compact)?,
         internal_resume: None,
     };
     let runtime = DesktopAgentCoreRuntime::new(state.inner().agent_run_supervisor().clone());
-    let prepared = runtime.continue_run(continuation, DesktopRunDriveMode::Background)?;
+    let drive_mode = if resume_action_id.is_some() {
+        DesktopRunDriveMode::CreateOnly
+    } else {
+        DesktopRunDriveMode::Background
+    };
+    let prepared = runtime.continue_run(continuation, drive_mode)?;
+    if resume_action_id.is_some() && prepared.drive_required {
+        let progress_result = emit_runtime_action_resume_progress(
+            &app,
+            &repo_root,
+            &project_id,
+            &located_snapshot.run.agent_session_id,
+            &resume_run_id,
+        );
+        let spawn_result = runtime.spawn_owned_agent_continuation(
+            prepared.snapshot.run.agent_session_id.clone(),
+            prepared.drive_request.clone(),
+        );
+        progress_result?;
+        spawn_result?;
+    }
     let snapshot = prepared.snapshot.clone();
     Ok(agent_run_dto(snapshot))
+}
+
+fn emit_runtime_action_resume_progress<R: Runtime>(
+    app: &AppHandle<R>,
+    repo_root: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+    run_id: &str,
+) -> CommandResult<()> {
+    let Some(runtime_snapshot) =
+        load_persisted_runtime_run(repo_root, project_id, agent_session_id)?
+    else {
+        return Ok(());
+    };
+
+    if runtime_snapshot.run.run_id != run_id {
+        return Ok(());
+    }
+
+    if matches!(
+        runtime_snapshot.run.status,
+        project_store::RuntimeRunStatus::Stopped | project_store::RuntimeRunStatus::Failed
+    ) {
+        return Ok(());
+    }
+
+    emit_owned_runtime_progress(
+        app,
+        repo_root,
+        &runtime_snapshot,
+        project_store::RuntimeRunStatus::Running,
+        None,
+        "Owned agent runtime resumed after an action response.",
+    )?;
+    Ok(())
 }
 
 fn tool_runtime_for_provider<R: Runtime>(
@@ -426,14 +497,42 @@ fn trace_to_json_value<T: serde::Serialize>(value: T) -> CommandResult<serde_jso
 fn ensure_agent_run_not_active(state: &DesktopState, run_id: &str) -> CommandResult<()> {
     let runtime = DesktopAgentCoreRuntime::new(state.agent_run_supervisor().clone());
     if runtime.is_active(run_id)? {
-        return Err(CommandError::user_fixable(
-            "agent_run_already_active",
-            format!(
-                "Xero is already driving owned-agent run `{run_id}`. Wait for it to finish or cancel it before sending another message."
-            ),
-        ));
+        return Err(agent_run_already_active_error(run_id));
     }
     Ok(())
+}
+
+fn wait_for_agent_run_to_release_action_prompt_lease(
+    state: &DesktopState,
+    run_id: &str,
+) -> CommandResult<()> {
+    let runtime = DesktopAgentCoreRuntime::new(state.agent_run_supervisor().clone());
+    let deadline = Instant::now() + ACTION_PROMPT_ACTIVE_RUN_HANDOFF_TIMEOUT;
+
+    loop {
+        if !runtime.is_active(run_id)? {
+            return Ok(());
+        }
+
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(agent_run_already_active_error(run_id));
+        }
+
+        thread::sleep(
+            ACTION_PROMPT_ACTIVE_RUN_HANDOFF_POLL_INTERVAL
+                .min(deadline.saturating_duration_since(now)),
+        );
+    }
+}
+
+fn agent_run_already_active_error(run_id: &str) -> CommandError {
+    CommandError::user_fixable(
+        "agent_run_already_active",
+        format!(
+            "Xero is already driving owned-agent run `{run_id}`. Wait for it to finish or cancel it before sending another message."
+        ),
+    )
 }
 
 pub(crate) fn auto_compact_preference(
@@ -772,6 +871,7 @@ mod tests {
                 project_id: project_id.into(),
                 repository_id: "repo-1".into(),
                 root_path: root_path.clone(),
+                is_git_repo: true,
             }],
         )
         .expect("seed registry");

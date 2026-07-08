@@ -60,6 +60,7 @@ const COMPLETION_NOTIFICATION_STREAM_ITEM_KINDS: RuntimeStreamItemKindDto[] = [
 
 type SetState<T> = Dispatch<SetStateAction<T>>
 type RuntimeStreamUpdater = (current: RuntimeStreamView | null) => RuntimeStreamView | null
+type RuntimeSubscriptionUnsubscribe = () => void
 
 type RuntimeSessionRecords = Record<string, RuntimeSessionView>
 type RuntimeLoadErrorRecords = Record<string, string | null>
@@ -148,6 +149,54 @@ interface AttachRuntimeCompletionNotificationSubscriptionArgs {
 
 type ScheduledFlushCancel = () => void
 type FlushScheduler = (callback: () => void) => ScheduledFlushCancel
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as PromiseLike<unknown>).then === 'function'
+  )
+}
+
+function disposeRuntimeSubscription(unsubscribe: RuntimeSubscriptionUnsubscribe): void {
+  try {
+    const maybePromise = (unsubscribe as () => unknown)()
+    if (isPromiseLike(maybePromise)) {
+      void Promise.resolve(maybePromise).catch(() => undefined)
+    }
+  } catch {
+    // Tauri unlisten callbacks can race effect cleanup after the listener id
+    // is already gone. Cleanup must stay idempotent from React's point of view.
+  }
+}
+
+function runtimeStreamItemKindsEqual(
+  left: readonly RuntimeStreamItemKindDto[],
+  right: readonly RuntimeStreamItemKindDto[],
+): boolean {
+  return left.length === right.length && left.every((kind, index) => kind === right[index])
+}
+
+function runtimeStreamConnectionMatches(
+  stream: RuntimeStreamView,
+  options: {
+    agentSessionId: string
+    runtimeKind: string
+    runId: string
+    sessionId: string | null
+    flowId: string | null
+    subscribedItemKinds: readonly RuntimeStreamItemKindDto[]
+  },
+): boolean {
+  return (
+    stream.agentSessionId === options.agentSessionId &&
+    stream.runtimeKind === options.runtimeKind &&
+    stream.runId === options.runId &&
+    stream.sessionId === options.sessionId &&
+    stream.flowId === options.flowId &&
+    runtimeStreamItemKindsEqual(stream.subscribedItemKinds, options.subscribedItemKinds)
+  )
+}
 
 interface RuntimeStreamEventBufferArgs {
   projectId: string
@@ -858,6 +907,23 @@ export async function attachDesktopRuntimeListeners({
   })
   let disposed = false
 
+  const disposeRegisteredListeners = () => {
+    if (disposed) {
+      return
+    }
+
+    disposed = true
+    pendingRepositoryStatuses.clear()
+    pendingRepositoryStatusKeys.clear()
+    cancelRepositoryStatusFlush?.()
+    cancelRepositoryStatusFlush = null
+    runtimeRunUpdateBuffer.dispose()
+    projectUnlisten?.()
+    repositoryUnlisten?.()
+    runtimeUnlisten?.()
+    runtimeRunUnlisten?.()
+  }
+
   const applyRepositoryStatusUpdate = (nextStatus: RepositoryStatusView) => {
     const nextStatusKey = createRepositoryStatusSyncKey(nextStatus)
     if (refs.repositoryStatusSyncKeyRef.current === nextStatusKey) {
@@ -947,114 +1013,110 @@ export async function attachDesktopRuntimeListeners({
     }
   }
 
-  projectUnlisten = await adapter.onProjectUpdated(
-    (payload) => {
-      if (disposed) {
-        return
-      }
-
-      const summary = mapProjectSummary(payload.project)
-      const cachedRuntime = refs.runtimeSessionsRef.current[summary.id] ?? null
-      setters.setProjects((currentProjects) =>
-        upsertProjectListItem(
-          currentProjects,
-          cachedRuntime ? applyRuntimeToProjectList(summary, cachedRuntime) : summary,
-        ),
-      )
-
-      if (refs.activeProjectIdRef.current !== summary.id) {
-        return
-      }
-
-      void loadProject(summary.id, 'project:updated')
-    },
-    handleAdapterEventError,
-  )
-
-  repositoryUnlisten = await adapter.onRepositoryStatusChanged(
-    (payload) => {
-      if (disposed || refs.activeProjectIdRef.current !== payload.projectId) {
-        return
-      }
-
-      const nextStatus = mapRepositoryStatus(payload.status)
-      scheduleRepositoryStatus(nextStatus)
-    },
-    handleAdapterEventError,
-  )
-
-  runtimeUnlisten = await adapter.onRuntimeUpdated(
-    (payload) => {
-      if (disposed) {
-        return
-      }
-
-      const currentRuntime = refs.runtimeSessionsRef.current[payload.projectId] ?? null
-      const nextRuntime = mergeRuntimeUpdated(currentRuntime, payload)
-
-      setters.setRuntimeSessions((currentRuntimeSessions) => ({
-        ...currentRuntimeSessions,
-        [payload.projectId]: nextRuntime,
-      }))
-      setters.setRuntimeLoadErrors((currentErrors) => ({
-        ...currentErrors,
-        [payload.projectId]: null,
-      }))
-      setters.setProjects((currentProjects) => {
-        const projectIndex = currentProjects.findIndex((project) => project.id === payload.projectId)
-        if (projectIndex < 0) {
-          return currentProjects
+  try {
+    projectUnlisten = await adapter.onProjectUpdated(
+      (payload) => {
+        if (disposed) {
+          return
         }
 
-        const project = currentProjects[projectIndex]
-        if (project.runtime === nextRuntime.runtimeLabel && project.runtimeLabel === nextRuntime.runtimeLabel) {
-          return currentProjects
+        const summary = mapProjectSummary(payload.project)
+        const cachedRuntime = refs.runtimeSessionsRef.current[summary.id] ?? null
+        setters.setProjects((currentProjects) =>
+          upsertProjectListItem(
+            currentProjects,
+            cachedRuntime ? applyRuntimeToProjectList(summary, cachedRuntime) : summary,
+          ),
+        )
+
+        if (refs.activeProjectIdRef.current !== summary.id) {
+          return
         }
 
-        const nextProjects = currentProjects.slice()
-        nextProjects[projectIndex] = applyRuntimeToProjectList(project, nextRuntime)
-        return nextProjects
-      })
+        void loadProject(summary.id, 'project:updated')
+      },
+      handleAdapterEventError,
+    )
 
-      if (!nextRuntime.isAuthenticated) {
-        setters.setRuntimeStreams((currentStreams) => removeRuntimeStreamsForProject(currentStreams, payload.projectId))
-      }
+    repositoryUnlisten = await adapter.onRepositoryStatusChanged(
+      (payload) => {
+        if (disposed || refs.activeProjectIdRef.current !== payload.projectId) {
+          return
+        }
 
-      if (refs.activeProjectIdRef.current !== payload.projectId) {
-        return
-      }
+        const nextStatus = mapRepositoryStatus(payload.status)
+        scheduleRepositoryStatus(nextStatus)
+      },
+      handleAdapterEventError,
+    )
 
-      setters.setRefreshSource('runtime:updated')
-      setters.setErrorMessage(null)
-      setters.setActiveProject((currentProject) =>
-        currentProject ? applyRuntimeSession(currentProject, nextRuntime) : currentProject,
-      )
-    },
-    handleAdapterEventError,
-  )
+    runtimeUnlisten = await adapter.onRuntimeUpdated(
+      (payload) => {
+        if (disposed) {
+          return
+        }
 
-  runtimeRunUnlisten = await adapter.onRuntimeRunUpdated(
-    (payload) => {
-      if (disposed) {
-        return
-      }
+        const currentRuntime = refs.runtimeSessionsRef.current[payload.projectId] ?? null
+        const nextRuntime = mergeRuntimeUpdated(currentRuntime, payload)
 
-      runtimeRunUpdateBuffer.enqueue(payload)
-    },
-    handleAdapterEventError,
-  )
+        setters.setRuntimeSessions((currentRuntimeSessions) => ({
+          ...currentRuntimeSessions,
+          [payload.projectId]: nextRuntime,
+        }))
+        setters.setRuntimeLoadErrors((currentErrors) => ({
+          ...currentErrors,
+          [payload.projectId]: null,
+        }))
+        setters.setProjects((currentProjects) => {
+          const projectIndex = currentProjects.findIndex((project) => project.id === payload.projectId)
+          if (projectIndex < 0) {
+            return currentProjects
+          }
+
+          const project = currentProjects[projectIndex]
+          if (project.runtime === nextRuntime.runtimeLabel && project.runtimeLabel === nextRuntime.runtimeLabel) {
+            return currentProjects
+          }
+
+          const nextProjects = currentProjects.slice()
+          nextProjects[projectIndex] = applyRuntimeToProjectList(project, nextRuntime)
+          return nextProjects
+        })
+
+        if (!nextRuntime.isAuthenticated) {
+          setters.setRuntimeStreams((currentStreams) => removeRuntimeStreamsForProject(currentStreams, payload.projectId))
+        }
+
+        if (refs.activeProjectIdRef.current !== payload.projectId) {
+          return
+        }
+
+        setters.setRefreshSource('runtime:updated')
+        setters.setErrorMessage(null)
+        setters.setActiveProject((currentProject) =>
+          currentProject ? applyRuntimeSession(currentProject, nextRuntime) : currentProject,
+        )
+      },
+      handleAdapterEventError,
+    )
+
+    runtimeRunUnlisten = await adapter.onRuntimeRunUpdated(
+      (payload) => {
+        if (disposed) {
+          return
+        }
+
+        runtimeRunUpdateBuffer.enqueue(payload)
+      },
+      handleAdapterEventError,
+    )
+  } catch (error) {
+    disposeRegisteredListeners()
+    throw error
+  }
 
   return () => {
-    disposed = true
-    pendingRepositoryStatuses.clear()
-    pendingRepositoryStatusKeys.clear()
-    cancelRepositoryStatusFlush?.()
-    cancelRepositoryStatusFlush = null
-    runtimeRunUpdateBuffer.dispose()
-    projectUnlisten?.()
-    repositoryUnlisten?.()
-    runtimeUnlisten?.()
-    runtimeRunUnlisten?.()
+    disposeRegisteredListeners()
   }
 }
 
@@ -1081,7 +1143,7 @@ export function attachRuntimeCompletionNotificationSubscription({
     }
 
     disposed = true
-    unsubscribe()
+    disposeRuntimeSubscription(unsubscribe)
   }
 
   const handleTerminalPayload = (payload: RuntimeStreamChannelPayload) => {
@@ -1131,7 +1193,7 @@ export function attachRuntimeCompletionNotificationSubscription({
     )
     .then((subscription) => {
       if (disposed) {
-        subscription.unsubscribe()
+        disposeRuntimeSubscription(subscription.unsubscribe)
         return
       }
 
@@ -1238,6 +1300,20 @@ export function attachRuntimeStreamSubscription({
       currentStream.agentSessionId === agentSessionId
     ) {
       replayAfterSequence = currentStream.lastSequence ?? null
+      const nextStatus = currentStream.items.length > 0 ? 'replaying' : 'subscribing'
+      if (
+        currentStream.status === nextStatus &&
+        runtimeStreamConnectionMatches(currentStream, {
+          agentSessionId,
+          runtimeKind: streamSeed.runtimeKind,
+          runId,
+          sessionId: streamSeed.sessionId,
+          flowId: streamSeed.flowId,
+          subscribedItemKinds: ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
+        })
+      ) {
+        return currentStream
+      }
       return {
         ...currentStream,
         agentSessionId,
@@ -1245,7 +1321,7 @@ export function attachRuntimeStreamSubscription({
         sessionId: streamSeed.sessionId,
         flowId: streamSeed.flowId,
         subscribedItemKinds: ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
-        status: currentStream.items.length > 0 ? 'replaying' : 'subscribing',
+        status: nextStatus,
       }
     }
 
@@ -1325,7 +1401,7 @@ export function attachRuntimeStreamSubscription({
       clearSubscribeTimeout()
 
       if (disposed) {
-        subscription.unsubscribe()
+        disposeRuntimeSubscription(subscription.unsubscribe)
         return
       }
 
@@ -1336,6 +1412,22 @@ export function attachRuntimeStreamSubscription({
           currentStream?.runId === subscription.response.runId
           && currentStream.agentSessionId === subscription.response.agentSessionId
         ) {
+          const nextStatus = getRuntimeStreamConnectedStatus(currentStream)
+          const nextLastIssue = currentStream.failure ? currentStream.lastIssue : null
+          if (
+            currentStream.status === nextStatus &&
+            currentStream.lastIssue === nextLastIssue &&
+            runtimeStreamConnectionMatches(currentStream, {
+              agentSessionId: subscription.response.agentSessionId,
+              runtimeKind: subscription.response.runtimeKind,
+              runId: subscription.response.runId,
+              sessionId: subscription.response.sessionId,
+              flowId: subscription.response.flowId ?? null,
+              subscribedItemKinds: subscription.response.subscribedItemKinds,
+            })
+          ) {
+            return currentStream
+          }
           return {
             ...currentStream,
             runtimeKind: subscription.response.runtimeKind,
@@ -1344,8 +1436,8 @@ export function attachRuntimeStreamSubscription({
             sessionId: subscription.response.sessionId,
             flowId: subscription.response.flowId ?? null,
             subscribedItemKinds: subscription.response.subscribedItemKinds,
-            status: getRuntimeStreamConnectedStatus(currentStream),
-            lastIssue: currentStream.failure ? currentStream.lastIssue : null,
+            status: nextStatus,
+            lastIssue: nextLastIssue,
           }
         }
 
@@ -1386,7 +1478,7 @@ export function attachRuntimeStreamSubscription({
     disposed = true
     clearSubscribeTimeout()
     streamEventBuffer?.dispose()
-    unsubscribe()
+    disposeRuntimeSubscription(unsubscribe)
   }
 }
 

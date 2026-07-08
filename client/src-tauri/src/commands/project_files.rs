@@ -54,6 +54,7 @@ static PROJECT_FILE_METADATA_CACHE_MEMORY: OnceLock<
 
 const SKIPPED_DIRECTORY_NAMES: &[&str] = &[
     ".git",
+    ".xero-cache",
     "node_modules",
     ".next",
     "dist",

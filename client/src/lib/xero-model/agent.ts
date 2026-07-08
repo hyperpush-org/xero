@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { isoTimestampSchema, nonEmptyOptionalTextSchema, normalizeOptionalText, normalizeText } from '@xero/ui/model/shared'
 import { getRuntimeAgentLabel, runtimeAgentIdSchema, runtimeRunControlInputSchema, runtimeRunDiagnosticSchema } from '@xero/ui/model/runtime'
+import { runtimeProtocolEventKindSchema } from './runtime-protocol'
 
 export const agentRunStatusSchema = z.enum([
   'starting',
@@ -13,28 +14,11 @@ export const agentRunStatusSchema = z.enum([
   'failed',
 ])
 export const agentMessageRoleSchema = z.enum(['system', 'developer', 'user', 'assistant', 'tool'])
-export const agentRunEventKindSchema = z.enum([
-  'message_delta',
-  'reasoning_summary',
-  'tool_started',
-  'tool_delta',
-  'tool_completed',
-  'file_changed',
-  'command_output',
-  'validation_started',
-  'validation_completed',
-  'tool_registry_snapshot',
-  'policy_decision',
-  'state_transition',
-  'plan_updated',
-  'verification_gate',
-  'environment_lifecycle_update',
-  'action_required',
-  'run_paused',
-  'run_completed',
-  'run_failed',
+export const AGENT_RUN_EVENT_KINDS = [
+  ...runtimeProtocolEventKindSchema.options,
   'subagent_lifecycle',
-])
+] as const
+export const agentRunEventKindSchema = z.enum(AGENT_RUN_EVENT_KINDS)
 export const agentToolCallStateSchema = z.enum(['pending', 'running', 'succeeded', 'failed'])
 export const agentFileChangeOperationSchema = z.enum([
   'create',

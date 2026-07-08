@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { checkAttachmentModelCompatibility } from './agent-attachments'
 
 describe('agent attachment compatibility', () => {
-  it('allows image attachments for Grok Build through the xAI model fallback', () => {
+  it('allows image attachments for known xAI Grok models through the fallback', () => {
     expect(
       checkAttachmentModelCompatibility(
         { kind: 'image', mediaType: 'image/png' },
@@ -10,6 +10,28 @@ describe('agent attachment compatibility', () => {
           providerId: 'xai',
           modelId: 'grok-build-0.1',
           modelLabel: 'Grok Build 0.1',
+        },
+      ),
+    ).toEqual({ supported: true })
+
+    expect(
+      checkAttachmentModelCompatibility(
+        { kind: 'image', mediaType: 'image/png' },
+        {
+          providerId: 'xai',
+          modelId: 'grok-4.5',
+          modelLabel: 'Grok 4.5',
+        },
+      ),
+    ).toEqual({ supported: true })
+
+    expect(
+      checkAttachmentModelCompatibility(
+        { kind: 'image', mediaType: 'image/png' },
+        {
+          providerId: 'xai',
+          modelId: 'grok-latest',
+          modelLabel: 'Grok Latest',
         },
       ),
     ).toEqual({ supported: true })

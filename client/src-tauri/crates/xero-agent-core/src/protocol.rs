@@ -857,27 +857,21 @@ impl RuntimeTrace {
         events.sort_by_key(|event| event.event_id);
         let mut status = self.snapshot.status.clone();
         let mut items = Vec::with_capacity(events.len());
-        let mut missing_segments = Vec::new();
+        let missing_segments = Vec::new();
         let mut previous_event_id = 0;
 
         for event in events {
-            if event.event_id <= previous_event_id {
+            // Event ids are the store's project-global rowids, so a single run's events are
+            // strictly increasing but NOT densely consecutive — other runs' events interleave
+            // in the id space. Only non-monotonic ids indicate real corruption (duplicate or
+            // out-of-order); a numeric gap is expected and must not be reported as a missing
+            // segment (doing so flagged every multi-run project's trace export as corrupt).
+            if event.event_id > 0 && event.event_id <= previous_event_id {
                 corrupt_segments.push(ReplayCorruptTimelineSegment {
                     event_id: event.event_id,
                     code: "event_id_not_monotonic".into(),
                     summary: format!(
                         "Event id `{}` was not strictly after `{previous_event_id}` in the replay source.",
-                        event.event_id
-                    ),
-                });
-            } else if event.event_id > previous_event_id.saturating_add(1) {
-                let start_event_id = previous_event_id.saturating_add(1);
-                let end_event_id = event.event_id.saturating_sub(1);
-                missing_segments.push(ReplayMissingTimelineSegment {
-                    start_event_id,
-                    end_event_id,
-                    summary: format!(
-                        "Replay detected a missing event range from `{start_event_id}` through `{end_event_id}` before event `{}`.",
                         event.event_id
                     ),
                 });
@@ -4470,7 +4464,7 @@ mod tests {
     }
 
     #[test]
-    fn replay_timeline_reports_missing_event_ranges() {
+    fn replay_timeline_treats_event_id_gaps_as_normal() {
         let trace_id = runtime_trace_id_for_run("project-1", "run-gap");
         let event_one = RuntimeEvent {
             id: 1,
@@ -4514,10 +4508,10 @@ mod tests {
         .expect("trace");
         let canonical = trace.canonical_snapshot().expect("canonical trace");
 
-        assert_eq!(canonical.timeline.missing_segments.len(), 1);
-        assert_eq!(canonical.timeline.missing_segments[0].start_event_id, 2);
-        assert!(!canonical.quality_gates.passed);
-        assert!(canonical
+        // Event ids are project-global rowids, so a gap between a run's events (here 1 → 3) is
+        // expected when other runs interleave and must NOT be reported as a missing segment.
+        assert!(canonical.timeline.missing_segments.is_empty());
+        assert!(!canonical
             .diagnostics
             .signals
             .iter()

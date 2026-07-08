@@ -584,7 +584,11 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
     emit_runtime_run_updated(app, Some(&runtime_run))?;
 
     let token = lease.token();
-    let outcome = drive_owned_agent_run(owned_request, token);
+    let outcome = drive_owned_agent_run(
+        owned_request,
+        token,
+        Some(state.agent_run_supervisor().clone()),
+    );
     let terminal_failure = match outcome {
         Ok(agent_snapshot)
             if agent_snapshot.run.status == project_store::AgentRunStatus::Completed =>
@@ -913,6 +917,15 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
             }
         }
         XAI_PROVIDER_ID => match active_profile.credential_link.as_ref() {
+            Some(crate::provider_credentials::ProviderCredentialLink::ApiKey { .. }) => {
+                let api_key = runtime_settings.provider_api_key.clone().ok_or_else(|| {
+                    CommandError::user_fixable(
+                        "xai_api_key_missing",
+                        "Xero cannot start the owned xAI adapter because no xAI API key is configured.",
+                    )
+                })?;
+                Ok(xai_provider_config_from_api_key(model_id.as_str(), api_key))
+            }
             Some(link @ crate::provider_credentials::ProviderCredentialLink::Xai { .. }) => {
                 let auth_store_path = state.global_db_path(app)?;
                 let session = load_xai_session_for_profile_link(&auth_store_path, link)
@@ -936,7 +949,7 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
                 } else {
                     Err(CommandError::user_fixable(
                         "xai_auth_missing",
-                        "Xero cannot start the owned xAI adapter because no xAI sign-in session is configured.",
+                        "Xero cannot start the owned xAI adapter because no xAI API key or sign-in session is configured.",
                     ))
                 }
             }
@@ -1176,11 +1189,15 @@ fn xai_provider_config_from_session(
     model_id: &str,
     session: StoredXaiSession,
 ) -> AgentProviderConfig {
+    xai_provider_config_from_api_key(model_id, session.access_token)
+}
+
+fn xai_provider_config_from_api_key(model_id: &str, bearer_token: String) -> AgentProviderConfig {
     AgentProviderConfig::XaiResponses(XaiResponsesProviderConfig {
         provider_id: XAI_PROVIDER_ID.into(),
         model_id: model_id.into(),
         base_url: XAI_API_BASE_URL.into(),
-        bearer_token: session.access_token,
+        bearer_token,
         timeout_ms: 0,
     })
 }

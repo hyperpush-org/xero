@@ -970,7 +970,7 @@ fn exit_status_looks_like_sandbox_abort(_status: ExitStatus) -> bool {
     false
 }
 
-fn configure_sandboxed_process_group(command: &mut Command) {
+pub(crate) fn configure_sandboxed_process_group(command: &mut Command) {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -1015,7 +1015,7 @@ fn wait_for_sandboxed_exit(child: &mut Child, timeout: Duration) -> io::Result<O
     }
 }
 
-fn cleanup_sandboxed_process_group(child_id: u32) {
+pub(crate) fn cleanup_sandboxed_process_group(child_id: u32) {
     #[cfg(unix)]
     {
         let _ = signal_sandboxed_process_group(child_id, libc::SIGTERM);
@@ -1366,9 +1366,11 @@ fn validate_write_path(path: &str, context: &SandboxExecutionContext) -> Result<
             .collect();
     }
 
+    // Match case-insensitively: on macOS's case-insensitive filesystem `.GIT`/`.Xero` reach
+    // the same protected directories, so an exact match would let the write through the guard.
     if protected_components
         .first()
-        .is_some_and(|part| part == ".git")
+        .is_some_and(|part| part.eq_ignore_ascii_case(".git"))
         && !context.explicit_git_mutation_allowed
     {
         return Err(format!(
@@ -1378,7 +1380,7 @@ fn validate_write_path(path: &str, context: &SandboxExecutionContext) -> Result<
 
     if protected_components
         .first()
-        .is_some_and(|part| part == ".xero")
+        .is_some_and(|part| part.eq_ignore_ascii_case(".xero"))
         && !context.legacy_xero_migration_allowed
     {
         return Err(format!(

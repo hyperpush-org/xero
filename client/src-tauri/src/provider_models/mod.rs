@@ -1141,7 +1141,9 @@ fn finalize_xai_models(mut normalized: Vec<ProviderModelRecord>) -> Vec<Provider
 
 fn xai_display_name(model_id: &str) -> String {
     match model_id {
-        XAI_DEFAULT_MODEL_ID => "Grok 4.3".into(),
+        "grok-4.5" => "Grok 4.5".into(),
+        "grok-latest" => "Grok Latest".into(),
+        "grok-4.3" => "Grok 4.3".into(),
         "grok-build-0.1" => "Grok Build 0.1".into(),
         other => {
             let parts = other
@@ -1237,6 +1239,7 @@ fn xai_context_window_tokens(model_id: &str) -> Option<u64> {
         .unwrap_or(model_id)
         .to_ascii_lowercase();
     match model_id.as_str() {
+        "grok-4.5" => Some(500_000),
         "grok-build-0.1" => Some(256_000),
         _ if is_supported_xai_text_model_id(&model_id) => Some(1_000_000),
         _ => None,
@@ -2244,7 +2247,7 @@ fn missing_xai_credential_diagnostic(
     ProviderModelCatalogDiagnostic {
         code: "xai_credential_missing".into(),
         message: format!(
-            "Xero cannot discover xAI models for provider `{}` because no xAI sign-in session is configured.",
+            "Xero cannot discover xAI models for provider `{}` because no xAI API key or sign-in session is configured.",
             profile.provider_id
         ),
         retryable: false,
@@ -2456,23 +2459,37 @@ mod tests {
     #[test]
     fn xai_projection_seeds_grok_models_with_reasoning_and_context() {
         let models = xai_projection();
-        let grok = models
+        let grok_4_5 = models
             .iter()
             .find(|model| model.model_id == XAI_DEFAULT_MODEL_ID)
+            .expect("grok-4.5 model choice");
+        let grok = models
+            .iter()
+            .find(|model| model.model_id == "grok-4.3")
             .expect("grok-4.3 model choice");
-        let latest = models
+        let version_latest = models
             .iter()
             .find(|model| model.model_id == "grok-4.3-latest")
             .expect("grok-4.3-latest model choice");
+        let latest_alias = models
+            .iter()
+            .find(|model| model.model_id == "grok-latest")
+            .expect("grok-latest model choice");
         let build = models
             .iter()
             .find(|model| model.model_id == "grok-build-0.1")
             .expect("grok-build-0.1 model choice");
 
+        assert_eq!(grok_4_5.display_name, "Grok 4.5");
+        assert_eq!(grok_4_5.context_window_tokens, Some(500_000));
+        assert_eq!(grok_4_5.input_modalities, vec!["image", "text"]);
+        assert_eq!(latest_alias.display_name, "Grok Latest");
+        assert_eq!(latest_alias.context_window_tokens, Some(1_000_000));
+        assert_eq!(latest_alias.input_modalities, vec!["image", "text"]);
         assert_eq!(grok.display_name, "Grok 4.3");
         assert_eq!(grok.context_window_tokens, Some(1_000_000));
         assert_eq!(grok.input_modalities, vec!["image", "text"]);
-        assert_eq!(latest.input_modalities, vec!["image", "text"]);
+        assert_eq!(version_latest.input_modalities, vec!["image", "text"]);
         assert_eq!(build.display_name, "Grok Build 0.1");
         assert_eq!(build.context_window_tokens, Some(256_000));
         assert_eq!(build.input_modalities, vec!["image", "text"]);
@@ -2496,7 +2513,7 @@ mod tests {
     #[test]
     fn xai_cached_models_upgrade_legacy_empty_modalities_for_grok() {
         let models = xai_cached_models(&[ProviderModelRecord {
-            model_id: XAI_DEFAULT_MODEL_ID.into(),
+            model_id: "grok-4.3".into(),
             display_name: "Grok 4.3".into(),
             thinking: unsupported_thinking_capability(),
             input_modalities: Vec::new(),
@@ -2509,8 +2526,12 @@ mod tests {
         }]);
         let grok = models
             .iter()
-            .find(|model| model.model_id == XAI_DEFAULT_MODEL_ID)
+            .find(|model| model.model_id == "grok-4.3")
             .expect("cached grok model");
+        let grok_4_5 = models
+            .iter()
+            .find(|model| model.model_id == XAI_DEFAULT_MODEL_ID)
+            .expect("projected grok 4.5 model");
         let latest = models
             .iter()
             .find(|model| model.model_id == "grok-4.3-latest")
@@ -2522,6 +2543,8 @@ mod tests {
 
         assert_eq!(grok.input_modalities, vec!["image", "text"]);
         assert_eq!(grok.input_modalities_source, "xai_text_runtime_default");
+        assert_eq!(grok_4_5.context_window_tokens, Some(500_000));
+        assert_eq!(grok_4_5.input_modalities, vec!["image", "text"]);
         assert_eq!(latest.input_modalities, vec!["image", "text"]);
         assert_eq!(build.context_window_tokens, Some(256_000));
     }
@@ -2698,6 +2721,11 @@ mod tests {
                 input_modalities: Vec::new(),
             },
             XaiModelEntry {
+                id: "grok-4.5".into(),
+                aliases: Vec::new(),
+                input_modalities: vec!["text".into(), "image".into()],
+            },
+            XaiModelEntry {
                 id: "grok-latest".into(),
                 aliases: vec!["grok-4.3".into()],
                 input_modalities: vec!["text".into(), "image".into()],
@@ -2720,16 +2748,24 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             model_ids,
-            vec!["grok-4.3", "grok-4.3-latest", "grok-build-0.1"]
+            vec![
+                "grok-4.3",
+                "grok-4.3-latest",
+                "grok-4.5",
+                "grok-build-0.1",
+                "grok-latest"
+            ]
         );
         assert_eq!(models[0].input_modalities, vec!["image", "text"]);
         assert_eq!(models[1].input_modalities, vec!["image", "text"]);
-        assert_eq!(models[2].display_name, "Grok Build 0.1");
-        assert_eq!(models[2].context_window_tokens, Some(256_000));
-        assert!(!models[2].thinking.supported);
-        assert!(models[2].thinking.effort_options.is_empty());
+        assert_eq!(models[2].display_name, "Grok 4.5");
+        assert_eq!(models[2].context_window_tokens, Some(500_000));
+        assert_eq!(models[3].display_name, "Grok Build 0.1");
+        assert_eq!(models[3].context_window_tokens, Some(256_000));
+        assert!(!models[3].thinking.supported);
+        assert!(models[3].thinking.effort_options.is_empty());
         assert_eq!(
-            models[1].thinking.effort_options,
+            models[4].thinking.effort_options,
             vec![
                 ProviderModelThinkingEffort::None,
                 ProviderModelThinkingEffort::Low,

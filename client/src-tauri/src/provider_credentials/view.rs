@@ -25,7 +25,7 @@ pub const GITHUB_MODELS_DEFAULT_PROFILE_ID: &str = "github_models-default";
 pub const DEEPSEEK_DEFAULT_PROFILE_ID: &str = "deepseek-default";
 pub const XAI_DEFAULT_PROFILE_ID: &str = "xai-default";
 pub const CURSOR_DEFAULT_PROFILE_ID: &str = "external_cursor_sdk-default";
-pub const OPENROUTER_FALLBACK_MODEL_ID: &str = "openai/gpt-4.1-mini";
+pub const OPENROUTER_FALLBACK_MODEL_ID: &str = "~x-ai/grok-latest";
 pub const DEEPSEEK_FALLBACK_MODEL_ID: &str = "deepseek-v4-pro";
 
 const OPENAI_CODEX_DEFAULT_PROFILE_LABEL: &str = "OpenAI Codex";
@@ -284,7 +284,6 @@ fn synthesize_profile_from_credential(
                 _ => None,
             }
         }
-        ProviderCredentialKind::ApiKey if provider_id == XAI_PROVIDER_ID => return None,
         ProviderCredentialKind::ApiKey => Some(ProviderCredentialLink::ApiKey {
             updated_at: record.updated_at.clone(),
         }),
@@ -442,7 +441,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn xai_local_credential_profile_is_not_synthesized() {
+    fn xai_api_key_profile_is_synthesized_for_direct_access() {
         let record = ProviderCredentialRecord {
             provider_id: XAI_PROVIDER_ID.into(),
             kind: ProviderCredentialKind::ApiKey,
@@ -460,7 +459,21 @@ mod tests {
             updated_at: "2026-05-20T12:00:00Z".into(),
         };
 
-        assert!(synthesize_profile_from_credential(&record).is_none());
+        let synthesized = synthesize_profile_from_credential(&record).expect("xAI API-key profile");
+
+        assert_eq!(synthesized.profile.profile_id, XAI_DEFAULT_PROFILE_ID);
+        assert_eq!(synthesized.profile.model_id, XAI_DEFAULT_MODEL_ID);
+        assert!(matches!(
+            synthesized.profile.credential_link,
+            Some(ProviderCredentialLink::ApiKey { .. })
+        ));
+        assert_eq!(
+            synthesized
+                .api_key_entry
+                .as_ref()
+                .map(|entry| entry.profile_id.as_str()),
+            Some(XAI_DEFAULT_PROFILE_ID)
+        );
     }
 
     #[test]
@@ -533,5 +546,34 @@ mod tests {
                 .map(|entry| entry.profile_id.as_str()),
             Some(CURSOR_DEFAULT_PROFILE_ID)
         );
+    }
+
+    #[test]
+    fn openrouter_api_key_profile_defaults_to_grok_latest_router() {
+        let record = ProviderCredentialRecord {
+            provider_id: OPENROUTER_PROVIDER_ID.into(),
+            kind: ProviderCredentialKind::ApiKey,
+            api_key: Some("sk-or-test".into()),
+            oauth_account_id: None,
+            oauth_session_id: None,
+            oauth_access_token: None,
+            oauth_refresh_token: None,
+            oauth_expires_at: None,
+            base_url: None,
+            api_version: None,
+            region: None,
+            project_id: None,
+            default_model_id: None,
+            updated_at: "2026-07-08T17:38:57Z".into(),
+        };
+
+        let synthesized = synthesize_profile_from_credential(&record).expect("OpenRouter profile");
+
+        assert_eq!(
+            synthesized.profile.profile_id,
+            OPENROUTER_DEFAULT_PROFILE_ID
+        );
+        assert_eq!(synthesized.profile.model_id, OPENROUTER_FALLBACK_MODEL_ID);
+        assert_eq!(synthesized.profile.model_id, "~x-ai/grok-latest");
     }
 }

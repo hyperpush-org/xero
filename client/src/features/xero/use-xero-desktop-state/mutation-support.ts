@@ -179,6 +179,7 @@ export interface UseXeroDesktopMutationsOperations {
     runtimeRun: RuntimeRunView | null,
     options?: { clearGlobalError?: boolean; loadError?: string | null },
   ) => RuntimeRunView | null
+  restartRuntimeStream: (projectId: string) => void
   applyAutonomousRunStateUpdate: (
     projectId: string,
     inspection: AutonomousInspection,

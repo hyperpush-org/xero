@@ -204,16 +204,38 @@ pub(crate) fn assemble_provider_context_package(
             "Context package estimate is the sum of admitted contributor estimates; provider request-shape estimates are used by continuation gates.".into(),
         ],
     };
+    // Only single-run compactions covering this run are applied at replay
+    // (`provider_messages_from_snapshot`). Apply the same filter here so a compaction that
+    // replay would ignore does not also suppress auto-compaction — otherwise the raw
+    // transcript is sent every turn while the policy believes it is already compacted.
     let active_compaction = project_store::load_active_agent_compaction(
         input.repo_root,
         input.project_id,
         input.agent_session_id,
-    )?;
+    )?
+    .filter(|compaction| {
+        compaction.covered_run_ids.len() == 1 && compaction.covers_run(input.run_id)
+    });
     let settings = project_store::load_agent_context_policy_settings(
         input.repo_root,
         input.project_id,
         Some(input.agent_session_id),
     )?;
+    // A present compaction only counts as "current" while the uncovered raw tail is still
+    // within the intended window. Once new turns push the tail past `raw_tail_message_count`,
+    // the compaction no longer protects the turn and the policy should recompact. Passing the
+    // same `is_some()` for both flags (the previous behavior) made the recompaction branch
+    // unreachable, so pressure between the compact and handoff thresholds was silently
+    // reported as healthy and nothing ever recompacted.
+    let compaction_current = match active_compaction.as_ref() {
+        None => true,
+        Some(compaction) => project_store::agent_compaction_is_current(
+            input.repo_root,
+            input.project_id,
+            input.run_id,
+            compaction,
+        )?,
+    };
     let policy_decision =
         project_store::evaluate_agent_context_policy(project_store::AgentContextPolicyInput {
             runtime_agent_id: input.runtime_agent_id,
@@ -221,7 +243,7 @@ pub(crate) fn assemble_provider_context_package(
             budget_tokens,
             provider_supports_compaction: true,
             active_compaction_present: active_compaction.is_some(),
-            compaction_current: active_compaction.is_some(),
+            compaction_current,
             settings,
         });
     let context_hash = provider_context_hash(&compilation, input.messages, input.tools)?;

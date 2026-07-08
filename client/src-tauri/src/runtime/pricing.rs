@@ -1183,6 +1183,27 @@ mod tests {
     }
 
     #[test]
+    fn xai_model_detail_parses_grok_4_5_pricing() {
+        let markdown = r#"
+        # Grok 4.5
+
+        ## Pricing
+
+        | Type | Price per 1M tokens |
+        | --- | --- |
+        | Input | $2.00 |
+        | Cached input | $0.50 |
+        | Output | $6.00 |
+        "#;
+
+        let parsed = parse_xai_model_detail_rate(markdown).expect("xai grok 4.5 rate");
+        assert_eq!(parsed.input_per_1m_micros, 2_000_000);
+        assert_eq!(parsed.cache_read_per_1m_micros, Some(500_000));
+        assert_eq!(parsed.cache_write_per_1m_micros, None);
+        assert_eq!(parsed.output_per_1m_micros, 6_000_000);
+    }
+
+    #[test]
     fn xai_embedded_model_data_parses_long_context_prices() {
         let html = r#"
         {\"name\":\"grok-4.3\",\"promptTextTokenPrice\":\"$n12500\",\"promptTextTokenPriceLongContext\":\"$n25000\",\"cachedPromptTokenPrice\":\"$n2000\",\"cachedPromptTokenPriceLongContext\":\"$n4000\",\"completionTextTokenPrice\":\"$n25000\",\"completionTokenPriceLongContext\":\"$n50000\",\"longContextThreshold\":\"$n200000\"}
@@ -1313,14 +1334,14 @@ mod tests {
     fn direct_provider_falls_back_to_openrouter_when_direct_rate_missing() {
         let catalog = catalog_with(
             "openrouter",
-            "x-ai/grok-4.3",
+            "~x-ai/grok-latest",
             rate(1_250_000, 200_000, 2_500_000),
         );
 
         let cost = estimate_cost_micros_from_catalog(
             &catalog,
             "xai",
-            "grok-4.3",
+            "grok-latest",
             UsageForPricing {
                 input_tokens: 1_000_000,
                 output_tokens: 100_000,

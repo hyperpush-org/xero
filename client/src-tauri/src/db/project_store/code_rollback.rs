@@ -63,6 +63,7 @@ const GENERATED_ARTIFACT_DIR_NAMES: &[&str] = &[
     ".hg",
     ".svn",
     ".xero",
+    ".xero-cache",
     "node_modules",
     "bower_components",
     "jspm_packages",
@@ -10457,6 +10458,7 @@ mod tests {
     fn generated_artifact_classifier_covers_common_dev_ecosystems() {
         for path in [
             "node_modules/react/index.js",
+            ".xero-cache/npm/_cacache/content-v2/sha512/aa/cache",
             ".npm-cache/_cacache/content-v2/sha512/aa/cache",
             ".pnpm-store/v10/files/00/cache",
             "target/debug/app",
@@ -10508,6 +10510,8 @@ mod tests {
         let root = &project.repo_root;
         fs::create_dir_all(root.join("src")).expect("src");
         fs::create_dir_all(root.join("node_modules/pkg")).expect("node_modules");
+        fs::create_dir_all(root.join(".xero-cache/npm/_cacache/content-v2/sha512/aa"))
+            .expect("xero cache");
         fs::create_dir_all(root.join(".npm-cache/_cacache/content-v2/sha512/aa"))
             .expect("npm cache");
         fs::create_dir_all(root.join(".pnpm-store/v10/files/00")).expect("pnpm store");
@@ -10527,6 +10531,11 @@ mod tests {
             .expect("fixture file");
         }
         fs::write(root.join("node_modules/pkg/generated.txt"), "ignored\n").expect("ignored");
+        fs::write(
+            root.join(".xero-cache/npm/_cacache/content-v2/sha512/aa/cache.txt"),
+            "ignored xero cache\n",
+        )
+        .expect("ignored xero cache");
         fs::write(
             root.join(".pnpm-store/v10/files/00/cache.txt"),
             "ignored cache\n",
@@ -10583,6 +10592,11 @@ mod tests {
             "ignored changed\n",
         )
         .expect("ignored changed");
+        fs::write(
+            root.join(".xero-cache/npm/_cacache/content-v2/sha512/aa/cache.txt"),
+            "ignored xero cache changed\n",
+        )
+        .expect("ignored xero cache changed");
         fs::write(
             root.join(".pnpm-store/v10/files/00/cache.txt"),
             "ignored cache changed\n",
@@ -10647,6 +10661,10 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.path.starts_with("node_modules/")));
+        assert!(!after_manifest
+            .entries
+            .iter()
+            .any(|entry| entry.path.starts_with(".xero-cache/")));
         assert!(!after_manifest
             .entries
             .iter()

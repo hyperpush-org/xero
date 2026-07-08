@@ -5933,6 +5933,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
             open={projectAddOpen}
             onOpenChange={setProjectAddOpen}
             isImporting={isImporting}
+            errorMessage={errorMessage}
             onSelectExisting={() => importProject()}
             onPickParentFolder={() => resolvedAdapter.pickParentFolder()}
             onCreate={(parentPath, name) => createProject(parentPath, name)}

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { getCurrentWebview, type DragDropEvent } from '@tauri-apps/api/webview'
+import { TauriEvent, type UnlistenFn } from '@tauri-apps/api/event'
 import { cn } from '@/lib/utils'
 import { createSafeTauriUnlisten } from '@/src/lib/tauri-events'
 
@@ -50,6 +51,10 @@ function nativeDropPointInside(root: HTMLDivElement | null, event: DragDropEvent
     clientY <= rect.bottom
   )
 }
+
+type NativeDragPosition = { x: number; y: number }
+type NativeDragWithPosition = { position: NativeDragPosition }
+type NativeDragWithPaths = NativeDragWithPosition & { paths: string[] }
 
 export function AgentPaneDropOverlay({
   enabled,
@@ -125,13 +130,16 @@ export function AgentPaneDropOverlay({
     if (!enabled || !hasNativePathDropSupport(onPathsDropped)) return
 
     let disposed = false
-    let unlisten: (() => void) | null = null
+    const unlisteners: UnlistenFn[] = []
 
-    void getCurrentWebview().onDragDropEvent((event) => {
-      const payload = event.payload
+    const resetNativeDragState = () => {
+      enterCountRef.current = 0
+      setIsOver(false)
+    }
+
+    const handleNativeDragDropPayload = (payload: DragDropEvent) => {
       if (payload.type === 'leave') {
-        enterCountRef.current = 0
-        setIsOver(false)
+        resetNativeDragState()
         return
       }
 
@@ -143,27 +151,66 @@ export function AgentPaneDropOverlay({
       }
 
       if (payload.type === 'drop') {
-        enterCountRef.current = 0
-        setIsOver(false)
+        resetNativeDragState()
         if (inside && payload.paths.length > 0) {
           onPathsDropped?.(payload.paths)
         }
       }
-    }).then((nextUnlisten) => {
-      const safeUnlisten = createSafeTauriUnlisten(nextUnlisten)
-      if (disposed) {
-        safeUnlisten()
-      } else {
-        unlisten = safeUnlisten
-      }
-    }).catch(() => {
-      enterCountRef.current = 0
-      setIsOver(false)
-    })
+    }
+
+    const trackUnlisten = (promise: Promise<UnlistenFn>) => {
+      void promise
+        .then((nextUnlisten) => {
+          const safeUnlisten = createSafeTauriUnlisten(nextUnlisten)
+          if (disposed) {
+            safeUnlisten()
+          } else {
+            unlisteners.push(safeUnlisten)
+          }
+        })
+        .catch(() => {
+          if (!disposed) {
+            resetNativeDragState()
+          }
+        })
+    }
+
+    const webview = getCurrentWebview()
+    trackUnlisten(
+      webview.listen<NativeDragWithPaths>(TauriEvent.DRAG_ENTER, (event) => {
+        handleNativeDragDropPayload({
+          type: 'enter',
+          paths: event.payload.paths,
+          position: event.payload.position,
+        } as DragDropEvent)
+      }),
+    )
+    trackUnlisten(
+      webview.listen<NativeDragWithPosition>(TauriEvent.DRAG_OVER, (event) => {
+        handleNativeDragDropPayload({
+          type: 'over',
+          position: event.payload.position,
+        } as DragDropEvent)
+      }),
+    )
+    trackUnlisten(
+      webview.listen<NativeDragWithPaths>(TauriEvent.DRAG_DROP, (event) => {
+        handleNativeDragDropPayload({
+          type: 'drop',
+          paths: event.payload.paths,
+          position: event.payload.position,
+        } as DragDropEvent)
+      }),
+    )
+    trackUnlisten(
+      webview.listen<unknown>(TauriEvent.DRAG_LEAVE, () => {
+        handleNativeDragDropPayload({ type: 'leave' })
+      }),
+    )
 
     return () => {
       disposed = true
-      unlisten?.()
+      unlisteners.forEach((unlisten) => unlisten())
     }
   }, [enabled, onPathsDropped])
 

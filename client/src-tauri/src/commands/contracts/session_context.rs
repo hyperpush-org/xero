@@ -2168,7 +2168,8 @@ fn xai_context_window_tokens(model: &str) -> Option<u64> {
         .unwrap_or(model)
         .to_ascii_lowercase();
     match model.as_str() {
-        "grok-4.3" | "grok-4.3-latest" => Some(1_000_000),
+        "grok-4.5" => Some(500_000),
+        "grok-latest" | "grok-4.3" | "grok-4.3-latest" => Some(1_000_000),
         "grok-build-0.1" => Some(256_000),
         _ => None,
     }
@@ -3321,10 +3322,14 @@ mod tests {
 
     #[test]
     fn xai_context_limit_uses_model_specific_windows() {
-        let grok = resolve_context_limit("xai", "grok-4.3-latest");
+        let grok_4_5 = resolve_context_limit("xai", "grok-4.5");
+        let grok = resolve_context_limit("xai", "grok-latest");
+        let version_latest = resolve_context_limit("xai", "grok-4.3-latest");
         let build = resolve_context_limit("xai", "grok-build-0.1");
 
+        assert_eq!(grok_4_5.context_window_tokens, Some(500_000));
         assert_eq!(grok.context_window_tokens, Some(1_000_000));
+        assert_eq!(version_latest.context_window_tokens, Some(1_000_000));
         assert_eq!(build.context_window_tokens, Some(256_000));
         assert_eq!(build.source, SessionContextLimitSourceDto::BuiltInRegistry);
         assert_eq!(build.confidence, SessionContextLimitConfidenceDto::Medium);

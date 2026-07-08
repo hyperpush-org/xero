@@ -331,9 +331,10 @@ impl DesktopAgentCoreRuntime {
             &request.agent_session_id,
             &request.run_id,
         )?;
+        let supervisor = self.supervisor.clone();
         thread::spawn(move || {
             let token = lease.token();
-            let _ = drive_owned_agent_run(request, token);
+            let _ = drive_owned_agent_run(request, token, Some(supervisor));
             drop(lease);
         });
         Ok(())
@@ -347,9 +348,10 @@ impl DesktopAgentCoreRuntime {
         let lease =
             self.supervisor
                 .begin(&request.project_id, &agent_session_id, &request.run_id)?;
+        let supervisor = self.supervisor.clone();
         thread::spawn(move || {
             let token = lease.token();
-            let _ = drive_owned_agent_continuation(request, token);
+            let _ = drive_owned_agent_continuation(request, token, Some(supervisor));
             drop(lease);
         });
         Ok(())

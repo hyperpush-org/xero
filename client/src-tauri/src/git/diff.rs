@@ -10,8 +10,9 @@ use crate::{
         },
         BranchSummaryDto, ChangeKind, CommandError, CommandResult, RepositoryDiffFileDto,
         RepositoryDiffHunkDto, RepositoryDiffResponseDto, RepositoryDiffRowDto,
-        RepositoryDiffRowKindDto, RepositoryDiffScope,
+        RepositoryDiffRowKindDto, RepositoryDiffScope, RepositorySummaryDto,
     },
+    db,
     git::{repository, status},
     registry::RegistryProjectRecord,
 };
@@ -23,6 +24,42 @@ pub struct RepositoryDiffProjection {
     pub branch: Option<BranchSummaryDto>,
     pub changed_files: usize,
     pub response: RepositoryDiffResponseDto,
+}
+
+fn empty_repository_diff_response(
+    repository: RepositorySummaryDto,
+    scope: RepositoryDiffScope,
+) -> RepositoryDiffResponseDto {
+    let mut response = RepositoryDiffResponseDto {
+        repository,
+        scope,
+        patch: String::new(),
+        files: Vec::new(),
+        truncated: false,
+        base_revision: None,
+        payload_budget: None,
+    };
+    let observed_bytes = estimate_serialized_payload_bytes(&response);
+    response.payload_budget = payload_budget_diagnostic(
+        "repository_diff",
+        "repository diff",
+        REPOSITORY_DIFF_BUDGET_BYTES,
+        observed_bytes,
+        false,
+        false,
+    );
+    response
+}
+
+fn empty_repository_diff_projection(
+    repository: RepositorySummaryDto,
+    scope: RepositoryDiffScope,
+) -> RepositoryDiffProjection {
+    RepositoryDiffProjection {
+        branch: None,
+        changed_files: 0,
+        response: empty_repository_diff_response(repository, scope),
+    }
 }
 
 pub fn load_repository_diff(
@@ -82,21 +119,22 @@ fn load_repository_diff_with_options(
     let candidates = status::lookup_registry_candidates(expected_project_id, registry_path)?;
     let mut first_error: Option<CommandError> = None;
 
-    for RegistryProjectRecord {
-        project_id,
-        repository_id,
-        root_path,
-    } in candidates
-    {
-        match repository::open_repository_root(Path::new(&root_path)) {
+    for record in candidates {
+        let root_path = Path::new(&record.root_path);
+        if !record.is_git_repo {
+            return Ok(empty_diff_for_registry_record(&record, scope)?.response);
+        }
+
+        match repository::open_repository_root(root_path) {
             Ok(repository) => {
-                if repository.project_id() != project_id
-                    || repository.repository_id() != repository_id
+                if repository.project_id() != record.project_id
+                    || repository.repository_id() != record.repository_id
                 {
                     return Err(CommandError::system_fault(
                         "project_registry_mismatch",
                         format!(
-                            "Registry entry for project `{project_id}` no longer matches the repository discovered at {root_path}."
+                            "Registry entry for project `{}` no longer matches the repository discovered at {}.",
+                            record.project_id, record.root_path
                         ),
                     ));
                 }
@@ -104,6 +142,9 @@ fn load_repository_diff_with_options(
                 return Ok(load_repository_diff_from_handle(&repository, scope, options)?.response);
             }
             Err(error) => {
+                if let Some(projection) = empty_diff_for_plain_project_root(root_path, scope)? {
+                    return Ok(projection.response);
+                }
                 if first_error.is_none() {
                     first_error = Some(error);
                 }
@@ -118,8 +159,17 @@ pub fn load_repository_diff_from_root(
     root_path: &Path,
     scope: RepositoryDiffScope,
 ) -> CommandResult<RepositoryDiffProjection> {
-    let repository = repository::open_repository_root(root_path)?;
-    load_repository_diff_from_handle(&repository, scope, &RepositoryDiffRenderOptions::default())
+    match repository::open_repository_root(root_path) {
+        Ok(repository) => load_repository_diff_from_handle(
+            &repository,
+            scope,
+            &RepositoryDiffRenderOptions::default(),
+        ),
+        Err(error) => match empty_diff_for_plain_project_root(root_path, scope)? {
+            Some(projection) => Ok(projection),
+            None => Err(error),
+        },
+    }
 }
 
 pub fn load_repository_diff_for_paths_from_root(
@@ -128,15 +178,43 @@ pub fn load_repository_diff_for_paths_from_root(
     paths: &[String],
     max_patch_bytes: usize,
 ) -> CommandResult<RepositoryDiffProjection> {
-    let repository = repository::open_repository_root(root_path)?;
-    load_repository_diff_from_handle(
-        &repository,
-        scope,
-        &RepositoryDiffRenderOptions {
-            max_patch_bytes,
-            pathspecs: normalized_pathspecs(paths),
+    match repository::open_repository_root(root_path) {
+        Ok(repository) => load_repository_diff_from_handle(
+            &repository,
+            scope,
+            &RepositoryDiffRenderOptions {
+                max_patch_bytes,
+                pathspecs: normalized_pathspecs(paths),
+            },
+        ),
+        Err(error) => match empty_diff_for_plain_project_root(root_path, scope)? {
+            Some(projection) => Ok(projection),
+            None => Err(error),
         },
-    )
+    }
+}
+
+fn empty_diff_for_registry_record(
+    record: &RegistryProjectRecord,
+    scope: RepositoryDiffScope,
+) -> CommandResult<RepositoryDiffProjection> {
+    let root_path = Path::new(&record.root_path);
+    let repository = db::repository_summary_for_repo_root(root_path)?
+        .unwrap_or_else(|| record.repository_summary());
+    Ok(empty_repository_diff_projection(repository, scope))
+}
+
+fn empty_diff_for_plain_project_root(
+    root_path: &Path,
+    scope: RepositoryDiffScope,
+) -> CommandResult<Option<RepositoryDiffProjection>> {
+    let Some(repository) = db::repository_summary_for_repo_root(root_path)? else {
+        return Ok(None);
+    };
+    if repository.is_git_repo {
+        return Ok(None);
+    }
+    Ok(Some(empty_repository_diff_projection(repository, scope)))
 }
 
 fn load_repository_diff_from_handle(
@@ -621,6 +699,32 @@ mod tests {
             .contains("diff --git a/second.txt b/second.txt"));
         assert!(response.patch.contains("+second change"));
         assert!(!response.patch.contains("first change"));
+    }
+
+    #[test]
+    fn plain_folder_diff_from_root_is_empty() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let registry_path = temp_dir.path().join("app-data").join("xero.db");
+        let project_root = temp_dir.path().join("plain-folder");
+        fs::create_dir_all(&project_root).unwrap();
+        fs::write(project_root.join("file.txt"), "plain folder content\n").unwrap();
+        crate::db::configure_project_database_paths(&registry_path);
+
+        let imported = crate::db::import_project_directory(
+            &project_root,
+            &crate::state::ImportFailpoints::default(),
+        )
+        .unwrap();
+
+        let projection =
+            load_repository_diff_from_root(&project_root, RepositoryDiffScope::Worktree).unwrap();
+
+        assert_eq!(projection.changed_files, 0);
+        assert_eq!(projection.response.repository.id, imported.repository.id);
+        assert!(!projection.response.repository.is_git_repo);
+        assert!(projection.response.patch.is_empty());
+        assert!(projection.response.files.is_empty());
+        assert!(!projection.response.truncated);
     }
 
     fn repository_with_committed_file(path: &str, content: &str) -> (TempDir, Repository) {

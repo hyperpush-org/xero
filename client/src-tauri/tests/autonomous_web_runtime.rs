@@ -434,6 +434,29 @@ fn web_fetch_rejects_bad_urls_and_unsupported_content_types() {
 }
 
 #[test]
+fn web_fetch_maps_access_denied_status_to_source_switch_guidance() {
+    let transport = FixtureTransport::default();
+    transport.push_response(Ok(AutonomousWebTransportResponse {
+        status: 403,
+        final_url: "https://www.npmjs.com/package/create-astro".into(),
+        content_type: Some("text/html; charset=utf-8".into()),
+        body: b"blocked".to_vec(),
+        body_truncated: false,
+    }));
+    let runtime = fetch_runtime(&transport);
+    let error = runtime
+        .fetch(AutonomousWebFetchRequest {
+            url: "https://www.npmjs.com/package/create-astro".into(),
+            max_chars: Some(12_000),
+            timeout_ms: None,
+        })
+        .expect_err("403 should ask the model to switch sources");
+
+    assert_eq!(error.code, "autonomous_web_fetch_access_denied");
+    assert!(error.message.contains("another official or primary source"));
+}
+
+#[test]
 fn web_fetch_surfaces_timeout_and_decode_failures() {
     let timeout_transport = FixtureTransport::default();
     timeout_transport.push_response(Err(AutonomousWebTransportError::Timeout(

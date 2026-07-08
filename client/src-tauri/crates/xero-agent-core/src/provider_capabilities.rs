@@ -298,10 +298,10 @@ fn provider_static_capability(provider_id: &str) -> ProviderStaticCapability {
         "xai" => ProviderStaticCapability {
             provider_id: "xai",
             provider_label: "xAI / Grok",
-            default_model_id: "grok-4.3",
+            default_model_id: "grok-4.5",
             runtime_family: "xai",
             runtime_kind: "xai",
-            auth_method: "oauth_or_api_key",
+            auth_method: "api_key",
             transport_mode: "hosted_api",
             endpoint_shape: "xai_responses",
             catalog_kind: "model_provider",
@@ -555,7 +555,7 @@ fn reasoning_capability(
             default_effort: input.thinking_default_effort.clone(),
             summary_support: match provider.provider_id {
                 "openai_codex" | "openai_api" => "auto_summary_supported".into(),
-                "xai" if is_xai_grok_4_3_text_model(model_id) => {
+                "xai" if is_xai_reasoning_text_model(model_id) => {
                     "reasoning_summary_delta_supported".into()
                 }
                 "deepseek" => "reasoning_content_replay_required".into(),
@@ -866,14 +866,17 @@ fn provider_remediations(
     remediations
 }
 
-fn is_xai_grok_4_3_text_model(model_id: &str) -> bool {
+fn is_xai_reasoning_text_model(model_id: &str) -> bool {
     let model_id = model_id
         .trim()
         .rsplit('/')
         .next()
         .unwrap_or(model_id)
         .to_ascii_lowercase();
-    matches!(model_id.as_str(), "grok-4.3" | "grok-4.3-latest")
+    matches!(
+        model_id.as_str(),
+        "grok-4.5" | "grok-latest" | "grok-4.3" | "grok-4.3-latest"
+    )
 }
 
 fn feature(status: &str, source: &str, detail: &str) -> ProviderFeatureCapability {
@@ -1008,8 +1011,8 @@ mod tests {
     #[test]
     fn xai_capabilities_describe_native_responses_adapter() {
         let mut input = input("xai");
-        input.model_id = "grok-4.3".into();
-        input.context_window_tokens = Some(1_000_000);
+        input.model_id = "grok-4.5".into();
+        input.context_window_tokens = Some(500_000);
         input.thinking_efforts = vec!["none".into(), "low".into(), "medium".into(), "high".into()];
         input.thinking_default_effort = Some("low".into());
         input.input_modalities = vec!["text".into(), "image".into()];

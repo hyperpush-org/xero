@@ -1,6 +1,5 @@
 use std::{fs, path::PathBuf};
 
-use git2::Repository;
 use tauri::{AppHandle, Emitter, Runtime, State};
 
 use crate::{
@@ -10,7 +9,7 @@ use crate::{
         RepositoryStatusChangedPayloadDto, PROJECT_UPDATED_EVENT, REPOSITORY_STATUS_CHANGED_EVENT,
     },
     db,
-    git::repository::resolve_repository,
+    git::status,
     registry::{self, RegistryProjectRecord},
     state::DesktopState,
 };
@@ -65,24 +64,11 @@ pub fn create_repository<R: Runtime>(
         )
     })?;
 
-    if let Err(error) = Repository::init(&project_path) {
-        let _ = fs::remove_dir_all(&project_path);
-        return Err(CommandError::system_fault(
-            "create_repository_git_init_failed",
-            format!(
-                "Xero created the folder but could not initialize a Git repository at `{}`: {error}",
-                project_path.display()
-            ),
-        ));
-    }
-
-    let project_path_string = project_path.to_string_lossy().into_owned();
-    let repository = resolve_repository(&project_path_string)?;
     let registry_path = state.global_db_path(&app)?;
     db::configure_project_database_paths(&registry_path);
 
-    let imported = db::import_project_with_origin(
-        &repository,
+    let imported = db::import_project_directory_with_origin(
+        &project_path,
         db::ProjectOrigin::Greenfield,
         state.import_failpoints(),
     )?;
@@ -92,6 +78,7 @@ pub fn create_repository<R: Runtime>(
             project_id: imported.project.id.clone(),
             repository_id: imported.repository.id.clone(),
             root_path: imported.repository.root_path.clone(),
+            is_git_repo: imported.repository.is_git_repo,
         },
         state.import_failpoints(),
     )?;
@@ -113,7 +100,7 @@ pub fn create_repository<R: Runtime>(
     let repository_status_payload = RepositoryStatusChangedPayloadDto {
         project_id: imported.project.id.clone(),
         repository_id: imported.repository.id.clone(),
-        status: repository.repository_status(),
+        status: status::empty_repository_status(imported.repository.clone()),
     };
     app.emit(REPOSITORY_STATUS_CHANGED_EVENT, &repository_status_payload)
         .map_err(|error| {

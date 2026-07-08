@@ -32,6 +32,9 @@ const DESCRIPTOR_MAX_LIST_TREE_ENTRIES: u64 = 1_000;
 const DESCRIPTOR_MAX_DIRECTORY_DIGEST_FILES: u64 = 5_000;
 const DESCRIPTOR_MAX_HASH_FILES: u64 = 5_000;
 const DESCRIPTOR_MAX_COMMAND_TIMEOUT_MS: u64 = 120_000;
+const DESCRIPTOR_MAX_WEB_RESULT_COUNT: u64 = 10;
+const DESCRIPTOR_MAX_WEB_FETCH_CHARS: u64 = 12_000;
+const DESCRIPTOR_MAX_WEB_TIMEOUT_MS: u64 = 20_000;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -693,7 +696,7 @@ fn user_input_contract_fragment() -> &'static str {
 }
 
 fn product_surface_stack_contract_fragment() -> &'static str {
-    "Product-surface technology contract: before creating or substantially changing a user-facing app, site, landing page, component library surface, or design system surface, inspect the existing stack, manifests, scripts, styling system, component library, and project instructions. Prefer the existing stack when it is coherent. If no stack exists, multiple viable stacks exist, or the choice would affect dependencies, maintainability, generated files, styling conventions, or verification, call `action_required` with `promptKind: \"technology_stack_selection\"` before the first implementation edit. Keep options technology-agnostic and evidence-based: include the existing stack when present, include mainstream framework/component/styling choices that fit the task, and include static HTML/CSS/JS only when it is explicitly requested or justified by constraints. Do not default to hand-written static UI for production product surfaces just because the repo is empty."
+    "Product-surface technology contract: before creating or substantially changing a user-facing app, site, landing page, component library surface, or design system surface, inspect the existing stack, manifests, scripts, styling system, component library, and project instructions. Prefer the existing stack when it is coherent and user-approved. If no stack exists, multiple viable stacks exist, the apparent stack comes only from partial prior agent output, or the choice would affect dependencies, maintainability, generated files, styling conventions, or verification, ask the user for their preferred technologies with `action_required` and `promptKind: \"technology_stack_selection\"` before the first implementation edit. Keep options technology-agnostic and evidence-based: include the existing stack when present, include mainstream framework/component/styling choices that fit the task, and include static HTML/CSS/JS only when it is explicitly requested or justified by constraints. Do not default to hand-written static UI for production product surfaces just because the repo is empty."
 }
 
 fn runtime_metadata_fragment(metadata: &RuntimeHostMetadata) -> String {
@@ -1507,7 +1510,7 @@ fn user_input_tool_prompt_section(tools: &[AgentToolDescriptor]) -> String {
 
 const COMMAND_FIRST_MANAGED_ARTIFACT_CONTRACT: &str = " Command-first managed-artifact contract: when a framework, package, registry, generator, codegen tool, migration tool, formatter, or package manager owns how files should be created or updated, first attempt the documented CLI command through `command_run` before hand-writing the resulting files. This applies during project bootstrap and later maintenance, including adding dependencies, framework tooling, generated clients, migrations, schemas, UI registry components, and component-library assets. For example, when a library documents adding components through its CLI, such as shadcn components, use that CLI rather than copying component files by hand. Manual file synthesis is only appropriate when the command is unavailable, incompatible with the existing project, unsafe, non-agent-friendly without a non-interactive form, or explicitly declined.";
 
-const AGENT_FRIENDLY_CLI_CONTRACT: &str = " Agent-friendly CLI contract: prefer finite, documented, non-interactive invocations with explicit flags and inputs, such as yes/CI/no-interactive flags and explicit component/name/path arguments. Avoid TUI, wizard, watch, dev-server, login, editor-opening, or prompt-driven commands through `command_run` unless they can be made non-interactive and bounded. Treat exposed environment/tool-stack facts as the user's available stack and inspect them first; use web docs for current syntax or changed generator behavior when web tools are available, not to rediscover tools that the harness already surfaced. If those facts show a bare CLI binary is missing but a JavaScript package manager is present, try the documented package-runner form before manual fallback: `pnpm dlx`, `npm exec` or `npx`, `yarn dlx`, or `bunx` as appropriate. Prefer normal package-manager caches outside the repository; do not create repo-local caches such as `.pnpm-store` unless the user or project explicitly requires them. If the canonical tool is interactive-only or would block waiting for terminal input the agent cannot provide, look for a documented non-interactive mode, explain the blocker, or ask the user before using a manual fallback.";
+const AGENT_FRIENDLY_CLI_CONTRACT: &str = " Agent-friendly CLI contract: prefer finite, documented, non-interactive invocations with explicit flags and inputs, such as yes/CI/no-interactive flags and explicit component/name/path arguments. Avoid TUI, wizard, watch, dev-server, login, editor-opening, or prompt-driven commands through `command_run` unless they can be made non-interactive and bounded. Treat exposed environment/tool-stack facts as the user's available stack and inspect them first; use web docs for current syntax or changed generator behavior when web tools are available, not to rediscover tools that the harness already surfaced. If those facts show a bare CLI binary is missing but a JavaScript package manager is present, try the documented package-runner form before manual fallback: `pnpm dlx`, `npm exec` or `npx`, `yarn dlx`, or `bunx` as appropriate. If `command_run` returns unspawned because approval is required, treat that as a recoverable command-shape problem first: research the tool's documented CI/non-interactive flags or package-runner syntax with web_search/web_fetch against official or primary docs when available; if those web tools are not currently listed, request `web_search_only` and `web_fetch` through `tool_access` before retrying or using a manual fallback. If a spawned package-manager bootstrap, scaffold, generator, create, install, add, or update command exits nonzero, research official docs and retry a documented command_run before hand-writing generated package/framework files; if `web_search`/`web_fetch` are hidden, activate them with `tool_access` first. For npm/pnpm cache permission errors, retry with a per-command temporary cache/home outside the repository via `sh -lc` and environment variables such as `npm_config_cache`, `NPM_CONFIG_CACHE`, or `PNPM_HOME`; if no outside-repo temp/cache location is writable, report that blocker instead of creating repo-local cache directories. Do not use `command_probe` for package-manager help/create/install/add/update, scaffolding, generators, or setup. Then retry a finite invocation that supplies all choices explicitly. Prefer asking the user only after no safe documented non-interactive form exists. Prefer normal package-manager caches outside the repository; do not create repo-local caches such as `.xero-cache`, `.npm-cache`, or `.pnpm-store` unless the user or project explicitly requires them. If the canonical tool is interactive-only or would block waiting for terminal input the agent cannot provide, look for a documented non-interactive mode, explain the blocker, or ask the user before using a manual fallback.";
 
 fn tool_descriptors_include(tools: &[AgentToolDescriptor], tool_name: &str) -> bool {
     tools.iter().any(|tool| tool.name == tool_name)
@@ -1758,7 +1761,15 @@ fn should_visit_instruction_entry(entry: &ignore::DirEntry) -> bool {
     };
     !matches!(
         name,
-        ".git" | ".next" | ".turbo" | "coverage" | "node_modules" | "target" | "dist" | "build"
+        ".git"
+            | ".xero-cache"
+            | ".next"
+            | ".turbo"
+            | "coverage"
+            | "node_modules"
+            | "target"
+            | "dist"
+            | "build"
     )
 }
 
@@ -2575,6 +2586,20 @@ pub(crate) fn plan_tool_exposure_for_prompt(
             "planner_classification",
             "package_scaffold_command_intent",
             "Task text indicates scaffolding, package-manager setup, generators, dependency installation, component registry updates, migrations, or codegen that requires reviewed command_run rather than command_probe.",
+        );
+        add_tool_group_with_reason(
+            &mut plan,
+            "web_search_only",
+            "planner_classification",
+            "package_scaffold_web_research_expected",
+            "Scaffold, bootstrap, generator, and package-manager setup tasks should have web search ready for current official CLI syntax and failure recovery.",
+        );
+        add_tool_group_with_reason(
+            &mut plan,
+            "web_fetch",
+            "planner_classification",
+            "package_scaffold_web_research_expected",
+            "Scaffold, bootstrap, generator, and package-manager setup tasks should be able to fetch official docs before manual fallback.",
         );
     }
 
@@ -3506,7 +3531,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
     let mut descriptors = vec![
         descriptor(
             AUTONOMOUS_TOOL_READ,
-            "Read a repo-relative file as text, image preview, binary metadata, byte range, line-hash anchored text, or a bounded directory listing.",
+            "Read a repo-relative file as text, image preview, binary metadata, byte range, line-hash anchored text, or a bounded directory listing. Non-informative OS/editor/cache sidecars are skipped.",
             object_schema(
                 &["path"],
                 &[
@@ -3526,7 +3551,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     (
                         "mode",
                         enum_schema(
-                            "Read mode. Auto preserves repo-scoped text reads while returning image previews or binary metadata when appropriate.",
+                            "Read mode. Auto preserves repo-scoped text reads while returning image previews or binary metadata when appropriate. Non-informative sidecar artifacts are skipped in every mode.",
                             &["auto", "text", "image", "binary_metadata"],
                         ),
                     ),
@@ -3587,7 +3612,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_READ_MANY,
-            "Read a bounded ordered set of small repo-relative files with per-file errors instead of failing the whole batch.",
+            "Read a bounded ordered set of small repo-relative files with per-file errors instead of failing the whole batch. Non-informative OS/editor/cache sidecars are returned as omissions.",
             object_schema(
                 &["paths"],
                 &[
@@ -3714,7 +3739,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_SEARCH,
-            "Search repo-scoped files with regex or literal matching, globs, context lines, hidden/ignored controls, and deterministic capped results.",
+            "Search repo-scoped files with regex or literal matching, globs, context lines, hidden/ignored controls, deterministic capped results, and non-informative sidecar filtering.",
             object_schema(
                 &["query"],
                 &[
@@ -3800,7 +3825,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_FIND,
-            "Find repo-scoped paths by glob, exact name, extension, or path prefix with optional bounded recursion and pagination.",
+            "Find repo-scoped paths by glob, exact name, extension, or path prefix with optional bounded recursion, pagination, and non-informative sidecar filtering.",
             object_schema(
                 &["pattern"],
                 &[
@@ -4224,7 +4249,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_LIST,
-            "List repo-scoped paths as a flat, paginated listing. Use list_tree for tree-shaped summaries.",
+            "List repo-scoped paths as a flat, paginated listing while omitting non-informative OS/editor/cache sidecars. Use list_tree for tree-shaped summaries.",
             object_schema(
                 &[],
                 &[
@@ -4274,7 +4299,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_LIST_TREE,
-            "Return a compact deterministic repo-relative directory tree with omission counts.",
+            "Return a compact deterministic repo-relative directory tree with omission counts and non-informative sidecar filtering.",
             object_schema(
                 &[],
                 &[
@@ -4332,7 +4357,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_DIRECTORY_DIGEST,
-            "Compute a deterministic digest for a repo-relative directory or file set.",
+            "Compute a deterministic digest for a repo-relative directory or file set, excluding non-informative OS/editor/cache sidecars.",
             object_schema(
                 &["path"],
                 &[
@@ -4379,7 +4404,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_HASH,
-            "Hash a repo-relative file, directory, or matched file set with SHA-256.",
+            "Hash a repo-relative file, directory, or matched file set with SHA-256, excluding non-informative OS/editor/cache sidecars in file-set mode.",
             object_schema(
                 &["path"],
                 &[
@@ -5129,11 +5154,19 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ("query", string_schema("Web search query.")),
                     (
                         "resultCount",
-                        integer_schema("Maximum number of search results to return."),
+                        bounded_integer_schema(
+                            "Maximum number of search results to return.",
+                            1,
+                            Some(DESCRIPTOR_MAX_WEB_RESULT_COUNT),
+                        ),
                     ),
                     (
                         "timeoutMs",
-                        integer_schema("Optional timeout in milliseconds."),
+                        bounded_integer_schema(
+                            "Optional timeout in milliseconds.",
+                            1,
+                            Some(DESCRIPTOR_MAX_WEB_TIMEOUT_MS),
+                        ),
                     ),
                 ],
             ),
@@ -5147,11 +5180,19 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ("url", string_schema("HTTP or HTTPS URL to fetch.")),
                     (
                         "maxChars",
-                        integer_schema("Maximum number of characters to return."),
+                        bounded_integer_schema(
+                            "Maximum number of characters to return.",
+                            1,
+                            Some(DESCRIPTOR_MAX_WEB_FETCH_CHARS),
+                        ),
                     ),
                     (
                         "timeoutMs",
-                        integer_schema("Optional timeout in milliseconds."),
+                        bounded_integer_schema(
+                            "Optional timeout in milliseconds.",
+                            1,
+                            Some(DESCRIPTOR_MAX_WEB_TIMEOUT_MS),
+                        ),
                     ),
                 ],
             ),
@@ -5410,6 +5451,10 @@ fn patch_schema() -> JsonValue {
                             "description": "Canonical ordered whole-change patch operations across one or many files. Operations that target the same file are applied sequentially after one file read, then committed atomically by file.",
                             "items": operation_schema
                         }),
+                    ),
+                    (
+                        "expectedHash",
+                        sha256_schema("Optional default lowercase SHA-256 expected current file hash for operations that omit expectedHash. Prefer per-operation expectedHash, especially for multi-file patches."),
                     ),
                     (
                         "preview",
@@ -5940,130 +5985,140 @@ fn mcp_call_tool_schema() -> JsonValue {
     )
 }
 
+/// The full set of `browser_observe` actions. This is the single source of truth shared by
+/// the model-facing descriptor schema (`browser_observe_schema`) and the runtime decode gate
+/// (`decode_action_level_tool_call`), so the two cannot drift — a drift previously rejected
+/// most advertised observe actions (snapshot, get_ref, extract, waits, …) at decode.
+pub(crate) const BROWSER_OBSERVE_ACTIONS: &[&str] = &[
+    "health",
+    "capabilities",
+    "page_list",
+    "read_text",
+    "source",
+    "query",
+    "snapshot",
+    "get_ref",
+    "wait_for_selector",
+    "wait_for_load",
+    "wait_for",
+    "assert",
+    "current_url",
+    "history_state",
+    "screenshot",
+    "cookies_get",
+    "storage_read",
+    "console_logs",
+    "network_summary",
+    "accessibility_tree",
+    "state_snapshot",
+    "find_best",
+    "analyze_form",
+    "frame_list",
+    "dialog_list",
+    "download_list",
+    "trace_status",
+    "visual_baseline_list",
+    "emulation_state",
+    "extract",
+    "frame_state",
+    "vault_list",
+    "auth_profile_list",
+    "viewer_state",
+    "browser_resource",
+    "browser_prompt",
+    "validate_bundle",
+    "timeline",
+    "prompt_injection_scan",
+    "harness_extension_contract",
+    "tab_list",
+];
+
+/// The full set of `browser_control` actions; single source of truth (see
+/// `BROWSER_OBSERVE_ACTIONS`).
+pub(crate) const BROWSER_CONTROL_ACTIONS: &[&str] = &[
+    "launch",
+    "attach",
+    "close",
+    "open",
+    "tab_open",
+    "navigate",
+    "back",
+    "forward",
+    "reload",
+    "stop",
+    "click",
+    "type",
+    "scroll",
+    "hover",
+    "press_key",
+    "click_ref",
+    "fill_ref",
+    "hover_ref",
+    "select_option",
+    "set_checked",
+    "drag",
+    "upload_file",
+    "focus",
+    "paste",
+    "set_viewport",
+    "zoom_region",
+    "batch",
+    "act",
+    "fill_form",
+    "dialog_accept",
+    "dialog_dismiss",
+    "dialog_respond",
+    "download_save",
+    "download_clear",
+    "trace_start",
+    "trace_stop",
+    "trace_export",
+    "visual_baseline_save",
+    "visual_diff",
+    "visual_baseline_delete",
+    "emulate_device",
+    "clear_emulation",
+    "switch_page",
+    "close_page",
+    "select_frame",
+    "cookies_set",
+    "storage_write",
+    "storage_clear",
+    "state_restore",
+    "vault_save",
+    "vault_login",
+    "vault_delete",
+    "auth_profile_save",
+    "auth_profile_restore",
+    "auth_profile_delete",
+    "viewer_goal",
+    "takeover",
+    "release_control",
+    "pause",
+    "resume",
+    "step",
+    "abort",
+    "sensitive_on",
+    "sensitive_off",
+    "debug_bundle",
+    "export_bundle",
+    "annotation",
+    "recording",
+    "mcp_bridge",
+    "generate_test",
+    "har_export",
+    "pdf_export",
+    "network_control",
+    "tab_close",
+    "tab_focus",
+];
+
 fn browser_observe_schema() -> JsonValue {
-    browser_schema_for_actions(&[
-        "health",
-        "capabilities",
-        "page_list",
-        "read_text",
-        "source",
-        "query",
-        "snapshot",
-        "get_ref",
-        "wait_for_selector",
-        "wait_for_load",
-        "wait_for",
-        "assert",
-        "current_url",
-        "history_state",
-        "screenshot",
-        "cookies_get",
-        "storage_read",
-        "console_logs",
-        "network_summary",
-        "accessibility_tree",
-        "state_snapshot",
-        "find_best",
-        "analyze_form",
-        "frame_list",
-        "dialog_list",
-        "download_list",
-        "trace_status",
-        "visual_baseline_list",
-        "emulation_state",
-        "extract",
-        "frame_state",
-        "vault_list",
-        "auth_profile_list",
-        "viewer_state",
-        "browser_resource",
-        "browser_prompt",
-        "validate_bundle",
-        "timeline",
-        "prompt_injection_scan",
-        "harness_extension_contract",
-        "tab_list",
-    ])
+    browser_schema_for_actions(BROWSER_OBSERVE_ACTIONS)
 }
 
 fn browser_control_schema() -> JsonValue {
-    browser_schema_for_actions(&[
-        "launch",
-        "attach",
-        "close",
-        "open",
-        "tab_open",
-        "navigate",
-        "back",
-        "forward",
-        "reload",
-        "stop",
-        "click",
-        "type",
-        "scroll",
-        "hover",
-        "press_key",
-        "click_ref",
-        "fill_ref",
-        "hover_ref",
-        "select_option",
-        "set_checked",
-        "drag",
-        "upload_file",
-        "focus",
-        "paste",
-        "set_viewport",
-        "zoom_region",
-        "batch",
-        "act",
-        "fill_form",
-        "dialog_accept",
-        "dialog_dismiss",
-        "dialog_respond",
-        "download_save",
-        "download_clear",
-        "trace_start",
-        "trace_stop",
-        "trace_export",
-        "visual_baseline_save",
-        "visual_diff",
-        "visual_baseline_delete",
-        "emulate_device",
-        "clear_emulation",
-        "switch_page",
-        "close_page",
-        "select_frame",
-        "cookies_set",
-        "storage_write",
-        "storage_clear",
-        "state_restore",
-        "vault_save",
-        "vault_login",
-        "vault_delete",
-        "auth_profile_save",
-        "auth_profile_restore",
-        "auth_profile_delete",
-        "viewer_goal",
-        "takeover",
-        "release_control",
-        "pause",
-        "resume",
-        "step",
-        "abort",
-        "sensitive_on",
-        "sensitive_off",
-        "debug_bundle",
-        "export_bundle",
-        "annotation",
-        "recording",
-        "mcp_bridge",
-        "generate_test",
-        "har_export",
-        "pdf_export",
-        "network_control",
-        "tab_close",
-        "tab_focus",
-    ])
+    browser_schema_for_actions(BROWSER_CONTROL_ACTIONS)
 }
 
 fn browser_schema_for_actions(actions: &[&str]) -> JsonValue {
@@ -7911,13 +7966,17 @@ pub(crate) fn runtime_controls_from_request(
     }
 }
 
-pub(crate) fn runtime_controls_for_agent_run(
+pub(crate) fn runtime_controls_for_agent_run_with_state(
     run: &project_store::AgentRunRecord,
     controls: Option<&RuntimeRunControlInputDto>,
+    fallback_state: Option<&RuntimeRunControlStateDto>,
     allowed_approval_modes: &[RuntimeRunApprovalModeDto],
     default_approval_mode: RuntimeRunApprovalModeDto,
 ) -> RuntimeRunControlStateDto {
-    let mut state = runtime_controls_from_request(controls);
+    let mut state = controls
+        .map(|controls| runtime_controls_from_request(Some(controls)))
+        .or_else(|| fallback_state.cloned())
+        .unwrap_or_else(|| runtime_controls_from_request(None));
     state.active.runtime_agent_id = run.runtime_agent_id;
     state.active.agent_definition_id = Some(run.agent_definition_id.clone());
     state.active.agent_definition_version = Some(run.agent_definition_version);
@@ -8499,6 +8558,41 @@ mod tests {
     }
 
     #[test]
+    fn web_tool_descriptors_advertise_runtime_integer_bounds() {
+        fn property_schema(descriptor: &AgentToolDescriptor, field: &str) -> JsonValue {
+            descriptor.input_schema["properties"][field].clone()
+        }
+
+        let descriptors =
+            descriptors_for_tools(&[AUTONOMOUS_TOOL_WEB_SEARCH, AUTONOMOUS_TOOL_WEB_FETCH]);
+        let web_search = descriptors
+            .iter()
+            .find(|descriptor| descriptor.name == AUTONOMOUS_TOOL_WEB_SEARCH)
+            .expect("web_search descriptor");
+        let web_fetch = descriptors
+            .iter()
+            .find(|descriptor| descriptor.name == AUTONOMOUS_TOOL_WEB_FETCH)
+            .expect("web_fetch descriptor");
+
+        assert_eq!(
+            property_schema(web_search, "resultCount")["maximum"],
+            json!(DESCRIPTOR_MAX_WEB_RESULT_COUNT)
+        );
+        assert_eq!(
+            property_schema(web_search, "timeoutMs")["maximum"],
+            json!(DESCRIPTOR_MAX_WEB_TIMEOUT_MS)
+        );
+        assert_eq!(
+            property_schema(web_fetch, "maxChars")["maximum"],
+            json!(DESCRIPTOR_MAX_WEB_FETCH_CHARS)
+        );
+        assert_eq!(
+            property_schema(web_fetch, "timeoutMs")["maximum"],
+            json!(DESCRIPTOR_MAX_WEB_TIMEOUT_MS)
+        );
+    }
+
+    #[test]
     fn edit_schema_requires_expected_hash_for_apply_but_not_preview() {
         fn required_contains(branch: &JsonValue, field: &str) -> bool {
             branch
@@ -8541,6 +8635,38 @@ mod tests {
                 .and_then(|properties| properties.get("preview"))
                 .and_then(|preview| preview.get("enum")),
             Some(&json!([true]))
+        );
+    }
+
+    #[test]
+    fn patch_schema_allows_default_expected_hash_for_multi_operation_requests() {
+        let schema = patch_schema();
+        let branches = schema
+            .get("oneOf")
+            .and_then(JsonValue::as_array)
+            .expect("patch schema branches");
+        let operations_branch = branches
+            .iter()
+            .find(|branch| {
+                branch
+                    .get("required")
+                    .and_then(JsonValue::as_array)
+                    .is_some_and(|required| {
+                        required
+                            .iter()
+                            .any(|value| value.as_str() == Some("operations"))
+                    })
+            })
+            .expect("operations branch");
+
+        let properties = operations_branch
+            .get("properties")
+            .and_then(JsonValue::as_object)
+            .expect("operations branch properties");
+
+        assert!(
+            properties.contains_key("expectedHash"),
+            "multi-operation patch branch should accept the default hash field the runtime DTO supports"
         );
     }
 
@@ -9565,6 +9691,8 @@ mod tests {
             assert!(prompt.contains("User-input contract:"));
             assert!(prompt.contains("Product-surface technology contract:"));
             assert!(prompt.contains("technology_stack_selection"));
+            assert!(prompt.contains("preferred technologies"));
+            assert!(prompt.contains("partial prior agent output"));
             assert!(prompt.contains("Do not default to hand-written static UI"));
 
             let policy = resolved_tool_application_policy(AgentToolApplicationStyleDto::Balanced);
@@ -9589,6 +9717,13 @@ mod tests {
             assert!(tool_prompt.contains("Agent-friendly CLI contract"));
             assert!(tool_prompt.contains("non-interactive"));
             assert!(tool_prompt.contains("prompt-driven commands"));
+            assert!(tool_prompt.contains("approval is required"));
+            assert!(tool_prompt.contains("CI/non-interactive flags"));
+            assert!(tool_prompt.contains("spawned package-manager bootstrap"));
+            assert!(tool_prompt
+                .contains("request `web_search_only` and `web_fetch` through `tool_access`"));
+            assert!(tool_prompt.contains("temporary cache/home"));
+            assert!(tool_prompt.contains("retry a finite invocation"));
             assert!(tool_prompt.contains("Treat exposed environment/tool-stack facts"));
             assert!(tool_prompt.contains("inspect them first"));
             assert!(tool_prompt.contains("use web docs for current syntax"));
@@ -10285,11 +10420,27 @@ mod tests {
         assert!(names.contains(AUTONOMOUS_TOOL_COMMAND_PROBE));
         assert!(names.contains(AUTONOMOUS_TOOL_COMMAND_VERIFY));
         assert!(names.contains(AUTONOMOUS_TOOL_COMMAND_RUN));
+        assert!(names.contains(AUTONOMOUS_TOOL_WEB_SEARCH));
+        assert!(names.contains(AUTONOMOUS_TOOL_WEB_FETCH));
         assert!(registry.exposure_plan().entries.iter().any(|entry| {
             entry.tool_name == AUTONOMOUS_TOOL_COMMAND_RUN
                 && entry.reasons.iter().any(|reason| {
                     reason.source == "planner_classification"
                         && reason.reason_code == "package_scaffold_command_intent"
+                })
+        }));
+        assert!(registry.exposure_plan().entries.iter().any(|entry| {
+            entry.tool_name == AUTONOMOUS_TOOL_WEB_SEARCH
+                && entry.reasons.iter().any(|reason| {
+                    reason.source == "planner_classification"
+                        && reason.reason_code == "package_scaffold_web_research_expected"
+                })
+        }));
+        assert!(registry.exposure_plan().entries.iter().any(|entry| {
+            entry.tool_name == AUTONOMOUS_TOOL_WEB_FETCH
+                && entry.reasons.iter().any(|reason| {
+                    reason.source == "planner_classification"
+                        && reason.reason_code == "package_scaffold_web_research_expected"
                 })
         }));
     }
@@ -10317,6 +10468,8 @@ mod tests {
         let names = registry.descriptor_names();
 
         assert!(names.contains(AUTONOMOUS_TOOL_COMMAND_RUN));
+        assert!(names.contains(AUTONOMOUS_TOOL_WEB_SEARCH));
+        assert!(names.contains(AUTONOMOUS_TOOL_WEB_FETCH));
         assert!(registry.exposure_plan().entries.iter().any(|entry| {
             entry.tool_name == AUTONOMOUS_TOOL_COMMAND_RUN
                 && entry.reasons.iter().any(|reason| {

@@ -1,5 +1,15 @@
-import { createContext, useCallback, useContext, useMemo, useState } from 'react'
-import { CheckCircle2, CircleHelp, Eye, EyeOff, KeyRound, ListChecks, Loader2, MessageSquare, X } from 'lucide-react'
+import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react'
+import {
+  CheckCircle2,
+  CircleHelp,
+  Eye,
+  EyeOff,
+  KeyRound,
+  ListChecks,
+  Loader2,
+  MessageSquare,
+  X,
+} from 'lucide-react'
 
 import type {
   RuntimeActionAnswerShapeDto,
@@ -9,13 +19,7 @@ import type {
 import { Button } from '../ui/button'
 import { Checkbox } from '../ui/checkbox'
 import { Input } from '../ui/input'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../ui/select'
+import { RadioGroup, RadioGroupItem } from '../ui/radio-group'
 import { Textarea } from '../ui/textarea'
 import { cn } from '../../lib/utils'
 
@@ -54,6 +58,43 @@ export function ActionPromptDispatchProvider({
 
 function useActionPromptDispatch(): ActionPromptDispatchValue | null {
   return useContext(ActionPromptDispatchContext)
+}
+
+type GuardedAction = () => Promise<unknown> | void
+
+function useGuardedPromptAction(disabled: boolean) {
+  const submittingRef = useRef(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  const run = useCallback(
+    (action: GuardedAction) => {
+      if (disabled || submittingRef.current) {
+        return
+      }
+
+      submittingRef.current = true
+      setIsSubmitting(true)
+
+      try {
+        const result = action()
+        const reset = () => {
+          submittingRef.current = false
+          setIsSubmitting(false)
+        }
+        void Promise.resolve(result).then(reset, reset)
+      } catch (error) {
+        submittingRef.current = false
+        setIsSubmitting(false)
+        throw error
+      }
+    },
+    [disabled],
+  )
+
+  return {
+    isSubmitting,
+    run,
+  }
 }
 
 interface ActionPromptCardProps {
@@ -97,40 +138,52 @@ export function ActionPromptCard({
     return MessageSquare
   }, [shape])
 
+  const kindLabel = useMemo(() => promptKindLabel(shape, allowMultiple), [shape, allowMultiple])
+
   return (
     <div
       className={cn(
-        'group/action-prompt rounded-md border border-border/50 bg-card/40 px-3 py-2.5',
-        'flex flex-col gap-2.5',
+        'group/action-prompt flex flex-col gap-3.5 rounded-xl border border-border/40 bg-card/30 px-4 py-3.5 transition-colors',
+        resolved ? 'opacity-90' : null,
       )}
       data-action-id={actionId}
     >
-      <div className="flex items-start gap-2">
-        <Icon
+      <div className="flex items-start gap-3">
+        <span
           aria-hidden="true"
           className={cn(
-            'mt-0.5 h-3.5 w-3.5 shrink-0',
-            resolved ? 'text-muted-foreground/60' : 'text-primary/80',
+            'mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg',
+            resolved ? 'bg-muted/50 text-muted-foreground/70' : 'bg-primary/10 text-primary',
           )}
-        />
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className="truncate text-[12.5px] font-medium text-foreground">{title}</span>
+        >
+          <Icon className="h-3.5 w-3.5" />
+        </span>
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <div className="flex items-start gap-2">
+            <span className="min-w-0 flex-1 text-[13px] font-medium leading-snug text-foreground">
+              {title}
+            </span>
+            {resolved ? (
+              <span className="agent-prompt-status-pop inline-flex shrink-0 items-center gap-1 rounded-md bg-muted/40 px-2 py-0.5 text-[10.5px] font-medium text-muted-foreground">
+                <CheckCircle2 className="h-3 w-3" /> Resolved
+              </span>
+            ) : isPendingForThis ? (
+              <span className="agent-prompt-status-pop inline-flex shrink-0 items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-[10.5px] font-medium text-primary">
+                <Loader2 className="h-3 w-3 animate-spin" /> Sending…
+              </span>
+            ) : (
+              <span className="shrink-0 rounded-md bg-muted/40 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/80">
+                {kindLabel}
+              </span>
+            )}
+          </div>
           {detail.length > 0 ? (
-            <span className="text-[12px] text-muted-foreground">{detail}</span>
+            <span className="text-[12px] leading-relaxed text-muted-foreground">{detail}</span>
           ) : null}
           {actionError ? (
             <span className="text-[12px] font-medium text-destructive">{actionError}</span>
           ) : null}
         </div>
-        {resolved ? (
-          <span className="agent-prompt-status-pop inline-flex items-center gap-1 rounded-sm bg-muted/40 px-1.5 py-0.5 text-[10.5px] font-medium text-muted-foreground">
-            <CheckCircle2 className="h-3 w-3" /> Resolved
-          </span>
-        ) : isPendingForThis ? (
-          <span className="agent-prompt-status-pop inline-flex items-center gap-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-[10.5px] font-medium text-primary">
-            <Loader2 className="h-3 w-3 animate-spin" /> Sending…
-          </span>
-        ) : null}
       </div>
 
       {shape === 'single_choice' && options ? (
@@ -138,9 +191,9 @@ export function ActionPromptCard({
           actionId={actionId}
           options={options}
           disabled={isLockedOut || !dispatch}
-          onPick={(optionId) =>
+          onSubmit={(answer) =>
             dispatch?.resolveActionPrompt(actionId, 'approve', {
-              userAnswer: optionId,
+              userAnswer: answer,
               runId,
               actionType: _actionType,
             })
@@ -154,9 +207,9 @@ export function ActionPromptCard({
           options={options}
           allowMultiple={allowMultiple}
           disabled={isLockedOut || !dispatch}
-          onSubmit={(optionIds) =>
+          onSubmit={(answer) =>
             dispatch?.resolveActionPrompt(actionId, 'approve', {
-              userAnswer: JSON.stringify(optionIds),
+              userAnswer: answer,
               runId,
               actionType: _actionType,
             })
@@ -217,82 +270,279 @@ export function ActionPromptCard({
   )
 }
 
+function promptKindLabel(shape: RuntimeActionAnswerShapeDto, allowMultiple: boolean): string {
+  switch (shape) {
+    case 'single_choice':
+      return 'Choose one'
+    case 'multi_choice':
+      return allowMultiple ? 'Choose any' : 'Choose one'
+    case 'sensitive_fields':
+      return 'Sensitive'
+    case 'terminal_input':
+      return 'Terminal'
+    case 'number':
+      return 'Number'
+    case 'date':
+      return 'Date'
+    case 'short_text':
+    case 'long_text':
+    case 'plain_text':
+      return 'Your input'
+  }
+}
+
+// Internal-only sentinel id for the user-provided "Something else" choice. It is
+// never sent to the runtime — when chosen, the typed text is submitted instead.
+const CUSTOM_CHOICE_ID = '__xero_custom_choice__'
+
+const CUSTOM_CHOICE_OPTION: RuntimeActionRequiredOptionDto = {
+  id: CUSTOM_CHOICE_ID,
+  label: 'Something else',
+  description: 'Provide your own answer instead of the options above.',
+}
+
+function appendChoiceNote(answer: string, note: string): string {
+  const body = answer.trim()
+  const trimmedNote = note.trim()
+  if (trimmedNote.length === 0) {
+    return body
+  }
+  if (body.length === 0) {
+    return `Note: ${trimmedNote}`
+  }
+  return `${body}\n\nNote: ${trimmedNote}`
+}
+
+function PromptNoteField({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string
+  onChange: (value: string) => void
+  disabled: boolean
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-[11px] font-medium text-muted-foreground">Add a note (optional)</span>
+      <Textarea
+        aria-label="Add a note"
+        rows={2}
+        className="min-h-[56px] resize-none border-border/40 bg-muted/20 text-[12px]"
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="Add context, constraints, or reasoning for your choice."
+        value={value}
+      />
+    </div>
+  )
+}
+
+function CustomChoiceField({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string
+  onChange: (value: string) => void
+  disabled: boolean
+}) {
+  return (
+    <Input
+      aria-label="Your own answer"
+      autoComplete="off"
+      autoFocus
+      className="h-9 border-border/40 bg-muted/20 text-[12px]"
+      disabled={disabled}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder="Type your own answer"
+      value={value}
+    />
+  )
+}
+
+interface ChoiceRowProps {
+  actionId: string
+  selected: boolean
+  disabled: boolean
+  option: RuntimeActionRequiredOptionDto
+  onToggle: () => void
+}
+
+function choiceControlId(actionId: string, optionId: string): string {
+  return `${actionId}:${optionId}`.replace(/[^a-zA-Z0-9_-]+/g, '-')
+}
+
+function ChoiceRadioRow({
+  actionId,
+  selected,
+  disabled,
+  option,
+  onToggle,
+}: ChoiceRowProps) {
+  const controlId = choiceControlId(actionId, option.id)
+  const labelId = `${controlId}-label`
+  const descriptionId = option.description ? `${controlId}-description` : undefined
+  return (
+    <div
+      aria-disabled={disabled}
+      onClick={() => {
+        if (!disabled) {
+          onToggle()
+        }
+      }}
+      className={cn(
+        'flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left text-[12px] transition-colors',
+        'focus-within:outline-none focus-within:ring-2 focus-within:ring-primary/30',
+        selected
+          ? 'bg-primary/10 ring-1 ring-inset ring-primary/25'
+          : 'bg-muted/20 hover:bg-muted/40',
+        disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
+      )}
+    >
+      <RadioGroupItem
+        id={controlId}
+        value={option.id}
+        disabled={disabled}
+        aria-labelledby={labelId}
+        aria-describedby={descriptionId}
+        onClick={(event) => event.stopPropagation()}
+        className="mt-0.5"
+      />
+      <span className="flex min-w-0 flex-col gap-1">
+        <span id={labelId} className="font-medium leading-snug text-foreground">{option.label}</span>
+        {option.description ? (
+          <span id={descriptionId} className="text-[11px] leading-relaxed text-muted-foreground">
+            {option.description}
+          </span>
+        ) : null}
+      </span>
+    </div>
+  )
+}
+
+function ChoiceCheckboxRow({ actionId, selected, disabled, option, onToggle }: ChoiceRowProps) {
+  const controlId = choiceControlId(actionId, option.id)
+  const labelId = `${controlId}-label`
+  const descriptionId = option.description ? `${controlId}-description` : undefined
+  return (
+    <div
+      aria-disabled={disabled}
+      onClick={() => {
+        if (!disabled) {
+          onToggle()
+        }
+      }}
+      className={cn(
+        'flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left text-[12px] transition-colors',
+        'focus-within:outline-none focus-within:ring-2 focus-within:ring-primary/30',
+        selected
+          ? 'bg-primary/10 ring-1 ring-inset ring-primary/25'
+          : 'bg-muted/20 hover:bg-muted/40',
+        disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
+      )}
+    >
+      <Checkbox
+        id={controlId}
+        checked={selected}
+        disabled={disabled}
+        aria-labelledby={labelId}
+        aria-describedby={descriptionId}
+        onClick={(event) => event.stopPropagation()}
+        onCheckedChange={() => onToggle()}
+        className="mt-0.5"
+      />
+      <span className="flex min-w-0 flex-col gap-1">
+        <span id={labelId} className="font-medium leading-snug text-foreground">{option.label}</span>
+        {option.description ? (
+          <span id={descriptionId} className="text-[11px] leading-relaxed text-muted-foreground">
+            {option.description}
+          </span>
+        ) : null}
+      </span>
+    </div>
+  )
+}
+
 function SingleChoiceBody({
   actionId,
   options,
   disabled,
-  onPick,
+  onSubmit,
 }: {
   actionId: string
   options: RuntimeActionRequiredOptionDto[]
   disabled: boolean
-  onPick: (optionId: string) => void
+  onSubmit: (answer: string) => Promise<unknown> | void
 }) {
   const [selected, setSelected] = useState('')
-  const selectedOption = options.find((option) => option.id === selected) ?? null
+  const [customValue, setCustomValue] = useState('')
+  const [note, setNote] = useState('')
+  const submitGuard = useGuardedPromptAction(disabled)
+  const fieldsDisabled = disabled || submitGuard.isSubmitting
+  const isCustom = selected === CUSTOM_CHOICE_ID
+  const customTrimmed = customValue.trim()
+  const hasSelection = selected.length > 0 && (!isCustom || customTrimmed.length > 0)
+  const canSubmit = hasSelection && !disabled && !submitGuard.isSubmitting
+  const scrollable = options.length > 6
 
-  if (options.length > 3) {
-    return (
-      <div className="flex flex-col gap-1.5">
-        <Select value={selected} onValueChange={setSelected} disabled={disabled}>
-          <SelectTrigger
-            size="sm"
-            className="h-8 w-full border-border/50 bg-background/40 text-[12px]"
-            aria-label="Choose one option"
-          >
-            <SelectValue placeholder="Choose an option" />
-          </SelectTrigger>
-          <SelectContent>
-            {options.map((option) => (
-              <SelectItem key={`${actionId}:${option.id}`} value={option.id}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        {selectedOption?.description ? (
-          <span className="text-[11px] text-muted-foreground">{selectedOption.description}</span>
-        ) : null}
-        <div className="flex justify-end">
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            disabled={disabled || selected.length === 0}
-            onClick={() => onPick(selected)}
-            className="h-7 px-2.5 text-[12px]"
-          >
-            Submit
-          </Button>
-        </div>
-      </div>
-    )
+  const handleSubmit = () => {
+    const selectionAnswer = isCustom
+      ? customTrimmed
+      : options.find((option) => option.id === selected)?.id ?? selected
+    return onSubmit(appendChoiceNote(selectionAnswer, note))
   }
 
   return (
-    <div aria-label="Choose one option" className="flex flex-col gap-1.5">
-      {options.map((option) => (
-        <button
-          key={`${actionId}:${option.id}`}
-          type="button"
+    <div className="flex flex-col gap-3">
+      <RadioGroup
+        value={selected}
+        onValueChange={setSelected}
+        disabled={disabled}
+        role="radiogroup"
+        aria-label="Choose one option"
+        className={cn(
+          'flex flex-col gap-2',
+          scrollable ? 'max-h-72 overflow-y-auto pr-1' : null,
+        )}
+      >
+        {options.map((option) => (
+          <ChoiceRadioRow
+            key={`${actionId}:${option.id}`}
+            actionId={actionId}
+            option={option}
+            selected={selected === option.id}
+            disabled={disabled}
+            onToggle={() => setSelected(option.id)}
+          />
+        ))}
+        <ChoiceRadioRow
+          key={`${actionId}:${CUSTOM_CHOICE_ID}`}
+          actionId={actionId}
+          option={CUSTOM_CHOICE_OPTION}
+          selected={isCustom}
           disabled={disabled}
-          onClick={() => onPick(option.id)}
-          className={cn(
-            'group/choice flex items-start gap-2 rounded-md border border-border/40 bg-background/40 px-2.5 py-1.5 text-left text-[12px] transition-colors',
-            'hover:border-primary/40 hover:bg-primary/5',
-            'focus-visible:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30',
-            'disabled:cursor-not-allowed disabled:opacity-60',
-          )}
+          onToggle={() => setSelected(CUSTOM_CHOICE_ID)}
+        />
+      </RadioGroup>
+      {isCustom ? (
+        <CustomChoiceField value={customValue} onChange={setCustomValue} disabled={fieldsDisabled} />
+      ) : null}
+      <PromptNoteField value={note} onChange={setNote} disabled={fieldsDisabled} />
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] text-muted-foreground">
+          {hasSelection ? '1 selected' : isCustom ? 'Add your answer' : 'Choose one option'}
+        </span>
+        <Button
+          type="button"
+          size="sm"
+          disabled={!canSubmit}
+          onClick={() => submitGuard.run(handleSubmit)}
+          className="h-8 px-4 text-[12px]"
         >
-          <span className="mt-0.5 h-3 w-3 shrink-0 rounded-full border border-border/60 group-hover/choice:border-primary/60" />
-          <span className="flex min-w-0 flex-col gap-0.5">
-            <span className="truncate font-medium text-foreground">{option.label}</span>
-            {option.description ? (
-              <span className="text-[11px] text-muted-foreground">{option.description}</span>
-            ) : null}
-          </span>
-        </button>
-      ))}
+          Submit
+        </Button>
+      </div>
     </div>
   )
 }
@@ -308,9 +558,13 @@ function MultiChoiceBody({
   options: RuntimeActionRequiredOptionDto[]
   allowMultiple: boolean
   disabled: boolean
-  onSubmit: (optionIds: string[]) => void
+  onSubmit: (answer: string) => Promise<unknown> | void
 }) {
   const [selected, setSelected] = useState<readonly string[]>([])
+  const [customValue, setCustomValue] = useState('')
+  const [note, setNote] = useState('')
+  const submitGuard = useGuardedPromptAction(disabled)
+  const fieldsDisabled = disabled || submitGuard.isSubmitting
   const toggle = useCallback(
     (optionId: string) => {
       setSelected((current) => {
@@ -325,51 +579,69 @@ function MultiChoiceBody({
     },
     [allowMultiple],
   )
-  const canSubmit = selected.length > 0 && !disabled
+  const isCustom = selected.includes(CUSTOM_CHOICE_ID)
+  const customTrimmed = customValue.trim()
+  const customSatisfied = !isCustom || customTrimmed.length > 0
+  const canSubmit =
+    selected.length > 0 && customSatisfied && !disabled && !submitGuard.isSubmitting
+  const scrollable = options.length > 6
+
+  const handleSubmit = () => {
+    const selections = selected.map((id) =>
+      id === CUSTOM_CHOICE_ID
+        ? customTrimmed
+        : options.find((option) => option.id === id)?.id ?? id,
+    )
+    return onSubmit(appendChoiceNote(JSON.stringify(selections), note))
+  }
 
   return (
-    <div className="flex flex-col gap-1.5">
-      <div role="group" aria-label="Pick options" className="flex flex-col gap-1.5">
-        {options.map((option) => {
-          const checked = selected.includes(option.id)
-          return (
-            <label
-              key={`${actionId}:${option.id}`}
-              onClick={() => {
-                if (!disabled) toggle(option.id)
-              }}
-              className={cn(
-                'flex cursor-pointer items-start gap-2 rounded-md border border-border/40 bg-background/40 px-2.5 py-1.5 text-[12px] transition-colors',
-                'hover:border-primary/40 hover:bg-primary/5',
-                disabled ? 'cursor-not-allowed opacity-60' : null,
-                checked ? 'border-primary/50 bg-primary/5' : null,
-              )}
-            >
-              <Checkbox
-                className="mt-0.5 h-3.5 w-3.5"
-                checked={checked}
-                disabled={disabled}
-                onClick={(event) => event.stopPropagation()}
-                onCheckedChange={() => toggle(option.id)}
-              />
-              <span className="flex min-w-0 flex-col gap-0.5">
-                <span className="truncate font-medium text-foreground">{option.label}</span>
-                {option.description ? (
-                  <span className="text-[11px] text-muted-foreground">{option.description}</span>
-                ) : null}
-              </span>
-            </label>
-          )
-        })}
+    <div className="flex flex-col gap-3">
+      <div
+        role="group"
+        aria-label="Pick options"
+        className={cn(
+          'flex flex-col gap-2',
+          scrollable ? 'max-h-72 overflow-y-auto pr-1' : null,
+        )}
+      >
+        {options.map((option) => (
+          <ChoiceCheckboxRow
+            key={`${actionId}:${option.id}`}
+            actionId={actionId}
+            option={option}
+            selected={selected.includes(option.id)}
+            disabled={disabled}
+            onToggle={() => toggle(option.id)}
+          />
+        ))}
+        <ChoiceCheckboxRow
+          key={`${actionId}:${CUSTOM_CHOICE_ID}`}
+          actionId={actionId}
+          option={CUSTOM_CHOICE_OPTION}
+          selected={isCustom}
+          disabled={disabled}
+          onToggle={() => toggle(CUSTOM_CHOICE_ID)}
+        />
       </div>
-      <div className="flex justify-end">
+      {isCustom ? (
+        <CustomChoiceField value={customValue} onChange={setCustomValue} disabled={fieldsDisabled} />
+      ) : null}
+      <PromptNoteField value={note} onChange={setNote} disabled={fieldsDisabled} />
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] text-muted-foreground">
+          {selected.length > 0
+            ? `${selected.length} selected`
+            : allowMultiple
+              ? 'Select one or more'
+              : 'Select one'}
+        </span>
         <Button
           type="button"
           size="sm"
-          variant="secondary"
           disabled={!canSubmit}
-          onClick={() => onSubmit([...selected])}
-          className="h-7 px-2.5 text-[12px]"
+          onClick={() => submitGuard.run(handleSubmit)}
+          className="h-8 px-4 text-[12px]"
         >
           Submit
         </Button>
@@ -390,21 +662,23 @@ function SensitiveFieldsBody({
   fields: RuntimeSensitiveInputFieldDto[]
   intendedUse: string | null
   disabled: boolean
-  onApprove: (values: Record<string, string>) => void
-  onReject: () => void
+  onApprove: (values: Record<string, string>) => Promise<unknown> | void
+  onReject: () => Promise<unknown> | void
 }) {
   const [values, setValues] = useState<Record<string, string>>({})
   const [revealed, setRevealed] = useState<Record<string, boolean>>({})
   const requiredMissing = fields.some((field) => field.required && !values[field.key]?.trim())
+  const submitGuard = useGuardedPromptAction(disabled)
+  const isDisabled = disabled || submitGuard.isSubmitting
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2.5">
       {intendedUse ? (
-        <div className="rounded-md border border-border/40 bg-background/40 px-2.5 py-2 text-[11.5px] text-muted-foreground">
+        <div className="rounded-lg bg-muted/25 px-3 py-2 text-[11.5px] leading-relaxed text-muted-foreground">
           {intendedUse}
         </div>
       ) : null}
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-2.5">
         {fields.map((field) => {
           const inputId = `${actionId}:${field.key}`
           const isRevealed = revealed[field.key] === true
@@ -427,8 +701,8 @@ function SensitiveFieldsBody({
                   id={inputId}
                   aria-label={field.label}
                   autoComplete="off"
-                  className="h-8 border-border/50 bg-background/40 text-[12px]"
-                  disabled={disabled}
+                  className="h-9 border-border/40 bg-muted/20 text-[12px]"
+                  disabled={isDisabled}
                   onChange={(event) =>
                     setValues((current) => ({
                       ...current,
@@ -443,14 +717,14 @@ function SensitiveFieldsBody({
                   type="button"
                   size="icon"
                   variant="ghost"
-                  disabled={disabled || value.length === 0}
+                  disabled={isDisabled || value.length === 0}
                   onClick={() =>
                     setRevealed((current) => ({
                       ...current,
                       [field.key]: !isRevealed,
                     }))
                   }
-                  className="h-8 w-8 shrink-0"
+                  className="h-9 w-9 shrink-0"
                   aria-label={isRevealed ? `Hide ${field.label}` : `Reveal ${field.label}`}
                 >
                   {isRevealed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
@@ -460,14 +734,14 @@ function SensitiveFieldsBody({
           )
         })}
       </div>
-      <div className="flex justify-end gap-1.5">
+      <div className="flex justify-end gap-2">
         <Button
           type="button"
           size="sm"
           variant="ghost"
-          disabled={disabled}
-          onClick={() => onReject()}
-          className="h-7 px-2 text-[12px] text-muted-foreground hover:text-destructive"
+          disabled={isDisabled}
+          onClick={() => submitGuard.run(() => onReject())}
+          className="h-8 px-3 text-[12px] text-muted-foreground hover:text-destructive"
         >
           <X className="mr-1 h-3 w-3" />
           Deny
@@ -475,17 +749,16 @@ function SensitiveFieldsBody({
         <Button
           type="button"
           size="sm"
-          variant="secondary"
-          disabled={disabled || requiredMissing}
-          onClick={() => {
+          disabled={isDisabled || requiredMissing}
+          onClick={() => submitGuard.run(() => {
             const submitted = Object.fromEntries(
               Object.entries(values)
                 .map(([key, value]) => [key, value.trim()] as const)
                 .filter(([, value]) => value.length > 0),
             )
-            onApprove(submitted)
-          }}
-          className="h-7 px-2.5 text-[12px]"
+            return onApprove(submitted)
+          })}
+          className="h-8 px-4 text-[12px]"
           data-action-id={actionId}
         >
           Approve
@@ -505,23 +778,25 @@ function FreeformBody({
   actionId: string
   shape: RuntimeActionAnswerShapeDto
   disabled: boolean
-  onApprove: (value: string) => void
-  onReject: () => void
+  onApprove: (value: string) => Promise<unknown> | void
+  onReject: () => Promise<unknown> | void
 }) {
   const [value, setValue] = useState('')
   const trimmed = value.trim()
   const placeholder = getFreeformPlaceholder(shape)
   const isTextArea = shape === 'plain_text' || shape === 'terminal_input' || shape === 'long_text'
   const requiresValue = shape !== 'plain_text'
+  const submitGuard = useGuardedPromptAction(disabled)
+  const isDisabled = disabled || submitGuard.isSubmitting
 
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-2.5">
       {isTextArea ? (
         <Textarea
           aria-label="Operator response"
           rows={2}
-          className="min-h-[64px] resize-none border-border/50 bg-background/40 text-[12px]"
-          disabled={disabled}
+          className="min-h-[72px] resize-none border-border/40 bg-muted/20 text-[12px]"
+          disabled={isDisabled}
           onChange={(event) => setValue(event.target.value)}
           placeholder={placeholder}
           value={value}
@@ -529,8 +804,8 @@ function FreeformBody({
       ) : (
         <Input
           aria-label="Operator response"
-          className="h-8 border-border/50 bg-background/40 text-[12px]"
-          disabled={disabled}
+          className="h-9 border-border/40 bg-muted/20 text-[12px]"
+          disabled={isDisabled}
           inputMode={shape === 'number' ? 'decimal' : undefined}
           onChange={(event) => setValue(event.target.value)}
           placeholder={placeholder}
@@ -538,14 +813,14 @@ function FreeformBody({
           value={value}
         />
       )}
-      <div className="flex justify-end gap-1.5">
+      <div className="flex justify-end gap-2">
         <Button
           type="button"
           size="sm"
           variant="ghost"
-          disabled={disabled}
-          onClick={() => onReject()}
-          className="h-7 px-2 text-[12px] text-muted-foreground hover:text-destructive"
+          disabled={isDisabled}
+          onClick={() => submitGuard.run(() => onReject())}
+          className="h-8 px-3 text-[12px] text-muted-foreground hover:text-destructive"
         >
           <X className="mr-1 h-3 w-3" />
           Reject
@@ -553,10 +828,9 @@ function FreeformBody({
         <Button
           type="button"
           size="sm"
-          variant="secondary"
-          disabled={disabled || (requiresValue && trimmed.length === 0)}
-          onClick={() => onApprove(trimmed.length > 0 ? trimmed : '')}
-          className="h-7 px-2.5 text-[12px]"
+          disabled={isDisabled || (requiresValue && trimmed.length === 0)}
+          onClick={() => submitGuard.run(() => onApprove(trimmed.length > 0 ? trimmed : ''))}
+          className="h-8 px-4 text-[12px]"
           data-action-id={actionId}
         >
           Approve

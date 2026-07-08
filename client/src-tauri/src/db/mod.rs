@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use rusqlite_migration::{Error as MigrationError, MigrationDefinitionError};
 use sha2::{Digest, Sha256};
 
@@ -46,6 +46,88 @@ pub struct ImportedProjectRecord {
     pub project: ProjectSummaryDto,
     pub repository: RepositorySummaryDto,
     pub database_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct ProjectImportTarget {
+    project_id: String,
+    repository_id: String,
+    root_path: PathBuf,
+    root_path_string: String,
+    display_name: String,
+    branch_name: Option<String>,
+    head_sha: Option<String>,
+    is_git_repo: bool,
+}
+
+impl ProjectImportTarget {
+    fn from_canonical(repository: &CanonicalRepository) -> Self {
+        Self {
+            project_id: repository.project_id.clone(),
+            repository_id: repository.repository_id.clone(),
+            root_path: repository.root_path.clone(),
+            root_path_string: repository.root_path_string.clone(),
+            display_name: repository.display_name.clone(),
+            branch_name: repository.branch_name.clone(),
+            head_sha: repository.head_sha.clone(),
+            is_git_repo: true,
+        }
+    }
+
+    fn from_directory(root_path: &Path) -> Result<Self, CommandError> {
+        let canonical_root_path =
+            fs::canonicalize(root_path).map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound => CommandError::user_fixable(
+                    "project_path_not_found",
+                    format!("Project folder `{}` does not exist.", root_path.display()),
+                ),
+                _ => CommandError::user_fixable(
+                    "project_path_invalid",
+                    format!(
+                        "Xero could not read project folder `{}`: {error}",
+                        root_path.display()
+                    ),
+                ),
+            })?;
+
+        if !canonical_root_path.is_dir() {
+            return Err(CommandError::user_fixable(
+                "project_path_not_directory",
+                format!("Project path `{}` is not a folder.", root_path.display()),
+            ));
+        }
+
+        let root_path_string = canonical_root_path.to_string_lossy().into_owned();
+        let display_name = canonical_root_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(ToOwned::to_owned)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| root_path_string.clone());
+
+        Ok(Self {
+            project_id: stable_project_id_for_repo_root(&canonical_root_path),
+            repository_id: stable_repository_id_for_repo_root(&canonical_root_path),
+            root_path: canonical_root_path,
+            root_path_string,
+            display_name,
+            branch_name: None,
+            head_sha: None,
+            is_git_repo: false,
+        })
+    }
+
+    fn repository_summary(&self) -> RepositorySummaryDto {
+        RepositorySummaryDto {
+            id: self.repository_id.clone(),
+            project_id: self.project_id.clone(),
+            root_path: self.root_path_string.clone(),
+            display_name: self.display_name.clone(),
+            branch: self.branch_name.clone(),
+            head_sha: self.head_sha.clone(),
+            is_git_repo: self.is_git_repo,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,6 +230,70 @@ pub fn database_path_for_repo(repo_root: &Path) -> PathBuf {
         .unwrap_or_else(|| database_path_for_project(&stable_project_id_for_repo_root(repo_root)))
 }
 
+pub(crate) fn repository_summary_for_repo_root(
+    repo_root: &Path,
+) -> Result<Option<RepositorySummaryDto>, CommandError> {
+    let database_path = database_path_for_repo(repo_root);
+    if !database_path.exists() {
+        return Ok(None);
+    }
+
+    let connection = open_database_connection(&database_path)?;
+    configure_connection(&connection)?;
+    let root_path_string = normalize_repo_root(repo_root)
+        .to_string_lossy()
+        .into_owned();
+
+    let summary = connection
+        .query_row(
+            r#"
+            SELECT id, project_id, root_path, display_name, branch, head_sha, is_git_repo
+            FROM repositories
+            WHERE root_path = ?1
+            ORDER BY updated_at DESC
+            LIMIT 1
+            "#,
+            params![root_path_string],
+            repository_summary_from_row,
+        )
+        .optional()
+        .map_err(|error| {
+            CommandError::retryable(
+                "repository_summary_read_failed",
+                format!(
+                    "Xero could not read the project repository summary at {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?;
+
+    if summary.is_some() {
+        return Ok(summary);
+    }
+
+    connection
+        .query_row(
+            r#"
+            SELECT id, project_id, root_path, display_name, branch, head_sha, is_git_repo
+            FROM repositories
+            ORDER BY updated_at DESC
+            LIMIT 1
+            "#,
+            [],
+            repository_summary_from_row,
+        )
+        .optional()
+        .map_err(|error| {
+            CommandError::retryable(
+                "repository_summary_read_failed",
+                format!(
+                    "Xero could not read the project repository summary at {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })
+}
+
 pub fn import_project(
     repository: &CanonicalRepository,
     failpoints: &ImportFailpoints,
@@ -155,8 +301,33 @@ pub fn import_project(
     import_project_with_origin(repository, ProjectOrigin::Brownfield, failpoints)
 }
 
+pub fn import_project_directory(
+    root_path: &Path,
+    failpoints: &ImportFailpoints,
+) -> Result<ImportedProjectRecord, CommandError> {
+    import_project_directory_with_origin(root_path, ProjectOrigin::Brownfield, failpoints)
+}
+
+pub fn import_project_directory_with_origin(
+    root_path: &Path,
+    project_origin: ProjectOrigin,
+    failpoints: &ImportFailpoints,
+) -> Result<ImportedProjectRecord, CommandError> {
+    let target = ProjectImportTarget::from_directory(root_path)?;
+    import_project_target_with_origin(&target, project_origin, failpoints)
+}
+
 pub fn import_project_with_origin(
     repository: &CanonicalRepository,
+    project_origin: ProjectOrigin,
+    failpoints: &ImportFailpoints,
+) -> Result<ImportedProjectRecord, CommandError> {
+    let target = ProjectImportTarget::from_canonical(repository);
+    import_project_target_with_origin(&target, project_origin, failpoints)
+}
+
+fn import_project_target_with_origin(
+    repository: &ProjectImportTarget,
     project_origin: ProjectOrigin,
     failpoints: &ImportFailpoints,
 ) -> Result<ImportedProjectRecord, CommandError> {
@@ -242,15 +413,7 @@ pub fn import_project_with_origin(
                 runtime: None,
                 start_targets: Vec::new(),
             },
-            repository: RepositorySummaryDto {
-                id: repository.repository_id.clone(),
-                project_id: repository.project_id.clone(),
-                root_path: repository.root_path_string.clone(),
-                display_name: repository.display_name.clone(),
-                branch: repository.branch_name.clone(),
-                head_sha: repository.head_sha.clone(),
-                is_git_repo: true,
-            },
+            repository: repository.repository_summary(),
             database_path: database_path.clone(),
         })
     })();
@@ -307,6 +470,18 @@ fn open_database_connection(database_path: &Path) -> Result<Connection, CommandE
     })
 }
 
+fn repository_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RepositorySummaryDto> {
+    Ok(RepositorySummaryDto {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        root_path: row.get(2)?,
+        display_name: row.get(3)?,
+        branch: row.get(4)?,
+        head_sha: row.get(5)?,
+        is_git_repo: row.get::<_, i64>(6)? == 1,
+    })
+}
+
 fn state_database_migration_error(database_path: &Path, error: MigrationError) -> CommandError {
     CommandError::system_fault(
         "state_database_migration_failed",
@@ -356,6 +531,8 @@ pub(crate) fn rebuild_incompatible_project_database(
     database_path: &Path,
     connection: Connection,
 ) -> Result<Connection, CommandError> {
+    let project_origin =
+        read_project_origin_for_rebuild(&connection).unwrap_or(ProjectOrigin::Brownfield);
     let observed_user_version = read_user_version(&connection);
     let _ = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
     drop(connection);
@@ -368,20 +545,35 @@ pub(crate) fn rebuild_incompatible_project_database(
         .to_latest(&mut reset_connection)
         .map_err(|error| state_database_migration_error(database_path, error))?;
 
-    let repository = crate::git::repository::open_repository_root(repo_root)?;
-    let canonical_repository = repository.canonical_repository()?;
-    persist_import_rows(
-        &reset_connection,
-        &canonical_repository,
-        ProjectOrigin::Brownfield,
-    )?;
-    register_project_database_path_for_project(
-        &canonical_repository.project_id,
-        repo_root,
-        database_path,
-    );
+    let import_target = match crate::git::repository::open_repository_root(repo_root) {
+        Ok(repository) => {
+            let canonical_repository = repository.canonical_repository()?;
+            ProjectImportTarget::from_canonical(&canonical_repository)
+        }
+        Err(error) if error.code == "git_repository_not_found" => {
+            ProjectImportTarget::from_directory(repo_root)?
+        }
+        Err(error) => return Err(error),
+    };
+    persist_import_rows(&reset_connection, &import_target, project_origin)?;
+    register_project_database_path_for_project(&import_target.project_id, repo_root, database_path);
 
     Ok(reset_connection)
+}
+
+fn read_project_origin_for_rebuild(connection: &Connection) -> Option<ProjectOrigin> {
+    connection
+        .query_row(
+            "SELECT project_origin FROM projects ORDER BY updated_at DESC LIMIT 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .map(|value| match value.as_str() {
+            "greenfield" => ProjectOrigin::Greenfield,
+            "unknown" => ProjectOrigin::Unknown,
+            _ => ProjectOrigin::Brownfield,
+        })
 }
 
 fn next_incompatible_backup_path(database_path: &Path, observed_user_version: i64) -> PathBuf {
@@ -413,7 +605,7 @@ fn remove_database_sidecars(database_path: &Path) {
 
 fn persist_import_rows(
     connection: &Connection,
-    repository: &CanonicalRepository,
+    repository: &ProjectImportTarget,
     project_origin: ProjectOrigin,
 ) -> Result<(), CommandError> {
     let transaction = connection.unchecked_transaction().map_err(|error| {
@@ -473,7 +665,7 @@ fn persist_import_rows(
                 is_git_repo,
                 updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
             ON CONFLICT(id) DO UPDATE SET
                 project_id = excluded.project_id,
                 root_path = excluded.root_path,
@@ -490,6 +682,7 @@ fn persist_import_rows(
                 repository.display_name,
                 repository.branch_name,
                 repository.head_sha,
+                if repository.is_git_repo { 1 } else { 0 },
             ],
         )
         .map_err(|error| {
@@ -755,17 +948,24 @@ fn normalize_repo_root(repo_root: &Path) -> PathBuf {
     fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf())
 }
 
-fn stable_project_id_for_repo_root(repo_root: &Path) -> String {
+pub(crate) fn stable_project_id_for_repo_root(repo_root: &Path) -> String {
+    format!("project_{}", stable_digest_for_repo_root(repo_root))
+}
+
+fn stable_repository_id_for_repo_root(repo_root: &Path) -> String {
+    format!("repo_{}", stable_digest_for_repo_root(repo_root))
+}
+
+fn stable_digest_for_repo_root(repo_root: &Path) -> String {
     let root_path_string = normalize_repo_root(repo_root)
         .to_string_lossy()
         .into_owned();
     let digest = Sha256::digest(root_path_string.as_bytes());
-    let short = digest
+    digest
         .iter()
         .take(16)
         .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    format!("project_{short}")
+        .collect::<String>()
 }
 
 fn fallback_database_path_for_unconfigured_import(project_id: &str) -> PathBuf {
@@ -862,6 +1062,58 @@ mod tests {
             RuntimeAgentIdDto::Crawl,
         )
         .expect("crawl allowed for brownfield");
+    }
+
+    #[test]
+    fn import_project_directory_accepts_plain_folder_without_git_metadata() {
+        let tempdir = tempdir().expect("tempdir");
+        let project_root = tempdir.path().join("plain-folder-project");
+        fs::create_dir_all(&project_root).expect("project root");
+        configure_project_database_paths(&tempdir.path().join("global").join("state.db"));
+
+        let record = import_project_directory(&project_root, &ImportFailpoints::default())
+            .expect("import plain folder");
+
+        assert_eq!(record.project.project_origin, ProjectOriginDto::Brownfield);
+        assert_eq!(record.project.name, "plain-folder-project");
+        assert_eq!(record.project.branch, None);
+        assert_eq!(record.repository.branch, None);
+        assert_eq!(record.repository.head_sha, None);
+        assert!(!record.repository.is_git_repo);
+
+        let summary = repository_summary_for_repo_root(&project_root)
+            .expect("read repository summary")
+            .expect("repository summary");
+        assert_eq!(summary.id, record.repository.id);
+        assert!(!summary.is_git_repo);
+
+        let sessions = project_store::list_agent_sessions(&project_root, &record.project.id, false)
+            .expect("list agent sessions");
+        assert_eq!(sessions.len(), 1);
+        assert!(sessions[0].selected);
+    }
+
+    #[test]
+    fn import_project_directory_with_origin_preserves_greenfield_origin() {
+        let tempdir = tempdir().expect("tempdir");
+        let project_root = tempdir.path().join("plain-greenfield-project");
+        fs::create_dir_all(&project_root).expect("project root");
+        configure_project_database_paths(&tempdir.path().join("global").join("state.db"));
+
+        let record = import_project_directory_with_origin(
+            &project_root,
+            ProjectOrigin::Greenfield,
+            &ImportFailpoints::default(),
+        )
+        .expect("import plain greenfield folder");
+
+        assert_eq!(record.project.project_origin, ProjectOriginDto::Greenfield);
+        assert!(!record.repository.is_git_repo);
+        assert_eq!(
+            project_store::load_project_origin(&project_root, &record.project.id)
+                .expect("load origin"),
+            ProjectOriginDto::Greenfield
+        );
     }
 
     #[test]

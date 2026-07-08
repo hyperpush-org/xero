@@ -89,6 +89,10 @@ pub struct ProviderPreflightRequiredFeatures {
 impl ProviderPreflightRequiredFeatures {
     pub fn owned_agent_text_turn() -> Self {
         Self {
+            // Streaming is probed and preferred where available, but it is advisory rather than
+            // a hard admission requirement (see `provider_preflight_admission_blockers`): the
+            // runtime consumes SSE where the provider streams and buffers the full response
+            // otherwise (Bedrock InvokeModel, Vertex rawPredict).
             streaming: true,
             tool_calls: true,
             reasoning_controls: false,
@@ -492,7 +496,10 @@ pub fn provider_preflight_admission_blockers(
                     "provider_preflight_credentials"
                         | "provider_preflight_endpoint"
                         | "provider_preflight_model"
-                        | "provider_preflight_streaming"
+                        // `provider_preflight_streaming` is intentionally NOT a blocker: the
+                        // runtime works without provider streaming (it buffers non-streaming
+                        // responses), so Bedrock/Vertex, whose streaming capability is
+                        // correctly reported unavailable, must not be blocked on it.
                         | "provider_preflight_tool_schema"
                         | "provider_preflight_reasoning"
                         | "provider_preflight_attachments"
@@ -881,7 +888,9 @@ pub fn run_xai_provider_preflight_probe(
             context_limit_known: request.context_window_tokens.map(|_| true),
             provider_error: Some(ProviderPreflightError {
                 code: "provider_preflight_credentials_missing".into(),
-                message: "No xAI OAuth session or API key is available for the selected provider profile.".into(),
+                message:
+                    "No xAI API key or OAuth session is available for the selected provider profile."
+                        .into(),
                 class: ProviderPreflightErrorClass::Authentication,
                 retryable: false,
             }),
@@ -1444,7 +1453,10 @@ fn xai_model_supports_reasoning_effort(model_id: &str) -> bool {
         .next()
         .unwrap_or(model_id)
         .to_ascii_lowercase();
-    matches!(model_id.as_str(), "grok-4.3" | "grok-4.3-latest")
+    matches!(
+        model_id.as_str(),
+        "grok-4.5" | "grok-latest" | "grok-4.3" | "grok-4.3-latest"
+    )
 }
 
 fn openai_compatible_preflight_supports_stream_options(provider_id: &str) -> bool {
@@ -1537,12 +1549,73 @@ fn normalize_preflight_timeout(timeout_ms: u64) -> u64 {
 }
 
 fn age_seconds_since_checked_at(checked_at: &str) -> Option<i64> {
-    let checked_seconds = checked_at.strip_prefix("unix:")?.parse::<u64>().ok()?;
-    let now_seconds = crate::now_timestamp()
-        .strip_prefix("unix:")?
-        .parse::<u64>()
-        .ok()?;
-    Some(now_seconds.saturating_sub(checked_seconds) as i64)
+    // `checked_at` arrives in two formats: this crate's own `unix:{seconds}` (headless paths)
+    // and RFC3339 written by the desktop consumers. Parsing only the former silently left the
+    // persisted-snapshot age at 0, so the TTL/staleness check never fired and a day-one live
+    // probe was reused indefinitely. Handle both.
+    let checked_seconds = parse_timestamp_to_epoch_seconds(checked_at)?;
+    let now_seconds = parse_timestamp_to_epoch_seconds(&crate::now_timestamp())?;
+    Some(now_seconds.saturating_sub(checked_seconds))
+}
+
+/// Parse either `unix:{seconds}` or an RFC3339/ISO-8601 UTC timestamp into epoch seconds.
+fn parse_timestamp_to_epoch_seconds(value: &str) -> Option<i64> {
+    if let Some(seconds) = value.strip_prefix("unix:") {
+        return seconds.parse::<i64>().ok();
+    }
+    parse_rfc3339_to_epoch_seconds(value)
+}
+
+/// Minimal RFC3339 → epoch-seconds parser (no external date dependency). Accepts a trailing
+/// `Z`, a `±HH:MM` offset, or none (treated as UTC), and ignores fractional seconds.
+fn parse_rfc3339_to_epoch_seconds(value: &str) -> Option<i64> {
+    let (date, rest) = value.split_once(['T', 't'])?;
+    let mut date_parts = date.split('-');
+    let year = date_parts.next()?.parse::<i64>().ok()?;
+    let month = date_parts.next()?.parse::<i64>().ok()?;
+    let day = date_parts.next()?.parse::<i64>().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+
+    // Split the time from any timezone designator.
+    let (time, offset_seconds) = if let Some(time) = rest
+        .strip_suffix('Z')
+        .or_else(|| rest.strip_suffix('z'))
+    {
+        (time, 0_i64)
+    } else if let Some(index) = rest.find(['+', '-']) {
+        let (time, tz) = rest.split_at(index);
+        let sign = if tz.starts_with('-') { -1 } else { 1 };
+        let mut tz_parts = tz[1..].split(':');
+        let tz_hours = tz_parts.next()?.parse::<i64>().ok()?;
+        let tz_minutes = tz_parts.next().unwrap_or("0").parse::<i64>().ok()?;
+        (time, sign * (tz_hours * 3600 + tz_minutes * 60))
+    } else {
+        (rest, 0_i64)
+    };
+
+    // Drop fractional seconds if present.
+    let time = time.split('.').next()?;
+    let mut time_parts = time.split(':');
+    let hour = time_parts.next()?.parse::<i64>().ok()?;
+    let minute = time_parts.next().unwrap_or("0").parse::<i64>().ok()?;
+    let second = time_parts.next().unwrap_or("0").parse::<i64>().ok()?;
+
+    let days = days_from_civil(year, month, day);
+    let seconds = days * 86_400 + hour * 3_600 + minute * 60 + second - offset_seconds;
+    Some(seconds)
+}
+
+/// Days since the Unix epoch (1970-01-01) for a proleptic-Gregorian civil date. Uses Howard
+/// Hinnant's `days_from_civil` algorithm, which is correct for all supported years.
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
 }
 
 fn truncate_text(text: &str, max_chars: usize) -> String {
@@ -1777,7 +1850,7 @@ mod tests {
         let request = XaiProviderPreflightProbeRequest {
             profile_id: "xai-default".into(),
             provider_id: "xai".into(),
-            model_id: "grok-4.3".into(),
+            model_id: "grok-4.5".into(),
             base_url: "https://api.x.ai/v1".into(),
             bearer_token: Some("test-key".into()),
             timeout_ms: 1_000,
@@ -1789,7 +1862,7 @@ mod tests {
                 attachment_input_modalities: Vec::new(),
             },
             credential_proof: Some("app_data_profile".into()),
-            context_window_tokens: Some(1_000_000),
+            context_window_tokens: Some(500_000),
             max_output_tokens: None,
             context_limit_source: Some("built_in_registry".into()),
             context_limit_confidence: Some("high".into()),
@@ -1802,7 +1875,7 @@ mod tests {
 
         let body = xai_preflight_body(&request);
 
-        assert_eq!(body["model"], "grok-4.3");
+        assert_eq!(body["model"], "grok-4.5");
         assert_eq!(body["stream"], true);
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tools"][0]["name"], PREFLIGHT_PROBE_TOOL_NAME);
@@ -1873,7 +1946,9 @@ mod tests {
             provider_id: "openrouter".into(),
             model_id: "openai/gpt-5.4".into(),
             source: ProviderPreflightSource::LiveProbe,
-            checked_at: "2026-05-04T00:00:00Z".into(),
+            // Use the crate's real "now" so the age recomputed from `checked_at` stays within
+            // the TTL — a fixed past timestamp would (correctly) be treated as stale.
+            checked_at: crate::now_timestamp(),
             age_seconds: Some(30),
             ttl_seconds: Some(120),
             required_features: ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
@@ -1892,6 +1967,39 @@ mod tests {
 
         assert_eq!(cached.source, ProviderPreflightSource::CachedProbe);
         assert!(provider_preflight_blockers(&cached).is_empty());
+    }
+
+    #[test]
+    fn rfc3339_and_unix_timestamps_parse_to_the_same_epoch_seconds() {
+        // 2026-05-04T00:00:00Z == 1777852800 (Unix). Both encodings must agree so the TTL
+        // check works regardless of which format the consumer wrote `checked_at` in.
+        assert_eq!(
+            parse_rfc3339_to_epoch_seconds("2026-05-04T00:00:00Z"),
+            Some(1_777_852_800)
+        );
+        assert_eq!(
+            parse_timestamp_to_epoch_seconds("unix:1777852800"),
+            Some(1_777_852_800)
+        );
+        assert_eq!(
+            parse_timestamp_to_epoch_seconds("2026-05-04T00:00:00Z"),
+            Some(1_777_852_800)
+        );
+        // Fractional seconds and a numeric offset are handled.
+        assert_eq!(
+            parse_rfc3339_to_epoch_seconds("2026-05-04T01:00:00.500+01:00"),
+            Some(1_777_852_800)
+        );
+        // The epoch itself and a pre-epoch date round-trip through the civil-date math.
+        assert_eq!(
+            parse_rfc3339_to_epoch_seconds("1970-01-01T00:00:00Z"),
+            Some(0)
+        );
+        assert_eq!(
+            parse_rfc3339_to_epoch_seconds("1969-12-31T23:59:59Z"),
+            Some(-1)
+        );
+        assert_eq!(parse_rfc3339_to_epoch_seconds("not-a-timestamp"), None);
     }
 
     #[test]

@@ -1152,23 +1152,9 @@ fn decode_action_level_tool_call(
         ),
         AUTONOMOUS_TOOL_BROWSER_OBSERVE => validate_action_value(
             &tool_call.input,
-            &[
-                "read_text",
-                "query",
-                "wait_for_selector",
-                "wait_for_load",
-                "current_url",
-                "history_state",
-                "screenshot",
-                "cookies_get",
-                "storage_read",
-                "console_logs",
-                "network_summary",
-                "accessibility_tree",
-                "state_snapshot",
-                "harness_extension_contract",
-                "tab_list",
-            ],
+            // Derived from the same list the descriptor schema advertises so the gate accepts
+            // every advertised observe action (the executor supports them all).
+            super::BROWSER_OBSERVE_ACTIONS,
             AUTONOMOUS_TOOL_BROWSER_OBSERVE,
         )
         .and_then(|()| {
@@ -1176,25 +1162,7 @@ fn decode_action_level_tool_call(
         }),
         AUTONOMOUS_TOOL_BROWSER_CONTROL => validate_action_value(
             &tool_call.input,
-            &[
-                "open",
-                "tab_open",
-                "navigate",
-                "back",
-                "forward",
-                "reload",
-                "stop",
-                "click",
-                "type",
-                "scroll",
-                "press_key",
-                "cookies_set",
-                "storage_write",
-                "storage_clear",
-                "state_restore",
-                "tab_close",
-                "tab_focus",
-            ],
+            super::BROWSER_CONTROL_ACTIONS,
             AUTONOMOUS_TOOL_BROWSER_CONTROL,
         )
         .and_then(|()| {
