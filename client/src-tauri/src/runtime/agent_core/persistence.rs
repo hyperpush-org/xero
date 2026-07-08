@@ -1,6 +1,9 @@
 use super::*;
 use crate::runtime::{
-    autonomous_tool_runtime::{AutonomousActionRequiredOutput, AutonomousSensitiveInputOutput},
+    autonomous_tool_runtime::{
+        AutonomousActionRequiredOutput, AutonomousAgentDefinitionOutput,
+        AutonomousSensitiveInputOutput, AutonomousWorkflowDefinitionOutput,
+    },
     AutonomousFsTransactionAction, AutonomousFsTransactionOutput, AutonomousFsTransactionRequest,
     AutonomousSubagentWriteScope,
 };
@@ -17,6 +20,9 @@ const AUTOMATED_MEMORY_PROMOTION_GATE: &str = "automatic_memory_promotion_gate";
 const AUTOMATED_MEMORY_PROMOTION_GATE_VERSION: u32 = 1;
 const REPO_FINGERPRINT_CACHE_TTL: Duration = Duration::from_secs(5);
 const CRAWL_REPORT_SCHEMA: &str = "xero.project_crawl.report.v1";
+// Streaming turns request a liveness touch per flushed provider chunk; anything
+// fresher than this interval adds DB writes without adding liveness signal.
+const AGENT_RUN_HEARTBEAT_MIN_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 struct RepoFingerprintCacheEntry {
@@ -26,6 +32,27 @@ struct RepoFingerprintCacheEntry {
 
 static REPO_FINGERPRINT_CACHE: OnceLock<Mutex<HashMap<PathBuf, RepoFingerprintCacheEntry>>> =
     OnceLock::new();
+
+static AGENT_RUN_HEARTBEAT_TOUCHES: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+
+fn agent_run_heartbeat_due(project_id: &str, run_id: &str, now: Instant) -> bool {
+    let touches = AGENT_RUN_HEARTBEAT_TOUCHES.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(mut guard) = touches.lock() else {
+        return true;
+    };
+    let key = format!("{project_id}\u{1f}{run_id}");
+    if guard
+        .get(&key)
+        .is_some_and(|last| now.duration_since(*last) < AGENT_RUN_HEARTBEAT_MIN_INTERVAL)
+    {
+        return false;
+    }
+    if guard.len() >= 64 {
+        guard.retain(|_, last| now.duration_since(*last) < AGENT_RUN_HEARTBEAT_MIN_INTERVAL);
+    }
+    guard.insert(key, now);
+    true
+}
 
 pub(crate) fn append_message(
     repo_root: &Path,
@@ -195,6 +222,9 @@ pub(crate) fn touch_agent_run_heartbeat(
     project_id: &str,
     run_id: &str,
 ) -> CommandResult<()> {
+    if !agent_run_heartbeat_due(project_id, run_id, Instant::now()) {
+        return Ok(());
+    }
     let timestamp = now_timestamp();
     project_store::touch_agent_run_heartbeat(repo_root, project_id, run_id, &timestamp)?;
     project_store::touch_runtime_run_heartbeat(repo_root, project_id, run_id, &timestamp)?;
@@ -3974,6 +4004,16 @@ pub(crate) fn record_command_output_event(
                 }),
             )?;
         }
+        AutonomousToolOutput::AgentDefinition(output) => {
+            if !output.applied && output.approval_required {
+                record_agent_definition_action_required(repo_root, project_id, run_id, output)?;
+            }
+        }
+        AutonomousToolOutput::WorkflowDefinition(output) => {
+            if !output.applied && output.approval_required {
+                record_workflow_definition_action_required(repo_root, project_id, run_id, output)?;
+            }
+        }
         _ => {}
     }
 
@@ -4145,6 +4185,117 @@ fn record_desktop_action_required(
         }),
     )?;
     Ok(())
+}
+
+fn record_agent_definition_action_required(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    output: &AutonomousAgentDefinitionOutput,
+) -> CommandResult<()> {
+    let action_id = agent_definition_action_approval_id(output);
+    record_action_request(
+        repo_root,
+        project_id,
+        run_id,
+        &action_id,
+        "agent_definition_approval",
+        "Agent definition change requires review",
+        &output.message,
+    )?;
+    append_event(
+        repo_root,
+        project_id,
+        run_id,
+        AgentRunEventKind::ActionRequired,
+        json!({
+            "actionId": sanitize_action_id(&action_id),
+            "actionType": "agent_definition_approval",
+            "title": "Agent definition change requires review",
+            "detail": output.message,
+            "toolName": "agent_definition",
+            "operation": output.action,
+            "definitionId": output
+                .definition
+                .as_ref()
+                .map(|definition| definition.definition_id.clone()),
+            "approvalReview": output.approval_review.clone(),
+        }),
+    )?;
+    Ok(())
+}
+
+fn record_workflow_definition_action_required(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    output: &AutonomousWorkflowDefinitionOutput,
+) -> CommandResult<()> {
+    let action_id = workflow_definition_action_approval_id(output);
+    record_action_request(
+        repo_root,
+        project_id,
+        run_id,
+        &action_id,
+        "workflow_definition_approval",
+        "Workflow definition change requires review",
+        &output.message,
+    )?;
+    append_event(
+        repo_root,
+        project_id,
+        run_id,
+        AgentRunEventKind::ActionRequired,
+        json!({
+            "actionId": sanitize_action_id(&action_id),
+            "actionType": "workflow_definition_approval",
+            "title": "Workflow definition change requires review",
+            "detail": output.message,
+            "toolName": "workflow_definition",
+            "operation": output.action,
+            "definitionId": output
+                .definition
+                .as_ref()
+                .map(|definition| definition.id.clone()),
+            "approvalReview": output.approval_review.clone(),
+        }),
+    )?;
+    Ok(())
+}
+
+pub(crate) fn agent_definition_action_approval_id(
+    output: &AutonomousAgentDefinitionOutput,
+) -> String {
+    match output.definition.as_ref() {
+        Some(definition) => format!(
+            "agent-definition-{}-{}",
+            json_enum_label(&output.action),
+            definition.definition_id
+        ),
+        None => format!("agent-definition-{}", json_enum_label(&output.action)),
+    }
+}
+
+pub(crate) fn workflow_definition_action_approval_id(
+    output: &AutonomousWorkflowDefinitionOutput,
+) -> String {
+    match output.definition.as_ref() {
+        Some(definition) => format!(
+            "workflow-definition-{}-{}",
+            json_enum_label(&output.action),
+            definition.id
+        ),
+        None => format!("workflow-definition-{}", json_enum_label(&output.action)),
+    }
+}
+
+/// Wire label of a snake_case serde unit enum, used to build deterministic
+/// approval action ids that both the persistence and replay sides recompute.
+fn json_enum_label<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| "action".into())
 }
 
 pub(crate) fn macos_action_approval_id(output: &AutonomousMacosAutomationOutput) -> String {
@@ -4867,6 +5018,33 @@ mod tests {
     use tempfile::tempdir;
 
     static PROJECT_DB_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn agent_run_heartbeat_due_throttles_repeat_touches_within_min_interval() {
+        let run_id = "run-heartbeat-throttle-test";
+        let start = Instant::now();
+
+        assert!(agent_run_heartbeat_due("project-a", run_id, start));
+        assert!(!agent_run_heartbeat_due("project-a", run_id, start));
+        assert!(!agent_run_heartbeat_due(
+            "project-a",
+            run_id,
+            start + AGENT_RUN_HEARTBEAT_MIN_INTERVAL - Duration::from_millis(1),
+        ));
+        assert!(agent_run_heartbeat_due(
+            "project-a",
+            run_id,
+            start + AGENT_RUN_HEARTBEAT_MIN_INTERVAL,
+        ));
+
+        // A different run is tracked independently and is never suppressed by
+        // another run's fresh heartbeat.
+        assert!(agent_run_heartbeat_due(
+            "project-a",
+            "run-heartbeat-other",
+            start
+        ));
+    }
 
     fn handoff_contract_snapshot(
         runtime_agent_id: RuntimeAgentIdDto,

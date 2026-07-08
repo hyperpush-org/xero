@@ -7500,7 +7500,10 @@ fn solana_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ("rpc_url", string_schema("Optional RPC URL.")),
                     ("cached_only", boolean_schema("Use cached logs only.")),
                     json_object_property("filter", "Live log subscription filter."),
-                    json_object_property("token", "Log subscription token for unsubscribe."),
+                    (
+                        "token",
+                        string_schema("Log subscription token for unsubscribe."),
+                    ),
                 ],
             ),
         ),
@@ -7517,7 +7520,13 @@ fn solana_tool_descriptors() -> Vec<AgentToolDescriptor> {
                         string_schema("Cluster for transaction pricing or send."),
                     ),
                     array_string_property("program_ids", "Program ids for priority fee sampling."),
-                    ("target", string_schema("Priority fee percentile target.")),
+                    (
+                        "target",
+                        enum_schema(
+                            "Priority fee percentile target.",
+                            &["low", "median", "high", "very_high", "max"],
+                        ),
+                    ),
                     ("rpc_url", string_schema("Optional RPC URL.")),
                     (
                         "program_id",
@@ -7602,18 +7611,18 @@ fn solana_tool_descriptors() -> Vec<AgentToolDescriptor> {
             AUTONOMOUS_TOOL_SOLANA_CODAMA,
             "Generate Codama client artifacts from an IDL.",
             object_schema(
-                &["idl_path", "targets", "output_dir"],
+                &["idlPath", "targets", "outputDir"],
                 &[
-                    ("idl_path", string_schema("IDL path to generate from.")),
+                    ("idlPath", string_schema("IDL path to generate from.")),
                     (
                         "targets",
                         json!({
                             "type": "array",
                             "description": "Codama generation targets.",
-                            "items": { "type": "object", "additionalProperties": true }
+                            "items": { "type": "string", "enum": ["ts", "rust", "umi"] }
                         }),
                     ),
-                    ("output_dir", string_schema("Output directory.")),
+                    ("outputDir", string_schema("Output directory.")),
                 ],
             ),
         ),
@@ -7628,8 +7637,25 @@ fn solana_tool_descriptors() -> Vec<AgentToolDescriptor> {
                         "seeds",
                         json!({
                             "type": "array",
-                            "description": "Seed parts.",
-                            "items": { "type": "object", "additionalProperties": true }
+                            "description": "Seed parts as {\"kind\", \"value\"} tagged unions.",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": ["kind", "value"],
+                                "properties": {
+                                    "kind": {
+                                        "type": "string",
+                                        "description": "Seed encoding kind.",
+                                        "enum": [
+                                            "utf8", "pubkey", "base58", "hex",
+                                            "u64_le", "u32_le", "u8"
+                                        ]
+                                    },
+                                    "value": {
+                                        "description": "Seed value: a string for utf8, pubkey, base58, and hex kinds; an unsigned integer for u64_le, u32_le, and u8 kinds."
+                                    }
+                                }
+                            }
                         }),
                     ),
                     ("bump", integer_schema("Optional bump seed.")),
@@ -7678,25 +7704,25 @@ fn solana_tool_descriptors() -> Vec<AgentToolDescriptor> {
             AUTONOMOUS_TOOL_SOLANA_DEPLOY,
             "Deploy a Solana program through Xero safety gates.",
             object_schema(
-                &["program_id", "cluster", "so_path", "authority"],
+                &["programId", "cluster", "soPath", "authority"],
                 &[
-                    ("program_id", string_schema("Program id to deploy.")),
+                    ("programId", string_schema("Program id to deploy.")),
                     ("cluster", string_schema("Target cluster.")),
-                    ("so_path", string_schema("Program shared-object path.")),
+                    ("soPath", string_schema("Program shared-object path.")),
                     json_object_property("authority", "Deploy authority."),
-                    ("idl_path", string_schema("Optional IDL path.")),
+                    ("idlPath", string_schema("Optional IDL path.")),
                     (
-                        "is_first_deploy",
+                        "isFirstDeploy",
                         boolean_schema("Whether this is a first deploy."),
                     ),
                     json_object_property("post", "Optional post-deploy checks."),
-                    ("rpc_url", string_schema("Optional RPC URL.")),
+                    ("rpcUrl", string_schema("Optional RPC URL.")),
                     (
-                        "project_root",
+                        "projectRoot",
                         string_schema("Project root for pre-deploy scans."),
                     ),
                     (
-                        "block_on_any_secret",
+                        "blockOnAnySecret",
                         boolean_schema("Block on medium or high secret findings."),
                     ),
                 ],
@@ -7706,33 +7732,28 @@ fn solana_tool_descriptors() -> Vec<AgentToolDescriptor> {
             AUTONOMOUS_TOOL_SOLANA_UPGRADE_CHECK,
             "Check Solana program upgrade safety.",
             object_schema(
+                &["programId", "cluster", "localSoPath", "expectedAuthority"],
                 &[
-                    "program_id",
-                    "cluster",
-                    "local_so_path",
-                    "expected_authority",
-                ],
-                &[
-                    ("program_id", string_schema("Program id to check.")),
+                    ("programId", string_schema("Program id to check.")),
                     ("cluster", string_schema("Target cluster.")),
                     (
-                        "local_so_path",
+                        "localSoPath",
                         string_schema("Local program artifact path."),
                     ),
                     (
-                        "expected_authority",
+                        "expectedAuthority",
                         string_schema("Expected upgrade authority."),
                     ),
-                    ("local_idl_path", string_schema("Optional local IDL path.")),
+                    ("localIdlPath", string_schema("Optional local IDL path.")),
                     (
-                        "max_program_size_bytes",
+                        "maxProgramSizeBytes",
                         integer_schema("Maximum allowed program size."),
                     ),
                     (
-                        "local_so_size_bytes",
+                        "localSoSizeBytes",
                         integer_schema("Known local artifact size."),
                     ),
-                    ("rpc_url", string_schema("Optional RPC URL.")),
+                    ("rpcUrl", string_schema("Optional RPC URL.")),
                 ],
             ),
         ),
@@ -7741,24 +7762,24 @@ fn solana_tool_descriptors() -> Vec<AgentToolDescriptor> {
             "Create or inspect Squads governance proposals.",
             object_schema(
                 &[
-                    "program_id",
+                    "programId",
                     "cluster",
-                    "multisig_pda",
+                    "multisigPda",
                     "buffer",
                     "spill",
                     "creator",
                 ],
                 &[
-                    ("program_id", string_schema("Program id.")),
+                    ("programId", string_schema("Program id.")),
                     ("cluster", string_schema("Target cluster.")),
-                    ("multisig_pda", string_schema("Squads multisig PDA.")),
+                    ("multisigPda", string_schema("Squads multisig PDA.")),
                     (
                         "buffer",
                         string_schema("Upgradeable loader buffer address."),
                     ),
                     ("spill", string_schema("Spill address.")),
                     ("creator", string_schema("Proposal creator address.")),
-                    ("vault_index", integer_schema("Optional vault index.")),
+                    ("vaultIndex", integer_schema("Optional vault index.")),
                     ("memo", string_schema("Optional proposal memo.")),
                 ],
             ),
@@ -7767,16 +7788,16 @@ fn solana_tool_descriptors() -> Vec<AgentToolDescriptor> {
             AUTONOMOUS_TOOL_SOLANA_VERIFIED_BUILD,
             "Run or inspect verified Solana builds.",
             object_schema(
-                &["program_id", "cluster", "manifest_path", "github_url"],
+                &["programId", "cluster", "manifestPath", "githubUrl"],
                 &[
-                    ("program_id", string_schema("Program id.")),
+                    ("programId", string_schema("Program id.")),
                     ("cluster", string_schema("Target cluster.")),
-                    ("manifest_path", string_schema("Manifest path.")),
-                    ("github_url", string_schema("GitHub repository URL.")),
-                    ("commit_hash", string_schema("Optional commit hash.")),
-                    ("library_name", string_schema("Optional library name.")),
+                    ("manifestPath", string_schema("Manifest path.")),
+                    ("githubUrl", string_schema("GitHub repository URL.")),
+                    ("commitHash", string_schema("Optional commit hash.")),
+                    ("libraryName", string_schema("Optional library name.")),
                     (
-                        "skip_remote_submit",
+                        "skipRemoteSubmit",
                         boolean_schema("Skip remote verification submission."),
                     ),
                 ],
@@ -7808,7 +7829,18 @@ fn solana_tool_descriptors() -> Vec<AgentToolDescriptor> {
             solana_action_schema(
                 &["list", "run"],
                 &[
-                    json_object_property("exploit", "Exploit key for replay."),
+                    (
+                        "exploit",
+                        enum_schema(
+                            "Exploit key for replay.",
+                            &[
+                                "wormhole_sig_skip",
+                                "cashio_fake_collateral",
+                                "mango_oracle_manip",
+                                "nirvana_flash_loan",
+                            ],
+                        ),
+                    ),
                     ("target_program", string_schema("Target program id.")),
                     ("cluster", string_schema("Target cluster.")),
                     ("rpc_url", string_schema("Optional RPC URL.")),
@@ -7854,10 +7886,46 @@ fn solana_tool_descriptors() -> Vec<AgentToolDescriptor> {
             "Check Solana cluster drift.",
             solana_action_schema(
                 &["tracked", "check"],
-                &[json_object_property(
-                    "request",
-                    "Cluster drift check request.",
-                )],
+                &[
+                    (
+                        "additional",
+                        json!({
+                            "type": "array",
+                            "description": "Extra tracked programs to check beyond the built-in registry.",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": ["label", "programId", "description"],
+                                "properties": {
+                                    "label": { "type": "string", "description": "Display label." },
+                                    "programId": { "type": "string", "description": "Program id." },
+                                    "description": { "type": "string", "description": "Why this program is tracked." },
+                                    "referenceUrl": { "type": "string", "description": "Optional doc URL." }
+                                }
+                            }
+                        }),
+                    ),
+                    (
+                        "clusters",
+                        json!({
+                            "type": "array",
+                            "description": "Restrict the drift check to these clusters.",
+                            "items": {
+                                "type": "string",
+                                "enum": ["localnet", "mainnet_fork", "devnet", "mainnet"]
+                            }
+                        }),
+                    ),
+                    json_object_property("rpcUrls", "Per-cluster RPC URL overrides."),
+                    (
+                        "skipBuiltins",
+                        boolean_schema("Skip the built-in tracked registry."),
+                    ),
+                    (
+                        "timeoutMs",
+                        integer_schema("Timeout per RPC call in milliseconds."),
+                    ),
+                ],
             ),
         ),
         (
@@ -8514,6 +8582,163 @@ mod tests {
                     .any(|tool_name| *tool_name == descriptor.name)
             })
             .collect()
+    }
+
+    #[test]
+    fn solana_descriptor_conformant_inputs_deserialize_into_runtime_requests() {
+        use crate::runtime::AutonomousToolRequest;
+
+        let samples: &[(&str, JsonValue)] = &[
+            (
+                AUTONOMOUS_TOOL_SOLANA_LOGS,
+                json!({ "action": "unsubscribe", "token": "log-sub-1" }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_TX,
+                json!({
+                    "action": "priority_fee",
+                    "cluster": "localnet",
+                    "program_ids": ["11111111111111111111111111111111"],
+                    "target": "median",
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_CODAMA,
+                json!({
+                    "idlPath": "target/idl/counter.json",
+                    "targets": ["ts", "rust"],
+                    "outputDir": "clients/generated",
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_PDA,
+                json!({
+                    "action": "derive",
+                    "program_id": "11111111111111111111111111111111",
+                    "seeds": [
+                        { "kind": "utf8", "value": "counter" },
+                        { "kind": "u64_le", "value": 7 },
+                    ],
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_DEPLOY,
+                json!({
+                    "programId": "11111111111111111111111111111111",
+                    "cluster": "localnet",
+                    "soPath": "target/deploy/counter.so",
+                    "authority": {
+                        "kind": "direct_keypair",
+                        "keypair_path": "keys/deploy.json",
+                    },
+                    "isFirstDeploy": true,
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_UPGRADE_CHECK,
+                json!({
+                    "programId": "11111111111111111111111111111111",
+                    "cluster": "devnet",
+                    "localSoPath": "target/deploy/counter.so",
+                    "expectedAuthority": "11111111111111111111111111111111",
+                    "maxProgramSizeBytes": 1_048_576,
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_SQUADS,
+                json!({
+                    "programId": "11111111111111111111111111111111",
+                    "cluster": "mainnet",
+                    "multisigPda": "11111111111111111111111111111111",
+                    "buffer": "11111111111111111111111111111111",
+                    "spill": "11111111111111111111111111111111",
+                    "creator": "11111111111111111111111111111111",
+                    "vaultIndex": 0,
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_VERIFIED_BUILD,
+                json!({
+                    "programId": "11111111111111111111111111111111",
+                    "cluster": "mainnet",
+                    "manifestPath": "programs/counter/Cargo.toml",
+                    "githubUrl": "https://github.com/example/counter",
+                    "skipRemoteSubmit": true,
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_REPLAY,
+                json!({
+                    "action": "run",
+                    "exploit": "wormhole_sig_skip",
+                    "target_program": "11111111111111111111111111111111",
+                    "cluster": "localnet",
+                    "dry_run": true,
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SOLANA_CLUSTER_DRIFT,
+                json!({
+                    "action": "check",
+                    "clusters": ["localnet", "devnet"],
+                    "rpcUrls": { "localnet": "http://127.0.0.1:8899" },
+                    "skipBuiltins": true,
+                    "timeoutMs": 4_000,
+                    "additional": [{
+                        "label": "counter",
+                        "programId": "11111111111111111111111111111111",
+                        "description": "Example tracked program.",
+                    }],
+                }),
+            ),
+        ];
+
+        let descriptors = solana_tool_descriptors();
+        for (tool_name, input) in samples {
+            let descriptor = descriptors
+                .iter()
+                .find(|descriptor| descriptor.name == *tool_name)
+                .unwrap_or_else(|| panic!("missing Solana descriptor for {tool_name}"));
+
+            // The sample must conform to the advertised schema: every
+            // required field present, no field outside the property map
+            // (descriptors set additionalProperties: false).
+            let schema = &descriptor.input_schema;
+            let properties = schema["properties"]
+                .as_object()
+                .unwrap_or_else(|| panic!("{tool_name} schema has no properties"));
+            let input_map = input
+                .as_object()
+                .unwrap_or_else(|| panic!("{tool_name} sample input must be an object"));
+            for required in schema["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{tool_name} schema has no required list"))
+            {
+                let required = required.as_str().expect("required entry is a string");
+                assert!(
+                    input_map.contains_key(required),
+                    "{tool_name} sample is missing required field `{required}`"
+                );
+            }
+            for key in input_map.keys() {
+                assert!(
+                    properties.contains_key(key),
+                    "{tool_name} sample field `{key}` is not advertised by the descriptor"
+                );
+            }
+
+            // The same schema-conformant input must decode into the
+            // runtime request handler shape.
+            let request = serde_json::from_value::<AutonomousToolRequest>(json!({
+                "tool": tool_name,
+                "input": input,
+            }));
+            assert!(
+                request.is_ok(),
+                "{tool_name} descriptor-conformant input failed to deserialize: {:?}",
+                request.err()
+            );
+        }
     }
 
     #[test]

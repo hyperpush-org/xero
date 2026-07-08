@@ -1300,6 +1300,7 @@ where
                         required_features: ProviderPreflightRequiredFeatures::owned_agent_text_turn(
                         ),
                         base_url: config.base_url.clone(),
+                        api_version: None,
                         api_key: config.api_key.clone(),
                         timeout_ms: config.timeout_ms,
                         credential_proof: config

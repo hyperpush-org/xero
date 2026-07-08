@@ -1927,9 +1927,8 @@ fn compact_manifest_messages(manifest: &JsonValue) -> JsonValue {
                     "tokenEstimate": message.get("tokenEstimate").cloned().unwrap_or(JsonValue::Null),
                     "bodyRedacted": message.get("bodyRedacted").cloned().unwrap_or(JsonValue::Null),
                     "bodyChars": message
-                        .get("body")
-                        .and_then(JsonValue::as_str)
-                        .map(|body| body.chars().count())
+                        .get("bodyChars")
+                        .and_then(JsonValue::as_u64)
                         .unwrap_or_default(),
                 })
             })

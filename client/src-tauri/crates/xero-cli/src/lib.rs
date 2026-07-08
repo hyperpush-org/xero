@@ -7471,6 +7471,7 @@ fn cli_provider_preflight_for_execution(
                     provider_id: config.provider_id.clone(),
                     model_id: config.model_id.clone(),
                     base_url: config.base_url.clone(),
+                    api_version: None,
                     api_key: config.api_key.clone(),
                     timeout_ms: config.timeout_ms,
                     required_features,

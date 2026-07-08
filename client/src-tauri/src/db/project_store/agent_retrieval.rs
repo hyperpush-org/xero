@@ -1596,17 +1596,17 @@ impl RetrievalDegradationSummary {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct RetrievalTrustSignal {
-    score: f64,
-    status: &'static str,
-    contradiction_state: &'static str,
-    ranking_adjustment: f64,
-    provenance_score: f64,
-    confidence_score: f64,
-    contradiction_penalty: f64,
+pub(crate) struct RetrievalTrustSignal {
+    pub(crate) score: f64,
+    pub(crate) status: &'static str,
+    pub(crate) contradiction_state: &'static str,
+    pub(crate) ranking_adjustment: f64,
+    pub(crate) provenance_score: f64,
+    pub(crate) confidence_score: f64,
+    pub(crate) contradiction_penalty: f64,
 }
 
-fn retrieval_trust_signal(
+pub(crate) fn retrieval_trust_signal(
     freshness_state: &str,
     confidence: Option<f64>,
     has_provenance: bool,
@@ -2392,7 +2392,7 @@ fn embedding_is_current(
         && version == Some(embedding_service.version())
 }
 
-fn freshness_score_adjustment(freshness_state: &str) -> f64 {
+pub(crate) fn freshness_score_adjustment(freshness_state: &str) -> f64 {
     match freshness_state {
         "current" => 0.20,
         "source_unknown" => 0.0,

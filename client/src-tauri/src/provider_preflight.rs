@@ -570,7 +570,7 @@ fn live_openai_compatible_preflight_for_profile(
 ) -> CommandResult<Option<ProviderPreflightSnapshot>> {
     let runtime_settings =
         runtime_settings_snapshot_for_provider_profile(provider_profiles, profile)?;
-    let (base_url, api_key) = match profile.provider_id.as_str() {
+    let (base_url, api_version, api_key) = match profile.provider_id.as_str() {
         OPENAI_API_PROVIDER_ID
         | DEEPSEEK_PROVIDER_ID
         | GITHUB_MODELS_PROVIDER_ID
@@ -591,11 +591,13 @@ fn live_openai_compatible_preflight_for_profile(
             })?;
             (
                 endpoint.effective_base_url,
+                endpoint.api_version,
                 runtime_settings.provider_api_key.clone(),
             )
         }
         OPENROUTER_PROVIDER_ID => (
             OPENROUTER_BASE_URL.into(),
+            None,
             runtime_settings.provider_api_key.clone(),
         ),
         _ => return Ok(None),
@@ -618,6 +620,7 @@ fn live_openai_compatible_preflight_for_profile(
             provider_id: profile.provider_id.clone(),
             model_id: selected_model_id.into(),
             base_url,
+            api_version,
             api_key,
             timeout_ms: PROVIDER_PREFLIGHT_LIVE_PROBE_TIMEOUT_MS,
             required_features,

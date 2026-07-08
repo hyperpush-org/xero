@@ -855,8 +855,40 @@ fn openai_chat_request_body(
                 json!({ "effort": openrouter_reasoning_effort_value(effort) }),
             );
         }
+    } else if matches!(
+        provider_id,
+        OPENAI_API_PROVIDER_ID
+            | AZURE_OPENAI_PROVIDER_ID
+            | GITHUB_MODELS_PROVIDER_ID
+            | GEMINI_AI_STUDIO_PROVIDER_ID
+    ) {
+        if let Some(effort) = request.controls.active.thinking_effort.as_ref() {
+            if let Some(value) = openai_chat_reasoning_effort_value(effort) {
+                body.insert("reasoning_effort".into(), json!(value));
+            }
+        }
     }
     Ok(JsonValue::Object(body))
+}
+
+/// Chat-completions `reasoning_effort` for OpenAI-compatible hosts. Clamped to
+/// the `low`/`medium`/`high` values every reasoning-capable model on these
+/// hosts accepts; `minimal`/`xhigh` and `none` exist only on specific model
+/// generations and would hard-fail the request elsewhere. `None` (thinking
+/// off) omits the parameter so non-reasoning models keep working.
+fn openai_chat_reasoning_effort_value(
+    effort: &ProviderModelThinkingEffortDto,
+) -> Option<&'static str> {
+    match effort {
+        ProviderModelThinkingEffortDto::None => None,
+        ProviderModelThinkingEffortDto::Minimal | ProviderModelThinkingEffortDto::Low => {
+            Some("low")
+        }
+        ProviderModelThinkingEffortDto::Medium => Some("medium"),
+        ProviderModelThinkingEffortDto::High | ProviderModelThinkingEffortDto::XHigh => {
+            Some("high")
+        }
+    }
 }
 
 fn provider_supports_openai_stream_options(provider_id: &str) -> bool {
@@ -935,7 +967,10 @@ fn sanitize_provider_wire_request_for_estimate(
                     .map(|(key, value)| {
                         if is_base64_source && key == "data" {
                             if let JsonValue::String(payload) = &value {
-                                return (key, sanitize_base64_payload_for_estimate(payload, sanitization));
+                                return (
+                                    key,
+                                    sanitize_base64_payload_for_estimate(payload, sanitization),
+                                );
                             }
                         }
                         (
@@ -960,8 +995,7 @@ fn sanitize_provider_wire_string_for_estimate(
     sanitization: &mut ProviderWireEstimateSanitization,
 ) -> Option<String> {
     let (media_type, encoded_payload) = image_data_url_payload(value)?;
-    let (encoded_bytes, estimated_tokens) =
-        account_base64_estimate(encoded_payload, sanitization);
+    let (encoded_bytes, estimated_tokens) = account_base64_estimate(encoded_payload, sanitization);
     Some(format!(
         "data:{media_type};base64,<omitted {encoded_bytes} encoded bytes; estimated_tokens={estimated_tokens}>"
     ))
@@ -1821,29 +1855,87 @@ fn anthropic_request_body(
     if let Some(model_id) = model_id {
         body.insert("model".into(), json!(model_id));
     }
-    body.insert("system".into(), json!(request.system_prompt));
-    body.insert("max_tokens".into(), json!(DEFAULT_MAX_OUTPUT_TOKENS));
     // Bedrock (InvokeModel) and Vertex (rawPredict/streamRawPredict) select streaming via the
     // API operation, not a body field, and their strict Anthropic-on-* schema rejects an
     // extraneous `stream` key with a ValidationException. Only the native Anthropic Messages
     // API takes `stream` in the body.
     let is_native_anthropic =
         !anthropic_version.starts_with("bedrock-") && !anthropic_version.starts_with("vertex-");
+    // Prompt-cache breakpoints only on the native Messages API; the Bedrock/Vertex
+    // Anthropic schemas are stricter and cache support varies by region/model there.
+    if is_native_anthropic {
+        body.insert(
+            "system".into(),
+            json!([{
+                "type": "text",
+                "text": request.system_prompt,
+                "cache_control": { "type": "ephemeral" },
+            }]),
+        );
+    } else {
+        body.insert("system".into(), json!(request.system_prompt));
+    }
+    let thinking_budget = request
+        .controls
+        .active
+        .thinking_effort
+        .as_ref()
+        .and_then(anthropic_thinking_budget_tokens);
+    // Anthropic requires max_tokens to exceed the thinking budget; the budget is
+    // spent on thinking, so reserve the normal output allowance on top of it.
+    let max_tokens = thinking_budget
+        .map(|budget| budget.saturating_add(u64::from(DEFAULT_MAX_OUTPUT_TOKENS)))
+        .unwrap_or(u64::from(DEFAULT_MAX_OUTPUT_TOKENS));
+    body.insert("max_tokens".into(), json!(max_tokens));
+    if let Some(budget) = thinking_budget {
+        body.insert(
+            "thinking".into(),
+            json!({ "type": "enabled", "budget_tokens": budget }),
+        );
+    }
     if is_native_anthropic {
         body.insert("stream".into(), json!(stream));
     }
-    body.insert(
-        "messages".into(),
-        JsonValue::Array(anthropic_messages(request)?),
-    );
-    body.insert(
-        "tools".into(),
-        JsonValue::Array(request.tools.iter().map(anthropic_tool).collect()),
-    );
+    let mut messages = anthropic_messages(request, thinking_budget.is_some())?;
+    if is_native_anthropic {
+        if let Some(last_block) = messages
+            .last_mut()
+            .and_then(|message| message.get_mut("content"))
+            .and_then(JsonValue::as_array_mut)
+            .and_then(|blocks| blocks.last_mut())
+        {
+            attach_anthropic_cache_control(last_block);
+        }
+    }
+    body.insert("messages".into(), JsonValue::Array(messages));
+    let mut tools: Vec<JsonValue> = request.tools.iter().map(anthropic_tool).collect();
+    if is_native_anthropic {
+        if let Some(last_tool) = tools.last_mut() {
+            attach_anthropic_cache_control(last_tool);
+        }
+    }
+    body.insert("tools".into(), JsonValue::Array(tools));
     if !is_native_anthropic {
         body.insert("anthropic_version".into(), json!(anthropic_version));
     }
     Ok(JsonValue::Object(body))
+}
+
+fn attach_anthropic_cache_control(target: &mut JsonValue) {
+    if let JsonValue::Object(object) = target {
+        object.insert("cache_control".into(), json!({ "type": "ephemeral" }));
+    }
+}
+
+fn anthropic_thinking_budget_tokens(effort: &ProviderModelThinkingEffortDto) -> Option<u64> {
+    match effort {
+        ProviderModelThinkingEffortDto::None => None,
+        ProviderModelThinkingEffortDto::Minimal => Some(1_024),
+        ProviderModelThinkingEffortDto::Low => Some(2_048),
+        ProviderModelThinkingEffortDto::Medium => Some(4_096),
+        ProviderModelThinkingEffortDto::High => Some(8_192),
+        ProviderModelThinkingEffortDto::XHigh => Some(16_384),
+    }
 }
 
 fn anthropic_count_tokens_body(
@@ -1971,7 +2063,10 @@ fn estimate_anthropic_context_tokens(
     Ok(estimate)
 }
 
-fn anthropic_messages(request: &ProviderTurnRequest) -> CommandResult<Vec<JsonValue>> {
+fn anthropic_messages(
+    request: &ProviderTurnRequest,
+    include_thinking: bool,
+) -> CommandResult<Vec<JsonValue>> {
     let mut messages = Vec::new();
     for message in &request.messages {
         match message {
@@ -1986,10 +2081,25 @@ fn anthropic_messages(request: &ProviderTurnRequest) -> CommandResult<Vec<JsonVa
             }
             ProviderMessage::Assistant {
                 content,
+                reasoning_details,
                 tool_calls,
                 ..
             } => {
                 let mut blocks = Vec::new();
+                // With extended thinking enabled, Anthropic requires assistant
+                // tool_use turns to replay their signed thinking blocks ahead
+                // of the other content blocks; without thinking enabled the
+                // request must not carry thinking blocks at all.
+                if include_thinking {
+                    if let Some(JsonValue::Array(details)) = reasoning_details {
+                        blocks.extend(
+                            details
+                                .iter()
+                                .filter(|block| anthropic_replayable_thinking_block(block))
+                                .cloned(),
+                        );
+                    }
+                }
                 if !content.trim().is_empty() {
                     blocks.push(json!({ "type": "text", "text": content }));
                 }
@@ -2022,6 +2132,30 @@ fn anthropic_messages(request: &ProviderTurnRequest) -> CommandResult<Vec<JsonVa
         }
     }
     Ok(messages)
+}
+
+/// Only replay blocks that are structurally valid Anthropic thinking blocks.
+/// Assistant messages can carry reasoning_details from other providers (e.g.
+/// OpenRouter) after a mid-run model switch; replaying those as thinking
+/// blocks would fail Anthropic's request validation.
+fn anthropic_replayable_thinking_block(block: &JsonValue) -> bool {
+    match block.get("type").and_then(JsonValue::as_str) {
+        Some("thinking") => {
+            block
+                .get("thinking")
+                .and_then(JsonValue::as_str)
+                .is_some_and(|thinking| !thinking.is_empty())
+                && block
+                    .get("signature")
+                    .and_then(JsonValue::as_str)
+                    .is_some_and(|signature| !signature.is_empty())
+        }
+        Some("redacted_thinking") => block
+            .get("data")
+            .and_then(JsonValue::as_str)
+            .is_some_and(|data| !data.is_empty()),
+        _ => false,
+    }
 }
 
 fn anthropic_user_content_blocks(
@@ -2224,7 +2358,10 @@ fn parse_openai_chat_sse(
             )
         })?;
         if let Some(error) = chunk.error.as_ref() {
-            return Err(anthropic_stream_error(provider_id, &json!({ "error": error })));
+            return Err(anthropic_stream_error(
+                provider_id,
+                &json!({ "error": error }),
+            ));
         }
         if let Some(next_usage) = chunk.usage {
             let mapped = openai_provider_usage(
@@ -2650,6 +2787,7 @@ fn parse_anthropic_sse(
 ) -> CommandResult<ProviderTurnOutcome> {
     let mut message = String::new();
     let mut partial_calls = BTreeMap::<usize, PartialToolCall>::new();
+    let mut thinking_blocks = BTreeMap::<usize, JsonValue>::new();
     let mut usage = ProviderUsage::default();
     let mut stop_reason: Option<String> = None;
 
@@ -2706,21 +2844,33 @@ fn parse_anthropic_sse(
                     .get("content_block")
                     .cloned()
                     .unwrap_or(JsonValue::Null);
-                if block.get("type").and_then(JsonValue::as_str) == Some("tool_use") {
-                    partial_calls.insert(
-                        index,
-                        PartialToolCall {
-                            id: block
-                                .get("id")
-                                .and_then(JsonValue::as_str)
-                                .map(ToOwned::to_owned),
-                            name: block
-                                .get("name")
-                                .and_then(JsonValue::as_str)
-                                .map(ToOwned::to_owned),
-                            arguments: String::new(),
-                        },
-                    );
+                match block.get("type").and_then(JsonValue::as_str) {
+                    Some("tool_use") => {
+                        partial_calls.insert(
+                            index,
+                            PartialToolCall {
+                                id: block
+                                    .get("id")
+                                    .and_then(JsonValue::as_str)
+                                    .map(ToOwned::to_owned),
+                                name: block
+                                    .get("name")
+                                    .and_then(JsonValue::as_str)
+                                    .map(ToOwned::to_owned),
+                                arguments: String::new(),
+                            },
+                        );
+                    }
+                    Some("thinking") => {
+                        thinking_blocks.insert(
+                            index,
+                            json!({ "type": "thinking", "thinking": "", "signature": "" }),
+                        );
+                    }
+                    Some("redacted_thinking") => {
+                        thinking_blocks.insert(index, block.clone());
+                    }
+                    _ => {}
                 }
             }
             "content_block_delta" => {
@@ -2758,6 +2908,44 @@ fn parse_anthropic_sse(
                             tool_name: partial.name.clone(),
                             arguments_delta: partial_json,
                         })?;
+                    }
+                    "thinking_delta" => {
+                        let index = value
+                            .get("index")
+                            .and_then(JsonValue::as_u64)
+                            .unwrap_or_default() as usize;
+                        let thinking = delta
+                            .get("thinking")
+                            .and_then(JsonValue::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        if !thinking.is_empty() {
+                            append_anthropic_thinking_delta(
+                                &mut thinking_blocks,
+                                index,
+                                "thinking",
+                                &thinking,
+                            );
+                            emit(ProviderStreamEvent::ReasoningSummary(thinking))?;
+                        }
+                    }
+                    "signature_delta" => {
+                        let index = value
+                            .get("index")
+                            .and_then(JsonValue::as_u64)
+                            .unwrap_or_default() as usize;
+                        let signature = delta
+                            .get("signature")
+                            .and_then(JsonValue::as_str)
+                            .unwrap_or_default();
+                        if !signature.is_empty() {
+                            append_anthropic_thinking_delta(
+                                &mut thinking_blocks,
+                                index,
+                                "signature",
+                                signature,
+                            );
+                        }
                     }
                     _ => {}
                 }
@@ -2810,7 +2998,53 @@ fn parse_anthropic_sse(
     if let Some(usage) = usage.as_ref() {
         emit(ProviderStreamEvent::Usage(usage.clone()))?;
     }
-    finish_provider_turn(provider_id, message, None, None, partial_calls, usage)
+    let (reasoning_content, reasoning_details) =
+        collect_anthropic_thinking_outcome(thinking_blocks);
+    finish_provider_turn(
+        provider_id,
+        message,
+        reasoning_content,
+        reasoning_details,
+        partial_calls,
+        usage,
+    )
+}
+
+fn append_anthropic_thinking_delta(
+    thinking_blocks: &mut BTreeMap<usize, JsonValue>,
+    index: usize,
+    field: &str,
+    delta: &str,
+) {
+    let block = thinking_blocks
+        .entry(index)
+        .or_insert_with(|| json!({ "type": "thinking", "thinking": "", "signature": "" }));
+    if let Some(JsonValue::String(value)) = block.get_mut(field) {
+        value.push_str(delta);
+    }
+}
+
+/// Fold streamed thinking blocks into the turn outcome: the concatenated
+/// thinking text becomes reasoning_content (display/persistence) and the
+/// ordered signed blocks become reasoning_details so the next Anthropic
+/// request can replay them verbatim.
+fn collect_anthropic_thinking_outcome(
+    thinking_blocks: BTreeMap<usize, JsonValue>,
+) -> (Option<String>, Option<JsonValue>) {
+    if thinking_blocks.is_empty() {
+        return (None, None);
+    }
+    let blocks: Vec<JsonValue> = thinking_blocks.into_values().collect();
+    let reasoning_content = blocks
+        .iter()
+        .filter_map(|block| block.get("thinking").and_then(JsonValue::as_str))
+        .filter(|thinking| !thinking.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (
+        (!reasoning_content.is_empty()).then_some(reasoning_content),
+        Some(JsonValue::Array(blocks)),
+    )
 }
 
 fn parse_anthropic_json_response(
@@ -2826,6 +3060,7 @@ fn parse_anthropic_json_response(
     })?;
     let mut message = String::new();
     let mut partial_calls = BTreeMap::new();
+    let mut thinking_blocks = BTreeMap::<usize, JsonValue>::new();
     for (index, block) in value
         .get("content")
         .and_then(JsonValue::as_array)
@@ -2867,6 +3102,17 @@ fn parse_anthropic_json_response(
                             .unwrap_or_else(|| "{}".into()),
                     },
                 );
+            }
+            "thinking" => {
+                if let Some(thinking) = block.get("thinking").and_then(JsonValue::as_str) {
+                    if !thinking.is_empty() {
+                        emit(ProviderStreamEvent::ReasoningSummary(thinking.to_string()))?;
+                    }
+                }
+                thinking_blocks.insert(index, block.clone());
+            }
+            "redacted_thinking" => {
+                thinking_blocks.insert(index, block.clone());
             }
             _ => {}
         }
@@ -2910,7 +3156,16 @@ fn parse_anthropic_json_response(
         provider_id,
         value.get("stop_reason").and_then(JsonValue::as_str),
     )?;
-    finish_provider_turn(provider_id, message, None, None, partial_calls, usage)
+    let (reasoning_content, reasoning_details) =
+        collect_anthropic_thinking_outcome(thinking_blocks);
+    finish_provider_turn(
+        provider_id,
+        message,
+        reasoning_content,
+        reasoning_details,
+        partial_calls,
+        usage,
+    )
 }
 
 /// Fail when a provider stopped generating because it hit the output-token limit. Without
@@ -4218,6 +4473,173 @@ mod tests {
         assert!(vertex.get("model").is_none());
         assert_eq!(vertex["anthropic_version"], VERTEX_ANTHROPIC_VERSION);
         assert!(vertex.get("stream").is_none());
+    }
+
+    #[test]
+    fn anthropic_body_sets_prompt_cache_breakpoints_on_native_api_only() {
+        let request = test_request();
+
+        let native =
+            anthropic_request_body(Some("claude-sonnet-4-5"), "2023-06-01", &request, true)
+                .expect("native anthropic body");
+        assert_eq!(native["system"][0]["type"], "text");
+        assert_eq!(native["system"][0]["text"], "system");
+        assert_eq!(native["system"][0]["cache_control"]["type"], "ephemeral");
+        let tools = native["tools"].as_array().expect("native tools");
+        assert_eq!(
+            tools.last().expect("last tool")["cache_control"]["type"],
+            "ephemeral"
+        );
+        let last_message_blocks = native["messages"]
+            .as_array()
+            .and_then(|messages| messages.last())
+            .and_then(|message| message["content"].as_array())
+            .expect("last message content blocks");
+        assert_eq!(
+            last_message_blocks.last().expect("last block")["cache_control"]["type"],
+            "ephemeral"
+        );
+
+        let bedrock = anthropic_request_body(None, BEDROCK_ANTHROPIC_VERSION, &request, false)
+            .expect("bedrock body");
+        assert_eq!(bedrock["system"], "system");
+        let bedrock_tools = bedrock["tools"].as_array().expect("bedrock tools");
+        assert!(bedrock_tools
+            .iter()
+            .all(|tool| tool.get("cache_control").is_none()));
+        let bedrock_blocks = bedrock["messages"]
+            .as_array()
+            .and_then(|messages| messages.last())
+            .and_then(|message| message["content"].as_array())
+            .expect("bedrock message blocks");
+        assert!(bedrock_blocks
+            .iter()
+            .all(|block| block.get("cache_control").is_none()));
+    }
+
+    #[test]
+    fn anthropic_body_enables_thinking_from_controls_and_replays_signed_blocks() {
+        let mut request = test_request();
+        request.messages = vec![
+            ProviderMessage::User {
+                content: "do work".into(),
+                attachments: Vec::new(),
+            },
+            ProviderMessage::Assistant {
+                content: String::new(),
+                reasoning_content: Some("planning the read".into()),
+                reasoning_details: Some(json!([
+                    {
+                        "type": "thinking",
+                        "thinking": "planning the read",
+                        "signature": "sig-1",
+                    },
+                    { "type": "redacted_thinking", "data": "opaque" },
+                    // Foreign (OpenRouter-shaped) entry must not be replayed.
+                    { "type": "reasoning.text", "text": "foreign" },
+                    // Unsigned thinking block must not be replayed.
+                    { "type": "thinking", "thinking": "unsigned", "signature": "" },
+                ])),
+                tool_calls: vec![AgentToolCall {
+                    tool_call_id: "call-1".into(),
+                    tool_name: "read".into(),
+                    input: json!({ "path": "src/lib.rs" }),
+                }],
+            },
+            ProviderMessage::Tool {
+                tool_call_id: "call-1".into(),
+                tool_name: "read".into(),
+                content: "file body".into(),
+            },
+        ];
+        request.controls.active.thinking_effort = Some(ProviderModelThinkingEffortDto::High);
+
+        let body = anthropic_request_body(Some("claude-sonnet-4-5"), "2023-06-01", &request, true)
+            .expect("anthropic thinking body");
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 8_192);
+        assert_eq!(
+            body["max_tokens"],
+            8_192 + u64::from(DEFAULT_MAX_OUTPUT_TOKENS)
+        );
+        let assistant_blocks = body["messages"][1]["content"]
+            .as_array()
+            .expect("assistant blocks");
+        assert_eq!(assistant_blocks[0]["type"], "thinking");
+        assert_eq!(assistant_blocks[0]["signature"], "sig-1");
+        assert_eq!(assistant_blocks[1]["type"], "redacted_thinking");
+        assert_eq!(assistant_blocks[2]["type"], "tool_use");
+        assert_eq!(assistant_blocks.len(), 3);
+
+        // Thinking off (unset or explicit none): no thinking param, no replayed blocks.
+        for effort in [None, Some(ProviderModelThinkingEffortDto::None)] {
+            request.controls.active.thinking_effort = effort;
+            let body =
+                anthropic_request_body(Some("claude-sonnet-4-5"), "2023-06-01", &request, true)
+                    .expect("anthropic body without thinking");
+            assert!(body.get("thinking").is_none());
+            assert_eq!(body["max_tokens"], u64::from(DEFAULT_MAX_OUTPUT_TOKENS));
+            let assistant_blocks = body["messages"][1]["content"]
+                .as_array()
+                .expect("assistant blocks");
+            assert!(assistant_blocks
+                .iter()
+                .all(|block| block["type"] != "thinking" && block["type"] != "redacted_thinking"));
+        }
+    }
+
+    #[test]
+    fn openai_chat_body_passes_reasoning_effort_for_openai_compatible_hosts() {
+        let mut request = test_request();
+        request.controls.active.thinking_effort = Some(ProviderModelThinkingEffortDto::XHigh);
+
+        let azure = openai_chat_request_body(AZURE_OPENAI_PROVIDER_ID, "gpt-5.2", &request)
+            .expect("azure body");
+        assert_eq!(azure["reasoning_effort"], "high");
+
+        let github = openai_chat_request_body(GITHUB_MODELS_PROVIDER_ID, "openai/o4", &request)
+            .expect("github body");
+        assert_eq!(github["reasoning_effort"], "high");
+
+        request.controls.active.thinking_effort = Some(ProviderModelThinkingEffortDto::Minimal);
+        let gemini =
+            openai_chat_request_body(GEMINI_AI_STUDIO_PROVIDER_ID, "gemini-3-pro", &request)
+                .expect("gemini body");
+        assert_eq!(gemini["reasoning_effort"], "low");
+
+        // Ollama has no reasoning_effort support; explicit `none` omits it everywhere.
+        let ollama = openai_chat_request_body(OLLAMA_PROVIDER_ID, "llama3.1", &request)
+            .expect("ollama body");
+        assert!(ollama.get("reasoning_effort").is_none());
+        request.controls.active.thinking_effort = Some(ProviderModelThinkingEffortDto::None);
+        let azure_none = openai_chat_request_body(AZURE_OPENAI_PROVIDER_ID, "gpt-5.2", &request)
+            .expect("azure body without effort");
+        assert!(azure_none.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn collect_anthropic_thinking_outcome_orders_blocks_and_joins_text() {
+        let mut blocks = BTreeMap::new();
+        blocks.insert(2, json!({ "type": "redacted_thinking", "data": "opaque" }));
+        blocks.insert(
+            0,
+            json!({ "type": "thinking", "thinking": "first", "signature": "sig-a" }),
+        );
+        blocks.insert(
+            1,
+            json!({ "type": "thinking", "thinking": "second", "signature": "sig-b" }),
+        );
+
+        let (reasoning_content, reasoning_details) = collect_anthropic_thinking_outcome(blocks);
+        assert_eq!(reasoning_content.as_deref(), Some("first\n\nsecond"));
+        let details = reasoning_details.expect("details");
+        assert_eq!(details[0]["thinking"], "first");
+        assert_eq!(details[1]["thinking"], "second");
+        assert_eq!(details[2]["type"], "redacted_thinking");
+
+        let (empty_content, empty_details) = collect_anthropic_thinking_outcome(BTreeMap::new());
+        assert!(empty_content.is_none());
+        assert!(empty_details.is_none());
     }
 
     #[test]

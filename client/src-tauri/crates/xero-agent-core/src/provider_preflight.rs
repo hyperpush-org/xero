@@ -264,6 +264,7 @@ pub struct OpenAiCompatibleProviderPreflightProbeRequest {
     pub provider_id: String,
     pub model_id: String,
     pub base_url: String,
+    pub api_version: Option<String>,
     pub api_key: Option<String>,
     pub timeout_ms: u64,
     pub required_features: ProviderPreflightRequiredFeatures,
@@ -662,7 +663,10 @@ pub fn run_openai_compatible_provider_preflight_probe(
         });
     }
 
-    let url = match openai_compatible_preflight_chat_url(&request.base_url) {
+    let url = match openai_compatible_preflight_chat_url(
+        &request.base_url,
+        request.api_version.as_deref(),
+    ) {
         Ok(url) => url,
         Err(error) => {
             return provider_preflight_snapshot(ProviderPreflightInput {
@@ -738,7 +742,8 @@ pub fn run_openai_compatible_provider_preflight_probe(
         .as_deref()
         .filter(|key| !key.trim().is_empty())
     {
-        http_request = http_request.bearer_auth(api_key);
+        http_request =
+            apply_openai_compatible_preflight_auth(&request.provider_id, http_request, api_key);
     }
 
     match http_request.send() {
@@ -1060,7 +1065,22 @@ pub fn run_xai_provider_preflight_probe(
     }
 }
 
-pub fn openai_compatible_preflight_chat_url(base_url: &str) -> CoreResult<String> {
+fn apply_openai_compatible_preflight_auth(
+    provider_id: &str,
+    request: reqwest::blocking::RequestBuilder,
+    api_key: &str,
+) -> reqwest::blocking::RequestBuilder {
+    if provider_id == AZURE_OPENAI_PROVIDER_ID {
+        request.header("api-key", api_key)
+    } else {
+        request.bearer_auth(api_key)
+    }
+}
+
+pub fn openai_compatible_preflight_chat_url(
+    base_url: &str,
+    api_version: Option<&str>,
+) -> CoreResult<String> {
     let trimmed = base_url.trim().trim_end_matches('/');
     if trimmed.is_empty() {
         return Err(CoreError::invalid_request(
@@ -1074,11 +1094,23 @@ pub fn openai_compatible_preflight_chat_url(base_url: &str) -> CoreResult<String
             "Live provider preflight allows plain HTTP only for localhost endpoints.",
         ));
     }
-    Ok(if trimmed.ends_with("/chat/completions") {
+    let chat_url = if trimmed.ends_with("/chat/completions") {
         trimmed.to_owned()
     } else {
         format!("{trimmed}/chat/completions")
-    })
+    };
+    let Some(api_version) = api_version.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(chat_url);
+    };
+    let mut url = reqwest::Url::parse(&chat_url).map_err(|error| {
+        CoreError::invalid_request(
+            "provider_preflight_base_url_invalid",
+            format!("Live provider preflight rejected base URL `{base_url}`: {error}"),
+        )
+    })?;
+    url.query_pairs_mut()
+        .append_pair("api-version", api_version);
+    Ok(url.into())
 }
 
 pub fn xai_preflight_responses_url(base_url: &str) -> CoreResult<String> {
@@ -1579,21 +1611,19 @@ fn parse_rfc3339_to_epoch_seconds(value: &str) -> Option<i64> {
     }
 
     // Split the time from any timezone designator.
-    let (time, offset_seconds) = if let Some(time) = rest
-        .strip_suffix('Z')
-        .or_else(|| rest.strip_suffix('z'))
-    {
-        (time, 0_i64)
-    } else if let Some(index) = rest.find(['+', '-']) {
-        let (time, tz) = rest.split_at(index);
-        let sign = if tz.starts_with('-') { -1 } else { 1 };
-        let mut tz_parts = tz[1..].split(':');
-        let tz_hours = tz_parts.next()?.parse::<i64>().ok()?;
-        let tz_minutes = tz_parts.next().unwrap_or("0").parse::<i64>().ok()?;
-        (time, sign * (tz_hours * 3600 + tz_minutes * 60))
-    } else {
-        (rest, 0_i64)
-    };
+    let (time, offset_seconds) =
+        if let Some(time) = rest.strip_suffix('Z').or_else(|| rest.strip_suffix('z')) {
+            (time, 0_i64)
+        } else if let Some(index) = rest.find(['+', '-']) {
+            let (time, tz) = rest.split_at(index);
+            let sign = if tz.starts_with('-') { -1 } else { 1 };
+            let mut tz_parts = tz[1..].split(':');
+            let tz_hours = tz_parts.next()?.parse::<i64>().ok()?;
+            let tz_minutes = tz_parts.next().unwrap_or("0").parse::<i64>().ok()?;
+            (time, sign * (tz_hours * 3600 + tz_minutes * 60))
+        } else {
+            (rest, 0_i64)
+        };
 
     // Drop fractional seconds if present.
     let time = time.split('.').next()?;
@@ -2177,6 +2207,68 @@ mod tests {
     }
 
     #[test]
+    fn azure_preflight_chat_url_appends_api_version_query() {
+        let url = openai_compatible_preflight_chat_url(
+            "https://example.openai.azure.com/openai/deployments/gpt-5-codex",
+            Some("2026-01-01"),
+        )
+        .expect("Azure preflight chat URL");
+
+        assert_eq!(
+            url,
+            "https://example.openai.azure.com/openai/deployments/gpt-5-codex/chat/completions?api-version=2026-01-01"
+        );
+    }
+
+    #[test]
+    fn preflight_chat_url_omits_api_version_when_absent() {
+        let url = openai_compatible_preflight_chat_url("https://api.openai.com/v1", None)
+            .expect("OpenAI preflight chat URL");
+
+        assert_eq!(url, "https://api.openai.com/v1/chat/completions");
+
+        let blank = openai_compatible_preflight_chat_url("https://api.openai.com/v1", Some("  "))
+            .expect("OpenAI preflight chat URL with blank api version");
+
+        assert_eq!(blank, "https://api.openai.com/v1/chat/completions");
+    }
+
+    #[test]
+    fn azure_preflight_auth_uses_api_key_header_not_bearer() {
+        let client = Client::new();
+        let azure = apply_openai_compatible_preflight_auth(
+            AZURE_OPENAI_PROVIDER_ID,
+            client.post("https://example.openai.azure.com/openai/deployments/gpt/chat/completions"),
+            "azure-secret",
+        )
+        .build()
+        .expect("Azure preflight auth request");
+
+        assert_eq!(
+            azure.headers().get("api-key").map(|value| value.as_bytes()),
+            Some("azure-secret".as_bytes())
+        );
+        assert!(azure.headers().get("authorization").is_none());
+
+        let openai = apply_openai_compatible_preflight_auth(
+            OPENAI_API_PROVIDER_ID,
+            client.post("https://api.openai.com/v1/chat/completions"),
+            "openai-secret",
+        )
+        .build()
+        .expect("OpenAI preflight auth request");
+
+        assert_eq!(
+            openai
+                .headers()
+                .get("authorization")
+                .map(|value| value.as_bytes()),
+            Some("Bearer openai-secret".as_bytes())
+        );
+        assert!(openai.headers().get("api-key").is_none());
+    }
+
+    #[test]
     fn deepseek_preflight_body_uses_thinking_controls_not_openai_reasoning() {
         let mut required = ProviderPreflightRequiredFeatures::owned_agent_text_turn();
         required.reasoning_controls = true;
@@ -2186,6 +2278,7 @@ mod tests {
                 provider_id: DEEPSEEK_PROVIDER_ID.into(),
                 model_id: "deepseek-v4-pro".into(),
                 base_url: "https://api.deepseek.com".into(),
+                api_version: None,
                 api_key: Some("test-key".into()),
                 timeout_ms: 1_000,
                 required_features: required,
@@ -2221,6 +2314,7 @@ mod tests {
                 provider_id: OPENROUTER_PROVIDER_ID.into(),
                 model_id: "deepseek/deepseek-v4-pro".into(),
                 base_url: "https://openrouter.ai/api/v1".into(),
+                api_version: None,
                 api_key: Some("test-key".into()),
                 timeout_ms: 1_000,
                 required_features: required,
@@ -2252,6 +2346,7 @@ mod tests {
                 provider_id: OPENROUTER_PROVIDER_ID.into(),
                 model_id: "x-ai/grok-4.3".into(),
                 base_url: "https://openrouter.ai/api/v1".into(),
+                api_version: None,
                 api_key: Some("test-key".into()),
                 timeout_ms: 1_000,
                 required_features: required,
@@ -2296,6 +2391,7 @@ mod tests {
                 provider_id: OPENROUTER_PROVIDER_ID.into(),
                 model_id: "anthropic/claude-3-7-sonnet".into(),
                 base_url: "https://openrouter.ai/api/v1".into(),
+                api_version: None,
                 api_key: Some("test-key".into()),
                 timeout_ms: 1_000,
                 required_features: required,

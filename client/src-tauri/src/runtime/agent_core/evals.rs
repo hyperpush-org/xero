@@ -60,7 +60,6 @@ const REQUIRED_RETRIEVAL_MEMORY_QUALITY_SURFACES: &[RetrievalMemoryQualitySurfac
     RetrievalMemoryQualitySurface::Relevance,
     RetrievalMemoryQualitySurface::Freshness,
     RetrievalMemoryQualitySurface::ContradictionHandling,
-    RetrievalMemoryQualitySurface::FirstTurnContinuity,
     RetrievalMemoryQualitySurface::ApprovedMemoryRecall,
     RetrievalMemoryQualitySurface::DegradedFallback,
     RetrievalMemoryQualitySurface::UserPreferenceRecall,
@@ -68,24 +67,18 @@ const REQUIRED_RETRIEVAL_MEMORY_QUALITY_SURFACES: &[RetrievalMemoryQualitySurfac
     RetrievalMemoryQualitySurface::PriorDebuggingFixRecall,
     RetrievalMemoryQualitySurface::StaleMemoryExclusion,
     RetrievalMemoryQualitySurface::SupersededMemoryExclusion,
-    RetrievalMemoryQualitySurface::HandoffContextCarryover,
-    RetrievalMemoryQualitySurface::MailboxPromotionProvenance,
-    RetrievalMemoryQualitySurface::ContextUsageAfterBrief,
 ];
 const REQUIRED_HANDOFF_CONTEXT_QUALITY_SURFACES: &[HandoffContextQualitySurface] = &[
     HandoffContextQualitySurface::ContextExhaustion,
     HandoffContextQualitySurface::Compaction,
-    HandoffContextQualitySurface::HandoffBundleCompleteness,
-    HandoffContextQualitySurface::CrashRecovery,
-    HandoffContextQualitySurface::TargetFirstTurnQuality,
 ];
-const REQUIRED_NO_REDESCRIPTION_CONTINUITY_SURFACES: &[NoRedescriptionContinuitySurface] = &[
-    NoRedescriptionContinuitySurface::WhatIsHappening,
-    NoRedescriptionContinuitySurface::WhatChanged,
-    NoRedescriptionContinuitySurface::WhatRemains,
-    NoRedescriptionContinuitySurface::Evidence,
-    NoRedescriptionContinuitySurface::SourceCitation,
-];
+/// No surfaces are currently required for the no-redescription continuity suite: every
+/// previous case asserted against its own hardcoded fixture instead of production output,
+/// and the production continuity-record builder
+/// (`persistence::current_problem_continuity_payload`) is private to the persistence
+/// module, where its behavior is covered by persistence unit tests. The vacuous cases were
+/// removed rather than kept as always-pass tautologies.
+const REQUIRED_NO_REDESCRIPTION_CONTINUITY_SURFACES: &[NoRedescriptionContinuitySurface] = &[];
 
 #[allow(dead_code)]
 const TEST_AGENT_CI_PROJECT_ID: &str = "test-agent-ci-project";
@@ -224,7 +217,6 @@ pub enum RetrievalMemoryQualitySurface {
     Relevance,
     Freshness,
     ContradictionHandling,
-    FirstTurnContinuity,
     ApprovedMemoryRecall,
     DegradedFallback,
     UserPreferenceRecall,
@@ -232,9 +224,6 @@ pub enum RetrievalMemoryQualitySurface {
     PriorDebuggingFixRecall,
     StaleMemoryExclusion,
     SupersededMemoryExclusion,
-    HandoffContextCarryover,
-    MailboxPromotionProvenance,
-    ContextUsageAfterBrief,
 }
 
 impl RetrievalMemoryQualitySurface {
@@ -243,7 +232,6 @@ impl RetrievalMemoryQualitySurface {
             Self::Relevance => "relevance",
             Self::Freshness => "freshness",
             Self::ContradictionHandling => "contradiction_handling",
-            Self::FirstTurnContinuity => "first_turn_continuity",
             Self::ApprovedMemoryRecall => "approved_memory_recall",
             Self::DegradedFallback => "degraded_fallback",
             Self::UserPreferenceRecall => "user_preference_recall",
@@ -251,9 +239,6 @@ impl RetrievalMemoryQualitySurface {
             Self::PriorDebuggingFixRecall => "prior_debugging_fix_recall",
             Self::StaleMemoryExclusion => "stale_memory_exclusion",
             Self::SupersededMemoryExclusion => "superseded_memory_exclusion",
-            Self::HandoffContextCarryover => "handoff_context_carryover",
-            Self::MailboxPromotionProvenance => "mailbox_promotion_provenance",
-            Self::ContextUsageAfterBrief => "context_usage_after_brief",
         }
     }
 }
@@ -263,9 +248,6 @@ impl RetrievalMemoryQualitySurface {
 pub enum HandoffContextQualitySurface {
     ContextExhaustion,
     Compaction,
-    HandoffBundleCompleteness,
-    CrashRecovery,
-    TargetFirstTurnQuality,
 }
 
 impl HandoffContextQualitySurface {
@@ -273,9 +255,6 @@ impl HandoffContextQualitySurface {
         match self {
             Self::ContextExhaustion => "context_exhaustion",
             Self::Compaction => "compaction",
-            Self::HandoffBundleCompleteness => "handoff_bundle_completeness",
-            Self::CrashRecovery => "crash_recovery",
-            Self::TargetFirstTurnQuality => "target_first_turn_quality",
         }
     }
 }
@@ -813,10 +792,6 @@ impl RetrievalMemoryQualityEvalReport {
                 self.metrics.contradiction_rate
             ),
             format!(
-                "- first_turn_continuity_rate: {:.3}",
-                self.metrics.first_turn_continuity_rate
-            ),
-            format!(
                 "- approved_memory_recall_rate: {:.3}",
                 self.metrics.approved_memory_recall_rate
             ),
@@ -843,18 +818,6 @@ impl RetrievalMemoryQualityEvalReport {
             format!(
                 "- superseded_exposure_rate: {:.3}",
                 self.metrics.superseded_exposure_rate
-            ),
-            format!(
-                "- handoff_context_carryover_rate: {:.3}",
-                self.metrics.handoff_context_carryover_rate
-            ),
-            format!(
-                "- mailbox_promotion_provenance_rate: {:.3}",
-                self.metrics.mailbox_promotion_provenance_rate
-            ),
-            format!(
-                "- context_usage_after_brief_rate: {:.3}",
-                self.metrics.context_usage_after_brief_rate
             ),
             String::new(),
             "## Cases".into(),
@@ -887,7 +850,6 @@ pub struct RetrievalMemoryQualityMetrics {
     pub relevance_rate: f64,
     pub freshness_rate: f64,
     pub contradiction_rate: f64,
-    pub first_turn_continuity_rate: f64,
     pub approved_memory_recall_rate: f64,
     pub degraded_fallback_rate: f64,
     pub user_preference_recall_rate: f64,
@@ -895,9 +857,6 @@ pub struct RetrievalMemoryQualityMetrics {
     pub prior_debugging_fix_recall_rate: f64,
     pub stale_exposure_rate: f64,
     pub superseded_exposure_rate: f64,
-    pub handoff_context_carryover_rate: f64,
-    pub mailbox_promotion_provenance_rate: f64,
-    pub context_usage_after_brief_rate: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -945,18 +904,6 @@ impl HandoffContextQualityEvalReport {
                 self.metrics.context_exhaustion_rate
             ),
             format!("- compaction_rate: {:.3}", self.metrics.compaction_rate),
-            format!(
-                "- handoff_bundle_completeness_rate: {:.3}",
-                self.metrics.handoff_bundle_completeness_rate
-            ),
-            format!(
-                "- crash_recovery_rate: {:.3}",
-                self.metrics.crash_recovery_rate
-            ),
-            format!(
-                "- target_first_turn_quality_rate: {:.3}",
-                self.metrics.target_first_turn_quality_rate
-            ),
             String::new(),
             "## Cases".into(),
         ];
@@ -987,9 +934,6 @@ pub struct HandoffContextQualityMetrics {
     pub pass_rate: f64,
     pub context_exhaustion_rate: f64,
     pub compaction_rate: f64,
-    pub handoff_bundle_completeness_rate: f64,
-    pub crash_recovery_rate: f64,
-    pub target_first_turn_quality_rate: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2066,6 +2010,19 @@ pub fn run_custom_agent_simulation_harness(repo_root: &Path) -> CustomAgentSimul
     }
 }
 
+/// Runs the retrieval and memory quality eval suite.
+///
+/// Every remaining case ranks in-memory candidates through
+/// `rank_retrieval_eval_candidates`, which delegates trust scoring, trust status,
+/// contradiction state, freshness ranking adjustments, and the composed ranking formula
+/// to the production implementations in `db::project_store::agent_retrieval`
+/// (`retrieval_trust_signal`, `freshness_score_adjustment`), so a regression in
+/// production ranking fails this suite. The former first-turn-continuity,
+/// handoff-context-carryover, mailbox-promotion-provenance, and context-usage-after-brief
+/// cases were removed: they asserted hardcoded JSON literals against themselves, and their
+/// production surfaces (working-set assembly, handoff carried context, mailbox promotion
+/// payloads, memory-brief nudges) are private, DB-coupled functions covered by unit tests
+/// in their own modules.
 pub fn run_retrieval_memory_quality_eval_suite(
     _repo_root: &Path,
 ) -> RetrievalMemoryQualityEvalReport {
@@ -2116,6 +2073,18 @@ pub fn run_retrieval_memory_quality_eval_suite(
     }
 }
 
+/// Runs the handoff and context-exhaustion quality eval suite.
+///
+/// The remaining cases exercise the production context-pressure policy
+/// (`project_store::evaluate_agent_context_policy`) with production default thresholds:
+/// exhausted pressure must produce a `handoff_now` decision with a target agent, and
+/// compact-threshold pressure must compact, recompact when an active compaction no longer
+/// protects the turn, and continue when a current compaction is in place. The former
+/// bundle-completeness, crash-recovery, and target-first-turn cases were removed: they
+/// asserted hardcoded JSON literals against themselves, and their production surfaces
+/// (`run::build_handoff_bundle`, `persistence::handoff_completeness_contract`, handoff
+/// lineage reconciliation, and target manifest assembly) are private or DB-coupled and
+/// are covered by unit tests in their own modules.
 pub fn run_handoff_context_quality_eval_suite(
     _repo_root: &Path,
 ) -> HandoffContextQualityEvalReport {
@@ -2166,6 +2135,15 @@ pub fn run_handoff_context_quality_eval_suite(
     }
 }
 
+/// Runs the no-redescription continuity eval suite.
+///
+/// This suite currently executes no cases and therefore verifies nothing beyond its own
+/// report plumbing: the previous cases asserted a hardcoded fixture against an answer
+/// derived from that same fixture, which could never detect a production regression.
+/// The production continuity-record builder
+/// (`persistence::current_problem_continuity_payload`) is private and DB-coupled, so it
+/// cannot be exercised here without a database harness; it is covered by persistence
+/// unit tests instead. Metrics over the empty case set report 0.0.
 pub fn run_no_redescription_needed_eval_suite(
     _repo_root: &Path,
 ) -> NoRedescriptionContinuityEvalReport {
@@ -2192,7 +2170,12 @@ pub fn run_no_redescription_needed_eval_suite(
     failures.sort();
     failures.dedup();
     let passed = failures.is_empty();
-    let summary = if passed {
+    let summary = if cases.is_empty() {
+        "No executable no-redescription continuity eval cases remain: the previous cases \
+         only re-asserted their own hardcoded fixture and were removed. The production \
+         continuity-record builder is covered by persistence unit tests."
+            .to_string()
+    } else if passed {
         format!(
             "All {} no-redescription continuity eval case(s) passed.",
             cases.len()
@@ -2229,7 +2212,6 @@ fn retrieval_memory_quality_cases() -> Vec<RetrievalMemoryQualityCaseResult> {
         retrieval_relevance_quality_case(),
         retrieval_freshness_quality_case(),
         retrieval_contradiction_quality_case(),
-        first_turn_continuity_quality_case(),
         approved_memory_recall_quality_case(),
         degraded_fallback_quality_case(),
         user_preference_recall_quality_case(),
@@ -2237,9 +2219,6 @@ fn retrieval_memory_quality_cases() -> Vec<RetrievalMemoryQualityCaseResult> {
         prior_debugging_fix_recall_quality_case(),
         stale_memory_exclusion_quality_case(),
         superseded_memory_exclusion_quality_case(),
-        handoff_context_carryover_quality_case(),
-        mailbox_promotion_provenance_quality_case(),
-        context_usage_after_brief_quality_case(),
     ]
 }
 
@@ -2402,38 +2381,6 @@ fn retrieval_contradiction_quality_case() -> RetrievalMemoryQualityCaseResult {
                 .and_then(|candidate| candidate.get("sourceId").and_then(JsonValue::as_str))
                 == Some("current-resolution"),
         "Expected superseded memory to be excluded from normal retrieval.",
-    )
-}
-
-fn first_turn_continuity_quality_case() -> RetrievalMemoryQualityCaseResult {
-    let observed = json!({
-        "workingSetSummaryAdmitted": true,
-        "sourceCitations": ["project-record:current-goal", "memory:recent-decision"],
-        "openQuestions": ["confirm rollout order"],
-        "nextActions": ["continue backend-only slices"],
-        "bulkDurableContextToolMediated": true,
-    });
-    eval_case(
-        "first_turn_continuity_contains_current_problem_without_bulk_preprompting",
-        RetrievalMemoryQualitySurface::FirstTurnContinuity,
-        vec![
-            "First-turn package must include a source-cited working-set summary.".into(),
-            "Bulk durable context must remain tool-mediated.".into(),
-        ],
-        observed.clone(),
-        observed
-            .get("workingSetSummaryAdmitted")
-            .and_then(JsonValue::as_bool)
-            == Some(true)
-            && observed
-                .get("bulkDurableContextToolMediated")
-                .and_then(JsonValue::as_bool)
-                == Some(true)
-            && observed
-                .get("sourceCitations")
-                .and_then(JsonValue::as_array)
-                .is_some_and(|citations| citations.len() >= 2),
-        "Expected source-cited working-set continuity with tool-mediated bulk context.",
     )
 }
 
@@ -2679,94 +2626,15 @@ fn superseded_memory_exclusion_quality_case() -> RetrievalMemoryQualityCaseResul
     )
 }
 
-fn handoff_context_carryover_quality_case() -> RetrievalMemoryQualityCaseResult {
-    let observed = json!({
-        "approvedMemories": [{"sourceId": "handoff-memory-1", "selectionReason": "matched focused handoff retrieval query"}],
-        "relevantProjectRecords": [{"sourceId": "handoff-record-1", "selectionReason": "matched focused handoff retrieval query"}],
-        "durableContextRetrieval": {
-            "queryIds": ["handoff-context-query"],
-            "resultIds": ["handoff-result-memory", "handoff-result-record"],
-            "guidance": "Target run should call project_context_get for carried IDs before relying on exact details."
-        },
-    });
-    eval_case(
-        "handoff_context_carryover_includes_memory_records_and_retrieval_ids",
-        RetrievalMemoryQualitySurface::HandoffContextCarryover,
-        vec![
-            "Handoff bundles must carry approved memory anchors when matching context exists."
-                .into(),
-            "Handoff bundles must carry relevant project-record anchors and retrieval evidence."
-                .into(),
-        ],
-        observed.clone(),
-        observed["approvedMemories"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty())
-            && observed["relevantProjectRecords"]
-                .as_array()
-                .is_some_and(|items| !items.is_empty())
-            && observed["durableContextRetrieval"]["queryIds"]
-                .as_array()
-                .is_some_and(|items| !items.is_empty())
-            && observed["durableContextRetrieval"]["resultIds"]
-                .as_array()
-                .is_some_and(|items| !items.is_empty()),
-        "Expected handoff carryover to include memory, project records, query IDs, and result IDs.",
-    )
-}
-
-fn mailbox_promotion_provenance_quality_case() -> RetrievalMemoryQualityCaseResult {
-    let observed = json!({
-        "temporaryMailbox": true,
-        "approvedMemoryAutomatically": false,
-        "requiresAutomatedGovernance": true,
-        "threading": {
-            "parentItemId": "mailbox-question",
-            "promotedFromItemId": "mailbox-answer",
-        },
-        "currentFileWarning": "Mailbox context is temporary coordination; current files and tool output outrank it.",
-    });
-    eval_case(
-        "mailbox_promotion_provenance_keeps_temporary_context_review_only",
-        RetrievalMemoryQualitySurface::MailboxPromotionProvenance,
-        vec![
-            "Mailbox promotions must stay review-only project-record candidates by default.".into(),
-            "Promoted mailbox content must preserve thread and TTL provenance.".into(),
-        ],
-        observed.clone(),
-        observed["temporaryMailbox"].as_bool() == Some(true)
-            && observed["approvedMemoryAutomatically"].as_bool() == Some(false)
-            && observed["requiresAutomatedGovernance"].as_bool() == Some(true)
-            && observed["threading"]["promotedFromItemId"]
-                .as_str()
-                .is_some(),
-        "Expected mailbox promotion provenance to remain temporary and review-only.",
-    )
-}
-
-fn context_usage_after_brief_quality_case() -> RetrievalMemoryQualityCaseResult {
-    let observed = json!({
-        "memoryBriefHighImpact": true,
-        "riskyAction": "workspace_mutation",
-        "projectContextGetBeforeAction": true,
-        "loggedIfIgnored": true,
-    });
-    eval_case(
-        "context_usage_after_brief_fetches_exact_content_before_risky_action",
-        RetrievalMemoryQualitySurface::ContextUsageAfterBrief,
-        vec![
-            "High-impact memory briefs must nudge exact project_context_get before risky actions."
-                .into(),
-            "Ignoring a high-impact brief before a risky action must be observable.".into(),
-        ],
-        observed.clone(),
-        observed["memoryBriefHighImpact"].as_bool() == Some(true)
-            && observed["projectContextGetBeforeAction"].as_bool() == Some(true)
-            && observed["loggedIfIgnored"].as_bool() == Some(true),
-        "Expected exact context retrieval or an ignore diagnostic after a high-impact brief.",
-    )
-}
-
+/// Ranks eval candidates by delegating trust, contradiction, and freshness scoring to
+/// the production retrieval implementation in `db::project_store::agent_retrieval`
+/// (`retrieval_trust_signal` and `freshness_score_adjustment`), composed with the same
+/// score formula production uses at ranking time:
+/// `keyword * 2 + vector + freshness_adjustment + trust.ranking_adjustment`, floored at 0.
+/// The production project-record importance term (`importance_rank * 0.05`) is not modeled
+/// because eval candidates carry no importance metadata. A regression in production trust
+/// or freshness scoring now fails these eval cases instead of being masked by an eval-local
+/// copy of the formulas.
 fn rank_retrieval_eval_candidates(
     candidates: &[RetrievalEvalCandidate],
     allow_keyword_fallback: bool,
@@ -2780,20 +2648,26 @@ fn rank_retrieval_eval_candidates(
                 || (allow_keyword_fallback && candidate.keyword_score > 0.0)
         })
         .map(|candidate| {
-            let trust = eval_trust_score(candidate);
+            let trust = project_store::retrieval_trust_signal(
+                candidate.freshness_state,
+                Some(candidate.confidence),
+                candidate.has_provenance,
+                candidate.superseded_by_id,
+                candidate.invalidated_at,
+            );
             let score = (candidate.keyword_score * 2.0
                 + candidate.semantic_score
-                + eval_freshness_adjustment(candidate.freshness_state)
-                + (trust - 0.5) * 0.20)
+                + project_store::freshness_score_adjustment(candidate.freshness_state)
+                + trust.ranking_adjustment)
                 .max(0.0);
             json!({
                 "sourceId": candidate.source_id,
                 "sourceKind": candidate.source_kind,
                 "score": score,
-                "trustScore": trust,
-                "trustStatus": eval_trust_status(trust),
+                "trustScore": trust.score,
+                "trustStatus": trust.status,
                 "freshnessState": candidate.freshness_state,
-                "contradictionState": eval_contradiction_state(candidate),
+                "contradictionState": trust.contradiction_state,
                 "semanticStatus": candidate.semantic_status,
                 "retrievalMode": if candidate.semantic_status == "available" {
                     "hybrid"
@@ -2816,63 +2690,14 @@ fn rank_retrieval_eval_candidates(
     ranked
 }
 
+/// Mirrors the production default-scope eligibility filter that retrieval applies in SQL
+/// (only `current`/`source_unknown` rows that are neither superseded nor invalidated are
+/// visible to normal top-k retrieval). This predicate stays eval-local because production
+/// enforces it in the query WHERE clause rather than in a callable Rust function.
 fn retrieval_eval_default_eligible(candidate: &RetrievalEvalCandidate) -> bool {
     matches!(candidate.freshness_state, "current" | "source_unknown")
         && candidate.superseded_by_id.is_none()
         && candidate.invalidated_at.is_none()
-}
-
-fn eval_trust_score(candidate: &RetrievalEvalCandidate) -> f64 {
-    let freshness = match candidate.freshness_state {
-        "current" => 1.0,
-        "source_unknown" => 0.45,
-        "stale" => 0.20,
-        "source_missing" => 0.10,
-        "superseded" | "blocked" => 0.0,
-        _ => 0.45,
-    };
-    let provenance = if candidate.has_provenance { 1.0 } else { 0.0 };
-    let contradiction_penalty = match eval_contradiction_state(candidate) {
-        "superseded" => 0.25,
-        "contradicted" => 0.15,
-        _ => 0.0,
-    };
-    (freshness * 0.45 + candidate.confidence.clamp(0.0, 1.0) * 0.35 + provenance * 0.20
-        - contradiction_penalty)
-        .clamp(0.0, 1.0)
-}
-
-fn eval_freshness_adjustment(freshness_state: &str) -> f64 {
-    match freshness_state {
-        "current" => 0.20,
-        "source_unknown" => 0.0,
-        "stale" => -0.15,
-        "source_missing" => -0.25,
-        "superseded" => -0.30,
-        _ => 0.0,
-    }
-}
-
-fn eval_contradiction_state(candidate: &RetrievalEvalCandidate) -> &'static str {
-    if candidate.superseded_by_id.is_some() || candidate.freshness_state == "superseded" {
-        "superseded"
-    } else if candidate.invalidated_at.is_some()
-        || matches!(candidate.freshness_state, "stale" | "source_missing")
-    {
-        "contradicted"
-    } else {
-        "none"
-    }
-}
-
-fn eval_trust_status(score: f64) -> &'static str {
-    if score >= 0.75 {
-        "high"
-    } else if score >= 0.45 {
-        "medium"
-    } else {
-        "low"
-    }
 }
 
 fn eval_case(
@@ -2927,10 +2752,6 @@ fn retrieval_memory_quality_metrics_for_cases(
             cases,
             RetrievalMemoryQualitySurface::ContradictionHandling,
         ),
-        first_turn_continuity_rate: surface_rate(
-            cases,
-            RetrievalMemoryQualitySurface::FirstTurnContinuity,
-        ),
         approved_memory_recall_rate: surface_rate(
             cases,
             RetrievalMemoryQualitySurface::ApprovedMemoryRecall,
@@ -2959,18 +2780,6 @@ fn retrieval_memory_quality_metrics_for_cases(
             cases,
             RetrievalMemoryQualitySurface::SupersededMemoryExclusion,
         ),
-        handoff_context_carryover_rate: surface_rate(
-            cases,
-            RetrievalMemoryQualitySurface::HandoffContextCarryover,
-        ),
-        mailbox_promotion_provenance_rate: surface_rate(
-            cases,
-            RetrievalMemoryQualitySurface::MailboxPromotionProvenance,
-        ),
-        context_usage_after_brief_rate: surface_rate(
-            cases,
-            RetrievalMemoryQualitySurface::ContextUsageAfterBrief,
-        ),
     }
 }
 
@@ -2993,225 +2802,16 @@ fn exposure_rate(
     1.0 - surface_rate(cases, surface)
 }
 
+/// The previous five no-redescription cases built a hardcoded continuity-record fixture,
+/// derived an "answer" from that same fixture inside the eval, and then asserted the
+/// answer matched the fixture — a tautology that could never catch a production
+/// regression. The production builder of continuity records
+/// (`persistence::current_problem_continuity_payload`) and the handoff completeness
+/// contract are private to the persistence module and DB-coupled, so no production
+/// surface is callable from this suite without a database harness. The vacuous cases
+/// were deleted; the production payload builder is covered by persistence unit tests.
 fn no_redescription_continuity_cases() -> Vec<NoRedescriptionContinuityCaseResult> {
-    vec![
-        no_redescription_what_is_happening_case(),
-        no_redescription_what_changed_case(),
-        no_redescription_what_remains_case(),
-        no_redescription_evidence_case(),
-        no_redescription_source_citation_case(),
-    ]
-}
-
-fn no_redescription_fixture() -> JsonValue {
-    json!({
-        "schema": "xero.project_record.current_problem_continuity.v1",
-        "recordId": "project-record-current-problem-s30",
-        "activeGoal": "Implement backend-only first-turn continuity.",
-        "currentTaskState": {
-            "status": "Running",
-            "runtimeAgentId": "engineer",
-            "latestPlan": {
-                "payload": {
-                    "summary": "Add structured current-problem records and retrieval evals."
-                }
-            },
-            "latestAssistantSummary": "S30 continuity record is implemented; S31 eval wiring remains."
-        },
-        "recentDecisions": [
-            "Keep durable context source-cited and bulk retrieval tool-mediated."
-        ],
-        "changedFiles": [
-            {
-                "path": "client/src-tauri/src/runtime/agent_core/persistence.rs",
-                "operation": "edit"
-            },
-            {
-                "path": "client/src-tauri/src/runtime/agent_core/evals.rs",
-                "operation": "edit"
-            }
-        ],
-        "testEvidence": [
-            {
-                "kind": "tool_call",
-                "toolName": "cargo_test",
-                "state": "Succeeded"
-            }
-        ],
-        "openQuestions": [
-            "confirm whether UI work stays deferred"
-        ],
-        "nextActions": [
-            "run scoped S31 verification",
-            "update the implementation plan"
-        ],
-        "sourceContextHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "workingSet": {
-            "deliveryModel": "admitted_source_cited_summary",
-            "rawDurableContextInjected": false,
-            "citations": [
-                {
-                    "sourceKind": "project_record",
-                    "sourceId": "project-record-current-problem-s30",
-                    "title": "Engineer current problem continuity"
-                }
-            ]
-        }
-    })
-}
-
-fn no_redescription_answer(fixture: &JsonValue) -> JsonValue {
-    json!({
-        "summary": fixture["currentTaskState"]["latestAssistantSummary"].clone(),
-        "whatIsHappening": {
-            "goal": fixture["activeGoal"].clone(),
-            "status": fixture["currentTaskState"]["status"].clone(),
-            "plan": fixture["currentTaskState"]["latestPlan"]["payload"]["summary"].clone(),
-        },
-        "whatChanged": {
-            "files": fixture["changedFiles"].clone(),
-            "decisions": fixture["recentDecisions"].clone(),
-        },
-        "whatRemains": {
-            "nextActions": fixture["nextActions"].clone(),
-            "openQuestions": fixture["openQuestions"].clone(),
-        },
-        "evidence": {
-            "testEvidence": fixture["testEvidence"].clone(),
-            "sourceContextHash": fixture["sourceContextHash"].clone(),
-        },
-        "citations": fixture["workingSet"]["citations"].clone(),
-        "asksUserToRestateProblem": false,
-    })
-}
-
-fn no_redescription_what_is_happening_case() -> NoRedescriptionContinuityCaseResult {
-    let fixture = no_redescription_fixture();
-    let answer = no_redescription_answer(&fixture);
-    no_redescription_case(
-        "first_turn_answers_what_is_happening_from_continuity_record",
-        NoRedescriptionContinuitySurface::WhatIsHappening,
-        vec![
-            "Answer must identify the active goal without asking the user to restate it.".into(),
-            "Answer must include current run/task status and latest plan summary.".into(),
-        ],
-        json!({ "fixture": fixture, "answer": answer }),
-        answer["whatIsHappening"]["goal"] == fixture["activeGoal"]
-            && answer["whatIsHappening"]["status"] == fixture["currentTaskState"]["status"]
-            && answer["whatIsHappening"]["plan"]
-                == fixture["currentTaskState"]["latestPlan"]["payload"]["summary"]
-            && answer["asksUserToRestateProblem"] == json!(false),
-        "Expected first-turn answer to explain the current goal, state, and plan without re-description.",
-    )
-}
-
-fn no_redescription_what_changed_case() -> NoRedescriptionContinuityCaseResult {
-    let fixture = no_redescription_fixture();
-    let answer = no_redescription_answer(&fixture);
-    no_redescription_case(
-        "first_turn_answers_what_changed_from_changed_files_and_decisions",
-        NoRedescriptionContinuitySurface::WhatChanged,
-        vec![
-            "Answer must include changed files.".into(),
-            "Answer must include recent decisions.".into(),
-        ],
-        json!({ "fixture": fixture, "answer": answer }),
-        answer["whatChanged"]["files"]
-            .as_array()
-            .is_some_and(|files| files.len() >= 2)
-            && answer["whatChanged"]["decisions"]
-                .as_array()
-                .is_some_and(|decisions| !decisions.is_empty()),
-        "Expected first-turn answer to name changed files and recent decisions.",
-    )
-}
-
-fn no_redescription_what_remains_case() -> NoRedescriptionContinuityCaseResult {
-    let fixture = no_redescription_fixture();
-    let answer = no_redescription_answer(&fixture);
-    no_redescription_case(
-        "first_turn_answers_what_remains_from_next_actions_and_questions",
-        NoRedescriptionContinuitySurface::WhatRemains,
-        vec![
-            "Answer must include next actions.".into(),
-            "Answer must include open questions or blockers when present.".into(),
-        ],
-        json!({ "fixture": fixture, "answer": answer }),
-        answer["whatRemains"]["nextActions"]
-            .as_array()
-            .is_some_and(|items| {
-                items
-                    .iter()
-                    .any(|item| item.as_str() == Some("run scoped S31 verification"))
-            })
-            && answer["whatRemains"]["openQuestions"]
-                .as_array()
-                .is_some_and(|questions| !questions.is_empty()),
-        "Expected first-turn answer to name remaining work and open questions.",
-    )
-}
-
-fn no_redescription_evidence_case() -> NoRedescriptionContinuityCaseResult {
-    let fixture = no_redescription_fixture();
-    let answer = no_redescription_answer(&fixture);
-    no_redescription_case(
-        "first_turn_answers_evidence_from_verification_and_context_hash",
-        NoRedescriptionContinuitySurface::Evidence,
-        vec![
-            "Answer must include verification evidence.".into(),
-            "Answer must preserve the source context hash for drift diagnostics.".into(),
-        ],
-        json!({ "fixture": fixture, "answer": answer }),
-        answer["evidence"]["testEvidence"]
-            .as_array()
-            .is_some_and(|evidence| !evidence.is_empty())
-            && answer["evidence"]["sourceContextHash"]
-                .as_str()
-                .is_some_and(|hash| hash.len() == 64),
-        "Expected first-turn answer to include verification evidence and source context hash.",
-    )
-}
-
-fn no_redescription_source_citation_case() -> NoRedescriptionContinuityCaseResult {
-    let fixture = no_redescription_fixture();
-    let answer = no_redescription_answer(&fixture);
-    no_redescription_case(
-        "first_turn_answer_is_source_cited_and_not_raw_bulk_context",
-        NoRedescriptionContinuitySurface::SourceCitation,
-        vec![
-            "Answer must cite the current-problem project record.".into(),
-            "Working set must not inject raw durable context.".into(),
-        ],
-        json!({ "fixture": fixture, "answer": answer }),
-        answer["citations"].as_array().is_some_and(|citations| {
-            citations
-                .iter()
-                .any(|citation| citation["sourceId"] == "project-record-current-problem-s30")
-        }) && fixture["workingSet"]["rawDurableContextInjected"] == json!(false),
-        "Expected first-turn answer to cite continuity record while keeping raw context tool-mediated.",
-    )
-}
-
-fn no_redescription_case(
-    case_id: &str,
-    surface: NoRedescriptionContinuitySurface,
-    criteria: Vec<String>,
-    observed: JsonValue,
-    passed: bool,
-    failure: &str,
-) -> NoRedescriptionContinuityCaseResult {
-    NoRedescriptionContinuityCaseResult {
-        case_id: case_id.into(),
-        surface,
-        passed,
-        criteria,
-        observed,
-        failures: if passed {
-            Vec::new()
-        } else {
-            vec![failure.into()]
-        },
-    }
+    Vec::new()
 }
 
 fn no_redescription_continuity_coverage_for_cases(
@@ -3274,159 +2874,112 @@ fn no_redescription_surface_rate(
 }
 
 fn handoff_context_quality_cases() -> Vec<HandoffContextQualityCaseResult> {
-    vec![
-        handoff_context_exhaustion_case(),
-        handoff_compaction_case(),
-        handoff_bundle_completeness_case(),
-        handoff_crash_recovery_case(),
-        handoff_target_first_turn_case(),
-    ]
+    vec![handoff_context_exhaustion_case(), handoff_compaction_case()]
 }
 
+const HANDOFF_EVAL_BUDGET_TOKENS: u64 = 100_000;
+
+fn handoff_eval_policy_settings() -> project_store::AgentContextPolicySettingsRecord {
+    project_store::AgentContextPolicySettingsRecord::project_defaults(
+        "handoff-context-eval-project",
+        "2026-05-09T00:00:00Z",
+    )
+}
+
+fn handoff_eval_policy_decision(
+    estimated_tokens: u64,
+    active_compaction_present: bool,
+    compaction_current: bool,
+) -> project_store::AgentContextPolicyDecision {
+    project_store::evaluate_agent_context_policy(project_store::AgentContextPolicyInput {
+        runtime_agent_id: RuntimeAgentIdDto::Engineer,
+        estimated_tokens,
+        budget_tokens: Some(HANDOFF_EVAL_BUDGET_TOKENS),
+        provider_supports_compaction: true,
+        active_compaction_present,
+        compaction_current,
+        settings: handoff_eval_policy_settings(),
+    })
+}
+
+fn handoff_eval_decision_json(decision: &project_store::AgentContextPolicyDecision) -> JsonValue {
+    json!({
+        "action": context_policy_action_label(&decision.action),
+        "reasonCode": decision.reason_code,
+        "pressurePercent": decision.pressure_percent,
+        "targetRuntimeAgentId": decision
+            .target_runtime_agent_id
+            .map(|agent_id| agent_id.as_str()),
+    })
+}
+
+/// Exercises the production context-pressure policy
+/// (`project_store::evaluate_agent_context_policy`) at exhausted pressure: with the
+/// production default thresholds, a session over the handoff threshold must return
+/// `handoff_now` with a same-agent target before task state is lost.
 fn handoff_context_exhaustion_case() -> HandoffContextQualityCaseResult {
+    let settings = handoff_eval_policy_settings();
+    let exhausted_tokens = HANDOFF_EVAL_BUDGET_TOKENS
+        .saturating_mul(u64::from(settings.handoff_threshold_percent) + 8)
+        / 100;
+    let decision = handoff_eval_policy_decision(exhausted_tokens, false, true);
     let observed = json!({
-        "contextPressure": "exhausted",
-        "handoffPrepared": true,
-        "sourceContextHash": "sha256:context",
-        "rawTranscriptDependence": "bounded_tail",
+        "estimatedTokens": exhausted_tokens,
+        "budgetTokens": HANDOFF_EVAL_BUDGET_TOKENS,
+        "handoffThresholdPercent": settings.handoff_threshold_percent,
+        "decision": handoff_eval_decision_json(&decision),
     });
     handoff_case(
         "context_exhaustion_prepares_handoff_before_losing_state",
         HandoffContextQualitySurface::ContextExhaustion,
         vec![
-            "Context exhaustion must prepare a handoff before losing task state.".into(),
-            "The source context hash must be recorded for drift diagnostics.".into(),
-        ],
-        observed.clone(),
-        observed.get("handoffPrepared").and_then(JsonValue::as_bool) == Some(true)
-            && observed
-                .get("sourceContextHash")
-                .and_then(JsonValue::as_str)
-                .is_some(),
-        "Expected handoff preparation and source context hash under exhausted context.",
-    )
-}
-
-fn handoff_compaction_case() -> HandoffContextQualityCaseResult {
-    let observed = json!({
-        "compaction": {
-            "rawTranscriptReduced": true,
-            "workingSetSummaryPreserved": true,
-            "toolEvidencePreserved": true,
-            "verificationPreserved": true,
-        }
-    });
-    let compaction = observed.get("compaction").and_then(JsonValue::as_object);
-    handoff_case(
-        "context_compaction_preserves_evidence_and_working_set",
-        HandoffContextQualitySurface::Compaction,
-        vec![
-            "Compaction must reduce raw transcript dependence.".into(),
-            "Working-set summary, tool evidence, and verification must survive compaction.".into(),
-        ],
-        observed.clone(),
-        compaction.is_some_and(|fields| {
-            [
-                "rawTranscriptReduced",
-                "workingSetSummaryPreserved",
-                "toolEvidencePreserved",
-                "verificationPreserved",
-            ]
-            .iter()
-            .all(|field| fields.get(*field).and_then(JsonValue::as_bool) == Some(true))
-        }),
-        "Expected compacted context to preserve working set, tool evidence, and verification.",
-    )
-}
-
-fn handoff_bundle_completeness_case() -> HandoffContextQualityCaseResult {
-    let fields = [
-        "goal",
-        "status",
-        "completedWork",
-        "pendingWork",
-        "decisions",
-        "constraints",
-        "projectFacts",
-        "fileChanges",
-        "toolEvidence",
-        "verification",
-        "risks",
-        "questions",
-        "memoryReferences",
-        "sourceContextHash",
-        "runtimeSpecific",
-    ];
-    let observed = json!({ "presentFields": fields });
-    handoff_case(
-        "handoff_bundle_contains_required_completeness_fields",
-        HandoffContextQualitySurface::HandoffBundleCompleteness,
-        vec![
-            "Bundle must include all required completeness fields.".into(),
-            "Runtime-specific details must be present for custom and built-in agents.".into(),
+            "The production context policy must return handoff_now once the handoff threshold is reached.".into(),
+            "The handoff decision must carry a target runtime agent and the threshold reason code.".into(),
         ],
         observed,
-        fields.len() == 15 && fields.contains(&"sourceContextHash"),
-        "Expected all handoff completeness fields to be present.",
+        decision.action == project_store::AgentContextPolicyAction::HandoffNow
+            && decision.reason_code == "handoff_threshold_reached"
+            && decision.target_runtime_agent_id.is_some(),
+        "Expected the production context policy to prepare a handoff under exhausted context pressure.",
     )
 }
 
-fn handoff_crash_recovery_case() -> HandoffContextQualityCaseResult {
+/// Exercises the production context-pressure policy between the compact and handoff
+/// thresholds: without an active compaction it must compact, with a stale compaction it
+/// must recompact instead of silently reporting healthy pressure, and with a current
+/// compaction it must continue.
+fn handoff_compaction_case() -> HandoffContextQualityCaseResult {
+    let settings = handoff_eval_policy_settings();
+    let compact_pressure_tokens = HANDOFF_EVAL_BUDGET_TOKENS.saturating_mul(
+        u64::from(settings.compact_threshold_percent + settings.handoff_threshold_percent) / 2,
+    ) / 100;
+    let compact_decision = handoff_eval_policy_decision(compact_pressure_tokens, false, true);
+    let recompact_decision = handoff_eval_policy_decision(compact_pressure_tokens, true, false);
+    let protected_decision = handoff_eval_policy_decision(compact_pressure_tokens, true, true);
     let observed = json!({
-        "recoveredBoundaries": [
-            "pending_lineage",
-            "bundle_recorded",
-            "target_run_created",
-            "source_marked_handed_off"
-        ],
-        "duplicatesCreated": 0,
+        "estimatedTokens": compact_pressure_tokens,
+        "budgetTokens": HANDOFF_EVAL_BUDGET_TOKENS,
+        "compactThresholdPercent": settings.compact_threshold_percent,
+        "handoffThresholdPercent": settings.handoff_threshold_percent,
+        "withoutActiveCompaction": handoff_eval_decision_json(&compact_decision),
+        "withStaleCompaction": handoff_eval_decision_json(&recompact_decision),
+        "withCurrentCompaction": handoff_eval_decision_json(&protected_decision),
     });
     handoff_case(
-        "handoff_reconciliation_recovers_crash_boundaries",
-        HandoffContextQualitySurface::CrashRecovery,
+        "context_compaction_policy_compacts_and_recompacts_under_pressure",
+        HandoffContextQualitySurface::Compaction,
         vec![
-            "Every intermediate handoff boundary must be recoverable.".into(),
-            "Recovery must not duplicate lineage, target runs, or handoff records.".into(),
+            "At compact-threshold pressure without an active compaction the policy must compact.".into(),
+            "A stale compaction that no longer protects the turn must trigger recompaction.".into(),
+            "A current compaction must let the turn continue without recompacting.".into(),
         ],
-        observed.clone(),
-        observed
-            .get("recoveredBoundaries")
-            .and_then(JsonValue::as_array)
-            .is_some_and(|boundaries| boundaries.len() == 4)
-            && observed
-                .get("duplicatesCreated")
-                .and_then(JsonValue::as_u64)
-                == Some(0),
-        "Expected all handoff crash boundaries to reconcile without duplicates.",
-    )
-}
-
-fn handoff_target_first_turn_case() -> HandoffContextQualityCaseResult {
-    let observed = json!({
-        "targetManifestBeforeProviderCall": true,
-        "containsHandoffBundle": true,
-        "containsWorkingSetSummary": true,
-        "containsContinuityRecords": true,
-        "containsPendingPrompt": true,
-    });
-    handoff_case(
-        "handoff_target_first_turn_has_working_context",
-        HandoffContextQualitySurface::TargetFirstTurnQuality,
-        vec![
-            "Target manifest must contain handoff bundle before the first provider call.".into(),
-            "Working-set summary, continuity records, and pending prompt must be present.".into(),
-        ],
-        observed.clone(),
-        [
-            "targetManifestBeforeProviderCall",
-            "containsHandoffBundle",
-            "containsWorkingSetSummary",
-            "containsContinuityRecords",
-            "containsPendingPrompt",
-        ]
-        .iter()
-        .all(|field| observed.get(*field).and_then(JsonValue::as_bool) == Some(true)),
-        "Expected target first turn to include handoff bundle, working set, continuity, and prompt.",
+        observed,
+        compact_decision.action == project_store::AgentContextPolicyAction::CompactNow
+            && compact_decision.reason_code == "compact_threshold_reached"
+            && recompact_decision.action == project_store::AgentContextPolicyAction::RecompactNow
+            && recompact_decision.reason_code == "active_compaction_no_longer_protects_turn"
+            && protected_decision.action == project_store::AgentContextPolicyAction::ContinueNow,
+        "Expected the production compaction policy to compact, recompact, and continue correctly under compact-threshold pressure.",
     )
 }
 
@@ -3481,18 +3034,6 @@ fn handoff_context_quality_metrics_for_cases(
             HandoffContextQualitySurface::ContextExhaustion,
         ),
         compaction_rate: handoff_surface_rate(cases, HandoffContextQualitySurface::Compaction),
-        handoff_bundle_completeness_rate: handoff_surface_rate(
-            cases,
-            HandoffContextQualitySurface::HandoffBundleCompleteness,
-        ),
-        crash_recovery_rate: handoff_surface_rate(
-            cases,
-            HandoffContextQualitySurface::CrashRecovery,
-        ),
-        target_first_turn_quality_rate: handoff_surface_rate(
-            cases,
-            HandoffContextQualitySurface::TargetFirstTurnQuality,
-        ),
     }
 }
 
@@ -6321,7 +5862,6 @@ mod tests {
         assert_eq!(report.metrics.relevance_rate, 1.0);
         assert_eq!(report.metrics.freshness_rate, 1.0);
         assert_eq!(report.metrics.contradiction_rate, 1.0);
-        assert_eq!(report.metrics.first_turn_continuity_rate, 1.0);
         assert_eq!(report.metrics.approved_memory_recall_rate, 1.0);
         assert_eq!(report.metrics.degraded_fallback_rate, 1.0);
         assert!(report
@@ -6334,23 +5874,21 @@ mod tests {
     }
 
     #[test]
-    fn s31_no_redescription_needed_eval_covers_first_turn_continuity_answers() {
+    fn s31_no_redescription_needed_eval_reports_removed_vacuous_cases() {
         let root = tempfile::tempdir().expect("temp dir");
         let report = run_no_redescription_needed_eval_suite(root.path());
 
         assert!(report.passed, "{:#?}", report.failures);
         assert_eq!(report.suite_id, "no_redescription_needed_eval_v1");
         assert!(report.coverage.missing_surfaces.is_empty());
-        assert_eq!(report.metrics.pass_rate, 1.0);
-        assert_eq!(report.metrics.what_is_happening_rate, 1.0);
-        assert_eq!(report.metrics.what_changed_rate, 1.0);
-        assert_eq!(report.metrics.what_remains_rate, 1.0);
-        assert_eq!(report.metrics.evidence_rate, 1.0);
-        assert_eq!(report.metrics.source_citation_rate, 1.0);
-        assert!(report.cases.iter().any(|case| {
-            case.surface == NoRedescriptionContinuitySurface::WhatRemains
-                && case.observed["answer"]["asksUserToRestateProblem"] == json!(false)
-        }));
+        // The suite intentionally has no executable cases: the previous cases asserted
+        // their own hardcoded fixture and were removed as vacuous. The summary must say
+        // so instead of claiming continuity answers were verified.
+        assert!(report.cases.is_empty());
+        assert!(report.failures.is_empty());
+        assert!(report
+            .summary
+            .contains("No executable no-redescription continuity eval cases remain"));
         assert!(report
             .to_markdown()
             .contains("# No Redescription Needed Eval Report: PASS"));
@@ -6367,12 +5905,14 @@ mod tests {
         assert_eq!(report.metrics.pass_rate, 1.0);
         assert_eq!(report.metrics.context_exhaustion_rate, 1.0);
         assert_eq!(report.metrics.compaction_rate, 1.0);
-        assert_eq!(report.metrics.handoff_bundle_completeness_rate, 1.0);
-        assert_eq!(report.metrics.crash_recovery_rate, 1.0);
-        assert_eq!(report.metrics.target_first_turn_quality_rate, 1.0);
         assert!(report.cases.iter().any(|case| {
-            case.surface == HandoffContextQualitySurface::TargetFirstTurnQuality
-                && case.observed["targetManifestBeforeProviderCall"] == json!(true)
+            case.surface == HandoffContextQualitySurface::ContextExhaustion
+                && case.observed["decision"]["action"] == json!("handoff_now")
+        }));
+        assert!(report.cases.iter().any(|case| {
+            case.surface == HandoffContextQualitySurface::Compaction
+                && case.observed["withoutActiveCompaction"]["action"] == json!("compact_now")
+                && case.observed["withStaleCompaction"]["action"] == json!("recompact_now")
         }));
         assert!(report
             .to_markdown()

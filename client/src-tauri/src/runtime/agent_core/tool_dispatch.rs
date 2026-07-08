@@ -1516,6 +1516,27 @@ impl ToolRollback for AgentToolRollback {
     }
 }
 
+/// Tools whose handlers evaluate the approval boundary themselves when run
+/// unapproved: they refuse the side effect, self-report a resolvable
+/// approval marker, and the persistence layer turns that marker into a
+/// durable `agent_action_requests` row that `answered_tool_replay_kind` can
+/// replay with operator approval. Routing these through the generic policy
+/// `RequireApproval` arm instead produces an unresolvable dead-end failure.
+///
+/// Adding a tool here is a safety-critical change. It is only correct when
+/// ALL of the following hold, otherwise the tool would execute without
+/// approval on first dispatch:
+/// 1. the unapproved handler variant refuses the gated action and returns a
+///    not-performed marker (or a `PolicyDenied` failure),
+/// 2. the handler's internal approval set covers at least the outer safety
+///    policy's `requires_approval` set for the tool,
+/// 3. `execute_approved` routes the tool to a real
+///    `*_with_operator_approval` variant, and
+/// 4. `record_command_output_event` (or the `PolicyDenied` failure path)
+///    creates the action request whose id `answered_tool_replay_kind`
+///    recomputes.
+/// Browser and MCP tools fail all of these today and must stay off this
+/// list until they grow approved variants and replay wiring.
 fn policy_approval_is_reported_by_handler(call: &ToolCallInput) -> bool {
     matches!(
         call.tool_name.as_str(),
@@ -1528,6 +1549,13 @@ fn policy_approval_is_reported_by_handler(call: &ToolCallInput) -> bool {
             | AUTONOMOUS_TOOL_HOST_COMMAND
             | AUTONOMOUS_TOOL_PROCESS_MANAGER
             | AUTONOMOUS_TOOL_POWERSHELL
+            | AUTONOMOUS_TOOL_READ
+            | AUTONOMOUS_TOOL_MACOS_AUTOMATION
+            | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS
+            | AUTONOMOUS_TOOL_DESKTOP_OBSERVE
+            | AUTONOMOUS_TOOL_DESKTOP_CONTROL
+            | AUTONOMOUS_TOOL_AGENT_DEFINITION
+            | AUTONOMOUS_TOOL_WORKFLOW_DEFINITION
     )
 }
 
@@ -2532,6 +2560,61 @@ mod tests {
     use crate::db::{
         configure_connection, migrations::migrations, register_project_database_path_for_tests,
     };
+
+    fn policy_call(tool_name: &str) -> ToolCallInput {
+        ToolCallInput {
+            tool_call_id: "call-policy-routing".into(),
+            tool_name: tool_name.into(),
+            input: json!({}),
+        }
+    }
+
+    #[test]
+    fn handler_reported_approval_whitelist_matches_wired_tools_only() {
+        // Every tool here has a verified unapproved-refusal gate, an
+        // execute_approved variant, action-request persistence, and a
+        // replay arm. See policy_approval_is_reported_by_handler docs.
+        for tool_name in [
+            AUTONOMOUS_TOOL_COMMAND,
+            AUTONOMOUS_TOOL_COMMAND_PROBE,
+            AUTONOMOUS_TOOL_COMMAND_VERIFY,
+            AUTONOMOUS_TOOL_COMMAND_RUN,
+            AUTONOMOUS_TOOL_COMMAND_SESSION,
+            AUTONOMOUS_TOOL_COMMAND_SESSION_START,
+            AUTONOMOUS_TOOL_HOST_COMMAND,
+            AUTONOMOUS_TOOL_PROCESS_MANAGER,
+            AUTONOMOUS_TOOL_POWERSHELL,
+            AUTONOMOUS_TOOL_READ,
+            AUTONOMOUS_TOOL_MACOS_AUTOMATION,
+            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS,
+            AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
+            AUTONOMOUS_TOOL_DESKTOP_CONTROL,
+            AUTONOMOUS_TOOL_AGENT_DEFINITION,
+            AUTONOMOUS_TOOL_WORKFLOW_DEFINITION,
+        ] {
+            assert!(
+                policy_approval_is_reported_by_handler(&policy_call(tool_name)),
+                "`{tool_name}` should route policy approval through its handler"
+            );
+        }
+
+        // Tools without approved execution variants or replay wiring must
+        // keep failing closed through the generic policy arm; whitelisting
+        // them would let the unapproved handler run the gated action.
+        for tool_name in [
+            "browser",
+            "mcp",
+            "desktop_stream",
+            "edit",
+            "write",
+            "web_fetch",
+        ] {
+            assert!(
+                !policy_approval_is_reported_by_handler(&policy_call(tool_name)),
+                "`{tool_name}` must not claim handler-reported approval without verified wiring"
+            );
+        }
+    }
 
     #[test]
     fn host_admin_windows_workspace_root_follows_requested_drive() {

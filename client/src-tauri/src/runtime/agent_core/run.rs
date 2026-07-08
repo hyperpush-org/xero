@@ -3583,7 +3583,77 @@ fn answered_tool_replay_kind(
         return Ok(Some(AnsweredToolReplayKind::OperatorApprovedCommand));
     }
 
+    if tool_call.state == AgentToolCallState::Succeeded
+        && agent_definition_approval_action_id_for_tool_call(tool_call)?
+            .as_deref()
+            .is_some_and(|action_id| answered_tool_action_ids.contains(action_id))
+    {
+        return Ok(Some(AnsweredToolReplayKind::OperatorApprovedCommand));
+    }
+
+    if tool_call.state == AgentToolCallState::Succeeded
+        && workflow_definition_approval_action_id_for_tool_call(tool_call)?
+            .as_deref()
+            .is_some_and(|action_id| answered_tool_action_ids.contains(action_id))
+    {
+        return Ok(Some(AnsweredToolReplayKind::OperatorApprovedCommand));
+    }
+
     Ok(None)
+}
+
+fn agent_definition_approval_action_id_for_tool_call(
+    tool_call: &project_store::AgentToolCallRecord,
+) -> CommandResult<Option<String>> {
+    let Some(result_json) = tool_call.result_json.as_deref() else {
+        return Ok(None);
+    };
+    let result = serde_json::from_str::<AutonomousToolResult>(result_json).map_err(|error| {
+        CommandError::system_fault(
+            "agent_tool_replay_result_decode_failed",
+            format!(
+                "Xero could not decode tool call `{}` while checking agent definition approval replay state: {error}",
+                tool_call.tool_call_id
+            ),
+        )
+    })?;
+
+    let AutonomousToolOutput::AgentDefinition(output) = result.output else {
+        return Ok(None);
+    };
+    if output.applied || !output.approval_required {
+        return Ok(None);
+    }
+    Ok(Some(sanitize_action_id(
+        &agent_definition_action_approval_id(&output),
+    )))
+}
+
+fn workflow_definition_approval_action_id_for_tool_call(
+    tool_call: &project_store::AgentToolCallRecord,
+) -> CommandResult<Option<String>> {
+    let Some(result_json) = tool_call.result_json.as_deref() else {
+        return Ok(None);
+    };
+    let result = serde_json::from_str::<AutonomousToolResult>(result_json).map_err(|error| {
+        CommandError::system_fault(
+            "agent_tool_replay_result_decode_failed",
+            format!(
+                "Xero could not decode tool call `{}` while checking workflow definition approval replay state: {error}",
+                tool_call.tool_call_id
+            ),
+        )
+    })?;
+
+    let AutonomousToolOutput::WorkflowDefinition(output) = result.output else {
+        return Ok(None);
+    };
+    if output.applied || !output.approval_required {
+        return Ok(None);
+    }
+    Ok(Some(sanitize_action_id(
+        &workflow_definition_action_approval_id(&output),
+    )))
 }
 
 fn command_approval_action_id_for_tool_call(
@@ -4542,10 +4612,7 @@ impl OwnedAgentSubagentExecutor {
     /// held lease (dropped by the caller when the drive finishes) or `None` when no supervisor
     /// is wired. Propagates `agent_run_already_active` when another driver (e.g. a scheduled
     /// wakeup) already holds the lease, so the two never drive the child concurrently.
-    fn acquire_child_run_lease(
-        &self,
-        child_run_id: &str,
-    ) -> CommandResult<Option<AgentRunLease>> {
+    fn acquire_child_run_lease(&self, child_run_id: &str) -> CommandResult<Option<AgentRunLease>> {
         match self.supervisor.as_ref() {
             Some(supervisor) => supervisor
                 .begin(&self.project_id, &self.agent_session_id, child_run_id)

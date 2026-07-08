@@ -1164,11 +1164,15 @@ fn provider_message_manifest_entries(
             estimated_tokens: estimate_tokens(&serialized),
             reason: Some("included_in_provider_turn".into()),
         });
+        // Message bodies are durably stored once in the agent messages
+        // table; every per-turn manifest re-embedding them made total
+        // manifest storage grow quadratically with turn count. Keep the
+        // per-message audit metadata and reference bodies by index.
         messages_json.push(json!({
             "index": index,
             "role": role,
             "tokenEstimate": estimate_tokens(&serialized),
-            "body": body,
+            "bodyChars": body.chars().count(),
             "bodyRedacted": redaction.redacted,
         }));
     }
@@ -2746,6 +2750,42 @@ mod tests {
         git::repository::CanonicalRepository,
         state::DesktopState,
     };
+
+    #[test]
+    fn provider_message_manifest_entries_reference_bodies_instead_of_embedding_them() {
+        let large_body = "x".repeat(64 * 1024);
+        let messages = vec![
+            ProviderMessage::User {
+                content: large_body.clone(),
+                attachments: Vec::new(),
+            },
+            ProviderMessage::User {
+                content: large_body,
+                attachments: Vec::new(),
+            },
+        ];
+
+        let (contributors, messages_json, _redacted) =
+            provider_message_manifest_entries(&messages).expect("manifest entries");
+
+        assert_eq!(contributors.len(), 2);
+        for (index, entry) in messages_json.iter().enumerate() {
+            assert_eq!(entry["index"], index);
+            assert_eq!(entry["role"], "user");
+            assert!(
+                entry.get("body").is_none(),
+                "manifest message entries must not embed full bodies; storing the \
+                 growing history each turn made manifest storage quadratic in turns"
+            );
+            assert!(entry["bodyChars"].as_u64().unwrap_or(0) >= 64 * 1024);
+            let serialized = serde_json::to_string(entry).expect("serialize entry");
+            assert!(
+                serialized.len() < 1024,
+                "manifest message entry should stay bounded, got {} bytes",
+                serialized.len()
+            );
+        }
+    }
 
     fn seed_project(root: &tempfile::TempDir) -> (String, PathBuf) {
         let repo_root = root.path().join("repo");
