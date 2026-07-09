@@ -111,6 +111,32 @@ describe('runtime protocol schemas', () => {
     expect(parsed.payload.kind).toBe('environment_lifecycle_update')
   })
 
+  it('accepts typed assistant candidate lifecycle events', () => {
+    const parsed = runtimeProtocolEventSchema.parse({
+      ...eventFixture,
+      eventId: 9,
+      eventKind: 'assistant_candidate',
+      payload: {
+        kind: 'assistant_candidate',
+        payload: {
+          candidateId: 'candidate-1',
+          turnIndex: 2,
+          state: 'superseded',
+          text: 'Draft answer',
+          disposition: 'verification_gate',
+        },
+      },
+    })
+
+    expect(parsed.payload).toMatchObject({
+      kind: 'assistant_candidate',
+      payload: {
+        candidateId: 'candidate-1',
+        state: 'superseded',
+      },
+    })
+  })
+
   it('requires runtime settings change submissions to carry object-shaped settings', () => {
     const parsed = runtimeSubmissionEnvelopeSchema.parse({
       ...submissionFixture,

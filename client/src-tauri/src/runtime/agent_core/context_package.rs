@@ -388,7 +388,10 @@ pub(crate) fn assemble_provider_context_package(
                     .iter()
                     .filter_map(required_attachment_input_modality)
                     .collect::<Vec<_>>(),
-                ProviderMessage::Assistant { .. } | ProviderMessage::Tool { .. } => Vec::new(),
+                ProviderMessage::Developer { .. }
+                | ProviderMessage::Assistant { .. }
+                | ProviderMessage::AssistantContext { .. }
+                | ProviderMessage::Tool { .. } => Vec::new(),
             }
         },
     ));
@@ -2264,8 +2267,12 @@ fn context_retrieval_query_text(
     }
     for message in messages.iter().rev() {
         let (role, content) = match message {
+            ProviderMessage::Developer { content } => ("developer", content.as_str()),
             ProviderMessage::User { content, .. } => ("user", content.as_str()),
             ProviderMessage::Assistant { content, .. } => ("assistant", content.as_str()),
+            ProviderMessage::AssistantContext { content, .. } => {
+                ("assistant_context", content.as_str())
+            }
             ProviderMessage::Tool { .. } => continue,
         };
         if !push_retrieval_query_part(&mut selected, &mut used, role, content) {
@@ -2400,8 +2407,10 @@ fn prompt_exclusion_context_kind(exclusion: &PromptFragmentExclusion) -> &'stati
 
 fn provider_message_role(message: &ProviderMessage) -> &'static str {
     match message {
+        ProviderMessage::Developer { .. } => "developer",
         ProviderMessage::User { .. } => "user",
         ProviderMessage::Assistant { .. } => "assistant",
+        ProviderMessage::AssistantContext { .. } => "assistant_context",
         ProviderMessage::Tool { .. } => "tool",
     }
 }

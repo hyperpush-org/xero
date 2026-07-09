@@ -1573,6 +1573,9 @@ pub struct ProviderTurnRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "role")]
 pub enum ProviderMessage {
+    Developer {
+        content: String,
+    },
     User {
         content: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1587,11 +1590,29 @@ pub enum ProviderMessage {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tool_calls: Vec<AgentToolCall>,
     },
+    AssistantContext {
+        content: String,
+        provenance: ProviderContextProvenance,
+    },
     Tool {
         tool_call_id: String,
         tool_name: String,
         content: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderContextProvenance {
+    pub source_kind: ProviderContextSourceKind,
+    pub source_id: String,
+    pub source_hash: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderContextSourceKind {
+    Compaction,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1749,7 +1770,7 @@ impl ProviderAdapter for FakeProviderAdapter {
             SYSTEM_PROMPT_VERSION
         )))?;
 
-        if latest_user_message_contains(&request.messages, "Xero verification gate")
+        if latest_instruction_message_contains(&request.messages, "Xero verification gate")
             && request
                 .tools
                 .iter()
@@ -1792,7 +1813,8 @@ impl ProviderAdapter for FakeProviderAdapter {
                     .skip(last_tool_index.saturating_add(1))
                     .rev()
                     .find_map(|message| match message {
-                        ProviderMessage::User { content, .. } => Some(content.clone()),
+                        ProviderMessage::Developer { content }
+                        | ProviderMessage::User { content, .. } => Some(content.clone()),
                         _ => None,
                     })
             });
@@ -1990,13 +2012,17 @@ impl ProviderAdapter for FakeProviderAdapter {
     }
 }
 
-fn latest_user_message_contains(messages: &[ProviderMessage], needle: &str) -> bool {
+fn latest_instruction_message_contains(messages: &[ProviderMessage], needle: &str) -> bool {
     messages
         .iter()
         .rev()
         .find_map(|message| match message {
-            ProviderMessage::User { content, .. } => Some(content.contains(needle)),
-            ProviderMessage::Assistant { .. } | ProviderMessage::Tool { .. } => None,
+            ProviderMessage::Developer { content } | ProviderMessage::User { content, .. } => {
+                Some(content.contains(needle))
+            }
+            ProviderMessage::Assistant { .. }
+            | ProviderMessage::AssistantContext { .. }
+            | ProviderMessage::Tool { .. } => None,
         })
         .unwrap_or(false)
 }

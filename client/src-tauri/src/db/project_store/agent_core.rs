@@ -37,6 +37,7 @@ pub enum AgentMessageRole {
 #[serde(rename_all = "snake_case")]
 pub enum AgentRunEventKind {
     RunStarted,
+    AssistantCandidate,
     MessageDelta,
     ReasoningSummary,
     ToolStarted,
@@ -1733,24 +1734,29 @@ pub fn update_agent_run_status(
     validate_non_empty_text(run_id, "runId")?;
     let status_value = agent_run_status_sql_value(&status);
     let connection = open_agent_database(repo_root)?;
-    // Never overwrite a terminal run. Terminal statuses are final in this app (continuations
-    // create new runs), so the first writer to reach a terminal state wins. This closes the
-    // cancel/complete race where a late cancel could flip an already-completed run to
-    // cancelled (and NULL its `completed_at`), or a late completion could clobber a cancel.
+    // Never overwrite a terminal run, except for the monotonic Completed -> HandedOff
+    // refinement recorded after an accepted routing switch creates its target run. The first
+    // terminal writer otherwise wins, closing cancel/complete races in both directions.
     let rows = connection
         .execute(
             r#"
             UPDATE agent_runs
             SET status = ?3,
                 last_heartbeat_at = ?4,
-                completed_at = CASE WHEN ?3 IN ('completed', 'handed_off') THEN ?4 ELSE NULL END,
+                completed_at = CASE
+                    WHEN ?3 IN ('completed', 'handed_off') THEN COALESCE(completed_at, ?4)
+                    ELSE NULL
+                END,
                 cancelled_at = CASE WHEN ?3 = 'cancelled' THEN ?4 ELSE NULL END,
                 last_error_code = ?5,
                 last_error_message = ?6,
                 updated_at = ?4
             WHERE project_id = ?1
               AND run_id = ?2
-              AND status NOT IN ('completed', 'handed_off', 'failed', 'cancelled')
+              AND (
+                    status NOT IN ('completed', 'handed_off', 'failed', 'cancelled')
+                    OR (status = 'completed' AND ?3 = 'handed_off')
+              )
             "#,
             params![
                 project_id,
@@ -1764,8 +1770,8 @@ pub fn update_agent_run_status(
         .map_err(|error| {
             map_agent_store_write_error(repo_root, "agent_run_status_update_failed", error)
         })?;
-    // Zero rows means the run is already terminal (or absent). Return the current snapshot so
-    // callers observe the winning terminal state rather than the state they tried to write;
+    // Zero rows means the requested transition lost to an immutable terminal state (or the run
+    // is absent). Return the current snapshot so callers observe the winning terminal state;
     // `read_agent_run_snapshot` surfaces a not-found error if the run truly does not exist.
     let _ = rows;
     read_agent_run_snapshot(&connection, repo_root, project_id, run_id)
@@ -3286,6 +3292,7 @@ pub fn runtime_agent_id_sql_value(runtime_agent_id: &RuntimeAgentIdDto) -> &'sta
 pub fn agent_event_kind_sql_value(kind: &AgentRunEventKind) -> &'static str {
     match kind {
         AgentRunEventKind::RunStarted => "run_started",
+        AgentRunEventKind::AssistantCandidate => "assistant_candidate",
         AgentRunEventKind::MessageDelta => "message_delta",
         AgentRunEventKind::ReasoningSummary => "reasoning_summary",
         AgentRunEventKind::ToolStarted => "tool_started",
@@ -3382,6 +3389,7 @@ fn parse_runtime_agent_id(value: &str) -> RuntimeAgentIdDto {
 fn parse_agent_event_kind(value: &str) -> AgentRunEventKind {
     match value {
         "run_started" => AgentRunEventKind::RunStarted,
+        "assistant_candidate" => AgentRunEventKind::AssistantCandidate,
         "message_delta" => AgentRunEventKind::MessageDelta,
         "reasoning_summary" => AgentRunEventKind::ReasoningSummary,
         "tool_started" => AgentRunEventKind::ToolStarted,
@@ -3588,5 +3596,92 @@ mod tests {
         )
         .expect_err("resolved action cannot be answered again");
         assert_eq!(retry_error.code, "agent_action_request_already_resolved");
+    }
+
+    #[test]
+    fn terminal_run_status_allows_only_completed_to_handed_off_refinement() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "terminal-status-refinement";
+        create_project_database(&repo_root, project_id);
+
+        seed_run(&repo_root, project_id, "completed-to-handoff");
+        let completed = update_agent_run_status(
+            &repo_root,
+            project_id,
+            "completed-to-handoff",
+            AgentRunStatus::Completed,
+            None,
+            "2026-06-05T12:01:00Z",
+        )
+        .expect("complete source run");
+        assert_eq!(completed.run.status, AgentRunStatus::Completed);
+        assert_eq!(
+            completed.run.completed_at.as_deref(),
+            Some("2026-06-05T12:01:00Z")
+        );
+
+        let handed_off = update_agent_run_status(
+            &repo_root,
+            project_id,
+            "completed-to-handoff",
+            AgentRunStatus::HandedOff,
+            None,
+            "2026-06-05T12:02:00Z",
+        )
+        .expect("refine completed source to handed off");
+        assert_eq!(handed_off.run.status, AgentRunStatus::HandedOff);
+        assert_eq!(
+            handed_off.run.completed_at.as_deref(),
+            Some("2026-06-05T12:01:00Z"),
+            "handoff refinement preserves the original completion timestamp"
+        );
+
+        seed_run(&repo_root, project_id, "completed-stays-completed");
+        update_agent_run_status(
+            &repo_root,
+            project_id,
+            "completed-stays-completed",
+            AgentRunStatus::Completed,
+            None,
+            "2026-06-05T12:03:00Z",
+        )
+        .expect("complete second run");
+        let late_cancel = update_agent_run_status(
+            &repo_root,
+            project_id,
+            "completed-stays-completed",
+            AgentRunStatus::Cancelled,
+            None,
+            "2026-06-05T12:04:00Z",
+        )
+        .expect("late cancel returns winning terminal state");
+        assert_eq!(late_cancel.run.status, AgentRunStatus::Completed);
+        assert_eq!(
+            late_cancel.run.completed_at.as_deref(),
+            Some("2026-06-05T12:03:00Z")
+        );
+
+        seed_run(&repo_root, project_id, "failed-stays-failed");
+        update_agent_run_status(
+            &repo_root,
+            project_id,
+            "failed-stays-failed",
+            AgentRunStatus::Failed,
+            None,
+            "2026-06-05T12:05:00Z",
+        )
+        .expect("fail third run");
+        let late_handoff = update_agent_run_status(
+            &repo_root,
+            project_id,
+            "failed-stays-failed",
+            AgentRunStatus::HandedOff,
+            None,
+            "2026-06-05T12:06:00Z",
+        )
+        .expect("late handoff returns failed terminal state");
+        assert_eq!(late_handoff.run.status, AgentRunStatus::Failed);
     }
 }

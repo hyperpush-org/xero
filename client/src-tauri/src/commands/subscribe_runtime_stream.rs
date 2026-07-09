@@ -1472,6 +1472,14 @@ fn owned_agent_event_runtime_item(
                 .or_else(|| Some("Owned agent run started.".into()));
             item.text = item.detail.clone();
         }
+        AgentRunEventKind::AssistantCandidate => {
+            if payload_string(&payload, "state").as_deref() != Some("accepted") {
+                return None;
+            }
+            item.kind = RuntimeStreamItemKind::Transcript;
+            item.text = payload_verbatim_string(&payload, "text");
+            item.transcript_role = Some(RuntimeStreamTranscriptRole::Assistant);
+        }
         AgentRunEventKind::MessageDelta => {
             if payload.get("internalResume").is_some() {
                 item.kind = RuntimeStreamItemKind::Activity;
@@ -3226,6 +3234,45 @@ mod tests {
         assert_eq!(item.kind, RuntimeStreamItemKind::Activity);
         assert_eq!(item.code.as_deref(), Some("owned_agent_internal_resume"));
         assert_eq!(item.text, None);
+    }
+
+    #[test]
+    fn only_accepted_assistant_candidate_projects_as_committed_transcript() {
+        for state in ["pending", "superseded"] {
+            let item = owned_agent_event_runtime_item(
+                event(
+                    AgentRunEventKind::AssistantCandidate,
+                    &serde_json::json!({
+                        "candidateId": "candidate-1",
+                        "turnIndex": 0,
+                        "state": state,
+                        "text": "Uncommitted candidate text"
+                    })
+                    .to_string(),
+                ),
+                "owned-agent:run-1",
+                None,
+            );
+
+            assert_eq!(item, None, "candidate state {state} must stay hidden");
+        }
+
+        let accepted = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::AssistantCandidate,
+                r#"{"candidateId":"candidate-1","turnIndex":0,"state":"accepted","text":"Committed answer"}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("accepted candidate transcript item");
+
+        assert_eq!(accepted.kind, RuntimeStreamItemKind::Transcript);
+        assert_eq!(accepted.text.as_deref(), Some("Committed answer"));
+        assert_eq!(
+            accepted.transcript_role,
+            Some(RuntimeStreamTranscriptRole::Assistant)
+        );
     }
 
     fn seed_replay_project(root: &tempfile::TempDir) -> std::path::PathBuf {

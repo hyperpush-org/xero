@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     process::{Command, Stdio},
     sync::{Mutex, OnceLock},
     time::Duration,
@@ -22,6 +22,8 @@ use super::{
     MessageAttachmentKind, ProviderAdapter, ProviderMessage, ProviderStreamEvent,
     ProviderTurnOutcome, ProviderTurnRequest, ProviderUsage,
 };
+#[cfg(test)]
+use super::{ProviderContextProvenance, ProviderContextSourceKind};
 use crate::{
     commands::{
         heuristic_token_estimate, CommandError, CommandResult, ProviderModelThinkingEffortDto,
@@ -47,6 +49,8 @@ const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 4096;
 const MAX_PROVIDER_ATTEMPTS: usize = 3;
 const ANTHROPIC_API_BASE_URL: &str = "https://api.anthropic.com";
 const ANTHROPIC_API_VERSION: &str = "2023-06-01";
+const ANTHROPIC_ASSISTANT_CONTEXT_PREAMBLE: &str =
+    "Continue from the assistant context provided in the next message.";
 const BEDROCK_ANTHROPIC_VERSION: &str = "bedrock-2023-05-31";
 const VERTEX_ANTHROPIC_VERSION: &str = "vertex-2023-10-16";
 const GITHUB_MODELS_API_VERSION: &str = "2026-03-10";
@@ -56,6 +60,329 @@ const OPENAI_CODEX_ORIGINATOR: &str = "pi";
 const OPENAI_CODEX_TEXT_VERBOSITY: &str = "medium";
 const OPENAI_REASONING_SUMMARY_DETAIL: &str = "detailed";
 const XAI_API_BASE_URL: &str = "https://api.x.ai/v1";
+const MAX_PROVIDER_STREAM_LINE_BYTES: usize = 2 * 1_024 * 1_024;
+const MAX_PROVIDER_STREAM_TOTAL_BYTES: usize = 64 * 1_024 * 1_024;
+const MAX_PROVIDER_STREAM_LINES: usize = 262_144;
+const MAX_PROVIDER_STREAM_EVENTS: usize = 131_072;
+const MAX_PROVIDER_MESSAGE_BYTES: usize = 16 * 1_024 * 1_024;
+const MAX_PROVIDER_REASONING_BYTES: usize = 32 * 1_024 * 1_024;
+const MAX_PROVIDER_TOOL_ARGUMENT_BYTES: usize = 8 * 1_024 * 1_024;
+const MAX_PROVIDER_TOOL_CALLS: usize = 256;
+const MAX_PROVIDER_REASONING_ITEMS: usize = 4_096;
+const MAX_PROVIDER_ITEMS_PER_EVENT: usize = 4_096;
+const MAX_PROVIDER_REASONING_ID_BYTES: usize = 1_024;
+const MAX_PROVIDER_NON_STREAM_BODY_BYTES: usize = MAX_PROVIDER_STREAM_TOTAL_BYTES;
+const MAX_PROVIDER_TOKEN_COUNT_BODY_BYTES: usize = 256 * 1_024;
+const MAX_PROVIDER_ERROR_BODY_BYTES: usize = 64 * 1_024;
+
+#[derive(Debug, Clone, Copy)]
+struct ProviderStreamLimits {
+    max_line_bytes: usize,
+    max_total_bytes: usize,
+    max_lines: usize,
+    max_events: usize,
+}
+
+const PROVIDER_STREAM_LIMITS: ProviderStreamLimits = ProviderStreamLimits {
+    max_line_bytes: MAX_PROVIDER_STREAM_LINE_BYTES,
+    max_total_bytes: MAX_PROVIDER_STREAM_TOTAL_BYTES,
+    max_lines: MAX_PROVIDER_STREAM_LINES,
+    max_events: MAX_PROVIDER_STREAM_EVENTS,
+};
+
+struct BoundedSseReader<R> {
+    reader: R,
+    limits: ProviderStreamLimits,
+    total_bytes: usize,
+    line_count: usize,
+    event_count: usize,
+}
+
+impl<R: BufRead> BoundedSseReader<R> {
+    fn new(reader: R, limits: ProviderStreamLimits) -> Self {
+        Self {
+            reader,
+            limits,
+            total_bytes: 0,
+            line_count: 0,
+            event_count: 0,
+        }
+    }
+
+    fn next_data(&mut self, provider_id: &str, stream_name: &str) -> CommandResult<Option<String>> {
+        loop {
+            let Some(mut line) = self.read_line(provider_id, stream_name)? else {
+                return Ok(None);
+            };
+            while matches!(line.last(), Some(b'\n' | b'\r')) {
+                line.pop();
+            }
+            let line = String::from_utf8(line).map_err(|error| {
+                CommandError::retryable(
+                    "agent_provider_stream_decode_failed",
+                    format!(
+                        "Xero could not decode a {provider_id} {stream_name} line as UTF-8: {error}"
+                    ),
+                )
+            })?;
+            let Some(data) = line.strip_prefix("data:") else {
+                continue;
+            };
+            self.event_count = self.event_count.checked_add(1).ok_or_else(|| {
+                provider_stream_limit_error(provider_id, stream_name, "event count overflowed")
+            })?;
+            if self.event_count > self.limits.max_events {
+                return Err(provider_stream_limit_error(
+                    provider_id,
+                    stream_name,
+                    &format!("event count exceeded {}", self.limits.max_events),
+                ));
+            }
+            return Ok(Some(data.trim().to_owned()));
+        }
+    }
+
+    fn read_line(
+        &mut self,
+        provider_id: &str,
+        stream_name: &str,
+    ) -> CommandResult<Option<Vec<u8>>> {
+        let mut line = Vec::with_capacity(self.limits.max_line_bytes.min(8 * 1_024));
+        loop {
+            let available = self.reader.fill_buf().map_err(|error| {
+                CommandError::retryable(
+                    "agent_provider_stream_read_failed",
+                    format!("Xero lost the {provider_id} {stream_name}: {error}"),
+                )
+            })?;
+            if available.is_empty() {
+                if line.is_empty() {
+                    return Ok(None);
+                }
+                break;
+            }
+
+            let bytes_to_take = available
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(available.len(), |index| index.saturating_add(1));
+            let next_line_len = line.len().checked_add(bytes_to_take).ok_or_else(|| {
+                provider_stream_limit_error(provider_id, stream_name, "line length overflowed")
+            })?;
+            if next_line_len > self.limits.max_line_bytes {
+                return Err(provider_stream_limit_error(
+                    provider_id,
+                    stream_name,
+                    &format!("line exceeded {} bytes", self.limits.max_line_bytes),
+                ));
+            }
+            let next_total = self.total_bytes.checked_add(bytes_to_take).ok_or_else(|| {
+                provider_stream_limit_error(provider_id, stream_name, "byte count overflowed")
+            })?;
+            if next_total > self.limits.max_total_bytes {
+                return Err(provider_stream_limit_error(
+                    provider_id,
+                    stream_name,
+                    &format!("stream exceeded {} bytes", self.limits.max_total_bytes),
+                ));
+            }
+
+            line.extend_from_slice(&available[..bytes_to_take]);
+            self.reader.consume(bytes_to_take);
+            self.total_bytes = next_total;
+            if line.last() == Some(&b'\n') {
+                break;
+            }
+        }
+
+        self.line_count = self.line_count.checked_add(1).ok_or_else(|| {
+            provider_stream_limit_error(provider_id, stream_name, "line count overflowed")
+        })?;
+        if self.line_count > self.limits.max_lines {
+            return Err(provider_stream_limit_error(
+                provider_id,
+                stream_name,
+                &format!("line count exceeded {}", self.limits.max_lines),
+            ));
+        }
+        Ok(Some(line))
+    }
+}
+
+fn provider_stream_limit_error(provider_id: &str, stream_name: &str, detail: &str) -> CommandError {
+    CommandError::user_fixable(
+        "agent_provider_stream_limit_exceeded",
+        format!(
+            "Xero stopped the {provider_id} {stream_name} because its {detail}. Try again or choose a different provider/model."
+        ),
+    )
+}
+
+fn provider_response_limit_error(provider_id: &str, body_name: &str, detail: &str) -> CommandError {
+    CommandError::user_fixable(
+        "agent_provider_response_limit_exceeded",
+        format!(
+            "Xero rejected the {provider_id} {body_name} because its {detail}. Try again or choose a different provider/model."
+        ),
+    )
+}
+
+fn ensure_provider_response_item_capacity(
+    current_items: usize,
+    additional_items: usize,
+    max_items: usize,
+    provider_id: &str,
+    item_name: &str,
+) -> CommandResult<()> {
+    let next_items = current_items.checked_add(additional_items).ok_or_else(|| {
+        provider_response_limit_error(
+            provider_id,
+            "response body",
+            &format!("{item_name} count overflowed"),
+        )
+    })?;
+    if next_items > max_items {
+        return Err(provider_response_limit_error(
+            provider_id,
+            "response body",
+            &format!("{item_name} count exceeded {max_items}"),
+        ));
+    }
+    Ok(())
+}
+
+fn append_provider_response_text(
+    target: &mut String,
+    delta: &str,
+    max_bytes: usize,
+    provider_id: &str,
+    field_name: &str,
+) -> CommandResult<()> {
+    let next_len = target.len().checked_add(delta.len()).ok_or_else(|| {
+        provider_response_limit_error(
+            provider_id,
+            "response body",
+            &format!("{field_name} byte count overflowed"),
+        )
+    })?;
+    if next_len > max_bytes {
+        return Err(provider_response_limit_error(
+            provider_id,
+            "response body",
+            &format!("{field_name} exceeded {max_bytes} bytes"),
+        ));
+    }
+    target.push_str(delta);
+    Ok(())
+}
+
+fn append_provider_stream_text(
+    target: &mut String,
+    delta: &str,
+    max_bytes: usize,
+    provider_id: &str,
+    field_name: &str,
+) -> CommandResult<()> {
+    let next_len = target.len().checked_add(delta.len()).ok_or_else(|| {
+        provider_stream_limit_error(
+            provider_id,
+            "response stream",
+            &format!("{field_name} byte count overflowed"),
+        )
+    })?;
+    if next_len > max_bytes {
+        return Err(provider_stream_limit_error(
+            provider_id,
+            "response stream",
+            &format!("{field_name} exceeded {max_bytes} bytes"),
+        ));
+    }
+    target.push_str(delta);
+    Ok(())
+}
+
+fn read_provider_text_bounded<R: Read>(
+    reader: &mut R,
+    max_bytes: usize,
+    provider_id: &str,
+    body_name: &str,
+) -> CommandResult<String> {
+    let bytes = read_provider_bytes_bounded(reader, max_bytes, provider_id, body_name)?;
+    String::from_utf8(bytes).map_err(|error| {
+        CommandError::retryable(
+            "agent_provider_response_decode_failed",
+            format!("Xero could not decode the {provider_id} {body_name} as UTF-8: {error}"),
+        )
+    })
+}
+
+fn read_provider_bytes_bounded<R: Read>(
+    reader: &mut R,
+    max_bytes: usize,
+    provider_id: &str,
+    body_name: &str,
+) -> CommandResult<Vec<u8>> {
+    let read_limit = u64::try_from(max_bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let mut bytes = Vec::with_capacity(max_bytes.min(8 * 1_024));
+    reader
+        .take(read_limit)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            CommandError::retryable(
+                "agent_provider_response_read_failed",
+                format!("Xero could not read the {provider_id} {body_name}: {error}"),
+            )
+        })?;
+    if bytes.len() > max_bytes {
+        return Err(provider_response_limit_error(
+            provider_id,
+            body_name,
+            &format!("size exceeded {max_bytes} bytes"),
+        ));
+    }
+    Ok(bytes)
+}
+
+fn read_provider_error_text_bounded<R: Read>(
+    reader: &mut R,
+    max_bytes: usize,
+    provider_id: &str,
+    body_name: &str,
+) -> String {
+    match read_provider_bytes_bounded(reader, max_bytes, provider_id, body_name) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(error) if error.code == "agent_provider_response_limit_exceeded" => {
+            "provider error body exceeded the safe read limit and was omitted.".into()
+        }
+        Err(_) => "provider error body could not be read.".into(),
+    }
+}
+
+fn ensure_provider_stream_item_capacity(
+    current_items: usize,
+    additional_items: usize,
+    max_items: usize,
+    provider_id: &str,
+    item_name: &str,
+) -> CommandResult<()> {
+    let next_items = current_items.checked_add(additional_items).ok_or_else(|| {
+        provider_stream_limit_error(
+            provider_id,
+            "response stream",
+            &format!("{item_name} count overflowed"),
+        )
+    })?;
+    if next_items > max_items {
+        return Err(provider_stream_limit_error(
+            provider_id,
+            "response stream",
+            &format!("{item_name} count exceeded {max_items}"),
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentProviderConfig {
@@ -555,6 +882,18 @@ impl ProviderAdapter for BedrockCliAdapter {
             )
         })?;
         let output_path = output.path().to_path_buf();
+        let stderr_output = NamedTempFile::new().map_err(|error| {
+            CommandError::retryable(
+                "bedrock_tempfile_failed",
+                format!("Xero could not allocate a Bedrock stderr file: {error}"),
+            )
+        })?;
+        let stderr_writer = stderr_output.reopen().map_err(|error| {
+            CommandError::retryable(
+                "bedrock_tempfile_failed",
+                format!("Xero could not open the Bedrock stderr file: {error}"),
+            )
+        })?;
         let mut command = Command::new("aws");
         command
             .arg("bedrock-runtime")
@@ -573,8 +912,8 @@ impl ProviderAdapter for BedrockCliAdapter {
             .arg(body_arg)
             .arg(&output_path)
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(stderr_writer));
         configure_process_tree_root(&mut command);
         let mut child = command.spawn().map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => CommandError::user_fixable(
@@ -592,7 +931,19 @@ impl ProviderAdapter for BedrockCliAdapter {
             BEDROCK_PROVIDER_ID,
         )?;
         if !status.success() {
-            let stderr = read_child_stderr(child)?;
+            drop(child);
+            let mut stderr_reader = stderr_output.reopen().map_err(|error| {
+                CommandError::retryable(
+                    "bedrock_response_read_failed",
+                    format!("Xero could not open the Bedrock stderr body: {error}"),
+                )
+            })?;
+            let stderr = read_provider_error_text_bounded(
+                &mut stderr_reader,
+                MAX_PROVIDER_ERROR_BODY_BYTES,
+                BEDROCK_PROVIDER_ID,
+                "stderr body",
+            );
             return Err(provider_status_error(
                 BEDROCK_PROVIDER_ID,
                 status.code().unwrap_or(-1),
@@ -600,12 +951,18 @@ impl ProviderAdapter for BedrockCliAdapter {
             ));
         }
 
-        let response_text = std::fs::read_to_string(&output_path).map_err(|error| {
+        let mut response_file = std::fs::File::open(&output_path).map_err(|error| {
             CommandError::retryable(
                 "bedrock_response_read_failed",
-                format!("Xero could not read the Bedrock response body: {error}"),
+                format!("Xero could not open the Bedrock response body: {error}"),
             )
         })?;
+        let response_text = read_provider_text_bounded(
+            &mut response_file,
+            MAX_PROVIDER_NON_STREAM_BODY_BYTES,
+            BEDROCK_PROVIDER_ID,
+            "response body",
+        )?;
         parse_anthropic_json_response(BEDROCK_PROVIDER_ID, &response_text, emit)
     }
 
@@ -656,18 +1013,18 @@ impl ProviderAdapter for VertexAnthropicAdapter {
         let token = vertex_access_token()?;
         let body = anthropic_request_body(None, VERTEX_ANTHROPIC_VERSION, request, false)?;
         let url = vertex_anthropic_raw_predict_url(&self.config)?;
-        let response = send_provider_json_request(VERTEX_PROVIDER_ID, || {
+        let mut response = send_provider_json_request(VERTEX_PROVIDER_ID, || {
             self.client
                 .post(url.clone())
                 .bearer_auth(token.clone())
                 .json(&body)
         })?;
-        let text = response.text().map_err(|error| {
-            CommandError::retryable(
-                "vertex_response_read_failed",
-                format!("Xero could not read the Vertex AI response body: {error}"),
-            )
-        })?;
+        let text = read_provider_text_bounded(
+            &mut response,
+            MAX_PROVIDER_NON_STREAM_BODY_BYTES,
+            VERTEX_PROVIDER_ID,
+            "response body",
+        )?;
         parse_anthropic_json_response(VERTEX_PROVIDER_ID, &text, emit)
     }
 
@@ -688,12 +1045,12 @@ impl ProviderAdapter for VertexAnthropicAdapter {
 fn provider_http_client(timeout_ms: u64) -> CommandResult<Client> {
     let timeout = Duration::from_millis(normalize_timeout(timeout_ms));
     Client::builder()
-        // A single total-request `.timeout()` aborts a healthy long-running SSE stream once it
-        // exceeds the deadline, even while deltas are still flowing (common for high-effort
-        // reasoning turns and long completions). The blocking client has no per-read timeout,
-        // so instead bound only connection setup and rely on TCP keepalive to detect a dead
-        // peer, letting a healthy stream run as long as it keeps delivering bytes.
         .connect_timeout(timeout)
+        // In reqwest's blocking client this timeout applies to header wait and separately to
+        // each `Response::read`; every successful read starts a fresh wait. It therefore acts
+        // as an idle-read bound without aborting a healthy SSE stream based on total age.
+        // Immediate run cancellation still requires an async/cancellable transport boundary.
+        .timeout(timeout)
         .tcp_keepalive(Duration::from_secs(30))
         .build()
         .map_err(|error| {
@@ -721,6 +1078,23 @@ fn normalize_required(value: &mut String, field: &'static str) -> CommandResult<
         *value = trimmed.to_owned();
     }
     Ok(())
+}
+
+fn trusted_system_text(request: &ProviderTurnRequest) -> String {
+    let mut trusted = request.system_prompt.clone();
+    for content in request.messages.iter().filter_map(|message| match message {
+        ProviderMessage::Developer { content } => Some(content.trim()),
+        _ => None,
+    }) {
+        if content.is_empty() {
+            continue;
+        }
+        if !trusted.is_empty() {
+            trusted.push_str("\n\n");
+        }
+        trusted.push_str(content);
+    }
+    trusted
 }
 
 fn responses_url(base_url: &str) -> CommandResult<Url> {
@@ -1112,10 +1486,11 @@ fn openai_chat_messages(
 ) -> CommandResult<Vec<JsonValue>> {
     let mut messages = vec![json!({
         "role": "system",
-        "content": request.system_prompt,
+        "content": trusted_system_text(request),
     })];
     for message in &request.messages {
         match message {
+            ProviderMessage::Developer { .. } => {}
             ProviderMessage::User {
                 content,
                 attachments,
@@ -1155,6 +1530,14 @@ fn openai_chat_messages(
                     );
                 }
                 messages.push(JsonValue::Object(object));
+            }
+            ProviderMessage::AssistantContext { content, .. } => {
+                if !content.trim().is_empty() {
+                    messages.push(json!({
+                        "role": "assistant",
+                        "content": content,
+                    }));
+                }
             }
             ProviderMessage::Tool {
                 tool_call_id,
@@ -1282,6 +1665,7 @@ fn openai_responses_request_body(
         "tools".into(),
         JsonValue::Array(request.tools.iter().map(openai_response_tool).collect()),
     );
+    body.insert("include".into(), json!(["reasoning.encrypted_content"]));
     body.insert("stream".into(), json!(true));
     body.insert("max_output_tokens".into(), json!(DEFAULT_MAX_OUTPUT_TOKENS));
     if let Some(effort) = request.controls.active.thinking_effort.as_ref() {
@@ -1303,10 +1687,10 @@ fn xai_responses_request_body(
 ) -> CommandResult<JsonValue> {
     let mut body = JsonMap::new();
     body.insert("model".into(), json!(model_id));
-    body.insert("instructions".into(), json!(request.system_prompt));
+    body.insert("instructions".into(), json!(trusted_system_text(request)));
     body.insert(
         "input".into(),
-        JsonValue::Array(openai_response_input(request)?),
+        JsonValue::Array(xai_response_input(request)?),
     );
     if !request.tools.is_empty() {
         body.insert(
@@ -1457,9 +1841,28 @@ fn openai_response_user_content(
 }
 
 fn openai_response_input(request: &ProviderTurnRequest) -> CommandResult<Vec<JsonValue>> {
+    openai_response_input_with_reasoning(request, true)
+}
+
+fn xai_response_input(request: &ProviderTurnRequest) -> CommandResult<Vec<JsonValue>> {
+    openai_response_input_with_reasoning(request, false)
+}
+
+fn openai_response_input_with_reasoning(
+    request: &ProviderTurnRequest,
+    include_openai_native_items: bool,
+) -> CommandResult<Vec<JsonValue>> {
     let mut input = Vec::new();
     for message in &request.messages {
         match message {
+            ProviderMessage::Developer { content } => {
+                if include_openai_native_items && !content.trim().is_empty() {
+                    input.push(json!({
+                        "role": "developer",
+                        "content": content,
+                    }));
+                }
+            }
             ProviderMessage::User {
                 content,
                 attachments,
@@ -1471,9 +1874,15 @@ fn openai_response_input(request: &ProviderTurnRequest) -> CommandResult<Vec<Jso
             }
             ProviderMessage::Assistant {
                 content,
+                reasoning_details,
                 tool_calls,
                 ..
             } => {
+                if include_openai_native_items {
+                    input.extend(replayable_openai_reasoning_items(
+                        reasoning_details.as_ref(),
+                    )?);
+                }
                 if !content.trim().is_empty() {
                     input.push(json!({ "role": "assistant", "content": content }));
                 }
@@ -1483,6 +1892,14 @@ fn openai_response_input(request: &ProviderTurnRequest) -> CommandResult<Vec<Jso
                         "call_id": tool_call.tool_call_id,
                         "name": tool_call.tool_name,
                         "arguments": tool_call.input.to_string(),
+                    }));
+                }
+            }
+            ProviderMessage::AssistantContext { content, .. } => {
+                if !content.trim().is_empty() {
+                    input.push(json!({
+                        "role": "assistant",
+                        "content": content,
                     }));
                 }
             }
@@ -1506,6 +1923,17 @@ fn openai_codex_response_input(request: &ProviderTurnRequest) -> CommandResult<V
     let mut input = Vec::new();
     for (index, message) in request.messages.iter().enumerate() {
         match message {
+            ProviderMessage::Developer { content } => {
+                if !content.trim().is_empty() {
+                    input.push(json!({
+                        "role": "developer",
+                        "content": [{
+                            "type": "input_text",
+                            "text": content,
+                        }],
+                    }));
+                }
+            }
             ProviderMessage::User {
                 content,
                 attachments,
@@ -1517,9 +1945,13 @@ fn openai_codex_response_input(request: &ProviderTurnRequest) -> CommandResult<V
             }
             ProviderMessage::Assistant {
                 content,
+                reasoning_details,
                 tool_calls,
                 ..
             } => {
+                input.extend(replayable_openai_reasoning_items(
+                    reasoning_details.as_ref(),
+                )?);
                 if !content.trim().is_empty() {
                     input.push(json!({
                         "type": "message",
@@ -1542,6 +1974,21 @@ fn openai_codex_response_input(request: &ProviderTurnRequest) -> CommandResult<V
                     }));
                 }
             }
+            ProviderMessage::AssistantContext { content, .. } => {
+                if !content.trim().is_empty() {
+                    input.push(json!({
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{
+                            "type": "output_text",
+                            "text": content,
+                            "annotations": [],
+                        }],
+                        "status": "completed",
+                        "id": format!("msg_{index}"),
+                    }));
+                }
+            }
             ProviderMessage::Tool {
                 tool_call_id,
                 content,
@@ -1556,6 +2003,105 @@ fn openai_codex_response_input(request: &ProviderTurnRequest) -> CommandResult<V
         }
     }
     Ok(input)
+}
+
+fn replayable_openai_reasoning_items(
+    reasoning_details: Option<&JsonValue>,
+) -> CommandResult<Vec<JsonValue>> {
+    let Some(items) = reasoning_details.and_then(JsonValue::as_array) else {
+        return Ok(Vec::new());
+    };
+    ensure_provider_stream_item_capacity(
+        0,
+        items.len(),
+        MAX_PROVIDER_REASONING_ITEMS,
+        OPENAI_API_PROVIDER_ID,
+        "stored reasoning items",
+    )?;
+
+    let mut replayable = Vec::new();
+    let mut seen_ids = BTreeSet::new();
+    let mut total_bytes = 0_usize;
+    for item in items {
+        let Some((id, normalized)) = normalize_openai_reasoning_item(item) else {
+            continue;
+        };
+        if !seen_ids.insert(id) {
+            continue;
+        }
+        let item_bytes = json_string_storage_bytes(&normalized).ok_or_else(|| {
+            provider_stream_limit_error(
+                OPENAI_API_PROVIDER_ID,
+                "reasoning replay",
+                "stored reasoning byte count overflowed",
+            )
+        })?;
+        total_bytes = total_bytes.checked_add(item_bytes).ok_or_else(|| {
+            provider_stream_limit_error(
+                OPENAI_API_PROVIDER_ID,
+                "reasoning replay",
+                "stored reasoning byte count overflowed",
+            )
+        })?;
+        if total_bytes > MAX_PROVIDER_REASONING_BYTES {
+            return Err(provider_stream_limit_error(
+                OPENAI_API_PROVIDER_ID,
+                "reasoning replay",
+                &format!("stored reasoning exceeded {MAX_PROVIDER_REASONING_BYTES} bytes"),
+            ));
+        }
+        replayable.push(normalized);
+    }
+    Ok(replayable)
+}
+
+fn normalize_openai_reasoning_item(item: &JsonValue) -> Option<(String, JsonValue)> {
+    let object = item.as_object()?;
+    if object.get("type").and_then(JsonValue::as_str) != Some("reasoning") {
+        return None;
+    }
+    let id = object.get("id").and_then(JsonValue::as_str)?;
+    if id.is_empty() || id.trim() != id || id.len() > MAX_PROVIDER_REASONING_ID_BYTES {
+        return None;
+    }
+    let encrypted_content = object
+        .get("encrypted_content")
+        .and_then(JsonValue::as_str)?;
+    if encrypted_content.is_empty() || encrypted_content.len() > MAX_PROVIDER_REASONING_BYTES {
+        return None;
+    }
+
+    let mut normalized = JsonMap::new();
+    normalized.insert("type".into(), json!("reasoning"));
+    normalized.insert("id".into(), json!(id));
+    normalized.insert("encrypted_content".into(), json!(encrypted_content));
+    if let Some(summary) = object
+        .get("summary")
+        .and_then(normalize_openai_reasoning_summary)
+    {
+        normalized.insert("summary".into(), summary);
+    }
+    Some((id.to_owned(), JsonValue::Object(normalized)))
+}
+
+fn normalize_openai_reasoning_summary(summary: &JsonValue) -> Option<JsonValue> {
+    let parts = summary.as_array()?;
+    if parts.len() > MAX_PROVIDER_REASONING_ITEMS {
+        return None;
+    }
+    let mut normalized = Vec::with_capacity(parts.len());
+    for part in parts {
+        let part = part.as_object()?;
+        if part.get("type").and_then(JsonValue::as_str) != Some("summary_text") {
+            return None;
+        }
+        let text = part.get("text").and_then(JsonValue::as_str)?;
+        if text.len() > MAX_PROVIDER_REASONING_BYTES {
+            return None;
+        }
+        normalized.push(json!({ "type": "summary_text", "text": text }));
+    }
+    Some(JsonValue::Array(normalized))
 }
 
 fn openai_codex_user_content(
@@ -1862,6 +2408,7 @@ fn anthropic_request_body(
     // API takes `stream` in the body.
     let is_native_anthropic =
         !anthropic_version.starts_with("bedrock-") && !anthropic_version.starts_with("vertex-");
+    let trusted_system = trusted_system_text(request);
     // Prompt-cache breakpoints only on the native Messages API; the Bedrock/Vertex
     // Anthropic schemas are stricter and cache support varies by region/model there.
     if is_native_anthropic {
@@ -1869,12 +2416,12 @@ fn anthropic_request_body(
             "system".into(),
             json!([{
                 "type": "text",
-                "text": request.system_prompt,
+                "text": trusted_system,
                 "cache_control": { "type": "ephemeral" },
             }]),
         );
     } else {
-        body.insert("system".into(), json!(request.system_prompt));
+        body.insert("system".into(), json!(trusted_system));
     }
     let thinking_budget = request
         .controls
@@ -1980,16 +2527,13 @@ fn estimate_anthropic_context_tokens(
             .json(&count_body)
     });
     let estimate = match response {
-        Ok(response) => {
-            let text = response.text().map_err(|error| {
-                CommandError::retryable(
-                    "anthropic_count_tokens_response_read_failed",
-                    format!(
-                        "Xero could not read the Anthropic token-count response for `{}`: {error}",
-                        config.model_id
-                    ),
-                )
-            });
+        Ok(mut response) => {
+            let text = read_provider_text_bounded(
+                &mut response,
+                MAX_PROVIDER_TOKEN_COUNT_BODY_BYTES,
+                &config.provider_id,
+                "token-count response body",
+            );
             match text.and_then(|text| {
                 serde_json::from_str::<JsonValue>(&text).map_err(|error| {
                     CommandError::retryable(
@@ -2071,6 +2615,7 @@ fn anthropic_messages(
     let mut messages = Vec::new();
     for message in &request.messages {
         match message {
+            ProviderMessage::Developer { .. } => {}
             ProviderMessage::User {
                 content,
                 attachments,
@@ -2116,6 +2661,14 @@ fn anthropic_messages(
                     messages.push(json!({ "role": "assistant", "content": blocks }));
                 }
             }
+            ProviderMessage::AssistantContext { content, .. } => {
+                if !content.trim().is_empty() {
+                    messages.push(json!({
+                        "role": "assistant",
+                        "content": [{ "type": "text", "text": content }],
+                    }));
+                }
+            }
             ProviderMessage::Tool {
                 tool_call_id,
                 content,
@@ -2131,6 +2684,23 @@ fn anthropic_messages(
                 }));
             }
         }
+    }
+    if messages
+        .first()
+        .and_then(|message| message.get("role"))
+        .and_then(JsonValue::as_str)
+        == Some("assistant")
+    {
+        messages.insert(
+            0,
+            json!({
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": ANTHROPIC_ASSISTANT_CONTEXT_PREAMBLE,
+                }],
+            }),
+        );
     }
     Ok(messages)
 }
@@ -2249,6 +2819,29 @@ struct PartialToolCall {
     arguments: String,
 }
 
+fn validate_partial_tool_calls(
+    provider_id: &str,
+    partial_calls: &BTreeMap<usize, PartialToolCall>,
+) -> CommandResult<()> {
+    ensure_provider_stream_item_capacity(
+        0,
+        partial_calls.len(),
+        MAX_PROVIDER_TOOL_CALLS,
+        provider_id,
+        "tool calls",
+    )?;
+    for partial in partial_calls.values() {
+        if partial.arguments.len() > MAX_PROVIDER_TOOL_ARGUMENT_BYTES {
+            return Err(provider_stream_limit_error(
+                provider_id,
+                "response stream",
+                &format!("tool arguments exceeded {MAX_PROVIDER_TOOL_ARGUMENT_BYTES} bytes"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 struct OpenAiChatChunk {
     #[serde(default)]
@@ -2334,25 +2927,16 @@ fn parse_openai_chat_sse(
     let mut partial_calls = BTreeMap::<usize, PartialToolCall>::new();
     let mut usage = None;
     let mut finish_reason: Option<String> = None;
+    let mut stream = BoundedSseReader::new(BufReader::new(response), PROVIDER_STREAM_LIMITS);
 
-    for line in BufReader::new(response).lines() {
-        let line = line.map_err(|error| {
-            CommandError::retryable(
-                "agent_provider_stream_read_failed",
-                format!("Xero lost the {provider_id} response stream: {error}"),
-            )
-        })?;
-        let Some(data) = line.strip_prefix("data:") else {
-            continue;
-        };
-        let data = data.trim();
+    while let Some(data) = stream.next_data(provider_id, "response stream")? {
         if data.is_empty() {
             continue;
         }
         if data == "[DONE]" {
             break;
         }
-        let chunk: OpenAiChatChunk = serde_json::from_str(data).map_err(|error| {
+        let chunk: OpenAiChatChunk = serde_json::from_str(&data).map_err(|error| {
             CommandError::retryable(
                 "agent_provider_stream_decode_failed",
                 format!("Xero could not decode a {provider_id} stream chunk: {error}"),
@@ -2376,6 +2960,13 @@ fn parse_openai_chat_sse(
             emit(ProviderStreamEvent::Usage(mapped.clone()))?;
             usage = Some(mapped);
         }
+        ensure_provider_stream_item_capacity(
+            0,
+            chunk.choices.len(),
+            MAX_PROVIDER_ITEMS_PER_EVENT,
+            provider_id,
+            "choices in one event",
+        )?;
         for choice in chunk.choices {
             if let Some(reason) = choice.finish_reason {
                 finish_reason = Some(reason);
@@ -2390,20 +2981,55 @@ fn parse_openai_chat_sse(
             if provider_replays_openai_reasoning_details(provider_id) {
                 if let Some(reasoning_details) = reasoning_details {
                     collect_reasoning_details(&mut reasoning_details_buffer, reasoning_details);
+                    ensure_provider_stream_item_capacity(
+                        0,
+                        reasoning_details_buffer.len(),
+                        MAX_PROVIDER_REASONING_ITEMS,
+                        provider_id,
+                        "reasoning detail items",
+                    )?;
                 }
             }
             if let Some(reasoning) = reasoning_content
                 .or(reasoning)
                 .filter(|reasoning| !reasoning.is_empty())
             {
-                reasoning_content_buffer.push_str(&reasoning);
+                append_provider_stream_text(
+                    &mut reasoning_content_buffer,
+                    &reasoning,
+                    MAX_PROVIDER_REASONING_BYTES,
+                    provider_id,
+                    "reasoning text",
+                )?;
                 emit(ProviderStreamEvent::ReasoningSummary(reasoning))?;
             }
             if let Some(content) = content {
-                message.push_str(&content);
+                append_provider_stream_text(
+                    &mut message,
+                    &content,
+                    MAX_PROVIDER_MESSAGE_BYTES,
+                    provider_id,
+                    "message text",
+                )?;
                 emit(ProviderStreamEvent::MessageDelta(content))?;
             }
+            ensure_provider_stream_item_capacity(
+                0,
+                tool_calls.len(),
+                MAX_PROVIDER_ITEMS_PER_EVENT,
+                provider_id,
+                "tool call deltas in one event",
+            )?;
             for tool_call in tool_calls {
+                if !partial_calls.contains_key(&tool_call.index) {
+                    ensure_provider_stream_item_capacity(
+                        partial_calls.len(),
+                        1,
+                        MAX_PROVIDER_TOOL_CALLS,
+                        provider_id,
+                        "tool calls",
+                    )?;
+                }
                 let partial = partial_calls.entry(tool_call.index).or_default();
                 if let Some(id) = tool_call.id {
                     partial.id = Some(id);
@@ -2413,7 +3039,13 @@ fn parse_openai_chat_sse(
                         partial.name = Some(name);
                     }
                     if let Some(arguments) = function.arguments {
-                        partial.arguments.push_str(&arguments);
+                        append_provider_stream_text(
+                            &mut partial.arguments,
+                            &arguments,
+                            MAX_PROVIDER_TOOL_ARGUMENT_BYTES,
+                            provider_id,
+                            "tool arguments",
+                        )?;
                         emit(ProviderStreamEvent::ToolDelta {
                             tool_call_id: partial.id.clone(),
                             tool_name: partial.name.clone(),
@@ -2454,32 +3086,31 @@ fn parse_openai_responses_sse(
     let mut completed_call_count = 0_usize;
     let mut reasoning_summary_state = OpenAiResponsesReasoningSummaryState::default();
     let mut usage = None;
+    let mut stream = BoundedSseReader::new(BufReader::new(response), PROVIDER_STREAM_LIMITS);
 
-    for line in BufReader::new(response).lines() {
-        let line = line.map_err(|error| {
-            CommandError::retryable(
-                "agent_provider_stream_read_failed",
-                format!("Xero lost the {provider_id} Responses stream: {error}"),
-            )
-        })?;
-        let Some(data) = line.strip_prefix("data:") else {
-            continue;
-        };
-        let data = data.trim();
-        if data.is_empty() || data == "[DONE]" {
+    while let Some(data) = stream.next_data(provider_id, "Responses stream")? {
+        if data.is_empty() {
             continue;
         }
-        let value: JsonValue = serde_json::from_str(data).map_err(|error| {
+        if data == "[DONE]" {
+            break;
+        }
+        let value: JsonValue = serde_json::from_str(&data).map_err(|error| {
             CommandError::retryable(
                 "agent_provider_stream_decode_failed",
                 format!("Xero could not decode a {provider_id} Responses chunk: {error}"),
             )
         })?;
         if emit_openai_responses_reasoning_summary_event(
+            provider_id,
             &value,
             &mut reasoning_summary_state,
             emit,
         )? {
+            validate_openai_responses_reasoning_summary_state(
+                provider_id,
+                &reasoning_summary_state,
+            )?;
             continue;
         }
         match value
@@ -2496,7 +3127,13 @@ fn parse_openai_responses_sse(
                     .unwrap_or_default()
                     .to_string();
                 if !delta.is_empty() {
-                    message.push_str(&delta);
+                    append_provider_stream_text(
+                        &mut message,
+                        &delta,
+                        MAX_PROVIDER_MESSAGE_BYTES,
+                        provider_id,
+                        "message text",
+                    )?;
                     emit(ProviderStreamEvent::MessageDelta(delta))?;
                 }
             }
@@ -2510,8 +3147,23 @@ fn parse_openai_responses_sse(
                     .and_then(JsonValue::as_str)
                     .unwrap_or_default()
                     .to_string();
+                if !partial_calls.contains_key(&index) {
+                    ensure_provider_stream_item_capacity(
+                        partial_calls.len(),
+                        1,
+                        MAX_PROVIDER_TOOL_CALLS,
+                        provider_id,
+                        "tool calls",
+                    )?;
+                }
                 let partial = partial_calls.entry(index).or_default();
-                partial.arguments.push_str(&delta);
+                append_provider_stream_text(
+                    &mut partial.arguments,
+                    &delta,
+                    MAX_PROVIDER_TOOL_ARGUMENT_BYTES,
+                    provider_id,
+                    "tool arguments",
+                )?;
                 emit(ProviderStreamEvent::ToolDelta {
                     tool_call_id: partial.id.clone(),
                     tool_name: partial.name.clone(),
@@ -2524,6 +3176,7 @@ fn parse_openai_responses_sse(
                     &value,
                     completed_call_count,
                 );
+                validate_partial_tool_calls(provider_id, &partial_calls)?;
             }
             "response.output_item.done" => {
                 if apply_openai_response_function_call_item(
@@ -2533,12 +3186,18 @@ fn parse_openai_responses_sse(
                 ) {
                     completed_call_count = completed_call_count.saturating_add(1);
                 }
+                validate_partial_tool_calls(provider_id, &partial_calls)?;
             }
             "response.completed" | "response.done" => {
                 emit_openai_responses_completed_reasoning_summaries(
+                    provider_id,
                     &value,
                     &mut reasoning_summary_state,
                     emit,
+                )?;
+                validate_openai_responses_reasoning_summary_state(
+                    provider_id,
+                    &reasoning_summary_state,
                 )?;
                 if let Some(mapped) = value
                     .get("response")
@@ -2582,12 +3241,27 @@ fn parse_openai_responses_sse(
         }
     }
 
-    flush_openai_responses_reasoning_summary_pending(&mut reasoning_summary_state, emit)?;
+    validate_openai_responses_reasoning_summary_state(provider_id, &reasoning_summary_state)?;
+    flush_openai_responses_reasoning_summary_pending(
+        provider_id,
+        &mut reasoning_summary_state,
+        emit,
+    )?;
+    validate_openai_responses_reasoning_summary_state(provider_id, &reasoning_summary_state)?;
+    let reasoning_details = reasoning_summary_state.replayable_reasoning_details();
 
-    finish_provider_turn(provider_id, message, None, None, partial_calls, usage)
+    finish_provider_turn(
+        provider_id,
+        message,
+        None,
+        reasoning_details,
+        partial_calls,
+        usage,
+    )
 }
 
 fn emit_openai_responses_completed_reasoning_summaries(
+    provider_id: &str,
     value: &JsonValue,
     state: &mut OpenAiResponsesReasoningSummaryState,
     emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
@@ -2599,6 +3273,13 @@ fn emit_openai_responses_completed_reasoning_summaries(
     else {
         return Ok(());
     };
+    ensure_provider_stream_item_capacity(
+        0,
+        output.len(),
+        MAX_PROVIDER_ITEMS_PER_EVENT,
+        provider_id,
+        "response output items in one event",
+    )?;
 
     let mut emitted_any = false;
     for (fallback_output_index, item) in output.iter().enumerate() {
@@ -2609,8 +3290,14 @@ fn emit_openai_responses_completed_reasoning_summaries(
             .get("output_index")
             .and_then(JsonValue::as_u64)
             .unwrap_or(fallback_output_index as u64);
-        emitted_any |=
-            emit_openai_responses_reasoning_summary_item(output_index, item, state, emit)?;
+        collect_openai_responses_reasoning_item(provider_id, state, item)?;
+        emitted_any |= emit_openai_responses_reasoning_summary_item(
+            provider_id,
+            output_index,
+            item,
+            state,
+            emit,
+        )?;
     }
 
     if emitted_any {
@@ -2623,9 +3310,143 @@ fn emit_openai_responses_completed_reasoning_summaries(
 struct OpenAiResponsesReasoningSummaryState {
     pending_text: BTreeMap<(u64, u64), String>,
     emitted_text: BTreeMap<(u64, u64), String>,
+    replayable_items: Vec<JsonValue>,
+    replayable_item_indices: BTreeMap<String, usize>,
+}
+
+impl OpenAiResponsesReasoningSummaryState {
+    fn replayable_reasoning_details(&self) -> Option<JsonValue> {
+        (!self.replayable_items.is_empty()).then(|| JsonValue::Array(self.replayable_items.clone()))
+    }
+}
+
+fn provider_replays_openai_responses_reasoning_items(provider_id: &str) -> bool {
+    matches!(
+        provider_id,
+        OPENAI_API_PROVIDER_ID | OPENAI_CODEX_PROVIDER_ID
+    )
+}
+
+fn collect_openai_responses_reasoning_item(
+    provider_id: &str,
+    state: &mut OpenAiResponsesReasoningSummaryState,
+    item: &JsonValue,
+) -> CommandResult<()> {
+    if !provider_replays_openai_responses_reasoning_items(provider_id) {
+        return Ok(());
+    }
+    let Some((id, normalized)) = normalize_openai_reasoning_item(item) else {
+        return Ok(());
+    };
+
+    if let Some(index) = state.replayable_item_indices.get(&id).copied() {
+        let existing = &mut state.replayable_items[index];
+        if existing.get("encrypted_content") != normalized.get("encrypted_content") {
+            return Err(CommandError::retryable(
+                "agent_provider_reasoning_item_conflict",
+                format!(
+                    "The {provider_id} Responses stream reused reasoning item `{id}` with different encrypted content."
+                ),
+            ));
+        }
+        if existing.get("summary").is_none() {
+            if let Some(summary) = normalized.get("summary") {
+                existing["summary"] = summary.clone();
+            }
+        }
+        return validate_openai_responses_replayable_items(provider_id, state);
+    }
+
+    ensure_provider_stream_item_capacity(
+        state.replayable_items.len(),
+        1,
+        MAX_PROVIDER_REASONING_ITEMS,
+        provider_id,
+        "replayable reasoning items",
+    )?;
+    let index = state.replayable_items.len();
+    state.replayable_items.push(normalized);
+    state.replayable_item_indices.insert(id, index);
+    validate_openai_responses_replayable_items(provider_id, state)
+}
+
+fn validate_openai_responses_replayable_items(
+    provider_id: &str,
+    state: &OpenAiResponsesReasoningSummaryState,
+) -> CommandResult<()> {
+    ensure_provider_stream_item_capacity(
+        0,
+        state.replayable_items.len(),
+        MAX_PROVIDER_REASONING_ITEMS,
+        provider_id,
+        "replayable reasoning items",
+    )?;
+    let total_bytes = state
+        .replayable_items
+        .iter()
+        .try_fold(0_usize, |total, item| {
+            json_string_storage_bytes(item).and_then(|bytes| total.checked_add(bytes))
+        })
+        .ok_or_else(|| {
+            provider_stream_limit_error(
+                provider_id,
+                "Responses stream",
+                "replayable reasoning byte count overflowed",
+            )
+        })?;
+    if total_bytes > MAX_PROVIDER_REASONING_BYTES {
+        return Err(provider_stream_limit_error(
+            provider_id,
+            "Responses stream",
+            &format!("replayable reasoning items exceeded {MAX_PROVIDER_REASONING_BYTES} bytes"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_openai_responses_reasoning_summary_state(
+    provider_id: &str,
+    state: &OpenAiResponsesReasoningSummaryState,
+) -> CommandResult<()> {
+    validate_openai_responses_replayable_items(provider_id, state)?;
+    ensure_provider_stream_item_capacity(
+        0,
+        state.pending_text.len(),
+        MAX_PROVIDER_REASONING_ITEMS,
+        provider_id,
+        "pending reasoning summary items",
+    )?;
+    ensure_provider_stream_item_capacity(
+        0,
+        state.emitted_text.len(),
+        MAX_PROVIDER_REASONING_ITEMS,
+        provider_id,
+        "emitted reasoning summary items",
+    )?;
+    let total_bytes = state
+        .pending_text
+        .values()
+        .chain(state.emitted_text.values())
+        .try_fold(0_usize, |total, text| total.checked_add(text.len()))
+        .ok_or_else(|| {
+            provider_stream_limit_error(
+                provider_id,
+                "Responses stream",
+                "reasoning summary byte count overflowed",
+            )
+        })?;
+    if total_bytes > MAX_PROVIDER_REASONING_BYTES {
+        return Err(provider_stream_limit_error(
+            provider_id,
+            "Responses stream",
+            &format!("reasoning summaries exceeded {MAX_PROVIDER_REASONING_BYTES} bytes"),
+        ));
+    }
+    Ok(())
 }
 
 fn emit_openai_responses_reasoning_summary_event(
+    provider_id: &str,
     value: &JsonValue,
     state: &mut OpenAiResponsesReasoningSummaryState,
     emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
@@ -2643,7 +3464,22 @@ fn emit_openai_responses_reasoning_summary_event(
                 .unwrap_or_default()
                 .to_owned();
             if !delta.is_empty() {
-                state.pending_text.entry(key).or_default().push_str(&delta);
+                if !state.pending_text.contains_key(&key) {
+                    ensure_provider_stream_item_capacity(
+                        state.pending_text.len(),
+                        1,
+                        MAX_PROVIDER_REASONING_ITEMS,
+                        provider_id,
+                        "pending reasoning summary items",
+                    )?;
+                }
+                append_provider_stream_text(
+                    state.pending_text.entry(key).or_default(),
+                    &delta,
+                    MAX_PROVIDER_REASONING_BYTES,
+                    provider_id,
+                    "reasoning summary text",
+                )?;
             }
             Ok(true)
         }
@@ -2655,7 +3491,7 @@ fn emit_openai_responses_reasoning_summary_event(
                 .and_then(JsonValue::as_str)
                 .filter(|text| !text.is_empty())
                 .unwrap_or(pending.as_str());
-            emit_openai_responses_reasoning_summary_text(key, text, state, emit)?;
+            emit_openai_responses_reasoning_summary_text(provider_id, key, text, state, emit)?;
             Ok(true)
         }
         "response.reasoning_summary_part.done" => {
@@ -2670,8 +3506,13 @@ fn emit_openai_responses_reasoning_summary_event(
                         .and_then(JsonValue::as_str)
                 })
                 .unwrap_or_default();
-            let emitted = emit_openai_responses_reasoning_summary_text(key, fallback, state, emit)?
-                || state.emitted_text.contains_key(&key);
+            let emitted = emit_openai_responses_reasoning_summary_text(
+                provider_id,
+                key,
+                fallback,
+                state,
+                emit,
+            )? || state.emitted_text.contains_key(&key);
             if emitted {
                 emit(ProviderStreamEvent::ReasoningSummary("\n\n".into()))?;
             }
@@ -2685,7 +3526,22 @@ fn emit_openai_responses_reasoning_summary_event(
                 .and_then(JsonValue::as_str)
                 .filter(|text| !text.is_empty())
             {
-                state.pending_text.entry(key).or_default().push_str(text);
+                if !state.pending_text.contains_key(&key) {
+                    ensure_provider_stream_item_capacity(
+                        state.pending_text.len(),
+                        1,
+                        MAX_PROVIDER_REASONING_ITEMS,
+                        provider_id,
+                        "pending reasoning summary items",
+                    )?;
+                }
+                append_provider_stream_text(
+                    state.pending_text.entry(key).or_default(),
+                    text,
+                    MAX_PROVIDER_REASONING_BYTES,
+                    provider_id,
+                    "reasoning summary text",
+                )?;
             }
             Ok(true)
         }
@@ -2694,13 +3550,19 @@ fn emit_openai_responses_reasoning_summary_event(
             if item.get("type").and_then(JsonValue::as_str) != Some("reasoning") {
                 return Ok(false);
             }
+            collect_openai_responses_reasoning_item(provider_id, state, item)?;
             let output_index = value
                 .get("output_index")
                 .or_else(|| item.get("output_index"))
                 .and_then(JsonValue::as_u64)
                 .unwrap_or_default();
-            let emitted_any =
-                emit_openai_responses_reasoning_summary_item(output_index, item, state, emit)?;
+            let emitted_any = emit_openai_responses_reasoning_summary_item(
+                provider_id,
+                output_index,
+                item,
+                state,
+                emit,
+            )?;
             if emitted_any {
                 emit(ProviderStreamEvent::ReasoningSummary("\n\n".into()))?;
             }
@@ -2711,12 +3573,13 @@ fn emit_openai_responses_reasoning_summary_event(
 }
 
 fn flush_openai_responses_reasoning_summary_pending(
+    provider_id: &str,
     state: &mut OpenAiResponsesReasoningSummaryState,
     emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
 ) -> CommandResult<()> {
     let pending = std::mem::take(&mut state.pending_text);
     for (key, text) in pending {
-        if emit_openai_responses_reasoning_summary_text(key, &text, state, emit)? {
+        if emit_openai_responses_reasoning_summary_text(provider_id, key, &text, state, emit)? {
             emit(ProviderStreamEvent::ReasoningSummary("\n\n".into()))?;
         }
     }
@@ -2724,6 +3587,7 @@ fn flush_openai_responses_reasoning_summary_pending(
 }
 
 fn emit_openai_responses_reasoning_summary_item(
+    provider_id: &str,
     output_index: u64,
     item: &JsonValue,
     state: &mut OpenAiResponsesReasoningSummaryState,
@@ -2737,7 +3601,8 @@ fn emit_openai_responses_reasoning_summary_item(
                 .get("text")
                 .and_then(JsonValue::as_str)
                 .unwrap_or_default();
-            emitted_any |= emit_openai_responses_reasoning_summary_text(key, text, state, emit)?;
+            emitted_any |=
+                emit_openai_responses_reasoning_summary_text(provider_id, key, text, state, emit)?;
         }
     }
     Ok(emitted_any)
@@ -2757,6 +3622,7 @@ fn openai_responses_reasoning_summary_key(value: &JsonValue) -> (u64, u64) {
 }
 
 fn emit_openai_responses_reasoning_summary_text(
+    provider_id: &str,
     key: (u64, u64),
     text: &str,
     state: &mut OpenAiResponsesReasoningSummaryState,
@@ -2764,6 +3630,13 @@ fn emit_openai_responses_reasoning_summary_text(
 ) -> CommandResult<bool> {
     if text.is_empty() {
         return Ok(false);
+    }
+    if text.len() > MAX_PROVIDER_REASONING_BYTES {
+        return Err(provider_stream_limit_error(
+            provider_id,
+            "Responses stream",
+            &format!("reasoning summary text exceeded {MAX_PROVIDER_REASONING_BYTES} bytes"),
+        ));
     }
     if let Some(previous) = state.emitted_text.get(&key) {
         if previous == text {
@@ -2775,12 +3648,23 @@ fn emit_openai_responses_reasoning_summary_text(
             }
             emit(ProviderStreamEvent::ReasoningSummary(delta.to_owned()))?;
             state.emitted_text.insert(key, text.to_owned());
+            validate_openai_responses_reasoning_summary_state(provider_id, state)?;
             return Ok(true);
         }
         return Ok(false);
     }
+    if !state.emitted_text.contains_key(&key) {
+        ensure_provider_stream_item_capacity(
+            state.emitted_text.len(),
+            1,
+            MAX_PROVIDER_REASONING_ITEMS,
+            provider_id,
+            "emitted reasoning summary items",
+        )?;
+    }
     emit(ProviderStreamEvent::ReasoningSummary(text.to_owned()))?;
     state.emitted_text.insert(key, text.to_owned());
+    validate_openai_responses_reasoning_summary_state(provider_id, state)?;
     Ok(true)
 }
 
@@ -2971,22 +3855,13 @@ fn parse_anthropic_sse(
     let mut thinking_blocks = BTreeMap::<usize, JsonValue>::new();
     let mut usage = ProviderUsage::default();
     let mut stop_reason: Option<String> = None;
+    let mut stream = BoundedSseReader::new(BufReader::new(response), PROVIDER_STREAM_LIMITS);
 
-    for line in BufReader::new(response).lines() {
-        let line = line.map_err(|error| {
-            CommandError::retryable(
-                "agent_provider_stream_read_failed",
-                format!("Xero lost the {provider_id} response stream: {error}"),
-            )
-        })?;
-        let Some(data) = line.strip_prefix("data:") else {
-            continue;
-        };
-        let data = data.trim();
+    while let Some(data) = stream.next_data(provider_id, "response stream")? {
         if data.is_empty() {
             continue;
         }
-        let value: JsonValue = serde_json::from_str(data).map_err(|error| {
+        let value: JsonValue = serde_json::from_str(&data).map_err(|error| {
             CommandError::retryable(
                 "agent_provider_stream_decode_failed",
                 format!("Xero could not decode a {provider_id} stream chunk: {error}"),
@@ -3027,6 +3902,15 @@ fn parse_anthropic_sse(
                     .unwrap_or(JsonValue::Null);
                 match block.get("type").and_then(JsonValue::as_str) {
                     Some("tool_use") => {
+                        if !partial_calls.contains_key(&index) {
+                            ensure_provider_stream_item_capacity(
+                                partial_calls.len(),
+                                1,
+                                MAX_PROVIDER_TOOL_CALLS,
+                                provider_id,
+                                "tool calls",
+                            )?;
+                        }
                         partial_calls.insert(
                             index,
                             PartialToolCall {
@@ -3043,13 +3927,32 @@ fn parse_anthropic_sse(
                         );
                     }
                     Some("thinking") => {
+                        if !thinking_blocks.contains_key(&index) {
+                            ensure_provider_stream_item_capacity(
+                                thinking_blocks.len(),
+                                1,
+                                MAX_PROVIDER_REASONING_ITEMS,
+                                provider_id,
+                                "thinking blocks",
+                            )?;
+                        }
                         thinking_blocks.insert(
                             index,
                             json!({ "type": "thinking", "thinking": "", "signature": "" }),
                         );
                     }
                     Some("redacted_thinking") => {
+                        if !thinking_blocks.contains_key(&index) {
+                            ensure_provider_stream_item_capacity(
+                                thinking_blocks.len(),
+                                1,
+                                MAX_PROVIDER_REASONING_ITEMS,
+                                provider_id,
+                                "thinking blocks",
+                            )?;
+                        }
                         thinking_blocks.insert(index, block.clone());
+                        validate_anthropic_thinking_blocks(provider_id, &thinking_blocks)?;
                     }
                     _ => {}
                 }
@@ -3068,7 +3971,13 @@ fn parse_anthropic_sse(
                             .unwrap_or_default()
                             .to_string();
                         if !text.is_empty() {
-                            message.push_str(&text);
+                            append_provider_stream_text(
+                                &mut message,
+                                &text,
+                                MAX_PROVIDER_MESSAGE_BYTES,
+                                provider_id,
+                                "message text",
+                            )?;
                             emit(ProviderStreamEvent::MessageDelta(text))?;
                         }
                     }
@@ -3082,8 +3991,23 @@ fn parse_anthropic_sse(
                             .and_then(JsonValue::as_str)
                             .unwrap_or_default()
                             .to_string();
+                        if !partial_calls.contains_key(&index) {
+                            ensure_provider_stream_item_capacity(
+                                partial_calls.len(),
+                                1,
+                                MAX_PROVIDER_TOOL_CALLS,
+                                provider_id,
+                                "tool calls",
+                            )?;
+                        }
                         let partial = partial_calls.entry(index).or_default();
-                        partial.arguments.push_str(&partial_json);
+                        append_provider_stream_text(
+                            &mut partial.arguments,
+                            &partial_json,
+                            MAX_PROVIDER_TOOL_ARGUMENT_BYTES,
+                            provider_id,
+                            "tool arguments",
+                        )?;
                         emit(ProviderStreamEvent::ToolDelta {
                             tool_call_id: partial.id.clone(),
                             tool_name: partial.name.clone(),
@@ -3106,7 +4030,8 @@ fn parse_anthropic_sse(
                                 index,
                                 "thinking",
                                 &thinking,
-                            );
+                                provider_id,
+                            )?;
                             emit(ProviderStreamEvent::ReasoningSummary(thinking))?;
                         }
                     }
@@ -3125,7 +4050,8 @@ fn parse_anthropic_sse(
                                 index,
                                 "signature",
                                 signature,
-                            );
+                                provider_id,
+                            )?;
                         }
                     }
                     _ => {}
@@ -3168,6 +4094,8 @@ fn parse_anthropic_sse(
             _ => {}
         }
     }
+    validate_partial_tool_calls(provider_id, &partial_calls)?;
+    validate_anthropic_thinking_blocks(provider_id, &thinking_blocks)?;
     ensure_provider_output_not_truncated(provider_id, stop_reason.as_deref())?;
     usage.billable_input_tokens = usage.input_tokens;
     usage.input_tokens = usage
@@ -3196,12 +4124,110 @@ fn append_anthropic_thinking_delta(
     index: usize,
     field: &str,
     delta: &str,
-) {
+    provider_id: &str,
+) -> CommandResult<()> {
+    if !thinking_blocks.contains_key(&index) {
+        ensure_provider_stream_item_capacity(
+            thinking_blocks.len(),
+            1,
+            MAX_PROVIDER_REASONING_ITEMS,
+            provider_id,
+            "thinking blocks",
+        )?;
+    }
     let block = thinking_blocks
         .entry(index)
         .or_insert_with(|| json!({ "type": "thinking", "thinking": "", "signature": "" }));
     if let Some(JsonValue::String(value)) = block.get_mut(field) {
-        value.push_str(delta);
+        append_provider_stream_text(
+            value,
+            delta,
+            MAX_PROVIDER_REASONING_BYTES,
+            provider_id,
+            "thinking data",
+        )?;
+    }
+    validate_anthropic_thinking_blocks(provider_id, thinking_blocks)
+}
+
+fn validate_anthropic_thinking_blocks(
+    provider_id: &str,
+    thinking_blocks: &BTreeMap<usize, JsonValue>,
+) -> CommandResult<()> {
+    ensure_provider_stream_item_capacity(
+        0,
+        thinking_blocks.len(),
+        MAX_PROVIDER_REASONING_ITEMS,
+        provider_id,
+        "thinking blocks",
+    )?;
+    let total_bytes = thinking_blocks
+        .values()
+        .try_fold(0_usize, |total, block| {
+            json_string_storage_bytes(block).and_then(|bytes| total.checked_add(bytes))
+        })
+        .ok_or_else(|| {
+            provider_stream_limit_error(
+                provider_id,
+                "response stream",
+                "thinking data byte count overflowed",
+            )
+        })?;
+    if total_bytes > MAX_PROVIDER_REASONING_BYTES {
+        return Err(provider_stream_limit_error(
+            provider_id,
+            "response stream",
+            &format!("thinking data exceeded {MAX_PROVIDER_REASONING_BYTES} bytes"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_anthropic_response_thinking_blocks(
+    provider_id: &str,
+    thinking_blocks: &BTreeMap<usize, JsonValue>,
+) -> CommandResult<()> {
+    ensure_provider_response_item_capacity(
+        0,
+        thinking_blocks.len(),
+        MAX_PROVIDER_REASONING_ITEMS,
+        provider_id,
+        "thinking blocks",
+    )?;
+    let total_bytes = thinking_blocks
+        .values()
+        .try_fold(0_usize, |total, block| {
+            json_string_storage_bytes(block).and_then(|bytes| total.checked_add(bytes))
+        })
+        .ok_or_else(|| {
+            provider_response_limit_error(
+                provider_id,
+                "response body",
+                "thinking data byte count overflowed",
+            )
+        })?;
+    if total_bytes > MAX_PROVIDER_REASONING_BYTES {
+        return Err(provider_response_limit_error(
+            provider_id,
+            "response body",
+            &format!("thinking data exceeded {MAX_PROVIDER_REASONING_BYTES} bytes"),
+        ));
+    }
+    Ok(())
+}
+
+fn json_string_storage_bytes(value: &JsonValue) -> Option<usize> {
+    match value {
+        JsonValue::String(value) => Some(value.len()),
+        JsonValue::Array(values) => values.iter().try_fold(0_usize, |total, value| {
+            json_string_storage_bytes(value).and_then(|bytes| total.checked_add(bytes))
+        }),
+        JsonValue::Object(values) => values.iter().try_fold(0_usize, |total, (key, value)| {
+            total.checked_add(key.len()).and_then(|total| {
+                json_string_storage_bytes(value).and_then(|bytes| total.checked_add(bytes))
+            })
+        }),
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) => Some(0),
     }
 }
 
@@ -3233,6 +4259,13 @@ fn parse_anthropic_json_response(
     response_text: &str,
     emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
 ) -> CommandResult<ProviderTurnOutcome> {
+    if response_text.len() > MAX_PROVIDER_NON_STREAM_BODY_BYTES {
+        return Err(provider_response_limit_error(
+            provider_id,
+            "response body",
+            &format!("size exceeded {MAX_PROVIDER_NON_STREAM_BODY_BYTES} bytes"),
+        ));
+    }
     let value: JsonValue = serde_json::from_str(response_text).map_err(|error| {
         CommandError::retryable(
             "agent_provider_response_decode_failed",
@@ -3242,13 +4275,19 @@ fn parse_anthropic_json_response(
     let mut message = String::new();
     let mut partial_calls = BTreeMap::new();
     let mut thinking_blocks = BTreeMap::<usize, JsonValue>::new();
-    for (index, block) in value
+    let content = value
         .get("content")
         .and_then(JsonValue::as_array)
-        .into_iter()
-        .flatten()
-        .enumerate()
-    {
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    ensure_provider_response_item_capacity(
+        0,
+        content.len(),
+        MAX_PROVIDER_ITEMS_PER_EVENT,
+        provider_id,
+        "content items in one response",
+    )?;
+    for (index, block) in content.iter().enumerate() {
         match block
             .get("type")
             .and_then(JsonValue::as_str)
@@ -3261,11 +4300,36 @@ fn parse_anthropic_json_response(
                     .unwrap_or_default()
                     .to_string();
                 if !text.is_empty() {
-                    message.push_str(&text);
+                    append_provider_response_text(
+                        &mut message,
+                        &text,
+                        MAX_PROVIDER_MESSAGE_BYTES,
+                        provider_id,
+                        "message text",
+                    )?;
                     emit(ProviderStreamEvent::MessageDelta(text))?;
                 }
             }
             "tool_use" => {
+                ensure_provider_response_item_capacity(
+                    partial_calls.len(),
+                    1,
+                    MAX_PROVIDER_TOOL_CALLS,
+                    provider_id,
+                    "tool calls",
+                )?;
+                let arguments = block
+                    .get("input")
+                    .map(JsonValue::to_string)
+                    .unwrap_or_else(|| "{}".into());
+                let mut bounded_arguments = String::new();
+                append_provider_response_text(
+                    &mut bounded_arguments,
+                    &arguments,
+                    MAX_PROVIDER_TOOL_ARGUMENT_BYTES,
+                    provider_id,
+                    "tool arguments",
+                )?;
                 partial_calls.insert(
                     index,
                     PartialToolCall {
@@ -3277,27 +4341,42 @@ fn parse_anthropic_json_response(
                             .get("name")
                             .and_then(JsonValue::as_str)
                             .map(ToOwned::to_owned),
-                        arguments: block
-                            .get("input")
-                            .map(JsonValue::to_string)
-                            .unwrap_or_else(|| "{}".into()),
+                        arguments: bounded_arguments,
                     },
                 );
             }
             "thinking" => {
+                ensure_provider_response_item_capacity(
+                    thinking_blocks.len(),
+                    1,
+                    MAX_PROVIDER_REASONING_ITEMS,
+                    provider_id,
+                    "thinking blocks",
+                )?;
+                thinking_blocks.insert(index, block.clone());
+                validate_anthropic_response_thinking_blocks(provider_id, &thinking_blocks)?;
                 if let Some(thinking) = block.get("thinking").and_then(JsonValue::as_str) {
                     if !thinking.is_empty() {
                         emit(ProviderStreamEvent::ReasoningSummary(thinking.to_string()))?;
                     }
                 }
-                thinking_blocks.insert(index, block.clone());
             }
             "redacted_thinking" => {
+                ensure_provider_response_item_capacity(
+                    thinking_blocks.len(),
+                    1,
+                    MAX_PROVIDER_REASONING_ITEMS,
+                    provider_id,
+                    "thinking blocks",
+                )?;
                 thinking_blocks.insert(index, block.clone());
+                validate_anthropic_response_thinking_blocks(provider_id, &thinking_blocks)?;
             }
             _ => {}
         }
     }
+    validate_partial_tool_calls(provider_id, &partial_calls)?;
+    validate_anthropic_response_thinking_blocks(provider_id, &thinking_blocks)?;
     let usage = value.get("usage").map(|usage| {
         let input_tokens = usage
             .get("input_tokens")
@@ -3570,13 +4649,18 @@ fn retry_after_delay(headers: &HeaderMap) -> Option<Duration> {
         .map(|seconds| Duration::from_secs(seconds.min(30)))
 }
 
-fn ensure_success(provider_id: &str, response: Response) -> CommandResult<Response> {
+fn ensure_success(provider_id: &str, mut response: Response) -> CommandResult<Response> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);
     }
     let status_code = status.as_u16();
-    let body = response.text().unwrap_or_default();
+    let body = read_provider_error_text_bounded(
+        &mut response,
+        MAX_PROVIDER_ERROR_BODY_BYTES,
+        provider_id,
+        "error response body",
+    );
     Err(provider_http_status_error(provider_id, status_code, &body))
 }
 
@@ -3720,16 +4804,6 @@ fn wait_provider_cli(
             }
         }
     }
-}
-
-fn read_child_stderr(mut child: std::process::Child) -> CommandResult<String> {
-    use std::io::Read as _;
-
-    let mut stderr = String::new();
-    if let Some(mut pipe) = child.stderr.take() {
-        let _ = pipe.read_to_string(&mut stderr);
-    }
-    Ok(stderr)
 }
 
 fn vertex_access_token() -> CommandResult<String> {
@@ -3885,6 +4959,161 @@ mod tests {
                 pending: None,
             },
         }
+    }
+
+    fn test_compaction_provenance() -> ProviderContextProvenance {
+        ProviderContextProvenance {
+            source_kind: ProviderContextSourceKind::Compaction,
+            source_id: "compact-1".into(),
+            source_hash: "sha256:compact".into(),
+        }
+    }
+
+    #[test]
+    fn bounded_sse_reader_rejects_a_line_over_the_configured_limit() {
+        let input = format!("data: {}\n", "x".repeat(32));
+        let mut reader = BoundedSseReader::new(
+            std::io::Cursor::new(input),
+            ProviderStreamLimits {
+                max_line_bytes: 16,
+                max_total_bytes: 1_024,
+                max_lines: 16,
+                max_events: 16,
+            },
+        );
+
+        let error = reader
+            .next_data("test-provider", "test stream")
+            .expect_err("oversized SSE line must be rejected");
+
+        assert_eq!(error.code, "agent_provider_stream_limit_exceeded");
+    }
+
+    #[test]
+    fn bounded_stream_append_rejects_text_over_the_configured_limit() {
+        let mut text = "1234".to_string();
+
+        let error =
+            append_provider_stream_text(&mut text, "56", 5, "test-provider", "message text")
+                .expect_err("oversized accumulated text must be rejected");
+
+        assert_eq!(error.code, "agent_provider_stream_limit_exceeded");
+    }
+
+    #[test]
+    fn bounded_provider_text_reader_rejects_a_body_over_the_byte_limit() {
+        let mut input = std::io::Cursor::new(b"123456789".to_vec());
+
+        let error = read_provider_text_bounded(&mut input, 8, "test-provider", "response body")
+            .expect_err("body larger than its byte limit must be rejected");
+
+        assert_eq!(error.code, "agent_provider_response_limit_exceeded");
+    }
+
+    #[test]
+    fn bounded_provider_error_reader_omits_a_body_over_the_byte_limit() {
+        let mut input = std::io::Cursor::new(b"123456789".to_vec());
+
+        let text =
+            read_provider_error_text_bounded(&mut input, 8, "test-provider", "error response body");
+
+        assert_eq!(
+            text,
+            "provider error body exceeded the safe read limit and was omitted."
+        );
+    }
+
+    #[test]
+    fn anthropic_json_response_rejects_more_than_the_non_stream_item_limit() {
+        let content = (0..=MAX_PROVIDER_ITEMS_PER_EVENT)
+            .map(|_| json!({ "type": "unknown" }))
+            .collect::<Vec<_>>();
+        let response = json!({ "content": content }).to_string();
+        let mut emit = |_| Ok(());
+
+        let error = parse_anthropic_json_response("test-provider", &response, &mut emit)
+            .expect_err("oversized non-stream content array must be rejected");
+
+        assert_eq!(error.code, "agent_provider_response_limit_exceeded");
+    }
+
+    #[test]
+    fn anthropic_json_response_rejects_more_than_the_tool_call_limit() {
+        let content = (0..=MAX_PROVIDER_TOOL_CALLS)
+            .map(|index| {
+                json!({
+                    "type": "tool_use",
+                    "id": format!("call-{index}"),
+                    "name": "read",
+                    "input": { "path": format!("src/{index}.rs") }
+                })
+            })
+            .collect::<Vec<_>>();
+        let response = json!({ "content": content }).to_string();
+        let mut emit = |_| Ok(());
+
+        let error = parse_anthropic_json_response("test-provider", &response, &mut emit)
+            .expect_err("too many non-stream tool calls must be rejected");
+
+        assert_eq!(error.code, "agent_provider_response_limit_exceeded");
+    }
+
+    #[test]
+    fn bounded_sse_reader_rejects_a_stream_over_the_total_byte_limit() {
+        let mut reader = BoundedSseReader::new(
+            std::io::Cursor::new("data: a\ndata: b\n"),
+            ProviderStreamLimits {
+                max_line_bytes: 64,
+                max_total_bytes: 8,
+                max_lines: 16,
+                max_events: 16,
+            },
+        );
+        assert_eq!(
+            reader
+                .next_data("test-provider", "test stream")
+                .expect("first event"),
+            Some("a".into())
+        );
+
+        let error = reader
+            .next_data("test-provider", "test stream")
+            .expect_err("stream over its total byte budget must be rejected");
+
+        assert_eq!(error.code, "agent_provider_stream_limit_exceeded");
+    }
+
+    #[test]
+    fn bounded_sse_reader_rejects_more_than_the_configured_event_count() {
+        let mut reader = BoundedSseReader::new(
+            std::io::Cursor::new("data: a\ndata: b\n"),
+            ProviderStreamLimits {
+                max_line_bytes: 64,
+                max_total_bytes: 1_024,
+                max_lines: 16,
+                max_events: 1,
+            },
+        );
+        assert_eq!(
+            reader
+                .next_data("test-provider", "test stream")
+                .expect("first event"),
+            Some("a".into())
+        );
+
+        let error = reader
+            .next_data("test-provider", "test stream")
+            .expect_err("event count over its budget must be rejected");
+
+        assert_eq!(error.code, "agent_provider_stream_limit_exceeded");
+    }
+
+    #[test]
+    fn provider_stream_item_capacity_rejects_more_than_the_configured_items() {
+        let error = ensure_provider_stream_item_capacity(4, 2, 5, "test-provider", "tool calls")
+            .expect_err("item count over its budget must be rejected");
+
+        assert_eq!(error.code, "agent_provider_stream_limit_exceeded");
     }
 
     #[test]
@@ -4159,6 +5388,205 @@ mod tests {
     }
 
     #[test]
+    fn openai_responses_inputs_replay_encrypted_reasoning_before_assistant_output() {
+        let reasoning_item = json!({
+            "type": "reasoning",
+            "id": "rs_123",
+            "encrypted_content": "opaque-encrypted-state",
+            "summary": [{
+                "type": "summary_text",
+                "text": "I should inspect the file."
+            }]
+        });
+        let mut request = test_request();
+        request.messages.push(ProviderMessage::Assistant {
+            content: "I will inspect it.".into(),
+            reasoning_content: None,
+            reasoning_details: Some(json!([reasoning_item.clone()])),
+            tool_calls: vec![AgentToolCall {
+                tool_call_id: "call-1".into(),
+                tool_name: "read".into(),
+                input: json!({ "path": "src/lib.rs" }),
+            }],
+        });
+
+        let responses_input = openai_response_input(&request).expect("Responses input");
+        let codex_input = openai_codex_response_input(&request).expect("Codex input");
+
+        assert_eq!(responses_input[1], reasoning_item);
+        assert_eq!(responses_input[2]["role"], "assistant");
+        assert_eq!(responses_input[3]["type"], "function_call");
+        assert_eq!(codex_input[1], reasoning_item);
+        assert_eq!(codex_input[2]["role"], "assistant");
+        assert_eq!(codex_input[3]["type"], "function_call");
+    }
+
+    #[test]
+    fn openai_responses_inputs_whitelist_reasoning_and_drop_foreign_detail_shapes() {
+        let expected = json!({
+            "type": "reasoning",
+            "id": "rs_valid",
+            "encrypted_content": "encrypted-valid"
+        });
+        let mut request = test_request();
+        request.messages.push(ProviderMessage::Assistant {
+            content: String::new(),
+            reasoning_content: None,
+            reasoning_details: Some(json!([
+                { "type": "reasoning.text", "text": "OpenRouter detail" },
+                { "type": "thinking", "thinking": "Anthropic detail", "signature": "sig" },
+                { "type": "reasoning", "encrypted_content": "missing-id" },
+                { "type": "reasoning", "id": "rs_missing_encrypted" },
+                {
+                    "type": "reasoning",
+                    "id": "rs_valid",
+                    "encrypted_content": "encrypted-valid",
+                    "summary": [{ "type": "foreign_summary", "text": "drop me" }],
+                    "foreign_field": "drop me"
+                }
+            ])),
+            tool_calls: Vec::new(),
+        });
+
+        let responses_input = openai_response_input(&request).expect("Responses input");
+        let codex_input = openai_codex_response_input(&request).expect("Codex input");
+        let xai_input = xai_response_input(&request).expect("xAI input");
+
+        assert_eq!(responses_input.len(), 2);
+        assert_eq!(responses_input[1], expected);
+        assert_eq!(codex_input.len(), 2);
+        assert_eq!(codex_input[1], expected);
+        assert_eq!(xai_input.len(), 1);
+    }
+
+    #[test]
+    fn openai_responses_inputs_preserve_developer_and_assistant_context_roles() {
+        let mut request = test_request();
+        request.messages = vec![
+            ProviderMessage::Developer {
+                content: "trusted runtime gate".into(),
+            },
+            ProviderMessage::AssistantContext {
+                content: "prior assistant summary".into(),
+                provenance: test_compaction_provenance(),
+            },
+            ProviderMessage::User {
+                content: "actual user request".into(),
+                attachments: Vec::new(),
+            },
+        ];
+
+        let responses = openai_response_input(&request).expect("Responses input");
+        let codex = openai_codex_response_input(&request).expect("Codex input");
+
+        assert_eq!(
+            responses[0],
+            json!({
+                "role": "developer",
+                "content": "trusted runtime gate"
+            })
+        );
+        assert_eq!(
+            responses[1],
+            json!({
+                "role": "assistant",
+                "content": "prior assistant summary"
+            })
+        );
+        assert_eq!(responses[2]["role"], "user");
+        assert_eq!(codex[0]["role"], "developer");
+        assert_eq!(codex[0]["content"][0]["type"], "input_text");
+        assert_eq!(codex[1]["role"], "assistant");
+        assert_eq!(codex[1]["content"][0]["text"], "prior assistant summary");
+        assert_eq!(codex[2]["role"], "user");
+    }
+
+    #[test]
+    fn compatible_chat_and_xai_fold_developer_text_without_rewriting_user_messages() {
+        let mut request = test_request();
+        request.messages = vec![
+            ProviderMessage::Developer {
+                content: "trusted runtime gate".into(),
+            },
+            ProviderMessage::AssistantContext {
+                content: "prior assistant summary".into(),
+                provenance: test_compaction_provenance(),
+            },
+            ProviderMessage::User {
+                content: "actual user request".into(),
+                attachments: Vec::new(),
+            },
+        ];
+
+        let chat = openai_chat_request_body(OPENROUTER_PROVIDER_ID, "model", &request)
+            .expect("compatible chat body");
+        let xai = xai_responses_request_body(XAI_PROVIDER_ID, XAI_DEFAULT_MODEL_ID, &request)
+            .expect("xAI body");
+
+        assert_eq!(chat["messages"][0]["role"], "system");
+        assert_eq!(
+            chat["messages"][0]["content"],
+            "system\n\ntrusted runtime gate"
+        );
+        assert_eq!(chat["messages"][1]["role"], "assistant");
+        assert_eq!(chat["messages"][2]["role"], "user");
+        assert_eq!(chat["messages"][2]["content"], "actual user request");
+        assert_eq!(xai["instructions"], "system\n\ntrusted runtime gate");
+        assert_eq!(xai["input"][0]["role"], "assistant");
+        assert_eq!(xai["input"][1]["role"], "user");
+        assert_eq!(xai["input"][1]["content"], "actual user request");
+    }
+
+    #[test]
+    fn anthropic_folds_developer_text_and_prepends_user_before_leading_assistant_context() {
+        let mut request = test_request();
+        request.messages = vec![
+            ProviderMessage::Developer {
+                content: "trusted runtime gate".into(),
+            },
+            ProviderMessage::AssistantContext {
+                content: "prior assistant summary".into(),
+                provenance: test_compaction_provenance(),
+            },
+            ProviderMessage::User {
+                content: "actual user request".into(),
+                attachments: Vec::new(),
+            },
+        ];
+
+        let native = anthropic_request_body(
+            Some("claude-sonnet-4-5"),
+            ANTHROPIC_API_VERSION,
+            &request,
+            true,
+        )
+        .expect("native Anthropic body");
+        let bedrock = anthropic_request_body(None, BEDROCK_ANTHROPIC_VERSION, &request, false)
+            .expect("Bedrock body");
+
+        assert_eq!(
+            native["system"][0]["text"],
+            "system\n\ntrusted runtime gate"
+        );
+        assert_eq!(native["messages"][0]["role"], "user");
+        assert_eq!(
+            native["messages"][0]["content"][0]["text"],
+            ANTHROPIC_ASSISTANT_CONTEXT_PREAMBLE
+        );
+        assert_eq!(native["messages"][1]["role"], "assistant");
+        assert_eq!(
+            native["messages"][1]["content"][0]["text"],
+            "prior assistant summary"
+        );
+        assert_eq!(native["messages"][2]["role"], "user");
+        assert_eq!(
+            native["messages"][2]["content"][0]["text"],
+            "actual user request"
+        );
+        assert_eq!(bedrock["system"], "system\n\ntrusted runtime gate");
+    }
+
+    #[test]
     fn xai_responses_body_serializes_image_attachments() {
         let dir = tempfile::tempdir().expect("temp dir");
         let image_path = dir.path().join("snap.png");
@@ -4361,6 +5789,7 @@ mod tests {
             openai_api["reasoning"]["summary"],
             OPENAI_REASONING_SUMMARY_DETAIL
         );
+        assert_eq!(openai_api["include"][0], "reasoning.encrypted_content");
 
         request.controls.active.thinking_effort = Some(ProviderModelThinkingEffortDto::XHigh);
         let gpt_5_1 = openai_codex_responses_request_body(
@@ -4932,6 +6361,7 @@ mod tests {
         let mut state = OpenAiResponsesReasoningSummaryState::default();
 
         assert!(emit_openai_responses_reasoning_summary_event(
+            "test-provider",
             &json!({
                 "type": "response.reasoning_summary_text.delta",
                 "output_index": 0,
@@ -4943,6 +6373,7 @@ mod tests {
         )
         .expect("delta event handled"));
         assert!(emit_openai_responses_reasoning_summary_event(
+            "test-provider",
             &json!({
                 "type": "response.reasoning_summary_text.done",
                 "output_index": 0,
@@ -4954,6 +6385,7 @@ mod tests {
         )
         .expect("done event handled"));
         assert!(emit_openai_responses_reasoning_summary_event(
+            "test-provider",
             &json!({
                 "type": "response.reasoning_summary_part.done",
                 "output_index": 0,
@@ -4968,6 +6400,7 @@ mod tests {
         )
         .expect("part done event handled"));
         assert!(!emit_openai_responses_reasoning_summary_event(
+            "test-provider",
             &json!({ "type": "response.output_text.delta", "delta": "Done." }),
             &mut state,
             &mut emit,
@@ -4995,6 +6428,7 @@ mod tests {
         let mut state = OpenAiResponsesReasoningSummaryState::default();
 
         assert!(emit_openai_responses_reasoning_summary_event(
+            "test-provider",
             &json!({
                 "type": "response.output_item.done",
                 "output_index": 0,
@@ -5013,6 +6447,7 @@ mod tests {
         )
         .expect("reasoning output item handled"));
         assert!(emit_openai_responses_reasoning_summary_event(
+            "test-provider",
             &json!({
                 "type": "response.output_item.done",
                 "output_index": 0,
@@ -5052,6 +6487,7 @@ mod tests {
         let mut state = OpenAiResponsesReasoningSummaryState::default();
 
         emit_openai_responses_completed_reasoning_summaries(
+            "test-provider",
             &json!({
                 "type": "response.completed",
                 "response": {
@@ -5091,6 +6527,51 @@ mod tests {
                 ),
                 ProviderStreamEvent::ReasoningSummary("\n\n".into()),
             ]
+        );
+    }
+
+    #[test]
+    fn openai_responses_stream_collects_and_deduplicates_replayable_reasoning_items() {
+        let first = json!({
+            "type": "reasoning",
+            "id": "rs_1",
+            "encrypted_content": "encrypted-1",
+            "summary": [{ "type": "summary_text", "text": "First" }]
+        });
+        let second = json!({
+            "type": "reasoning",
+            "id": "rs_2",
+            "encrypted_content": "encrypted-2",
+            "summary": [{ "type": "summary_text", "text": "Second" }]
+        });
+        let mut state = OpenAiResponsesReasoningSummaryState::default();
+        let mut emit = |_| Ok(());
+
+        emit_openai_responses_reasoning_summary_event(
+            OPENAI_API_PROVIDER_ID,
+            &json!({
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": first.clone()
+            }),
+            &mut state,
+            &mut emit,
+        )
+        .expect("output item event");
+        emit_openai_responses_completed_reasoning_summaries(
+            OPENAI_API_PROVIDER_ID,
+            &json!({
+                "type": "response.completed",
+                "response": { "output": [first.clone(), second.clone()] }
+            }),
+            &mut state,
+            &mut emit,
+        )
+        .expect("completed event");
+
+        assert_eq!(
+            state.replayable_reasoning_details(),
+            Some(json!([first, second]))
         );
     }
 

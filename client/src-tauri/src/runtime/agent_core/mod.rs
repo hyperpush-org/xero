@@ -5,6 +5,7 @@ use std::{
     sync::Arc,
 };
 
+mod compaction_integrity;
 mod consumed_artifacts;
 mod context_package;
 mod db_touchpoints;
@@ -63,6 +64,7 @@ pub use db_touchpoints::{
 };
 pub use output_sections::{output_sections_for, OutputSectionEntry};
 
+pub(crate) use compaction_integrity::*;
 pub(crate) use context_package::*;
 pub(crate) use environment_lifecycle::*;
 pub(crate) use harness_order::*;

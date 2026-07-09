@@ -54,13 +54,14 @@ use crate::{
     },
     runtime::{
         agent_core::{
+            canonical_compaction_source_hash, compaction_run_coverage_for_snapshot,
             compile_system_prompt_for_session_with_attached, create_provider_adapter,
             load_persisted_attached_skill_contexts_for_run, provider_messages_from_snapshot,
             runtime_controls_from_request, skill_contexts_from_provider_messages,
             tool_registry_for_snapshot, CodeHistoryMemoryGuard, CodeHistoryMemoryGuardOutcome,
-            PromptCompilation, PromptFragment, ProviderAdapter, ProviderCompactionRequest,
-            ProviderMemoryCandidate, ProviderMemoryExtractionRequest, ToolRegistry,
-            ToolRegistryOptions,
+            CompactionRunCoverage, PromptCompilation, PromptFragment, ProviderAdapter,
+            ProviderCompactionRequest, ProviderMemoryCandidate, ProviderMemoryExtractionRequest,
+            ToolRegistry, ToolRegistryOptions,
         },
         AgentToolDescriptor,
     },
@@ -2353,26 +2354,29 @@ fn build_compaction_source(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    let covered_run_id_set = covered_run_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let run_coverage = compaction_run_coverage(snapshots, &covered_messages);
     let covered_message_start_id = covered_messages.iter().map(|message| message.id).min();
     let covered_message_end_id = covered_messages.iter().map(|message| message.id).max();
 
     let mut covered_events = snapshots
         .iter()
         .flat_map(|(snapshot, _)| snapshot.events.iter())
-        .filter(|event| covered_run_id_set.contains(&event.run_id))
+        .filter(|event| {
+            run_coverage
+                .get(&event.run_id)
+                .is_some_and(|coverage| coverage.includes_event(event))
+        })
         .collect::<Vec<_>>();
     covered_events.sort_by(|left, right| left.id.cmp(&right.id));
     let covered_event_start_id = covered_events.iter().map(|event| event.id).min();
     let covered_event_end_id = covered_events.iter().map(|event| event.id).max();
-    let transcript =
-        render_compaction_transcript(snapshots, &covered_run_id_set, &covered_messages)?;
-    let source_hash = compaction_source_hash(
-        snapshots,
-        &covered_run_id_set,
+    let transcript = render_compaction_transcript(snapshots, &run_coverage, &covered_messages)?;
+    let source_hash = canonical_compaction_source_hash(
+        snapshots.iter().map(|(snapshot, _)| snapshot),
         &covered_messages,
         &covered_events,
-    )?;
+        &run_coverage,
+    );
 
     Ok(CompactionSource {
         transcript,
@@ -2386,9 +2390,31 @@ fn build_compaction_source(
     })
 }
 
+fn compaction_run_coverage(
+    snapshots: &[(
+        AgentRunSnapshotRecord,
+        Option<project_store::AgentUsageRecord>,
+    )],
+    covered_messages: &[&AgentMessageRecord],
+) -> HashMap<String, CompactionRunCoverage> {
+    let covered_run_ids = covered_messages
+        .iter()
+        .map(|message| message.run_id.as_str())
+        .collect::<BTreeSet<_>>();
+
+    snapshots
+        .iter()
+        .filter(|(snapshot, _)| covered_run_ids.contains(snapshot.run.run_id.as_str()))
+        .filter_map(|(snapshot, _)| {
+            compaction_run_coverage_for_snapshot(snapshot, covered_messages)
+                .map(|coverage| (snapshot.run.run_id.clone(), coverage))
+        })
+        .collect()
+}
+
 fn compaction_tail_start_index(messages: &[&AgentMessageRecord], raw_tail_count: usize) -> usize {
     if messages.len() <= raw_tail_count {
-        return messages.len();
+        return 0;
     }
     let mut start = messages.len().saturating_sub(raw_tail_count);
     while start > 0 && messages[start].role == AgentMessageRole::Tool {
@@ -2402,29 +2428,20 @@ fn render_compaction_transcript(
         AgentRunSnapshotRecord,
         Option<project_store::AgentUsageRecord>,
     )],
-    covered_run_ids: &BTreeSet<String>,
+    run_coverage: &HashMap<String, CompactionRunCoverage>,
     covered_messages: &[&AgentMessageRecord],
 ) -> CommandResult<String> {
     let mut output = String::new();
     output.push_str("Compact the following Xero session history for replay.\n");
     output.push_str("Raw transcript rows stay durable; unresolved actions remain unresolved.\n\n");
-    for (snapshot, usage) in snapshots {
-        if !covered_run_ids.contains(&snapshot.run.run_id) {
+    for (snapshot, _usage) in snapshots {
+        let Some(coverage) = run_coverage.get(&snapshot.run.run_id) else {
             continue;
-        }
+        };
         output.push_str(&format!(
-            "Run {} provider={} model={} status={:?}\n",
-            snapshot.run.run_id,
-            snapshot.run.provider_id,
-            snapshot.run.model_id,
-            snapshot.run.status
+            "Run {} provider={} model={}\n",
+            snapshot.run.run_id, snapshot.run.provider_id, snapshot.run.model_id
         ));
-        if let Some(usage) = usage {
-            output.push_str(&format!(
-                "Usage: {} input + {} output = {} total tokens.\n",
-                usage.input_tokens, usage.output_tokens, usage.total_tokens
-            ));
-        }
         for message in covered_messages
             .iter()
             .filter(|message| message.run_id == snapshot.run.run_id)
@@ -2437,7 +2454,11 @@ fn render_compaction_transcript(
                 preview_context_text(&text)
             ));
         }
-        for tool_call in &snapshot.tool_calls {
+        for tool_call in snapshot
+            .tool_calls
+            .iter()
+            .filter(|tool_call| coverage.includes_tool_call(tool_call))
+        {
             let (input, _) = redact_session_context_text(&tool_call.input_json);
             let result = tool_call
                 .result_json
@@ -2454,7 +2475,11 @@ fn render_compaction_transcript(
                 result
             ));
         }
-        for action in &snapshot.action_requests {
+        for action in snapshot
+            .action_requests
+            .iter()
+            .filter(|action| coverage.includes_action(action))
+        {
             let (detail, _) = redact_session_context_text(&action.detail);
             output.push_str(&format!(
                 "- Action {} type={} status={} detail={}\n",
@@ -2464,7 +2489,11 @@ fn render_compaction_transcript(
                 preview_context_text(&detail)
             ));
         }
-        for checkpoint in &snapshot.checkpoints {
+        for checkpoint in snapshot
+            .checkpoints
+            .iter()
+            .filter(|checkpoint| coverage.includes_timestamp(&checkpoint.created_at))
+        {
             let (summary, _) = redact_session_context_text(&checkpoint.summary);
             output.push_str(&format!(
                 "- Checkpoint {}: {}\n",
@@ -2472,7 +2501,11 @@ fn render_compaction_transcript(
                 preview_context_text(&summary)
             ));
         }
-        for file_change in &snapshot.file_changes {
+        for file_change in snapshot
+            .file_changes
+            .iter()
+            .filter(|file_change| coverage.includes_file_change(file_change))
+        {
             let (path, _) = redact_session_context_text(&file_change.path);
             output.push_str(&format!(
                 "- File change {}: {}\n",
@@ -2483,42 +2516,6 @@ fn render_compaction_transcript(
         output.push('\n');
     }
     Ok(output)
-}
-
-fn compaction_source_hash(
-    snapshots: &[(
-        AgentRunSnapshotRecord,
-        Option<project_store::AgentUsageRecord>,
-    )],
-    covered_run_ids: &BTreeSet<String>,
-    covered_messages: &[&AgentMessageRecord],
-    covered_events: &[&project_store::AgentEventRecord],
-) -> CommandResult<String> {
-    let mut hasher = Sha256::new();
-    for (snapshot, _usage) in snapshots {
-        if !covered_run_ids.contains(&snapshot.run.run_id) {
-            continue;
-        }
-        hasher.update(snapshot.run.run_id.as_bytes());
-        hasher.update(snapshot.run.provider_id.as_bytes());
-        hasher.update(snapshot.run.model_id.as_bytes());
-        hasher.update(snapshot.run.prompt.as_bytes());
-        for message in covered_messages
-            .iter()
-            .filter(|message| message.run_id == snapshot.run.run_id)
-        {
-            hasher.update(message.id.to_string().as_bytes());
-            hasher.update(format!("{:?}", message.role).as_bytes());
-            hasher.update(message.content.as_bytes());
-        }
-    }
-    for event in covered_events {
-        hasher.update(event.id.to_string().as_bytes());
-        hasher.update(event.run_id.as_bytes());
-        hasher.update(format!("{:?}", event.event_kind).as_bytes());
-        hasher.update(event.payload_json.as_bytes());
-    }
-    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn load_context_snapshots(
@@ -4648,6 +4645,127 @@ mod tests {
     const MODEL_ID: &str = "test-model";
 
     #[test]
+    fn compaction_keeps_entire_history_raw_when_tail_limit_covers_it() {
+        let messages = vec![
+            compaction_message(1, "2026-05-06T12:00:01Z"),
+            compaction_message(2, "2026-05-06T12:00:02Z"),
+        ];
+        let message_refs = messages.iter().collect::<Vec<_>>();
+
+        assert_eq!(compaction_tail_start_index(&message_refs, 2), 0);
+        assert_eq!(compaction_tail_start_index(&message_refs, 3), 0);
+    }
+
+    #[test]
+    fn compaction_excludes_same_run_artifacts_from_the_raw_tail() {
+        let snapshot = compaction_snapshot_with_raw_tail_artifacts();
+        let snapshots = vec![(snapshot.clone(), None)];
+
+        let source = build_compaction_source(&snapshots, 2).expect("compaction source");
+
+        assert_eq!(source.covered_message_end_id, Some(2));
+        assert_eq!(source.covered_event_end_id, Some(10));
+        for covered_artifact in [
+            "tool-before-tail",
+            "action before tail",
+            "checkpoint before tail",
+            "src/before-tail.rs",
+        ] {
+            assert!(
+                source.transcript.contains(covered_artifact),
+                "covered artifact `{covered_artifact}` should be compacted"
+            );
+        }
+        for raw_tail_artifact in [
+            "tool-in-raw-tail",
+            "action in raw tail",
+            "checkpoint in raw tail",
+            "src/in-raw-tail.rs",
+        ] {
+            assert!(
+                !source.transcript.contains(raw_tail_artifact),
+                "raw-tail artifact `{raw_tail_artifact}` must stay out of compaction"
+            );
+        }
+
+        let mut changed_raw_tail = snapshot;
+        changed_raw_tail.events[1].payload_json = r#"{"rawTail":"changed"}"#.into();
+        changed_raw_tail.tool_calls[1].result_json = Some(r#"{"changed":true}"#.into());
+        changed_raw_tail.action_requests[1].detail = "changed raw-tail action".into();
+        changed_raw_tail.checkpoints[1].summary = "changed raw-tail checkpoint".into();
+        changed_raw_tail.file_changes[1].path = "src/changed-in-raw-tail.rs".into();
+        let changed_snapshots = vec![(changed_raw_tail, None)];
+        let changed_source =
+            build_compaction_source(&changed_snapshots, 2).expect("changed compaction source");
+        assert_eq!(source.source_hash, changed_source.source_hash);
+    }
+
+    #[test]
+    fn compaction_hash_binds_every_summarized_artifact() {
+        let snapshot = compaction_snapshot_with_raw_tail_artifacts();
+        let snapshots = vec![(snapshot.clone(), None)];
+        let baseline = build_compaction_source(&snapshots, 2)
+            .expect("baseline compaction source")
+            .source_hash;
+
+        let mut changed_tool = snapshot.clone();
+        changed_tool.tool_calls[0].result_json = Some(r#"{"changed":"tool"}"#.into());
+        let mut changed_action = snapshot.clone();
+        changed_action.action_requests[0].detail = "changed covered action".into();
+        let mut changed_checkpoint = snapshot.clone();
+        changed_checkpoint.checkpoints[0].summary = "changed covered checkpoint".into();
+        let mut changed_file = snapshot.clone();
+        changed_file.file_changes[0].path = "src/changed-covered.rs".into();
+        let mut changed_event = snapshot;
+        changed_event.events[0].payload_json = r#"{"changed":"event"}"#.into();
+
+        for (artifact_kind, changed_snapshot) in [
+            ("tool call", changed_tool),
+            ("action", changed_action),
+            ("checkpoint", changed_checkpoint),
+            ("file change", changed_file),
+            ("event", changed_event),
+        ] {
+            let changed_hash = build_compaction_source(&[(changed_snapshot, None)], 2)
+                .expect("changed compaction source")
+                .source_hash;
+            assert_ne!(
+                baseline, changed_hash,
+                "covered {artifact_kind} mutation must invalidate the source hash"
+            );
+        }
+    }
+
+    #[test]
+    fn compaction_excludes_artifacts_at_the_partial_run_cutoff_timestamp() {
+        let mut snapshot = compaction_snapshot_with_raw_tail_artifacts();
+        let cutoff = "2026-05-06T12:00:20Z";
+        snapshot.events[0].created_at = cutoff.into();
+        snapshot.tool_calls[0].completed_at = Some(cutoff.into());
+        snapshot.action_requests[0].resolved_at = Some(cutoff.into());
+        snapshot.checkpoints[0].created_at = cutoff.into();
+        snapshot.file_changes[0].created_at = cutoff.into();
+
+        let snapshots = vec![(snapshot, None)];
+        let source =
+            build_compaction_source(&snapshots, 2).expect("equal-timestamp compaction source");
+
+        assert_eq!(source.covered_event_start_id, None);
+        assert_eq!(source.covered_event_end_id, None);
+        for ambiguous_artifact in [
+            "tool-before-tail",
+            "action before tail",
+            "checkpoint before tail",
+            "src/before-tail.rs",
+        ] {
+            assert!(
+                !source.transcript.contains(ambiguous_artifact),
+                "equal-timestamp artifact `{ambiguous_artifact}` must stay out of compaction"
+            );
+        }
+    }
+
+    #[test]
     fn code_history_operation_items_are_append_only_and_chronological() {
         let mut runs = vec![base_run_transcript()];
         let operation = code_history_operation_record(
@@ -4765,6 +4883,181 @@ mod tests {
             action_id: None,
             media_attachments: Vec::new(),
             redaction: SessionContextRedactionDto::public(),
+        }
+    }
+
+    fn compaction_message(id: i64, created_at: &str) -> AgentMessageRecord {
+        AgentMessageRecord {
+            id,
+            project_id: PROJECT_ID.into(),
+            run_id: RUN_ID.into(),
+            role: AgentMessageRole::User,
+            content: format!("message {id}"),
+            provider_metadata_json: None,
+            created_at: created_at.into(),
+            attachments: Vec::new(),
+        }
+    }
+
+    fn compaction_snapshot_with_raw_tail_artifacts() -> AgentRunSnapshotRecord {
+        let mut messages = vec![
+            compaction_message(1, "2026-05-06T12:00:10Z"),
+            compaction_message(2, "2026-05-06T12:00:20Z"),
+            compaction_message(3, "2026-05-06T12:00:30Z"),
+            compaction_message(4, "2026-05-06T12:00:40Z"),
+        ];
+        messages[1].role = AgentMessageRole::Assistant;
+        messages[3].role = AgentMessageRole::Assistant;
+
+        AgentRunSnapshotRecord {
+            run: project_store::AgentRunRecord {
+                runtime_agent_id: crate::commands::RuntimeAgentIdDto::Generalist,
+                agent_definition_id: "builtin.generalist".into(),
+                agent_definition_version: 1,
+                project_id: PROJECT_ID.into(),
+                agent_session_id: AGENT_SESSION_ID.into(),
+                run_id: RUN_ID.into(),
+                trace_id: "trace-history".into(),
+                lineage_kind: "top_level".into(),
+                parent_run_id: None,
+                parent_trace_id: None,
+                parent_subagent_id: None,
+                subagent_role: None,
+                provider_id: PROVIDER_ID.into(),
+                model_id: MODEL_ID.into(),
+                status: project_store::AgentRunStatus::Completed,
+                prompt: "Test compaction boundaries.".into(),
+                system_prompt: "system".into(),
+                started_at: "2026-05-06T12:00:00Z".into(),
+                last_heartbeat_at: None,
+                completed_at: Some("2026-05-06T12:00:50Z".into()),
+                cancelled_at: None,
+                last_error: None,
+                updated_at: "2026-05-06T12:00:50Z".into(),
+            },
+            messages,
+            events: vec![
+                project_store::AgentEventRecord {
+                    id: 10,
+                    project_id: PROJECT_ID.into(),
+                    run_id: RUN_ID.into(),
+                    event_kind: project_store::AgentRunEventKind::PlanUpdated,
+                    payload_json: r#"{"covered":true}"#.into(),
+                    created_at: "2026-05-06T12:00:19Z".into(),
+                },
+                project_store::AgentEventRecord {
+                    id: 11,
+                    project_id: PROJECT_ID.into(),
+                    run_id: RUN_ID.into(),
+                    event_kind: project_store::AgentRunEventKind::PlanUpdated,
+                    payload_json: r#"{"rawTail":true}"#.into(),
+                    created_at: "2026-05-06T12:00:31Z".into(),
+                },
+            ],
+            tool_calls: vec![
+                project_store::AgentToolCallRecord {
+                    project_id: PROJECT_ID.into(),
+                    run_id: RUN_ID.into(),
+                    tool_call_id: "tool-before-tail".into(),
+                    tool_name: "read".into(),
+                    input_json: r#"{"path":"src/before-tail.rs"}"#.into(),
+                    state: project_store::AgentToolCallState::Succeeded,
+                    result_json: Some(r#"{"ok":true}"#.into()),
+                    error: None,
+                    started_at: "2026-05-06T12:00:15Z".into(),
+                    completed_at: Some("2026-05-06T12:00:18Z".into()),
+                },
+                project_store::AgentToolCallRecord {
+                    project_id: PROJECT_ID.into(),
+                    run_id: RUN_ID.into(),
+                    tool_call_id: "tool-in-raw-tail".into(),
+                    tool_name: "read".into(),
+                    input_json: r#"{"path":"src/in-raw-tail.rs"}"#.into(),
+                    state: project_store::AgentToolCallState::Succeeded,
+                    result_json: Some(r#"{"ok":true}"#.into()),
+                    error: None,
+                    started_at: "2026-05-06T12:00:31Z".into(),
+                    completed_at: Some("2026-05-06T12:00:34Z".into()),
+                },
+            ],
+            file_changes: vec![
+                project_store::AgentFileChangeRecord {
+                    id: 20,
+                    project_id: PROJECT_ID.into(),
+                    run_id: RUN_ID.into(),
+                    trace_id: "trace-history".into(),
+                    top_level_run_id: RUN_ID.into(),
+                    subagent_id: None,
+                    subagent_role: None,
+                    change_group_id: None,
+                    path: "src/before-tail.rs".into(),
+                    operation: "edit".into(),
+                    old_hash: None,
+                    new_hash: Some("a".repeat(64)),
+                    created_at: "2026-05-06T12:00:17Z".into(),
+                },
+                project_store::AgentFileChangeRecord {
+                    id: 21,
+                    project_id: PROJECT_ID.into(),
+                    run_id: RUN_ID.into(),
+                    trace_id: "trace-history".into(),
+                    top_level_run_id: RUN_ID.into(),
+                    subagent_id: None,
+                    subagent_role: None,
+                    change_group_id: None,
+                    path: "src/in-raw-tail.rs".into(),
+                    operation: "edit".into(),
+                    old_hash: None,
+                    new_hash: Some("b".repeat(64)),
+                    created_at: "2026-05-06T12:00:37Z".into(),
+                },
+            ],
+            checkpoints: vec![
+                project_store::AgentCheckpointRecord {
+                    id: 30,
+                    project_id: PROJECT_ID.into(),
+                    run_id: RUN_ID.into(),
+                    checkpoint_kind: "covered".into(),
+                    summary: "checkpoint before tail".into(),
+                    payload_json: None,
+                    created_at: "2026-05-06T12:00:16Z".into(),
+                },
+                project_store::AgentCheckpointRecord {
+                    id: 31,
+                    project_id: PROJECT_ID.into(),
+                    run_id: RUN_ID.into(),
+                    checkpoint_kind: "raw_tail".into(),
+                    summary: "checkpoint in raw tail".into(),
+                    payload_json: None,
+                    created_at: "2026-05-06T12:00:36Z".into(),
+                },
+            ],
+            action_requests: vec![
+                project_store::AgentActionRequestRecord {
+                    project_id: PROJECT_ID.into(),
+                    run_id: RUN_ID.into(),
+                    action_id: "action-before-tail".into(),
+                    action_type: "approval".into(),
+                    title: "Covered action".into(),
+                    detail: "action before tail".into(),
+                    status: "resolved".into(),
+                    created_at: "2026-05-06T12:00:14Z".into(),
+                    resolved_at: Some("2026-05-06T12:00:18Z".into()),
+                    response: Some("approved".into()),
+                },
+                project_store::AgentActionRequestRecord {
+                    project_id: PROJECT_ID.into(),
+                    run_id: RUN_ID.into(),
+                    action_id: "action-in-raw-tail".into(),
+                    action_type: "approval".into(),
+                    title: "Raw-tail action".into(),
+                    detail: "action in raw tail".into(),
+                    status: "resolved".into(),
+                    created_at: "2026-05-06T12:00:32Z".into(),
+                    resolved_at: Some("2026-05-06T12:00:35Z".into()),
+                    response: Some("approved".into()),
+                },
+            ],
         }
     }
 

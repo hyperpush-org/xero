@@ -726,6 +726,7 @@ fn core_message_role_from_desktop(role: &AgentMessageRole) -> CoreMessageRole {
 fn core_event_kind_from_desktop(kind: &AgentRunEventKind) -> CoreRuntimeEventKind {
     match kind {
         AgentRunEventKind::RunStarted => CoreRuntimeEventKind::RunStarted,
+        AgentRunEventKind::AssistantCandidate => CoreRuntimeEventKind::AssistantCandidate,
         AgentRunEventKind::MessageDelta => CoreRuntimeEventKind::MessageDelta,
         AgentRunEventKind::ReasoningSummary => CoreRuntimeEventKind::ReasoningSummary,
         AgentRunEventKind::ToolStarted => CoreRuntimeEventKind::ToolStarted,

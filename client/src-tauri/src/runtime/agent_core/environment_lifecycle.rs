@@ -1139,6 +1139,7 @@ fn desktop_message_role_from_core(role: &CoreMessageRole) -> AgentMessageRole {
 fn core_event_kind_from_desktop(kind: &AgentRunEventKind) -> CoreRuntimeEventKind {
     match kind {
         AgentRunEventKind::RunStarted => CoreRuntimeEventKind::RunStarted,
+        AgentRunEventKind::AssistantCandidate => CoreRuntimeEventKind::AssistantCandidate,
         AgentRunEventKind::MessageDelta => CoreRuntimeEventKind::MessageDelta,
         AgentRunEventKind::ReasoningSummary => CoreRuntimeEventKind::ReasoningSummary,
         AgentRunEventKind::ToolStarted => CoreRuntimeEventKind::ToolStarted,
@@ -1174,6 +1175,7 @@ fn core_event_kind_from_desktop(kind: &AgentRunEventKind) -> CoreRuntimeEventKin
 
 fn desktop_event_kind_from_core(kind: &CoreRuntimeEventKind) -> AgentRunEventKind {
     match kind {
+        CoreRuntimeEventKind::AssistantCandidate => AgentRunEventKind::AssistantCandidate,
         CoreRuntimeEventKind::MessageDelta => AgentRunEventKind::MessageDelta,
         CoreRuntimeEventKind::ReasoningSummary => AgentRunEventKind::ReasoningSummary,
         CoreRuntimeEventKind::ToolStarted => AgentRunEventKind::ToolStarted,

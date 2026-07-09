@@ -310,6 +310,16 @@ pub enum RuntimeProtocolEventPayload {
         to: String,
         reason: Option<String>,
     },
+    AssistantCandidate {
+        candidate_id: String,
+        turn_index: u64,
+        state: String,
+        text_delta: Option<String>,
+        text: Option<String>,
+        disposition: Option<String>,
+        reasoning_content: Option<String>,
+        reasoning_details: Option<JsonValue>,
+    },
     MessageDelta {
         role: MessageRole,
         text: String,
@@ -2869,10 +2879,12 @@ fn json_bool_key_is_true(value: &JsonValue, keys: &[&str]) -> bool {
 fn is_provider_turn_event(event: &RuntimeProtocolEvent) -> bool {
     matches!(
         &event.payload,
-        RuntimeProtocolEventPayload::MessageDelta {
-            role: MessageRole::Assistant,
-            ..
-        } | RuntimeProtocolEventPayload::ReasoningSummary { .. }
+        RuntimeProtocolEventPayload::AssistantCandidate { .. }
+            | RuntimeProtocolEventPayload::MessageDelta {
+                role: MessageRole::Assistant,
+                ..
+            }
+            | RuntimeProtocolEventPayload::ReasoningSummary { .. }
             | RuntimeProtocolEventPayload::ToolDelta { .. }
             | RuntimeProtocolEventPayload::ToolStarted { .. }
             | RuntimeProtocolEventPayload::ToolCompleted { .. }
@@ -2960,6 +2972,19 @@ fn runtime_protocol_payload_from_json(
                 .unwrap_or(RunStatus::Running),
             provider_id: text_field(payload, "providerId").unwrap_or_default(),
             model_id: text_field(payload, "modelId").unwrap_or_default(),
+        },
+        RuntimeEventKind::AssistantCandidate => RuntimeProtocolEventPayload::AssistantCandidate {
+            candidate_id: text_field(payload, "candidateId").unwrap_or_default(),
+            turn_index: payload
+                .get("turnIndex")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or_default(),
+            state: text_field(payload, "state").unwrap_or_else(|| "pending".into()),
+            text_delta: text_field(payload, "textDelta"),
+            text: text_field(payload, "text"),
+            disposition: text_field(payload, "disposition"),
+            reasoning_content: text_field(payload, "reasoningContent"),
+            reasoning_details: payload.get("reasoningDetails").cloned(),
         },
         RuntimeEventKind::MessageDelta => RuntimeProtocolEventPayload::MessageDelta {
             role: role_field(payload, "role").unwrap_or(MessageRole::Assistant),
@@ -3221,6 +3246,9 @@ fn replay_label(payload: &RuntimeProtocolEventPayload) -> String {
         RuntimeProtocolEventPayload::RunCompleted { .. } => "Run completed".into(),
         RuntimeProtocolEventPayload::RunFailed { .. } => "Run failed".into(),
         RuntimeProtocolEventPayload::StateTransition { to, .. } => format!("State changed to {to}"),
+        RuntimeProtocolEventPayload::AssistantCandidate { state, .. } => {
+            format!("Assistant candidate: {state}")
+        }
         RuntimeProtocolEventPayload::MessageDelta { role, .. } => {
             format!("{role:?} message delta")
         }
@@ -3287,6 +3315,11 @@ fn replay_label(payload: &RuntimeProtocolEventPayload) -> String {
 
 fn replay_text(payload: &RuntimeProtocolEventPayload) -> Option<String> {
     match payload {
+        RuntimeProtocolEventPayload::AssistantCandidate { state, text, .. }
+            if state == "accepted" =>
+        {
+            text.clone()
+        }
         RuntimeProtocolEventPayload::MessageDelta { text, .. }
         | RuntimeProtocolEventPayload::ReasoningSummary { text }
         | RuntimeProtocolEventPayload::ToolDelta { text, .. }
@@ -3363,6 +3396,48 @@ mod tests {
 
     use super::*;
     use crate::{ContextManifest, RunControls, RuntimeEvent};
+
+    #[test]
+    fn assistant_candidate_protocol_payload_preserves_lifecycle_state() {
+        let trace_id = runtime_trace_id_for_run("project-1", "run-1");
+        let event = RuntimeEvent {
+            id: 1,
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            event_kind: RuntimeEventKind::AssistantCandidate,
+            trace: RuntimeTraceContext::for_event(
+                &trace_id,
+                "run-1",
+                1,
+                &RuntimeEventKind::AssistantCandidate,
+            ),
+            payload: json!({
+                "candidateId": "candidate-1",
+                "turnIndex": 2,
+                "state": "superseded",
+                "text": "Draft answer",
+                "disposition": "verification_gate"
+            }),
+            created_at: "2026-05-03T12:00:00Z".into(),
+        };
+
+        let protocol = event.to_protocol_event().expect("candidate protocol event");
+
+        assert!(matches!(
+            protocol.payload,
+            RuntimeProtocolEventPayload::AssistantCandidate {
+                candidate_id,
+                turn_index: 2,
+                state,
+                text: Some(text),
+                disposition: Some(disposition),
+                ..
+            } if candidate_id == "candidate-1"
+                && state == "superseded"
+                && text == "Draft answer"
+                && disposition == "verification_gate"
+        ));
+    }
 
     fn live_preflight_json() -> JsonValue {
         json!({

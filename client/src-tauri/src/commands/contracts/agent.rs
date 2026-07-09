@@ -43,6 +43,7 @@ pub enum AgentMessageRoleDto {
 #[serde(rename_all = "snake_case")]
 pub enum AgentRunEventKindDto {
     RunStarted,
+    AssistantCandidate,
     MessageDelta,
     ReasoningSummary,
     ToolStarted,

@@ -1825,7 +1825,9 @@ pub(crate) fn prompt_relevant_paths_from_provider_messages(
                     collect_relevant_paths_from_json(&value, &mut paths);
                 }
             }
-            ProviderMessage::User { .. } => {}
+            ProviderMessage::Developer { .. }
+            | ProviderMessage::User { .. }
+            | ProviderMessage::AssistantContext { .. } => {}
         }
     }
     paths

@@ -54,6 +54,7 @@ export const runtimeProtocolMessageRoleSchema = z.enum([
 
 export const runtimeProtocolEventKindSchema = z.enum([
   'run_started',
+  'assistant_candidate',
   'message_delta',
   'reasoning_summary',
   'tool_started',
@@ -302,6 +303,16 @@ export const runtimeProtocolEventPayloadSchema = z.discriminatedUnion('kind', [
     from: z.string(),
     to: z.string(),
     reason: z.string().nullable().optional(),
+  }).strict() }).strict(),
+  z.object({ kind: z.literal('assistant_candidate'), payload: z.object({
+    candidateId: nonEmptyTextSchema,
+    turnIndex: z.number().int().nonnegative(),
+    state: z.enum(['pending', 'accepted', 'superseded']),
+    textDelta: z.string().nullable().optional(),
+    text: z.string().nullable().optional(),
+    disposition: z.string().nullable().optional(),
+    reasoningContent: z.string().nullable().optional(),
+    reasoningDetails: z.unknown().nullable().optional(),
   }).strict() }).strict(),
   z.object({ kind: z.literal('message_delta'), payload: z.object({
     role: runtimeProtocolMessageRoleSchema,

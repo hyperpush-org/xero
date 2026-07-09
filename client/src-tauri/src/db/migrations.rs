@@ -2777,6 +2777,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         created_at TEXT NOT NULL,
         CHECK (event_kind IN (
             'run_started',
+            'assistant_candidate',
             'message_delta',
             'reasoning_summary',
             'tool_started',

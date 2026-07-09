@@ -266,6 +266,7 @@ pub enum MessageRole {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeEventKind {
     RunStarted,
+    AssistantCandidate,
     MessageDelta,
     ReasoningSummary,
     ToolStarted,

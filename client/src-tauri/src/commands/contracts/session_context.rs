@@ -1280,6 +1280,32 @@ pub fn run_transcript_from_agent_snapshot(
     }
 
     for event in &snapshot.events {
+        if event.event_kind == AgentRunEventKind::AssistantCandidate {
+            let payload =
+                serde_json::from_str::<JsonValue>(&event.payload_json).unwrap_or(JsonValue::Null);
+            let candidate_id = payload.get("candidateId").and_then(JsonValue::as_str);
+            let accepted = payload.get("state").and_then(JsonValue::as_str) == Some("accepted");
+            let has_persisted_message = candidate_id.is_some_and(|candidate_id| {
+                snapshot.messages.iter().any(|message| {
+                    message.role == crate::db::project_store::AgentMessageRole::Assistant
+                        && message
+                            .provider_metadata_json
+                            .as_deref()
+                            .and_then(|metadata| serde_json::from_str::<JsonValue>(metadata).ok())
+                            .and_then(|metadata| {
+                                metadata
+                                    .get("providerMessageId")
+                                    .and_then(JsonValue::as_str)
+                                    .map(str::to_owned)
+                            })
+                            .as_deref()
+                            == Some(candidate_id)
+                })
+            });
+            if !accepted || has_persisted_message {
+                continue;
+            }
+        }
         let payload =
             serde_json::from_str::<JsonValue>(&event.payload_json).unwrap_or(JsonValue::Null);
         let (title, text, summary, redaction) = transcript_parts_from_event(event, &payload);
@@ -2536,7 +2562,9 @@ fn actor_from_message_role(
 
 fn transcript_kind_from_event(kind: &AgentRunEventKind) -> SessionTranscriptItemKindDto {
     match kind {
-        AgentRunEventKind::MessageDelta => SessionTranscriptItemKindDto::Message,
+        AgentRunEventKind::AssistantCandidate | AgentRunEventKind::MessageDelta => {
+            SessionTranscriptItemKindDto::Message
+        }
         AgentRunEventKind::ReasoningSummary => SessionTranscriptItemKindDto::Reasoning,
         AgentRunEventKind::ToolStarted | AgentRunEventKind::ToolDelta => {
             SessionTranscriptItemKindDto::ToolCall
@@ -2572,9 +2600,9 @@ fn transcript_kind_from_event(kind: &AgentRunEventKind) -> SessionTranscriptItem
 
 fn actor_from_event(kind: &AgentRunEventKind) -> SessionTranscriptActorDto {
     match kind {
-        AgentRunEventKind::MessageDelta | AgentRunEventKind::ReasoningSummary => {
-            SessionTranscriptActorDto::Assistant
-        }
+        AgentRunEventKind::AssistantCandidate
+        | AgentRunEventKind::MessageDelta
+        | AgentRunEventKind::ReasoningSummary => SessionTranscriptActorDto::Assistant,
         AgentRunEventKind::ToolStarted
         | AgentRunEventKind::ToolDelta
         | AgentRunEventKind::ToolCompleted => SessionTranscriptActorDto::Tool,
@@ -2596,6 +2624,7 @@ fn transcript_parts_from_event(
 ) {
     let title = match event.event_kind {
         AgentRunEventKind::RunStarted => Some("Run started".into()),
+        AgentRunEventKind::AssistantCandidate => Some("Assistant response".into()),
         AgentRunEventKind::MessageDelta => Some("Message delta".into()),
         AgentRunEventKind::ReasoningSummary => Some("Reasoning".into()),
         AgentRunEventKind::ToolStarted => Some("Tool started".into()),

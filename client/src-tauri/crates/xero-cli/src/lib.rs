@@ -4593,6 +4593,7 @@ fn parse_message_role(value: &str) -> MessageRole {
 fn runtime_event_kind_wire(kind: &RuntimeEventKind) -> &'static str {
     match kind {
         RuntimeEventKind::RunStarted => "run_started",
+        RuntimeEventKind::AssistantCandidate => "assistant_candidate",
         RuntimeEventKind::MessageDelta => "message_delta",
         RuntimeEventKind::ReasoningSummary => "reasoning_summary",
         RuntimeEventKind::ToolStarted => "tool_started",

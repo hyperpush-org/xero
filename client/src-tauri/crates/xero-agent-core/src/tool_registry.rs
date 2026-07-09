@@ -1,10 +1,10 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc, Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc, Arc, Condvar, Mutex, OnceLock, Weak,
     },
-    thread,
+    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
@@ -18,6 +18,7 @@ const DEFAULT_TOOL_FAILURE_LIMIT: usize = 16;
 const DEFAULT_REPEATED_EQUIVALENT_CALL_LIMIT: usize = 3;
 const DEFAULT_COMMAND_OUTPUT_BYTES: usize = 64 * 1024;
 const DEFAULT_GROUP_WALL_CLOCK_MS: u64 = 120_000;
+const DEFAULT_MAX_SUPERVISED_READ_ONLY_WORKERS: usize = 32;
 pub const TOOL_EXTENSION_MANIFEST_CONTRACT_VERSION: u32 = 1;
 
 pub type ToolRegistryResult<T> = Result<T, ToolExecutionError>;
@@ -1391,14 +1392,211 @@ pub struct ToolBatchDispatchReport {
 }
 
 #[derive(Default)]
+struct ReadOnlyWorkerState {
+    workers: BTreeMap<u64, Option<JoinHandle<()>>>,
+    completed_worker_ids: BTreeSet<u64>,
+}
+
+struct ReadOnlyWorkerSupervisor {
+    max_workers: usize,
+    next_worker_id: AtomicU64,
+    state: Mutex<ReadOnlyWorkerState>,
+    capacity_available: Condvar,
+}
+
+impl ReadOnlyWorkerSupervisor {
+    fn new(max_workers: usize) -> Self {
+        Self {
+            max_workers: max_workers.max(1),
+            next_worker_id: AtomicU64::new(1),
+            state: Mutex::new(ReadOnlyWorkerState::default()),
+            capacity_available: Condvar::new(),
+        }
+    }
+
+    fn spawn_until<F>(self: &Arc<Self>, deadline: Instant, job: F) -> ToolRegistryResult<u64>
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let mut job = Some(job);
+        loop {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let completed_worker_ids = std::mem::take(&mut state.completed_worker_ids);
+            let mut completed_handles = Vec::new();
+            for worker_id in completed_worker_ids {
+                match state.workers.get(&worker_id) {
+                    Some(Some(_)) => {
+                        if let Some(handle) = state.workers.remove(&worker_id).flatten() {
+                            completed_handles.push(handle);
+                        }
+                    }
+                    Some(None) => {
+                        state.completed_worker_ids.insert(worker_id);
+                    }
+                    None => {}
+                }
+            }
+
+            if state.workers.len() < self.max_workers {
+                let worker_id = self.next_worker_id.fetch_add(1, Ordering::Relaxed);
+                let Some(job) = job.take() else {
+                    drop(state);
+                    join_supervised_workers(completed_handles);
+                    return Err(ToolExecutionError::unavailable(
+                        "agent_tool_worker_job_missing",
+                        "Xero lost a queued read-only tool job before it started.",
+                    ));
+                };
+                state.workers.insert(worker_id, None);
+                drop(state);
+                join_supervised_workers(completed_handles);
+                let completion = ReadOnlyWorkerCompletionNotifier {
+                    worker_id,
+                    supervisor: Arc::downgrade(self),
+                };
+                let handle = match thread::Builder::new()
+                    .name(format!("xero-read-tool-{worker_id}"))
+                    .spawn(move || {
+                        let _completion = completion;
+                        job();
+                    }) {
+                    Ok(handle) => handle,
+                    Err(error) => {
+                        let mut state = self
+                            .state
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        state.workers.remove(&worker_id);
+                        state.completed_worker_ids.remove(&worker_id);
+                        drop(state);
+                        self.capacity_available.notify_all();
+                        return Err(ToolExecutionError::unavailable(
+                            "agent_tool_worker_spawn_failed",
+                            format!("Xero could not spawn a read-only tool worker: {error}"),
+                        ));
+                    }
+                };
+                let mut state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                state.workers.insert(worker_id, Some(handle));
+                let completed = state.completed_worker_ids.contains(&worker_id);
+                drop(state);
+                if completed {
+                    self.capacity_available.notify_all();
+                }
+                return Ok(worker_id);
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                let retained_worker_count = state.workers.len();
+                drop(state);
+                join_supervised_workers(completed_handles);
+                return Err(ToolExecutionError::timeout(
+                    "agent_tool_worker_capacity_exhausted",
+                    format!(
+                        "Xero retained {retained_worker_count} active or non-cooperative read-only tool workers, and capacity did not become available before the tool-group deadline."
+                    ),
+                ));
+            }
+
+            debug_assert!(completed_handles.is_empty());
+            let (next_state, _) = self
+                .capacity_available
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            drop(next_state);
+        }
+    }
+
+    fn join(&self, worker_id: u64) {
+        let handle = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.completed_worker_ids.remove(&worker_id);
+            state.workers.remove(&worker_id).flatten()
+        };
+        if let Some(handle) = handle {
+            self.capacity_available.notify_all();
+            let _ = handle.join();
+        }
+    }
+
+    fn mark_completed(&self, worker_id: u64) {
+        let notify = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.workers.contains_key(&worker_id) && state.completed_worker_ids.insert(worker_id)
+        };
+        if notify {
+            self.capacity_available.notify_all();
+        }
+    }
+}
+
+struct ReadOnlyWorkerCompletionNotifier {
+    worker_id: u64,
+    supervisor: Weak<ReadOnlyWorkerSupervisor>,
+}
+
+impl Drop for ReadOnlyWorkerCompletionNotifier {
+    fn drop(&mut self) {
+        if let Some(supervisor) = self.supervisor.upgrade() {
+            supervisor.mark_completed(self.worker_id);
+        }
+    }
+}
+
+fn join_supervised_workers(handles: Vec<JoinHandle<()>>) {
+    for handle in handles {
+        let _ = handle.join();
+    }
+}
+
+fn global_read_only_worker_supervisor() -> Arc<ReadOnlyWorkerSupervisor> {
+    // Production registries are rebuilt for each tool batch. Keep timed-out worker handles
+    // process-wide so non-cooperative handlers cannot become untracked, unbounded threads.
+    static SUPERVISOR: OnceLock<Arc<ReadOnlyWorkerSupervisor>> = OnceLock::new();
+    Arc::clone(SUPERVISOR.get_or_init(|| {
+        Arc::new(ReadOnlyWorkerSupervisor::new(
+            DEFAULT_MAX_SUPERVISED_READ_ONLY_WORKERS,
+        ))
+    }))
+}
+
 pub struct ToolRegistryV2 {
     handlers: BTreeMap<String, Arc<dyn ToolHandler>>,
+    read_only_worker_supervisor: Arc<ReadOnlyWorkerSupervisor>,
+}
+
+impl Default for ToolRegistryV2 {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ToolRegistryV2 {
     pub fn new() -> Self {
         Self {
             handlers: BTreeMap::new(),
+            read_only_worker_supervisor: global_read_only_worker_supervisor(),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_read_only_worker_limit(max_workers: usize) -> Self {
+        Self {
+            handlers: BTreeMap::new(),
+            read_only_worker_supervisor: Arc::new(ReadOnlyWorkerSupervisor::new(max_workers)),
         }
     }
 
@@ -1546,23 +1744,43 @@ impl ToolRegistryV2 {
         }
 
         let mut pending = BTreeMap::new();
+        let mut worker_ids = BTreeMap::new();
         let (result_tx, result_rx) = mpsc::channel();
         for (index, prepared_call) in prepared {
-            pending.insert(
-                index,
-                PendingReadOnlyToolCall::from_prepared(&prepared_call),
-            );
+            let pending_call = PendingReadOnlyToolCall::from_prepared(&prepared_call);
             let context = config.context.clone();
             let rollback = config.rollback.clone();
             let result_tx = result_tx.clone();
-            thread::spawn(move || {
-                let call = prepared_call.call.clone();
-                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    execute_prepared_call(prepared_call, &context, rollback.as_deref())
-                }))
-                .unwrap_or_else(|_| panic_failure_outcome(&call));
-                let _ = result_tx.send((index, call, outcome));
-            });
+            let spawn_result = self
+                .read_only_worker_supervisor
+                .spawn_until(deadline, move || {
+                    let call = prepared_call.call.clone();
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        execute_prepared_call(prepared_call, &context, rollback.as_deref())
+                    }))
+                    .unwrap_or_else(|_| panic_failure_outcome(&call));
+                    let _ = result_tx.send((index, call, outcome));
+                });
+            match spawn_result {
+                Ok(worker_id) => {
+                    pending.insert(index, pending_call);
+                    worker_ids.insert(index, worker_id);
+                }
+                Err(error) => {
+                    let call = pending_call.call.clone();
+                    let mut outcome = ToolDispatchOutcome::Failed(failure_from_pending_error(
+                        pending_call,
+                        error,
+                    ));
+                    if let ToolDispatchOutcome::Failed(failure) = &mut outcome {
+                        match tracker.record_failure(&call, &failure.error) {
+                            Ok(signal) => failure.doom_loop_signal = signal,
+                            Err(error) => failure.error = error,
+                        }
+                    }
+                    outcomes[index] = Some(outcome);
+                }
+            }
         }
         drop(result_tx);
 
@@ -1574,6 +1792,9 @@ impl ToolRegistryV2 {
             match result_rx.recv_timeout(remaining) {
                 Ok((index, call, mut outcome)) => {
                     pending.remove(&index);
+                    if let Some(worker_id) = worker_ids.remove(&index) {
+                        self.read_only_worker_supervisor.join(worker_id);
+                    }
                     if let ToolDispatchOutcome::Failed(failure) = &mut outcome {
                         match tracker.record_failure(&call, &failure.error) {
                             Ok(signal) => failure.doom_loop_signal = signal,
@@ -1822,12 +2043,34 @@ fn execute_prepared_call(
         return ToolDispatchOutcome::Failed(timeout_failure_from_prepared(prepared));
     }
 
-    let raw_result = prepared
-        .handler
-        .execute_with_control(context, &prepared.call, &control);
-    let post_hook_payload = prepared
-        .handler
-        .post_hook_payload(&prepared.call, &raw_result);
+    let mut raw_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        prepared
+            .handler
+            .execute_with_control(context, &prepared.call, &control)
+    }))
+    .unwrap_or_else(|_| Err(handler_panic_error(&prepared.call)));
+    if raw_result.is_ok() && control.is_cancelled() {
+        raw_result = Err(ToolExecutionError::timeout(
+            "agent_tool_group_timeout",
+            format!(
+                "Tool `{}` completed after the tool-group wall-clock budget expired.",
+                prepared.call.tool_name
+            ),
+        ));
+    }
+    let post_hook_payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        prepared
+            .handler
+            .post_hook_payload(&prepared.call, &raw_result)
+    }))
+    .unwrap_or_else(|_| {
+        json!({
+            "toolCallId": &prepared.call.tool_call_id,
+            "toolName": &prepared.call.tool_name,
+            "ok": false,
+            "postHookPanicked": true,
+        })
+    });
     match raw_result {
         Ok(handler_output) => {
             let mut sandbox_metadata = prepared.sandbox_metadata;
@@ -1935,6 +2178,24 @@ fn timeout_failure_from_pending(
     )
 }
 
+fn failure_from_pending_error(
+    pending: PendingReadOnlyToolCall,
+    error: ToolExecutionError,
+) -> ToolDispatchFailure {
+    let mut sandbox_metadata = pending.sandbox_metadata;
+    if let Some(metadata) = sandbox_metadata.as_mut() {
+        metadata.exit_classification = exit_classification_from_error(&error);
+    }
+    failure_from_error_with_sandbox(
+        &pending.call,
+        error,
+        pending.pre_hook_payload,
+        json!({ "ok": false, "workerStarted": false }),
+        pending.started.elapsed(),
+        sandbox_metadata,
+    )
+}
+
 fn panic_failure_outcome(call: &ToolCallInput) -> ToolDispatchOutcome {
     ToolDispatchOutcome::Failed(failure_from_error(
         call,
@@ -1946,6 +2207,16 @@ fn panic_failure_outcome(call: &ToolCallInput) -> ToolDispatchOutcome {
         json!({ "ok": false, "panicked": true }),
         Duration::from_millis(0),
     ))
+}
+
+fn handler_panic_error(call: &ToolCallInput) -> ToolExecutionError {
+    ToolExecutionError::retryable(
+        "agent_tool_handler_panicked",
+        format!(
+            "Tool `{}` panicked while executing its handler.",
+            call.tool_name
+        ),
+    )
 }
 
 fn exit_classification_from_output(output: &JsonValue) -> crate::SandboxExitClassification {
@@ -2585,10 +2856,15 @@ fn stable_json_signature(value: &JsonValue) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Condvar, Mutex};
     use std::time::{Duration, Instant};
 
     use super::*;
+
+    fn read_only_supervisor_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
     use crate::{
         PermissionProfileSandbox, ProjectTrustState, SandboxApprovalSource,
         SandboxExecutionContext, SandboxExitClassification, SandboxNetworkMode,
@@ -3311,6 +3587,70 @@ mod tests {
         assert_eq!(*rollback.rollbacks.lock().unwrap(), 1);
     }
 
+    #[test]
+    fn mutating_tool_success_after_deadline_is_rejected_and_rolled_back() {
+        let rollback = Arc::new(RecordingRollback::default());
+        let mut registry = ToolRegistryV2::new();
+        registry
+            .register(StaticToolHandler::new_cancellable(
+                descriptor("patch", ToolMutability::Mutating),
+                |_context, _call, control| {
+                    while !control.is_cancelled() {
+                        thread::yield_now();
+                    }
+                    Ok(ToolHandlerOutput::new("late write", json!({ "ok": true })))
+                },
+            ))
+            .expect("register patch tool");
+        let config = ToolDispatchConfig {
+            budget: ToolBudget {
+                max_wall_clock_time_per_tool_group_ms: 10,
+                ..ToolBudget::default()
+            },
+            rollback: Some(rollback.clone()),
+            ..ToolDispatchConfig::default()
+        };
+        let mut tracker = ToolBudgetTracker::new(config.budget.clone());
+
+        let outcome =
+            registry.dispatch_call(call("call-1", "patch", "src/lib.rs"), &mut tracker, &config);
+
+        let failure = outcome.failure().expect("late success must fail");
+        assert_eq!(failure.error.category, ToolErrorCategory::Timeout);
+        assert_eq!(failure.error.code, "agent_tool_group_timeout");
+        assert!(failure.rollback_payload.is_some());
+        assert_eq!(*rollback.checkpoints.lock().unwrap(), 1);
+        assert_eq!(*rollback.rollbacks.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn mutating_tool_handler_panic_is_contained_and_rolled_back() {
+        let rollback = Arc::new(RecordingRollback::default());
+        let mut registry = ToolRegistryV2::new();
+        registry
+            .register(StaticToolHandler::new(
+                descriptor("patch", ToolMutability::Mutating),
+                |_context, _call| -> ToolRegistryResult<ToolHandlerOutput> {
+                    panic!("handler panic must not escape dispatch")
+                },
+            ))
+            .expect("register patch tool");
+        let config = ToolDispatchConfig {
+            rollback: Some(rollback.clone()),
+            ..ToolDispatchConfig::default()
+        };
+        let mut tracker = ToolBudgetTracker::new(config.budget.clone());
+
+        let outcome =
+            registry.dispatch_call(call("call-1", "patch", "src/lib.rs"), &mut tracker, &config);
+
+        let failure = outcome.failure().expect("panicking handler must fail");
+        assert_eq!(failure.error.code, "agent_tool_handler_panicked");
+        assert!(failure.rollback_payload.is_some());
+        assert_eq!(*rollback.checkpoints.lock().unwrap(), 1);
+        assert_eq!(*rollback.rollbacks.lock().unwrap(), 1);
+    }
+
     #[derive(Debug)]
     struct FailingCheckpoint;
 
@@ -3454,6 +3794,9 @@ mod tests {
 
     #[test]
     fn read_only_tools_are_dispatched_in_parallel_groups() {
+        let _guard = read_only_supervisor_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let active = Arc::new(Mutex::new(0usize));
         let max_active = Arc::new(Mutex::new(0usize));
         let mut registry = ToolRegistryV2::new();
@@ -3492,6 +3835,9 @@ mod tests {
 
     #[test]
     fn tool_group_timeout_interrupts_hung_read_only_handler() {
+        let _guard = read_only_supervisor_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut registry = ToolRegistryV2::new();
         for name in ["slow_a", "slow_b"] {
             registry
@@ -3531,6 +3877,9 @@ mod tests {
 
     #[test]
     fn cancellable_handler_observes_group_deadline_control() {
+        let _guard = read_only_supervisor_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let observed_cancel = Arc::new(Mutex::new(false));
         let observed_cancel_for_handler = Arc::clone(&observed_cancel);
         let mut registry = ToolRegistryV2::new();
@@ -3569,6 +3918,145 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
         assert!(*observed_cancel.lock().unwrap());
+    }
+
+    #[derive(Debug, Default)]
+    struct CooperativeReadWave {
+        started: usize,
+        active: usize,
+        max_active: usize,
+        released: bool,
+    }
+
+    #[test]
+    fn cooperative_read_only_work_queues_above_supervisor_capacity() {
+        let _guard = read_only_supervisor_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let wave = Arc::new((Mutex::new(CooperativeReadWave::default()), Condvar::new()));
+        let wave_for_handler = Arc::clone(&wave);
+        let mut registry = ToolRegistryV2::new();
+        registry
+            .register(StaticToolHandler::new(
+                descriptor("cooperative_read", ToolMutability::ReadOnly),
+                move |_context, _call| {
+                    let (lock, ready) = &*wave_for_handler;
+                    let mut state = lock.lock().unwrap();
+                    state.started += 1;
+                    state.active += 1;
+                    state.max_active = state.max_active.max(state.active);
+                    ready.notify_all();
+                    while !state.released {
+                        state = ready.wait(state).unwrap();
+                    }
+                    state.active -= 1;
+                    Ok(ToolHandlerOutput::new("read", json!({ "ok": true })))
+                },
+            ))
+            .expect("register cooperative read");
+        let wave_for_release = Arc::clone(&wave);
+        let release = thread::spawn(move || {
+            let (lock, ready) = &*wave_for_release;
+            let state = lock.lock().unwrap();
+            let (mut state, _) = ready
+                .wait_timeout_while(state, Duration::from_millis(500), |state| {
+                    state.started < DEFAULT_MAX_SUPERVISED_READ_ONLY_WORKERS
+                })
+                .unwrap();
+            drop(state);
+            thread::sleep(Duration::from_millis(20));
+            state = lock.lock().unwrap();
+            state.released = true;
+            ready.notify_all();
+        });
+        let call_count = DEFAULT_MAX_SUPERVISED_READ_ONLY_WORKERS + 1;
+        let calls = (0..call_count)
+            .map(|index| {
+                call(
+                    &format!("call-{index}"),
+                    "cooperative_read",
+                    &format!("path-{index}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let config = ToolDispatchConfig {
+            budget: ToolBudget {
+                max_wall_clock_time_per_tool_group_ms: 1_500,
+                ..ToolBudget::default()
+            },
+            ..ToolDispatchConfig::default()
+        };
+
+        let report = registry.dispatch_batch(&calls, &config);
+        release.join().expect("release cooperative reads");
+
+        assert_eq!(report.groups.len(), 1);
+        assert_eq!(report.groups[0].outcomes.len(), call_count);
+        assert!(report.groups[0]
+            .outcomes
+            .iter()
+            .all(ToolDispatchOutcome::is_success));
+        assert!(
+            wave.as_ref().0.lock().unwrap().max_active <= DEFAULT_MAX_SUPERVISED_READ_ONLY_WORKERS
+        );
+    }
+
+    #[test]
+    fn non_cooperative_read_only_worker_is_retained_and_bounded() {
+        let release = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicBool::new(false));
+        let release_for_handler = Arc::clone(&release);
+        let finished_for_handler = Arc::clone(&finished);
+        let mut registry = ToolRegistryV2::with_read_only_worker_limit(1);
+        registry
+            .register(StaticToolHandler::new(
+                descriptor("stuck_read", ToolMutability::ReadOnly),
+                move |_context, _call| {
+                    while !release_for_handler.load(Ordering::SeqCst) {
+                        thread::park_timeout(Duration::from_millis(1));
+                    }
+                    finished_for_handler.store(true, Ordering::SeqCst);
+                    Ok(ToolHandlerOutput::new("released", json!({ "ok": true })))
+                },
+            ))
+            .expect("register stuck read");
+        registry
+            .register(StaticToolHandler::new(
+                descriptor("fast_read", ToolMutability::ReadOnly),
+                |_context, _call| Ok(ToolHandlerOutput::new("fast", json!({ "ok": true }))),
+            ))
+            .expect("register fast read");
+        let config = ToolDispatchConfig {
+            budget: ToolBudget {
+                max_wall_clock_time_per_tool_group_ms: 10,
+                ..ToolBudget::default()
+            },
+            ..ToolDispatchConfig::default()
+        };
+
+        let first = registry.dispatch_batch(&[call("call-1", "stuck_read", "a")], &config);
+        let second = registry.dispatch_batch(&[call("call-2", "fast_read", "b")], &config);
+        release.store(true, Ordering::SeqCst);
+        let cleanup_deadline = Instant::now() + Duration::from_secs(1);
+        while !finished.load(Ordering::SeqCst) && Instant::now() < cleanup_deadline {
+            thread::yield_now();
+        }
+        let third = registry.dispatch_batch(&[call("call-3", "fast_read", "c")], &config);
+
+        assert_eq!(
+            first.groups[0].outcomes[0].failure().unwrap().error.code,
+            "agent_tool_group_timeout"
+        );
+        assert_eq!(
+            second.groups[0].outcomes[0]
+                .failure()
+                .expect("supervisor must reject an unbounded replacement worker")
+                .error
+                .code,
+            "agent_tool_worker_capacity_exhausted"
+        );
+        assert!(finished.load(Ordering::SeqCst));
+        assert!(third.groups[0].outcomes[0].is_success());
     }
 
     #[test]
