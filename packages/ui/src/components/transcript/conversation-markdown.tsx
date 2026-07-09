@@ -50,6 +50,7 @@ type Segment =
   | { kind: 'text'; text: string }
 
 const FENCE_RE = /(^|\n)( {0,3})```([^\n`]*)\n([\s\S]*?)(?:\n {0,3}```[^\S\n]*(?=\n|$)|$)/g
+const MARKDOWN_HTML_COMMENT_RE = /<!--[\s\S]*?-->/g
 export const MARKDOWN_CODE_BLOCK_HIGHLIGHT_BYTE_LIMIT = 96 * 1024
 const MARKDOWN_SEGMENT_CACHE_MAX_ENTRIES = 240
 export const MARKDOWN_SEGMENT_CACHE_MAX_BYTES = 2 * 1024 * 1024
@@ -105,6 +106,31 @@ function stripFencedCodeIndent(code: string, indentSize: number): string {
     .join('\n')
 }
 
+export function stripMarkdownHtmlComments(input: string): string {
+  let output = ''
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+  const fenceRe = new RegExp(FENCE_RE.source, FENCE_RE.flags)
+
+  while ((match = fenceRe.exec(input)) !== null) {
+    const [whole, leading] = match
+    const start = match.index + leading.length
+    output += input.slice(lastIndex, start).replace(MARKDOWN_HTML_COMMENT_RE, '')
+    output += input.slice(start, match.index + whole.length)
+    lastIndex = match.index + whole.length
+  }
+
+  output += input.slice(lastIndex).replace(MARKDOWN_HTML_COMMENT_RE, '')
+  return output
+}
+
+function pushTextSegment(segments: Segment[], text: string): void {
+  const visibleText = stripMarkdownHtmlComments(text)
+  if (visibleText.length > 0) {
+    segments.push({ kind: 'text', text: visibleText })
+  }
+}
+
 export function splitFencedSegments(input: string): Segment[] {
   const segments: Segment[] = []
   let lastIndex = 0
@@ -115,7 +141,7 @@ export function splitFencedSegments(input: string): Segment[] {
     const [whole, leading, indent, langRaw, body] = match
     const start = match.index + leading.length
     if (start > lastIndex) {
-      segments.push({ kind: 'text', text: input.slice(lastIndex, start) })
+      pushTextSegment(segments, input.slice(lastIndex, start))
     }
     segments.push({
       kind: 'code',
@@ -126,7 +152,7 @@ export function splitFencedSegments(input: string): Segment[] {
   }
 
   if (lastIndex < input.length) {
-    segments.push({ kind: 'text', text: input.slice(lastIndex) })
+    pushTextSegment(segments, input.slice(lastIndex))
   }
 
   return segments

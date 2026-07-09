@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { isCreditLimitFailure } from '@xero/ui/model/credit-limit'
 
 import type { AgentPaneView } from '@/src/features/xero/use-xero-desktop-state'
 import type {
@@ -144,6 +145,15 @@ function appendComposerPrompt(currentPrompt: string, addition: string): string {
 
   const current = currentPrompt.trimEnd()
   return current.length > 0 ? `${current}\n\n${nextPrompt}` : nextPrompt
+}
+
+function isCreditLimitRuntimeRun(run: RuntimeRunView | null | undefined): boolean {
+  if (!run?.isFailed) return false
+
+  return isCreditLimitFailure(
+    run.lastError?.code ?? run.lastErrorCode ?? null,
+    run.lastError?.message ?? null,
+  )
 }
 
 const AUTO_COMPACT_STORAGE_KEY = 'xero.agent.autoCompact.enabled'
@@ -942,12 +952,15 @@ export function useAgentRuntimeController({
         (attachment) => attachment.absolutePath != null,
       )
       const linkedPathsToSubmit = getPendingLinkedPaths?.() ?? []
-      await onStartRuntimeRun({
+      const startedRun = await onStartRuntimeRun({
         controls: selectedControlInput,
         prompt: promptToSubmit.length > 0 ? promptToSubmit : null,
         attachments: attachmentsToSubmit.length > 0 ? attachmentsToSubmit : undefined,
         linkedPaths: linkedPathsToSubmit.length > 0 ? linkedPathsToSubmit : undefined,
       })
+      if (isCreditLimitRuntimeRun(startedRun)) {
+        return false
+      }
       if (promptToSubmit.length > 0 || attachmentsToSubmit.length > 0) {
         clearSubmittedDraft()
         if (promptToSubmit.length > 0) {
@@ -998,11 +1011,14 @@ export function useAgentRuntimeController({
         return false
       }
 
-      await onUpdateRuntimeRunControls({
+      const updatedRun = await onUpdateRuntimeRunControls({
         ...(promptToSubmit.length > 0 ? { prompt: promptToSubmit } : {}),
         ...(attachmentsToSubmit.length > 0 ? { attachments: attachmentsToSubmit } : {}),
         ...(linkedPathsToSubmit.length > 0 ? { linkedPaths: linkedPathsToSubmit } : {}),
       })
+      if (isCreditLimitRuntimeRun(updatedRun)) {
+        return false
+      }
       clearSubmittedDraft()
       if (promptToSubmit.length > 0) {
         setQueuedDraftAcknowledgement(promptToSubmit)
@@ -1065,10 +1081,13 @@ export function useAgentRuntimeController({
           return false
         }
 
-        await onStartRuntimeRun({
+        const startedRun = await onStartRuntimeRun({
           controls: controlsToSubmit ?? selectedControlInput,
           prompt: promptToSubmit,
         })
+        if (isCreditLimitRuntimeRun(startedRun)) {
+          return false
+        }
         if (acknowledgeAsUserPrompt) {
           setQueuedDraftAcknowledgement(promptToSubmit)
         }
@@ -1083,10 +1102,13 @@ export function useAgentRuntimeController({
         return false
       }
 
-      await onUpdateRuntimeRunControls({
+      const updatedRun = await onUpdateRuntimeRunControls({
         ...(controlsToSubmit ? { controls: controlsToSubmit } : {}),
         prompt: promptToSubmit,
       })
+      if (isCreditLimitRuntimeRun(updatedRun)) {
+        return false
+      }
       if (acknowledgeAsUserPrompt) {
         setQueuedDraftAcknowledgement(promptToSubmit)
       }

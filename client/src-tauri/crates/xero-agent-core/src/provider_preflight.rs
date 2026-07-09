@@ -164,6 +164,10 @@ pub enum ProviderPreflightErrorClass {
     EndpointUnreachable,
     ModelUnavailable,
     RateLimited,
+    /// The provider account is out of credits or has hit a spending/billing
+    /// limit (typically surfaced as HTTP 402). This is user-fixable by topping
+    /// up credits or switching to another model, and is NOT retryable.
+    CreditLimit,
     ProviderRejectedRequest,
     ProviderServerError,
     Decode,
@@ -178,6 +182,7 @@ impl ProviderPreflightErrorClass {
             Self::EndpointUnreachable => "endpoint_unreachable",
             Self::ModelUnavailable => "model_unavailable",
             Self::RateLimited => "rate_limited",
+            Self::CreditLimit => "credit_limit",
             Self::ProviderRejectedRequest => "provider_rejected_request",
             Self::ProviderServerError => "provider_server_error",
             Self::Decode => "decode",
@@ -1530,6 +1535,29 @@ fn xai_preflight_tool_schema() -> JsonValue {
     })
 }
 
+/// Returns `true` when a provider error message indicates the account is out of
+/// credits or has hit a spending/billing limit. Used both to classify live
+/// provider errors as [`ProviderPreflightErrorClass::CreditLimit`] and, at the
+/// run-start boundary, to route the failure to a dedicated `provider_credit_limit`
+/// diagnostic so the UI can present a purpose-built billing card instead of a
+/// generic error. Matches the `credit_limit` class marker as well as the raw
+/// phrasing providers use (xAI/Grok, OpenRouter, OpenAI, Anthropic, …).
+pub fn provider_preflight_message_indicates_credit_limit(message: &str) -> bool {
+    let text = message.to_ascii_lowercase();
+    text.contains("credit_limit")
+        || text.contains("out of credits")
+        || text.contains("insufficient credit")
+        || text.contains("insufficient_quota")
+        || text.contains("insufficient funds")
+        || text.contains("spending limit")
+        || text.contains("spending-limit")
+        || text.contains("spending_limit")
+        || text.contains("add credits")
+        || text.contains("personal-team-blocked")
+        || text.contains("http 402")
+        || text.contains("payment required")
+}
+
 fn classify_provider_preflight_http_error(status: u16, body: &str) -> ProviderPreflightError {
     let body = body.trim();
     let message = if body.is_empty() {
@@ -1540,14 +1568,20 @@ fn classify_provider_preflight_http_error(status: u16, body: &str) -> ProviderPr
             truncate_text(body, 512)
         )
     };
-    let class = match status {
-        401 => ProviderPreflightErrorClass::Authentication,
-        403 => ProviderPreflightErrorClass::Authorization,
-        404 => ProviderPreflightErrorClass::ModelUnavailable,
-        429 => ProviderPreflightErrorClass::RateLimited,
-        400 | 422 => ProviderPreflightErrorClass::ProviderRejectedRequest,
-        500..=599 => ProviderPreflightErrorClass::ProviderServerError,
-        _ => ProviderPreflightErrorClass::Unknown,
+    let class = if status == 402 || provider_preflight_message_indicates_credit_limit(body) {
+        // HTTP 402 Payment Required — or an error body that explicitly names a
+        // credit/spending limit — means the provider account is out of credits.
+        ProviderPreflightErrorClass::CreditLimit
+    } else {
+        match status {
+            401 => ProviderPreflightErrorClass::Authentication,
+            403 => ProviderPreflightErrorClass::Authorization,
+            404 => ProviderPreflightErrorClass::ModelUnavailable,
+            429 => ProviderPreflightErrorClass::RateLimited,
+            400 | 422 => ProviderPreflightErrorClass::ProviderRejectedRequest,
+            500..=599 => ProviderPreflightErrorClass::ProviderServerError,
+            _ => ProviderPreflightErrorClass::Unknown,
+        }
     };
     let retryable = matches!(
         class,
@@ -1782,6 +1816,48 @@ mod tests {
         }
 
         output
+    }
+
+    #[test]
+    fn http_402_classifies_as_credit_limit_and_is_not_retryable() {
+        let error = classify_provider_preflight_http_error(
+            402,
+            "{\"code\":\"personal-team-blocked:spending-limit\",\"error\":\"You have run out of credits or need a Grok subscription. Add credits at https://grok.com/?_s=usage\"}",
+        );
+        assert_eq!(error.class, ProviderPreflightErrorClass::CreditLimit);
+        assert_eq!(error.class.as_str(), "credit_limit");
+        assert!(
+            !error.retryable,
+            "a credit/billing limit must not be treated as retryable",
+        );
+        assert!(error.message.contains("HTTP 402"));
+    }
+
+    #[test]
+    fn credit_limit_body_upgrades_non_402_status() {
+        // Some providers surface billing limits under a non-402 status; the
+        // message signal must still classify it as a credit limit.
+        let error = classify_provider_preflight_http_error(403, "You are out of credits");
+        assert_eq!(error.class, ProviderPreflightErrorClass::CreditLimit);
+    }
+
+    #[test]
+    fn credit_limit_message_detection_matches_signals_but_not_generic_errors() {
+        assert!(provider_preflight_message_indicates_credit_limit(
+            "Provider preflight failed with credit_limit: ..."
+        ));
+        assert!(provider_preflight_message_indicates_credit_limit(
+            "Provider returned HTTP 402: out of credits"
+        ));
+        assert!(provider_preflight_message_indicates_credit_limit(
+            "code: personal-team-blocked:spending-limit"
+        ));
+        assert!(!provider_preflight_message_indicates_credit_limit(
+            "Provider returned HTTP 401: unauthorized"
+        ));
+        assert!(!provider_preflight_message_indicates_credit_limit(
+            "Provider preflight failed with model_unavailable: model not found"
+        ));
     }
 
     #[test]

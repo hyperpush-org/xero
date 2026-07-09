@@ -444,38 +444,6 @@ pub(crate) fn assemble_system_prompt_for_session_with_attached_and_policy(
     clippy::too_many_arguments,
     reason = "Prompt compilation combines orthogonal runtime context, tool policy, and skill payload inputs at the boundary."
 )]
-pub(crate) fn compile_system_prompt_for_session(
-    repo_root: &Path,
-    project_id: Option<&str>,
-    agent_session_id: Option<&str>,
-    runtime_agent_id: RuntimeAgentIdDto,
-    browser_control_preference: BrowserControlPreferenceDto,
-    tools: &[AgentToolDescriptor],
-    agent_definition_snapshot: Option<&JsonValue>,
-    soul_settings: Option<&SoulSettingsDto>,
-    owned_process_summary: Option<&str>,
-    skill_contexts: Vec<XeroSkillToolContextPayload>,
-) -> CommandResult<PromptCompilation> {
-    compile_system_prompt_for_session_with_attached(
-        repo_root,
-        project_id,
-        agent_session_id,
-        runtime_agent_id,
-        browser_control_preference,
-        &ResolvedAgentToolApplicationStyleDto::default(),
-        tools,
-        agent_definition_snapshot,
-        soul_settings,
-        owned_process_summary,
-        Vec::new(),
-        skill_contexts,
-    )
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Prompt compilation combines orthogonal runtime context, tool policy, and skill payload inputs at the boundary."
-)]
 pub(crate) fn compile_system_prompt_for_session_with_attached(
     repo_root: &Path,
     project_id: Option<&str>,

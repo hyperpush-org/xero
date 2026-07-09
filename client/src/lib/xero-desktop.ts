@@ -115,6 +115,7 @@ import {
   workflowRunBlockerResponseSchema,
   workflowRunBundleResponseSchema,
   workflowRunResponseSchema,
+  workflowRunUpdatedPayloadSchema,
   writeWorkflowDeliveryStateRequestSchema,
   type CancelWorkflowRunRequestDto,
   type CreateWorkflowDefinitionRequestDto,
@@ -140,6 +141,7 @@ import {
   type WorkflowRunBlockerResponseDto,
   type WorkflowRunBundleResponseDto,
   type WorkflowRunResponseDto,
+  type WorkflowRunUpdatedPayloadDto,
   type WriteWorkflowDeliveryStateRequestDto,
 } from '@/src/lib/xero-model/workflow-run'
 import {
@@ -889,6 +891,7 @@ const EVENTS = {
   repositoryStatusChanged: 'repository:status_changed',
   runtimeUpdated: 'runtime:updated',
   runtimeRunUpdated: 'runtime_run:updated',
+  workflowRunUpdated: 'workflow_run:updated',
   browserUrlChanged: 'browser:url_changed',
   browserLoadState: 'browser:load_state',
   browserConsole: 'browser:console',
@@ -1695,6 +1698,10 @@ export interface XeroDesktopAdapter {
   ): Promise<UnlistenFn>
   onRuntimeRunUpdated(
     handler: (payload: RuntimeRunUpdatedPayloadDto) => void,
+    onError?: (error: XeroDesktopError) => void,
+  ): Promise<UnlistenFn>
+  onWorkflowRunUpdated?(
+    handler: (payload: WorkflowRunUpdatedPayloadDto) => void,
     onError?: (error: XeroDesktopError) => void,
   ): Promise<UnlistenFn>
   onAgentUsageUpdated(
@@ -4249,6 +4256,10 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
 
   onRuntimeRunUpdated(handler, onError) {
     return listenTyped(EVENTS.runtimeRunUpdated, runtimeRunUpdatedPayloadSchema, handler, onError)
+  },
+
+  onWorkflowRunUpdated(handler, onError) {
+    return listenTyped(EVENTS.workflowRunUpdated, workflowRunUpdatedPayloadSchema, handler, onError)
   },
 
   onAgentUsageUpdated(handler, onError) {

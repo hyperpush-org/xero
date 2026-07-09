@@ -1,3 +1,4 @@
-// Temporary product gate: agent authoring stays live while multi-agent workflows
-// are reworked behind "Coming soon" surfaces.
-export const WORKFLOWS_ENABLED = false
+// Product gate for multi-agent workflows. Definitions, runs, and the run
+// driver are live end-to-end; flip this off to park the surfaces behind
+// "Coming soon" again.
+export const WORKFLOWS_ENABLED = true

@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use rusqlite_migration::{Migrations, M};
 
-pub const PROJECT_DATABASE_SCHEMA_VERSION: i64 = 42;
+pub const PROJECT_DATABASE_SCHEMA_VERSION: i64 = 43;
 
 pub fn migrations() -> &'static Migrations<'static> {
     static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
@@ -3752,7 +3752,7 @@ mod tests {
         assert!(built_ins.contains(&"agent_create:3:Agent Create".to_string()));
         assert!(built_ins.contains(&"computer_use:1:Computer Use".to_string()));
         assert!(built_ins.contains(&"debug:2:Debug".to_string()));
-        assert!(built_ins.contains(&"engineer:4:Engineer".to_string()));
+        assert!(built_ins.contains(&"engineer:5:Engineer".to_string()));
         assert!(built_ins.contains(&"generalist:1:Agent".to_string()));
         assert!(built_ins.contains(&"plan:2:Plan".to_string()));
 

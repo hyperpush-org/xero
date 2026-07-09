@@ -63,9 +63,6 @@ const PROJECT_PERFORMANCE_BUDGETS: &[(&str, u64, &str, &str)] = &[
         "warning",
     ),
 ];
-const PROJECT_PERFORMANCE_BENCHMARK_SCHEMA: &str = "xero.project_performance_benchmark.v1";
-const PROJECT_PERFORMANCE_REGRESSION_GRACE_MS: u64 = 25;
-const PROJECT_PERFORMANCE_REGRESSION_GRACE_PERCENT: u64 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectStorageObservabilityReport {
@@ -108,40 +105,6 @@ pub struct ProjectPerformanceBudget {
     pub measurement_source: String,
     pub enforcement: String,
     pub status: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectPerformanceBenchmarkMeasurement {
-    pub operation: String,
-    pub observed_ms: u64,
-    pub sample_count: u64,
-    pub measured_at: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectPerformanceBenchmarkObservation {
-    pub operation: String,
-    pub budget_ms: u64,
-    pub observed_ms: Option<u64>,
-    pub sample_count: Option<u64>,
-    pub over_budget_ms: u64,
-    pub failure_threshold_ms: u64,
-    pub measurement_source: String,
-    pub enforcement: String,
-    pub status: String,
-    pub measured_at: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectPerformanceBenchmarkReport {
-    pub schema: String,
-    pub project_id: String,
-    pub generated_at: String,
-    pub regression_grace_ms: u64,
-    pub regression_grace_percent: u64,
-    pub observations: Vec<ProjectPerformanceBenchmarkObservation>,
-    pub diagnostics: Vec<ProjectStorageDiagnostic>,
-    pub failed_operations: Vec<String>,
 }
 
 pub(crate) fn record_project_storage_maintenance_success(
@@ -399,165 +362,6 @@ pub fn load_project_performance_budgets(
         budgets,
         diagnostics,
     })
-}
-
-pub fn evaluate_project_performance_benchmark(
-    repo_root: &Path,
-    project_id: &str,
-    generated_at: &str,
-    measurements: &[ProjectPerformanceBenchmarkMeasurement],
-) -> Result<ProjectPerformanceBenchmarkReport, CommandError> {
-    validate_non_empty_text(
-        generated_at,
-        "generatedAt",
-        "project_performance_benchmark_generated_at_required",
-    )?;
-    for measurement in measurements {
-        validate_non_empty_text(
-            &measurement.operation,
-            "operation",
-            "project_performance_benchmark_operation_required",
-        )?;
-        if measurement.sample_count == 0 {
-            return Err(CommandError::user_fixable(
-                "project_performance_benchmark_sample_count_required",
-                format!(
-                    "Performance benchmark measurement `{}` must include at least one sample.",
-                    measurement.operation
-                ),
-            ));
-        }
-    }
-
-    let budget_report = load_project_performance_budgets(repo_root, project_id)?;
-    let mut diagnostics = budget_report.diagnostics.clone();
-    let mut failed_operations = Vec::new();
-    let mut observations = Vec::new();
-
-    if measurements.is_empty() {
-        diagnostics.push(ProjectStorageDiagnostic {
-            code: "project_performance_benchmark_unmeasured".into(),
-            message: "No benchmark measurements were supplied for the project performance budgets."
-                .into(),
-            severity: "warning".into(),
-        });
-    }
-
-    for measurement in measurements {
-        if !budget_report
-            .budgets
-            .iter()
-            .any(|budget| budget.operation == measurement.operation)
-        {
-            diagnostics.push(ProjectStorageDiagnostic {
-                code: "project_performance_benchmark_unknown_measurement".into(),
-                message: format!(
-                    "Benchmark measurement `{}` does not match a tracked project performance budget.",
-                    measurement.operation
-                ),
-                severity: "warning".into(),
-            });
-        }
-    }
-
-    for budget in &budget_report.budgets {
-        let measurement = measurements
-            .iter()
-            .filter(|measurement| measurement.operation == budget.operation)
-            .max_by_key(|measurement| measurement.observed_ms);
-        let failure_threshold_ms = project_performance_regression_threshold_ms(budget.budget_ms);
-        let (observed_ms, sample_count, over_budget_ms, status, measured_at) =
-            if let Some(measurement) = measurement {
-                let over_budget_ms = measurement.observed_ms.saturating_sub(budget.budget_ms);
-                let status = if measurement.observed_ms <= budget.budget_ms {
-                    "within_budget"
-                } else if measurement.observed_ms > failure_threshold_ms {
-                    failed_operations.push(budget.operation.clone());
-                    diagnostics.push(ProjectStorageDiagnostic {
-                        code: "project_performance_benchmark_regression".into(),
-                        message: format!(
-                            "`{}` took {}ms, exceeding its {}ms budget and {}ms failure threshold.",
-                            budget.operation,
-                            measurement.observed_ms,
-                            budget.budget_ms,
-                            failure_threshold_ms
-                        ),
-                        severity: if budget.enforcement == "blocker" {
-                            "error".into()
-                        } else {
-                            "warning".into()
-                        },
-                    });
-                    "meaningful_regression"
-                } else {
-                    diagnostics.push(ProjectStorageDiagnostic {
-                        code: "project_performance_benchmark_over_budget_within_grace".into(),
-                        message: format!(
-                        "`{}` took {}ms against a {}ms budget, within the {}ms failure threshold.",
-                        budget.operation,
-                        measurement.observed_ms,
-                        budget.budget_ms,
-                        failure_threshold_ms
-                    ),
-                        severity: "warning".into(),
-                    });
-                    "over_budget_within_grace"
-                };
-                (
-                    Some(measurement.observed_ms),
-                    Some(measurement.sample_count),
-                    over_budget_ms,
-                    status,
-                    measurement.measured_at.clone(),
-                )
-            } else {
-                (None, None, 0, "unmeasured", None)
-            };
-
-        observations.push(ProjectPerformanceBenchmarkObservation {
-            operation: budget.operation.clone(),
-            budget_ms: budget.budget_ms,
-            observed_ms,
-            sample_count,
-            over_budget_ms,
-            failure_threshold_ms,
-            measurement_source: budget.measurement_source.clone(),
-            enforcement: budget.enforcement.clone(),
-            status: status.into(),
-            measured_at,
-        });
-    }
-
-    Ok(ProjectPerformanceBenchmarkReport {
-        schema: PROJECT_PERFORMANCE_BENCHMARK_SCHEMA.into(),
-        project_id: budget_report.project_id,
-        generated_at: generated_at.into(),
-        regression_grace_ms: PROJECT_PERFORMANCE_REGRESSION_GRACE_MS,
-        regression_grace_percent: PROJECT_PERFORMANCE_REGRESSION_GRACE_PERCENT,
-        observations,
-        diagnostics,
-        failed_operations,
-    })
-}
-
-pub fn enforce_project_performance_benchmark(
-    repo_root: &Path,
-    project_id: &str,
-    generated_at: &str,
-    measurements: &[ProjectPerformanceBenchmarkMeasurement],
-) -> Result<ProjectPerformanceBenchmarkReport, CommandError> {
-    let report =
-        evaluate_project_performance_benchmark(repo_root, project_id, generated_at, measurements)?;
-    if !report.failed_operations.is_empty() {
-        return Err(CommandError::system_fault(
-            "project_performance_budget_regression",
-            format!(
-                "Project performance benchmark exceeded meaningful budgets for: {}.",
-                report.failed_operations.join(", ")
-            ),
-        ));
-    }
-    Ok(report)
 }
 
 pub fn load_project_support_diagnostics_bundle(
@@ -896,32 +700,6 @@ fn performance_budget_report_json(report: &ProjectPerformanceBudgetReport) -> Js
     })
 }
 
-#[cfg(test)]
-fn performance_benchmark_report_json(report: &ProjectPerformanceBenchmarkReport) -> JsonValue {
-    json!({
-        "schema": report.schema,
-        "projectId": report.project_id,
-        "generatedAt": report.generated_at,
-        "regressionGraceMs": report.regression_grace_ms,
-        "regressionGracePercent": report.regression_grace_percent,
-        "failureCount": report.failed_operations.len(),
-        "failedOperations": report.failed_operations,
-        "observations": report.observations.iter().map(|observation| json!({
-            "operation": observation.operation,
-            "budgetMs": observation.budget_ms,
-            "observedMs": observation.observed_ms,
-            "sampleCount": observation.sample_count,
-            "overBudgetMs": observation.over_budget_ms,
-            "failureThresholdMs": observation.failure_threshold_ms,
-            "measurementSource": observation.measurement_source,
-            "enforcement": observation.enforcement,
-            "status": observation.status,
-            "measuredAt": observation.measured_at,
-        })).collect::<Vec<_>>(),
-        "diagnostics": report.diagnostics.iter().map(storage_diagnostic_json).collect::<Vec<_>>(),
-    })
-}
-
 fn storage_diagnostic_json(diagnostic: &ProjectStorageDiagnostic) -> JsonValue {
     json!({
         "code": diagnostic.code,
@@ -998,12 +776,6 @@ fn push_lance_health_diagnostics(
             severity: "warning".into(),
         });
     }
-}
-
-fn project_performance_regression_threshold_ms(budget_ms: u64) -> u64 {
-    let percentage_grace_ms =
-        budget_ms.saturating_mul(PROJECT_PERFORMANCE_REGRESSION_GRACE_PERCENT) / 100;
-    budget_ms.saturating_add(percentage_grace_ms.max(PROJECT_PERFORMANCE_REGRESSION_GRACE_MS))
 }
 
 fn directory_bytes(path: &Path) -> Result<u64, CommandError> {
@@ -1209,116 +981,6 @@ mod tests {
             .iter()
             .any(|budget| budget.operation == "handoff_preparation"
                 && budget.enforcement == "blocker"));
-
-        let benchmark = evaluate_project_performance_benchmark(
-            &repo_root,
-            project_id,
-            "2026-05-09T00:05:00Z",
-            &[ProjectPerformanceBenchmarkMeasurement {
-                operation: "project_open".into(),
-                observed_ms: 1_250,
-                sample_count: 5,
-                measured_at: Some("2026-05-09T00:05:00Z".into()),
-            }],
-        )
-        .expect("evaluate performance benchmark");
-        assert_eq!(benchmark.schema, PROJECT_PERFORMANCE_BENCHMARK_SCHEMA);
-        assert_eq!(benchmark.failed_operations, Vec::<String>::new());
-        assert_eq!(benchmark.observations.len(), report.budgets.len());
-        let project_open = benchmark
-            .observations
-            .iter()
-            .find(|observation| observation.operation == "project_open")
-            .expect("project open observation");
-        assert_eq!(project_open.status, "within_budget");
-        assert_eq!(project_open.observed_ms, Some(1_250));
-        let agent_selection = benchmark
-            .observations
-            .iter()
-            .find(|observation| observation.operation == "agent_selection")
-            .expect("agent selection observation");
-        assert_eq!(agent_selection.status, "unmeasured");
-
-        let benchmark_json = performance_benchmark_report_json(&benchmark);
-        assert_eq!(
-            benchmark_json["schema"],
-            json!(PROJECT_PERFORMANCE_BENCHMARK_SCHEMA)
-        );
-        assert_eq!(benchmark_json["failureCount"], json!(0));
-        assert_eq!(
-            benchmark_json["observations"]
-                .as_array()
-                .expect("observations array")
-                .len(),
-            report.budgets.len()
-        );
-    }
-
-    #[test]
-    fn s60_project_performance_benchmark_fails_meaningful_regressions() {
-        project_record_lance::reset_connection_cache_for_tests();
-        agent_memory_lance::reset_connection_cache_for_tests();
-        let tempdir = tempfile::tempdir().expect("tempdir");
-        let repo_root = tempdir.path().join("repo");
-        fs::create_dir_all(&repo_root).expect("repo dir");
-        let project_id = "project-performance-budget-regressions";
-        create_project_database(&repo_root, project_id);
-
-        let measurements = vec![
-            ProjectPerformanceBenchmarkMeasurement {
-                operation: "retrieval_latency".into(),
-                observed_ms: 800,
-                sample_count: 7,
-                measured_at: Some("2026-05-09T00:06:00Z".into()),
-            },
-            ProjectPerformanceBenchmarkMeasurement {
-                operation: "handoff_preparation".into(),
-                observed_ms: 2_300,
-                sample_count: 3,
-                measured_at: Some("2026-05-09T00:06:00Z".into()),
-            },
-        ];
-        let report = evaluate_project_performance_benchmark(
-            &repo_root,
-            project_id,
-            "2026-05-09T00:06:00Z",
-            &measurements,
-        )
-        .expect("evaluate regression benchmark");
-        assert_eq!(
-            report.failed_operations,
-            vec!["handoff_preparation".to_string()]
-        );
-        let retrieval = report
-            .observations
-            .iter()
-            .find(|observation| observation.operation == "retrieval_latency")
-            .expect("retrieval observation");
-        assert_eq!(retrieval.status, "over_budget_within_grace");
-        let handoff = report
-            .observations
-            .iter()
-            .find(|observation| observation.operation == "handoff_preparation")
-            .expect("handoff observation");
-        assert_eq!(handoff.status, "meaningful_regression");
-        assert_eq!(handoff.over_budget_ms, 300);
-        assert_eq!(handoff.failure_threshold_ms, 2_200);
-        assert!(report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "project_performance_benchmark_regression"));
-
-        let output = performance_benchmark_report_json(&report);
-        assert_eq!(output["failureCount"], json!(1));
-        assert_eq!(output["failedOperations"], json!(["handoff_preparation"]));
-        let error = enforce_project_performance_benchmark(
-            &repo_root,
-            project_id,
-            "2026-05-09T00:06:00Z",
-            &measurements,
-        )
-        .expect_err("meaningful regression should fail enforcement");
-        assert_eq!(error.code, "project_performance_budget_regression");
     }
 
     #[test]

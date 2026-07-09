@@ -1274,6 +1274,13 @@ pub struct WorkflowRunDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowRunUpdatedPayloadDto {
+    pub project_id: String,
+    pub run: WorkflowRunDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateWorkflowDefinitionRequestDto {
     pub definition: WorkflowDefinitionDto,
 }

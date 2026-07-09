@@ -303,10 +303,6 @@ OpenAI-compatible setup recipes cover LiteLLM, LM Studio, Mistral, Groq, Togethe
 
 Xero supports session transcript search, Markdown/JSON export, context visualization, manual compact, opt-in auto-compact, branch, rewind, selective code undo, and session rollback workflows. Reviewed memory and project records live in the shared OS app-data `project_store`/Lance backend; `dev:tui` renders the review queue through a desktop-backed adapter rather than a copied terminal store. See `docs/session-memory-and-context.md` for shipped behavior, privacy guarantees, and support triage guidance.
 
-## Agent Harness Benchmarking
-
-Xero's owned-agent harness should be compared with fixed-model, sandboxed benchmark runs rather than informal leaderboard screenshots. See `docs/agent-harness-benchmarking.md` for the research summary, benchmark choices, and implementation plan.
-
 ## Xero Agent TUI And Tool Harness
 
 `pnpm run dev:tui` launches the real terminal-native Xero agent client (`xero`). It also ensures the local Phoenix relay and Cloud app are available for TUI cloud-session development, starting missing local services after preflight. It is for owned-agent development workflows: selecting an app-data project, selecting or creating sessions, sending prompts through the shared headless runtime, inspecting runtime events/tool calls, and reaching project/git/provider/context command surfaces without opening a Tauri window. The development command runs the desktop-backed `xero` binary so project records, memory review, and agent-definition authoring reuse existing desktop Rust services.

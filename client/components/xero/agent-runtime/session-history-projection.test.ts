@@ -87,6 +87,18 @@ function makeRunPromptItem(
   }
 }
 
+function makeRuntimeRunPromptItem(
+  runId: string,
+  sequence: number,
+  text: string,
+): SessionTranscriptItemDto {
+  return {
+    ...makeRunPromptItem(runId, sequence, text),
+    itemId: `${runId}:runtime-prompt`,
+    sourceTable: 'runtime_runs',
+  }
+}
+
 function makeEventMessageDeltaItem(
   runId: string,
   sequence: number,
@@ -352,6 +364,23 @@ describe('buildHistoricalConversationTurns', () => {
       text: 'legacy-free prompt fallback',
     })
     expect(turns[1]).toMatchObject({ role: 'assistant', text: 'answer' })
+  })
+
+  it('projects runtime-only queued prompts from failed preflight runs', () => {
+    const transcript = makeTranscript(
+      [makeRun('run-A', 'failed', '2026-05-08T09:00:00Z', 1)],
+      [makeRuntimeRunPromptItem('run-A', 1, 'test')],
+    )
+
+    const turns = buildHistoricalConversationTurns(transcript, { activeRunId: null })
+
+    expect(turns).toEqual([
+      expect.objectContaining({
+        kind: 'message',
+        role: 'user',
+        text: 'test',
+      }),
+    ])
   })
 
   it('does not surface orphan raw message deltas as historical chat turns', () => {

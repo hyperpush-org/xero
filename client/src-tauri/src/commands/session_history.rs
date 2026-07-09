@@ -17,21 +17,22 @@ use crate::{
     commands::{
         context_budget_with_source, estimate_tokens, evaluate_compaction_policy,
         memory_policy_decision, redact_session_context_text, resolve_context_limit,
-        run_transcript_from_agent_snapshot, session_compaction_record_dto,
-        session_memory_diagnostic_dto, session_memory_promotion_status, session_memory_record_dto,
-        session_transcript_from_runs, usage_totals_from_agent_usage,
-        validate_context_snapshot_contract, validate_export_payload_contract,
-        validate_session_compaction_record_contract, validate_session_memory_record_contract,
-        validate_session_transcript_contract, AgentSessionBranchResponseDto,
-        AgentSessionLineageBoundaryKindDto, BranchAgentSessionRequestDto,
-        BrowserControlPreferenceDto, CommandError, CommandResult, CompactSessionHistoryRequestDto,
-        CompactSessionHistoryResponseDto, CorrectSessionMemoryRequestDto,
-        CorrectSessionMemoryResponseDto, DeleteSessionMemoryRequestDto,
-        ExportSessionTranscriptRequestDto, ExtractSessionMemoriesRequestDto,
-        ExtractSessionMemoriesResponseDto, GetSessionContextSnapshotRequestDto,
-        GetSessionMemoryItemsRequestDto, GetSessionTranscriptRequestDto,
-        ListSessionMemoriesRequestDto, ListSessionMemoriesResponseDto, ProjectAssetState,
-        RewindAgentSessionRequestDto, SaveSessionTranscriptExportRequestDto,
+        run_transcript_from_agent_snapshot, run_transcript_from_runtime_run_snapshot,
+        session_compaction_record_dto, session_memory_diagnostic_dto,
+        session_memory_promotion_status, session_memory_record_dto, session_transcript_from_runs,
+        usage_totals_from_agent_usage, validate_context_snapshot_contract,
+        validate_export_payload_contract, validate_session_compaction_record_contract,
+        validate_session_memory_record_contract, validate_session_transcript_contract,
+        AgentSessionBranchResponseDto, AgentSessionLineageBoundaryKindDto,
+        BranchAgentSessionRequestDto, BrowserControlPreferenceDto, CommandError, CommandResult,
+        CompactSessionHistoryRequestDto, CompactSessionHistoryResponseDto,
+        CorrectSessionMemoryRequestDto, CorrectSessionMemoryResponseDto,
+        DeleteSessionMemoryRequestDto, ExportSessionTranscriptRequestDto,
+        ExtractSessionMemoriesRequestDto, ExtractSessionMemoriesResponseDto,
+        GetSessionContextSnapshotRequestDto, GetSessionMemoryItemsRequestDto,
+        GetSessionTranscriptRequestDto, ListSessionMemoriesRequestDto,
+        ListSessionMemoriesResponseDto, ProjectAssetState, RewindAgentSessionRequestDto,
+        RunTranscriptDto, SaveSessionTranscriptExportRequestDto,
         SearchSessionTranscriptsRequestDto, SearchSessionTranscriptsResponseDto,
         SessionCompactionPolicyInput, SessionContextCodeMapDto, SessionContextCodeSymbolDto,
         SessionContextContributorDto, SessionContextContributorKindDto,
@@ -787,7 +788,7 @@ fn build_session_transcript(
     } else {
         project_store::load_agent_session_run_snapshots(repo_root, project_id, agent_session_id)?
     };
-    let runs = run_transcripts_with_rollback_events(
+    let mut runs = run_transcripts_with_rollback_events(
         repo_root,
         project_id,
         agent_session_id,
@@ -795,6 +796,15 @@ fn build_session_transcript(
         &snapshots,
         asset_state,
     )?;
+    if let Some(runtime_run) = runtime_run_transcript_fallback(
+        repo_root,
+        project_id,
+        agent_session_id,
+        run_id,
+        &snapshots,
+    )? {
+        runs.push(runtime_run);
+    }
 
     let transcript = session_transcript_from_runs(&session, runs);
     validate_session_transcript_contract(&transcript).map_err(|details| {
@@ -804,6 +814,36 @@ fn build_session_transcript(
         )
     })?;
     Ok(transcript)
+}
+
+fn runtime_run_transcript_fallback(
+    repo_root: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+    run_id: Option<&str>,
+    snapshots: &[(
+        AgentRunSnapshotRecord,
+        Option<project_store::AgentUsageRecord>,
+    )],
+) -> CommandResult<Option<RunTranscriptDto>> {
+    let Some(runtime_snapshot) =
+        project_store::load_runtime_run(repo_root, project_id, agent_session_id)?
+    else {
+        return Ok(None);
+    };
+
+    if run_id.is_some_and(|run_id| runtime_snapshot.run.run_id != run_id) {
+        return Ok(None);
+    }
+
+    if snapshots
+        .iter()
+        .any(|(snapshot, _)| snapshot.run.run_id == runtime_snapshot.run.run_id)
+    {
+        return Ok(None);
+    }
+
+    Ok(run_transcript_from_runtime_run_snapshot(&runtime_snapshot))
 }
 
 fn run_transcripts_with_rollback_events(

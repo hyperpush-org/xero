@@ -114,7 +114,6 @@ if [ -z "$identity" ]; then
 fi
 
 helper_names=(
-  xero-harness-evals
   tool-harness
   xero
   xero-cursor-sidecar

@@ -138,6 +138,7 @@ fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (
             project_id: repository.project_id.clone(),
             repository_id: repository.repository_id.clone(),
             root_path: root_path_string,
+            is_git_repo: true,
         }],
     )
     .expect("persist registry entry");
@@ -2951,8 +2952,8 @@ fn owned_agent_queues_user_messages_until_environment_ready() {
     .expect("load pending environment messages");
     assert_eq!(pending.len(), 1);
 
-    let driven =
-        drive_owned_agent_run(request, AgentRunCancellationToken::default()).expect("drive run");
+    let driven = drive_owned_agent_run(request, AgentRunCancellationToken::default(), None)
+        .expect("drive run");
     assert_eq!(
         driven.run.status,
         db::project_store::AgentRunStatus::Completed
@@ -5457,10 +5458,10 @@ fn built_in_agents_seed_workflow_structure_v2() {
         let record = by_id
             .get(definition_id)
             .unwrap_or_else(|| panic!("missing built-in `{definition_id}` after migration"));
-        let expected_version = if definition_id == "agent_create" {
-            3
-        } else {
-            2
+        let expected_version = match definition_id {
+            "agent_create" => 3,
+            "engineer" => 5,
+            _ => 2,
         };
         assert_eq!(
             record.current_version, expected_version,

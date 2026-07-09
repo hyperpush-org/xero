@@ -9,7 +9,8 @@ import {
   Sparkles,
   Wrench,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, type ReactNode, type RefObject } from 'react'
+import { openUrl } from '@tauri-apps/plugin-opener'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 
 import type {
   OperatorActionErrorView,
@@ -33,12 +34,14 @@ import { cn } from '@/lib/utils'
 import type { AgentAttachmentCompatibilityProfile } from '@/lib/agent-attachments'
 import {
   Composer,
+  CreditLimitNotice,
   type ComposerContextMentionOption,
   type ComposerContextMentionStatus,
   type ComposerPendingContext,
   type ComposerSelectGroup,
   type ComposerSelectOption,
 } from '@xero/ui/components/composer'
+import type { CreditLimitNoticeView } from '@xero/ui/model/credit-limit'
 import { useShortcuts } from '@/src/features/shortcuts/shortcuts-provider'
 
 import type {
@@ -104,6 +107,12 @@ interface ComposerDockProps {
   pendingRuntimeRunAction: RuntimeRunActionKind | null
   runtimeRunActionError: OperatorActionErrorView | null
   runtimeRunActionErrorTitle: string
+  /**
+   * When the latest run failed because the provider is out of credits / hit a
+   * spending limit, this holds the classified billing card to dock above the
+   * composer (instead of a generic error). `null` when there is no such failure.
+   */
+  creditLimitNotice?: CreditLimitNoticeView | null
   dictation: ComposerDictationControl
   hideDictation?: boolean
   contextMeter?: ReactNode
@@ -207,6 +216,7 @@ export function ComposerDock({
   pendingRuntimeRunAction,
   runtimeRunActionError,
   runtimeRunActionErrorTitle,
+  creditLimitNotice = null,
   dictation,
   hideDictation = false,
   contextMeter,
@@ -235,6 +245,9 @@ export function ComposerDock({
   onComposerApprovalModeChange,
 }: ComposerDockProps) {
   const { bindings } = useShortcuts()
+  // Controlled open-state for the model picker so the credit-limit card's
+  // "Switch model" button can open it externally.
+  const [modelSelectOpen, setModelSelectOpen] = useState(false)
   const handleComposerModelChange = useStableCallback(onComposerModelChange)
   const composerRuntimeAgentDescriptor = getRuntimeAgentDescriptor(composerRuntimeAgentId)
   const showApprovalSelector = composerRuntimeAgentDescriptor.allowedApprovalModes.length > 1
@@ -389,6 +402,8 @@ export function ComposerDock({
       selectedModelId={composerModelId}
       onModelChange={handleComposerModelChange}
       modelDisabled={modelGroups.length === 0 || controlsDisabled}
+      modelSelectOpen={modelSelectOpen}
+      onModelSelectOpenChange={setModelSelectOpen}
       thinkingOptions={thinkingComposerOptions}
       selectedThinkingId={composerThinkingLevel}
       onThinkingChange={(value) => onComposerThinkingLevelChange(value as ProviderModelThinkingEffortDto)}
@@ -425,7 +440,23 @@ export function ComposerDock({
 
   return (
     <div className={cn('relative shrink-0 pt-0', dense ? 'px-0 pb-0' : 'px-4 pb-3')}>
-      <div className={cn('mx-auto w-full', dense ? 'max-w-full' : 'max-w-[720px]')}>
+      <div className={cn('mx-auto flex w-full flex-col gap-2', dense ? 'max-w-full' : 'max-w-[720px]')}>
+        {creditLimitNotice ? (
+          <CreditLimitNotice
+            notice={creditLimitNotice}
+            onOpenLink={(url) => {
+              void openUrl(url).catch(() => {
+                // The opener plugin surfaces its own errors; swallow to keep the
+                // click handler synchronous.
+              })
+            }}
+            onSwitchModel={
+              modelGroups.length === 0 || controlsDisabled
+                ? undefined
+                : () => setModelSelectOpen(true)
+            }
+          />
+        ) : null}
         {composer}
       </div>
     </div>

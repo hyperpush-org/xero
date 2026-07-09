@@ -361,6 +361,16 @@ export const workflowRunResponseSchema = z
   .strict()
 export type WorkflowRunResponseDto = z.infer<typeof workflowRunResponseSchema>
 
+export const workflowRunUpdatedPayloadSchema = z
+  .object({
+    projectId: nonEmptyTextSchema,
+    run: workflowRunSchema,
+  })
+  .strict()
+export type WorkflowRunUpdatedPayloadDto = z.infer<
+  typeof workflowRunUpdatedPayloadSchema
+>
+
 export const workflowRunBlockerResponseSchema = z
   .object({
     status: nonEmptyTextSchema,

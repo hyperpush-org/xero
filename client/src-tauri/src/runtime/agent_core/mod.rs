@@ -9,7 +9,6 @@ mod consumed_artifacts;
 mod context_package;
 mod db_touchpoints;
 mod environment_lifecycle;
-mod evals;
 mod events;
 mod facade;
 mod harness_contract;
@@ -29,26 +28,6 @@ mod tool_dispatch;
 mod types;
 mod wakeup_scheduler;
 
-pub use evals::{
-    run_agent_definition_quality_eval_suite, run_agent_harness_eval_suite,
-    run_custom_agent_simulation_harness, run_handoff_context_quality_eval_suite,
-    run_no_redescription_needed_eval_suite, run_retrieval_memory_quality_eval_suite,
-    run_test_agent_ci_eval, run_xero_quality_eval_suites, AgentDefinitionEvalFixtureKind,
-    AgentDefinitionQualityCaseResult, AgentDefinitionQualityCoverage,
-    AgentDefinitionQualityEvalReport, AgentDefinitionQualityMetrics, AgentDefinitionQualitySurface,
-    AgentDefinitionQualityThresholds, AgentHarnessEvalCaseResult, AgentHarnessEvalCoverage,
-    AgentHarnessEvalMetrics, AgentHarnessEvalReport, AgentHarnessEvalThresholds,
-    CustomAgentSimulationCaseResult, CustomAgentSimulationCoverage,
-    CustomAgentSimulationHarnessReport, CustomAgentSimulationSurface,
-    HandoffContextQualityCaseResult, HandoffContextQualityCoverage,
-    HandoffContextQualityEvalReport, HandoffContextQualityMetrics, HandoffContextQualitySurface,
-    HarnessEvalFixtureKind, NoRedescriptionContinuityCaseResult, NoRedescriptionContinuityCoverage,
-    NoRedescriptionContinuityEvalReport, NoRedescriptionContinuityMetrics,
-    NoRedescriptionContinuitySurface, RetrievalMemoryQualityCaseResult,
-    RetrievalMemoryQualityCoverage, RetrievalMemoryQualityEvalReport,
-    RetrievalMemoryQualityMetrics, RetrievalMemoryQualitySurface, TestAgentCiEvalReport,
-    TestAgentCiManifestOutcome, XeroQualityEvalReport,
-};
 pub use events::{publish_agent_event, subscribe_agent_events, AgentEventSubscription};
 pub use facade::{
     DesktopAgentCoreRuntime, DesktopCancelRunRequest, DesktopCompactSessionRequest,

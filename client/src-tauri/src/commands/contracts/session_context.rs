@@ -8,6 +8,7 @@ use crate::db::project_store::{
     AgentCompactionRecord, AgentCompactionTrigger, AgentMemoryKind, AgentMemoryRecord,
     AgentMemoryScope, AgentRunEventKind, AgentRunRecord, AgentRunSnapshotRecord, AgentRunStatus,
     AgentSessionRecord, AgentSessionStatus, AgentToolCallState, AgentUsageRecord,
+    RuntimeRunSnapshotRecord, RuntimeRunStatus,
 };
 
 use super::code_history::CodePatchAvailabilityDto;
@@ -1506,6 +1507,90 @@ pub fn run_transcript_from_agent_snapshot(
         items,
         usage_totals,
         redaction,
+    }
+}
+
+pub fn run_transcript_from_runtime_run_snapshot(
+    snapshot: &RuntimeRunSnapshotRecord,
+) -> Option<RunTranscriptDto> {
+    let pending = snapshot.controls.pending.as_ref()?;
+    let prompt = pending.queued_prompt.as_deref()?.trim();
+    if prompt.is_empty() {
+        return None;
+    }
+
+    let (prompt, prompt_redaction) = sanitize_context_text(prompt);
+    let created_at = pending
+        .queued_prompt_at
+        .clone()
+        .unwrap_or_else(|| snapshot.run.started_at.clone());
+    let item = SessionTranscriptItemDto {
+        contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
+        item_id: format!("runtime_run_prompt:{}", snapshot.run.run_id),
+        project_id: snapshot.run.project_id.clone(),
+        agent_session_id: snapshot.run.agent_session_id.clone(),
+        run_id: snapshot.run.run_id.clone(),
+        provider_id: snapshot.run.provider_id.clone(),
+        model_id: snapshot.controls.active.model_id.clone(),
+        source_kind: SessionTranscriptSourceKindDto::OwnedAgent,
+        source_table: "runtime_runs".into(),
+        source_id: snapshot.run.run_id.clone(),
+        sequence: 1,
+        created_at,
+        kind: SessionTranscriptItemKindDto::Message,
+        actor: SessionTranscriptActorDto::User,
+        title: Some("Run prompt".into()),
+        text: Some(prompt),
+        summary: None,
+        tool_call_id: None,
+        tool_name: None,
+        tool_state: None,
+        file_path: None,
+        code_change_group_id: None,
+        code_commit_id: None,
+        code_workspace_epoch: None,
+        code_patch_availability: None,
+        checkpoint_kind: None,
+        action_id: None,
+        media_attachments: Vec::new(),
+        redaction: prompt_redaction,
+    };
+    let redaction = item.redaction.clone();
+
+    Some(RunTranscriptDto {
+        contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
+        project_id: snapshot.run.project_id.clone(),
+        agent_session_id: snapshot.run.agent_session_id.clone(),
+        run_id: snapshot.run.run_id.clone(),
+        provider_id: snapshot.run.provider_id.clone(),
+        model_id: snapshot.controls.active.model_id.clone(),
+        status: runtime_run_status_sql_value_for_transcript(&snapshot.run.status).into(),
+        source_kind: SessionTranscriptSourceKindDto::OwnedAgent,
+        started_at: snapshot.run.started_at.clone(),
+        completed_at: terminal_time_for_runtime_run(&snapshot.run.status, &snapshot.run.stopped_at),
+        items: vec![item],
+        usage_totals: None,
+        redaction,
+    })
+}
+
+fn runtime_run_status_sql_value_for_transcript(status: &RuntimeRunStatus) -> &'static str {
+    match status {
+        RuntimeRunStatus::Starting => "starting",
+        RuntimeRunStatus::Running => "running",
+        RuntimeRunStatus::Stale => "stale",
+        RuntimeRunStatus::Stopped => "stopped",
+        RuntimeRunStatus::Failed => "failed",
+    }
+}
+
+fn terminal_time_for_runtime_run(
+    status: &RuntimeRunStatus,
+    stopped_at: &Option<String>,
+) -> Option<String> {
+    match status {
+        RuntimeRunStatus::Stopped | RuntimeRunStatus::Failed => stopped_at.clone(),
+        RuntimeRunStatus::Starting | RuntimeRunStatus::Running | RuntimeRunStatus::Stale => None,
     }
 }
 

@@ -5554,7 +5554,7 @@ mod tests {
                     "Next: run the scoped S30 verification command.",
                     "Question: confirm whether UI work stays deferred.",
                     "Verification passed with focused cargo test.",
-                    "Remaining risk: S31 evals still need to consume this record.",
+                    "Remaining risk: S31 verification still needs to consume this record.",
                 ]
                 .join("\n"),
                 provider_metadata_json: None,

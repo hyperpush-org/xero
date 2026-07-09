@@ -51,21 +51,24 @@ describe('WorkflowCanvasEmptyState', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('shows workflow creation as coming soon without invoking handlers', () => {
+  it('opens the create-workflow dialog and starts a blank workflow', () => {
     const onCreateWorkflow = vi.fn()
 
     render(<WorkflowCanvasEmptyState onCreateWorkflow={onCreateWorkflow} />)
 
-    expect(screen.getByRole('heading', { name: 'Start with an agent' })).toBeInTheDocument()
-    expect(screen.getByText('Workflows coming soon')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Create workflow/i })).toBeDisabled()
-    expect(screen.queryByRole('heading', { name: 'Create workflow' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Start with a workflow' })).toBeInTheDocument()
+    expect(screen.queryByText('Workflows coming soon')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /Create workflow/i }))
     expect(onCreateWorkflow).not.toHaveBeenCalled()
+    expect(screen.getByRole('heading', { name: 'Create workflow' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Blank workflow/ }))
+    expect(onCreateWorkflow).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('keeps workflow template creation disabled while workflows are coming soon', () => {
+  it('routes workflow template selection through onCreateWorkflowFromTemplate', () => {
     const onCreateWorkflowFromTemplate = vi.fn()
 
     render(
@@ -76,12 +79,15 @@ describe('WorkflowCanvasEmptyState', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: /Create workflow/i }))
-    expect(onCreateWorkflowFromTemplate).not.toHaveBeenCalled()
-    expect(screen.queryByText(/Templates open as editable workflow drafts/i)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /From template/ }))
+    expect(screen.getByText(/Templates open as editable workflow drafts/i)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Plan, build, verify/ }))
+    expect(onCreateWorkflowFromTemplate).toHaveBeenCalledWith('continuous_delivery')
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('keeps workflow Agent Create disabled while workflows are coming soon', () => {
+  it('routes the Agent Create choice through onCreateWorkflowWithAgentCreate', () => {
     const onCreateWorkflowWithAgentCreate = vi.fn()
 
     render(
@@ -92,8 +98,8 @@ describe('WorkflowCanvasEmptyState', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: /Create workflow/i }))
-    expect(onCreateWorkflowWithAgentCreate).not.toHaveBeenCalled()
-    expect(screen.queryByRole('button', { name: /Use Agent Create/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Use Agent Create/ }))
+    expect(onCreateWorkflowWithAgentCreate).toHaveBeenCalledTimes(1)
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
@@ -207,17 +213,22 @@ describe('WorkflowCanvasEmptyState', () => {
     expect(screen.queryByText(/Templates open on the canvas/i)).toBeNull()
   })
 
-  it('keeps run-existing-workflow visible as coming soon when browsing is unavailable', () => {
+  it('runs browse-workflows when available and hides the action otherwise', () => {
     const onBrowseWorkflows = vi.fn()
-    render(
+    const { rerender } = render(
       <WorkflowCanvasEmptyState onCreateAgent={vi.fn()} onBrowseWorkflows={onBrowseWorkflows} />,
     )
 
     const runWorkflow = screen.getByRole('button', { name: /Run an existing workflow/i })
-    expect(runWorkflow).toBeDisabled()
-    expect(runWorkflow).toHaveTextContent('Coming soon')
+    expect(runWorkflow).toBeEnabled()
+    expect(runWorkflow).not.toHaveTextContent('Coming soon')
 
     fireEvent.click(runWorkflow)
-    expect(onBrowseWorkflows).not.toHaveBeenCalled()
+    expect(onBrowseWorkflows).toHaveBeenCalledTimes(1)
+
+    rerender(<WorkflowCanvasEmptyState onCreateAgent={vi.fn()} />)
+    expect(
+      screen.queryByRole('button', { name: /Run an existing workflow/i }),
+    ).not.toBeInTheDocument()
   })
 })

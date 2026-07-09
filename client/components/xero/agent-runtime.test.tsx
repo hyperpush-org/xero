@@ -2,8 +2,14 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ComponentProps } from 'react'
 
+const { openUrlMock } = vi.hoisted(() => ({
+  openUrlMock: vi.fn(async () => undefined),
+}))
+vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: openUrlMock }))
+
 afterEach(() => {
   window.localStorage.clear()
+  openUrlMock.mockClear()
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
     value: undefined,
@@ -1523,6 +1529,200 @@ describe('AgentRuntime current UI', () => {
       }),
     )
     await waitFor(() => expect(input).toHaveValue(''))
+  })
+
+  it('presents a credit-limit failure as a docked card, not a red error', async () => {
+    const onStartRuntimeRun = vi.fn(async () => makeRuntimeRun({ runId: 'run-2' }))
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun({
+            providerId: 'xai',
+            status: 'failed',
+            statusLabel: 'Agent failed',
+            runtimeLabel: 'xAI · Agent failed',
+            isActive: false,
+            isTerminal: true,
+            isFailed: true,
+            stoppedAt: '2026-04-29T00:48:02Z',
+            lastErrorCode: 'provider_credit_limit',
+            lastError: {
+              code: 'provider_credit_limit',
+              message:
+                'Xero cannot start an owned agent turn with provider `xai` and model `grok-4.5` because provider preflight `provider_preflight_provider_error` failed: Provider preflight failed with credit_limit: Provider returned HTTP 402: {"code":"personal-team-blocked:spending-limit","error":"You have run out of credits or need a Grok subscription."}',
+            },
+          }),
+          composerModelOptions: [
+            {
+              selectionKey: 'unscoped::xai',
+              profileId: 'unscoped',
+              providerId: 'xai' as const,
+              providerLabel: 'xAI',
+              modelId: 'grok-4.5',
+              displayName: 'Grok 4.5',
+              thinking: { supported: false, effortOptions: [], defaultEffort: null },
+              thinkingEffortOptions: [],
+              defaultThinkingEffort: null,
+            },
+          ],
+        })}
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    // The scary red run-failure notice is suppressed for credit-limit failures.
+    expect(screen.queryByText('Latest saved run failed')).toBeNull()
+
+    // The purpose-built card is docked above the composer.
+    const card = screen.getByRole('status', { name: 'Provider credit limit' })
+    expect(within(card).getByText('Out of credits')).toBeVisible()
+
+    // The composer placeholder reflects the credit-limit state.
+    const input = screen.getByLabelText('Agent input')
+    expect(input).toBeEnabled()
+    expect(input).toHaveAttribute('placeholder', 'Add credits or switch models to continue.')
+
+    // Billing link opens the provider's top-up URL in the system browser.
+    fireEvent.click(within(card).getByRole('button', { name: /Add credits/ }))
+    expect(openUrlMock).toHaveBeenCalledWith('https://grok.com/?_s=usage')
+
+    // "Switch model" opens the composer model picker.
+    expect(screen.queryByPlaceholderText('Search models...')).toBeNull()
+    fireEvent.click(within(card).getByRole('button', { name: /Switch model/ }))
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText('Search models...')).toBeVisible(),
+    )
+  })
+
+  it('keeps the submitted prompt visible when run startup hits a credit limit', async () => {
+    const submittedPrompt = 'what is this project about'
+    const creditLimitedRun = makeRuntimeRun({
+      providerId: 'xai',
+      status: 'failed',
+      statusLabel: 'Agent failed',
+      runtimeLabel: 'xAI · Agent failed',
+      isActive: false,
+      isTerminal: true,
+      isFailed: true,
+      stoppedAt: '2026-04-29T00:48:02Z',
+      lastErrorCode: 'provider_credit_limit',
+      lastError: {
+        code: 'provider_credit_limit',
+        message:
+          'Xero cannot start an owned agent turn with provider `xai` and model `grok-4.5` because provider preflight `provider_preflight_provider_error` failed: Provider preflight failed with credit_limit: Provider returned HTTP 402: {"code":"personal-team-blocked:spending-limit","error":"You have run out of credits or need a Grok subscription."}',
+      },
+    })
+    const xaiComposerModel = {
+      selectionKey: 'unscoped::xai',
+      profileId: 'unscoped',
+      providerId: 'xai' as const,
+      providerLabel: 'xAI',
+      modelId: 'grok-4.5',
+      displayName: 'Grok 4.5',
+      thinking: { supported: false, effortOptions: [], defaultEffort: null },
+      thinkingEffortOptions: [],
+      defaultThinkingEffort: null,
+    }
+    const baseAgent = {
+      runtimeSession: makeRuntimeSession({
+        sessionId: 'session-1',
+        isSignedOut: false,
+        providerId: 'xai',
+        runtimeLabel: 'xAI · Authenticated',
+      }),
+      selectedProviderId: 'xai' as const,
+      selectedProviderLabel: 'xAI',
+      selectedModelId: 'grok-4.5',
+      selectedModelSelectionKey: 'unscoped::xai',
+      composerModelOptions: [xaiComposerModel],
+    }
+    const onStartRuntimeRun = vi.fn(async () => creditLimitedRun)
+
+    const { rerender } = render(
+      <AgentRuntime
+        agent={makeAgent(baseAgent)}
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    const input = screen.getByLabelText('Agent input')
+    fireEvent.change(input, { target: { value: submittedPrompt } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() =>
+      expect(onStartRuntimeRun).toHaveBeenCalledWith(expect.objectContaining({
+        prompt: submittedPrompt,
+      })),
+    )
+    await waitFor(() =>
+      expect(screen.getByLabelText('Agent input')).toHaveValue(submittedPrompt),
+    )
+
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          ...baseAgent,
+          runtimeRun: creditLimitedRun,
+        })}
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    expect(screen.getByRole('status', { name: 'Provider credit limit' })).toBeVisible()
+    expect(screen.getByLabelText('Agent input')).toHaveValue(submittedPrompt)
+  })
+
+  it('dismisses the credit-limit card once a different model is chosen', async () => {
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          selectedModelSelectionKey: 'openai_codex:openai_codex',
+          runtimeRun: makeRuntimeRun({
+            providerId: 'xai',
+            status: 'failed',
+            statusLabel: 'Agent failed',
+            isActive: false,
+            isTerminal: true,
+            isFailed: true,
+            stoppedAt: '2026-04-29T00:48:02Z',
+            lastErrorCode: 'provider_credit_limit',
+            lastError: {
+              code: 'provider_credit_limit',
+              message:
+                'provider preflight `provider_preflight_provider_error` failed: Provider preflight failed with credit_limit: Provider returned HTTP 402: out of credits',
+            },
+          }),
+          composerModelOptions: [
+            makeComposerModelOption(),
+            makeComposerModelOption({
+              selectionKey: 'xai:xai/grok-4.3',
+              profileId: 'xai-default',
+              providerId: 'xai',
+              providerLabel: 'xAI',
+              modelId: 'xai/grok-4.3',
+              displayName: 'Grok 4.3',
+              thinking: { supported: true, effortOptions: ['low', 'medium'], defaultEffort: 'medium' },
+              thinkingEffortOptions: ['low', 'medium'],
+              defaultThinkingEffort: 'medium',
+            }),
+          ],
+        })}
+        onStartRuntimeRun={vi.fn(async () => makeRuntimeRun())}
+      />,
+    )
+
+    const card = screen.getByRole('status', { name: 'Provider credit limit' })
+    fireEvent.click(within(card).getByRole('button', { name: /Switch model/ }))
+
+    // Choosing a different model from the picker resolves the situation and
+    // dismisses the card.
+    fireEvent.click(await screen.findByRole('option', { name: /Grok 4\.3/ }))
+    await waitFor(() =>
+      expect(screen.queryByRole('status', { name: 'Provider credit limit' })).toBeNull(),
+    )
   })
 
   it('dedupes saved run failures already shown as inline stream failures', () => {
@@ -3644,6 +3844,110 @@ describe('AgentRuntime current UI', () => {
     )
 
     expect(within(conversation).getAllByText(submittedPrompt)).toHaveLength(1)
+  })
+
+  it('keeps the prompt singular when the run ends before the echo and history refetches the persisted copy', async () => {
+    const submittedPrompt = 'Review the auth flow.'
+    const onStartRuntimeRun = vi.fn(async () =>
+      makeRuntimeRun({ status: 'starting', statusLabel: 'Agent starting', isActive: true }),
+    )
+    const baseAgent = {
+      runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+    }
+
+    const { rerender } = render(
+      <AgentRuntime agent={makeAgent(baseAgent)} onStartRuntimeRun={onStartRuntimeRun} />,
+    )
+
+    fireEvent.change(screen.getByLabelText('Agent input'), {
+      target: { value: submittedPrompt },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(onStartRuntimeRun).toHaveBeenCalled())
+
+    const conversation = screen.getByRole('list', { name: 'Agent conversation turns' })
+    await waitFor(() =>
+      expect(within(conversation).getAllByText(submittedPrompt)).toHaveLength(1),
+    )
+
+    // The run dies before the live stream echoes the prompt (manual stop or a
+    // provider failure such as out-of-credits). The refetched history now
+    // carries the persisted copy; the optimistic bubble must yield to it
+    // instead of duplicating the prompt.
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          ...baseAgent,
+          runtimeRun: makeRuntimeRun({
+            status: 'failed',
+            statusLabel: 'Agent failed',
+            isActive: false,
+            isTerminal: true,
+            isFailed: true,
+            stoppedAt: '2026-04-29T00:48:02Z',
+          }),
+        })}
+        historicalConversationTurns={[
+          {
+            id: 'transcript:run-1:1',
+            kind: 'message',
+            role: 'user',
+            sequence: 1,
+            text: submittedPrompt,
+            createdAt: new Date().toISOString(),
+          },
+        ]}
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    expect(within(conversation).getAllByText(submittedPrompt)).toHaveLength(1)
+  })
+
+  it('still shows a fresh optimistic prompt when an identical prompt exists earlier in history', async () => {
+    const submittedPrompt = 'Review the auth flow.'
+    const onStartRuntimeRun = vi.fn(async () =>
+      makeRuntimeRun({ status: 'starting', statusLabel: 'Agent starting', isActive: true }),
+    )
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+        })}
+        historicalConversationTurns={[
+          {
+            id: 'transcript:run-0:1',
+            kind: 'message',
+            role: 'user',
+            sequence: 1,
+            text: submittedPrompt,
+            createdAt: '2026-04-01T00:00:00Z',
+          },
+          {
+            id: 'transcript:run-0:2',
+            kind: 'message',
+            role: 'assistant',
+            sequence: 2,
+            text: 'Earlier reply.',
+          },
+        ]}
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText('Agent input'), {
+      target: { value: submittedPrompt },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(onStartRuntimeRun).toHaveBeenCalled())
+
+    // The historical copy predates this submission, so it must not swallow
+    // the fresh optimistic bubble: both prompts belong in the conversation.
+    const conversation = screen.getByRole('list', { name: 'Agent conversation turns' })
+    await waitFor(() =>
+      expect(within(conversation).getAllByText(submittedPrompt)).toHaveLength(2),
+    )
   })
 
   it('keeps the submitted prompt row mounted when the runtime echo replaces queued truth', async () => {

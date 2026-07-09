@@ -1067,12 +1067,13 @@ describe('AgentVisualization', () => {
     expect(onCreateAgent).toHaveBeenCalledTimes(1)
   })
 
-  it('shows existing workflows as coming soon in the empty state', () => {
+  it('offers workflow actions in the empty state when workflows are enabled', () => {
     const onBrowseWorkflows = vi.fn()
 
-    const { getAllByRole, getAllByText, getByRole } = render(
+    const { getAllByRole, getByRole, queryAllByText } = render(
       <WorkflowCanvasEmptyState
         onCreateAgent={vi.fn()}
+        onCreateWorkflow={vi.fn()}
         onBrowseWorkflows={onBrowseWorkflows}
       />,
     )
@@ -1082,15 +1083,14 @@ describe('AgentVisualization', () => {
     expect(actions[1]).toHaveTextContent('Create workflow')
     expect(actions[2]).toHaveTextContent('Run an existing workflow')
 
-    expect(getByRole('button', { name: /Create workflow/i })).toBeDisabled()
+    expect(getByRole('button', { name: /Create workflow/i })).toBeEnabled()
+    expect(queryAllByText('Coming soon')).toHaveLength(0)
+
     const runExistingWorkflow = getByRole('button', {
       name: /Run an existing workflow/i,
     })
-    expect(runExistingWorkflow).toBeDisabled()
-    expect(getAllByText('Coming soon')).toHaveLength(2)
-
     fireEvent.click(runExistingWorkflow)
-    expect(onBrowseWorkflows).not.toHaveBeenCalled()
+    expect(onBrowseWorkflows).toHaveBeenCalledTimes(1)
   })
 
   it('keeps the selected graph mounted while closing back to the empty canvas', () => {

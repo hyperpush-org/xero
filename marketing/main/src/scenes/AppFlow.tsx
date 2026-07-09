@@ -2840,7 +2840,7 @@ export const AppFlow: React.FC = () => {
       </AbsoluteFill>
 
       {/* As the head turn swings the scene off-left, the next view (solana
-          benchmark) pans in from the right and settles face-on — same motion. */}
+          reference) pans in from the right and settles face-on — same motion. */}
       {turn > 0.001 && (
         <AbsoluteFill style={{ perspective: 1700 }}>
           <AbsoluteFill

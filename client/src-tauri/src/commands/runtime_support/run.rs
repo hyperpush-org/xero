@@ -7,8 +7,8 @@ use rand::RngCore;
 use tauri::{AppHandle, Emitter, Runtime};
 use xero_agent_core::{
     provider_attachment_capability_satisfies_required_features, provider_preflight_blockers,
-    ProviderPreflightRequiredFeatures, ProviderPreflightSnapshot,
-    PROVIDER_PREFLIGHT_CONTRACT_VERSION,
+    provider_preflight_message_indicates_credit_limit, ProviderPreflightRequiredFeatures,
+    ProviderPreflightSnapshot, PROVIDER_PREFLIGHT_CONTRACT_VERSION,
 };
 
 use crate::{
@@ -620,21 +620,17 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
     };
 
     if let Some(diagnostic) = terminal_failure {
-        runtime_snapshot = persist_owned_runtime_run(
+        // Route through the latest persisted snapshot instead of the local
+        // copy: a follow-up prompt queued while the drive was running lives
+        // only in the durable pending controls, and persisting the stale
+        // in-memory controls here would erase it.
+        record_owned_runtime_failure(
+            app,
             &task.repo_root,
-            &task.project_id,
-            &task.agent_session_id,
-            &task.run_id,
-            &task.provider_id,
-            &runtime_snapshot.controls,
-            RuntimeRunStatus::Failed,
-            Some(diagnostic),
+            &runtime_snapshot,
+            &CommandError::user_fixable(diagnostic.code, diagnostic.message),
             "Owned agent task failed.",
-            runtime_snapshot.last_checkpoint_sequence.saturating_add(1),
-            Some(&runtime_snapshot),
-        )?;
-        let runtime_run = runtime_run_dto_from_snapshot(&runtime_snapshot);
-        emit_runtime_run_updated(app, Some(&runtime_run))?;
+        );
     }
     drop(lease);
     Ok(())
@@ -673,6 +669,7 @@ fn emit_owned_runtime_failure<R: Runtime>(
     error: &CommandError,
     checkpoint_summary: &str,
 ) -> CommandResult<RuntimeRunSnapshotRecord> {
+    persist_unconsumed_queued_prompt_for_terminal_run(repo_root, snapshot, Some(error));
     emit_owned_runtime_progress(
         app,
         repo_root,
@@ -684,6 +681,137 @@ fn emit_owned_runtime_failure<R: Runtime>(
         }),
         checkpoint_summary,
     )
+}
+
+const QUEUED_PROMPT_FALLBACK_SYSTEM_PROMPT: &str =
+    "The run ended before a system prompt was assembled.";
+
+/// Durably record a queued prompt that a terminal transition would otherwise
+/// strand in the runtime-run control snapshot.
+///
+/// `runtime_runs` keeps a single row per session, so the next run overwrites
+/// the pending `queued_prompt`. A run that ends before the agent run consumed
+/// the prompt (provider preflight failure, stop during `starting`, a queued
+/// follow-up prompt at failure time) would lose the user's message from the
+/// rebuilt chat history. Copy it into the per-run agent store instead:
+/// create a minimal terminal agent run when none exists, and append the user
+/// message plus its transcript event so both rebuild paths see it.
+///
+/// Best-effort: the terminal transition must proceed even if this write fails.
+fn persist_unconsumed_queued_prompt_for_terminal_run(
+    repo_root: &Path,
+    snapshot: &RuntimeRunSnapshotRecord,
+    failure: Option<&CommandError>,
+) {
+    let Some(pending) = snapshot.controls.pending.as_ref() else {
+        return;
+    };
+    let Some(prompt) = pending
+        .queued_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|prompt| !prompt.is_empty())
+    else {
+        return;
+    };
+
+    if let Err(error) =
+        persist_unconsumed_queued_prompt(repo_root, snapshot, pending, prompt, failure)
+    {
+        eprintln!(
+            "[runtime] failed to persist the unconsumed queued prompt for run `{}`: {}",
+            snapshot.run.run_id, error.message
+        );
+    }
+}
+
+fn persist_unconsumed_queued_prompt(
+    repo_root: &Path,
+    snapshot: &RuntimeRunSnapshotRecord,
+    pending: &RuntimeRunPendingControlSnapshotRecord,
+    prompt: &str,
+    failure: Option<&CommandError>,
+) -> CommandResult<()> {
+    let project_id = &snapshot.run.project_id;
+    let run_id = &snapshot.run.run_id;
+    let now = now_timestamp();
+    let recorded_at = pending
+        .queued_prompt_at
+        .clone()
+        .unwrap_or_else(|| now.clone());
+
+    match project_store::load_agent_run_record(repo_root, project_id, run_id) {
+        Ok(_) => {
+            let agent_snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
+            let already_recorded = agent_snapshot.messages.iter().any(|message| {
+                matches!(message.role, project_store::AgentMessageRole::User)
+                    && message.content == prompt
+            });
+            if already_recorded {
+                return Ok(());
+            }
+        }
+        Err(error) if error.code == "agent_run_not_found" => {
+            project_store::insert_agent_run(
+                repo_root,
+                &project_store::NewAgentRunRecord {
+                    runtime_agent_id: pending.runtime_agent_id,
+                    agent_definition_id: pending.agent_definition_id.clone(),
+                    agent_definition_version: pending.agent_definition_version,
+                    project_id: project_id.clone(),
+                    agent_session_id: snapshot.run.agent_session_id.clone(),
+                    run_id: run_id.clone(),
+                    provider_id: snapshot.run.provider_id.clone(),
+                    model_id: pending.model_id.clone(),
+                    prompt: prompt.to_string(),
+                    system_prompt: QUEUED_PROMPT_FALLBACK_SYSTEM_PROMPT.into(),
+                    now: snapshot.run.started_at.clone(),
+                },
+            )?;
+        }
+        Err(error) => return Err(error),
+    }
+
+    // Queued attachments are not copied: their staged files may already be
+    // gone by failure time, and the prompt text is the part that must survive.
+    project_store::append_agent_message(
+        repo_root,
+        &project_store::NewAgentMessageRecord {
+            project_id: project_id.clone(),
+            run_id: run_id.clone(),
+            role: project_store::AgentMessageRole::User,
+            content: prompt.to_string(),
+            provider_metadata_json: None,
+            created_at: recorded_at.clone(),
+            attachments: Vec::new(),
+        },
+    )?;
+    project_store::append_agent_event(
+        repo_root,
+        &project_store::NewAgentEventRecord {
+            project_id: project_id.clone(),
+            run_id: run_id.clone(),
+            event_kind: project_store::AgentRunEventKind::MessageDelta,
+            payload_json: serde_json::json!({ "role": "user", "text": prompt }).to_string(),
+            created_at: recorded_at,
+        },
+    )?;
+
+    let (status, diagnostic) = match failure {
+        Some(error) => (
+            project_store::AgentRunStatus::Failed,
+            Some(project_store::AgentRunDiagnosticRecord {
+                code: error.code.clone(),
+                message: error.message.clone(),
+            }),
+        ),
+        None => (project_store::AgentRunStatus::Cancelled, None),
+    };
+    // No-op when the run is already terminal: the first terminal writer wins.
+    project_store::update_agent_run_status(
+        repo_root, project_id, run_id, status, diagnostic, &now,
+    )?;
+    Ok(())
 }
 
 fn record_owned_runtime_failure<R: Runtime>(
@@ -1282,8 +1410,19 @@ pub(crate) fn ensure_owned_runtime_provider_turn_capabilities<R: Runtime>(
 
     if require_persisted_profile {
         if let Some(blocker) = provider_preflight_blockers(&preflight).first() {
+            // Credit/billing limits (e.g. HTTP 402 "out of credits") are not a
+            // generic run failure: they are user-fixable by topping up or
+            // switching models. Route them to a dedicated `provider_credit_limit`
+            // diagnostic so the UI can render a purpose-built billing card
+            // instead of a red error. The provider's original message (including
+            // any billing/upgrade URLs) is preserved verbatim.
+            let code = if provider_preflight_message_indicates_credit_limit(&blocker.message) {
+                "provider_credit_limit"
+            } else {
+                "provider_preflight_blocked"
+            };
             return Err(CommandError::user_fixable(
-                "provider_preflight_blocked",
+                code,
                 format!(
                     "Xero cannot start an owned agent turn with provider `{provider_id}` and model `{model_id}` because provider preflight `{}` failed: {}",
                     blocker.code, blocker.message
@@ -1582,6 +1721,7 @@ pub(crate) fn stop_owned_runtime_run(
     repo_root: &Path,
     snapshot: &RuntimeRunSnapshotRecord,
 ) -> CommandResult<RuntimeRunSnapshotRecord> {
+    persist_unconsumed_queued_prompt_for_terminal_run(repo_root, snapshot, None);
     persist_owned_runtime_run(
         repo_root,
         &snapshot.run.project_id,

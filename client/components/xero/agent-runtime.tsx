@@ -89,6 +89,8 @@ import {
   getComposerPlaceholder,
   getComposerThinkingOptions,
 } from './agent-runtime/composer-helpers'
+import { classifyCreditLimitFailure } from '@xero/ui/model/credit-limit'
+import { getCloudProviderLabel } from '@/src/lib/xero-model/provider-presets'
 import {
   ActionPromptDispatchProvider,
   type ActionPromptDecision,
@@ -1230,6 +1232,7 @@ function routeItemIntoTurns(item: RuntimeStreamViewItem, context: TurnRoutingCon
       role: item.role,
       sequence: item.sequence,
       text: item.text,
+      createdAt: item.createdAt,
       attachments: runtimeMediaAttachmentsToConversation(item.mediaAttachments),
     })
     if (item.role === 'assistant') {
@@ -1539,6 +1542,53 @@ function getPendingPromptTurnId(pendingPrompt: PendingPromptTurn): string {
   return `pending-prompt:${pendingPrompt.id}`
 }
 
+/**
+ * Whether `turn` is the persisted copy (live echo or refetched history) of a
+ * prompt submitted at `queuedAt`. Text alone is not enough: an identical
+ * prompt sent earlier in the session must not swallow a fresh submission, so
+ * when both timestamps are known the persisted copy must not predate the
+ * submission beyond clock skew.
+ */
+function userMessageTurnEchoesSubmittedPrompt(
+  turn: ConversationTurn,
+  submittedText: string,
+  queuedAt: string | null,
+): boolean {
+  if (turn.kind !== 'message' || turn.role !== 'user') {
+    return false
+  }
+  if (turn.id.startsWith('pending-prompt:')) {
+    return false
+  }
+
+  const promptText = normalizeConversationTurnText(userVisiblePromptText(submittedText))
+  if (!promptText || normalizeConversationTurnText(userVisiblePromptText(turn.text)) !== promptText) {
+    return false
+  }
+
+  const queuedAtMs = Date.parse(queuedAt ?? '')
+  if (!Number.isFinite(queuedAtMs)) {
+    return true
+  }
+  const createdAtMs = Date.parse(turn.createdAt ?? '')
+  if (!Number.isFinite(createdAtMs)) {
+    return false
+  }
+  return createdAtMs >= queuedAtMs - PENDING_PROMPT_TRANSCRIPT_CLOCK_SKEW_MS
+}
+
+function pendingPromptEchoedInTurns(
+  turns: readonly ConversationTurn[],
+  pendingPrompt: PendingPromptTurn | null,
+): boolean {
+  if (!pendingPrompt) {
+    return false
+  }
+  return turns.some((turn) =>
+    userMessageTurnEchoesSubmittedPrompt(turn, pendingPrompt.text, pendingPrompt.queuedAt),
+  )
+}
+
 function appendPendingPromptTurn(
   turns: ConversationTurn[],
   pendingPrompt: PendingPromptTurn | null,
@@ -1555,13 +1605,17 @@ function appendPendingPromptTurn(
   const visibleText = normalizeConversationTurnText(userVisiblePromptText(text))
   const alreadyVisible = Boolean(
     visibleText &&
-      pendingPrompt.id.startsWith('queued:') &&
-      turns.some(
-        (turn) =>
-          turn.kind === 'message' &&
-          turn.role === 'user' &&
-          normalizeConversationTurnText(userVisiblePromptText(turn.text)) === visibleText,
-      ),
+      ((pendingPrompt.id.startsWith('queued:') &&
+        turns.some(
+          (turn) =>
+            turn.kind === 'message' &&
+            turn.role === 'user' &&
+            normalizeConversationTurnText(userVisiblePromptText(turn.text)) === visibleText,
+        )) ||
+        // The persisted copy of this same submission may already be visible —
+        // e.g. the historical transcript refetched after the run terminated —
+        // in which case appending the pending bubble would duplicate it.
+        pendingPromptEchoedInTurns(turns, pendingPrompt)),
   )
   if (alreadyVisible) {
     return turns
@@ -1576,6 +1630,7 @@ function appendPendingPromptTurn(
       role: 'user',
       sequence: latestSequence + 0.5,
       text,
+      createdAt: pendingPrompt.queuedAt,
       attachments: pendingPrompt.attachments,
     },
   ]
@@ -1844,6 +1899,20 @@ function conversationMessageCovers(
     return false
   }
 
+  // A pending prompt bubble carries no run id, so the run-scoped coverage
+  // below can never match it. Reconcile it against the persisted copy of the
+  // same submission (live echo or refetched history) by text + submit time.
+  if (
+    candidateTurn.role === 'user' &&
+    candidateTurn.id.startsWith('pending-prompt:')
+  ) {
+    return userMessageTurnEchoesSubmittedPrompt(
+      coveringTurn,
+      candidateTurn.text,
+      candidateTurn.createdAt ?? null,
+    )
+  }
+
   const coveringRunId = getConversationTurnRunId(coveringTurn)
   const candidateRunId = getConversationTurnRunId(candidateTurn)
   if (!coveringRunId || coveringRunId !== candidateRunId) {
@@ -2010,7 +2079,7 @@ function mergeConversationTurnsByCurrentOrder({
 
     if (replaceEquivalentPendingPrompts) {
       const equivalentPendingPromptIndex = mergedTurns.findIndex((previousTurn) =>
-        areEquivalentPendingPromptTurns(previousTurn, currentTurn),
+        pendingPromptTurnSupersededBy(previousTurn, currentTurn),
       )
       if (equivalentPendingPromptIndex >= 0) {
         mergedTurns[equivalentPendingPromptIndex] = currentTurn
@@ -2065,18 +2134,30 @@ function mergeConversationContinuityTurns(
   })
 }
 
-function areEquivalentPendingPromptTurns(
-  left: ConversationTurn,
-  right: ConversationTurn,
+function pendingPromptTurnSupersededBy(
+  previousTurn: ConversationTurn,
+  currentTurn: ConversationTurn,
 ): boolean {
-  return (
-    left.kind === 'message' &&
-    right.kind === 'message' &&
-    left.role === 'user' &&
-    right.role === 'user' &&
-    left.id.startsWith('pending-prompt:') &&
-    right.id.startsWith('pending-prompt:') &&
-    left.text.trim() === right.text.trim()
+  if (
+    previousTurn.kind !== 'message' ||
+    currentTurn.kind !== 'message' ||
+    previousTurn.role !== 'user' ||
+    currentTurn.role !== 'user' ||
+    !previousTurn.id.startsWith('pending-prompt:')
+  ) {
+    return false
+  }
+
+  if (currentTurn.id.startsWith('pending-prompt:')) {
+    return previousTurn.text.trim() === currentTurn.text.trim()
+  }
+
+  // The persisted copy of the same submission (live echo or refetched
+  // history) replaces the stale pending bubble instead of duplicating it.
+  return userMessageTurnEchoesSubmittedPrompt(
+    currentTurn,
+    previousTurn.text,
+    previousTurn.createdAt ?? null,
   )
 }
 
@@ -2617,16 +2698,27 @@ export const AgentRuntime = memo(function AgentRuntime({
     }
   }, [agent.selectedPrompt.hasQueuedPrompt, agent.selectedPrompt.queuedAt, agent.selectedPrompt.text])
   const pendingPromptTurn = useMemo<PendingPromptTurn | null>(() => {
-    if (optimisticPromptTurn && !hasTranscriptForPendingPrompt(runtimeStreamItems, optimisticPromptTurn)) {
+    // A pending prompt is superseded by its persisted copy wherever that copy
+    // lives: the live stream echo, or the historical transcript once a
+    // stopped/failed run's items are refetched into history.
+    if (
+      optimisticPromptTurn &&
+      !hasTranscriptForPendingPrompt(runtimeStreamItems, optimisticPromptTurn) &&
+      !pendingPromptEchoedInTurns(visibleTurnsForDisplay, optimisticPromptTurn)
+    ) {
       return optimisticPromptTurn
     }
 
-    if (selectedQueuedPromptTurn && !hasTranscriptForPendingPrompt(runtimeStreamItems, selectedQueuedPromptTurn)) {
+    if (
+      selectedQueuedPromptTurn &&
+      !hasTranscriptForPendingPrompt(runtimeStreamItems, selectedQueuedPromptTurn) &&
+      !pendingPromptEchoedInTurns(visibleTurnsForDisplay, selectedQueuedPromptTurn)
+    ) {
       return selectedQueuedPromptTurn
     }
 
     return null
-  }, [optimisticPromptTurn, runtimeStreamItems, selectedQueuedPromptTurn])
+  }, [optimisticPromptTurn, runtimeStreamItems, selectedQueuedPromptTurn, visibleTurnsForDisplay])
   const rawVisibleTurnsWithPendingPrompt = useMemo(
     () => appendPendingPromptTurn(visibleTurnsForDisplay, pendingPromptTurn),
     [pendingPromptTurn, visibleTurnsForDisplay],
@@ -3470,14 +3562,56 @@ export const AgentRuntime = memo(function AgentRuntime({
       return
     }
 
-    if (hasTranscriptForPendingPrompt(runtimeStreamItems, optimisticPromptTurn)) {
+    if (
+      hasTranscriptForPendingPrompt(runtimeStreamItems, optimisticPromptTurn) ||
+      // A run that ends before the stream echoes the prompt (manual stop,
+      // provider preflight failure) surfaces the persisted copy through the
+      // refetched historical transcript instead — release the optimistic
+      // bubble then too, or it would linger and duplicate the prompt.
+      pendingPromptEchoedInTurns(visibleTurnsWithHistory, optimisticPromptTurn)
+    ) {
       setOptimisticPromptTurn(null)
     }
-  }, [optimisticPromptTurn, runtimeStreamItems])
+  }, [optimisticPromptTurn, runtimeStreamItems, visibleTurnsWithHistory])
 
   const selectedComposerModel = useMemo(
     () => getComposerModelOption(availableModels, controller.composerModelId),
     [availableModels, controller.composerModelId],
+  )
+  // A credit/billing limit failure is presented as a dedicated card docked above
+  // the composer (see ComposerDock) instead of a red run-failure error. Once the
+  // user picks a different model to resolve it (tracked by the failed run id),
+  // the card is dismissed.
+  const [dismissedCreditLimitRunId, setDismissedCreditLimitRunId] = useState<string | null>(
+    null,
+  )
+  const creditLimitNotice = useMemo(() => {
+    const run = renderableRuntimeRun
+    if (!run || !run.isFailed) return null
+    if (dismissedCreditLimitRunId === run.runId) return null
+    return classifyCreditLimitFailure({
+      code: run.lastError?.code ?? run.lastErrorCode ?? null,
+      message: run.lastError?.message ?? null,
+      providerId: run.providerId,
+      providerLabel: getCloudProviderLabel(run.providerId),
+      modelLabel:
+        selectedComposerModel?.providerId === run.providerId
+          ? (selectedComposerModel?.displayName ?? null)
+          : null,
+    })
+  }, [renderableRuntimeRun, selectedComposerModel, dismissedCreditLimitRunId])
+  // Switching to a different model resolves the out-of-credits situation, so
+  // dismiss the credit-limit card for the current failed run when the model
+  // selection actually changes.
+  const handleComposerModelChangeWithCreditDismiss = useCallback(
+    (value: string) => {
+      const run = renderableRuntimeRun
+      if (run && value !== controller.composerModelId) {
+        setDismissedCreditLimitRunId(run.runId)
+      }
+      controller.handleComposerModelChange(value)
+    },
+    [renderableRuntimeRun, controller.composerModelId, controller.handleComposerModelChange],
   )
   const composerModelGroups = useMemo(
     () => getComposerModelGroups(availableModels, controller.composerModelId),
@@ -5078,7 +5212,7 @@ export const AgentRuntime = memo(function AgentRuntime({
           onComposerRuntimeAgentChange={controller.handleComposerRuntimeAgentChange}
           onComposerAgentSelectionChange={controller.handleComposerAgentSelectionChange}
           onAutoCompactEnabledChange={controller.handleAutoCompactEnabledChange}
-          onComposerModelChange={controller.handleComposerModelChange}
+          onComposerModelChange={handleComposerModelChangeWithCreditDismiss}
           onComposerThinkingLevelChange={controller.handleComposerThinkingLevelChange}
           onDraftPromptChange={controller.handleDraftPromptChange}
           onSubmitDraftPrompt={handleSubmitDraftPrompt}
@@ -5101,6 +5235,7 @@ export const AgentRuntime = memo(function AgentRuntime({
           runtimeSessionBindInFlight={controller.runtimeSessionBindInFlight}
           runtimeRunActionError={composerRuntimeRunActionError}
           runtimeRunActionErrorTitle={composerRuntimeRunActionErrorTitle}
+          creditLimitNotice={creditLimitNotice}
           runtimeRunActionStatus={runtimeRunActionStatus}
           sendButtonLabel={sendButtonLabel}
           onOpenDiagnostics={onOpenDiagnostics}

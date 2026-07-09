@@ -84,6 +84,7 @@ fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> s
             project_id: PROJECT_ID.into(),
             repository_id: REPO_ID.into(),
             root_path: canonical_string,
+            is_git_repo: true,
         }],
     )
     .expect("persist registry");

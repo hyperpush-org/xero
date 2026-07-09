@@ -21,6 +21,8 @@ export type {
 export { COMPOSER_DICTATION_SHORTCUT } from "./composer";
 export { ComposerModelSelect } from "./composer-model-select";
 export type { ComposerModelSelectProps } from "./composer-model-select";
+export { CreditLimitNotice } from "./credit-limit-notice";
+export type { CreditLimitNoticeProps } from "./credit-limit-notice";
 export type {
 	ComposerSelectGroup,
 	ComposerSelectOption,

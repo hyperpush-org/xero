@@ -54,6 +54,7 @@ const OPENAI_CODEX_API_BASE_URL: &str = "https://chatgpt.com/backend-api";
 const OPENAI_CODEX_BETA_HEADER: &str = "responses=experimental";
 const OPENAI_CODEX_ORIGINATOR: &str = "pi";
 const OPENAI_CODEX_TEXT_VERBOSITY: &str = "medium";
+const OPENAI_REASONING_SUMMARY_DETAIL: &str = "detailed";
 const XAI_API_BASE_URL: &str = "https://api.x.ai/v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1288,7 +1289,7 @@ fn openai_responses_request_body(
             "reasoning".into(),
             json!({
                 "effort": openai_responses_thinking_effort_value(provider_id, model_id, effort),
-                "summary": "auto",
+                "summary": OPENAI_REASONING_SUMMARY_DETAIL,
             }),
         );
     }
@@ -1374,7 +1375,7 @@ fn openai_codex_responses_request_body(
             "reasoning".into(),
             json!({
                 "effort": openai_responses_thinking_effort_value(provider_id, model_id, effort),
-                "summary": "auto",
+                "summary": OPENAI_REASONING_SUMMARY_DETAIL,
             }),
         );
     }
@@ -2451,6 +2452,7 @@ fn parse_openai_responses_sse(
     let mut message = String::new();
     let mut partial_calls = BTreeMap::<usize, PartialToolCall>::new();
     let mut completed_call_count = 0_usize;
+    let mut reasoning_summary_state = OpenAiResponsesReasoningSummaryState::default();
     let mut usage = None;
 
     for line in BufReader::new(response).lines() {
@@ -2473,7 +2475,11 @@ fn parse_openai_responses_sse(
                 format!("Xero could not decode a {provider_id} Responses chunk: {error}"),
             )
         })?;
-        if emit_openai_responses_reasoning_summary_event(&value, emit)? {
+        if emit_openai_responses_reasoning_summary_event(
+            &value,
+            &mut reasoning_summary_state,
+            emit,
+        )? {
             continue;
         }
         match value
@@ -2529,6 +2535,11 @@ fn parse_openai_responses_sse(
                 }
             }
             "response.completed" | "response.done" => {
+                emit_openai_responses_completed_reasoning_summaries(
+                    &value,
+                    &mut reasoning_summary_state,
+                    emit,
+                )?;
                 if let Some(mapped) = value
                     .get("response")
                     .and_then(|response| response.get("usage"))
@@ -2571,11 +2582,52 @@ fn parse_openai_responses_sse(
         }
     }
 
+    flush_openai_responses_reasoning_summary_pending(&mut reasoning_summary_state, emit)?;
+
     finish_provider_turn(provider_id, message, None, None, partial_calls, usage)
+}
+
+fn emit_openai_responses_completed_reasoning_summaries(
+    value: &JsonValue,
+    state: &mut OpenAiResponsesReasoningSummaryState,
+    emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
+) -> CommandResult<()> {
+    let Some(output) = value
+        .get("response")
+        .and_then(|response| response.get("output"))
+        .and_then(JsonValue::as_array)
+    else {
+        return Ok(());
+    };
+
+    let mut emitted_any = false;
+    for (fallback_output_index, item) in output.iter().enumerate() {
+        if item.get("type").and_then(JsonValue::as_str) != Some("reasoning") {
+            continue;
+        }
+        let output_index = item
+            .get("output_index")
+            .and_then(JsonValue::as_u64)
+            .unwrap_or(fallback_output_index as u64);
+        emitted_any |=
+            emit_openai_responses_reasoning_summary_item(output_index, item, state, emit)?;
+    }
+
+    if emitted_any {
+        emit(ProviderStreamEvent::ReasoningSummary("\n\n".into()))?;
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct OpenAiResponsesReasoningSummaryState {
+    pending_text: BTreeMap<(u64, u64), String>,
+    emitted_text: BTreeMap<(u64, u64), String>,
 }
 
 fn emit_openai_responses_reasoning_summary_event(
     value: &JsonValue,
+    state: &mut OpenAiResponsesReasoningSummaryState,
     emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
 ) -> CommandResult<bool> {
     match value
@@ -2584,23 +2636,152 @@ fn emit_openai_responses_reasoning_summary_event(
         .unwrap_or_default()
     {
         "response.reasoning_summary_text.delta" => {
+            let key = openai_responses_reasoning_summary_key(value);
             let delta = value
                 .get("delta")
                 .and_then(JsonValue::as_str)
                 .unwrap_or_default()
-                .to_string();
+                .to_owned();
             if !delta.is_empty() {
-                emit(ProviderStreamEvent::ReasoningSummary(delta))?;
+                state.pending_text.entry(key).or_default().push_str(&delta);
             }
             Ok(true)
         }
-        "response.reasoning_summary_part.done" | "response.reasoning_summary_text.done" => {
-            emit(ProviderStreamEvent::ReasoningSummary("\n\n".into()))?;
+        "response.reasoning_summary_text.done" => {
+            let key = openai_responses_reasoning_summary_key(value);
+            let pending = state.pending_text.remove(&key).unwrap_or_default();
+            let text = value
+                .get("text")
+                .and_then(JsonValue::as_str)
+                .filter(|text| !text.is_empty())
+                .unwrap_or(pending.as_str());
+            emit_openai_responses_reasoning_summary_text(key, text, state, emit)?;
             Ok(true)
         }
-        "response.reasoning_summary_part.added" => Ok(true),
+        "response.reasoning_summary_part.done" => {
+            let key = openai_responses_reasoning_summary_key(value);
+            let pending = state.pending_text.remove(&key);
+            let fallback = pending
+                .as_deref()
+                .or_else(|| {
+                    value
+                        .get("part")
+                        .and_then(|part| part.get("text"))
+                        .and_then(JsonValue::as_str)
+                })
+                .unwrap_or_default();
+            let emitted = emit_openai_responses_reasoning_summary_text(key, fallback, state, emit)?
+                || state.emitted_text.contains_key(&key);
+            if emitted {
+                emit(ProviderStreamEvent::ReasoningSummary("\n\n".into()))?;
+            }
+            Ok(true)
+        }
+        "response.reasoning_summary_part.added" => {
+            let key = openai_responses_reasoning_summary_key(value);
+            if let Some(text) = value
+                .get("part")
+                .and_then(|part| part.get("text"))
+                .and_then(JsonValue::as_str)
+                .filter(|text| !text.is_empty())
+            {
+                state.pending_text.entry(key).or_default().push_str(text);
+            }
+            Ok(true)
+        }
+        "response.output_item.done" => {
+            let item = value.get("item").unwrap_or(&JsonValue::Null);
+            if item.get("type").and_then(JsonValue::as_str) != Some("reasoning") {
+                return Ok(false);
+            }
+            let output_index = value
+                .get("output_index")
+                .or_else(|| item.get("output_index"))
+                .and_then(JsonValue::as_u64)
+                .unwrap_or_default();
+            let emitted_any =
+                emit_openai_responses_reasoning_summary_item(output_index, item, state, emit)?;
+            if emitted_any {
+                emit(ProviderStreamEvent::ReasoningSummary("\n\n".into()))?;
+            }
+            Ok(true)
+        }
         _ => Ok(false),
     }
+}
+
+fn flush_openai_responses_reasoning_summary_pending(
+    state: &mut OpenAiResponsesReasoningSummaryState,
+    emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
+) -> CommandResult<()> {
+    let pending = std::mem::take(&mut state.pending_text);
+    for (key, text) in pending {
+        if emit_openai_responses_reasoning_summary_text(key, &text, state, emit)? {
+            emit(ProviderStreamEvent::ReasoningSummary("\n\n".into()))?;
+        }
+    }
+    Ok(())
+}
+
+fn emit_openai_responses_reasoning_summary_item(
+    output_index: u64,
+    item: &JsonValue,
+    state: &mut OpenAiResponsesReasoningSummaryState,
+    emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
+) -> CommandResult<bool> {
+    let mut emitted_any = false;
+    if let Some(summary) = item.get("summary").and_then(JsonValue::as_array) {
+        for (summary_index, part) in summary.iter().enumerate() {
+            let key = (output_index, summary_index as u64);
+            let text = part
+                .get("text")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default();
+            emitted_any |= emit_openai_responses_reasoning_summary_text(key, text, state, emit)?;
+        }
+    }
+    Ok(emitted_any)
+}
+
+fn openai_responses_reasoning_summary_key(value: &JsonValue) -> (u64, u64) {
+    (
+        value
+            .get("output_index")
+            .and_then(JsonValue::as_u64)
+            .unwrap_or_default(),
+        value
+            .get("summary_index")
+            .and_then(JsonValue::as_u64)
+            .unwrap_or_default(),
+    )
+}
+
+fn emit_openai_responses_reasoning_summary_text(
+    key: (u64, u64),
+    text: &str,
+    state: &mut OpenAiResponsesReasoningSummaryState,
+    emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
+) -> CommandResult<bool> {
+    if text.is_empty() {
+        return Ok(false);
+    }
+    if let Some(previous) = state.emitted_text.get(&key) {
+        if previous == text {
+            return Ok(false);
+        }
+        if let Some(delta) = text.strip_prefix(previous) {
+            if delta.is_empty() {
+                return Ok(false);
+            }
+            emit(ProviderStreamEvent::ReasoningSummary(delta.to_owned()))?;
+            state.emitted_text.insert(key, text.to_owned());
+            return Ok(true);
+        }
+        return Ok(false);
+    }
+    emit(ProviderStreamEvent::ReasoningSummary(text.to_owned()))?;
+    state.emitted_text.insert(key, text.to_owned());
+    Ok(true)
 }
 
 fn apply_openai_response_function_call_item(
@@ -4149,7 +4330,10 @@ mod tests {
         )
         .expect("gpt-5.4 body");
         assert_eq!(gpt_5_4["reasoning"]["effort"], "low");
-        assert_eq!(gpt_5_4["reasoning"]["summary"], "auto");
+        assert_eq!(
+            gpt_5_4["reasoning"]["summary"],
+            OPENAI_REASONING_SUMMARY_DETAIL
+        );
         assert_eq!(gpt_5_4["store"], false);
         assert_eq!(gpt_5_4["stream"], true);
         assert_eq!(gpt_5_4["text"]["verbosity"], "medium");
@@ -4173,7 +4357,10 @@ mod tests {
         let openai_api = openai_responses_request_body(OPENAI_API_PROVIDER_ID, "gpt-5.4", &request)
             .expect("openai api body");
         assert_eq!(openai_api["reasoning"]["effort"], "minimal");
-        assert_eq!(openai_api["reasoning"]["summary"], "auto");
+        assert_eq!(
+            openai_api["reasoning"]["summary"],
+            OPENAI_REASONING_SUMMARY_DETAIL
+        );
 
         request.controls.active.thinking_effort = Some(ProviderModelThinkingEffortDto::XHigh);
         let gpt_5_1 = openai_codex_responses_request_body(
@@ -4736,28 +4923,53 @@ mod tests {
     }
 
     #[test]
-    fn openai_responses_reasoning_summary_events_emit_thinking_deltas() {
+    fn openai_responses_reasoning_summary_events_emit_done_text_without_duplicate_deltas() {
         let mut events = Vec::new();
         let mut emit = |event| {
             events.push(event);
             Ok(())
         };
+        let mut state = OpenAiResponsesReasoningSummaryState::default();
 
         assert!(emit_openai_responses_reasoning_summary_event(
             &json!({
                 "type": "response.reasoning_summary_text.delta",
-                "delta": "I should inspect the failing test"
+                "output_index": 0,
+                "summary_index": 0,
+                "delta": "**Planning fix**\n\n<!-- -->"
             }),
+            &mut state,
             &mut emit,
         )
         .expect("delta event handled"));
         assert!(emit_openai_responses_reasoning_summary_event(
-            &json!({ "type": "response.reasoning_summary_part.done" }),
+            &json!({
+                "type": "response.reasoning_summary_text.done",
+                "output_index": 0,
+                "summary_index": 0,
+                "text": "**Planning fix**\n\nI should inspect the failing test."
+            }),
+            &mut state,
+            &mut emit,
+        )
+        .expect("done event handled"));
+        assert!(emit_openai_responses_reasoning_summary_event(
+            &json!({
+                "type": "response.reasoning_summary_part.done",
+                "output_index": 0,
+                "summary_index": 0,
+                "part": {
+                    "type": "summary_text",
+                    "text": "**Planning fix**\n\nI should inspect the failing test."
+                }
+            }),
+            &mut state,
             &mut emit,
         )
         .expect("part done event handled"));
         assert!(!emit_openai_responses_reasoning_summary_event(
             &json!({ "type": "response.output_text.delta", "delta": "Done." }),
+            &mut state,
             &mut emit,
         )
         .expect("text event ignored"));
@@ -4765,7 +4977,118 @@ mod tests {
         assert_eq!(
             events,
             vec![
-                ProviderStreamEvent::ReasoningSummary("I should inspect the failing test".into()),
+                ProviderStreamEvent::ReasoningSummary(
+                    "**Planning fix**\n\nI should inspect the failing test.".into()
+                ),
+                ProviderStreamEvent::ReasoningSummary("\n\n".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn openai_responses_reasoning_summary_output_item_done_backfills_missing_stream_text() {
+        let mut events = Vec::new();
+        let mut emit = |event| {
+            events.push(event);
+            Ok(())
+        };
+        let mut state = OpenAiResponsesReasoningSummaryState::default();
+
+        assert!(emit_openai_responses_reasoning_summary_event(
+            &json!({
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {
+                    "type": "reasoning",
+                    "summary": [
+                        {
+                            "type": "summary_text",
+                            "text": "**Checking context**\n\nI need to read the project files."
+                        }
+                    ]
+                }
+            }),
+            &mut state,
+            &mut emit,
+        )
+        .expect("reasoning output item handled"));
+        assert!(emit_openai_responses_reasoning_summary_event(
+            &json!({
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {
+                    "type": "reasoning",
+                    "summary": [
+                        {
+                            "type": "summary_text",
+                            "text": "**Checking context**\n\nI need to read the project files."
+                        }
+                    ]
+                }
+            }),
+            &mut state,
+            &mut emit,
+        )
+        .expect("duplicate reasoning output item handled"));
+
+        assert_eq!(
+            events,
+            vec![
+                ProviderStreamEvent::ReasoningSummary(
+                    "**Checking context**\n\nI need to read the project files.".into()
+                ),
+                ProviderStreamEvent::ReasoningSummary("\n\n".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn openai_responses_completed_event_backfills_reasoning_output_summary() {
+        let mut events = Vec::new();
+        let mut emit = |event| {
+            events.push(event);
+            Ok(())
+        };
+        let mut state = OpenAiResponsesReasoningSummaryState::default();
+
+        emit_openai_responses_completed_reasoning_summaries(
+            &json!({
+                "type": "response.completed",
+                "response": {
+                    "output": [
+                        {
+                            "type": "reasoning",
+                            "summary": [
+                                {
+                                    "type": "summary_text",
+                                    "text": "**Planning project inspection**\n\nI need to inspect the package metadata and README."
+                                }
+                            ]
+                        },
+                        {
+                            "type": "message",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": "Done."
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }),
+            &mut state,
+            &mut emit,
+        )
+        .expect("completed response summaries handled");
+
+        assert_eq!(
+            events,
+            vec![
+                ProviderStreamEvent::ReasoningSummary(
+                    "**Planning project inspection**\n\nI need to inspect the package metadata and README."
+                        .into()
+                ),
                 ProviderStreamEvent::ReasoningSummary("\n\n".into()),
             ]
         );

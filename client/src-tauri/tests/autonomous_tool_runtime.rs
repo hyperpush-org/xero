@@ -119,6 +119,7 @@ fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (
             project_id: repository.project_id.clone(),
             repository_id: repository.repository_id.clone(),
             root_path: root_path_string,
+            is_git_repo: true,
         }],
     )
     .expect("persist registry entry");

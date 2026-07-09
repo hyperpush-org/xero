@@ -1903,6 +1903,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const [selectedWorkflowTemplatePreviewId, setSelectedWorkflowTemplatePreviewId] =
     useState<WorkflowTemplateIdDto | null>(null)
   const [workflowActionRunning, setWorkflowActionRunning] = useState(false)
+  const [workflowStartRequestToken, setWorkflowStartRequestToken] = useState(0)
   const workflowAgentInspector = useWorkflowAgentInspector({
     adapter: resolvedAdapter,
     projectId: activeProjectId,
@@ -2036,6 +2037,40 @@ export function XeroApp({ adapter }: XeroAppProps) {
     void refreshWorkflowDefinitions()
     void refreshWorkflowRuns()
   }, [activeProjectId, refreshWorkflowDefinitions, refreshWorkflowRuns])
+
+  useEffect(() => {
+    if (!WORKFLOWS_ENABLED || !activeProjectId || !resolvedAdapter.onWorkflowRunUpdated) return
+    let cancelled = false
+    let unlisten: (() => void) | null = null
+    void resolvedAdapter
+      .onWorkflowRunUpdated((payload) => {
+        if (cancelled || payload.projectId !== activeProjectId) return
+        setWorkflowRuns((current) => {
+          const index = current.findIndex((run) => run.id === payload.run.id)
+          if (index === -1) return [payload.run, ...current]
+          const next = current.slice()
+          next[index] = payload.run
+          return next
+        })
+        setSelectedWorkflowRun((current) =>
+          current?.id === payload.run.id ? payload.run : current,
+        )
+      })
+      .then((dispose) => {
+        if (cancelled) {
+          dispose()
+        } else {
+          unlisten = dispose
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to subscribe to workflow run updates', error)
+      })
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [activeProjectId, resolvedAdapter])
   const shouldRestoreExplorerFromAutoCollapseRef = useRef(false)
   const previousBrowserOpenRef = useRef<boolean>(browserOpen)
 
@@ -4025,6 +4060,14 @@ export function XeroApp({ adapter }: XeroAppProps) {
     [activeProjectId, resolvedAdapter, setActiveView, workflowAgentInspector, workflowRuns],
   )
 
+  const handleRequestWorkflowStart = useCallback(
+    async (workflowId: string) => {
+      await handleSelectWorkflowDefinition(workflowId)
+      setWorkflowStartRequestToken((token) => token + 1)
+    },
+    [handleSelectWorkflowDefinition],
+  )
+
   const handleSelectWorkflowRun = useCallback(
     async (runId: string) => {
       if (!activeProjectId || !resolvedAdapter.getWorkflowRun) return
@@ -4865,7 +4908,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
     [submitOpenAiCallback],
   )
   const handleAgentCodeUndoApplied = useCallback(() => retry(), [retry])
-  const handleStartWorkflowRun = useCallback(() => startRuntimeRun(), [startRuntimeRun])
 
   const handleSelectProject = useCallback(
     (projectId: string) => {
@@ -5092,14 +5134,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 active={activeView === 'phases'}
                 projectId={activeProjectId}
                 workflow={workflowView}
-                canStartRun={Boolean(
-                  agentView?.runtimeRunActionStatus !== undefined &&
-                    !agentView.runtimeRun &&
-                    agentView.runtimeSession?.isAuthenticated,
-                )}
-                isStartingRun={agentView?.runtimeRunActionStatus === 'running'}
-                onOpenSettings={handleOpenAgentProviderSettings}
-                onStartRun={handleStartWorkflowRun}
                 onToggleWorkflows={toggleWorkflows}
                 workflowsOpen={workflowsOpen}
                 onCreateAgent={handleCreateAgent}
@@ -5125,6 +5159,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onStartWorkflowDefinitionRun={
                   WORKFLOWS_ENABLED ? handleStartWorkflowDefinitionRun : undefined
                 }
+                workflowStartRequestToken={WORKFLOWS_ENABLED ? workflowStartRequestToken : 0}
                 onCancelWorkflowRun={WORKFLOWS_ENABLED ? handleCancelWorkflowRun : undefined}
                 onRetryWorkflowNodeRun={WORKFLOWS_ENABLED ? handleRetryWorkflowNodeRun : undefined}
                 onSkipWorkflowBranch={WORKFLOWS_ENABLED ? handleSkipWorkflowBranch : undefined}
@@ -5636,7 +5671,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onStartWorkflowRun={
                   WORKFLOWS_ENABLED
                     ? (workflowId) => {
-                        void handleStartWorkflowDefinitionRun(workflowId, { goal: '' })
+                        void handleRequestWorkflowStart(workflowId)
                       }
                     : undefined
                 }

@@ -57,8 +57,7 @@ describe('AgentCreateDraftSection', () => {
 
     expect(screen.getByText('2 pending approvals')).toBeInTheDocument()
     expect(screen.getByText(/Drafted agent definition/)).toBeInTheDocument()
-    expect(screen.queryByText('workflow_definition')).not.toBeInTheDocument()
-    expect(screen.queryByText(/failed validation/)).not.toBeInTheDocument()
+    expect(screen.getByText(/failed validation/)).toBeInTheDocument()
   })
 
   it('ignores non definition tool items', () => {

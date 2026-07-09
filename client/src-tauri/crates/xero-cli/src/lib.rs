@@ -3,11 +3,11 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
-    io::{self, BufRead, Read, Write},
+    io::{self, BufRead, Write},
     path::{Path, PathBuf},
     process::Command,
     sync::Arc,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
@@ -108,14 +108,11 @@ const WORKSPACE_EMBEDDING_DIM: usize = 768;
 const WORKSPACE_EMBEDDING_MODEL: &str = "xero-local-hash-embedding";
 const WORKSPACE_EMBEDDING_VERSION: &str = "xero-local-hash-embedding.v1";
 const EXTERNAL_AGENT_DEFAULT_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
-const XERO_BENCHMARK_ADAPTER_VERSION: &str = "xero-terminal-bench-harbor-adapter.v1";
-const XERO_BENCHMARK_PROMPT_VERSION: &str = "xero-terminal-bench-prompt.v2";
-const XERO_BENCHMARK_TOOL_POLICY_VERSION: &str = "owned-agent-core-tool-registry-v2";
 const OPENAI_CODEX_PROVIDER_ID: &str = "openai_codex";
 const OPENAI_CODEX_DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api";
 const OPENAI_CODEX_OAUTH_REFRESH_SKEW_SECONDS: i64 = 60;
 
-const BENCHMARK_PROJECT_SCHEMA: &str = r#"
+const CLI_PROJECT_STATE_SCHEMA: &str = r#"
     PRAGMA foreign_keys = ON;
     PRAGMA journal_mode = WAL;
     CREATE TABLE IF NOT EXISTS projects (
@@ -180,7 +177,7 @@ const BENCHMARK_PROJECT_SCHEMA: &str = r#"
         validation_report_json,
         created_at
     )
-    VALUES ('engineer', 1, '{"id":"engineer","version":1}', '{"status":"valid","source":"benchmark_seed"}', '2026-05-01T00:00:00Z');
+    VALUES ('engineer', 1, '{"id":"engineer","version":1}', '{"status":"valid","source":"cli_project_state_seed"}', '2026-05-01T00:00:00Z');
     CREATE TABLE IF NOT EXISTS agent_sessions (
         project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
         agent_session_id TEXT NOT NULL,
@@ -327,14 +324,6 @@ impl CliError {
             exit_code: 1,
         }
     }
-
-    fn benchmark(code: impl Into<String>, message: impl Into<String>, exit_code: i32) -> Self {
-        Self {
-            code: code.into(),
-            message: message.into(),
-            exit_code,
-        }
-    }
 }
 
 pub trait TuiCommandAdapter: Send + Sync {
@@ -450,7 +439,6 @@ fn dispatch(globals: GlobalOptions, args: Vec<String>) -> Result<CliResponse, Cl
             }),
         )),
         Some("agent") => dispatch_agent(globals, args[1..].to_vec()),
-        Some("benchmark") => dispatch_benchmark(globals, args[1..].to_vec()),
         Some("conversation") => dispatch_conversation(globals, args[1..].to_vec()),
         Some("project") => project_cli::dispatch_project(globals, args[1..].to_vec()),
         Some("project-state") | Some("state") => {
@@ -492,20 +480,6 @@ fn dispatch(globals: GlobalOptions, args: Vec<String>) -> Result<CliResponse, Cl
             "Unknown xero command `{other}`. Run `xero --help`."
         ))),
         None => Ok(response(&globals, root_help(), root_help_json())),
-    }
-}
-
-fn dispatch_benchmark(globals: GlobalOptions, args: Vec<String>) -> Result<CliResponse, CliError> {
-    match args.first().map(String::as_str) {
-        Some("terminal-bench") | Some("run") => {
-            command_benchmark_terminal_bench(globals, args[1..].to_vec())
-        }
-        Some(other) => Err(CliError::usage(format!(
-            "Unknown benchmark command `{other}`. Use `xero benchmark terminal-bench`."
-        ))),
-        None => Err(CliError::usage(
-            "Missing benchmark command. Use `xero benchmark terminal-bench`.",
-        )),
     }
 }
 
@@ -733,596 +707,22 @@ fn command_agent_exec(
     ))
 }
 
-#[derive(Debug, Clone)]
-struct BenchmarkRunConfig {
-    instruction: String,
-    workspace_root: PathBuf,
-    trial_app_data_root: PathBuf,
-    output_dir: PathBuf,
-    project_id: String,
-    agent_session_id: String,
-    run_id: String,
-    benchmark_name: String,
-    dataset_id: String,
-    dataset_digest: Option<String>,
-    task_id: String,
-    attempt_index: u64,
-    provider_id: String,
-    model_id: String,
-    profile_id: Option<String>,
-    credential_mode: Option<String>,
-    oauth_app_data_root: Option<PathBuf>,
-    oauth_account_id: Option<String>,
-    api_key_env: Option<String>,
-    base_url: Option<String>,
-    temperature: Option<String>,
-    reasoning_effort: Option<String>,
-    max_output_tokens: Option<u64>,
-    context_budget: Option<u64>,
-    wall_time_seconds: Option<u64>,
-    max_turns: Option<usize>,
-    max_tool_calls: Option<u64>,
-    max_command_calls: Option<u64>,
-    max_cost_usd: Option<f64>,
-    approval_mode: String,
-    sandbox_policy: String,
-    network_policy: String,
-    sandbox_provider: String,
-    environment_id: Option<String>,
-    image_digest: Option<String>,
-    prompt_version: String,
-    tool_policy_version: String,
-    adapter_version: String,
-    harness_version: String,
-    xero_source_revision: Option<String>,
-    comparison_mode: String,
-    provider_account_class: String,
-    endpoint_class: String,
-    allow_fake_provider_fixture: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BenchmarkArtifactSummary {
-    output_dir: String,
-    manifest: String,
-    trajectory: String,
-    xero_trace: String,
-    final_diff: String,
-    support_bundle: String,
-    stdout: String,
-    stderr: String,
-}
-
-fn command_benchmark_terminal_bench(
-    globals: GlobalOptions,
-    mut args: Vec<String>,
-) -> Result<CliResponse, CliError> {
-    if take_help(&args) {
-        return Ok(response(
-            &globals,
-            [
-                "Usage: xero benchmark terminal-bench --instruction-file PATH --workspace-root PATH --trial-app-data-root PATH --output-dir PATH --task-id ID --dataset-id ID --provider ID --model ID [options]",
-                "",
-                "Runs one Harbor/Terminal-Bench trial through Xero's headless owned-agent runtime and writes manifest.json, trajectory.json, xero-trace.json, final.diff, support-bundle.zip, stdout.txt, and stderr.txt.",
-                "Use --allow-fake-provider-fixture with --provider fake_provider only for adapter fixture tests.",
-            ]
-            .join("\n"),
-            json!({ "command": "benchmark terminal-bench" }),
-        ));
-    }
-
-    let config = parse_benchmark_terminal_bench_config(&globals, &mut args)?;
-    reject_unknown_options(&args)?;
-    ensure_not_legacy_xero_state(&config.trial_app_data_root, "trial app-data root")?;
-    ensure_not_legacy_xero_state(&config.output_dir, "benchmark output directory")?;
-    fs::create_dir_all(&config.output_dir).map_err(|error| {
-        CliError::benchmark(
-            "xero_benchmark_output_prepare_failed",
-            format!(
-                "Could not create benchmark output directory `{}`: {error}",
-                config.output_dir.display()
-            ),
-            1,
-        )
-    })?;
-
-    let benchmark_globals = GlobalOptions {
-        output_mode: globals.output_mode,
-        ci: false,
-        state_dir: config.trial_app_data_root.clone(),
-        tui_adapter: None,
-    };
-    let registered_project = ensure_benchmark_project_registered(
-        &benchmark_globals,
-        &config.project_id,
-        &config.workspace_root,
-    )?;
-    let app_data_store = AppDataProjectAgentStore::open(registered_project)?;
-    let store = if config.provider_id == FAKE_PROVIDER_ID {
-        CliAgentStore::Harness(open_harness_agent_store(&benchmark_globals)?)
-    } else {
-        CliAgentStore::AppData(app_data_store)
-    };
-    let provider = resolve_benchmark_provider_execution(&benchmark_globals, &config)?;
-    let provider = provider.with_project_workspace(&store);
-    if provider.execution_mode == "real_provider" {
-        ensure_cli_real_provider_runtime_contract(&config.project_id, &provider, &store)?;
-    }
-    let provider_preflight = ensure_cli_provider_preflight_for_run(&benchmark_globals, &provider)?;
-    let runtime = HeadlessProviderRuntime::new(
-        store.clone(),
-        provider.execution.clone(),
-        HeadlessRuntimeOptions {
-            ci_mode: false,
-            max_provider_turns: config
-                .max_turns
-                .unwrap_or_else(|| HeadlessRuntimeOptions::default().max_provider_turns),
-            max_wall_time_ms: config
-                .wall_time_seconds
-                .map(|seconds| seconds.saturating_mul(1_000)),
-            max_tool_calls: config.max_tool_calls,
-            max_command_calls: config.max_command_calls,
-            provider_preflight: Some(provider_preflight.clone()),
-        },
-    );
-
-    let started = Instant::now();
-    let run_result = runtime.start_run(StartRunRequest {
-        project_id: config.project_id.clone(),
-        agent_session_id: config.agent_session_id.clone(),
-        run_id: config.run_id.clone(),
-        prompt: config.instruction.clone(),
-        provider: ProviderSelection {
-            provider_id: provider.provider_id.clone(),
-            model_id: provider.model_id.clone(),
-        },
-        controls: Some(RunControls {
-            runtime_agent_id: "engineer".into(),
-            agent_definition_id: Some("engineer".into()),
-            agent_definition_version: Some(1),
-            thinking_effort: None,
-            approval_mode: config.approval_mode.clone(),
-            plan_mode_required: config.approval_mode == "strict",
-        }),
-    });
-    let elapsed_ms = started.elapsed().as_millis() as u64;
-
-    let (snapshot, run_error) = match run_result {
-        Ok(snapshot) => (Some(snapshot), None),
-        Err(error) => {
-            let snapshot = store.load_run(&config.project_id, &config.run_id).ok();
-            (snapshot, Some(error))
-        }
-    };
-    let run_error_cli = run_error.as_ref().map(benchmark_runtime_error_to_cli);
-    let artifacts = write_benchmark_trial_artifacts(
-        &config,
-        &store,
-        snapshot.as_ref(),
-        run_error_cli.as_ref(),
-        elapsed_ms,
-    )?;
-
-    if let Some(error) = run_error_cli {
-        return Err(error);
-    }
-    let snapshot = snapshot.ok_or_else(|| {
-        CliError::benchmark(
-            "xero_benchmark_run_missing",
-            "The benchmark run finished without a runtime snapshot.",
-            4,
-        )
-    })?;
-    if snapshot.status != RunStatus::Completed {
-        return Err(CliError::benchmark(
-            "xero_benchmark_agent_incomplete",
-            format!(
-                "Benchmark run `{}` ended with status {:?}. Artifacts were written to `{}`.",
-                snapshot.run_id,
-                snapshot.status,
-                config.output_dir.display()
-            ),
-            4,
-        ));
-    }
-
-    let text = format!(
-        "Benchmark trial {} completed for task {}. Artifacts: {}",
-        config.run_id,
-        config.task_id,
-        config.output_dir.display()
-    );
-    Ok(response(
-        &globals,
-        text.clone(),
-        json!({
-            "kind": "benchmarkTerminalBench",
-            "status": "completed",
-            "runId": config.run_id,
-            "taskId": config.task_id,
-            "stdout": text,
-            "artifacts": artifacts,
-            "providerPreflight": provider_preflight,
-        }),
-    ))
-}
-
-fn parse_benchmark_terminal_bench_config(
-    globals: &GlobalOptions,
-    args: &mut Vec<String>,
-) -> Result<BenchmarkRunConfig, CliError> {
-    let instruction = read_benchmark_instruction(args)?;
-    let workspace_root = required_existing_path_option(args, "--workspace-root")?;
-    let output_dir = required_path_option(args, "--output-dir")?;
-    let trial_app_data_root = match take_option(args, "--trial-app-data-root")? {
-        Some(value) => Some(value),
-        None => take_option(args, "--app-data-root")?,
-    }
-    .map(PathBuf::from)
-    .unwrap_or_else(|| globals.state_dir.clone());
-    let project_id = take_option(args, "--project-id")?
-        .unwrap_or_else(|| stable_project_id_for_repo_root(&workspace_root));
-    let agent_session_id =
-        take_option(args, "--session-id")?.unwrap_or_else(|| generate_id("benchmark-session"));
-    let run_id = take_option(args, "--run-id")?.unwrap_or_else(|| generate_id("benchmark-run"));
-    let benchmark_name =
-        take_option(args, "--benchmark")?.unwrap_or_else(|| "terminal-bench".into());
-    let dataset_id = take_option(args, "--dataset-id")?
-        .or_else(|| env::var("TERMINAL_BENCH_DATASET").ok())
-        .ok_or_else(|| CliError::usage("Missing `--dataset-id`."))?;
-    let dataset_digest = take_option(args, "--dataset-digest")?;
-    let task_id =
-        take_option(args, "--task-id")?.ok_or_else(|| CliError::usage("Missing `--task-id`."))?;
-    let attempt_index = take_option(args, "--attempt-index")?
-        .map(|value| parse_nonnegative_u64(&value, "--attempt-index"))
-        .transpose()?
-        .unwrap_or(0);
-    let provider_id = normalize_benchmark_provider_id(
-        &take_option(args, "--provider")?
-            .ok_or_else(|| CliError::usage("Missing `--provider`."))?,
-    );
-    let model_id = take_option(args, "--model")?
-        .or_else(|| provider_catalog_entry(&provider_id).map(|entry| entry.default_model.into()))
-        .ok_or_else(|| CliError::usage("Missing `--model`."))?;
-    let model_id = if provider_id == OPENAI_CODEX_PROVIDER_ID {
-        normalize_openai_codex_model_id(&model_id)
-    } else {
-        model_id
-    };
-    let profile_id = take_option(args, "--profile-id")?;
-    let credential_mode = take_option(args, "--credential-mode")?
-        .or_else(|| (provider_id == OPENAI_CODEX_PROVIDER_ID).then(|| "app_openai_oauth".into()));
-    let oauth_app_data_root = take_option(args, "--oauth-app-data-root")?
-        .or_else(|| env::var("XERO_OPENAI_OAUTH_APP_DATA_ROOT").ok())
-        .map(PathBuf::from);
-    let oauth_account_id = take_option(args, "--oauth-account-id")?
-        .or_else(|| env::var("XERO_OPENAI_OAUTH_ACCOUNT_ID").ok());
-    let base_url = take_option(args, "--base-url")?;
-    let api_key_env = take_option(args, "--api-key-env")?.or_else(|| {
-        let local_endpoint = base_url.as_deref().is_some_and(is_local_provider_base_url);
-        (provider_id != OPENAI_CODEX_PROVIDER_ID && !local_endpoint)
-            .then(|| default_benchmark_api_key_env(&provider_id).map(str::to_owned))
-            .flatten()
-    });
-    let temperature = take_option(args, "--temperature")?;
-    let reasoning_effort = take_option(args, "--reasoning-effort")?;
-    let max_output_tokens = take_option(args, "--max-output-tokens")?
-        .map(|value| parse_positive_u64(&value, "--max-output-tokens"))
-        .transpose()?;
-    let context_budget = take_option(args, "--context-budget")?
-        .map(|value| parse_positive_u64(&value, "--context-budget"))
-        .transpose()?;
-    let wall_time_seconds = match take_option(args, "--wall-time-seconds")? {
-        Some(value) => Some(value),
-        None => take_option(args, "--timeout-seconds")?,
-    }
-    .map(|value| parse_positive_u64(&value, "--wall-time-seconds"))
-    .transpose()?;
-    let max_turns = take_option(args, "--max-turns")?
-        .map(|value| parse_positive_usize(&value, "--max-turns"))
-        .transpose()?;
-    let max_tool_calls = take_option(args, "--max-tool-calls")?
-        .map(|value| parse_positive_u64(&value, "--max-tool-calls"))
-        .transpose()?;
-    let max_command_calls = take_option(args, "--max-command-calls")?
-        .map(|value| parse_positive_u64(&value, "--max-command-calls"))
-        .transpose()?;
-    let max_cost_usd = take_option(args, "--max-cost-usd")?
-        .map(|value| parse_nonnegative_f64(&value, "--max-cost-usd"))
-        .transpose()?;
-    let approval_mode = take_option(args, "--approval-mode")?.unwrap_or_else(|| "strict".into());
-    let sandbox_policy =
-        take_option(args, "--sandbox-policy")?.unwrap_or_else(|| "harbor_task_sandbox".into());
-    let network_policy =
-        take_option(args, "--network-policy")?.unwrap_or_else(|| "harbor_controlled".into());
-    let sandbox_provider =
-        take_option(args, "--sandbox-provider")?.unwrap_or_else(|| "harbor".into());
-    let environment_id = take_option(args, "--environment-id")?;
-    let image_digest = take_option(args, "--image-digest")?;
-    let prompt_version = take_option(args, "--prompt-version")?
-        .unwrap_or_else(|| XERO_BENCHMARK_PROMPT_VERSION.into());
-    let tool_policy_version = take_option(args, "--tool-policy-version")?
-        .unwrap_or_else(|| XERO_BENCHMARK_TOOL_POLICY_VERSION.into());
-    let adapter_version = take_option(args, "--adapter-version")?
-        .unwrap_or_else(|| XERO_BENCHMARK_ADAPTER_VERSION.into());
-    let harness_version =
-        take_option(args, "--harness-version")?.unwrap_or_else(|| "harbor".into());
-    let xero_source_revision = take_option(args, "--xero-source-revision")?
-        .or_else(|| env::var("XERO_SOURCE_REVISION").ok());
-    let comparison_mode =
-        take_option(args, "--comparison-mode")?.unwrap_or_else(|| "fixed-model".into());
-    let provider_account_class =
-        take_option(args, "--provider-account-class")?.unwrap_or_else(|| "unspecified".into());
-    let endpoint_class = take_option(args, "--endpoint-class")?.unwrap_or_else(|| {
-        if provider_id == OPENAI_CODEX_PROVIDER_ID {
-            "chatgpt-codex-oauth".into()
-        } else {
-            "openai-compatible".into()
-        }
-    });
-    let allow_fake_provider_fixture = take_bool_flag(args, "--allow-fake-provider-fixture");
-    if provider_id == FAKE_PROVIDER_ID && !allow_fake_provider_fixture {
-        return Err(CliError::usage(
-            "`--provider fake_provider` is fixture-only for benchmarks. Add `--allow-fake-provider-fixture` for adapter smoke tests.",
-        ));
-    }
-    if instruction.trim().is_empty() {
-        return Err(CliError::usage("Benchmark instruction cannot be empty."));
-    }
-
-    Ok(BenchmarkRunConfig {
-        instruction,
-        workspace_root,
-        trial_app_data_root,
-        output_dir,
-        project_id,
-        agent_session_id,
-        run_id,
-        benchmark_name,
-        dataset_id,
-        dataset_digest,
-        task_id,
-        attempt_index,
-        provider_id,
-        model_id,
-        profile_id,
-        credential_mode,
-        oauth_app_data_root,
-        oauth_account_id,
-        api_key_env,
-        base_url,
-        temperature,
-        reasoning_effort,
-        max_output_tokens,
-        context_budget,
-        wall_time_seconds,
-        max_turns,
-        max_tool_calls,
-        max_command_calls,
-        max_cost_usd,
-        approval_mode,
-        sandbox_policy,
-        network_policy,
-        sandbox_provider,
-        environment_id,
-        image_digest,
-        prompt_version,
-        tool_policy_version,
-        adapter_version,
-        harness_version,
-        xero_source_revision,
-        comparison_mode,
-        provider_account_class,
-        endpoint_class,
-        allow_fake_provider_fixture,
-    })
-}
-
-fn read_benchmark_instruction(args: &mut Vec<String>) -> Result<String, CliError> {
-    let instruction = take_option(args, "--instruction")?;
-    let instruction_file = take_option(args, "--instruction-file")?;
-    match (instruction, instruction_file) {
-        (Some(_), Some(_)) => Err(CliError::usage(
-            "Use either `--instruction` or `--instruction-file`, not both.",
-        )),
-        (Some(value), None) => Ok(value),
-        (None, Some(path)) if path == "-" => {
-            let mut input = String::new();
-            io::stdin().read_to_string(&mut input).map_err(|error| {
-                CliError::benchmark(
-                    "xero_benchmark_instruction_read_failed",
-                    format!("Could not read benchmark instruction from stdin: {error}"),
-                    2,
-                )
-            })?;
-            Ok(input)
-        }
-        (None, Some(path)) => fs::read_to_string(&path).map_err(|error| {
-            CliError::benchmark(
-                "xero_benchmark_instruction_read_failed",
-                format!("Could not read benchmark instruction file `{path}`: {error}"),
-                2,
-            )
-        }),
-        (None, None) if !args.is_empty() && !args[0].starts_with('-') => Ok(args.remove(0)),
-        (None, None) => Err(CliError::usage(
-            "Missing benchmark instruction. Use `--instruction`, `--instruction-file`, or stdin with `--instruction-file -`.",
-        )),
-    }
-}
-
-fn required_path_option(args: &mut Vec<String>, name: &str) -> Result<PathBuf, CliError> {
-    let value =
-        take_option(args, name)?.ok_or_else(|| CliError::usage(format!("Missing `{name}`.")))?;
-    Ok(PathBuf::from(value))
-}
-
-fn required_existing_path_option(args: &mut Vec<String>, name: &str) -> Result<PathBuf, CliError> {
-    let value =
-        take_option(args, name)?.ok_or_else(|| CliError::usage(format!("Missing `{name}`.")))?;
-    canonicalize_existing_path(&value)
-}
-
 fn parse_positive_usize(value: &str, name: &str) -> Result<usize, CliError> {
     let parsed = parse_positive_u64(value, name)?;
     usize::try_from(parsed).map_err(|_| CliError::usage(format!("`{name}` is too large.")))
 }
 
-fn parse_nonnegative_u64(value: &str, name: &str) -> Result<u64, CliError> {
-    value
-        .trim()
-        .parse::<u64>()
-        .map_err(|_| CliError::usage(format!("`{name}` must be a non-negative integer.")))
-}
-
-fn parse_nonnegative_f64(value: &str, name: &str) -> Result<f64, CliError> {
-    let parsed = value
-        .trim()
-        .parse::<f64>()
-        .map_err(|_| CliError::usage(format!("`{name}` must be a number.")))?;
-    if parsed < 0.0 || !parsed.is_finite() {
-        return Err(CliError::usage(format!(
-            "`{name}` must be a finite non-negative number."
-        )));
-    }
-    Ok(parsed)
-}
-
-fn normalize_benchmark_provider_id(provider_id: &str) -> String {
-    match provider_id.trim() {
-        "openai" => "openai_api".into(),
-        "google" | "gemini" => "gemini_ai_studio".into(),
-        "github" => "github_models".into(),
-        other => other.into(),
-    }
-}
-
-fn default_benchmark_api_key_env(provider_id: &str) -> Option<&'static str> {
-    match provider_id {
-        "openai_api" => Some("OPENAI_API_KEY"),
-        "openrouter" => Some("OPENROUTER_API_KEY"),
-        "github_models" => Some("GITHUB_TOKEN"),
-        "gemini_ai_studio" => Some("GEMINI_API_KEY"),
-        _ => None,
-    }
-}
-
 #[derive(Debug, Clone)]
-struct BenchmarkOpenAiCodexSession {
+struct OpenAiCodexSession {
     account_id: String,
     session_id: String,
     access_token: String,
     expires_at: i64,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum OpenAiCodexOAuthReadContext {
-    Cli,
-    Benchmark,
-}
-
-impl OpenAiCodexOAuthReadContext {
-    fn store_open_failed(self, database_path: &Path, error: rusqlite::Error) -> CliError {
-        let message = format!(
-            "Could not open OpenAI OAuth credential store `{}`: {error}",
-            database_path.display()
-        );
-        match self {
-            Self::Cli => CliError::system_fault("xero_cli_openai_oauth_store_open_failed", message),
-            Self::Benchmark => {
-                CliError::benchmark("xero_benchmark_openai_oauth_store_open_failed", message, 1)
-            }
-        }
-    }
-
-    fn store_read_failed(self, message: String) -> CliError {
-        match self {
-            Self::Cli => CliError::system_fault("xero_cli_openai_oauth_store_read_failed", message),
-            Self::Benchmark => {
-                CliError::benchmark("xero_benchmark_openai_oauth_store_read_failed", message, 1)
-            }
-        }
-    }
-
-    fn store_decode_failed(self, message: String) -> CliError {
-        match self {
-            Self::Cli => {
-                CliError::system_fault("xero_cli_openai_oauth_store_decode_failed", message)
-            }
-            Self::Benchmark => CliError::benchmark(
-                "xero_benchmark_openai_oauth_store_decode_failed",
-                message,
-                1,
-            ),
-        }
-    }
-}
-
-fn load_benchmark_openai_codex_oauth_session(
-    config: &BenchmarkRunConfig,
-) -> Result<BenchmarkOpenAiCodexSession, CliError> {
-    let app_data_root = config
-        .oauth_app_data_root
-        .clone()
-        .or_else(|| default_app_data_root().ok())
-        .ok_or_else(|| {
-            CliError::benchmark(
-                "xero_benchmark_openai_oauth_root_missing",
-                "OpenAI OAuth benchmark runs need `--oauth-app-data-root` or `XERO_OPENAI_OAUTH_APP_DATA_ROOT` pointing at the app-data directory that contains your logged-in Xero OAuth session.",
-                2,
-            )
-        })?;
-    ensure_not_legacy_xero_state(&app_data_root, "OpenAI OAuth app-data root")?;
-    let database_path = app_data_root.join(GLOBAL_DATABASE_FILE);
-    if !database_path.is_file() {
-        return Err(CliError::benchmark(
-            "xero_benchmark_openai_oauth_store_missing",
-            format!(
-                "Could not find OpenAI OAuth credential store `{}`.",
-                database_path.display()
-            ),
-            2,
-        ));
-    }
-    let connection = open_immutable_read_only_sqlite(&database_path).map_err(|error| {
-        OpenAiCodexOAuthReadContext::Benchmark.store_open_failed(&database_path, error)
-    })?;
-    let mut session = load_openai_codex_session_from_provider_credentials(
-        &connection,
-        config.oauth_account_id.as_deref(),
-        OpenAiCodexOAuthReadContext::Benchmark,
-    )?;
-    if session.is_none() {
-        session = load_openai_codex_session_from_legacy_sessions(
-            &connection,
-            config.oauth_account_id.as_deref(),
-            OpenAiCodexOAuthReadContext::Benchmark,
-        )?;
-    }
-    let session = session.ok_or_else(|| {
-        CliError::benchmark(
-            "xero_benchmark_openai_oauth_session_missing",
-            "No app-local OpenAI OAuth session was found. Log into OpenAI in Xero, then rerun the benchmark with the matching app-data root.",
-            2,
-        )
-    })?;
-
-    if session.expires_at
-        <= current_unix_timestamp().saturating_add(OPENAI_CODEX_OAUTH_REFRESH_SKEW_SECONDS)
-    {
-        return Err(CliError::benchmark(
-            "xero_benchmark_openai_oauth_session_expired",
-            "The app-local OpenAI OAuth session is expired or too close to expiry. Refresh OpenAI login in Xero before starting a benchmark run.",
-            3,
-        ));
-    }
-    Ok(session)
-}
-
 fn load_cli_openai_codex_oauth_session(
     globals: &GlobalOptions,
-) -> Result<BenchmarkOpenAiCodexSession, CliError> {
+) -> Result<OpenAiCodexSession, CliError> {
     let app_data_root = cli_app_data_root(globals);
     if app_data_root
         .components()
@@ -1349,19 +749,17 @@ fn load_cli_openai_codex_oauth_session(
     }
 
     let connection = open_read_only_sqlite(&database_path).map_err(|error| {
-        OpenAiCodexOAuthReadContext::Cli.store_open_failed(&database_path, error)
+        CliError::system_fault(
+            "xero_cli_openai_oauth_store_open_failed",
+            format!(
+                "Could not open OpenAI OAuth credential store `{}`: {error}",
+                database_path.display()
+            ),
+        )
     })?;
-    let mut session = load_openai_codex_session_from_provider_credentials(
-        &connection,
-        None,
-        OpenAiCodexOAuthReadContext::Cli,
-    )?;
+    let mut session = load_openai_codex_session_from_provider_credentials(&connection)?;
     if session.is_none() {
-        session = load_openai_codex_session_from_legacy_sessions(
-            &connection,
-            None,
-            OpenAiCodexOAuthReadContext::Cli,
-        )?;
+        session = load_openai_codex_session_from_legacy_sessions(&connection)?;
     }
     let session = session.ok_or_else(|| {
         CliError::user_fixable(
@@ -1382,144 +780,92 @@ fn load_cli_openai_codex_oauth_session(
     Ok(session)
 }
 
-fn open_immutable_read_only_sqlite(database_path: &Path) -> rusqlite::Result<Connection> {
-    Connection::open_with_flags(
-        sqlite_immutable_read_only_uri(database_path),
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
-    )
-}
-
 fn open_read_only_sqlite(database_path: &Path) -> rusqlite::Result<Connection> {
     Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
 }
 
-fn sqlite_immutable_read_only_uri(database_path: &Path) -> String {
-    format!(
-        "file:{}?mode=ro&immutable=1",
-        percent_encode_sqlite_uri_path(database_path)
-    )
-}
-
-fn percent_encode_sqlite_uri_path(path: &Path) -> String {
-    let path = path.to_string_lossy();
-    let mut encoded = String::with_capacity(path.len());
-    for byte in path.as_bytes() {
-        match *byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'.' | b'-' | b'_' | b'~' => {
-                encoded.push(char::from(*byte))
-            }
-            other => encoded.push_str(&format!("%{other:02X}")),
-        }
-    }
-    encoded
-}
-
 fn load_openai_codex_session_from_provider_credentials(
     connection: &Connection,
-    account_id: Option<&str>,
-    context: OpenAiCodexOAuthReadContext,
-) -> Result<Option<BenchmarkOpenAiCodexSession>, CliError> {
-    let sql = if account_id.is_some() {
-        "SELECT oauth_account_id, oauth_session_id, oauth_access_token, oauth_expires_at
-         FROM provider_credentials
-         WHERE provider_id = ?1 AND kind = 'oauth_session' AND oauth_account_id = ?2
-         LIMIT 1"
-    } else {
-        "SELECT oauth_account_id, oauth_session_id, oauth_access_token, oauth_expires_at
+) -> Result<Option<OpenAiCodexSession>, CliError> {
+    let sql = "SELECT oauth_account_id, oauth_session_id, oauth_access_token, oauth_expires_at
          FROM provider_credentials
          WHERE provider_id = ?1 AND kind = 'oauth_session'
          ORDER BY updated_at DESC
-         LIMIT 1"
-    };
+         LIMIT 1";
     let mut statement = match connection.prepare(sql) {
         Ok(statement) => statement,
         Err(error) if is_missing_table_error(&error) => return Ok(None),
         Err(error) => {
-            return Err(context.store_read_failed(format!(
+            return Err(openai_oauth_store_read_failed(format!(
                 "Could not prepare provider_credentials OAuth read: {error}"
             )));
         }
     };
-    let mut query = if let Some(account_id) = account_id {
-        statement.query(params![OPENAI_CODEX_PROVIDER_ID, account_id])
-    } else {
-        statement.query(params![OPENAI_CODEX_PROVIDER_ID])
-    }
-    .map_err(|error| {
-        context.store_read_failed(format!(
-            "Could not query provider_credentials OAuth row: {error}"
-        ))
-    })?;
+    let mut query = statement
+        .query(params![OPENAI_CODEX_PROVIDER_ID])
+        .map_err(|error| {
+            openai_oauth_store_read_failed(format!(
+                "Could not query provider_credentials OAuth row: {error}"
+            ))
+        })?;
     let Some(row) = query.next().map_err(|error| {
-        context.store_read_failed(format!(
+        openai_oauth_store_read_failed(format!(
             "Could not read provider_credentials OAuth row: {error}"
         ))
     })?
     else {
         return Ok(None);
     };
-    oauth_session_from_row(row, "provider_credentials", context)
+    oauth_session_from_row(row, "provider_credentials")
 }
 
 fn load_openai_codex_session_from_legacy_sessions(
     connection: &Connection,
-    account_id: Option<&str>,
-    context: OpenAiCodexOAuthReadContext,
-) -> Result<Option<BenchmarkOpenAiCodexSession>, CliError> {
-    let sql = if account_id.is_some() {
-        "SELECT account_id, session_id, access_token, expires_at
-         FROM openai_codex_sessions
-         WHERE account_id = ?1
-         LIMIT 1"
-    } else {
-        "SELECT account_id, session_id, access_token, expires_at
+) -> Result<Option<OpenAiCodexSession>, CliError> {
+    let sql = "SELECT account_id, session_id, access_token, expires_at
          FROM openai_codex_sessions
          ORDER BY updated_at DESC
-         LIMIT 1"
-    };
+         LIMIT 1";
     let mut statement = match connection.prepare(sql) {
         Ok(statement) => statement,
         Err(error) if is_missing_table_error(&error) => return Ok(None),
         Err(error) => {
-            return Err(context.store_read_failed(format!(
+            return Err(openai_oauth_store_read_failed(format!(
                 "Could not prepare openai_codex_sessions read: {error}"
             )));
         }
     };
-    let mut query = match account_id {
-        Some(account_id) => statement.query(params![account_id]),
-        None => statement.query([]),
-    }
-    .map_err(|error| {
-        context.store_read_failed(format!(
+    let mut query = statement.query([]).map_err(|error| {
+        openai_oauth_store_read_failed(format!(
             "Could not query openai_codex_sessions row: {error}"
         ))
     })?;
     let Some(row) = query.next().map_err(|error| {
-        context.store_read_failed(format!("Could not read openai_codex_sessions row: {error}"))
+        openai_oauth_store_read_failed(format!("Could not read openai_codex_sessions row: {error}"))
     })?
     else {
         return Ok(None);
     };
-    oauth_session_from_row(row, "openai_codex_sessions", context)
+    oauth_session_from_row(row, "openai_codex_sessions")
 }
 
 fn oauth_session_from_row(
     row: &rusqlite::Row<'_>,
     source: &str,
-    context: OpenAiCodexOAuthReadContext,
-) -> Result<Option<BenchmarkOpenAiCodexSession>, CliError> {
+) -> Result<Option<OpenAiCodexSession>, CliError> {
     let account_id = row.get::<_, Option<String>>(0).map_err(|error| {
-        context.store_decode_failed(format!("Could not decode `{source}` account id: {error}"))
+        openai_oauth_store_decode_failed(format!("Could not decode `{source}` account id: {error}"))
     })?;
     let session_id = row.get::<_, Option<String>>(1).map_err(|error| {
-        context.store_decode_failed(format!("Could not decode `{source}` session id: {error}"))
+        openai_oauth_store_decode_failed(format!("Could not decode `{source}` session id: {error}"))
     })?;
     let access_token = row.get::<_, Option<String>>(2).map_err(|error| {
-        context.store_decode_failed(format!("Could not decode `{source}` access token: {error}"))
+        openai_oauth_store_decode_failed(format!(
+            "Could not decode `{source}` access token: {error}"
+        ))
     })?;
     let expires_at = row.get::<_, Option<i64>>(3).map_err(|error| {
-        context.store_decode_failed(format!("Could not decode `{source}` expiry: {error}"))
+        openai_oauth_store_decode_failed(format!("Could not decode `{source}` expiry: {error}"))
     })?;
     let Some(account_id) = account_id.filter(|value| !value.trim().is_empty()) else {
         return Ok(None);
@@ -1530,12 +876,20 @@ fn oauth_session_from_row(
     let Some(access_token) = access_token.filter(|value| !value.trim().is_empty()) else {
         return Ok(None);
     };
-    Ok(Some(BenchmarkOpenAiCodexSession {
+    Ok(Some(OpenAiCodexSession {
         account_id,
         session_id,
         access_token,
         expires_at: expires_at.unwrap_or_default(),
     }))
+}
+
+fn openai_oauth_store_read_failed(message: String) -> CliError {
+    CliError::system_fault("xero_cli_openai_oauth_store_read_failed", message)
+}
+
+fn openai_oauth_store_decode_failed(message: String) -> CliError {
+    CliError::system_fault("xero_cli_openai_oauth_store_decode_failed", message)
 }
 
 fn is_missing_table_error(error: &rusqlite::Error) -> bool {
@@ -1558,945 +912,11 @@ fn normalize_openai_codex_model_id(model_id: &str) -> String {
     }
 }
 
-fn default_app_data_root() -> Result<PathBuf, CliError> {
-    if let Some(path) = env::var_os("XERO_APP_DATA_DIR") {
-        if !path.is_empty() {
-            return Ok(PathBuf::from(path));
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        home_dir()
-            .map(|home| {
-                home.join("Library")
-                    .join("Application Support")
-                    .join(APP_DATA_DIRECTORY_NAME)
-            })
-            .ok_or_else(|| {
-                CliError::system_fault(
-                    "xero_cli_home_missing",
-                    "Could not determine the default Xero app-data directory.",
-                )
-            })
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        default_headless_state_dir()
-            .map(|path| path.parent().map(Path::to_path_buf).unwrap_or(path))
-    }
-}
-
 fn current_unix_timestamp() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or(0)
-}
-
-fn resolve_benchmark_provider_execution(
-    globals: &GlobalOptions,
-    config: &BenchmarkRunConfig,
-) -> Result<CliProviderExecution, CliError> {
-    if config.provider_id == FAKE_PROVIDER_ID {
-        return Ok(CliProviderExecution {
-            profile_id: FAKE_PROVIDER_ID.into(),
-            provider_id: FAKE_PROVIDER_ID.into(),
-            model_id: config.model_id.clone(),
-            execution_mode: "fake_provider_harness",
-            execution: HeadlessProviderExecutionConfig::Fake,
-            credential_proof: Some("fixture_only_none_required".into()),
-        });
-    }
-    if config.provider_id == OPENAI_CODEX_PROVIDER_ID {
-        let session = load_benchmark_openai_codex_oauth_session(config)?;
-        let execution =
-            HeadlessProviderExecutionConfig::OpenAiCodexResponses(OpenAiCodexHeadlessConfig {
-                provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
-                model_id: normalize_openai_codex_model_id(&config.model_id),
-                base_url: config
-                    .base_url
-                    .clone()
-                    .unwrap_or_else(|| OPENAI_CODEX_DEFAULT_BASE_URL.into()),
-                access_token: session.access_token,
-                account_id: session.account_id,
-                session_id: Some(session.session_id),
-                timeout_ms: 0,
-                workspace_root: Some(config.workspace_root.clone()),
-                allow_workspace_writes: true,
-            });
-        return Ok(CliProviderExecution {
-            profile_id: config
-                .profile_id
-                .clone()
-                .unwrap_or_else(|| "benchmark-openai-codex-oauth".into()),
-            provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
-            model_id: normalize_openai_codex_model_id(&config.model_id),
-            execution_mode: "real_provider",
-            execution,
-            credential_proof: Some("app_data_openai_codex_session".into()),
-        });
-    }
-
-    ensure_owned_agent_provider(&config.provider_id)?;
-    let entry = provider_catalog_entry(&config.provider_id).ok_or_else(|| {
-        CliError::benchmark(
-            "xero_benchmark_provider_unknown",
-            format!(
-                "Provider `{}` is not in Xero's headless provider catalog.",
-                config.provider_id
-            ),
-            2,
-        )
-    })?;
-    let profile = ProviderProfile {
-        profile_id: config
-            .profile_id
-            .clone()
-            .unwrap_or_else(|| format!("benchmark-{}", config.provider_id)),
-        provider_id: config.provider_id.clone(),
-        api_key_env: config.api_key_env.clone(),
-        base_url: config.base_url.clone(),
-        recorded_at: now_timestamp(),
-    };
-    let mut execution = openai_compatible_execution_config(globals, &profile, &config.model_id)?;
-    if let HeadlessProviderExecutionConfig::OpenAiCompatible(execution_config) = &mut execution {
-        execution_config.workspace_root = Some(config.workspace_root.clone());
-    }
-    Ok(CliProviderExecution {
-        profile_id: profile.profile_id.clone(),
-        provider_id: profile.provider_id.clone(),
-        model_id: config.model_id.clone(),
-        execution_mode: "real_provider",
-        execution,
-        credential_proof: provider_credential_proof_for_entry(entry, Some(&profile)),
-    })
-}
-
-fn ensure_benchmark_project_registered(
-    globals: &GlobalOptions,
-    project_id: &str,
-    repo_root: &Path,
-) -> Result<RegisteredProject, CliError> {
-    validate_required_cli(project_id, "projectId")?;
-    ensure_not_legacy_xero_state(&cli_app_data_root(globals), "trial app-data root")?;
-    let app_data_root = cli_app_data_root(globals);
-    fs::create_dir_all(&app_data_root).map_err(|error| {
-        CliError::benchmark(
-            "xero_benchmark_app_data_prepare_failed",
-            format!(
-                "Could not create benchmark app-data root `{}`: {error}",
-                app_data_root.display()
-            ),
-            1,
-        )
-    })?;
-
-    let global_database = global_database_path(globals);
-    let global = Connection::open(&global_database).map_err(|error| {
-        CliError::benchmark(
-            "xero_benchmark_registry_open_failed",
-            format!(
-                "Could not open benchmark app-data registry `{}`: {error}",
-                global_database.display()
-            ),
-            1,
-        )
-    })?;
-    global
-        .execute_batch(
-            r#"
-            PRAGMA foreign_keys = ON;
-            CREATE TABLE IF NOT EXISTS projects (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS repositories (
-                id TEXT PRIMARY KEY,
-                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                root_path TEXT NOT NULL UNIQUE,
-                display_name TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            "#,
-        )
-        .map_err(|error| {
-            CliError::benchmark(
-                "xero_benchmark_registry_schema_failed",
-                format!("Could not prepare benchmark app-data registry schema: {error}"),
-                1,
-            )
-        })?;
-    let now = now_timestamp();
-    let display_name = repo_root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(project_id);
-    global
-        .execute(
-            "INSERT INTO projects (id, name, updated_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at",
-            params![project_id, display_name, now],
-        )
-        .map_err(|error| {
-            CliError::benchmark(
-                "xero_benchmark_registry_project_write_failed",
-                format!("Could not register benchmark project `{project_id}`: {error}"),
-                1,
-            )
-        })?;
-    global
-        .execute(
-            "INSERT INTO repositories (id, project_id, root_path, display_name, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(root_path) DO UPDATE SET
-                project_id = excluded.project_id,
-                display_name = excluded.display_name,
-                updated_at = excluded.updated_at",
-            params![
-                format!("repo-{project_id}"),
-                project_id,
-                repo_root.display().to_string(),
-                display_name,
-                now_timestamp(),
-            ],
-        )
-        .map_err(|error| {
-            CliError::benchmark(
-                "xero_benchmark_registry_repository_write_failed",
-                format!(
-                    "Could not register benchmark workspace `{}`: {error}",
-                    repo_root.display()
-                ),
-                1,
-            )
-        })?;
-
-    let database_path = workspace_project_database_path(globals, project_id);
-    if let Some(parent) = database_path.parent() {
-        fs::create_dir_all(parent).map_err(|error| {
-            CliError::benchmark(
-                "xero_benchmark_project_state_prepare_failed",
-                format!(
-                    "Could not create project state directory `{}`: {error}",
-                    parent.display()
-                ),
-                1,
-            )
-        })?;
-    }
-    let project = Connection::open(&database_path).map_err(|error| {
-        CliError::benchmark(
-            "xero_benchmark_project_state_open_failed",
-            format!(
-                "Could not open benchmark project database `{}`: {error}",
-                database_path.display()
-            ),
-            1,
-        )
-    })?;
-    project
-        .execute_batch(BENCHMARK_PROJECT_SCHEMA)
-        .map_err(|error| {
-            CliError::benchmark(
-                "xero_benchmark_project_schema_failed",
-                format!("Could not prepare benchmark project schema: {error}"),
-                1,
-            )
-        })?;
-    project
-        .execute(
-            "INSERT INTO projects (id, name, updated_at)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at",
-            params![project_id, display_name, now_timestamp()],
-        )
-        .map_err(|error| {
-            CliError::benchmark(
-                "xero_benchmark_project_write_failed",
-                format!("Could not seed benchmark project `{project_id}`: {error}"),
-                1,
-            )
-        })?;
-    drop(project);
-    let _ = open_workspace_index_database(globals, repo_root, project_id)?;
-
-    Ok(RegisteredProject {
-        project_id: project_id.into(),
-        repo_root: repo_root.to_path_buf(),
-        database_path,
-    })
-}
-
-fn ensure_not_legacy_xero_state(path: &Path, label: &str) -> Result<(), CliError> {
-    if path
-        .components()
-        .any(|component| component.as_os_str().to_string_lossy() == ".xero")
-    {
-        return Err(CliError::benchmark(
-            "xero_benchmark_legacy_state_rejected",
-            format!(
-                "The {label} `{}` is inside legacy repo-local `.xero` state.",
-                path.display()
-            ),
-            2,
-        ));
-    }
-    Ok(())
-}
-
-fn benchmark_runtime_error_to_cli(error: &xero_agent_core::CoreError) -> CliError {
-    let exit_code = if is_provider_or_auth_error(&error.code) {
-        3
-    } else {
-        4
-    };
-    CliError::benchmark(error.code.clone(), error.message.clone(), exit_code)
-}
-
-fn is_provider_or_auth_error(code: &str) -> bool {
-    let lower = code.to_ascii_lowercase();
-    lower.contains("provider") || lower.contains("credential") || lower.contains("api_key")
-}
-
-fn write_benchmark_trial_artifacts(
-    config: &BenchmarkRunConfig,
-    store: &CliAgentStore,
-    snapshot: Option<&RunSnapshot>,
-    run_error: Option<&CliError>,
-    elapsed_ms: u64,
-) -> Result<BenchmarkArtifactSummary, CliError> {
-    fs::create_dir_all(&config.output_dir).map_err(|error| {
-        CliError::benchmark(
-            "xero_benchmark_artifact_dir_failed",
-            format!(
-                "Could not create benchmark artifact directory `{}`: {error}",
-                config.output_dir.display()
-            ),
-            1,
-        )
-    })?;
-    let manifest_path = config.output_dir.join("manifest.json");
-    let trajectory_path = config.output_dir.join("trajectory.json");
-    let trace_path = config.output_dir.join("xero-trace.json");
-    let diff_path = config.output_dir.join("final.diff");
-    let support_bundle_path = config.output_dir.join("support-bundle.zip");
-    let stdout_path = config.output_dir.join("stdout.txt");
-    let stderr_path = config.output_dir.join("stderr.txt");
-
-    let diff = final_workspace_diff(&config.workspace_root).unwrap_or_else(|error| {
-        format!(
-            "Xero could not collect final diff for `{}`: {}\n",
-            config.workspace_root.display(),
-            error.message
-        )
-    });
-    fs::write(&diff_path, &diff).map_err(|error| {
-        CliError::benchmark(
-            "xero_benchmark_diff_write_failed",
-            format!("Could not write `{}`: {error}", diff_path.display()),
-            1,
-        )
-    })?;
-
-    if let Some(snapshot) = snapshot {
-        let trace = store
-            .export_trace(&snapshot.project_id, &snapshot.run_id)
-            .map_err(core_error)?;
-        write_json_file(&trace_path, &trace)?;
-        let trajectory = benchmark_trajectory_json(snapshot, &config.adapter_version);
-        write_json_file(&trajectory_path, &trajectory)?;
-    } else {
-        write_json_file(
-            &trace_path,
-            &json!({
-                "schema": "xero.benchmark.trace.v1",
-                "status": "unavailable",
-                "reason": run_error.map(|error| error.code.as_str()).unwrap_or("run_not_started"),
-            }),
-        )?;
-        write_json_file(
-            &trajectory_path,
-            &json!({
-                "schema_version": "ATIF-v1.4",
-                "session_id": config.run_id,
-                "agent": {
-                    "name": "xero",
-                    "version": env!("CARGO_PKG_VERSION"),
-                    "model_name": config.model_id,
-                },
-                "steps": [],
-                "extra": {
-                    "conversion_status": "unavailable",
-                    "xero_trace_path": "xero-trace.json",
-                },
-            }),
-        )?;
-    }
-
-    let stdout_text = benchmark_stdout_text(config, snapshot, elapsed_ms);
-    let stderr_text = run_error
-        .map(|error| format!("{}: {}\n", error.code, error.message))
-        .unwrap_or_default();
-    fs::write(&stdout_path, stdout_text).map_err(|error| {
-        CliError::benchmark(
-            "xero_benchmark_stdout_write_failed",
-            format!("Could not write `{}`: {error}", stdout_path.display()),
-            1,
-        )
-    })?;
-    fs::write(&stderr_path, stderr_text).map_err(|error| {
-        CliError::benchmark(
-            "xero_benchmark_stderr_write_failed",
-            format!("Could not write `{}`: {error}", stderr_path.display()),
-            1,
-        )
-    })?;
-
-    let manifest = benchmark_manifest_json(
-        config,
-        snapshot,
-        run_error,
-        elapsed_ms,
-        &diff,
-        &BenchmarkArtifactSummary {
-            output_dir: config.output_dir.display().to_string(),
-            manifest: "manifest.json".into(),
-            trajectory: "trajectory.json".into(),
-            xero_trace: "xero-trace.json".into(),
-            final_diff: "final.diff".into(),
-            support_bundle: "support-bundle.zip".into(),
-            stdout: "stdout.txt".into(),
-            stderr: "stderr.txt".into(),
-        },
-    );
-    write_json_file(&manifest_path, &manifest)?;
-    write_support_bundle(
-        &support_bundle_path,
-        &[
-            ("manifest.json", manifest_path.as_path()),
-            ("trajectory.json", trajectory_path.as_path()),
-            ("xero-trace.json", trace_path.as_path()),
-            ("final.diff", diff_path.as_path()),
-            ("stdout.txt", stdout_path.as_path()),
-            ("stderr.txt", stderr_path.as_path()),
-        ],
-    )?;
-
-    Ok(BenchmarkArtifactSummary {
-        output_dir: config.output_dir.display().to_string(),
-        manifest: manifest_path.display().to_string(),
-        trajectory: trajectory_path.display().to_string(),
-        xero_trace: trace_path.display().to_string(),
-        final_diff: diff_path.display().to_string(),
-        support_bundle: support_bundle_path.display().to_string(),
-        stdout: stdout_path.display().to_string(),
-        stderr: stderr_path.display().to_string(),
-    })
-}
-
-fn benchmark_manifest_json(
-    config: &BenchmarkRunConfig,
-    snapshot: Option<&RunSnapshot>,
-    run_error: Option<&CliError>,
-    elapsed_ms: u64,
-    diff: &str,
-    artifacts: &BenchmarkArtifactSummary,
-) -> JsonValue {
-    let status = if let Some(error) = run_error {
-        if is_provider_or_auth_error(&error.code) {
-            "provider_failure"
-        } else {
-            "agent_failure"
-        }
-    } else if snapshot
-        .map(|snapshot| snapshot.status == RunStatus::Completed)
-        .unwrap_or(false)
-    {
-        "completed"
-    } else {
-        "incomplete"
-    };
-    let metrics = snapshot
-        .map(|snapshot| benchmark_metrics_json(snapshot, diff, elapsed_ms, &config.workspace_root))
-        .unwrap_or_else(|| {
-            json!({
-                "wallTimeMs": elapsed_ms,
-                "costUsd": null,
-                "inputTokens": null,
-                "outputTokens": null,
-                "toolCalls": 0,
-                "commandCalls": 0,
-                "editedFiles": 0,
-                "diffBytes": diff.len(),
-                "diffLines": diff.lines().count(),
-            })
-        });
-    json!({
-        "schema": "xero.benchmark.terminal_bench_manifest.v1",
-        "benchmark": {
-            "name": config.benchmark_name,
-            "datasetId": config.dataset_id,
-            "datasetDigest": config.dataset_digest,
-            "taskId": config.task_id,
-            "attemptIndex": config.attempt_index,
-            "runDate": now_timestamp(),
-        },
-        "harness": {
-            "name": "xero",
-            "harnessVersion": config.harness_version,
-            "adapterVersion": config.adapter_version,
-            "xeroCliVersion": env!("CARGO_PKG_VERSION"),
-            "xeroSourceRevision": config.xero_source_revision.clone(),
-            "promptVersion": config.prompt_version,
-            "toolPolicyVersion": config.tool_policy_version,
-            "comparisonMode": config.comparison_mode,
-            "fakeProviderFixture": config.allow_fake_provider_fixture,
-        },
-        "runtime": {
-            "scoringPath": if config.allow_fake_provider_fixture {
-                "fixture_fake_provider_harness"
-            } else {
-                "owned_agent_core_tool_registry_v2"
-            },
-            "productionRuntimeRequired": !config.allow_fake_provider_fixture,
-            "legacyMiniHeadlessToolsAvailable": false,
-            "requiredCoreCapabilities": [
-                "provider_profile_model_resolution",
-                "app_data_project_store_access",
-                "context_package_assembly",
-                "preflight_admission",
-                "provider_loop_execution",
-                "tool_registry_v2_dispatch",
-                "command_execution",
-                "patch_editing",
-                "trace_support_bundle_export"
-            ],
-            "uiBoundDisabledCapabilities": [
-                "desktop_window_events",
-                "browser_control_requiring_ui_process",
-                "emulator_control_requiring_ui_process"
-            ],
-        },
-        "run": {
-            "projectId": config.project_id,
-            "sessionId": config.agent_session_id,
-            "runId": config.run_id,
-            "traceId": snapshot.map(|snapshot| snapshot.trace_id.as_str()),
-            "status": status,
-            "xeroRunStatus": snapshot.map(|snapshot| format!("{:?}", snapshot.status)),
-            "failureCategory": run_error.map(|error| benchmark_failure_category(&error.code)),
-            "failureCode": run_error.map(|error| error.code.as_str()),
-            "failureMessage": run_error.map(|error| error.message.as_str()),
-        },
-        "model": {
-            "provider": config.provider_id,
-            "modelId": config.model_id,
-            "endpointClass": config.endpoint_class,
-            "temperature": config.temperature,
-            "reasoningEffort": config.reasoning_effort,
-            "maxOutputTokens": config.max_output_tokens,
-            "contextBudget": config.context_budget,
-            "providerAccountClass": config.provider_account_class,
-            "credentialMode": config.credential_mode.clone().unwrap_or_else(|| {
-                if config.provider_id == OPENAI_CODEX_PROVIDER_ID {
-                    "app_openai_oauth".into()
-                } else if config.api_key_env.is_some() {
-                    "api_key_env".into()
-                } else {
-                    "none_or_local".into()
-                }
-            }),
-            "credentialEnv": config.api_key_env,
-            "oauthAppDataRootConfigured": config.oauth_app_data_root.is_some(),
-            "oauthAccountSelected": config.oauth_account_id.is_some(),
-            "baseUrlConfigured": config.base_url.is_some(),
-        },
-        "limits": {
-            "wallTimeSeconds": config.wall_time_seconds,
-            "maxTurns": config.max_turns,
-            "maxToolCalls": config.max_tool_calls,
-            "maxCommandCalls": config.max_command_calls,
-            "maxCostUsd": config.max_cost_usd,
-            "approvalMode": config.approval_mode,
-            "sandboxPolicy": config.sandbox_policy,
-            "networkPolicy": config.network_policy,
-            "enforcement": {
-                "maxTurns": "xero_runtime",
-                "wallTime": "xero_runtime_and_harbor_timeout",
-                "maxToolCalls": "xero_runtime",
-                "maxCommandCalls": "xero_runtime",
-                "maxCostUsd": "recorded_not_enforced_in_this_adapter",
-            },
-        },
-        "environment": {
-            "sandboxProvider": config.sandbox_provider,
-            "environmentId": config.environment_id,
-            "imageDigest": config.image_digest,
-            "os": std::env::consts::OS,
-            "architecture": std::env::consts::ARCH,
-            "workspaceRoot": config.workspace_root,
-            "trialAppDataRoot": config.trial_app_data_root,
-            "installedCliVersions": installed_cli_versions_json(),
-            "secretValuesRedacted": true,
-        },
-        "metrics": metrics,
-        "artifacts": artifacts,
-    })
-}
-
-fn benchmark_failure_category(code: &str) -> &'static str {
-    let lower = code.to_ascii_lowercase();
-    if lower.contains("provider") || lower.contains("credential") || lower.contains("api_key") {
-        "provider_auth_failure"
-    } else if lower.contains("timeout") || lower.contains("limit") {
-        "timeout_or_limit"
-    } else if lower.contains("sandbox") || lower.contains("policy") {
-        "policy_blocked"
-    } else {
-        "agent_or_infrastructure_failure"
-    }
-}
-
-fn benchmark_metrics_json(
-    snapshot: &RunSnapshot,
-    diff: &str,
-    elapsed_ms: u64,
-    repo_root: &Path,
-) -> JsonValue {
-    let tool_calls = snapshot
-        .messages
-        .iter()
-        .filter_map(|message| message.provider_metadata.as_ref())
-        .map(|metadata| metadata.assistant_tool_calls.len())
-        .sum::<usize>();
-    let command_calls = snapshot
-        .events
-        .iter()
-        .filter(|event| {
-            event.event_kind == RuntimeEventKind::ToolStarted
-                && event
-                    .payload
-                    .get("toolName")
-                    .and_then(JsonValue::as_str)
-                    .is_some_and(|tool| tool.contains("command"))
-        })
-        .count();
-    let mut edited_files = BTreeSet::<String>::new();
-    for event in &snapshot.events {
-        if event.event_kind == RuntimeEventKind::FileChanged {
-            if let Some(path) = event.payload.get("path").and_then(JsonValue::as_str) {
-                edited_files.insert(path.into());
-            }
-        }
-    }
-    for change in git_name_status(repo_root, false).unwrap_or_default() {
-        edited_files.insert(change.path);
-    }
-    json!({
-        "wallTimeMs": elapsed_ms,
-        "costUsd": null,
-        "inputTokens": null,
-        "outputTokens": null,
-        "toolCalls": tool_calls,
-        "commandCalls": command_calls,
-        "editedFiles": edited_files.len(),
-        "editedFilePaths": edited_files,
-        "diffBytes": diff.len(),
-        "diffLines": diff.lines().count(),
-    })
-}
-
-fn benchmark_trajectory_json(snapshot: &RunSnapshot, adapter_version: &str) -> JsonValue {
-    let mut steps = Vec::new();
-    for (index, message) in snapshot.messages.iter().enumerate() {
-        let source = match message.role {
-            MessageRole::Assistant => "agent",
-            MessageRole::User => "user",
-            MessageRole::System => "system",
-            MessageRole::Tool => "environment",
-            MessageRole::Developer => "system",
-        };
-        let mut step = json!({
-            "step_id": index + 1,
-            "timestamp": message.created_at,
-            "source": source,
-            "message": message.content,
-        });
-        if message.role == MessageRole::Assistant {
-            step["model_name"] = json!(snapshot.model_id);
-        }
-        if let Some(metadata) = &message.provider_metadata {
-            if !metadata.assistant_tool_calls.is_empty() {
-                step["tool_calls"] = json!(metadata
-                    .assistant_tool_calls
-                    .iter()
-                    .map(|call| {
-                        json!({
-                            "tool_call_id": call.tool_call_id,
-                            "function_name": call.provider_tool_name,
-                            "arguments": call.arguments,
-                        })
-                    })
-                    .collect::<Vec<_>>());
-            }
-        }
-        steps.push(step);
-    }
-    let step_count = steps.len();
-    json!({
-        "schema_version": "ATIF-v1.4",
-        "session_id": snapshot.run_id,
-        "agent": {
-            "name": "xero",
-            "version": env!("CARGO_PKG_VERSION"),
-            "model_name": snapshot.model_id,
-            "extra": {
-                "adapter_version": adapter_version,
-            },
-        },
-        "steps": steps,
-        "final_metrics": {
-            "total_steps": step_count,
-        },
-        "extra": {
-            "conversion_status": "partial_xero_trace_is_lossless",
-            "xero_trace_path": "xero-trace.json",
-            "trace_id": snapshot.trace_id,
-        },
-    })
-}
-
-fn benchmark_stdout_text(
-    config: &BenchmarkRunConfig,
-    snapshot: Option<&RunSnapshot>,
-    elapsed_ms: u64,
-) -> String {
-    match snapshot {
-        Some(snapshot) => format!(
-            "Xero benchmark run {} finished with status {:?} for task {} in {} ms.\n",
-            snapshot.run_id, snapshot.status, config.task_id, elapsed_ms
-        ),
-        None => format!(
-            "Xero benchmark run {} did not start for task {}.\n",
-            config.run_id, config.task_id
-        ),
-    }
-}
-
-fn final_workspace_diff(repo_root: &Path) -> Result<String, CliError> {
-    let probe = Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .arg("rev-parse")
-        .arg("--is-inside-work-tree")
-        .output();
-    match probe {
-        Ok(output)
-            if output.status.success()
-                && String::from_utf8_lossy(&output.stdout).trim() == "true" =>
-        {
-            final_workspace_git_diff(repo_root)
-        }
-        Ok(output) => {
-            final_workspace_file_listing(repo_root, String::from_utf8_lossy(&output.stderr).trim())
-        }
-        Err(error) => final_workspace_file_listing(repo_root, &format!("git unavailable: {error}")),
-    }
-}
-
-fn final_workspace_git_diff(repo_root: &Path) -> Result<String, CliError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .arg("diff")
-        .arg("--binary")
-        .arg("--no-ext-diff")
-        .output()
-        .map_err(|error| {
-            CliError::benchmark(
-                "xero_benchmark_git_diff_failed",
-                format!(
-                    "Could not run git diff in `{}`: {error}",
-                    repo_root.display()
-                ),
-                1,
-            )
-        })?;
-    if !output.status.success() {
-        return Err(CliError::benchmark(
-            "xero_benchmark_git_diff_failed",
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            1,
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-fn final_workspace_file_listing(repo_root: &Path, reason: &str) -> Result<String, CliError> {
-    let mut entries = Vec::new();
-    collect_workspace_file_listing(repo_root, repo_root, &mut entries, 5_000)?;
-    entries.sort();
-    let reason = if reason.is_empty() {
-        "git diff is unavailable for this workspace"
-    } else {
-        reason
-    };
-    let mut output = format!("# Non-git workspace final file listing\n# Reason: {reason}\n");
-    for entry in entries {
-        output.push_str(&entry);
-        output.push('\n');
-    }
-    Ok(output)
-}
-
-fn collect_workspace_file_listing(
-    root: &Path,
-    dir: &Path,
-    entries: &mut Vec<String>,
-    limit: usize,
-) -> Result<(), CliError> {
-    if entries.len() >= limit {
-        return Ok(());
-    }
-    let read_dir = fs::read_dir(dir).map_err(|error| {
-        CliError::benchmark(
-            "xero_benchmark_workspace_listing_failed",
-            format!(
-                "Could not list workspace directory `{}`: {error}",
-                dir.display()
-            ),
-            1,
-        )
-    })?;
-    for entry in read_dir {
-        if entries.len() >= limit {
-            entries.push(format!("... listing truncated at {limit} entries"));
-            break;
-        }
-        let entry = entry.map_err(|error| {
-            CliError::benchmark(
-                "xero_benchmark_workspace_listing_failed",
-                format!("Could not read a workspace directory entry: {error}"),
-                1,
-            )
-        })?;
-        let path = entry.path();
-        let name = entry.file_name();
-        if name
-            .to_str()
-            .is_some_and(|value| matches!(value, ".git" | ".xero"))
-        {
-            continue;
-        }
-        let metadata = entry.metadata().map_err(|error| {
-            CliError::benchmark(
-                "xero_benchmark_workspace_listing_failed",
-                format!(
-                    "Could not stat workspace path `{}`: {error}",
-                    path.display()
-                ),
-                1,
-            )
-        })?;
-        let relative = path
-            .strip_prefix(root)
-            .unwrap_or(path.as_path())
-            .display()
-            .to_string();
-        if metadata.is_dir() {
-            entries.push(format!("dir  - {relative}/"));
-            collect_workspace_file_listing(root, &path, entries, limit)?;
-        } else if metadata.is_file() {
-            entries.push(format!("file {:>10} {relative}", metadata.len()));
-        } else {
-            entries.push(format!("other - {relative}"));
-        }
-    }
-    Ok(())
-}
-
-fn write_support_bundle(path: &Path, files: &[(&str, &Path)]) -> Result<(), CliError> {
-    let file = fs::File::create(path).map_err(|error| {
-        CliError::benchmark(
-            "xero_benchmark_support_bundle_write_failed",
-            format!(
-                "Could not create support bundle `{}`: {error}",
-                path.display()
-            ),
-            1,
-        )
-    })?;
-    let mut zip = zip::ZipWriter::new(file);
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-    for (name, file_path) in files {
-        let bytes = fs::read(file_path).map_err(|error| {
-            CliError::benchmark(
-                "xero_benchmark_support_bundle_read_failed",
-                format!(
-                    "Could not read support bundle source `{}`: {error}",
-                    file_path.display()
-                ),
-                1,
-            )
-        })?;
-        zip.start_file(*name, options).map_err(|error| {
-            CliError::benchmark(
-                "xero_benchmark_support_bundle_write_failed",
-                format!("Could not add `{name}` to support bundle: {error}"),
-                1,
-            )
-        })?;
-        zip.write_all(&bytes).map_err(|error| {
-            CliError::benchmark(
-                "xero_benchmark_support_bundle_write_failed",
-                format!("Could not write `{name}` to support bundle: {error}"),
-                1,
-            )
-        })?;
-    }
-    zip.finish().map_err(|error| {
-        CliError::benchmark(
-            "xero_benchmark_support_bundle_write_failed",
-            format!(
-                "Could not finish support bundle `{}`: {error}",
-                path.display()
-            ),
-            1,
-        )
-    })?;
-    Ok(())
-}
-
-fn installed_cli_versions_json() -> JsonValue {
-    json!({
-        "xero": env!("CARGO_PKG_VERSION"),
-        "git": command_version("git", &["--version"]),
-        "python3": command_version("python3", &["--version"]),
-        "docker": command_version("docker", &["--version"]),
-        "uvx": command_version("uvx", &["--version"]),
-    })
-}
-
-fn command_version(program: &str, args: &[&str]) -> Option<String> {
-    Command::new(program)
-        .args(args)
-        .output()
-        .ok()
-        .and_then(|output| {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                (!stdout.is_empty())
-                    .then_some(stdout)
-                    .or_else(|| (!stderr.is_empty()).then_some(stderr))
-            } else {
-                None
-            }
-        })
 }
 
 fn command_agent_host(
@@ -6344,7 +4764,6 @@ fn root_help() -> String {
         "  agent exec",
         "  agent host",
         "  agent cursor",
-        "  benchmark terminal-bench",
         "  conversation list|show|dump|support-bundle|compact|continue|answer|approve|deny|cancel|resume|search|export|retry|clone|branch|stats",
         "  project list|import|create|remove|snapshot|select",
         "  project-state list|backup|restore|repair",
@@ -6379,7 +4798,6 @@ fn root_help_json() -> JsonValue {
             "agent exec",
             "agent host",
             "agent cursor",
-            "benchmark terminal-bench",
             "conversation list",
             "conversation show",
             "conversation dump",
@@ -6760,7 +5178,7 @@ fn provider_catalog() -> Vec<ProviderCatalogEntry> {
             label: "OpenAI Codex",
             default_model: "gpt-5.5",
             credential_kind: "app_session",
-            headless_status: "benchmark_app_oauth_supported",
+            headless_status: "app_oauth_supported",
             catalog_kind: "model_provider",
             adapter_kind: None,
         },
@@ -14553,7 +12971,7 @@ mod tests {
     }
 
     #[test]
-    fn real_provider_exposes_command_and_patch_tools_for_benchmark_workloads() {
+    fn real_provider_exposes_command_and_patch_tools_for_agent_workloads() {
         let state_dir = unique_temp_dir("agent-exec-real-provider-v2-command-patch");
         let workspace = unique_temp_dir("agent-exec-real-provider-v2-command-patch-workspace");
         seed_registered_project(&state_dir, "project-real", &workspace);
@@ -16986,595 +15404,6 @@ mod tests {
                 break;
             }
         }
-    }
-
-    #[test]
-    fn final_workspace_diff_lists_non_git_workspace_outputs() {
-        let workspace = unique_temp_dir("benchmark-non-git-final-diff");
-        fs::create_dir_all(workspace.join("polyglot")).expect("create workspace dir");
-        fs::write(workspace.join("polyglot/main.py.c"), "print(55)\n").expect("write deliverable");
-        fs::write(workspace.join("polyglot/cmain"), "compiled debris\n")
-            .expect("write build output");
-
-        let diff = final_workspace_diff(&workspace).expect("non-git fallback diff");
-
-        assert!(diff.contains("Non-git workspace final file listing"));
-        assert!(diff.contains("polyglot/main.py.c"));
-        assert!(
-            diff.contains("polyglot/cmain"),
-            "fallback listing should expose verification debris"
-        );
-    }
-
-    #[test]
-    fn benchmark_real_provider_runtime_uses_explicit_workspace_root() {
-        let workspace = unique_temp_dir("benchmark-explicit-workspace");
-        let state_dir = unique_temp_dir("benchmark-explicit-workspace-state");
-        let globals = GlobalOptions {
-            output_mode: OutputMode::Text,
-            ci: false,
-            state_dir,
-            tui_adapter: None,
-        };
-        let config = BenchmarkRunConfig {
-            instruction: "Use the benchmark workspace.".into(),
-            workspace_root: workspace.clone(),
-            trial_app_data_root: unique_temp_dir("benchmark-explicit-workspace-app-data"),
-            output_dir: unique_temp_dir("benchmark-explicit-workspace-output"),
-            project_id: "benchmark-project".into(),
-            agent_session_id: "benchmark-session".into(),
-            run_id: "benchmark-run".into(),
-            benchmark_name: "terminal-bench".into(),
-            dataset_id: "terminal-bench@2.0".into(),
-            dataset_digest: None,
-            task_id: "workspace-root-task".into(),
-            attempt_index: 0,
-            provider_id: "openai_api".into(),
-            model_id: "test-model".into(),
-            profile_id: None,
-            credential_mode: None,
-            oauth_app_data_root: None,
-            oauth_account_id: None,
-            api_key_env: None,
-            base_url: Some("http://127.0.0.1:9/v1".into()),
-            temperature: None,
-            reasoning_effort: None,
-            max_output_tokens: None,
-            context_budget: None,
-            wall_time_seconds: None,
-            max_turns: None,
-            max_tool_calls: None,
-            max_command_calls: None,
-            max_cost_usd: None,
-            approval_mode: "strict".into(),
-            sandbox_policy: "harbor_task_sandbox".into(),
-            network_policy: "harbor_controlled".into(),
-            sandbox_provider: "harbor".into(),
-            environment_id: None,
-            image_digest: None,
-            prompt_version: XERO_BENCHMARK_PROMPT_VERSION.into(),
-            tool_policy_version: XERO_BENCHMARK_TOOL_POLICY_VERSION.into(),
-            adapter_version: XERO_BENCHMARK_ADAPTER_VERSION.into(),
-            harness_version: "harbor".into(),
-            xero_source_revision: None,
-            comparison_mode: "fixed-model".into(),
-            provider_account_class: "standard".into(),
-            endpoint_class: "openai-compatible".into(),
-            allow_fake_provider_fixture: false,
-        };
-
-        let provider = resolve_benchmark_provider_execution(&globals, &config)
-            .expect("benchmark real provider should resolve");
-        match provider.execution {
-            HeadlessProviderExecutionConfig::OpenAiCompatible(execution_config) => {
-                assert_eq!(
-                    execution_config.workspace_root.as_deref(),
-                    Some(workspace.as_path())
-                );
-            }
-            HeadlessProviderExecutionConfig::OpenAiCodexResponses(_) => {
-                panic!("expected OpenAI-compatible provider execution")
-            }
-            HeadlessProviderExecutionConfig::Fake => panic!("expected real provider execution"),
-        }
-    }
-
-    #[test]
-    fn benchmark_openai_codex_parse_defaults_to_oauth_mode() {
-        let workspace = unique_temp_dir("benchmark-openai-codex-parse-workspace");
-        let output_dir = unique_temp_dir("benchmark-openai-codex-parse-output");
-        let state_dir = unique_temp_dir("benchmark-openai-codex-parse-state");
-        let globals = GlobalOptions {
-            output_mode: OutputMode::Text,
-            ci: false,
-            state_dir,
-            tui_adapter: None,
-        };
-        let mut args: Vec<String> = vec![
-            "--instruction".into(),
-            "Use OAuth.".into(),
-            "--workspace-root".into(),
-            workspace.to_string_lossy().to_string(),
-            "--output-dir".into(),
-            output_dir.to_string_lossy().to_string(),
-            "--task-id".into(),
-            "openai-oauth-task".into(),
-            "--dataset-id".into(),
-            "terminal-bench@2.0".into(),
-            "--provider".into(),
-            "openai_codex".into(),
-            "--model".into(),
-            "openai/gpt-5.5".into(),
-        ];
-
-        let config = parse_benchmark_terminal_bench_config(&globals, &mut args)
-            .expect("parse OpenAI OAuth benchmark config");
-
-        assert_eq!(config.provider_id, OPENAI_CODEX_PROVIDER_ID);
-        assert_eq!(config.model_id, "gpt-5.5");
-        assert_eq!(config.credential_mode.as_deref(), Some("app_openai_oauth"));
-        assert_eq!(config.endpoint_class, "chatgpt-codex-oauth");
-        assert_eq!(config.api_key_env, None);
-    }
-
-    #[test]
-    fn benchmark_openai_codex_oauth_uri_uses_immutable_read_only_mode() {
-        let uri = sqlite_immutable_read_only_uri(Path::new("/tmp/xero oauth?/xero.db"));
-
-        assert_eq!(uri, "file:/tmp/xero%20oauth%3F/xero.db?mode=ro&immutable=1");
-    }
-
-    #[test]
-    fn benchmark_openai_codex_oauth_uses_app_data_session() {
-        let workspace = unique_temp_dir("benchmark-openai-codex-workspace");
-        let app_data_root = unique_temp_dir("benchmark-openai-codex-app-data");
-        let database_path = app_data_root.join(GLOBAL_DATABASE_FILE);
-        let connection = Connection::open(&database_path).expect("open OAuth store");
-        connection
-            .execute_batch(
-                r#"
-                CREATE TABLE provider_credentials (
-                    provider_id              TEXT    PRIMARY KEY,
-                    kind                     TEXT    NOT NULL,
-                    api_key                  TEXT,
-                    oauth_account_id         TEXT,
-                    oauth_session_id         TEXT,
-                    oauth_access_token       TEXT,
-                    oauth_refresh_token      TEXT,
-                    oauth_expires_at         INTEGER,
-                    base_url                 TEXT,
-                    api_version              TEXT,
-                    region                   TEXT,
-                    scope_project_id         TEXT,
-                    default_model_id         TEXT,
-                    updated_at               TEXT    NOT NULL
-                );
-                "#,
-            )
-            .expect("create provider_credentials");
-        connection
-            .execute(
-                "INSERT INTO provider_credentials (
-                    provider_id,
-                    kind,
-                    oauth_account_id,
-                    oauth_session_id,
-                    oauth_access_token,
-                    oauth_expires_at,
-                    updated_at
-                ) VALUES (?1, 'oauth_session', ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    OPENAI_CODEX_PROVIDER_ID,
-                    "acct_123",
-                    "sess_123",
-                    "oauth-access-token",
-                    current_unix_timestamp() + 3600,
-                    now_timestamp(),
-                ],
-            )
-            .expect("insert OAuth session");
-        let globals = GlobalOptions {
-            output_mode: OutputMode::Text,
-            ci: false,
-            state_dir: unique_temp_dir("benchmark-openai-codex-state"),
-            tui_adapter: None,
-        };
-        let config = BenchmarkRunConfig {
-            instruction: "Use the OpenAI OAuth session.".into(),
-            workspace_root: workspace.clone(),
-            trial_app_data_root: unique_temp_dir("benchmark-openai-codex-trial-app-data"),
-            output_dir: unique_temp_dir("benchmark-openai-codex-output"),
-            project_id: "benchmark-project".into(),
-            agent_session_id: "benchmark-session".into(),
-            run_id: "benchmark-run".into(),
-            benchmark_name: "terminal-bench".into(),
-            dataset_id: "terminal-bench@2.0".into(),
-            dataset_digest: None,
-            task_id: "openai-oauth-task".into(),
-            attempt_index: 0,
-            provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
-            model_id: "openai/gpt-5.5".into(),
-            profile_id: None,
-            credential_mode: Some("app_openai_oauth".into()),
-            oauth_app_data_root: Some(app_data_root),
-            oauth_account_id: Some("acct_123".into()),
-            api_key_env: None,
-            base_url: Some("http://127.0.0.1:9/backend-api".into()),
-            temperature: None,
-            reasoning_effort: Some("medium".into()),
-            max_output_tokens: None,
-            context_budget: None,
-            wall_time_seconds: None,
-            max_turns: None,
-            max_tool_calls: None,
-            max_command_calls: None,
-            max_cost_usd: None,
-            approval_mode: "strict".into(),
-            sandbox_policy: "harbor_task_sandbox".into(),
-            network_policy: "harbor_controlled".into(),
-            sandbox_provider: "harbor".into(),
-            environment_id: None,
-            image_digest: None,
-            prompt_version: XERO_BENCHMARK_PROMPT_VERSION.into(),
-            tool_policy_version: XERO_BENCHMARK_TOOL_POLICY_VERSION.into(),
-            adapter_version: XERO_BENCHMARK_ADAPTER_VERSION.into(),
-            harness_version: "harbor".into(),
-            xero_source_revision: None,
-            comparison_mode: "fixed-model".into(),
-            provider_account_class: "standard".into(),
-            endpoint_class: "chatgpt-codex-oauth".into(),
-            allow_fake_provider_fixture: false,
-        };
-
-        let provider = resolve_benchmark_provider_execution(&globals, &config)
-            .expect("benchmark OpenAI OAuth provider should resolve");
-
-        assert_eq!(provider.provider_id, OPENAI_CODEX_PROVIDER_ID);
-        assert_eq!(provider.model_id, "gpt-5.5");
-        assert_eq!(
-            provider.credential_proof.as_deref(),
-            Some("app_data_openai_codex_session")
-        );
-        match provider.execution {
-            HeadlessProviderExecutionConfig::OpenAiCodexResponses(execution_config) => {
-                assert_eq!(execution_config.provider_id, OPENAI_CODEX_PROVIDER_ID);
-                assert_eq!(execution_config.model_id, "gpt-5.5");
-                assert_eq!(execution_config.access_token, "oauth-access-token");
-                assert_eq!(execution_config.account_id, "acct_123");
-                assert_eq!(execution_config.session_id.as_deref(), Some("sess_123"));
-                assert_eq!(
-                    execution_config.workspace_root.as_deref(),
-                    Some(workspace.as_path())
-                );
-                assert!(execution_config.allow_workspace_writes);
-            }
-            other => panic!("expected OpenAI Codex OAuth execution, got {other:?}"),
-        }
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn benchmark_openai_codex_oauth_reads_read_only_store() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let app_data_root = unique_temp_dir("benchmark-openai-codex-read-only-app-data");
-        let database_path = app_data_root.join(GLOBAL_DATABASE_FILE);
-        let connection = Connection::open(&database_path).expect("open OAuth store");
-        connection
-            .execute_batch(
-                r#"
-                CREATE TABLE provider_credentials (
-                    provider_id              TEXT    PRIMARY KEY,
-                    kind                     TEXT    NOT NULL,
-                    api_key                  TEXT,
-                    oauth_account_id         TEXT,
-                    oauth_session_id         TEXT,
-                    oauth_access_token       TEXT,
-                    oauth_refresh_token      TEXT,
-                    oauth_expires_at         INTEGER,
-                    base_url                 TEXT,
-                    api_version              TEXT,
-                    region                   TEXT,
-                    scope_project_id         TEXT,
-                    default_model_id         TEXT,
-                    updated_at               TEXT    NOT NULL
-                );
-                "#,
-            )
-            .expect("create provider_credentials");
-        connection
-            .execute(
-                "INSERT INTO provider_credentials (
-                    provider_id,
-                    kind,
-                    oauth_account_id,
-                    oauth_session_id,
-                    oauth_access_token,
-                    oauth_expires_at,
-                    updated_at
-                ) VALUES (?1, 'oauth_session', ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    OPENAI_CODEX_PROVIDER_ID,
-                    "acct_read_only",
-                    "sess_read_only",
-                    "oauth-read-only-token",
-                    current_unix_timestamp() + 3600,
-                    now_timestamp(),
-                ],
-            )
-            .expect("insert OAuth session");
-        drop(connection);
-        fs::set_permissions(&database_path, fs::Permissions::from_mode(0o444))
-            .expect("make OAuth database read-only");
-        fs::set_permissions(&app_data_root, fs::Permissions::from_mode(0o555))
-            .expect("make OAuth directory read-only");
-
-        let config = BenchmarkRunConfig {
-            instruction: "Use the OpenAI OAuth session.".into(),
-            workspace_root: unique_temp_dir("benchmark-openai-codex-read-only-workspace"),
-            trial_app_data_root: unique_temp_dir("benchmark-openai-codex-read-only-trial-app-data"),
-            output_dir: unique_temp_dir("benchmark-openai-codex-read-only-output"),
-            project_id: "benchmark-project".into(),
-            agent_session_id: "benchmark-session".into(),
-            run_id: "benchmark-run".into(),
-            benchmark_name: "terminal-bench".into(),
-            dataset_id: "terminal-bench@2.0".into(),
-            dataset_digest: None,
-            task_id: "openai-oauth-read-only-task".into(),
-            attempt_index: 0,
-            provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
-            model_id: "gpt-5.5".into(),
-            profile_id: None,
-            credential_mode: Some("app_openai_oauth".into()),
-            oauth_app_data_root: Some(app_data_root.clone()),
-            oauth_account_id: Some("acct_read_only".into()),
-            api_key_env: None,
-            base_url: None,
-            temperature: None,
-            reasoning_effort: None,
-            max_output_tokens: None,
-            context_budget: None,
-            wall_time_seconds: None,
-            max_turns: None,
-            max_tool_calls: None,
-            max_command_calls: None,
-            max_cost_usd: None,
-            approval_mode: "strict".into(),
-            sandbox_policy: "harbor_task_sandbox".into(),
-            network_policy: "harbor_controlled".into(),
-            sandbox_provider: "harbor".into(),
-            environment_id: None,
-            image_digest: None,
-            prompt_version: XERO_BENCHMARK_PROMPT_VERSION.into(),
-            tool_policy_version: XERO_BENCHMARK_TOOL_POLICY_VERSION.into(),
-            adapter_version: XERO_BENCHMARK_ADAPTER_VERSION.into(),
-            harness_version: "harbor".into(),
-            xero_source_revision: None,
-            comparison_mode: "fixed-model".into(),
-            provider_account_class: "standard".into(),
-            endpoint_class: "chatgpt-codex-oauth".into(),
-            allow_fake_provider_fixture: false,
-        };
-
-        let session =
-            load_benchmark_openai_codex_oauth_session(&config).expect("read read-only OAuth store");
-
-        assert_eq!(session.account_id, "acct_read_only");
-        assert_eq!(session.session_id, "sess_read_only");
-        assert_eq!(session.access_token, "oauth-read-only-token");
-
-        let _ = fs::set_permissions(&app_data_root, fs::Permissions::from_mode(0o755));
-        let _ = fs::set_permissions(&database_path, fs::Permissions::from_mode(0o644));
-    }
-
-    #[test]
-    fn benchmark_terminal_bench_fake_fixture_writes_trial_artifacts_in_app_data() {
-        let workspace = unique_temp_dir("benchmark-workspace");
-        fs::write(workspace.join("README.md"), "benchmark workspace\n").expect("write workspace");
-        let state_dir = unique_temp_dir("benchmark-app-data");
-        let output_dir = unique_temp_dir("benchmark-output").join("trial-1");
-
-        let response = run_with_args([
-            "xero",
-            "--json",
-            "benchmark",
-            "terminal-bench",
-            "--instruction",
-            "Summarize the benchmark workspace.",
-            "--workspace-root",
-            workspace.to_str().expect("workspace"),
-            "--trial-app-data-root",
-            state_dir.to_str().expect("state dir"),
-            "--output-dir",
-            output_dir.to_str().expect("output dir"),
-            "--project-id",
-            "benchmark-project",
-            "--session-id",
-            "benchmark-session",
-            "--run-id",
-            "benchmark-run",
-            "--task-id",
-            "adapter-smoke-task",
-            "--dataset-id",
-            "terminal-bench@2.0",
-            "--provider",
-            "fake_provider",
-            "--model",
-            "fake-model",
-            "--allow-fake-provider-fixture",
-        ])
-        .expect("benchmark fake fixture should complete");
-
-        assert_eq!(response.json["kind"], json!("benchmarkTerminalBench"));
-        assert_eq!(response.json["status"], json!("completed"));
-        assert!(output_dir.join("manifest.json").is_file());
-        assert!(output_dir.join("trajectory.json").is_file());
-        assert!(output_dir.join("xero-trace.json").is_file());
-        assert!(output_dir.join("final.diff").is_file());
-        assert!(output_dir.join("support-bundle.zip").is_file());
-        assert!(state_dir.join(GLOBAL_DATABASE_FILE).is_file());
-        assert!(
-            workspace_project_database_path_for_app_root(&state_dir, "benchmark-project").is_file()
-        );
-
-        let manifest: JsonValue =
-            read_json_file(&output_dir.join("manifest.json")).expect("read manifest");
-        assert_eq!(manifest["run"]["status"], json!("completed"));
-        assert_eq!(manifest["harness"]["fakeProviderFixture"], json!(true));
-        assert_eq!(manifest["harness"]["xeroSourceRevision"], JsonValue::Null);
-        assert_eq!(manifest["benchmark"]["taskId"], json!("adapter-smoke-task"));
-        assert!(!manifest.to_string().contains(".xero"));
-    }
-
-    #[test]
-    fn benchmark_terminal_bench_rejects_unlabeled_fake_provider() {
-        let workspace = unique_temp_dir("benchmark-workspace-unlabeled");
-        let state_dir = unique_temp_dir("benchmark-app-data-unlabeled");
-        let output_dir = unique_temp_dir("benchmark-output-unlabeled");
-        let error = run_with_args([
-            "xero",
-            "benchmark",
-            "terminal-bench",
-            "--instruction",
-            "Fixture run.",
-            "--workspace-root",
-            workspace.to_str().expect("workspace"),
-            "--trial-app-data-root",
-            state_dir.to_str().expect("state dir"),
-            "--output-dir",
-            output_dir.to_str().expect("output dir"),
-            "--task-id",
-            "adapter-smoke-task",
-            "--dataset-id",
-            "terminal-bench@2.0",
-            "--provider",
-            "fake_provider",
-        ])
-        .expect_err("fake provider must be explicitly labeled");
-
-        assert_eq!(error.code, "xero_cli_usage");
-        assert!(error.message.contains("fixture-only"));
-    }
-
-    #[test]
-    fn benchmark_terminal_bench_rejects_legacy_xero_state() {
-        let workspace = unique_temp_dir("benchmark-workspace-legacy");
-        let legacy_state = workspace.join(".xero").join("benchmark-state");
-        let output_dir = unique_temp_dir("benchmark-output-legacy");
-        let error = run_with_args([
-            "xero",
-            "benchmark",
-            "terminal-bench",
-            "--instruction",
-            "Fixture run.",
-            "--workspace-root",
-            workspace.to_str().expect("workspace"),
-            "--trial-app-data-root",
-            legacy_state.to_str().expect("legacy state"),
-            "--output-dir",
-            output_dir.to_str().expect("output dir"),
-            "--task-id",
-            "adapter-smoke-task",
-            "--dataset-id",
-            "terminal-bench@2.0",
-            "--provider",
-            "fake_provider",
-            "--allow-fake-provider-fixture",
-        ])
-        .expect_err("legacy .xero state must be rejected");
-
-        assert_eq!(error.code, "xero_benchmark_legacy_state_rejected");
-        assert_eq!(error.exit_code, 2);
-    }
-
-    #[test]
-    fn benchmark_terminal_bench_enforces_command_call_limit_before_dispatch() {
-        let workspace = unique_temp_dir("benchmark-workspace-command-limit");
-        let state_dir = unique_temp_dir("benchmark-app-data-command-limit");
-        let output_dir = unique_temp_dir("benchmark-output-command-limit").join("trial-1");
-        let first_command = serde_json::to_string(&json!({
-            "argv": ["sh", "-c", "touch should-not-run-a"]
-        }))
-        .expect("first command");
-        let second_command = serde_json::to_string(&json!({
-            "argv": ["sh", "-c", "touch should-not-run-b"]
-        }))
-        .expect("second command");
-        let server = MockOpenAiCompatibleServer::start(vec![json!({
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": "call-command-a",
-                        "type": "function",
-                        "function": {
-                            "name": "command",
-                            "arguments": first_command
-                        }
-                    }, {
-                        "id": "call-command-b",
-                        "type": "function",
-                        "function": {
-                            "name": "command",
-                            "arguments": second_command
-                        }
-                    }]
-                }
-            }]
-        })]);
-
-        let error = run_with_args([
-            "xero",
-            "benchmark",
-            "terminal-bench",
-            "--instruction",
-            "Try too many commands.",
-            "--workspace-root",
-            workspace.to_str().expect("workspace"),
-            "--trial-app-data-root",
-            state_dir.to_str().expect("state dir"),
-            "--output-dir",
-            output_dir.to_str().expect("output dir"),
-            "--project-id",
-            "benchmark-project",
-            "--session-id",
-            "benchmark-session",
-            "--run-id",
-            "benchmark-run",
-            "--task-id",
-            "command-limit-task",
-            "--dataset-id",
-            "terminal-bench@2.0",
-            "--provider",
-            "openai_api",
-            "--model",
-            "test-model",
-            "--base-url",
-            server.base_url.as_str(),
-            "--max-command-calls",
-            "1",
-        ])
-        .expect_err("command call limit should fail the benchmark run");
-        drop(server);
-
-        assert_eq!(
-            error.code,
-            "agent_core_headless_command_call_limit_exceeded"
-        );
-        assert!(!workspace.join("should-not-run-a").exists());
-        assert!(!workspace.join("should-not-run-b").exists());
-        let manifest: JsonValue =
-            read_json_file(&output_dir.join("manifest.json")).expect("read manifest");
-        assert_eq!(manifest["run"]["status"], json!("agent_failure"));
-        assert_eq!(
-            manifest["run"]["failureCategory"],
-            json!("timeout_or_limit")
-        );
-        assert_eq!(
-            manifest["limits"]["enforcement"]["maxCommandCalls"],
-            json!("xero_runtime")
-        );
     }
 
     fn unique_temp_dir(label: &str) -> PathBuf {

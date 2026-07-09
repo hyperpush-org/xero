@@ -1042,7 +1042,11 @@ pub(crate) fn load_provider_preflight_snapshot(
 
 fn classify_provider_preflight_error(code: &str, message: &str) -> ProviderPreflightErrorClass {
     let text = format!("{code} {message}").to_ascii_lowercase();
-    if text.contains("401") || text.contains("unauthorized") || text.contains("auth") {
+    if text.contains("402")
+        || xero_agent_core::provider_preflight_message_indicates_credit_limit(&text)
+    {
+        ProviderPreflightErrorClass::CreditLimit
+    } else if text.contains("401") || text.contains("unauthorized") || text.contains("auth") {
         ProviderPreflightErrorClass::Authentication
     } else if text.contains("403") || text.contains("forbidden") {
         ProviderPreflightErrorClass::Authorization

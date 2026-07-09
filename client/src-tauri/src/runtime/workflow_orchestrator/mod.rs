@@ -1,6 +1,7 @@
 pub mod artifacts;
 pub mod condition_eval;
 pub mod definition_validator;
+pub mod driver;
 pub mod reconcile;
 
 pub use condition_eval::{evaluate_workflow_condition, WorkflowConditionContext};

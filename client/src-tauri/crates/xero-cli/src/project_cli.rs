@@ -13,7 +13,7 @@ use super::{
     canonicalize_existing_path, cli_app_data_root, generate_id, global_database_path,
     now_timestamp, read_json_file, response, stable_project_id_for_repo_root, take_bool_flag,
     take_help, take_option, validate_required_cli, workspace_project_database_path,
-    write_json_file, CliError, CliResponse, GlobalOptions, BENCHMARK_PROJECT_SCHEMA,
+    write_json_file, CliError, CliResponse, GlobalOptions, CLI_PROJECT_STATE_SCHEMA,
 };
 
 const TUI_SETTINGS_FILE: &str = "tui-settings.json";
@@ -1233,7 +1233,7 @@ fn ensure_global_computer_use_state(
         .busy_timeout(Duration::from_secs(5))
         .map_err(|error| sqlite_error("xero_cli_computer_use_state_config_failed", error))?;
     connection
-        .execute_batch(BENCHMARK_PROJECT_SCHEMA)
+        .execute_batch(CLI_PROJECT_STATE_SCHEMA)
         .map_err(|error| sqlite_error("xero_cli_computer_use_state_migrate_failed", error))?;
     ensure_project_start_targets_column(&connection)?;
     ensure_agent_session_kind_column(&connection)?;
@@ -1353,7 +1353,7 @@ fn ensure_project_state(
     let connection = Connection::open(&database_path)
         .map_err(|error| sqlite_error("xero_cli_project_state_open_failed", error))?;
     connection
-        .execute_batch(BENCHMARK_PROJECT_SCHEMA)
+        .execute_batch(CLI_PROJECT_STATE_SCHEMA)
         .map_err(|error| sqlite_error("xero_cli_project_state_migrate_failed", error))?;
     ensure_project_start_targets_column(&connection)?;
     connection

@@ -169,6 +169,7 @@ interface WorkflowDefinitionCanvasProps {
   onCancelEditing?: () => void
   onCanvasStatusChange?: (status: WorkflowDefinitionCanvasStatus | null) => void
   onStartRun?: (workflowId: string, initialInput: unknown) => Promise<WorkflowRunDto | void>
+  startRunRequestToken?: number
   onCancelRun?: (runId: string) => Promise<WorkflowRunDto | void>
   onRetryNodeRun?: (runId: string, nodeRunId: string) => Promise<WorkflowRunDto | void>
   onSkipBranch?: (
@@ -389,6 +390,7 @@ function WorkflowDefinitionCanvasInner({
   onCancelEditing,
   onCanvasStatusChange,
   onStartRun,
+  startRunRequestToken = 0,
   onCancelRun,
   onRetryNodeRun,
   onSkipBranch,
@@ -425,6 +427,16 @@ function WorkflowDefinitionCanvasInner({
     setSelection(null)
     setLocalError(null)
   }, [definition.id, definition.version, definition.updatedAt, initialMode])
+
+  // A bumped token is an external request (e.g. the sidebar's "Start run"
+  // action) to collect run inputs and start this workflow.
+  const handledStartRunRequestTokenRef = useRef(startRunRequestToken)
+  useEffect(() => {
+    if (startRunRequestToken === handledStartRunRequestTokenRef.current) return
+    handledStartRunRequestTokenRef.current = startRunRequestToken
+    if (startRunRequestToken <= 0 || !onStartRun || mode === 'edit') return
+    setStartDialogOpen(true)
+  }, [mode, onStartRun, startRunRequestToken])
 
   useEffect(
     () => () => {

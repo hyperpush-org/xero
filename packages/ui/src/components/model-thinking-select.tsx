@@ -61,6 +61,9 @@ export interface ModelThinkingSelectProps {
 	placeholder?: string;
 	searchPlaceholder?: string;
 	emptyText?: string;
+	/** Controlled open state. When omitted the dropdown manages its own state. */
+	open?: boolean;
+	onOpenChange?: (open: boolean) => void;
 }
 
 const fieldTriggerClassName =
@@ -84,8 +87,18 @@ export const ModelThinkingSelect = memo(function ModelThinkingSelect({
 	placeholder = "Model not configured",
 	searchPlaceholder = "Search models...",
 	emptyText = "No models found.",
+	open: openProp,
+	onOpenChange,
 }: ModelThinkingSelectProps) {
-	const [open, setOpen] = useState(false);
+	const [internalOpen, setInternalOpen] = useState(false);
+	const open = openProp ?? internalOpen;
+	const setOpen = useCallback(
+		(next: boolean) => {
+			if (openProp === undefined) setInternalOpen(next);
+			onOpenChange?.(next);
+		},
+		[openProp, onOpenChange],
+	);
 	const listRef = useRef<HTMLDivElement | null>(null);
 	const selectedLabel = useMemo(() => {
 		for (const group of groups) {

@@ -162,12 +162,13 @@ pub fn start_workflow_run<R: Runtime + 'static>(
         &request.workflow_id,
         initial_input,
     )?;
-    let run = workflow_orchestrator::reconcile::reconcile_workflow_run(
+    let run = workflow_orchestrator::driver::reconcile_workflow_run(
         &app,
         state.inner(),
         &request.project_id,
         &run.id,
     )?;
+    workflow_orchestrator::driver::ensure_workflow_run_driver_if_active(&app, &run);
     Ok(WorkflowRunResponseDto { run })
 }
 
@@ -260,12 +261,13 @@ pub fn get_workflow_run<R: Runtime + 'static>(
 ) -> CommandResult<WorkflowRunResponseDto> {
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.run_id, "runId")?;
-    let run = workflow_orchestrator::reconcile::reconcile_workflow_run(
+    let run = workflow_orchestrator::driver::reconcile_workflow_run(
         &app,
         state.inner(),
         &request.project_id,
         &request.run_id,
     )?;
+    workflow_orchestrator::driver::ensure_workflow_run_driver_if_active(&app, &run);
     Ok(WorkflowRunResponseDto { run })
 }
 
@@ -277,7 +279,7 @@ pub fn explain_workflow_run_blocker<R: Runtime + 'static>(
 ) -> CommandResult<WorkflowRunBlockerResponseDto> {
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.run_id, "runId")?;
-    let run = workflow_orchestrator::reconcile::reconcile_workflow_run(
+    let run = workflow_orchestrator::driver::reconcile_workflow_run(
         &app,
         state.inner(),
         &request.project_id,
@@ -295,7 +297,7 @@ pub fn export_workflow_run_bundle<R: Runtime + 'static>(
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.run_id, "runId")?;
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
-    let run = workflow_orchestrator::reconcile::reconcile_workflow_run(
+    let run = workflow_orchestrator::driver::reconcile_workflow_run(
         &app,
         state.inner(),
         &request.project_id,
@@ -339,7 +341,7 @@ pub fn resume_workflow_next_incomplete_phase<R: Runtime + 'static>(
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.run_id, "runId")?;
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
-    let source_run = workflow_orchestrator::reconcile::reconcile_workflow_run(
+    let source_run = workflow_orchestrator::driver::reconcile_workflow_run(
         &app,
         state.inner(),
         &request.project_id,
@@ -393,12 +395,13 @@ pub fn resume_workflow_next_incomplete_phase<R: Runtime + 'static>(
             "inputPath": selection.input_path,
         }),
     )?;
-    let run = workflow_orchestrator::reconcile::reconcile_workflow_run(
+    let run = workflow_orchestrator::driver::reconcile_workflow_run(
         &app,
         state.inner(),
         &request.project_id,
         &run.id,
     )?;
+    workflow_orchestrator::driver::ensure_workflow_run_driver_if_active(&app, &run);
     Ok(WorkflowRunResponseDto { run })
 }
 
@@ -721,20 +724,24 @@ fn latest_event_for_node(run: &WorkflowRunDto, node_run_id: &str) -> Option<Json
 }
 
 #[tauri::command]
-pub fn list_workflow_runs<R: Runtime>(
+pub fn list_workflow_runs<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
     request: ListWorkflowRunsRequestDto,
 ) -> CommandResult<ListWorkflowRunsResponseDto> {
     validate_non_empty(&request.project_id, "projectId")?;
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
-    Ok(ListWorkflowRunsResponseDto {
-        runs: project_store::list_workflow_runs(
-            &repo_root,
-            &request.project_id,
-            request.workflow_id.as_deref(),
-        )?,
-    })
+    let runs = project_store::list_workflow_runs(
+        &repo_root,
+        &request.project_id,
+        request.workflow_id.as_deref(),
+    )?;
+    // Re-arm drivers for runs that were still in flight when the app last
+    // closed so they resume advancing as soon as the project is opened.
+    for run in &runs {
+        workflow_orchestrator::driver::ensure_workflow_run_driver_if_active(&app, run);
+    }
+    Ok(ListWorkflowRunsResponseDto { runs })
 }
 
 #[tauri::command]
@@ -793,6 +800,7 @@ pub fn cancel_workflow_run<R: Runtime>(
                 ),
             )
         })?;
+    workflow_orchestrator::driver::emit_workflow_run_updated(&app, &run);
     Ok(WorkflowRunResponseDto { run })
 }
 
@@ -805,13 +813,14 @@ pub fn retry_workflow_node_run<R: Runtime + 'static>(
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.run_id, "runId")?;
     validate_non_empty(&request.node_run_id, "nodeRunId")?;
-    let run = workflow_orchestrator::reconcile::retry_workflow_node_run(
+    let run = workflow_orchestrator::driver::retry_workflow_node_run(
         &app,
         state.inner(),
         &request.project_id,
         &request.run_id,
         &request.node_run_id,
     )?;
+    workflow_orchestrator::driver::ensure_workflow_run_driver_if_active(&app, &run);
     Ok(WorkflowRunResponseDto { run })
 }
 
@@ -824,7 +833,7 @@ pub fn skip_workflow_branch<R: Runtime + 'static>(
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.run_id, "runId")?;
     validate_non_empty(&request.node_run_id, "nodeRunId")?;
-    let run = workflow_orchestrator::reconcile::skip_workflow_branch(
+    let run = workflow_orchestrator::driver::skip_workflow_branch(
         &app,
         state.inner(),
         &request.project_id,
@@ -832,6 +841,7 @@ pub fn skip_workflow_branch<R: Runtime + 'static>(
         &request.node_run_id,
         request.reason.as_deref(),
     )?;
+    workflow_orchestrator::driver::ensure_workflow_run_driver_if_active(&app, &run);
     Ok(WorkflowRunResponseDto { run })
 }
 
@@ -845,7 +855,7 @@ pub fn resume_workflow_checkpoint<R: Runtime + 'static>(
     validate_non_empty(&request.run_id, "runId")?;
     validate_non_empty(&request.node_run_id, "nodeRunId")?;
     validate_non_empty(&request.decision, "decision")?;
-    let run = workflow_orchestrator::reconcile::resume_workflow_checkpoint(
+    let run = workflow_orchestrator::driver::resume_workflow_checkpoint(
         &app,
         state.inner(),
         &request.project_id,
@@ -854,6 +864,7 @@ pub fn resume_workflow_checkpoint<R: Runtime + 'static>(
         &request.decision,
         request.payload,
     )?;
+    workflow_orchestrator::driver::ensure_workflow_run_driver_if_active(&app, &run);
     Ok(WorkflowRunResponseDto { run })
 }
 

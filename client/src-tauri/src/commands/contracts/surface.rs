@@ -171,6 +171,7 @@ pub const PROJECT_UPDATED_EVENT: &str = "project:updated";
 pub const REPOSITORY_STATUS_CHANGED_EVENT: &str = "repository:status_changed";
 pub const RUNTIME_UPDATED_EVENT: &str = "runtime:updated";
 pub const RUNTIME_RUN_UPDATED_EVENT: &str = "runtime_run:updated";
+pub const WORKFLOW_RUN_UPDATED_EVENT: &str = "workflow_run:updated";
 
 pub const START_OPENAI_CODEX_AUTH_COMMAND: &str = START_OPENAI_LOGIN_COMMAND;
 pub const COMPLETE_OPENAI_CODEX_AUTH_COMMAND: &str = SUBMIT_OPENAI_CALLBACK_COMMAND;

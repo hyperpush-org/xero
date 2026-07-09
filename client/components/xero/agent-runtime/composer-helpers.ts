@@ -27,6 +27,7 @@ import {
 import { displayValue } from './shared-helpers'
 import { hasUsableRuntimeRunId } from './runtime-stream-helpers'
 import { getCloudProviderLabel } from '@/src/lib/xero-model/provider-presets'
+import { isCreditLimitFailure } from '@xero/ui/model/credit-limit'
 
 export interface ComposerModelOption {
   value: string
@@ -491,9 +492,16 @@ export function getComposerPlaceholder(
   }
 
   if (runtimeRun.isTerminal) {
-    return runtimeRun.isFailed
-      ? 'Last run failed — send a message to start a fresh one.'
-      : 'Run finished — send a message to keep going.'
+    if (runtimeRun.isFailed) {
+      const creditLimited = isCreditLimitFailure(
+        runtimeRun.lastError?.code ?? runtimeRun.lastErrorCode ?? null,
+        runtimeRun.lastError?.message ?? null,
+      )
+      return creditLimited
+        ? 'Add credits or switch models to continue.'
+        : 'Last run failed — send a message to start a fresh one.'
+    }
+    return 'Run finished — send a message to keep going.'
   }
 
   switch (streamStatus) {

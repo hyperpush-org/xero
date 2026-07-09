@@ -159,6 +159,9 @@ export interface ComposerProps {
 	selectedModelId: string | null;
 	onModelChange: (id: string) => void;
 	modelDisabled?: boolean;
+	/** Controlled open state for the model picker (used to open it externally). */
+	modelSelectOpen?: boolean;
+	onModelSelectOpenChange?: (open: boolean) => void;
 
 	thinkingOptions?: readonly ComposerSelectOption[];
 	selectedThinkingId?: string | null;
@@ -377,6 +380,8 @@ export function Composer({
 	selectedModelId,
 	onModelChange,
 	modelDisabled,
+	modelSelectOpen,
+	onModelSelectOpenChange,
 	thinkingOptions,
 	selectedThinkingId,
 	onThinkingChange,
@@ -860,6 +865,8 @@ export function Composer({
 			value={selectedModelId}
 			onChange={onModelChange}
 			disabled={modelDisabled}
+			open={modelSelectOpen}
+			onOpenChange={onModelSelectOpenChange}
 			thinkingOptions={thinkingOptions}
 			selectedThinkingId={selectedThinkingId}
 			onThinkingChange={onThinkingChange}

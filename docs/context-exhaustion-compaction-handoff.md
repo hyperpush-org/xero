@@ -6,7 +6,7 @@ This document is for Xero engineers changing owned-agent continuity behavior. Af
 
 ## Recommendation
 
-Add an opt-in continuity model routing policy, then make it the default only after evals prove it is better than active-provider compaction. The recommended shape is a routing policy that can use a fast, large-context model for compaction and handoff summaries, with an explicit user override and an active-provider fallback.
+Add an opt-in continuity model routing policy, then make it the default only after controlled tests prove it is better than active-provider compaction. The recommended shape is a routing policy that can use a fast, large-context model for compaction and handoff summaries, with an explicit user override and an active-provider fallback.
 
 Do not add a hidden provider that silently bypasses the user's active profile. Compaction sees raw conversation history, tool evidence, local paths, and sometimes redacted or partially redacted project context. Users need to know which provider receives that payload, what it costs, and how fallback works.
 
@@ -64,7 +64,7 @@ Run continuation after handoff works through the target run returned by the hand
 | Stage/progress state | System prompt and events may include stage state | Active todos and event summaries may include it | Stage id/current gate is not a dedicated handoff field |
 | Memory candidates | Not extracted by compaction | Extraction is attempted when source is marked handed off | Candidate extraction depends on provider availability |
 | Verification state | Prompt asks provider to preserve it | Verification events are included | Older verification can be summarized too weakly |
-| Context manifests | Compaction artifact manifests are recorded | Target manifests include handoff identifiers and context policy | Existing evals are mostly synthetic |
+| Context manifests | Compaction artifact manifests are recorded | Target manifests include handoff identifiers and context policy | Existing automated coverage is mostly contract-focused |
 
 ## Cost And Latency
 
@@ -91,7 +91,7 @@ The failure modes are substantial:
 | --- | --- | --- | --- |
 | Active-provider compaction | Keep current behavior | Simple, no extra provider disclosure, preserves current behavior | Slow/expensive/small/unavailable active models block continuity |
 | Dedicated compaction and handoff provider | Add explicit continuity provider/profile fields | Clear cost and provider ownership, easy to reason about | Too rigid; hidden defaults would create privacy surprises |
-| Routing policy with override | Pick a configured or recommended fast large-context model, allow user override, fall back by policy | Best balance of reliability, cost, and user control | Requires model capability metadata, fallback diagnostics, and new eval coverage |
+| Routing policy with override | Pick a configured or recommended fast large-context model, allow user override, fall back by policy | Best balance of reliability, cost, and user control | Requires model capability metadata, fallback diagnostics, and new test coverage |
 
 Use the routing-policy design. Store configuration in app-data-backed settings, not repo-local state. The first version should support global default plus per-project override. Per-session override can come later when users need different privacy or cost behavior inside the same project.
 
@@ -132,14 +132,14 @@ Track these before changing defaults:
 - Provider failure recovery rate and user-visible retry quality.
 - User trust signals: clear provider disclosure, understandable cost, and low surprise in target-run first turns.
 
-## Test And Eval Plan
+## Test Plan
 
 Add focused coverage before shipping routing:
 
 1. Unit tests for continuity-model settings validation, app-data persistence, and fallback policy.
 2. Provider-adapter tests that force compaction failure, tool-call responses, empty summaries, provider mismatch, and source-hash mismatch.
 3. Continuation tests for known budget, unknown budget, stale active compaction, auto-handoff disabled, and source-run continuation after handoff.
-4. Structured-output evals comparing active-provider, dedicated-provider, and routed-provider summaries against the same transcript.
+4. Structured-output tests comparing active-provider, dedicated-provider, and routed-provider summaries against the same transcript.
 5. Handoff target first-turn tests that assert pending work, verification evidence, active todos, and source citations are present before the provider call.
 6. Cost/latency instrumentation tests that verify compaction token counts and provider/model metadata are recorded.
 
@@ -148,12 +148,12 @@ Add focused coverage before shipping routing:
 1. Instrument current behavior. Record compaction latency, input tokens, summary tokens, provider/model, replay savings, failure codes, and handoff target first-turn quality.
 2. Add the app-data continuity-model setting behind an opt-in flag. Keep active-provider fallback as the default.
 3. Add structured compaction input and schema-checked output while preserving the raw-transcript path as fallback.
-4. Run side-by-side evals for active provider, explicit continuity provider, and automatic routing.
+4. Run side-by-side tests for active provider, explicit continuity provider, and automatic routing.
 5. Enable user-configured continuity model routing for opted-in projects.
-6. Promote automatic routing only when evals beat active-provider compaction on carryover, hallucination, latency, and failure recovery.
+6. Promote automatic routing only when controlled tests beat active-provider compaction on carryover, hallucination, latency, and failure recovery.
 
 ## Implementation Notes
 
-The change should touch the session-context contracts, provider model catalog and context-limit metadata, runtime controls/settings, session-history compaction, provider adapters, context manifests, handoff lineage and bundle creation, and the handoff-context quality eval suite.
+The change should touch the session-context contracts, provider model catalog and context-limit metadata, runtime controls/settings, session-history compaction, provider adapters, context manifests, handoff lineage and bundle creation, and the handoff-context test coverage.
 
 Keep new state in OS app-data/global app-data. Do not add repo-local state under legacy project directories. Because this is new behavior, do not add backwards-compatible migration glue unless compatibility is explicitly requested.

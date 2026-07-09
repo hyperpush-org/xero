@@ -176,7 +176,7 @@ function isDisplayableUserOrAssistantMessage(
     return true
   }
 
-  if (item.sourceTable === 'agent_runs') {
+  if (item.sourceTable === 'agent_runs' || item.sourceTable === 'runtime_runs') {
     return item.actor === 'user' && !policy.runIdsWithUserMessages.has(item.runId)
   }
 
@@ -200,6 +200,7 @@ function toMessageTurn(item: SessionTranscriptItemDto): Extract<ConversationTurn
     role: item.actor === 'user' ? 'user' : 'assistant',
     sequence: item.sequence,
     text: item.text ?? '',
+    createdAt: item.createdAt,
     attachments: runtimeMediaAttachmentsToConversation(item.mediaAttachments),
   }
 }

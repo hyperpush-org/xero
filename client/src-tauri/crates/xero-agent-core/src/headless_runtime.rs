@@ -1326,7 +1326,7 @@ where
             }
             HeadlessProviderExecutionConfig::OpenAiCodexResponses(config) => {
                 Ok(crate::provider_preflight_snapshot(ProviderPreflightInput {
-                    profile_id: "benchmark-openai-codex-oauth".into(),
+                    profile_id: "openai_codex-app-oauth".into(),
                     provider_id: config.provider_id.clone(),
                     model_id: config.model_id.clone(),
                     source: ProviderPreflightSource::LiveProbe,
@@ -3544,8 +3544,7 @@ fn headless_command_descriptor() -> ToolDescriptorV2 {
     ToolDescriptorV2 {
         name: HEADLESS_TOOL_COMMAND.into(),
         description:
-            "Run a bounded command in the registered workspace under Xero's benchmark policy."
-                .into(),
+            "Run a bounded command in the registered workspace under Xero's command policy.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -3564,11 +3563,7 @@ fn headless_command_descriptor() -> ToolDescriptorV2 {
             "required": ["argv"],
             "additionalProperties": false
         }),
-        capability_tags: vec![
-            "workspace".into(),
-            "command".into(),
-            "terminal_bench".into(),
-        ],
+        capability_tags: vec!["workspace".into(), "command".into(), "headless".into()],
         application_metadata: ToolApplicationMetadata::granular("command"),
         effect_class: ToolEffectClass::CommandExecution,
         mutability: ToolMutability::Mutating,
@@ -3924,7 +3919,7 @@ fn headless_system_prompt_for_agent(
             "xero-owned-agent-v1\n\nYou are Xero's Debug agent. Reproduce, gather evidence, test hypotheses, isolate root cause, fix when needed, and verify.\n\nUse the production Tool Registry V2 tools in {workspace}: `read`, `list`, and, when available, `write`, `patch`, `delete`, `move`, `replace`, and `command`. Keep task deliverables inside the workspace, never touch .git or .xero, and use scratch locations such as /tmp for build outputs, compiled binaries, downloaded helpers, and verification debris when the command runner allows it. Before probing fragile recovery inputs, copy them first and work from the copies when possible. Before finishing, remove temporary files you created inside the workspace and leave only task-requested deliverables.\n\nFinal response contract: provide symptom, root cause, fix, files changed, verification, and residual risk."
         ),
         _ => format!(
-            "xero-owned-agent-v1\n\nYou are Xero's headless owned-agent runtime. Use the production Tool Registry V2 tools when you need to inspect, edit, patch, or verify files in {workspace}: `read`, `list`, and, when available, `write`, `patch`, `delete`, `move`, `replace`, and `command`. Keep task deliverables inside the workspace, never touch .git or .xero, and use scratch locations such as /tmp for build outputs, compiled binaries, downloaded helpers, and verification debris when the command runner allows it. Before probing fragile recovery inputs, copy them first and work from the copies when possible. Before finishing, remove temporary files you created inside the workspace and leave only task-requested deliverables. Avoid network access unless the benchmark policy explicitly allows it, and finish with a concise summary."
+            "xero-owned-agent-v1\n\nYou are Xero's headless owned-agent runtime. Use the production Tool Registry V2 tools when you need to inspect, edit, patch, or verify files in {workspace}: `read`, `list`, and, when available, `write`, `patch`, `delete`, `move`, `replace`, and `command`. Keep task deliverables inside the workspace, never touch .git or .xero, and use scratch locations such as /tmp for build outputs, compiled binaries, downloaded helpers, and verification debris when the command runner allows it. Before probing fragile recovery inputs, copy them first and work from the copies when possible. Before finishing, remove temporary files you created inside the workspace and leave only task-requested deliverables. Avoid network access unless the active runtime policy explicitly allows it, and finish with a concise summary."
         ),
     }
 }
@@ -4341,7 +4336,7 @@ mod tests {
     }
 
     #[test]
-    fn headless_system_prompt_preserves_benchmark_workspace_hygiene() {
+    fn headless_system_prompt_preserves_workspace_hygiene() {
         let prompt = headless_system_prompt(Some(Path::new("/app")));
 
         assert!(prompt.contains("/tmp"));

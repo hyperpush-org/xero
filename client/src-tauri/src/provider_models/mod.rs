@@ -42,8 +42,7 @@ use crate::{
         CURSOR_DEFAULT_MODEL_ID, CURSOR_PROVIDER_ID, DEEPSEEK_PROVIDER_ID,
         GEMINI_AI_STUDIO_PROVIDER_ID, GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID,
         OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENAI_CODEX_SUPPORTED_MODEL_IDS,
-        OPENROUTER_PROVIDER_ID, VERTEX_PROVIDER_ID, XAI_DEFAULT_MODEL_ID, XAI_PROVIDER_ID,
-        XAI_SUPPORTED_TEXT_MODEL_IDS,
+        OPENROUTER_PROVIDER_ID, VERTEX_PROVIDER_ID, XAI_PROVIDER_ID, XAI_SUPPORTED_TEXT_MODEL_IDS,
     },
     state::DesktopState,
 };
@@ -2359,6 +2358,7 @@ mod tests {
     use super::*;
 
     use crate::auth::openai_compatible::OpenAiCompatibleDiscoveredThinkingCapability;
+    use crate::runtime::XAI_DEFAULT_MODEL_ID;
 
     #[test]
     fn openai_codex_projection_exposes_gsd_thinking_levels_for_openai_choices() {

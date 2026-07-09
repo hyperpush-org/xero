@@ -1,4 +1,5 @@
 export * from './shared'
 export * from './code-history'
+export * from './credit-limit'
 export * from './runtime'
 export * from './runtime-stream'

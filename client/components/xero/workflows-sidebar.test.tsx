@@ -301,7 +301,7 @@ describe('WorkflowsSidebar', () => {
     expect(screen.queryByText('Build by hand')).not.toBeInTheDocument()
   })
 
-  it('shows workflows as coming soon and disables workflow actions', () => {
+  it('lists workflows and routes create and select actions when enabled', () => {
     const onCreateWorkflow = vi.fn()
     const onSelectWorkflow = vi.fn()
     render(
@@ -316,25 +316,27 @@ describe('WorkflowsSidebar', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: /workflows/i }))
 
-    expect(screen.getByText('Workflows are coming soon')).toBeInTheDocument()
-    expect(screen.getAllByText('Coming soon').length).toBeGreaterThanOrEqual(1)
-    expect(screen.getByRole('button', { name: 'New workflow coming soon' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Search workflows coming soon' })).toBeDisabled()
-    expect(screen.queryByText('Release pipeline')).not.toBeInTheDocument()
+    expect(screen.queryByText('Workflows are coming soon')).not.toBeInTheDocument()
+    expect(screen.getByText('Release pipeline')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Search workflows' })).toBeEnabled()
 
-    fireEvent.click(screen.getByRole('button', { name: 'New workflow coming soon' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New workflow' }))
     expect(onCreateWorkflow).not.toHaveBeenCalled()
-    expect(onSelectWorkflow).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: /Blank workflow/ }))
+    expect(onCreateWorkflow).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open workflow Release pipeline' }))
+    expect(onSelectWorkflow).toHaveBeenCalledWith('release-pipeline')
   })
 
-  it('returns from the coming-soon workflows tab to working agents', () => {
+  it('switches between the workflows and agents tabs', () => {
     render(<WorkflowsSidebar open agents={REAL_AGENTS} workflowDefinitions={WORKFLOWS} />)
 
     fireEvent.click(screen.getByRole('tab', { name: /workflows/i }))
-    fireEvent.click(screen.getByRole('button', { name: 'View agents' }))
+    expect(screen.getByText('Release pipeline')).toBeInTheDocument()
 
+    fireEvent.click(screen.getByRole('tab', { name: /agents/i }))
     expect(screen.getByRole('tab', { name: /agents/i })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByText('Engineer')).toBeInTheDocument()
-    expect(screen.queryByText('Workflows are coming soon')).not.toBeInTheDocument()
   })
 })

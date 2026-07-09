@@ -55,7 +55,7 @@ import type {
   RuntimeStreamMediaSourceDto,
   RuntimeStreamToolItemView,
 } from '../../model'
-import { getRuntimeAgentLabel } from '../../model'
+import { getRuntimeAgentLabel, isCreditLimitFailure } from '../../model'
 import { AppLogo } from '../app-logo'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
@@ -75,7 +75,7 @@ import {
 } from '../ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip'
 import { ActionPromptCard } from './action-prompt-card'
-import { Markdown } from './conversation-markdown'
+import { Markdown, stripMarkdownHtmlComments } from './conversation-markdown'
 import {
   AttachmentPreviewChip,
   ImageAttachmentPreview,
@@ -110,6 +110,13 @@ export type ConversationTurn =
       sequence: number
       text: string
       attachments?: ConversationMessageAttachment[]
+      /**
+       * Source timestamp (ISO 8601) of the underlying transcript item, when
+       * known. Used to reconcile optimistic/queued prompt turns against the
+       * persisted copy of the same prompt without collapsing legitimately
+       * repeated prompts from earlier in the session.
+       */
+      createdAt?: string | null
     }
   | {
       id: string
@@ -632,7 +639,10 @@ function conversationTurnCopySections(
       })
     }
     case 'thinking':
-      return turn.text.trim().length > 0 ? [`Thoughts:\n${turn.text.trim()}`] : []
+      {
+        const text = stripMarkdownHtmlComments(turn.text).trim()
+        return text.length > 0 ? [`Thoughts:\n${text}`] : []
+      }
     case 'action':
       return [formatCopyTitleAndDetail(turn.title, turn.detail)]
     case 'action_group':
@@ -759,7 +769,13 @@ export const ConversationSection = memo(function ConversationSection({
           streamIssue.code === streamFailure?.code),
     )
 
-  const showRunFailure = Boolean(runFailureMessage && !inlineFailureDuplicatesRunFailure)
+  // Credit/billing limit failures are surfaced by a dedicated card docked above
+  // the composer, so suppress the red run-failure notice here to avoid a
+  // duplicate (scary) error in the transcript.
+  const isCreditLimitRunFailure = isCreditLimitFailure(runFailureCode, runFailureMessage)
+  const showRunFailure = Boolean(
+    runFailureMessage && !inlineFailureDuplicatesRunFailure && !isCreditLimitRunFailure,
+  )
   const showStreamFailure = Boolean(
     streamFailure && !streamFailureIsDuplicate && !inlineFailureDuplicatesStreamFailure,
   )
@@ -3261,12 +3277,12 @@ function splitAssistantText(text: string): AssistantSegment[] {
   let match = THINK_PATTERN.exec(text)
   while (match !== null) {
     if (match.index > lastIndex) {
-      const before = text.slice(lastIndex, match.index)
+      const before = stripMarkdownHtmlComments(text.slice(lastIndex, match.index))
       if (before.trim().length > 0) {
         segments.push({ kind: 'response', text: before })
       }
     }
-    const inner = match[2]
+    const inner = stripMarkdownHtmlComments(match[2])
     if (inner.trim().length > 0) {
       segments.push({ kind: 'thinking', text: inner })
     }
@@ -3275,14 +3291,17 @@ function splitAssistantText(text: string): AssistantSegment[] {
   }
 
   if (lastIndex < text.length) {
-    const tail = text.slice(lastIndex)
+    const tail = stripMarkdownHtmlComments(text.slice(lastIndex))
     if (tail.trim().length > 0) {
       segments.push({ kind: 'response', text: tail })
     }
   }
 
-  if (segments.length === 0 && text.trim().length > 0) {
-    segments.push({ kind: 'response', text })
+  if (segments.length === 0) {
+    const visibleText = stripMarkdownHtmlComments(text)
+    if (visibleText.trim().length > 0) {
+      segments.push({ kind: 'response', text: visibleText })
+    }
   }
 
   return segments
@@ -3417,6 +3436,35 @@ function StreamingCaret() {
   )
 }
 
+/**
+ * Extract headline-only thought content. Some providers stream reasoning
+ * summaries as bold one-line headlines with no prose body (e.g. GPT-5.5 via
+ * the ChatGPT-account Codex backend, which replaces summary bodies with empty
+ * `<!-- -->` placeholders — see openai/codex#31664). Returns the headline
+ * texts when the whole thought consists of such headlines, otherwise null so
+ * full traces keep the regular markdown rendering.
+ */
+function extractThoughtHeadlines(visibleText: string): string[] | null {
+  const lines = visibleText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+  if (lines.length === 0) {
+    return null
+  }
+
+  const headlines: string[] = []
+  for (const line of lines) {
+    const match = /^\*\*(.+)\*\*$/.exec(line)
+    const headline = match?.[1]?.trim()
+    if (!headline || headline.includes('**')) {
+      return null
+    }
+    headlines.push(headline)
+  }
+  return headlines
+}
+
 function ThinkingBlock({
   messageId,
   text,
@@ -3424,6 +3472,51 @@ function ThinkingBlock({
   messageId?: string
   text: string
 }) {
+  const visibleText = stripMarkdownHtmlComments(text)
+  if (visibleText.trim().length === 0) {
+    return null
+  }
+
+  const headlines = extractThoughtHeadlines(visibleText)
+
+  if (headlines) {
+    return (
+      <div className="w-full max-w-full min-w-0">
+        <div className="flex items-center gap-1.5 text-[11.5px] font-semibold uppercase tracking-[0.07em] text-muted-foreground/90">
+          <Brain className="h-3.5 w-3.5 text-primary/70" />
+          <span>Thoughts</span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="cursor-default select-none rounded-full border border-border/50 bg-muted/40 px-1.5 py-px text-[9.5px] font-medium normal-case tracking-normal text-muted-foreground">
+                headlines
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              This model shares brief thought headlines instead of a full
+              reasoning trace.
+            </TooltipContent>
+          </Tooltip>
+        </div>
+        <ol className="mt-1.5 flex flex-col gap-1" aria-label="Thought headlines">
+          {headlines.map((headline, index) => (
+            <li
+              key={`${messageId ?? 'thinking'}:headline-${index}`}
+              className="flex items-start gap-2 text-[12.5px] leading-relaxed"
+            >
+              <span
+                aria-hidden="true"
+                className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-primary/50"
+              />
+              <span className="min-w-0 font-medium text-foreground/85">
+                {headline}
+              </span>
+            </li>
+          ))}
+        </ol>
+      </div>
+    )
+  }
+
   return (
     <div className="w-full max-w-full min-w-0">
       <div className="flex items-center gap-1.5 text-[11.5px] font-semibold uppercase tracking-[0.07em] text-muted-foreground/90">
@@ -3431,7 +3524,7 @@ function ThinkingBlock({
         <span>Thoughts</span>
       </div>
       <div className="mt-1.5">
-        <Markdown messageId={messageId ?? null} text={text} muted />
+        <Markdown messageId={messageId ?? null} text={visibleText} muted />
       </div>
     </div>
   )
@@ -4111,7 +4204,7 @@ function DenseMessageItem({
     () => (isUser ? splitBrowserToolPromptContext(text) : null),
     [isUser, text],
   )
-  const displayText = promptParts?.visibleText ?? text
+  const displayText = promptParts?.visibleText ?? stripMarkdownHtmlComments(text)
   const promptContexts = promptParts?.contexts ?? []
   const promptContextAttachments = useMemo(
     () => pairBrowserToolContextAttachments(promptContexts, attachments),
@@ -4216,8 +4309,13 @@ function DenseMessageItem({
 
 function DenseThinkingItem({ id, text }: { id: string; text: string }) {
   const [open, setOpen] = useState(false)
-  const normalized = text.trim()
+  const visibleText = stripMarkdownHtmlComments(text)
+  const normalized = visibleText.trim()
   const hasMore = normalized.length > 240 || /\r?\n/.test(normalized)
+  if (normalized.length === 0) {
+    return null
+  }
+
   return (
     <li className="px-1 text-muted-foreground/80">
       <button
@@ -4237,9 +4335,9 @@ function DenseThinkingItem({ id, text }: { id: string; text: string }) {
         <span className="shrink-0 select-none">~</span>
         <span
           className="min-w-0 flex-1 truncate"
-          title={hasMore && !open ? text : undefined}
+          title={hasMore && !open ? visibleText : undefined}
         >
-          {truncateForLine(text)}
+          {truncateForLine(visibleText)}
         </span>
         {hasMore ? (
           <ChevronDown
@@ -4258,7 +4356,7 @@ function DenseThinkingItem({ id, text }: { id: string; text: string }) {
             'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-150',
           )}
         >
-          <Markdown messageId={`${id}:dense`} text={text} muted scale="dense" />
+          <Markdown messageId={`${id}:dense`} text={visibleText} muted scale="dense" />
         </div>
       ) : null}
     </li>

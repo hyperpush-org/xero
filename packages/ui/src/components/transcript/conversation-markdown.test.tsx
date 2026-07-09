@@ -8,6 +8,8 @@ import {
   getMarkdownSegmentStats,
   resetMarkdownSegmentCacheForTests,
   resetMermaidSvgCacheForTests,
+  splitFencedSegments,
+  stripMarkdownHtmlComments,
 } from './conversation-markdown'
 
 const mermaidRenderMock = vi.fn(async (_id: string, _text: string) => ({
@@ -121,6 +123,38 @@ describe('conversation markdown performance behavior', () => {
     expect(container.querySelector('pre')).toHaveClass('text-[11.5px]')
     expect(container.querySelector('table')).toHaveClass('text-[11.5px]')
     expect(container.querySelector('thead th')).toHaveClass('text-[11.5px]')
+  })
+})
+
+describe('conversation markdown HTML comments', () => {
+  it('omits markdown HTML comments from rendered prose', () => {
+    render(
+      <Markdown
+        messageId="turn-comment"
+        text={['Planning project inspection', '<!---->', 'Reading package metadata'].join('\n')}
+      />,
+    )
+
+    expect(screen.getByText('Planning project inspection')).toBeInTheDocument()
+    expect(screen.getByText('Reading package metadata')).toBeInTheDocument()
+    expect(screen.queryByText(/<!---->/)).not.toBeInTheDocument()
+  })
+
+  it('strips comments outside fenced code without changing fenced code contents', () => {
+    expect(stripMarkdownHtmlComments('alpha<!---->beta<!-- hidden -->gamma')).toBe(
+      'alphabetagamma',
+    )
+    expect(
+      stripMarkdownHtmlComments(
+        ['alpha<!-- hidden -->', '```html', '<!---->', '```', 'omega<!---->'].join('\n'),
+      ),
+    ).toBe(['alpha', '```html', '<!---->', '```', 'omega'].join('\n'))
+    expect(
+      splitFencedSegments(['alpha', '<!---->', '```html', '<!---->', '```'].join('\n')),
+    ).toEqual([
+      { kind: 'text', text: 'alpha\n\n' },
+      { kind: 'code', lang: 'html', code: '<!---->' },
+    ])
   })
 })
 

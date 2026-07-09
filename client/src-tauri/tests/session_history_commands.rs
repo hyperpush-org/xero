@@ -13,7 +13,7 @@ use xero_desktop_lib::{
         export_session_transcript, extract_session_memories, get_session_context_snapshot,
         get_session_memory_review_queue, get_session_transcript, list_session_memories,
         rewind_agent_session, save_session_transcript_export, search_session_transcripts,
-        update_session_memory, validate_context_snapshot_contract,
+        stop_runtime_run, update_session_memory, validate_context_snapshot_contract,
         validate_export_payload_contract, validate_session_memory_record_contract,
         validate_session_transcript_contract, AgentSessionLineageBoundaryKindDto,
         BranchAgentSessionRequestDto, CompactSessionHistoryRequestDto,
@@ -26,13 +26,13 @@ use xero_desktop_lib::{
         SessionContextPolicyActionDto, SessionContextPolicyDecisionKindDto, SessionMemoryKindDto,
         SessionMemoryScopeDto, SessionTranscriptExportFormatDto, SessionTranscriptExportPayloadDto,
         SessionTranscriptItemKindDto, SessionTranscriptScopeDto, SessionUsageSourceDto,
-        UpdateSessionMemoryRequestDto,
+        StopRuntimeRunRequestDto, UpdateSessionMemoryRequestDto,
     },
     configure_builder_with_state,
     db::{self, project_store},
     git::repository::CanonicalRepository,
     registry::{self, RegistryProjectRecord},
-    runtime::AgentProviderConfig,
+    runtime::{AgentProviderConfig, OWNED_AGENT_RUNTIME_KIND, OWNED_AGENT_SUPERVISOR_KIND},
     state::DesktopState,
 };
 
@@ -106,6 +106,7 @@ fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (
             project_id: repository.project_id.clone(),
             repository_id: repository.repository_id.clone(),
             root_path: root_path_string,
+            is_git_repo: true,
         }],
     )
     .expect("persist registry entry");
@@ -684,6 +685,138 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
     )
     .expect("search after session delete");
     assert!(deleted_search.results.is_empty());
+}
+
+#[test]
+fn transcript_rebuild_includes_runtime_only_queued_prompt_after_preflight_failure() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+
+    seed_failed_runtime_only_run(
+        &repo_root,
+        &project_id,
+        "run-preflight-failed",
+        "2026-04-26T12:00:00Z",
+        "test",
+    );
+
+    let transcript = tauri::async_runtime::block_on(get_session_transcript(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        app.state::<ProjectAssetState>(),
+        GetSessionTranscriptRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id: SESSION_ID.into(),
+            run_id: None,
+        },
+    ))
+    .expect("session transcript should include runtime-only failed run");
+    validate_session_transcript_contract(&transcript).expect("valid session transcript");
+
+    assert_eq!(
+        transcript
+            .runs
+            .iter()
+            .map(|run| run.run_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["run-preflight-failed"]
+    );
+    assert!(transcript.items.iter().any(|item| {
+        item.source_table == "runtime_runs"
+            && item.title.as_deref() == Some("Run prompt")
+            && item.text.as_deref() == Some("test")
+    }));
+}
+
+#[test]
+fn stopping_a_run_with_queued_prompt_durably_records_it_across_run_overwrite() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let session = project_store::create_agent_session(
+        &repo_root,
+        &project_store::AgentSessionCreateRecord {
+            project_id: project_id.clone(),
+            title: "Stopped-run durability".into(),
+            summary: String::new(),
+            session_kind: project_store::AgentSessionKind::Standard,
+            selected: false,
+        },
+    )
+    .expect("create durability session");
+    let session_id = session.agent_session_id.as_str();
+
+    seed_runtime_only_run(
+        &repo_root,
+        &project_id,
+        session_id,
+        project_store::RuntimeRunStatus::Running,
+        "run-stopped-early",
+        "2026-04-26T12:00:00Z",
+        "test",
+    );
+
+    stop_runtime_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StopRuntimeRunRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id: session_id.into(),
+            run_id: "run-stopped-early".into(),
+        },
+    )
+    .expect("stop runtime run");
+
+    // The stop must copy the still-queued prompt into the per-run agent store:
+    // the runtime_runs row is per-session and the next run overwrites it.
+    let agent_snapshot =
+        project_store::load_agent_run(&repo_root, &project_id, "run-stopped-early")
+            .expect("stopped run should persist a durable agent run for the queued prompt");
+    assert_eq!(agent_snapshot.run.prompt, "test");
+    assert_eq!(
+        agent_snapshot.run.status,
+        project_store::AgentRunStatus::Cancelled
+    );
+    assert!(agent_snapshot.messages.iter().any(|message| {
+        matches!(message.role, project_store::AgentMessageRole::User) && message.content == "test"
+    }));
+
+    seed_runtime_only_run(
+        &repo_root,
+        &project_id,
+        session_id,
+        project_store::RuntimeRunStatus::Failed,
+        "run-after-stop-preflight-failed",
+        "2026-04-26T13:00:00Z",
+        "second prompt",
+    );
+
+    let transcript = tauri::async_runtime::block_on(get_session_transcript(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        app.state::<ProjectAssetState>(),
+        GetSessionTranscriptRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id: session_id.into(),
+            run_id: None,
+        },
+    ))
+    .expect("session transcript after run overwrite");
+    validate_session_transcript_contract(&transcript).expect("valid session transcript");
+
+    // Both prompts survive: the stopped run through the agent store, the new
+    // failed run through the runtime-run fallback.
+    assert!(transcript.items.iter().any(|item| {
+        item.run_id == "run-stopped-early"
+            && item.source_table == "agent_messages"
+            && item.text.as_deref() == Some("test")
+    }));
+    assert!(transcript.items.iter().any(|item| {
+        item.run_id == "run-after-stop-preflight-failed"
+            && item.source_table == "runtime_runs"
+            && item.text.as_deref() == Some("second prompt")
+    }));
 }
 
 #[test]
@@ -2021,6 +2154,118 @@ fn seed_minimal_run(
         started_at,
         prompt,
     );
+}
+
+fn seed_failed_runtime_only_run(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    started_at: &str,
+    prompt: &str,
+) {
+    seed_runtime_only_run(
+        repo_root,
+        project_id,
+        SESSION_ID,
+        project_store::RuntimeRunStatus::Failed,
+        run_id,
+        started_at,
+        prompt,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn seed_runtime_only_run(
+    repo_root: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+    status: project_store::RuntimeRunStatus,
+    run_id: &str,
+    started_at: &str,
+    prompt: &str,
+) {
+    let queued_at = plus_seconds(started_at, 1);
+    let stopped_at = plus_seconds(started_at, 2);
+    let terminal = matches!(
+        status,
+        project_store::RuntimeRunStatus::Stopped | project_store::RuntimeRunStatus::Failed
+    );
+    let failed = matches!(status, project_store::RuntimeRunStatus::Failed);
+    let active = project_store::RuntimeRunActiveControlSnapshotRecord {
+        runtime_agent_id: xero_desktop_lib::commands::RuntimeAgentIdDto::Ask,
+        agent_definition_id: None,
+        agent_definition_version: None,
+        provider_profile_id: Some("xai-default".into()),
+        model_id: MODEL_ID.into(),
+        thinking_effort: None,
+        approval_mode: xero_desktop_lib::commands::RuntimeRunApprovalModeDto::Suggest,
+        plan_mode_required: false,
+        auto_compact_enabled: true,
+        revision: 1,
+        applied_at: started_at.into(),
+    };
+    let pending = project_store::RuntimeRunPendingControlSnapshotRecord {
+        runtime_agent_id: active.runtime_agent_id,
+        agent_definition_id: active.agent_definition_id.clone(),
+        agent_definition_version: active.agent_definition_version,
+        provider_profile_id: active.provider_profile_id.clone(),
+        model_id: active.model_id.clone(),
+        thinking_effort: active.thinking_effort.clone(),
+        approval_mode: active.approval_mode.clone(),
+        plan_mode_required: active.plan_mode_required,
+        auto_compact_enabled: active.auto_compact_enabled,
+        revision: active.revision.saturating_add(1),
+        queued_at: queued_at.clone(),
+        queued_prompt: Some(prompt.into()),
+        queued_prompt_at: Some(queued_at.clone()),
+        queued_attachments: Vec::new(),
+        queued_linked_paths: Vec::new(),
+    };
+
+    project_store::upsert_runtime_run(
+        repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run: project_store::RuntimeRunRecord {
+                project_id: project_id.into(),
+                agent_session_id: agent_session_id.into(),
+                run_id: run_id.into(),
+                runtime_kind: OWNED_AGENT_RUNTIME_KIND.into(),
+                provider_id: PROVIDER_ID.into(),
+                supervisor_kind: OWNED_AGENT_SUPERVISOR_KIND.into(),
+                status,
+                transport: project_store::RuntimeRunTransportRecord {
+                    kind: "internal".into(),
+                    endpoint: "xero://owned-agent".into(),
+                    liveness: project_store::RuntimeRunTransportLiveness::Reachable,
+                },
+                started_at: started_at.into(),
+                last_heartbeat_at: Some(stopped_at.clone()),
+                stopped_at: terminal.then(|| stopped_at.clone()),
+                last_error: failed.then(|| project_store::RuntimeRunDiagnosticRecord {
+                    code: "provider_preflight_provider_error".into(),
+                    message: "Provider returned HTTP 402: out of credits.".into(),
+                }),
+                updated_at: stopped_at.clone(),
+            },
+            checkpoint: Some(project_store::RuntimeRunCheckpointRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                sequence: 1,
+                kind: project_store::RuntimeRunCheckpointKind::Bootstrap,
+                summary: if failed {
+                    "Provider check failed.".into()
+                } else {
+                    "Owned agent runtime queued the initial prompt.".into()
+                },
+                created_at: stopped_at,
+            }),
+            control_state: Some(project_store::RuntimeRunControlStateRecord {
+                active,
+                pending: Some(pending),
+            }),
+        },
+    )
+    .expect("seed failed runtime-only run");
 }
 
 #[allow(clippy::too_many_arguments)]

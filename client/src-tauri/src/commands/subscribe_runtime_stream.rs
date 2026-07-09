@@ -2874,10 +2874,25 @@ fn payload_verbatim_string(payload: &serde_json::Value, key: &str) -> Option<Str
 }
 
 fn visible_reasoning_summary(summary: &str) -> Option<String> {
-    if reasoning_summary_exposes_internal_tool_deliberation(summary) {
+    if !reasoning_summary_exposes_internal_tool_deliberation(summary) {
+        return Some(summary.to_owned());
+    }
+
+    // Stream coalescing can pack a whole summary part (headline plus several
+    // paragraphs) into a single chunk, so judging the chunk wholesale would
+    // hide an entire thought over one internal-sounding sentence. Judge each
+    // paragraph on its own — the same granularity the guard had when deltas
+    // arrived uncoalesced — and keep the benign ones visible.
+    let visible = summary
+        .split("\n\n")
+        .filter(|paragraph| !reasoning_summary_exposes_internal_tool_deliberation(paragraph))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    if visible.trim().is_empty() {
         None
     } else {
-        Some(summary.to_owned())
+        Some(visible)
     }
 }
 
@@ -3901,6 +3916,21 @@ mod tests {
         assert!(
             internal_reasoning.is_none(),
             "internal tool-selection reasoning should not render into the timeline"
+        );
+
+        let mixed_reasoning = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ReasoningSummary,
+                r#"{"summary":"**Inspecting project layout**\n\nThe repo has a Tauri client and a UI package.\n\nSince I have tools like `todo`, `list_tree`, etc., I need to use them."}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("mixed reasoning item keeps benign paragraphs");
+        assert_eq!(
+            mixed_reasoning.text.as_deref(),
+            Some("**Inspecting project layout**\n\nThe repo has a Tauri client and a UI package."),
+            "only the internal-deliberation paragraph should be hidden"
         );
     }
 
