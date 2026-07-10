@@ -839,6 +839,52 @@ pub fn read_latest_agent_events(
     Ok(events)
 }
 
+pub fn read_latest_agent_event_by_payload_kind(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    event_kind: AgentRunEventKind,
+    payload_kind: &str,
+) -> Result<Option<AgentEventRecord>, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    validate_non_empty_text(payload_kind, "payloadKind")?;
+    let connection = open_agent_database(repo_root)?;
+    connection
+        .query_row(
+            r#"
+            SELECT id, project_id, run_id, event_kind, payload_json, created_at
+            FROM agent_events
+            WHERE project_id = ?1
+              AND run_id = ?2
+              AND event_kind = ?3
+              AND json_extract(payload_json, '$.kind') = ?4
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+            params![
+                project_id,
+                run_id,
+                agent_event_kind_sql_value(&event_kind),
+                payload_kind,
+            ],
+            |row| {
+                Ok(AgentEventRecord {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    run_id: row.get(2)?,
+                    event_kind: parse_agent_event_kind(row.get::<_, String>(3)?.as_str()),
+                    payload_json: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_event_payload_kind_read_failed", error)
+        })
+}
+
 pub fn upsert_agent_environment_lifecycle_snapshot(
     repo_root: &Path,
     record: &NewAgentEnvironmentLifecycleSnapshotRecord,

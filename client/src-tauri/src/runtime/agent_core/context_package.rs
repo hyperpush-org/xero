@@ -2697,6 +2697,7 @@ fn subagent_inheritance_manifest_json(
         "roleLabel": identity.get("roleLabel"),
         "depth": identity.get("depth"),
         "parentRunId": identity.get("parentRunId"),
+        "parentTraceId": identity.get("parentTraceId"),
         "parentSubagentId": identity.get("parentSubagentId"),
         "inheritedContext": inherited_context,
     })
@@ -3044,6 +3045,7 @@ mod tests {
                 "roleLabel": "Researcher",
                 "depth": 2,
                 "parentRunId": "parent-child-run",
+                "parentTraceId": "0123456789abcdef0123456789abcdef",
                 "parentSubagentId": "subagent-2",
                 "inheritedContext": [{
                     "kind": "tool_policy_ceiling",

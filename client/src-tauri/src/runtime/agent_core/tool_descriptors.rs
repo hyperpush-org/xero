@@ -8694,17 +8694,14 @@ pub(crate) fn load_subagent_child_identity_for_run(
     if run.lineage_kind != "subagent_child" {
         return Ok(None);
     }
-    let events = project_store::read_all_agent_events(repo_root, &run.project_id, &run.run_id)?;
-    let identity_payload = events.iter().rev().find_map(|event| {
-        if event.event_kind != AgentRunEventKind::StateTransition {
-            return None;
-        }
-        let payload = serde_json::from_str::<JsonValue>(&event.payload_json).ok()?;
-        (payload.get("kind").and_then(JsonValue::as_str) == Some("subagent_child_identity_bound"))
-            .then(|| payload.get("identity").cloned())
-            .flatten()
-    });
-    let Some(identity_payload) = identity_payload else {
+    let identity_event = project_store::read_latest_agent_event_by_payload_kind(
+        repo_root,
+        &run.project_id,
+        &run.run_id,
+        AgentRunEventKind::StateTransition,
+        "subagent_child_identity_bound",
+    )?;
+    let Some(identity_event) = identity_event else {
         return Err(CommandError::system_fault(
             "agent_subagent_child_identity_missing",
             format!(
@@ -8713,6 +8710,25 @@ pub(crate) fn load_subagent_child_identity_for_run(
             ),
         ));
     };
+    let payload =
+        serde_json::from_str::<JsonValue>(&identity_event.payload_json).map_err(|error| {
+            CommandError::system_fault(
+                "agent_subagent_child_identity_event_invalid",
+                format!(
+                "Xero cannot resume child run `{}` because its identity event is invalid: {error}",
+                run.run_id
+            ),
+            )
+        })?;
+    let identity_payload = payload.get("identity").cloned().ok_or_else(|| {
+        CommandError::system_fault(
+            "agent_subagent_child_identity_missing",
+            format!(
+                "Xero cannot resume child run `{}` because its identity event has no typed identity.",
+                run.run_id
+            ),
+        )
+    })?;
     let identity = serde_json::from_value::<AutonomousSubagentChildIdentity>(identity_payload)
         .map_err(|error| {
             CommandError::system_fault(
@@ -8723,53 +8739,16 @@ pub(crate) fn load_subagent_child_identity_for_run(
                 ),
             )
         })?;
-    if identity.schema != AUTONOMOUS_SUBAGENT_CHILD_IDENTITY_SCHEMA {
-        return Err(CommandError::system_fault(
-            "agent_subagent_child_identity_schema_invalid",
-            format!(
-                "Xero cannot resume child run `{}` because child identity schema `{}` is unsupported.",
-                run.run_id, identity.schema
-            ),
-        ));
-    }
-    if identity.initial_prompt != run.prompt {
-        return Err(CommandError::system_fault(
-            "agent_subagent_child_identity_prompt_mismatch",
-            format!(
-                "Xero cannot resume child run `{}` because its persisted prompt disagrees with its typed child identity.",
-                run.run_id
-            ),
-        ));
-    }
-    if identity
-        .definition_snapshot
-        .get("scope")
-        .and_then(JsonValue::as_str)
-        != Some("runtime_child")
-        || identity
-            .definition_snapshot
-            .get("subagentIdentity")
-            .and_then(|value| value.get("role"))
-            .and_then(JsonValue::as_str)
-            != Some(identity.role.as_str())
+    identity.validate_for_run(&run.prompt)?;
+    if run.parent_run_id.as_deref() != Some(identity.parent_run_id.as_str())
+        || run.parent_trace_id.as_deref() != Some(identity.parent_trace_id.as_str())
+        || run.parent_subagent_id.as_deref() != Some(identity.parent_subagent_id.as_str())
+        || run.subagent_role.as_deref() != Some(identity.role.as_str())
     {
         return Err(CommandError::system_fault(
-            "agent_subagent_child_definition_identity_mismatch",
+            "agent_subagent_child_identity_lineage_mismatch",
             format!(
-                "Xero cannot resume child run `{}` because its child definition does not match its typed role.",
-                run.run_id
-            ),
-        ));
-    }
-    if run
-        .subagent_role
-        .as_deref()
-        .is_some_and(|role| role != identity.role.as_str())
-    {
-        return Err(CommandError::system_fault(
-            "agent_subagent_child_identity_role_mismatch",
-            format!(
-                "Xero cannot resume child run `{}` because durable role metadata disagrees with its typed child identity.",
+                "Xero cannot resume child run `{}` because its durable lineage disagrees with its typed child identity.",
                 run.run_id
             ),
         ));

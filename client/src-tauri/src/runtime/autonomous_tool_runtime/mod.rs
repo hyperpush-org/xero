@@ -4669,6 +4669,165 @@ pub struct AutonomousSubagentChildIdentity {
     pub inherited_context: Vec<AutonomousSubagentInheritedContext>,
 }
 
+impl AutonomousSubagentChildIdentity {
+    pub(crate) fn validate_for_run(&self, run_prompt: &str) -> CommandResult<()> {
+        if self.schema != AUTONOMOUS_SUBAGENT_CHILD_IDENTITY_SCHEMA {
+            return Err(CommandError::system_fault(
+                "agent_subagent_child_identity_schema_invalid",
+                format!(
+                    "Xero cannot use child identity schema `{}` because it is unsupported.",
+                    self.schema
+                ),
+            ));
+        }
+        if self.initial_prompt != run_prompt {
+            return Err(CommandError::system_fault(
+                "agent_subagent_child_identity_prompt_mismatch",
+                "Xero cannot use a child identity whose initial prompt disagrees with the run prompt.",
+            ));
+        }
+
+        let definition_identity = self
+            .definition_snapshot
+            .get("subagentIdentity")
+            .and_then(JsonValue::as_object);
+        let definition_inherited_context = definition_identity
+            .and_then(|identity| identity.get("inheritedContext"))
+            .cloned()
+            .and_then(|value| {
+                serde_json::from_value::<Vec<AutonomousSubagentInheritedContext>>(value).ok()
+            });
+        let definition_depth = definition_identity
+            .and_then(|identity| identity.get("depth"))
+            .and_then(JsonValue::as_u64)
+            .and_then(|depth| usize::try_from(depth).ok());
+        let inherited_context_is_valid = !self.inherited_context.is_empty()
+            && self.inherited_context.iter().all(|context| {
+                !context.kind.trim().is_empty()
+                    && context.source_run_id == self.parent_run_id
+                    && !context.reason.trim().is_empty()
+            });
+        let child_tool_policy =
+            AutonomousAgentToolPolicy::from_definition_snapshot(&self.definition_snapshot);
+        let role_policy = AutonomousAgentToolPolicy::from_subagent_role(self.role);
+        let child_tool_policy_is_bounded = child_tool_policy.as_ref().is_some_and(|policy| {
+            policy.allowed_effect_classes.is_empty()
+                && policy.allowed_tool_packs.is_empty()
+                && policy.allowed_mcp_servers.is_empty()
+                && policy.allowed_dynamic_tools.is_empty()
+                && !policy.subagent_allowed
+                && policy.allowed_subagent_roles.is_empty()
+                && policy
+                    .allowed_tools
+                    .iter()
+                    .all(|tool| role_policy.allows_tool(tool))
+        });
+        let definition_matches = self
+            .definition_snapshot
+            .get("scope")
+            .and_then(JsonValue::as_str)
+            == Some("runtime_child")
+            && self
+                .definition_snapshot
+                .get("id")
+                .and_then(JsonValue::as_str)
+                .is_some_and(|id| !id.trim().is_empty())
+            && self
+                .definition_snapshot
+                .get("version")
+                .and_then(JsonValue::as_u64)
+                .is_some_and(|version| version > 0)
+            && definition_identity
+                .and_then(|identity| identity.get("schema"))
+                .and_then(JsonValue::as_str)
+                == Some(AUTONOMOUS_SUBAGENT_CHILD_IDENTITY_SCHEMA)
+            && definition_identity
+                .and_then(|identity| identity.get("role"))
+                .and_then(JsonValue::as_str)
+                == Some(self.role.as_str())
+            && definition_identity
+                .and_then(|identity| identity.get("roleLabel"))
+                .and_then(JsonValue::as_str)
+                == Some(self.role_label.as_str())
+            && definition_identity
+                .and_then(|identity| identity.get("parentRunId"))
+                .and_then(JsonValue::as_str)
+                == Some(self.parent_run_id.as_str())
+            && definition_identity
+                .and_then(|identity| identity.get("parentTraceId"))
+                .and_then(JsonValue::as_str)
+                == Some(self.parent_trace_id.as_str())
+            && definition_identity
+                .and_then(|identity| identity.get("parentSubagentId"))
+                .and_then(JsonValue::as_str)
+                == Some(self.parent_subagent_id.as_str())
+            && definition_identity
+                .and_then(|identity| identity.get("verificationContract"))
+                .and_then(JsonValue::as_str)
+                == Some(self.verification_contract.as_str())
+            && definition_depth == Some(self.depth)
+            && definition_inherited_context.as_ref() == Some(&self.inherited_context);
+        let child_contract_is_valid = self.depth > 0
+            && !self.role_label.trim().is_empty()
+            && !self.verification_contract.trim().is_empty()
+            && !self.parent_run_id.trim().is_empty()
+            && !self.parent_trace_id.trim().is_empty()
+            && !self.parent_subagent_id.trim().is_empty()
+            && inherited_context_is_valid
+            && definition_matches
+            && child_tool_policy_is_bounded
+            && self
+                .definition_snapshot
+                .get("promptFragments")
+                .and_then(JsonValue::as_array)
+                .is_some_and(Vec::is_empty)
+            && self
+                .definition_snapshot
+                .get("finalResponseContract")
+                .and_then(JsonValue::as_str)
+                == Some(self.verification_contract.as_str())
+            && self
+                .definition_snapshot
+                .get("attachedSkills")
+                .and_then(JsonValue::as_array)
+                .is_some_and(Vec::is_empty)
+            && self
+                .definition_snapshot
+                .get("handoffPolicy")
+                .and_then(|policy| policy.get("enabled"))
+                .and_then(JsonValue::as_bool)
+                == Some(false);
+        if !child_contract_is_valid {
+            return Err(CommandError::system_fault(
+                "agent_subagent_child_identity_invalid",
+                "Xero refused a child identity because its typed identity, definition, or inheritance metadata is incomplete or inconsistent.",
+            ));
+        }
+        if let Some(workflow_structure) = self.definition_snapshot.get("workflowStructure") {
+            let Some(child_tool_policy) = child_tool_policy.as_ref() else {
+                return Err(CommandError::system_fault(
+                    "agent_subagent_child_identity_invalid",
+                    "Xero refused a child identity because its definition has no child tool policy.",
+                ));
+            };
+            validate_subagent_workflow_structure(
+                Some(workflow_structure.clone()),
+                child_tool_policy,
+            )
+            .map_err(|error| {
+                CommandError::system_fault(
+                    "agent_subagent_child_stage_invalid",
+                    format!(
+                        "Xero refused a child identity because its Stage configuration is invalid: {}",
+                        error.message
+                    ),
+                )
+            })?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AutonomousSubagentLimits {
     pub max_child_agents: usize,

@@ -48,7 +48,7 @@ pub fn create_owned_agent_run(
 ) -> CommandResult<AgentRunSnapshotRecord> {
     validate_prompt(&request.prompt)?;
     if let Some(identity) = request.tool_runtime.subagent_child_identity() {
-        validate_subagent_child_identity(identity, &request.prompt)?;
+        identity.validate_for_run(&request.prompt)?;
     }
     project_store::ensure_agent_session_active(
         &request.repo_root,
@@ -5056,62 +5056,6 @@ fn effective_agent_tool_policy(
     )
 }
 
-fn validate_subagent_child_identity(
-    identity: &AutonomousSubagentChildIdentity,
-    request_prompt: &str,
-) -> CommandResult<()> {
-    let definition_role = identity
-        .definition_snapshot
-        .get("subagentIdentity")
-        .and_then(|value| value.get("role"))
-        .and_then(JsonValue::as_str);
-    let definition_scope = identity
-        .definition_snapshot
-        .get("scope")
-        .and_then(JsonValue::as_str);
-    let definition_id = identity
-        .definition_snapshot
-        .get("id")
-        .and_then(JsonValue::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    if identity.schema != AUTONOMOUS_SUBAGENT_CHILD_IDENTITY_SCHEMA
-        || identity.role_label.trim().is_empty()
-        || identity.verification_contract.trim().is_empty()
-        || identity.parent_run_id.trim().is_empty()
-        || identity.parent_trace_id.trim().is_empty()
-        || identity.parent_subagent_id.trim().is_empty()
-        || definition_scope != Some("runtime_child")
-        || definition_role != Some(identity.role.as_str())
-        || definition_id.is_none()
-        || agent_tool_policy_from_snapshot(&identity.definition_snapshot).is_none()
-    {
-        return Err(CommandError::system_fault(
-            "agent_subagent_child_identity_invalid",
-            "Xero refused to create a child run because its typed child identity is incomplete or inconsistent.",
-        ));
-    }
-    if identity.initial_prompt != request_prompt {
-        return Err(CommandError::system_fault(
-            "agent_subagent_child_prompt_mismatch",
-            "Xero refused to create a child run because its request prompt disagrees with the typed child identity.",
-        ));
-    }
-    if identity
-        .definition_snapshot
-        .get("workflowStructure")
-        .is_some()
-        && AutonomousAgentWorkflowPolicy::from_definition_snapshot(&identity.definition_snapshot)
-            .is_none()
-    {
-        return Err(CommandError::system_fault(
-            "agent_subagent_child_stage_invalid",
-            "Xero refused to create a child run because its typed child Stage configuration is invalid.",
-        ));
-    }
-    Ok(())
-}
-
 fn subagent_prompt(task: &AutonomousSubagentTask, parent_run_id: &str) -> String {
     let boundary = subagent_ownership_boundary(task);
     format!(
@@ -5192,7 +5136,9 @@ fn subagent_child_identity(
             "roleLabel": task.role_label,
             "depth": task.depth,
             "parentRunId": parent_run_id,
+            "parentTraceId": parent_trace_id,
             "parentSubagentId": task.subagent_id,
+            "verificationContract": task.verification_contract,
             "inheritedContext": &inherited_context,
         }
     });
@@ -5427,6 +5373,31 @@ mod tests {
     }
 
     #[test]
+    fn child_identity_rejects_tools_outside_its_typed_role() {
+        let role_policy = AutonomousAgentToolPolicy::for_subagent_role(
+            AutonomousSubagentRole::Researcher,
+            None,
+            false,
+        );
+        let task = subagent_task_with_stages(AutonomousSubagentRole::Researcher, 1, None);
+        let mut identity = subagent_child_identity(
+            &task,
+            "parent-run",
+            "0123456789abcdef0123456789abcdef",
+            RuntimeAgentIdDto::Engineer,
+            &role_policy,
+            false,
+        );
+        identity.definition_snapshot["toolPolicy"]["allowedTools"] = json!(["write"]);
+
+        let error = identity
+            .validate_for_run(&identity.initial_prompt)
+            .expect_err("role-escalating child policy must fail closed");
+
+        assert_eq!(error.code, "agent_subagent_child_identity_invalid");
+    }
+
+    #[test]
     fn nested_child_identity_preserves_only_explicit_child_stages() {
         let child_stages = json!({
             "startPhaseId": "child_inspect",
@@ -5473,7 +5444,7 @@ mod tests {
     }
 
     #[test]
-    fn child_identity_and_stages_survive_durable_reload() {
+    fn child_identity_and_stages_survive_reload_and_reject_lineage_drift() {
         let tempdir = tempfile::tempdir().expect("temp dir");
         let repo_root = tempdir.path().join("repo");
         fs::create_dir_all(&repo_root).expect("create repo root");
@@ -5491,7 +5462,7 @@ mod tests {
         parent_definition["version"] = json!(2);
         parent_definition["toolPolicy"]["subagentAllowed"] = json!(true);
         parent_definition["toolPolicy"]["allowedSubagentRoles"] = json!(["researcher"]);
-        parent_definition["toolPolicy"]["allowedTools"] = json!(["subagent"]);
+        parent_definition["toolPolicy"]["allowedTools"] = json!(["subagent", "read"]);
         parent_definition["workflowStructure"] = json!({
             "startPhaseId": "parent_gate",
             "phases": [{
@@ -5615,6 +5586,23 @@ mod tests {
         );
         assert!(child.run.system_prompt.contains("child_inspect"));
         assert!(!child.run.system_prompt.contains("parent_gate"));
+
+        let mismatched = project_store::update_agent_run_lineage(
+            &repo_root,
+            &project_store::AgentRunLineageUpdateRecord {
+                project_id: project_id.into(),
+                run_id: child_run_id.into(),
+                parent_run_id: parent.run.run_id.clone(),
+                parent_trace_id: parent.run.trace_id.clone(),
+                parent_subagent_id: "different-subagent".into(),
+                subagent_role: "researcher".into(),
+                updated_at: "2026-07-09T20:01:00Z".into(),
+            },
+        )
+        .expect("mutate durable lineage");
+        let error = load_subagent_child_identity_for_run(&repo_root, &mismatched.run)
+            .expect_err("lineage drift must fail closed");
+        assert_eq!(error.code, "agent_subagent_child_identity_lineage_mismatch");
     }
 
     fn save_custom_definition(repo_root: &Path, definition_id: &str, profile: &str) {
