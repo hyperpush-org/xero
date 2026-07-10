@@ -1448,6 +1448,7 @@ const MIGRATION_018_AGENT_SUBAGENT_TASKS_SQL: &str = r#"
         prompt_preview TEXT NOT NULL DEFAULT '',
         model_id TEXT,
         write_set_json TEXT NOT NULL DEFAULT '[]' CHECK (write_set_json <> '' AND json_valid(write_set_json)),
+        workflow_structure_json TEXT CHECK (workflow_structure_json IS NULL OR (workflow_structure_json <> '' AND json_valid(workflow_structure_json))),
         verification_contract TEXT NOT NULL,
         depth INTEGER NOT NULL DEFAULT 0 CHECK (depth >= 0),
         max_tool_calls INTEGER NOT NULL DEFAULT 0 CHECK (max_tool_calls >= 0),

@@ -95,6 +95,15 @@ pub(crate) fn drive_provider_loop(
             workspace_guard.record_persisted_observations(&run_snapshot)?;
             let agent_definition_snapshot =
                 load_agent_definition_snapshot_for_run(repo_root, &run_snapshot.run)?;
+            let effective_agent_definition_id = agent_definition_snapshot
+                .get("id")
+                .and_then(JsonValue::as_str)
+                .unwrap_or(run_snapshot.run.agent_definition_id.as_str());
+            let effective_agent_definition_version = agent_definition_snapshot
+                .get("version")
+                .and_then(JsonValue::as_u64)
+                .and_then(|version| u32::try_from(version).ok())
+                .unwrap_or(run_snapshot.run.agent_definition_version);
             let attached_skill_contexts = attached_skill_contexts_for_provider_turn(
                 repo_root,
                 project_id,
@@ -110,8 +119,8 @@ pub(crate) fn drive_provider_loop(
                     agent_session_id,
                     run_id,
                     runtime_agent_id: controls.active.runtime_agent_id,
-                    agent_definition_id: run_snapshot.run.agent_definition_id.as_str(),
-                    agent_definition_version: run_snapshot.run.agent_definition_version,
+                    agent_definition_id: effective_agent_definition_id,
+                    agent_definition_version: effective_agent_definition_version,
                     agent_definition_snapshot: Some(&agent_definition_snapshot),
                     provider_id: provider.provider_id(),
                     model_id: provider.model_id(),
@@ -7849,6 +7858,7 @@ mod tests {
                 prompt_preview: "Inspect the implementation.".into(),
                 model_id: None,
                 write_set_json: "[]".into(),
+                workflow_structure_json: None,
                 verification_contract: "Report findings.".into(),
                 depth: 1,
                 max_tool_calls: 5,

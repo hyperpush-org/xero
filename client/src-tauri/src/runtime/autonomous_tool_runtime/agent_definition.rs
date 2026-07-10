@@ -3149,7 +3149,7 @@ fn subagent_role_known(role: &str) -> bool {
     )
 }
 
-fn validate_workflow_structure(
+pub(super) fn validate_workflow_structure(
     value: Option<&JsonValue>,
     diagnostics: &mut Vec<AutonomousAgentDefinitionValidationDiagnostic>,
 ) {
@@ -3167,7 +3167,7 @@ fn validate_workflow_structure(
     let Some(phases) = object.get("phases").and_then(JsonValue::as_array) else {
         diagnostics.push(diagnostic(
             "agent_definition_workflow_phases_required",
-            "workflowStructure.phases must contain at least one phase.",
+            "workflowStructure.phases must contain at least one Stage.",
             "workflowStructure.phases",
         ));
         return;
@@ -3175,7 +3175,7 @@ fn validate_workflow_structure(
     if phases.is_empty() {
         diagnostics.push(diagnostic(
             "agent_definition_workflow_phases_required",
-            "workflowStructure.phases must contain at least one phase.",
+            "workflowStructure.phases must contain at least one Stage.",
             "workflowStructure.phases",
         ));
         return;
@@ -3188,7 +3188,7 @@ fn validate_workflow_structure(
         let Some(phase_object) = phase.as_object() else {
             diagnostics.push(diagnostic(
                 "agent_definition_workflow_phase_invalid",
-                "Workflow phases must be objects.",
+                "Stages must be objects.",
                 path,
             ));
             continue;
@@ -3223,7 +3223,7 @@ fn validate_workflow_structure(
     for duplicate in duplicate_phase_ids {
         diagnostics.push(diagnostic(
             "agent_definition_workflow_phase_duplicate",
-            format!("Workflow phase id `{duplicate}` is duplicated."),
+            format!("Stage id `{duplicate}` is duplicated."),
             "workflowStructure.phases",
         ));
     }
@@ -3233,7 +3233,7 @@ fn validate_workflow_structure(
             diagnostics.push(diagnostic(
                 "agent_definition_workflow_start_phase_unknown",
                 format!(
-                    "workflowStructure.startPhaseId `{}` does not match a phase id.",
+                    "workflowStructure.startPhaseId `{}` does not match a Stage id.",
                     start_phase_id.trim()
                 ),
                 "workflowStructure.startPhaseId",
@@ -3253,7 +3253,7 @@ fn validate_workflow_structure(
             let Some(branch_object) = branch.as_object() else {
                 diagnostics.push(diagnostic(
                     "agent_definition_workflow_branch_invalid",
-                    "Workflow branches must be objects.",
+                    "Stage branches must be objects.",
                     path,
                 ));
                 continue;
@@ -3270,7 +3270,7 @@ fn validate_workflow_structure(
                 if !phase_ids.contains(&target) {
                     diagnostics.push(diagnostic(
                         "agent_definition_workflow_branch_target_unknown",
-                        format!("Workflow branch target phase `{target}` is not declared."),
+                        format!("Stage branch target `{target}` is not declared."),
                         format!(
                             "workflowStructure.phases[{index}].branches[{branch_index}].targetPhaseId"
                         ),
@@ -3319,7 +3319,7 @@ fn validate_workflow_allowed_tools(
     let Some(allowed_tools) = allowed_tools.as_array() else {
         diagnostics.push(diagnostic(
             "agent_definition_workflow_allowed_tools_invalid",
-            "workflow phase allowedTools must be an array.",
+            "Stage allowedTools must be an array.",
             format!("workflowStructure.phases[{phase_index}].allowedTools"),
         ));
         return;
@@ -3330,7 +3330,7 @@ fn validate_workflow_allowed_tools(
         let Some(tool) = tool.as_str().map(str::trim).filter(|tool| !tool.is_empty()) else {
             diagnostics.push(diagnostic(
                 "agent_definition_workflow_tool_invalid",
-                "workflow phase allowedTools entries must be non-empty strings.",
+                "Stage allowedTools entries must be non-empty strings.",
                 path,
             ));
             continue;
@@ -3338,7 +3338,7 @@ fn validate_workflow_allowed_tools(
         if !known_tools.contains(tool) {
             diagnostics.push(diagnostic(
                 "agent_definition_workflow_tool_unknown",
-                format!("Workflow phase references unknown tool `{tool}`."),
+                format!("Stage references unknown tool `{tool}`."),
                 path,
             ));
         }
@@ -3377,7 +3377,7 @@ fn validate_workflow_check(
     let Some(object) = value.as_object() else {
         diagnostics.push(diagnostic(
             "agent_definition_workflow_check_invalid",
-            "Workflow checks must be objects.",
+            "Stage checks must be objects.",
             path,
         ));
         return;
@@ -3416,7 +3416,7 @@ fn validate_workflow_check(
             if !saw_tool {
                 diagnostics.push(diagnostic(
                     "agent_definition_workflow_text_required",
-                    "Workflow check requires non-empty text field `toolName` or non-empty string array `toolNames`.",
+                    "Stage check requires non-empty text field `toolName` or non-empty string array `toolNames`.",
                     format!("{path}.toolName"),
                 ));
             }
@@ -3425,9 +3425,9 @@ fn validate_workflow_check(
         _ => diagnostics.push(diagnostic(
             "agent_definition_workflow_check_kind_invalid",
             if allow_always {
-                "Workflow checks must use kind always, todo_completed, or tool_succeeded."
+                "Stage checks must use kind always, todo_completed, or tool_succeeded."
             } else {
-                "Workflow required checks must use kind todo_completed or tool_succeeded."
+                "Stage required checks must use kind todo_completed or tool_succeeded."
             },
             format!("{path}.kind"),
         )),
@@ -3452,7 +3452,7 @@ fn validate_workflow_tool_name(
     if !known_tools.contains(tool_name) {
         diagnostics.push(diagnostic(
             "agent_definition_workflow_tool_unknown",
-            format!("Workflow check references unknown tool `{tool_name}`."),
+            format!("Stage check references unknown tool `{tool_name}`."),
             path,
         ));
     }
@@ -3468,7 +3468,7 @@ fn validate_workflow_tool_names(
     let Some(items) = value.as_array() else {
         diagnostics.push(diagnostic(
             "agent_definition_workflow_tool_names_invalid",
-            "Workflow toolNames must be a non-empty string array.",
+            "Stage toolNames must be a non-empty string array.",
             path,
         ));
         return;
@@ -3476,7 +3476,7 @@ fn validate_workflow_tool_names(
     if items.is_empty() {
         diagnostics.push(diagnostic(
             "agent_definition_workflow_tool_names_invalid",
-            "Workflow toolNames must be a non-empty string array.",
+            "Stage toolNames must be a non-empty string array.",
             path,
         ));
         return;
@@ -3490,7 +3490,7 @@ fn validate_workflow_tool_names(
         else {
             diagnostics.push(diagnostic(
                 "agent_definition_workflow_tool_names_invalid",
-                "Workflow toolNames entries must be non-empty strings.",
+                "Stage toolNames entries must be non-empty strings.",
                 item_path,
             ));
             continue;
@@ -3509,7 +3509,7 @@ fn validate_workflow_positive_count(
         if min_count.as_u64().filter(|count| *count > 0).is_none() {
             diagnostics.push(diagnostic(
                 "agent_definition_workflow_min_count_invalid",
-                "Workflow minCount must be a positive integer.",
+                "Stage minCount must be a positive integer.",
                 format!("{path}.minCount"),
             ));
         }
@@ -3527,7 +3527,7 @@ fn validate_workflow_retry_limit(
     if retry_limit.as_u64().is_none() {
         diagnostics.push(diagnostic(
             "agent_definition_workflow_retry_limit_invalid",
-            "Workflow retryLimit must be a non-negative integer.",
+            "Stage retryLimit must be a non-negative integer.",
             format!("workflowStructure.phases[{phase_index}].retryLimit"),
         ));
     }

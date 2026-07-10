@@ -47,6 +47,9 @@ pub fn create_owned_agent_run(
     request: &OwnedAgentRunRequest,
 ) -> CommandResult<AgentRunSnapshotRecord> {
     validate_prompt(&request.prompt)?;
+    if let Some(identity) = request.tool_runtime.subagent_child_identity() {
+        validate_subagent_child_identity(identity, &request.prompt)?;
+    }
     project_store::ensure_agent_session_active(
         &request.repo_root,
         &request.project_id,
@@ -85,11 +88,16 @@ pub fn create_owned_agent_run(
     }
     controls.active.plan_mode_required =
         controls.active.plan_mode_required && controls.active.runtime_agent_id.allows_plan_gate();
+    let effective_definition_snapshot = request
+        .tool_runtime
+        .subagent_child_identity()
+        .map(|identity| &identity.definition_snapshot)
+        .unwrap_or(&definition_selection.snapshot);
     let agent_tool_policy =
-        effective_agent_tool_policy(&definition_selection.snapshot, &request.tool_runtime);
+        effective_agent_tool_policy(effective_definition_snapshot, &request.tool_runtime);
     let stage_allowed_tools = initial_workflow_allowed_tools_for_runtime_agent(
         controls.active.runtime_agent_id,
-        &definition_selection.snapshot,
+        effective_definition_snapshot,
     );
     let tool_registry = ToolRegistry::for_prompt_with_options(
         &request.repo_root,
@@ -108,7 +116,7 @@ pub fn create_owned_agent_run(
         &request.repo_root,
         &request.project_id,
         &request.run_id,
-        &definition_selection.snapshot,
+        effective_definition_snapshot,
         &request.tool_runtime,
     )?;
     let attached_skill_contexts =
@@ -121,7 +129,7 @@ pub fn create_owned_agent_run(
         request.tool_runtime.browser_control_preference(),
         request.tool_runtime.tool_application_policy(),
         tool_registry.descriptors(),
-        Some(&definition_selection.snapshot),
+        Some(effective_definition_snapshot),
         Some(request.tool_runtime.soul_settings()),
         None,
         attached_skill_contexts,
@@ -154,6 +162,30 @@ pub fn create_owned_agent_run(
             now: now.clone(),
         },
     )?;
+    if let Some(identity) = request.tool_runtime.subagent_child_identity() {
+        project_store::update_agent_run_lineage(
+            &request.repo_root,
+            &project_store::AgentRunLineageUpdateRecord {
+                project_id: request.project_id.clone(),
+                run_id: request.run_id.clone(),
+                parent_run_id: identity.parent_run_id.clone(),
+                parent_trace_id: identity.parent_trace_id.clone(),
+                parent_subagent_id: identity.parent_subagent_id.clone(),
+                subagent_role: identity.role.as_str().into(),
+                updated_at: now.clone(),
+            },
+        )?;
+        append_event(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+            AgentRunEventKind::StateTransition,
+            json!({
+                "kind": "subagent_child_identity_bound",
+                "identity": identity,
+            }),
+        )?;
+    }
     project_store::persist_runtime_attached_skill_snapshot(
         &request.repo_root,
         &attached_skill_snapshot,
@@ -446,7 +478,11 @@ fn workflow_policy_for_runtime_agent(
     runtime_agent_id: RuntimeAgentIdDto,
     definition_snapshot: &JsonValue,
 ) -> Option<AutonomousAgentWorkflowPolicy> {
-    if runtime_agent_id == RuntimeAgentIdDto::Generalist {
+    let is_child_definition = definition_snapshot
+        .get("scope")
+        .and_then(JsonValue::as_str)
+        .is_some_and(|scope| scope == "runtime_child");
+    if runtime_agent_id == RuntimeAgentIdDto::Generalist && !is_child_definition {
         return None;
     }
     AutonomousAgentWorkflowPolicy::from_definition_snapshot(definition_snapshot)
@@ -4295,11 +4331,18 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
             .unwrap_or(self.controls.active.model_id.as_str())
             .to_owned();
         let provider_config = route_provider_config_model(self.provider_config.clone(), &model_id);
-        let prompt = subagent_prompt(&task, &self.parent_run_id);
         let child_token = self.cancellation.linked_child();
         let role_policy = AutonomousAgentToolPolicy::for_subagent_role(
             task.role,
             self.tool_runtime.agent_tool_policy(),
+            self.tool_runtime.skill_tool_enabled(),
+        );
+        let child_identity = subagent_child_identity(
+            &task,
+            &self.parent_run_id,
+            &parent_trace_id,
+            self.controls.active.runtime_agent_id,
+            &role_policy,
             self.tool_runtime.skill_tool_enabled(),
         );
         let request = OwnedAgentRunRequest {
@@ -4307,7 +4350,7 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
             project_id: self.project_id.clone(),
             agent_session_id: self.agent_session_id.clone(),
             run_id: child_run_id.clone(),
-            prompt,
+            prompt: child_identity.initial_prompt.clone(),
             attachments: Vec::new(),
             linked_paths: Vec::new(),
             controls: Some(RuntimeRunControlInputDto {
@@ -4326,6 +4369,7 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
                 .clone()
                 .with_agent_tool_policy(Some(role_policy))
                 .with_agent_workflow_policy(None)
+                .with_subagent_child_identity(child_identity)
                 .with_delegated_tool_call_budget(task.subagent_id.clone(), task.max_tool_calls)
                 .with_delegated_provider_usage_budget(
                     task.subagent_id.clone(),
@@ -4428,6 +4472,18 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
         };
         let child_snapshot =
             project_store::load_agent_run(&self.repo_root, &self.project_id, child_run_id)?;
+        let child_identity = load_subagent_child_identity_for_run(
+            &self.repo_root,
+            &child_snapshot.run,
+        )?
+        .ok_or_else(|| {
+            CommandError::system_fault(
+                "agent_subagent_child_identity_missing",
+                format!(
+                    "Xero cannot continue child run `{child_run_id}` because its typed child identity is missing."
+                ),
+            )
+        })?;
         match child_snapshot.run.status {
             AgentRunStatus::Paused => {}
             AgentRunStatus::Starting | AgentRunStatus::Running | AgentRunStatus::Cancelling => {
@@ -4460,11 +4516,15 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
             .unwrap_or(child_snapshot.run.model_id.as_str())
             .to_owned();
         let provider_config = route_provider_config_model(self.provider_config.clone(), &model_id);
-        let role_policy = AutonomousAgentToolPolicy::for_subagent_role(
-            task.role,
-            self.tool_runtime.agent_tool_policy(),
-            self.tool_runtime.skill_tool_enabled(),
-        );
+        let role_policy = agent_tool_policy_from_snapshot(&child_identity.definition_snapshot)
+            .ok_or_else(|| {
+                CommandError::system_fault(
+                    "agent_subagent_child_tool_policy_missing",
+                    format!(
+                        "Xero cannot continue child run `{child_run_id}` because its typed child definition has no tool policy."
+                    ),
+                )
+            })?;
         let request = ContinueOwnedAgentRunRequest {
             repo_root: self.repo_root.clone(),
             project_id: self.project_id.clone(),
@@ -4488,6 +4548,7 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
                 .clone()
                 .with_agent_tool_policy(Some(role_policy))
                 .with_agent_workflow_policy(None)
+                .with_subagent_child_identity(child_identity.clone())
                 .with_delegated_tool_call_budget(
                     task.subagent_id.clone(),
                     task.max_tool_calls.saturating_sub(task.used_tool_calls),
@@ -4497,7 +4558,7 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
                     task.max_tokens.saturating_sub(task.used_tokens),
                     task.max_cost_micros.saturating_sub(task.used_cost_micros),
                 )
-                .with_subagent_write_scope(task.role, task.write_set.clone()),
+                .with_subagent_write_scope(child_identity.role, task.write_set.clone()),
             provider_config,
             provider_preflight: None,
             answer_pending_actions: false,
@@ -4641,25 +4702,9 @@ impl OwnedAgentSubagentExecutor {
         task_store: Arc<std::sync::Mutex<BTreeMap<String, AutonomousSubagentTask>>>,
     ) {
         let run_id = request.run_id.clone();
-        let result = create_owned_agent_run(&request).and_then(|_| {
-            if let Some(parent_trace_id) = task.parent_trace_id.clone() {
-                let _ = project_store::update_agent_run_lineage(
-                    &self.repo_root,
-                    &project_store::AgentRunLineageUpdateRecord {
-                        project_id: self.project_id.clone(),
-                        run_id: run_id.clone(),
-                        parent_run_id: self.parent_run_id.clone(),
-                        parent_trace_id,
-                        parent_subagent_id: task.subagent_id.clone(),
-                        subagent_role: task.role.as_str().into(),
-                        updated_at: now_timestamp(),
-                    },
-                )
-                .map(|snapshot| {
-                    task.trace_id = Some(snapshot.run.trace_id);
-                    task.parent_trace_id = snapshot.run.parent_trace_id;
-                });
-            }
+        let result = create_owned_agent_run(&request).and_then(|snapshot| {
+            task.trace_id = Some(snapshot.run.trace_id);
+            task.parent_trace_id = snapshot.run.parent_trace_id;
             emit_subagent_lifecycle(
                 &self.repo_root,
                 &self.project_id,
@@ -4997,6 +5042,13 @@ fn effective_agent_tool_policy(
     definition_snapshot: &JsonValue,
     tool_runtime: &AutonomousToolRuntime,
 ) -> Option<AutonomousAgentToolPolicy> {
+    if definition_snapshot
+        .get("scope")
+        .and_then(JsonValue::as_str)
+        .is_some_and(|scope| scope == "runtime_child")
+    {
+        return agent_tool_policy_from_snapshot(definition_snapshot);
+    }
     AutonomousAgentToolPolicy::intersect_optional(
         agent_tool_policy_from_snapshot(definition_snapshot).as_ref(),
         tool_runtime.agent_tool_policy(),
@@ -5004,8 +5056,166 @@ fn effective_agent_tool_policy(
     )
 }
 
+fn validate_subagent_child_identity(
+    identity: &AutonomousSubagentChildIdentity,
+    request_prompt: &str,
+) -> CommandResult<()> {
+    let definition_role = identity
+        .definition_snapshot
+        .get("subagentIdentity")
+        .and_then(|value| value.get("role"))
+        .and_then(JsonValue::as_str);
+    let definition_scope = identity
+        .definition_snapshot
+        .get("scope")
+        .and_then(JsonValue::as_str);
+    let definition_id = identity
+        .definition_snapshot
+        .get("id")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if identity.schema != AUTONOMOUS_SUBAGENT_CHILD_IDENTITY_SCHEMA
+        || identity.role_label.trim().is_empty()
+        || identity.verification_contract.trim().is_empty()
+        || identity.parent_run_id.trim().is_empty()
+        || identity.parent_trace_id.trim().is_empty()
+        || identity.parent_subagent_id.trim().is_empty()
+        || definition_scope != Some("runtime_child")
+        || definition_role != Some(identity.role.as_str())
+        || definition_id.is_none()
+        || agent_tool_policy_from_snapshot(&identity.definition_snapshot).is_none()
+    {
+        return Err(CommandError::system_fault(
+            "agent_subagent_child_identity_invalid",
+            "Xero refused to create a child run because its typed child identity is incomplete or inconsistent.",
+        ));
+    }
+    if identity.initial_prompt != request_prompt {
+        return Err(CommandError::system_fault(
+            "agent_subagent_child_prompt_mismatch",
+            "Xero refused to create a child run because its request prompt disagrees with the typed child identity.",
+        ));
+    }
+    if identity
+        .definition_snapshot
+        .get("workflowStructure")
+        .is_some()
+        && AutonomousAgentWorkflowPolicy::from_definition_snapshot(&identity.definition_snapshot)
+            .is_none()
+    {
+        return Err(CommandError::system_fault(
+            "agent_subagent_child_stage_invalid",
+            "Xero refused to create a child run because its typed child Stage configuration is invalid.",
+        ));
+    }
+    Ok(())
+}
+
 fn subagent_prompt(task: &AutonomousSubagentTask, parent_run_id: &str) -> String {
-    let boundary = if task.role.allows_write_set() && !task.write_set.is_empty() {
+    let boundary = subagent_ownership_boundary(task);
+    format!(
+        "Delegated task from parent owned-agent run `{parent_run_id}`. Work only on this focused task and stay inside the owning pane lineage. {boundary}\nTool budget: at most {} delegated tool calls, {} tokens, and {} cost micros.\n\n{}",
+        task.max_tool_calls,
+        task.max_tokens,
+        task.max_cost_micros,
+        task.prompt
+    )
+}
+
+fn subagent_child_identity(
+    task: &AutonomousSubagentTask,
+    parent_run_id: &str,
+    parent_trace_id: &str,
+    runtime_agent_id: RuntimeAgentIdDto,
+    role_policy: &AutonomousAgentToolPolicy,
+    skill_tool_enabled: bool,
+) -> AutonomousSubagentChildIdentity {
+    let definition_id = sanitize_action_id(&format!(
+        "runtime-subagent-{parent_run_id}-{}-{}",
+        task.subagent_id,
+        task.role.as_str()
+    ));
+    let ownership_boundary = subagent_ownership_boundary(task);
+    let initial_prompt = subagent_prompt(task, parent_run_id);
+    let inherited_context = vec![
+        AutonomousSubagentInheritedContext {
+            kind: "repository_scope".into(),
+            source_run_id: parent_run_id.into(),
+            reason: "child_executes_in_the_same_explicit_project_repository_scope".into(),
+        },
+        AutonomousSubagentInheritedContext {
+            kind: "provider_route".into(),
+            source_run_id: parent_run_id.into(),
+            reason: "delegation_reuses_the_parent_provider_route_unless_modelId_overrides_it"
+                .into(),
+        },
+        AutonomousSubagentInheritedContext {
+            kind: "tool_policy_ceiling".into(),
+            source_run_id: parent_run_id.into(),
+            reason: "child_role_tools_are_intersected_with_the_parent_tool_policy".into(),
+        },
+    ];
+    let mut definition_snapshot = json!({
+        "schema": "xero.agent_definition.v1",
+        "schemaVersion": 3,
+        "id": definition_id,
+        "version": 1,
+        "displayName": task.role_label,
+        "shortLabel": task.role_label,
+        "description": format!("Typed {} child agent identity.", task.role.label()),
+        "taskPurpose": format!(
+            "You are the {} subagent for parent owned-agent run `{parent_run_id}`. Work only on this delegated task: {} {}",
+            task.role.label(),
+            task.prompt,
+            task.verification_contract,
+        ),
+        "scope": "runtime_child",
+        "lifecycleState": "active",
+        "baseCapabilityProfile": runtime_agent_id.as_str(),
+        "toolPolicy": role_policy.child_definition_policy_snapshot(skill_tool_enabled),
+        "promptFragments": [],
+        "workflowContract": format!("{ownership_boundary} {}", task.verification_contract),
+        "finalResponseContract": task.verification_contract,
+        "attachedSkills": [],
+        "handoffPolicy": {
+            "enabled": false,
+            "routingMode": "same_agent",
+            "allowedTargets": [],
+            "preserveDefinitionVersion": true,
+            "carrySummary": true,
+            "includeDurableContext": false
+        },
+        "subagentIdentity": {
+            "schema": AUTONOMOUS_SUBAGENT_CHILD_IDENTITY_SCHEMA,
+            "role": task.role.as_str(),
+            "roleLabel": task.role_label,
+            "depth": task.depth,
+            "parentRunId": parent_run_id,
+            "parentSubagentId": task.subagent_id,
+            "inheritedContext": &inherited_context,
+        }
+    });
+    if let Some(workflow_structure) = task.workflow_structure.as_ref() {
+        definition_snapshot["workflowStructure"] = workflow_structure.clone();
+    }
+    AutonomousSubagentChildIdentity {
+        schema: AUTONOMOUS_SUBAGENT_CHILD_IDENTITY_SCHEMA.into(),
+        role: task.role,
+        role_label: task.role_label.clone(),
+        verification_contract: task.verification_contract.clone(),
+        initial_prompt,
+        parent_run_id: parent_run_id.into(),
+        parent_trace_id: parent_trace_id.into(),
+        parent_subagent_id: task.subagent_id.clone(),
+        depth: task.depth,
+        definition_snapshot,
+        inherited_context,
+    }
+}
+
+fn subagent_ownership_boundary(task: &AutonomousSubagentTask) -> String {
+    if task.role.allows_write_set() && !task.write_set.is_empty() {
         format!(
             "You may edit only these repo-relative writeSet paths: {}. Do not modify any other file.",
             task.write_set.join(", ")
@@ -5014,16 +5224,7 @@ fn subagent_prompt(task: &AutonomousSubagentTask, parent_run_id: &str) -> String
         "This role has no writeSet for this task, so it is read-only. Do not change files.".into()
     } else {
         "This is a read-only role. Do not change files.".into()
-    };
-    format!(
-        "You are the {} subagent for parent owned-agent run `{parent_run_id}`. Work only on this focused task, stay inside the owning pane lineage, and respect the ownership boundary. {boundary}\nVerification contract: {}\nTool budget: at most {} delegated tool calls, {} tokens, and {} cost micros.\n\n{}",
-        task.role.label(),
-        task.verification_contract,
-        task.max_tool_calls,
-        task.max_tokens,
-        task.max_cost_micros,
-        task.prompt
-    )
+    }
 }
 
 fn subagent_result_summary(snapshot: &AgentRunSnapshotRecord) -> String {
@@ -5054,6 +5255,7 @@ mod tests {
     use std::{fs, path::Path};
 
     use crate::db::{configure_connection, database_path_for_repo, migrations::migrations};
+    use crate::runtime::AutonomousSubagentRole;
 
     struct PanicMemoryProvider;
 
@@ -5140,6 +5342,279 @@ mod tests {
                 ],
             )
             .expect("insert agent session");
+    }
+
+    fn subagent_task_with_stages(
+        role: AutonomousSubagentRole,
+        depth: usize,
+        workflow_structure: Option<JsonValue>,
+    ) -> AutonomousSubagentTask {
+        AutonomousSubagentTask {
+            subagent_id: format!("subagent-{depth}"),
+            role,
+            role_label: role.label().into(),
+            prompt: "Inspect the delegated implementation boundary.".into(),
+            model_id: None,
+            write_set: Vec::new(),
+            workflow_structure,
+            verification_contract: role.verification_contract().into(),
+            depth,
+            max_tool_calls: 10,
+            max_tokens: 10_000,
+            max_cost_micros: 10_000,
+            used_tool_calls: 0,
+            used_tokens: 0,
+            used_cost_micros: 0,
+            budget_status: "within_budget".into(),
+            budget_diagnostic: None,
+            status: "registered".into(),
+            created_at: "2026-07-09T20:00:00Z".into(),
+            started_at: None,
+            completed_at: None,
+            cancelled_at: None,
+            integrated_at: None,
+            run_id: None,
+            trace_id: None,
+            parent_run_id: None,
+            parent_trace_id: None,
+            input_log: Vec::new(),
+            result_summary: None,
+            result_artifact: None,
+            parent_decision: None,
+        }
+    }
+
+    #[test]
+    fn child_identity_omits_parent_stages_by_default() {
+        let parent_policy = AutonomousAgentToolPolicy::from_definition_snapshot(&json!({
+            "toolPolicy": {
+                "allowedTools": ["read", "search"]
+            },
+            "workflowStructure": {
+                "phases": [{
+                    "id": "parent_gate",
+                    "title": "Parent Gate",
+                    "allowedTools": ["search"]
+                }]
+            }
+        }))
+        .expect("parent policy");
+        let role_policy = AutonomousAgentToolPolicy::for_subagent_role(
+            AutonomousSubagentRole::Researcher,
+            Some(&parent_policy),
+            false,
+        );
+        let task = subagent_task_with_stages(AutonomousSubagentRole::Researcher, 1, None);
+
+        let identity = subagent_child_identity(
+            &task,
+            "parent-run",
+            "0123456789abcdef0123456789abcdef",
+            RuntimeAgentIdDto::Engineer,
+            &role_policy,
+            false,
+        );
+
+        assert_eq!(identity.role, AutonomousSubagentRole::Researcher);
+        assert_eq!(
+            identity.definition_snapshot["scope"],
+            json!("runtime_child")
+        );
+        assert!(identity
+            .definition_snapshot
+            .get("workflowStructure")
+            .is_none());
+    }
+
+    #[test]
+    fn nested_child_identity_preserves_only_explicit_child_stages() {
+        let child_stages = json!({
+            "startPhaseId": "child_inspect",
+            "phases": [{
+                "id": "child_inspect",
+                "title": "Child Inspect",
+                "allowedTools": ["read"]
+            }]
+        });
+        let role_policy = AutonomousAgentToolPolicy::for_subagent_role(
+            AutonomousSubagentRole::Researcher,
+            None,
+            false,
+        );
+        let task = subagent_task_with_stages(
+            AutonomousSubagentRole::Researcher,
+            2,
+            Some(child_stages.clone()),
+        );
+
+        let identity = subagent_child_identity(
+            &task,
+            "immediate-child-parent",
+            "0123456789abcdef0123456789abcdef",
+            RuntimeAgentIdDto::Generalist,
+            &role_policy,
+            false,
+        );
+        let policy = workflow_policy_for_runtime_agent(
+            RuntimeAgentIdDto::Generalist,
+            &identity.definition_snapshot,
+        )
+        .expect("explicit child Stages compile for a generalist-backed child");
+
+        assert_eq!(identity.depth, 2);
+        assert_eq!(identity.parent_run_id, "immediate-child-parent");
+        assert_eq!(
+            identity.definition_snapshot["workflowStructure"],
+            child_stages
+        );
+        assert!(policy
+            .initial_allowed_tools()
+            .is_some_and(|tools| tools.contains("read")));
+    }
+
+    #[test]
+    fn child_identity_and_stages_survive_durable_reload() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "subagent-identity-reload";
+        create_project_database(&repo_root, project_id);
+        let parent_definition_id = "parent-with-stages";
+        save_custom_definition(&repo_root, parent_definition_id, "engineering");
+        let mut parent_definition =
+            project_store::load_effective_agent_definition_version_snapshot(
+                &repo_root,
+                parent_definition_id,
+                1,
+            )
+            .expect("load base parent definition");
+        parent_definition["version"] = json!(2);
+        parent_definition["toolPolicy"]["subagentAllowed"] = json!(true);
+        parent_definition["toolPolicy"]["allowedSubagentRoles"] = json!(["researcher"]);
+        parent_definition["toolPolicy"]["allowedTools"] = json!(["subagent"]);
+        parent_definition["workflowStructure"] = json!({
+            "startPhaseId": "parent_gate",
+            "phases": [{
+                "id": "parent_gate",
+                "title": "Parent Gate",
+                "allowedTools": ["search"]
+            }]
+        });
+        project_store::insert_agent_definition(
+            &repo_root,
+            &project_store::NewAgentDefinitionRecord {
+                definition_id: parent_definition_id.into(),
+                version: 2,
+                display_name: "Parent With Stages".into(),
+                short_label: "Parent".into(),
+                description: "Parent definition used to verify child isolation.".into(),
+                scope: "project_custom".into(),
+                lifecycle_state: "active".into(),
+                base_capability_profile: "engineering".into(),
+                snapshot: parent_definition,
+                validation_report: Some(json!({ "status": "valid" })),
+                created_at: "2026-07-09T20:00:00Z".into(),
+                updated_at: "2026-07-09T20:00:00Z".into(),
+            },
+        )
+        .expect("insert parent definition");
+        let parent = project_store::insert_agent_run(
+            &repo_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: Some(parent_definition_id.into()),
+                agent_definition_version: Some(2),
+                project_id: project_id.into(),
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: "parent-run".into(),
+                provider_id: FAKE_PROVIDER_ID.into(),
+                model_id: "fake-model".into(),
+                prompt: "Drive the parent run.".into(),
+                system_prompt: "parent system".into(),
+                now: "2026-07-09T20:00:00Z".into(),
+            },
+        )
+        .expect("insert parent run");
+        let parent_definition = load_agent_definition_snapshot_for_run(&repo_root, &parent.run)
+            .expect("load parent definition");
+        let parent_policy =
+            agent_tool_policy_from_snapshot(&parent_definition).expect("parent tool policy");
+        let role_policy = AutonomousAgentToolPolicy::for_subagent_role(
+            AutonomousSubagentRole::Researcher,
+            Some(&parent_policy),
+            false,
+        );
+        let child_stages = json!({
+            "startPhaseId": "child_inspect",
+            "phases": [{
+                "id": "child_inspect",
+                "title": "Child Inspect",
+                "allowedTools": ["read"]
+            }]
+        });
+        let task = subagent_task_with_stages(
+            AutonomousSubagentRole::Researcher,
+            1,
+            Some(child_stages.clone()),
+        );
+        let identity = subagent_child_identity(
+            &task,
+            &parent.run.run_id,
+            &parent.run.trace_id,
+            RuntimeAgentIdDto::Engineer,
+            &role_policy,
+            false,
+        );
+        let child_run_id = "parent-run-subagent-1";
+        let tool_runtime = AutonomousToolRuntime::new(&repo_root)
+            .expect("tool runtime")
+            .with_agent_tool_policy(Some(role_policy))
+            .with_agent_workflow_policy(None)
+            .with_subagent_child_identity(identity.clone());
+
+        create_owned_agent_run(&OwnedAgentRunRequest {
+            repo_root: repo_root.clone(),
+            project_id: project_id.into(),
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            run_id: child_run_id.into(),
+            prompt: subagent_prompt(&task, &parent.run.run_id),
+            attachments: Vec::new(),
+            linked_paths: Vec::new(),
+            controls: Some(RuntimeRunControlInputDto {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: Some(parent_definition_id.into()),
+                agent_definition_version: Some(2),
+                provider_profile_id: None,
+                model_id: "fake-model".into(),
+                thinking_effort: None,
+                approval_mode: RuntimeRunApprovalModeDto::Suggest,
+                plan_mode_required: false,
+                auto_compact_enabled: true,
+            }),
+            tool_runtime,
+            provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
+        })
+        .expect("create child run");
+
+        let child = project_store::load_agent_run(&repo_root, project_id, child_run_id)
+            .expect("reload child run");
+        let reloaded_identity = load_subagent_child_identity_for_run(&repo_root, &child.run)
+            .expect("reload child identity")
+            .expect("child identity");
+        let reloaded_definition = load_agent_definition_snapshot_for_run(&repo_root, &child.run)
+            .expect("reload child definition");
+
+        assert_eq!(child.run.lineage_kind, "subagent_child");
+        assert_eq!(child.run.subagent_role.as_deref(), Some("researcher"));
+        assert_eq!(reloaded_identity, identity);
+        assert_eq!(reloaded_definition["workflowStructure"], child_stages);
+        assert_ne!(
+            reloaded_definition["workflowStructure"],
+            parent_definition["workflowStructure"]
+        );
+        assert!(child.run.system_prompt.contains("child_inspect"));
+        assert!(!child.run.system_prompt.contains("parent_gate"));
     }
 
     fn save_custom_definition(repo_root: &Path, definition_id: &str, profile: &str) {

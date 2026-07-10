@@ -1054,6 +1054,7 @@ fn tool_runtime_executes_priority_one_agent_surface_tools() {
             role: Some(AutonomousSubagentRole::Researcher),
             prompt: Some("Find the relevant symbols.".into()),
             model_id: Some("fast-model".into()),
+            workflow_structure: None,
             write_set: Vec::new(),
             decision: None,
             timeout_ms: None,
@@ -1229,6 +1230,7 @@ fn subagent_runtime_enforces_engineer_ownership_and_integration_decisions() {
         role: Some(AutonomousSubagentRole::Engineer),
         prompt: Some("Own everything.".into()),
         model_id: None,
+        workflow_structure: None,
         write_set: vec![".".into()],
         decision: None,
         timeout_ms: None,
@@ -1250,6 +1252,7 @@ fn subagent_runtime_enforces_engineer_ownership_and_integration_decisions() {
             role: Some(AutonomousSubagentRole::Engineer),
             prompt: Some("Own the source root.".into()),
             model_id: None,
+            workflow_structure: None,
             write_set: vec!["src".into()],
             decision: None,
             timeout_ms: None,
@@ -1272,6 +1275,7 @@ fn subagent_runtime_enforces_engineer_ownership_and_integration_decisions() {
         role: Some(AutonomousSubagentRole::Engineer),
         prompt: Some("Try overlapping ownership.".into()),
         model_id: None,
+        workflow_structure: None,
         write_set: vec!["src/lib.rs".into()],
         decision: None,
         timeout_ms: None,
@@ -1292,6 +1296,7 @@ fn subagent_runtime_enforces_engineer_ownership_and_integration_decisions() {
         role: Some(AutonomousSubagentRole::Reviewer),
         prompt: Some("Review only.".into()),
         model_id: None,
+        workflow_structure: None,
         write_set: vec!["README.md".into()],
         decision: None,
         timeout_ms: None,
@@ -1313,6 +1318,7 @@ fn subagent_runtime_enforces_engineer_ownership_and_integration_decisions() {
             role: None,
             prompt: None,
             model_id: None,
+            workflow_structure: None,
             write_set: Vec::new(),
             decision: None,
             timeout_ms: None,
@@ -1329,6 +1335,7 @@ fn subagent_runtime_enforces_engineer_ownership_and_integration_decisions() {
             role: None,
             prompt: None,
             model_id: None,
+            workflow_structure: None,
             write_set: Vec::new(),
             decision: Some("Do not apply output; engineer was cancelled.".into()),
             timeout_ms: None,
@@ -1370,6 +1377,7 @@ fn subagent_runtime_tracks_lifecycle_and_delegated_budgets() {
             role: Some(AutonomousSubagentRole::Planner),
             prompt: Some("Plan the implementation.".into()),
             model_id: None,
+            workflow_structure: None,
             write_set: Vec::new(),
             decision: None,
             timeout_ms: None,
@@ -1401,6 +1409,7 @@ fn subagent_runtime_tracks_lifecycle_and_delegated_budgets() {
             role: None,
             prompt: Some("Include migration risks.".into()),
             model_id: None,
+            workflow_structure: None,
             write_set: Vec::new(),
             decision: None,
             timeout_ms: None,
@@ -1424,6 +1433,7 @@ fn subagent_runtime_tracks_lifecycle_and_delegated_budgets() {
             role: None,
             prompt: None,
             model_id: None,
+            workflow_structure: None,
             write_set: Vec::new(),
             decision: None,
             timeout_ms: Some(0),
@@ -1440,6 +1450,7 @@ fn subagent_runtime_tracks_lifecycle_and_delegated_budgets() {
             role: None,
             prompt: None,
             model_id: None,
+            workflow_structure: None,
             write_set: Vec::new(),
             decision: Some("Closed after reviewing the planner output.".into()),
             timeout_ms: None,
@@ -1456,6 +1467,7 @@ fn subagent_runtime_tracks_lifecycle_and_delegated_budgets() {
             role: Some(AutonomousSubagentRole::Researcher),
             prompt: Some("Research options.".into()),
             model_id: None,
+            workflow_structure: None,
             write_set: Vec::new(),
             decision: None,
             timeout_ms: None,
@@ -1471,6 +1483,7 @@ fn subagent_runtime_tracks_lifecycle_and_delegated_budgets() {
         role: Some(AutonomousSubagentRole::Reviewer),
         prompt: Some("Review the plan.".into()),
         model_id: None,
+        workflow_structure: None,
         write_set: Vec::new(),
         decision: None,
         timeout_ms: None,
@@ -1513,6 +1526,105 @@ fn subagent_role_policies_are_least_privilege_and_parent_bounded() {
     assert!(!engineer_policy.allows_tool("write"));
     assert!(!engineer_policy.allows_tool("command_probe"));
     assert!(!engineer_policy.allows_tool("command_run"));
+}
+
+#[test]
+fn subagent_stage_configuration_is_child_scoped_and_role_compatible() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let runtime = AutonomousToolRuntime::new(temp.path()).expect("runtime");
+    let workflow_structure = serde_json::json!({
+        "startPhaseId": "inspect",
+        "phases": [{
+            "id": "inspect",
+            "title": "Inspect",
+            "allowedTools": ["read"],
+            "requiredChecks": [{
+                "kind": "tool_succeeded",
+                "toolName": "read",
+                "minCount": 1
+            }]
+        }]
+    });
+
+    let spawned = runtime
+        .subagent(AutonomousSubagentRequest {
+            action: AutonomousSubagentAction::Spawn,
+            task_id: None,
+            role: Some(AutonomousSubagentRole::Researcher),
+            prompt: Some("Inspect the relevant implementation.".into()),
+            model_id: None,
+            workflow_structure: Some(workflow_structure.clone()),
+            write_set: Vec::new(),
+            decision: None,
+            timeout_ms: None,
+            max_tool_calls: None,
+            max_tokens: None,
+            max_cost_micros: None,
+        })
+        .expect("spawn child with compatible Stages");
+    let AutonomousToolOutput::Subagent(output) = spawned.output else {
+        panic!("expected subagent output");
+    };
+    assert_eq!(output.task.workflow_structure, Some(workflow_structure));
+
+    let incompatible = runtime
+        .subagent(AutonomousSubagentRequest {
+            action: AutonomousSubagentAction::Spawn,
+            task_id: None,
+            role: Some(AutonomousSubagentRole::Researcher),
+            prompt: Some("Attempt a write-gated Stage.".into()),
+            model_id: None,
+            workflow_structure: Some(serde_json::json!({
+                "phases": [{
+                    "id": "mutate",
+                    "title": "Mutate",
+                    "allowedTools": ["write"]
+                }]
+            })),
+            write_set: Vec::new(),
+            decision: None,
+            timeout_ms: None,
+            max_tool_calls: None,
+            max_tokens: None,
+            max_cost_micros: None,
+        })
+        .expect_err("role-incompatible child Stages must be rejected");
+    assert_eq!(
+        incompatible.code,
+        "autonomous_tool_subagent_stage_tool_incompatible"
+    );
+}
+
+#[test]
+fn subagent_stage_configuration_rejects_invalid_graphs_before_spawn() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let runtime = AutonomousToolRuntime::new(temp.path()).expect("runtime");
+
+    let error = runtime
+        .subagent(AutonomousSubagentRequest {
+            action: AutonomousSubagentAction::Spawn,
+            task_id: None,
+            role: Some(AutonomousSubagentRole::Researcher),
+            prompt: Some("Inspect with an invalid Stage graph.".into()),
+            model_id: None,
+            workflow_structure: Some(serde_json::json!({
+                "startPhaseId": "missing",
+                "phases": [{
+                    "id": "inspect",
+                    "title": "Inspect",
+                    "allowedTools": ["read"]
+                }]
+            })),
+            write_set: Vec::new(),
+            decision: None,
+            timeout_ms: None,
+            max_tool_calls: None,
+            max_tokens: None,
+            max_cost_micros: None,
+        })
+        .expect_err("invalid child Stage graph must be rejected");
+
+    assert_eq!(error.code, "autonomous_tool_subagent_stage_invalid");
 }
 
 #[test]
@@ -1572,6 +1684,7 @@ fn subagent_runtime_supports_phase_nine_role_scenarios() {
                 role: Some(role),
                 prompt: Some(prompt.into()),
                 model_id: None,
+                workflow_structure: None,
                 write_set: write_set.into_iter().map(str::to_owned).collect(),
                 decision: None,
                 timeout_ms: None,

@@ -75,6 +75,8 @@ pub(crate) fn assemble_provider_context_package_with_prompt_budget(
     let created_at = now_timestamp();
     let first_turn_context_policy =
         FirstTurnContextPolicy::from_agent_definition_snapshot(input.agent_definition_snapshot);
+    let subagent_inherited_context =
+        subagent_inherited_context_from_definition_snapshot(input.agent_definition_snapshot)?;
     let retrieval_query_text = context_retrieval_query_text(
         input.runtime_agent_id,
         input.messages,
@@ -193,6 +195,18 @@ pub(crate) fn assemble_provider_context_package_with_prompt_budget(
     included.extend(tool_contributors);
     included.extend(agent_definition_contributors);
     included.extend(coordination_contributors);
+    included.extend(subagent_inherited_context.iter().map(|inherited| {
+        project_store::AgentContextManifestContributorRecord {
+            contributor_id: format!(
+                "subagent_parent_context:{}:{}",
+                inherited.source_run_id, inherited.kind
+            ),
+            kind: "subagent_parent_context".into(),
+            source_id: Some(inherited.source_run_id.clone()),
+            estimated_tokens: estimate_tokens(&inherited.reason),
+            reason: Some(inherited.reason.clone()),
+        }
+    }));
     if let Some(lineage) = handoff_lineage.as_ref() {
         included.push(project_store::AgentContextManifestContributorRecord {
             contributor_id: format!("handoff_lineage:{}", lineage.handoff_id),
@@ -554,6 +568,13 @@ pub(crate) fn assemble_provider_context_package_with_prompt_budget(
     );
     manifest_fields.insert("toolExposurePlan".into(), json!(input.tool_exposure_plan));
     manifest_fields.insert("agentDefinition".into(), agent_definition_json);
+    manifest_fields.insert(
+        "subagentInheritance".into(),
+        subagent_inheritance_manifest_json(
+            input.agent_definition_snapshot,
+            &subagent_inherited_context,
+        ),
+    );
     manifest_fields.insert(
         "attachedSkills".into(),
         attached_skill_context_manifest_json(&attached_skill_contexts),
@@ -2630,6 +2651,57 @@ fn manifest_contributor_json(
     })
 }
 
+fn subagent_inherited_context_from_definition_snapshot(
+    snapshot: Option<&JsonValue>,
+) -> CommandResult<Vec<AutonomousSubagentInheritedContext>> {
+    let Some(snapshot) = snapshot else {
+        return Ok(Vec::new());
+    };
+    let is_child = snapshot
+        .get("scope")
+        .and_then(JsonValue::as_str)
+        .is_some_and(|scope| scope == "runtime_child");
+    if !is_child {
+        return Ok(Vec::new());
+    }
+    let inherited_context = snapshot
+        .get("subagentIdentity")
+        .and_then(|identity| identity.get("inheritedContext"))
+        .cloned()
+        .ok_or_else(|| {
+            CommandError::system_fault(
+                "agent_subagent_context_inheritance_missing",
+                "Xero cannot assemble a child context manifest without explicit parent-context inheritance metadata.",
+            )
+        })?;
+    serde_json::from_value(inherited_context).map_err(|error| {
+        CommandError::system_fault(
+            "agent_subagent_context_inheritance_invalid",
+            format!(
+                "Xero cannot assemble the child context manifest because parent-context inheritance metadata is invalid: {error}"
+            ),
+        )
+    })
+}
+
+fn subagent_inheritance_manifest_json(
+    snapshot: Option<&JsonValue>,
+    inherited_context: &[AutonomousSubagentInheritedContext],
+) -> JsonValue {
+    let Some(identity) = snapshot.and_then(|snapshot| snapshot.get("subagentIdentity")) else {
+        return JsonValue::Null;
+    };
+    json!({
+        "schema": AUTONOMOUS_SUBAGENT_CHILD_IDENTITY_SCHEMA,
+        "role": identity.get("role"),
+        "roleLabel": identity.get("roleLabel"),
+        "depth": identity.get("depth"),
+        "parentRunId": identity.get("parentRunId"),
+        "parentSubagentId": identity.get("parentSubagentId"),
+        "inheritedContext": inherited_context,
+    })
+}
+
 fn handoff_lineage_manifest_json(lineage: &project_store::AgentHandoffLineageRecord) -> JsonValue {
     json!({
         "schema": "xero.provider_context_handoff_lineage.v1",
@@ -2962,6 +3034,36 @@ mod tests {
         git::repository::CanonicalRepository,
         state::DesktopState,
     };
+
+    #[test]
+    fn child_context_manifest_metadata_traces_parent_inheritance_reasons() {
+        let snapshot = json!({
+            "scope": "runtime_child",
+            "subagentIdentity": {
+                "role": "researcher",
+                "roleLabel": "Researcher",
+                "depth": 2,
+                "parentRunId": "parent-child-run",
+                "parentSubagentId": "subagent-2",
+                "inheritedContext": [{
+                    "kind": "tool_policy_ceiling",
+                    "sourceRunId": "parent-child-run",
+                    "reason": "child_role_tools_are_intersected_with_the_parent_tool_policy"
+                }]
+            }
+        });
+
+        let inherited = subagent_inherited_context_from_definition_snapshot(Some(&snapshot))
+            .expect("decode child inheritance");
+        let manifest = subagent_inheritance_manifest_json(Some(&snapshot), &inherited);
+
+        assert_eq!(inherited.len(), 1);
+        assert_eq!(inherited[0].source_run_id, "parent-child-run");
+        assert_eq!(
+            manifest["inheritedContext"][0]["reason"],
+            json!("child_role_tools_are_intersected_with_the_parent_tool_policy")
+        );
+    }
 
     #[test]
     fn provider_message_manifest_entries_reference_bodies_instead_of_embedding_them() {

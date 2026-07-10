@@ -296,6 +296,7 @@ pub struct AgentSubagentTaskRecord {
     pub prompt_preview: String,
     pub model_id: Option<String>,
     pub write_set_json: String,
+    pub workflow_structure_json: Option<String>,
     pub verification_contract: String,
     pub depth: u64,
     pub max_tool_calls: u64,
@@ -2082,6 +2083,7 @@ pub fn upsert_agent_subagent_task(
                 prompt_preview,
                 model_id,
                 write_set_json,
+                workflow_structure_json,
                 verification_contract,
                 depth,
                 max_tool_calls,
@@ -2112,7 +2114,7 @@ pub fn upsert_agent_subagent_task(
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
                 ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
                 ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
-                ?31, ?32, ?33, ?34
+                ?31, ?32, ?33, ?34, ?35
             )
             ON CONFLICT(project_id, parent_run_id, subagent_id) DO UPDATE SET
                 role = excluded.role,
@@ -2121,6 +2123,7 @@ pub fn upsert_agent_subagent_task(
                 prompt_preview = excluded.prompt_preview,
                 model_id = excluded.model_id,
                 write_set_json = excluded.write_set_json,
+                workflow_structure_json = excluded.workflow_structure_json,
                 verification_contract = excluded.verification_contract,
                 depth = excluded.depth,
                 max_tool_calls = excluded.max_tool_calls,
@@ -2156,6 +2159,7 @@ pub fn upsert_agent_subagent_task(
                 record.prompt_preview,
                 record.model_id,
                 record.write_set_json,
+                record.workflow_structure_json,
                 record.verification_contract,
                 record.depth,
                 record.max_tool_calls,
@@ -2665,6 +2669,9 @@ fn validate_agent_subagent_task(record: &AgentSubagentTaskRecord) -> Result<(), 
         validate_non_empty_text(model_id, "modelId")?;
     }
     validate_json_payload(&record.write_set_json, "writeSetJson")?;
+    if let Some(workflow_structure_json) = record.workflow_structure_json.as_ref() {
+        validate_json_payload(workflow_structure_json, "workflowStructureJson")?;
+    }
     validate_non_empty_text(&record.verification_contract, "verificationContract")?;
     validate_non_empty_text(&record.budget_status, "budgetStatus")?;
     if let Some(diagnostic_json) = record.budget_diagnostic_json.as_ref() {
@@ -3140,6 +3147,7 @@ fn agent_subagent_task_select_sql(where_clause: &str) -> String {
             prompt_preview,
             model_id,
             write_set_json,
+            workflow_structure_json,
             verification_contract,
             depth,
             max_tool_calls,
@@ -3182,31 +3190,32 @@ fn read_agent_subagent_task_row(row: &Row<'_>) -> rusqlite::Result<AgentSubagent
         prompt_preview: row.get(6)?,
         model_id: row.get(7)?,
         write_set_json: row.get(8)?,
-        verification_contract: row.get(9)?,
-        depth: read_nonnegative_u64(row, 10)?,
-        max_tool_calls: read_nonnegative_u64(row, 11)?,
-        max_tokens: read_nonnegative_u64(row, 12)?,
-        max_cost_micros: read_nonnegative_u64(row, 13)?,
-        used_tool_calls: read_nonnegative_u64(row, 14)?,
-        used_tokens: read_nonnegative_u64(row, 15)?,
-        used_cost_micros: read_nonnegative_u64(row, 16)?,
-        budget_status: row.get(17)?,
-        budget_diagnostic_json: row.get(18)?,
-        status: row.get(19)?,
-        created_at: row.get(20)?,
-        started_at: row.get(21)?,
-        completed_at: row.get(22)?,
-        cancelled_at: row.get(23)?,
-        integrated_at: row.get(24)?,
-        child_run_id: row.get(25)?,
-        child_trace_id: row.get(26)?,
-        parent_trace_id: row.get(27)?,
-        input_log_json: row.get(28)?,
-        result_summary: row.get(29)?,
-        result_artifact: row.get(30)?,
-        parent_decision: row.get(31)?,
-        latest_summary: row.get(32)?,
-        updated_at: row.get(33)?,
+        workflow_structure_json: row.get(9)?,
+        verification_contract: row.get(10)?,
+        depth: read_nonnegative_u64(row, 11)?,
+        max_tool_calls: read_nonnegative_u64(row, 12)?,
+        max_tokens: read_nonnegative_u64(row, 13)?,
+        max_cost_micros: read_nonnegative_u64(row, 14)?,
+        used_tool_calls: read_nonnegative_u64(row, 15)?,
+        used_tokens: read_nonnegative_u64(row, 16)?,
+        used_cost_micros: read_nonnegative_u64(row, 17)?,
+        budget_status: row.get(18)?,
+        budget_diagnostic_json: row.get(19)?,
+        status: row.get(20)?,
+        created_at: row.get(21)?,
+        started_at: row.get(22)?,
+        completed_at: row.get(23)?,
+        cancelled_at: row.get(24)?,
+        integrated_at: row.get(25)?,
+        child_run_id: row.get(26)?,
+        child_trace_id: row.get(27)?,
+        parent_trace_id: row.get(28)?,
+        input_log_json: row.get(29)?,
+        result_summary: row.get(30)?,
+        result_artifact: row.get(31)?,
+        parent_decision: row.get(32)?,
+        latest_summary: row.get(33)?,
+        updated_at: row.get(34)?,
     })
 }
 

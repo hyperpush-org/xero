@@ -923,6 +923,28 @@ impl AutonomousAgentToolPolicy {
         }
     }
 
+    pub(crate) fn allowed_tool_names(&self, skill_tool_enabled: bool) -> BTreeSet<String> {
+        deferred_tool_catalog(skill_tool_enabled)
+            .into_iter()
+            .map(|entry| entry.tool_name.to_owned())
+            .filter(|tool| self.allows_tool(tool))
+            .collect()
+    }
+
+    pub(crate) fn child_definition_policy_snapshot(&self, skill_tool_enabled: bool) -> JsonValue {
+        json!({
+            "allowedTools": self.allowed_tool_names(skill_tool_enabled),
+            "externalServiceAllowed": self.external_service_allowed,
+            "browserControlAllowed": self.browser_control_allowed,
+            "skillRuntimeAllowed": self.skill_runtime_allowed,
+            "subagentAllowed": self.subagent_allowed,
+            "allowedSubagentRoles": &self.allowed_subagent_roles,
+            "deniedSubagentRoles": &self.denied_subagent_roles,
+            "commandAllowed": self.command_allowed,
+            "destructiveWriteAllowed": self.destructive_write_allowed,
+        })
+    }
+
     pub fn from_definition_snapshot(snapshot: &JsonValue) -> Option<Self> {
         let value = snapshot.get("toolPolicy")?;
         if let Some(label) = value.as_str() {
@@ -1559,6 +1581,100 @@ impl AutonomousAgentWorkflowPolicy {
             };
             state.current_phase_id = next_phase.id.clone();
         }
+    }
+}
+
+fn validate_subagent_workflow_structure(
+    workflow_structure: Option<JsonValue>,
+    role_policy: &AutonomousAgentToolPolicy,
+) -> CommandResult<Option<JsonValue>> {
+    let Some(workflow_structure) = workflow_structure else {
+        return Ok(None);
+    };
+    let mut diagnostics = Vec::new();
+    agent_definition::validate_workflow_structure(Some(&workflow_structure), &mut diagnostics);
+    if let Some(diagnostic) = diagnostics.first() {
+        return Err(CommandError::user_fixable(
+            "autonomous_tool_subagent_stage_invalid",
+            format!(
+                "Xero refused the child Stage configuration at `{}`: {}",
+                diagnostic.path, diagnostic.message
+            ),
+        ));
+    }
+    let snapshot = json!({ "workflowStructure": workflow_structure.clone() });
+    if AutonomousAgentWorkflowPolicy::from_definition_snapshot(&snapshot).is_none() {
+        return Err(CommandError::user_fixable(
+            "autonomous_tool_subagent_stage_invalid",
+            "Xero could not compile the child Stage configuration into an executable policy.",
+        ));
+    }
+    for tool in workflow_structure_referenced_tools(&workflow_structure) {
+        if !role_policy.allows_tool(&tool) {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_subagent_stage_tool_incompatible",
+                format!(
+                    "Xero refused the child Stage configuration because tool `{tool}` is outside the selected child role policy."
+                ),
+            ));
+        }
+    }
+    Ok(Some(workflow_structure))
+}
+
+fn workflow_structure_referenced_tools(workflow_structure: &JsonValue) -> BTreeSet<String> {
+    let Some(phases) = workflow_structure
+        .get("phases")
+        .and_then(JsonValue::as_array)
+    else {
+        return BTreeSet::new();
+    };
+    let mut tools = BTreeSet::new();
+    for phase in phases {
+        if let Some(allowed_tools) = phase.get("allowedTools").and_then(JsonValue::as_array) {
+            tools.extend(
+                allowed_tools
+                    .iter()
+                    .filter_map(JsonValue::as_str)
+                    .map(str::trim)
+                    .filter(|tool| !tool.is_empty())
+                    .map(ToOwned::to_owned),
+            );
+        }
+        if let Some(checks) = phase.get("requiredChecks").and_then(JsonValue::as_array) {
+            for check in checks {
+                collect_workflow_condition_tools(check, &mut tools);
+            }
+        }
+        if let Some(branches) = phase.get("branches").and_then(JsonValue::as_array) {
+            for branch in branches {
+                if let Some(condition) = branch.get("condition") {
+                    collect_workflow_condition_tools(condition, &mut tools);
+                }
+            }
+        }
+    }
+    tools
+}
+
+fn collect_workflow_condition_tools(condition: &JsonValue, tools: &mut BTreeSet<String>) {
+    if let Some(tool) = condition
+        .get("toolName")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|tool| !tool.is_empty())
+    {
+        tools.insert(tool.to_owned());
+    }
+    if let Some(tool_names) = condition.get("toolNames").and_then(JsonValue::as_array) {
+        tools.extend(
+            tool_names
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .map(str::trim)
+                .filter(|tool| !tool.is_empty())
+                .map(ToOwned::to_owned),
+        );
     }
 }
 
@@ -3354,6 +3470,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
                 "prompt",
                 "modelId",
                 "writeSet",
+                "workflowStructure",
                 "decision",
                 "maxToolCalls",
             ],
@@ -4454,6 +4571,7 @@ pub struct AutonomousToolRuntime {
     pub(super) subagent_tasks: Arc<Mutex<BTreeMap<String, AutonomousSubagentTask>>>,
     pub(super) subagent_executor: Option<Arc<dyn AutonomousSubagentExecutor>>,
     pub(super) subagent_execution_depth: usize,
+    pub(super) subagent_child_identity: Option<AutonomousSubagentChildIdentity>,
     pub(super) subagent_write_scope: Option<AutonomousSubagentWriteScope>,
     pub(super) subagent_limits: AutonomousSubagentLimits,
     pub(super) delegated_tool_call_budget: Option<AutonomousDelegatedToolCallBudget>,
@@ -4485,6 +4603,10 @@ impl std::fmt::Debug for AutonomousToolRuntime {
                 &self.tool_execution_cancelled.is_some(),
             )
             .field("subagent_execution_depth", &self.subagent_execution_depth)
+            .field(
+                "subagent_child_identity_bound",
+                &self.subagent_child_identity.is_some(),
+            )
             .field("subagent_write_scope", &self.subagent_write_scope)
             .field("subagent_limits", &self.subagent_limits)
             .field("delegated_usage_budget", &self.delegated_usage_budget)
@@ -4518,6 +4640,33 @@ pub(super) struct ContextAccessLedger {
 pub struct AutonomousSubagentWriteScope {
     pub role: AutonomousSubagentRole,
     pub write_set: Vec<String>,
+}
+
+pub const AUTONOMOUS_SUBAGENT_CHILD_IDENTITY_SCHEMA: &str =
+    "xero.autonomous_subagent_child_identity.v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousSubagentInheritedContext {
+    pub kind: String,
+    pub source_run_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousSubagentChildIdentity {
+    pub schema: String,
+    pub role: AutonomousSubagentRole,
+    pub role_label: String,
+    pub verification_contract: String,
+    pub initial_prompt: String,
+    pub parent_run_id: String,
+    pub parent_trace_id: String,
+    pub parent_subagent_id: String,
+    pub depth: usize,
+    pub definition_snapshot: JsonValue,
+    pub inherited_context: Vec<AutonomousSubagentInheritedContext>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4700,6 +4849,7 @@ impl AutonomousToolRuntime {
             subagent_tasks: Arc::new(Mutex::new(BTreeMap::new())),
             subagent_executor: None,
             subagent_execution_depth: 0,
+            subagent_child_identity: None,
             subagent_write_scope: None,
             subagent_limits: AutonomousSubagentLimits::default(),
             delegated_tool_call_budget: None,
@@ -4991,6 +5141,18 @@ impl AutonomousToolRuntime {
     pub fn with_subagent_execution_depth(mut self, depth: usize) -> Self {
         self.subagent_execution_depth = depth;
         self
+    }
+
+    pub(crate) fn with_subagent_child_identity(
+        mut self,
+        identity: AutonomousSubagentChildIdentity,
+    ) -> Self {
+        self.subagent_child_identity = Some(identity);
+        self
+    }
+
+    pub fn subagent_child_identity(&self) -> Option<&AutonomousSubagentChildIdentity> {
+        self.subagent_child_identity.as_ref()
     }
 
     pub fn with_subagent_limits(mut self, limits: AutonomousSubagentLimits) -> Self {
@@ -8392,6 +8554,17 @@ fn agent_subagent_task_record_from_task(
                 format!("Xero could not serialize subagent budget diagnostics: {error}"),
             )
         })?;
+    let workflow_structure_json = task
+        .workflow_structure
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_subagent_stage_serialize_failed",
+                format!("Xero could not serialize child Stage state: {error}"),
+            )
+        })?;
     Ok(project_store::AgentSubagentTaskRecord {
         project_id: project_id.into(),
         parent_run_id: task
@@ -8406,6 +8579,7 @@ fn agent_subagent_task_record_from_task(
         prompt_preview: subagent_prompt_preview(&task.prompt),
         model_id: task.model_id.clone(),
         write_set_json,
+        workflow_structure_json,
         verification_contract: task.verification_contract.clone(),
         depth: task.depth as u64,
         max_tool_calls: task.max_tool_calls as u64,
@@ -8476,6 +8650,17 @@ fn autonomous_subagent_task_from_record(
                 format!("Xero could not decode durable subagent budget diagnostics: {error}"),
             )
         })?;
+    let workflow_structure = record
+        .workflow_structure_json
+        .as_deref()
+        .map(serde_json::from_str::<JsonValue>)
+        .transpose()
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_subagent_stage_decode_failed",
+                format!("Xero could not decode durable child Stage state: {error}"),
+            )
+        })?;
     Ok(AutonomousSubagentTask {
         subagent_id: record.subagent_id,
         role,
@@ -8483,6 +8668,7 @@ fn autonomous_subagent_task_from_record(
         prompt: record.prompt_preview,
         model_id: record.model_id,
         write_set,
+        workflow_structure,
         verification_contract: record.verification_contract,
         depth: record.depth as usize,
         max_tool_calls: record.max_tool_calls as usize,
@@ -8540,6 +8726,8 @@ pub struct AutonomousSubagentRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_structure: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tool_calls: Option<usize>,
@@ -8571,6 +8759,8 @@ pub struct AutonomousSubagentTask {
     pub model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub write_set: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_structure: Option<JsonValue>,
     pub verification_contract: String,
     pub depth: usize,
     pub max_tool_calls: usize,
@@ -12650,6 +12840,7 @@ mod tests {
                 role: Some(AutonomousSubagentRole::Reviewer),
                 prompt: Some("Review the proposed change and summarize risks.".into()),
                 model_id: None,
+                workflow_structure: None,
                 timeout_ms: None,
                 max_tool_calls: None,
                 max_tokens: None,
@@ -12673,6 +12864,7 @@ mod tests {
                 role: Some(AutonomousSubagentRole::Engineer),
                 prompt: Some("Edit the implementation.".into()),
                 model_id: None,
+                workflow_structure: None,
                 timeout_ms: None,
                 max_tool_calls: None,
                 max_tokens: None,
@@ -12683,6 +12875,44 @@ mod tests {
             .expect_err("undeclared role is blocked");
         assert_eq!(denied.code, "policy_denied");
         assert!(denied.message.contains("allowedSubagentRoles"));
+    }
+
+    #[test]
+    fn durable_subagent_task_round_trip_preserves_child_stages() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let runtime = AutonomousToolRuntime::new(tempdir.path()).expect("runtime");
+        let workflow_structure = json!({
+            "startPhaseId": "inspect",
+            "phases": [{
+                "id": "inspect",
+                "title": "Inspect",
+                "allowedTools": ["read"]
+            }]
+        });
+        let result = runtime
+            .subagent(AutonomousSubagentRequest {
+                action: AutonomousSubagentAction::Spawn,
+                task_id: None,
+                role: Some(AutonomousSubagentRole::Researcher),
+                prompt: Some("Inspect the child Stage state.".into()),
+                model_id: None,
+                workflow_structure: Some(workflow_structure.clone()),
+                timeout_ms: None,
+                max_tool_calls: None,
+                max_tokens: None,
+                max_cost_micros: None,
+                write_set: Vec::new(),
+                decision: None,
+            })
+            .expect("spawn staged child");
+        let AutonomousToolOutput::Subagent(output) = result.output else {
+            panic!("expected subagent output");
+        };
+        let record = agent_subagent_task_record_from_task("project-1", "parent-run", &output.task)
+            .expect("encode durable task");
+        let decoded = autonomous_subagent_task_from_record(record).expect("decode durable task");
+
+        assert_eq!(decoded.workflow_structure, Some(workflow_structure));
     }
 
     #[test]

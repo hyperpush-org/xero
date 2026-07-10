@@ -27,23 +27,24 @@ use super::{
     },
     stale_file_error, tool_allowed_for_runtime_agent, tool_available_on_current_host,
     tool_catalog_activation_groups, tool_effect_class, validate_sha256_hash,
-    AutonomousCodeDiagnostic, AutonomousCodeIntelAction, AutonomousCodeIntelOutput,
-    AutonomousCodeIntelRequest, AutonomousCodeSymbol, AutonomousCommandRequest,
-    AutonomousDynamicToolDescriptor, AutonomousDynamicToolRoute, AutonomousLspAction,
-    AutonomousLspInstallCommand, AutonomousLspInstallSuggestion, AutonomousLspOutput,
-    AutonomousLspRequest, AutonomousLspServerStatus, AutonomousMcpAction, AutonomousMcpOutput,
-    AutonomousMcpRequest, AutonomousMcpResultArtifact, AutonomousMcpServerSummary,
-    AutonomousNotebookEditOutput, AutonomousNotebookEditRequest, AutonomousPowerShellRequest,
-    AutonomousSubagentAction, AutonomousSubagentInputRecord, AutonomousSubagentOutput,
-    AutonomousSubagentRequest, AutonomousSubagentRole, AutonomousSubagentTask,
-    AutonomousTodoAction, AutonomousTodoItem, AutonomousTodoMode, AutonomousTodoOutput,
-    AutonomousTodoRequest, AutonomousTodoStatus, AutonomousToolCatalogEntry,
-    AutonomousToolEffectClass, AutonomousToolOutput, AutonomousToolResult, AutonomousToolRuntime,
-    AutonomousToolSearchMatch, AutonomousToolSearchOutput, AutonomousToolSearchRequest,
-    AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX, AUTONOMOUS_TOOL_CODE_INTEL, AUTONOMOUS_TOOL_COMMAND_VERIFY,
-    AUTONOMOUS_TOOL_LSP, AUTONOMOUS_TOOL_MCP, AUTONOMOUS_TOOL_NOTEBOOK_EDIT,
-    AUTONOMOUS_TOOL_POWERSHELL, AUTONOMOUS_TOOL_SKILL, AUTONOMOUS_TOOL_SUBAGENT,
-    AUTONOMOUS_TOOL_TODO, AUTONOMOUS_TOOL_TOOL_SEARCH,
+    validate_subagent_workflow_structure, AutonomousAgentToolPolicy, AutonomousCodeDiagnostic,
+    AutonomousCodeIntelAction, AutonomousCodeIntelOutput, AutonomousCodeIntelRequest,
+    AutonomousCodeSymbol, AutonomousCommandRequest, AutonomousDynamicToolDescriptor,
+    AutonomousDynamicToolRoute, AutonomousLspAction, AutonomousLspInstallCommand,
+    AutonomousLspInstallSuggestion, AutonomousLspOutput, AutonomousLspRequest,
+    AutonomousLspServerStatus, AutonomousMcpAction, AutonomousMcpOutput, AutonomousMcpRequest,
+    AutonomousMcpResultArtifact, AutonomousMcpServerSummary, AutonomousNotebookEditOutput,
+    AutonomousNotebookEditRequest, AutonomousPowerShellRequest, AutonomousSubagentAction,
+    AutonomousSubagentInputRecord, AutonomousSubagentOutput, AutonomousSubagentRequest,
+    AutonomousSubagentRole, AutonomousSubagentTask, AutonomousTodoAction, AutonomousTodoItem,
+    AutonomousTodoMode, AutonomousTodoOutput, AutonomousTodoRequest, AutonomousTodoStatus,
+    AutonomousToolCatalogEntry, AutonomousToolEffectClass, AutonomousToolOutput,
+    AutonomousToolResult, AutonomousToolRuntime, AutonomousToolSearchMatch,
+    AutonomousToolSearchOutput, AutonomousToolSearchRequest, AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX,
+    AUTONOMOUS_TOOL_CODE_INTEL, AUTONOMOUS_TOOL_COMMAND_VERIFY, AUTONOMOUS_TOOL_LSP,
+    AUTONOMOUS_TOOL_MCP, AUTONOMOUS_TOOL_NOTEBOOK_EDIT, AUTONOMOUS_TOOL_POWERSHELL,
+    AUTONOMOUS_TOOL_SKILL, AUTONOMOUS_TOOL_SUBAGENT, AUTONOMOUS_TOOL_TODO,
+    AUTONOMOUS_TOOL_TOOL_SEARCH,
 };
 
 use crate::{
@@ -421,6 +422,13 @@ impl AutonomousToolRuntime {
             ));
         }
         self.enforce_subagent_budget_before_spawn(role)?;
+        let role_policy = AutonomousAgentToolPolicy::for_subagent_role(
+            role,
+            self.agent_tool_policy.as_ref(),
+            self.skill_tool_enabled(),
+        );
+        let workflow_structure =
+            validate_subagent_workflow_structure(request.workflow_structure, &role_policy)?;
         let max_tool_calls = request
             .max_tool_calls
             .unwrap_or(self.subagent_limits.max_delegated_tool_calls)
@@ -450,6 +458,7 @@ impl AutonomousToolRuntime {
                 prompt: prompt.trim().into(),
                 model_id: normalize_optional_text(request.model_id),
                 write_set,
+                workflow_structure,
                 verification_contract: role.verification_contract().into(),
                 depth: self.subagent_execution_depth + 1,
                 max_tool_calls,
@@ -3210,6 +3219,7 @@ fn empty_subagent_status_task() -> AutonomousSubagentTask {
         prompt: String::new(),
         model_id: None,
         write_set: Vec::new(),
+        workflow_structure: None,
         verification_contract: AutonomousSubagentRole::Researcher
             .verification_contract()
             .into(),

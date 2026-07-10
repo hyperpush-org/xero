@@ -5144,6 +5144,23 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                         }),
                     ),
                     (
+                        "workflowStructure",
+                        json!({
+                            "type": "object",
+                            "description": "Optional child-only Stage configuration. It is validated independently and may reference only tools allowed by the selected child role.",
+                            "properties": {
+                                "startPhaseId": { "type": "string" },
+                                "phases": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": { "type": "object" }
+                                }
+                            },
+                            "required": ["phases"],
+                            "additionalProperties": false
+                        }),
+                    ),
+                    (
                         "decision",
                         string_schema(
                             "Parent decision recorded when integrating or closing a subagent output.",
@@ -8647,6 +8664,9 @@ pub(crate) fn load_agent_definition_snapshot_for_run(
     repo_root: &Path,
     run: &project_store::AgentRunRecord,
 ) -> CommandResult<JsonValue> {
+    if let Some(identity) = load_subagent_child_identity_for_run(repo_root, run)? {
+        return Ok(identity.definition_snapshot);
+    }
     project_store::load_effective_agent_definition_version_snapshot(
         repo_root,
         &run.agent_definition_id,
@@ -8665,6 +8685,96 @@ pub(crate) fn load_agent_definition_snapshot_for_run(
             error
         }
     })
+}
+
+pub(crate) fn load_subagent_child_identity_for_run(
+    repo_root: &Path,
+    run: &project_store::AgentRunRecord,
+) -> CommandResult<Option<AutonomousSubagentChildIdentity>> {
+    if run.lineage_kind != "subagent_child" {
+        return Ok(None);
+    }
+    let events = project_store::read_all_agent_events(repo_root, &run.project_id, &run.run_id)?;
+    let identity_payload = events.iter().rev().find_map(|event| {
+        if event.event_kind != AgentRunEventKind::StateTransition {
+            return None;
+        }
+        let payload = serde_json::from_str::<JsonValue>(&event.payload_json).ok()?;
+        (payload.get("kind").and_then(JsonValue::as_str) == Some("subagent_child_identity_bound"))
+            .then(|| payload.get("identity").cloned())
+            .flatten()
+    });
+    let Some(identity_payload) = identity_payload else {
+        return Err(CommandError::system_fault(
+            "agent_subagent_child_identity_missing",
+            format!(
+                "Xero cannot resume child run `{}` because its typed child identity is missing.",
+                run.run_id
+            ),
+        ));
+    };
+    let identity = serde_json::from_value::<AutonomousSubagentChildIdentity>(identity_payload)
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_subagent_child_identity_invalid",
+                format!(
+                    "Xero cannot resume child run `{}` because its typed child identity is invalid: {error}",
+                    run.run_id
+                ),
+            )
+        })?;
+    if identity.schema != AUTONOMOUS_SUBAGENT_CHILD_IDENTITY_SCHEMA {
+        return Err(CommandError::system_fault(
+            "agent_subagent_child_identity_schema_invalid",
+            format!(
+                "Xero cannot resume child run `{}` because child identity schema `{}` is unsupported.",
+                run.run_id, identity.schema
+            ),
+        ));
+    }
+    if identity.initial_prompt != run.prompt {
+        return Err(CommandError::system_fault(
+            "agent_subagent_child_identity_prompt_mismatch",
+            format!(
+                "Xero cannot resume child run `{}` because its persisted prompt disagrees with its typed child identity.",
+                run.run_id
+            ),
+        ));
+    }
+    if identity
+        .definition_snapshot
+        .get("scope")
+        .and_then(JsonValue::as_str)
+        != Some("runtime_child")
+        || identity
+            .definition_snapshot
+            .get("subagentIdentity")
+            .and_then(|value| value.get("role"))
+            .and_then(JsonValue::as_str)
+            != Some(identity.role.as_str())
+    {
+        return Err(CommandError::system_fault(
+            "agent_subagent_child_definition_identity_mismatch",
+            format!(
+                "Xero cannot resume child run `{}` because its child definition does not match its typed role.",
+                run.run_id
+            ),
+        ));
+    }
+    if run
+        .subagent_role
+        .as_deref()
+        .is_some_and(|role| role != identity.role.as_str())
+    {
+        return Err(CommandError::system_fault(
+            "agent_subagent_child_identity_role_mismatch",
+            format!(
+                "Xero cannot resume child run `{}` because durable role metadata disagrees with its typed child identity.",
+                run.run_id
+            ),
+        ));
+    }
+    Ok(Some(identity))
 }
 
 pub(crate) fn agent_tool_policy_from_snapshot(
