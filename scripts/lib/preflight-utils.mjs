@@ -5,7 +5,7 @@
 
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, readdirSync, statSync } from 'node:fs'
-import { delimiter, resolve } from 'node:path'
+import { delimiter, dirname, resolve } from 'node:path'
 import { homedir, platform } from 'node:os'
 
 export const host = platform()
@@ -128,6 +128,18 @@ export function nodeModulesBinPath(dir, binName) {
   return resolve(dir, 'node_modules', '.bin', `${binName}${extension}`)
 }
 
+export function findClosestPnpmLockfile(dir) {
+  let currentDir = resolve(dir)
+  while (true) {
+    const lockfile = resolve(currentDir, 'pnpm-lock.yaml')
+    if (existsSync(lockfile)) return lockfile
+
+    const parentDir = dirname(currentDir)
+    if (parentDir === currentDir) return null
+    currentDir = parentDir
+  }
+}
+
 export function pnpmDepsNeedInstall(dir, requiredBins = []) {
   const nodeModulesDir = resolve(dir, 'node_modules')
   const installMarker = resolve(nodeModulesDir, '.modules.yaml')
@@ -139,7 +151,7 @@ export function pnpmDepsNeedInstall(dir, requiredBins = []) {
 
   const installMtime = statMtimeMs(installMarker)
   const manifestMtime = statMtimeMs(resolve(dir, 'package.json'))
-  const lockfileMtime = statMtimeMs(resolve(dir, 'pnpm-lock.yaml'))
+  const lockfileMtime = statMtimeMs(findClosestPnpmLockfile(dir))
   return installMtime < Math.max(manifestMtime, lockfileMtime)
 }
 
@@ -224,7 +236,7 @@ export async function ensurePnpmDeps(logger, { label, dir, requiredBins = [] }) 
   }
 
   const args = ['install']
-  if (existsSync(resolve(dir, 'pnpm-lock.yaml'))) {
+  if (findClosestPnpmLockfile(dir)) {
     args.push('--frozen-lockfile')
   }
   args.push('--prefer-offline')

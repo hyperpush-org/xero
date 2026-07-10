@@ -2,7 +2,10 @@
 
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { EditorView as CodeMirrorView } from '@codemirror/view'
-import { DEFAULT_EDITOR_RENDER_PREFERENCES, type EditorRenderPreferences } from './code-editor'
+import {
+  DEFAULT_EDITOR_RENDER_PREFERENCES,
+  type EditorRenderPreferences,
+} from './editor-render-preferences'
 import type {
   CreateProjectEntryRequestDto,
   CreateProjectEntryResponseDto,

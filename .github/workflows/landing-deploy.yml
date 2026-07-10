@@ -170,7 +170,7 @@ jobs:
       - name: Deploy
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_LANDING_TOKEN || secrets.FLY_API_TOKEN }}
-        run: flyctl deploy --remote-only
+        run: flyctl deploy .. --remote-only --config fly.toml
 
   cloud:
     name: Deploy cloud to Fly.io

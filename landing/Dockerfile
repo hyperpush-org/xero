@@ -1,4 +1,7 @@
 # syntax=docker/dockerfile:1
+#
+# Build context must be the repository root so this image uses the canonical
+# workspace lockfile shared by local development and CI.
 
 FROM node:24-slim AS base
 
@@ -11,15 +14,22 @@ WORKDIR /app
 
 FROM base AS deps
 
-COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY client/package.json ./client/
+COPY cloud/package.json ./cloud/
+COPY landing/package.json ./landing/
+COPY packages/ui/package.json ./packages/ui/
+RUN pnpm install --frozen-lockfile --filter landing...
 
 FROM base AS builder
 
 ENV NEXT_TELEMETRY_DISABLED=1
 
 COPY --from=deps /app/node_modules ./node_modules
-COPY . .
+COPY --from=deps /app/landing/node_modules ./landing/node_modules
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY landing ./landing
+WORKDIR /app/landing
 RUN pnpm build
 
 FROM node:24-slim AS runner
@@ -34,9 +44,9 @@ WORKDIR /app
 RUN groupadd --system --gid 1001 nodejs \
   && useradd --system --uid 1001 nextjs
 
-COPY --from=builder /app/public ./public
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder /app/landing/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/landing/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/landing/.next/static ./.next/static
 
 USER nextjs
 

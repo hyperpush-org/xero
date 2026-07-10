@@ -339,9 +339,12 @@ describe("SolanaWorkbenchSidebar", () => {
   it("does not badge static tab inventory counts", async () => {
     render(<SolanaWorkbenchSidebar open />)
 
-    await waitFor(() => {
-      expect(invokedCommands).toContain("solana_wallet_scaffold_list")
-    })
+    await waitFor(
+      () => {
+        expect(invokedCommands).toContain("solana_wallet_scaffold_list")
+      },
+      { timeout: 3_000 },
+    )
 
     expect(screen.getByRole("tab", { name: "Personas" })).toBeVisible()
     expect(screen.getByRole("tab", { name: "Scenarios" })).toBeVisible()

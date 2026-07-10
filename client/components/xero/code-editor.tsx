@@ -25,6 +25,13 @@ import type {
 import type { ProjectDiagnosticDto } from '@/src/lib/xero-model'
 import type { EditorSelectionContext } from './execution-view/agent-aware-editor-hooks'
 import type { EditorGitDiffLineMarker } from './execution-view/git-aware-editing'
+import {
+  DEFAULT_EDITOR_RENDER_PREFERENCES,
+  type EditorRenderPreferences,
+} from './editor-render-preferences'
+
+export { DEFAULT_EDITOR_RENDER_PREFERENCES } from './editor-render-preferences'
+export type { EditorRenderPreferences } from './editor-render-preferences'
 
 export const EDITOR_SNAPSHOT_DEBOUNCE_MS = 250
 
@@ -45,20 +52,6 @@ export interface EditorCursorPosition {
 
 export interface EditorDocumentStats {
   lineCount: number
-}
-
-export interface EditorRenderPreferences {
-  fontSize: number
-  tabSize: number
-  insertSpaces: boolean
-  lineWrapping: boolean
-}
-
-export const DEFAULT_EDITOR_RENDER_PREFERENCES: EditorRenderPreferences = {
-  fontSize: 13,
-  tabSize: 2,
-  insertSpaces: true,
-  lineWrapping: true,
 }
 
 export interface CodeEditorProps {

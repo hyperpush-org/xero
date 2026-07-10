@@ -10,7 +10,7 @@ import {
   type DocumentSettings,
 } from '@/lib/document-settings'
 import { cn } from '@/lib/utils'
-import type { EditorRenderPreferences } from '../code-editor'
+import type { EditorRenderPreferences } from '../editor-render-preferences'
 import type { EditorGitFileStatus } from './git-aware-editing'
 
 interface EditorStatusBarProps {

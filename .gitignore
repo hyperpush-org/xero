@@ -23,6 +23,7 @@ vendor/
 !server/assets/vendor/
 !server/assets/vendor/**
 *.log
+*.tsbuildinfo
 coverage/
 .cache/
 tmp/

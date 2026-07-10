@@ -31,7 +31,7 @@ const SOURCE_ROOTS = [
   resolve(clientDir, 'lib'),
   resolve(clientDir, 'hooks'),
   resolve(clientDir, 'package.json'),
-  resolve(clientDir, 'pnpm-lock.yaml'),
+  resolve(repoRoot, 'pnpm-lock.yaml'),
 ]
 
 const IGNORED_DIRS = new Set(['node_modules', 'target', 'dist', '.next', '.turbo', '.git'])

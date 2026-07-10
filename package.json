@@ -39,6 +39,20 @@
     "concurrently": "^9.2.1"
   },
   "pnpm": {
+    "allowedDeprecatedVersions": {
+      "whatwg-encoding": "3.1.1"
+    },
+    "overrides": {
+      "@connectrpc/connect-node@1>undici": "6.27.0",
+      "@babel/core@7": "7.29.6",
+      "dompurify": "3.4.11",
+      "esbuild@0.28": "0.28.1",
+      "js-yaml@4": "4.2.0",
+      "postcss": "8.5.16",
+      "shell-quote": "1.8.4",
+      "sqlite3": "6.0.1",
+      "undici@7": "7.28.0"
+    },
     "onlyBuiltDependencies": [
       "esbuild",
       "lightningcss",

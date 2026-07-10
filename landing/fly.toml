@@ -2,6 +2,7 @@ app = "xero-landing"
 primary_region = "ord"
 
 [build]
+  # Deploy from the repository root so Docker can consume the workspace lockfile.
   dockerfile = "Dockerfile"
 
 [env]
