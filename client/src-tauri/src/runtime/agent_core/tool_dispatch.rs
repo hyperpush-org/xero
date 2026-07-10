@@ -141,7 +141,27 @@ pub(crate) fn dry_run_tool_call(
                 ),
             )
         })?;
-    let descriptor_v2 = descriptor.to_core_descriptor_v2(true);
+    let descriptor_v2 = tool_registry.descriptor_v2(descriptor);
+    let extension_decision = if tool_registry.extension(&tool_call.tool_name).is_some() {
+        Some(tool_runtime.evaluate_extension_safety_policy(
+            &descriptor_v2,
+            &tool_call.input,
+            operator_approved,
+            &sha256_json(&tool_call.input)?,
+        )?)
+    } else {
+        None
+    };
+    if let Some(extension_decision) = extension_decision {
+        return dry_run_extension_call(
+            repo_root,
+            project_id,
+            tool_call,
+            descriptor_v2,
+            extension_decision,
+            tool_runtime,
+        );
+    }
     let request = match tool_registry.decode_call(&tool_call) {
         Ok(request) => request,
         Err(error) => {
@@ -214,6 +234,48 @@ pub(crate) fn dry_run_tool_call(
         ),
     };
 
+    Ok(ToolDryRunReport {
+        tool_call_id: tool_call.tool_call_id,
+        tool_name: tool_call.tool_name,
+        decoded: true,
+        policy_decision,
+        sandbox_decision,
+        sandbox_denied,
+    })
+}
+
+fn dry_run_extension_call(
+    repo_root: &Path,
+    project_id: &str,
+    tool_call: AgentToolCall,
+    descriptor: ToolDescriptorV2,
+    policy_decision: AutonomousSafetyPolicyDecision,
+    tool_runtime: &AutonomousToolRuntime,
+) -> CommandResult<ToolDryRunReport> {
+    let sandbox = ProductionToolSandbox::new(repo_root, tool_runtime);
+    let context = ToolExecutionContext {
+        project_id: project_id.into(),
+        run_id: "developer-tool-harness-dry-run".into(),
+        turn_index: 0,
+        context_epoch: "developer-tool-harness".into(),
+        telemetry_attributes: BTreeMap::from([
+            ("xero.dispatch.path".into(), "developer_tool_dry_run".into()),
+            ("xero.dispatch.registry".into(), "tool_registry_v2".into()),
+        ]),
+    };
+    let call_input = ToolCallInput {
+        tool_call_id: tool_call.tool_call_id.clone(),
+        tool_name: tool_call.tool_name.clone(),
+        input: tool_call.input,
+    };
+    let (sandbox_decision, sandbox_denied) =
+        match sandbox.evaluate(&descriptor, &call_input, &context) {
+            Ok(metadata) => (json!({ "outcome": "allow", "metadata": metadata }), false),
+            Err(denied) => (
+                json!({ "outcome": "deny", "error": denied.error, "metadata": denied.metadata }),
+                true,
+            ),
+        };
     Ok(ToolDryRunReport {
         tool_call_id: tool_call.tool_call_id,
         tool_name: tool_call.tool_name,
@@ -409,12 +471,22 @@ fn build_tool_registry_v2(
 ) -> CommandResult<ToolRegistryV2> {
     let mut registry_v2 = ToolRegistryV2::new();
     for descriptor in tool_registry.descriptors_v2() {
-        registry_v2
-            .register(AutonomousToolHandler {
-                descriptor,
-                shared: Arc::clone(&shared),
-            })
-            .map_err(tool_execution_error_to_command_error)?;
+        if let Some(extension) = tool_registry.extension(&descriptor.name).cloned() {
+            registry_v2
+                .register(ProcessToolExtensionHandler {
+                    descriptor,
+                    extension,
+                    shared: Arc::clone(&shared),
+                })
+                .map_err(tool_execution_error_to_command_error)?;
+        } else {
+            registry_v2
+                .register(AutonomousToolHandler {
+                    descriptor,
+                    shared: Arc::clone(&shared),
+                })
+                .map_err(tool_execution_error_to_command_error)?;
+        }
     }
     Ok(registry_v2)
 }
@@ -1168,6 +1240,56 @@ fn code_capture_summary_label(tool_name: &str, request: &AutonomousToolRequest) 
     }
 }
 
+struct ProcessToolExtensionHandler {
+    descriptor: ToolDescriptorV2,
+    extension: crate::runtime::tool_extensions::LoadedToolExtension,
+    shared: Arc<AutonomousToolHandlerShared>,
+}
+
+impl ProcessToolExtensionHandler {
+    fn execute_isolated(
+        &self,
+        context: &ToolExecutionContext,
+        call: &ToolCallInput,
+        control: &ToolExecutionControl,
+    ) -> ToolRegistryResult<ToolHandlerOutput> {
+        let sandbox = ProductionToolSandbox::new(&self.shared.repo_root, &self.shared.tool_runtime);
+        let metadata = sandbox
+            .evaluate(&self.descriptor, call, context)
+            .map_err(|denied| denied.error)?;
+        crate::runtime::tool_extensions::execute_tool_extension(
+            &self.extension,
+            context,
+            call,
+            control,
+            metadata,
+        )
+    }
+}
+
+impl ToolHandler for ProcessToolExtensionHandler {
+    fn descriptor(&self) -> ToolDescriptorV2 {
+        self.descriptor.clone()
+    }
+
+    fn execute(
+        &self,
+        context: &ToolExecutionContext,
+        call: &ToolCallInput,
+    ) -> ToolRegistryResult<ToolHandlerOutput> {
+        self.execute_isolated(context, call, &ToolExecutionControl::default())
+    }
+
+    fn execute_with_control(
+        &self,
+        context: &ToolExecutionContext,
+        call: &ToolCallInput,
+        control: &ToolExecutionControl,
+    ) -> ToolRegistryResult<ToolHandlerOutput> {
+        self.execute_isolated(context, call, control)
+    }
+}
+
 struct AutonomousToolHandler {
     descriptor: ToolDescriptorV2,
     shared: Arc<AutonomousToolHandlerShared>,
@@ -1231,19 +1353,33 @@ impl AutonomousPolicyAdapter {
             &self.shared.project_id,
             &tool_call.tool_name,
         )?;
-        let request = self.shared.legacy_registry.decode_call(&tool_call)?;
         let input_sha256 = sha256_json(&tool_call.input)?;
         let operator_approved = self
             .shared
             .operator_approved_call_ids
             .contains(&tool_call.tool_call_id);
-        let decision = self.shared.tool_runtime.evaluate_safety_policy(
-            &descriptor.name,
-            &tool_call.input,
-            &request,
-            operator_approved,
-            &input_sha256,
-        )?;
+        let decision = if self
+            .shared
+            .legacy_registry
+            .extension(&tool_call.tool_name)
+            .is_some()
+        {
+            self.shared.tool_runtime.evaluate_extension_safety_policy(
+                descriptor,
+                &tool_call.input,
+                operator_approved,
+                &input_sha256,
+            )?
+        } else {
+            let request = self.shared.legacy_registry.decode_call(&tool_call)?;
+            self.shared.tool_runtime.evaluate_safety_policy(
+                &descriptor.name,
+                &tool_call.input,
+                &request,
+                operator_approved,
+                &input_sha256,
+            )?
+        };
         record_policy_decision_event(
             &self.shared.repo_root,
             &self.shared.project_id,

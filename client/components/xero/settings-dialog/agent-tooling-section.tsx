@@ -1,9 +1,21 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react"
-import { AlertTriangle, Bot, Check, LoaderCircle, Plus, RefreshCw, Trash2 } from "lucide-react"
+import {
+  AlertTriangle,
+  Bot,
+  Check,
+  LoaderCircle,
+  Plus,
+  Puzzle,
+  RefreshCw,
+  ShieldCheck,
+  Trash2,
+} from "lucide-react"
 
 import type { XeroDesktopAdapter } from "@/src/lib/xero-desktop"
 import type {
   AgentToolApplicationStyleDto,
+  AgentToolExtensionCatalogDto,
+  AgentToolExtensionCatalogEntryDto,
   AgentToolingModelOverrideDto,
   AgentToolingSettingsDto,
   ProviderCredentialDto,
@@ -19,6 +31,7 @@ import {
   type ComposerModelOptionView,
 } from "@/src/features/xero/use-xero-desktop-state/runtime-provider"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
@@ -40,7 +53,18 @@ export type AgentToolingSettingsAdapter = Pick<
   XeroDesktopAdapter,
   "isDesktopRuntime" | "agentToolingSettings" | "agentToolingUpdateSettings"
 > &
-  Partial<Pick<XeroDesktopAdapter, "listProviderCredentials" | "getProviderModelCatalog">>
+  Partial<
+    Pick<
+      XeroDesktopAdapter,
+      | "listProviderCredentials"
+      | "getProviderModelCatalog"
+      | "pickToolExtensionFolder"
+      | "listAgentToolExtensions"
+      | "installAgentToolExtension"
+      | "setAgentToolExtensionEnabled"
+      | "removeAgentToolExtension"
+    >
+  >
 
 interface AgentToolingSectionProps {
   adapter?: AgentToolingSettingsAdapter
@@ -111,6 +135,10 @@ export function AgentToolingSection({
   const [pendingOverrideKey, setPendingOverrideKey] = useState<string | null>(null)
   const [credentials, setCredentials] = useState<ProviderCredentialsSnapshotDto | null>(null)
   const [catalogs, setCatalogs] = useState<Record<string, ProviderModelCatalogDto>>({})
+  const [extensionCatalog, setExtensionCatalog] =
+    useState<AgentToolExtensionCatalogDto | null>(null)
+  const [pendingExtensionId, setPendingExtensionId] = useState<string | null>(null)
+  const [extensionInstallPending, setExtensionInstallPending] = useState(false)
 
   const canUseAdapter = Boolean(
     adapter?.isDesktopRuntime?.() &&
@@ -123,6 +151,7 @@ export function AgentToolingSection({
       setSettings(FALLBACK_SETTINGS)
       setCredentials(null)
       setCatalogs({})
+      setExtensionCatalog(null)
       setLoadState("ready")
       return
     }
@@ -134,10 +163,14 @@ export function AgentToolingSection({
     const credentialsPromise = adapter.listProviderCredentials
       ? adapter.listProviderCredentials().catch(() => null)
       : Promise.resolve(null)
+    const extensionsPromise = adapter.listAgentToolExtensions
+      ? adapter.listAgentToolExtensions()
+      : Promise.resolve(null)
 
     settingsPromise
       .then(async (nextSettings) => {
         const snapshot = await credentialsPromise
+        const extensions = await extensionsPromise
         const nextCatalogs: Record<string, ProviderModelCatalogDto> = {}
         if (snapshot && adapter.getProviderModelCatalog) {
           await Promise.all(
@@ -157,12 +190,14 @@ export function AgentToolingSection({
         setSettings(nextSettings)
         setCredentials(snapshot)
         setCatalogs(nextCatalogs)
+        setExtensionCatalog(extensions)
         setLoadState("ready")
       })
       .catch((loadError) => {
         setSettings(FALLBACK_SETTINGS)
         setCredentials(null)
         setCatalogs({})
+        setExtensionCatalog(null)
         setError(getErrorMessage(loadError, "Xero could not load Agent Tooling settings."))
         setLoadState("error")
       })
@@ -175,6 +210,13 @@ export function AgentToolingSection({
   const isBusy = loadState === "loading" || saveState === "saving"
   const isGroupingSaving = groupingSaveState === "saving"
   const isRoutingAutoSwitchSaving = routingAutoSwitchSaveState === "saving"
+  const canManageExtensions = Boolean(
+    adapter?.pickToolExtensionFolder &&
+      adapter.listAgentToolExtensions &&
+      adapter.installAgentToolExtension &&
+      adapter.setAgentToolExtensionEnabled &&
+      adapter.removeAgentToolExtension,
+  )
 
   const submit = useCallback(
     async (
@@ -239,6 +281,64 @@ export function AgentToolingSection({
       )
     },
     [submit],
+  )
+
+  const installExtension = useCallback(async () => {
+    if (!adapter?.pickToolExtensionFolder || !adapter.installAgentToolExtension) return
+    setError(null)
+    try {
+      const sourceDirectory = await adapter.pickToolExtensionFolder()
+      if (!sourceDirectory) return
+      setExtensionInstallPending(true)
+      const catalog = await adapter.installAgentToolExtension({ sourceDirectory })
+      setExtensionCatalog(catalog)
+    } catch (installError) {
+      setError(getErrorMessage(installError, "Xero could not install the tool extension."))
+    } finally {
+      setExtensionInstallPending(false)
+    }
+  }, [adapter])
+
+  const setExtensionEnabled = useCallback(
+    async (entry: AgentToolExtensionCatalogEntryDto, enabled: boolean) => {
+      if (!adapter?.setAgentToolExtensionEnabled) return
+      setPendingExtensionId(entry.extensionId)
+      setError(null)
+      try {
+        const catalog = await adapter.setAgentToolExtensionEnabled({
+          extensionId: entry.extensionId,
+          enabled,
+          permissionId: enabled ? entry.permission.permissionId : undefined,
+        })
+        setExtensionCatalog(catalog)
+      } catch (extensionError) {
+        setError(
+          getErrorMessage(extensionError, "Xero could not change the extension enablement."),
+        )
+      } finally {
+        setPendingExtensionId(null)
+      }
+    },
+    [adapter],
+  )
+
+  const removeExtension = useCallback(
+    async (entry: AgentToolExtensionCatalogEntryDto) => {
+      if (!adapter?.removeAgentToolExtension) return
+      setPendingExtensionId(entry.extensionId)
+      setError(null)
+      try {
+        const catalog = await adapter.removeAgentToolExtension({
+          extensionId: entry.extensionId,
+        })
+        setExtensionCatalog(catalog)
+      } catch (extensionError) {
+        setError(getErrorMessage(extensionError, "Xero could not remove the tool extension."))
+      } finally {
+        setPendingExtensionId(null)
+      }
+    },
+    [adapter],
   )
 
   const updateToolCallGroupingPreference = useCallback(
@@ -361,6 +461,17 @@ export function AgentToolingSection({
             onUpsertOverride={upsertOverride}
             onRemoveOverride={removeOverride}
           />
+
+          {canManageExtensions && extensionCatalog ? (
+            <ToolExtensionsPanel
+              catalog={extensionCatalog}
+              installPending={extensionInstallPending}
+              pendingExtensionId={pendingExtensionId}
+              onInstall={() => void installExtension()}
+              onSetEnabled={(entry, enabled) => void setExtensionEnabled(entry, enabled)}
+              onRemove={(entry) => void removeExtension(entry)}
+            />
+          ) : null}
         </>
       )}
     </div>
@@ -831,6 +942,159 @@ function AddOverrideForm({
       </div>
     </form>
   )
+}
+
+function ToolExtensionsPanel({
+  catalog,
+  installPending,
+  pendingExtensionId,
+  onInstall,
+  onSetEnabled,
+  onRemove,
+}: {
+  catalog: AgentToolExtensionCatalogDto
+  installPending: boolean
+  pendingExtensionId: string | null
+  onInstall: () => void
+  onSetEnabled: (entry: AgentToolExtensionCatalogEntryDto, enabled: boolean) => void
+  onRemove: (entry: AgentToolExtensionCatalogEntryDto) => void
+}) {
+  return (
+    <section className="flex flex-col gap-3" aria-label="Tool extensions">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h4 className="flex items-center gap-2 text-[13.5px] font-semibold tracking-tight text-foreground">
+            <Puzzle className="h-4 w-4 text-muted-foreground" />
+            Tool extensions
+          </h4>
+          <p className="mt-1 max-w-2xl text-[12.5px] leading-[1.5] text-muted-foreground">
+            Install explicitly reviewed local bundles into Xero&apos;s OS app-data directory.
+            Extensions stay disabled until you grant their declared permission.
+          </p>
+          <p className="mt-1 break-all font-mono text-[10.5px] text-muted-foreground/80">
+            {catalog.appDataDirectory}
+          </p>
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 gap-1.5 text-[12px]"
+          disabled={installPending || pendingExtensionId !== null}
+          onClick={onInstall}
+        >
+          {installPending ? (
+            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Plus className="h-3.5 w-3.5" />
+          )}
+          Install extension
+        </Button>
+      </div>
+
+      {catalog.extensions.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-border/60 bg-secondary/10 px-4 py-5 text-center">
+          <p className="text-[12.5px] text-muted-foreground">
+            No tool extensions are installed.
+          </p>
+        </div>
+      ) : (
+        <ul className="flex flex-col gap-2.5">
+          {catalog.extensions.map((entry) => {
+            const pending = pendingExtensionId === entry.extensionId
+            return (
+              <li
+                key={entry.extensionId}
+                className="rounded-lg border border-border/60 bg-background px-4 py-3.5"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-[13.5px] font-semibold text-foreground">{entry.label}</p>
+                      <Badge variant={entry.enabled ? "default" : "outline"}>
+                        {entry.enabled ? "Enabled" : "Disabled"}
+                      </Badge>
+                      {!entry.eligible ? <Badge variant="destructive">Blocked</Badge> : null}
+                    </div>
+                    <p className="mt-1 font-mono text-[11px] text-muted-foreground">
+                      {entry.toolName}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {pending ? (
+                      <LoaderCircle className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                    ) : null}
+                    <Switch
+                      checked={entry.enabled}
+                      disabled={pending || (!entry.eligible && !entry.enabled)}
+                      onCheckedChange={(enabled) => onSetEnabled(entry, enabled)}
+                      aria-label={`${entry.enabled ? "Disable" : "Enable"} ${entry.label}`}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
+                      disabled={pending}
+                      onClick={() => onRemove(entry)}
+                      aria-label={`Remove ${entry.label}`}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="mt-3 rounded-md border border-border/50 bg-secondary/10 px-3 py-2.5">
+                  <div className="flex items-center gap-2 text-[12px] font-semibold text-foreground">
+                    <ShieldCheck className="h-3.5 w-3.5 text-primary" />
+                    {entry.permission.label}
+                  </div>
+                  <p className="mt-1 text-[11.5px] leading-[1.5] text-muted-foreground">
+                    Permission <span className="font-mono">{entry.permission.permissionId}</span>
+                    {" · "}
+                    {formatExtensionToken(entry.permission.effectClass)}
+                    {" · risk "}
+                    {entry.permission.riskClass}
+                    {" · "}
+                    {formatExtensionToken(entry.permission.sandboxRequirement)} sandbox
+                    {" · "}
+                    {formatExtensionToken(entry.permission.approvalRequirement)} approval
+                  </p>
+                  {entry.permission.capabilityTags.length > 0 ? (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {entry.permission.capabilityTags.map((tag) => (
+                        <Badge key={tag} variant="secondary" className="font-mono text-[10px]">
+                          {tag}
+                        </Badge>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+
+                {entry.diagnostics.length > 0 ? (
+                  <div className="mt-3 flex flex-col gap-1.5">
+                    {entry.diagnostics.map((diagnostic) => (
+                      <p
+                        key={`${diagnostic.code}:${diagnostic.message}`}
+                        className="flex items-start gap-1.5 text-[11.5px] leading-[1.45] text-destructive"
+                      >
+                        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <span>{diagnostic.message}</span>
+                      </p>
+                    ))}
+                  </div>
+                ) : null}
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </section>
+  )
+}
+
+function formatExtensionToken(value: string): string {
+  return value.split("_").join(" ")
 }
 
 function UnavailableCard() {

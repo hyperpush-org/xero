@@ -5328,6 +5328,36 @@ fn dynamic_tool_catalog_metadata(
             "trust": "connected_mcp_server",
             "approvalStatus": "allowed",
         }),
+        AutonomousDynamicToolRoute::ToolExtension {
+            extension_id,
+            installation_hash,
+        } => json!({
+            "toolName": descriptor.name.as_str(),
+            "group": "extensions",
+            "catalogKind": "tool_extension",
+            "activationGroups": ["extensions"],
+            "activationTools": [descriptor.name.as_str()],
+            "tags": ["extension", extension_id],
+            "schemaFields": descriptor
+                .input_schema
+                .get("properties")
+                .and_then(JsonValue::as_object)
+                .map(|properties| properties.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default(),
+            "examples": [format!("Call verified extension `{}`.", descriptor.name)],
+            "riskClass": "permissioned_extension",
+            "effectClass": "manifest_declared",
+            "allowedRuntimeAgents": [
+                RuntimeAgentIdDto::Engineer.as_str(),
+                RuntimeAgentIdDto::Debug.as_str(),
+                RuntimeAgentIdDto::Generalist.as_str()
+            ],
+            "runtimeAvailable": true,
+            "source": extension_id,
+            "trust": "operator_enabled_app_data_extension",
+            "approvalStatus": "permission_granted",
+            "installationHash": installation_hash,
+        }),
     }
 }
 
@@ -6654,6 +6684,7 @@ pub(crate) fn tool_registry_for_snapshot(
             "Registry reconstruction replayed tools granted by persisted tool_access results.",
         );
     }
+    registry.refresh_enabled_tool_extensions()?;
     Ok(registry)
 }
 

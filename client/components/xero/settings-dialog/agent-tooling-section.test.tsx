@@ -17,6 +17,7 @@ import {
 } from '@/components/xero/settings-dialog/agent-tooling-section'
 import type {
   AgentToolingSettingsDto,
+  AgentToolExtensionCatalogDto,
   ProviderCredentialDto,
   ProviderCredentialsSnapshotDto,
   ProviderModelCatalogDto,
@@ -79,6 +80,34 @@ interface AdapterOverrides {
   updateError?: Error
   credentials?: ProviderCredentialsSnapshotDto
   catalogs?: Record<string, ProviderModelCatalogDto>
+  extensionCatalog?: AgentToolExtensionCatalogDto
+}
+
+const DEFAULT_EXTENSION_CATALOG: AgentToolExtensionCatalogDto = {
+  schema: 'xero.agent_tool_extension_catalog.v1',
+  appDataDirectory: '/Users/test/Library/Application Support/dev.sn0w.xero/tool-extensions',
+  extensions: [
+    {
+      extensionId: 'demo.read',
+      label: 'Demo reader',
+      toolName: 'demo_read',
+      enabled: false,
+      eligible: true,
+      installationHash: 'a'.repeat(64),
+      permission: {
+        permissionId: 'demo_read_permission',
+        label: 'Read demo input',
+        effectClass: 'observe',
+        riskClass: 'low',
+        auditLabel: 'demo_read',
+        mutability: 'read_only',
+        sandboxRequirement: 'read_only',
+        approvalRequirement: 'policy',
+        capabilityTags: ['demo', 'read'],
+      },
+      diagnostics: [],
+    },
+  ],
 }
 
 const DEFAULT_CREDENTIALS: ProviderCredentialsSnapshotDto = {
@@ -102,10 +131,16 @@ function makeAdapter(
   agentToolingUpdateSettings: ReturnType<typeof vi.fn>
   listProviderCredentials: ReturnType<typeof vi.fn>
   getProviderModelCatalog: ReturnType<typeof vi.fn>
+  pickToolExtensionFolder: ReturnType<typeof vi.fn>
+  listAgentToolExtensions: ReturnType<typeof vi.fn>
+  installAgentToolExtension: ReturnType<typeof vi.fn>
+  setAgentToolExtensionEnabled: ReturnType<typeof vi.fn>
+  removeAgentToolExtension: ReturnType<typeof vi.fn>
 } {
   let current: AgentToolingSettingsDto = overrides.settings ?? makeSettings()
   const credentials = overrides.credentials ?? DEFAULT_CREDENTIALS
   const catalogs = overrides.catalogs ?? DEFAULT_CATALOGS
+  let extensionCatalog = overrides.extensionCatalog ?? DEFAULT_EXTENSION_CATALOG
   return {
     isDesktopRuntime: vi.fn(() => true),
     agentToolingSettings: vi.fn(async () => current),
@@ -127,6 +162,29 @@ function makeAdapter(
       const catalog = catalogs[profileId]
       if (!catalog) throw new Error(`Missing catalog ${profileId}`)
       return catalog
+    }),
+    pickToolExtensionFolder: vi.fn(async () => '/tmp/demo-extension'),
+    listAgentToolExtensions: vi.fn(async () => extensionCatalog),
+    installAgentToolExtension: vi.fn(async () => extensionCatalog),
+    setAgentToolExtensionEnabled: vi.fn(async (request) => {
+      extensionCatalog = {
+        ...extensionCatalog,
+        extensions: extensionCatalog.extensions.map((entry) =>
+          entry.extensionId === request.extensionId
+            ? { ...entry, enabled: request.enabled }
+            : entry,
+        ),
+      }
+      return extensionCatalog
+    }),
+    removeAgentToolExtension: vi.fn(async (request) => {
+      extensionCatalog = {
+        ...extensionCatalog,
+        extensions: extensionCatalog.extensions.filter(
+          (entry) => entry.extensionId !== request.extensionId,
+        ),
+      }
+      return extensionCatalog
     }),
   }
 }
@@ -377,5 +435,48 @@ describe('AgentToolingSection', () => {
 
     expect(await screen.findByText('write failed')).toBeVisible()
     await waitFor(() => expect(screen.getByRole('radio', { name: 'Balanced' })).toBeChecked())
+  })
+
+  it('shows declared extension permissions and grants the exact permission when enabling', async () => {
+    const adapter = makeAdapter()
+
+    render(<AgentToolingSection adapter={adapter} />)
+
+    expect(await screen.findByText('Read demo input')).toBeVisible()
+    expect(screen.getByText('demo_read_permission')).toBeVisible()
+    expect(screen.getByText(/read only sandbox/i)).toBeVisible()
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Enable Demo reader' }))
+
+    await waitFor(() =>
+      expect(adapter.setAgentToolExtensionEnabled).toHaveBeenCalledWith({
+        extensionId: 'demo.read',
+        enabled: true,
+        permissionId: 'demo_read_permission',
+      }),
+    )
+    expect(await screen.findByText('Enabled')).toBeVisible()
+  })
+
+  it('installs from an explicitly selected bundle and supports deterministic removal', async () => {
+    const adapter = makeAdapter()
+
+    render(<AgentToolingSection adapter={adapter} />)
+    await screen.findByRole('button', { name: 'Install extension' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Install extension' }))
+    await waitFor(() =>
+      expect(adapter.installAgentToolExtension).toHaveBeenCalledWith({
+        sourceDirectory: '/tmp/demo-extension',
+      }),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Demo reader' }))
+    await waitFor(() =>
+      expect(adapter.removeAgentToolExtension).toHaveBeenCalledWith({
+        extensionId: 'demo.read',
+      }),
+    )
+    expect(await screen.findByText('No tool extensions are installed.')).toBeVisible()
   })
 })

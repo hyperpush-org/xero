@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tauri::{AppHandle, Runtime, State};
@@ -8,8 +10,36 @@ use xero_agent_core::{
 
 use crate::{
     commands::{runtime_support::resolve_project_root, validate_non_empty, CommandResult},
+    runtime::{
+        tool_extensions::{
+            install_tool_extension, list_tool_extensions, remove_tool_extension,
+            set_tool_extension_enabled, ToolExtensionCatalog,
+        },
+        ToolRegistry,
+    },
     state::DesktopState,
 };
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InstallAgentToolExtensionRequestDto {
+    pub source_directory: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetAgentToolExtensionEnabledRequestDto {
+    pub extension_id: String,
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoveAgentToolExtensionRequestDto {
+    pub extension_id: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -60,6 +90,61 @@ pub struct AgentToolExtensionManifestValidationDto {
 }
 
 #[tauri::command]
+pub fn list_agent_tool_extensions<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+) -> CommandResult<ToolExtensionCatalog> {
+    let app_data_dir = state.app_data_dir(&app)?;
+    list_tool_extensions(&app_data_dir, &reserved_tool_names())
+}
+
+#[tauri::command]
+pub fn install_agent_tool_extension<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: InstallAgentToolExtensionRequestDto,
+) -> CommandResult<ToolExtensionCatalog> {
+    let app_data_dir = state.app_data_dir(&app)?;
+    install_tool_extension(
+        &app_data_dir,
+        &request.source_directory,
+        &reserved_tool_names(),
+    )
+}
+
+#[tauri::command]
+pub fn set_agent_tool_extension_enabled<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: SetAgentToolExtensionEnabledRequestDto,
+) -> CommandResult<ToolExtensionCatalog> {
+    validate_non_empty(&request.extension_id, "extensionId")?;
+    let app_data_dir = state.app_data_dir(&app)?;
+    set_tool_extension_enabled(
+        &app_data_dir,
+        &request.extension_id,
+        request.enabled,
+        request.permission_id.as_deref(),
+        &reserved_tool_names(),
+    )
+}
+
+#[tauri::command]
+pub fn remove_agent_tool_extension<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: RemoveAgentToolExtensionRequestDto,
+) -> CommandResult<ToolExtensionCatalog> {
+    validate_non_empty(&request.extension_id, "extensionId")?;
+    let app_data_dir = state.app_data_dir(&app)?;
+    remove_tool_extension(&app_data_dir, &request.extension_id, &reserved_tool_names())
+}
+
+fn reserved_tool_names() -> std::collections::BTreeSet<String> {
+    ToolRegistry::builtin().descriptor_names()
+}
+
+#[tauri::command]
 pub fn validate_agent_tool_extension_manifest<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
@@ -94,7 +179,7 @@ fn validate_tool_extension_manifest_payload(
                 code: "agent_tool_extension_manifest_malformed".into(),
                 message: error.to_string(),
             }],
-            ui_deferred: true,
+            ui_deferred: false,
         },
     }
 }
@@ -135,7 +220,7 @@ fn validation_from_manifest(
             fixture_count,
             fixture_ids,
             diagnostics: Vec::new(),
-            ui_deferred: true,
+            ui_deferred: false,
         },
         Err(error) => AgentToolExtensionManifestValidationDto {
             schema: "xero.agent_tool_extension_manifest_validation.v1".into(),
@@ -151,7 +236,7 @@ fn validation_from_manifest(
                 code: error.code,
                 message: error.message,
             }],
-            ui_deferred: true,
+            ui_deferred: false,
         },
     }
 }
@@ -193,12 +278,17 @@ mod tests {
                     "input": { "query": "hello" },
                     "expectedSummaryContains": "hello"
                 }
-            ]
+            ],
+            "runtime": {
+                "kind": "process",
+                "executable": "handler",
+                "args": []
+            }
         })
     }
 
     #[test]
-    fn s20_extension_manifest_validation_reports_descriptor_and_fixture_metadata() {
+    fn extension_manifest_validation_reports_ui_ready_descriptor_and_fixture_metadata() {
         let report = validate_tool_extension_manifest_payload("project-1".into(), valid_manifest());
 
         assert!(report.valid);
@@ -221,11 +311,11 @@ mod tests {
             report.descriptor.as_ref().expect("descriptor").name,
             "demo_tool"
         );
-        assert!(report.ui_deferred);
+        assert!(!report.ui_deferred);
     }
 
     #[test]
-    fn s20_extension_manifest_validation_reports_missing_fixtures_without_ui() {
+    fn extension_manifest_validation_reports_missing_fixtures_for_ui() {
         let mut manifest = valid_manifest();
         manifest["testFixtures"] = json!([]);
 
@@ -241,6 +331,6 @@ mod tests {
                 .map(|diagnostic| diagnostic.code.as_str()),
             Some("agent_tool_extension_fixture_missing")
         );
-        assert!(report.ui_deferred);
+        assert!(!report.ui_deferred);
     }
 }

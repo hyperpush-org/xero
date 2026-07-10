@@ -95,6 +95,34 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
                     {
                         eprintln!("[storage] permission hardening skipped: {error}");
                     }
+
+                    let reserved_tool_names =
+                        runtime::ToolRegistry::builtin().descriptor_names();
+                    match runtime::tool_extensions::list_tool_extensions(
+                        &app_data_dir,
+                        &reserved_tool_names,
+                    ) {
+                        Ok(catalog) => {
+                            for extension in catalog
+                                .extensions
+                                .iter()
+                                .filter(|extension| extension.enabled && !extension.eligible)
+                            {
+                                for diagnostic in &extension.diagnostics {
+                                    eprintln!(
+                                        "[tool-extension:{}] {} - {}",
+                                        extension.extension_id,
+                                        diagnostic.code,
+                                        diagnostic.message
+                                    );
+                                }
+                            }
+                        }
+                        Err(error) => eprintln!(
+                            "[tool-extension] startup discovery failed closed: {} - {}",
+                            error.code, error.message
+                        ),
+                    }
                 }
             }
 
@@ -318,6 +346,10 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::agent_definition::save_agent_definition,
             commands::agent_definition::update_agent_definition,
             commands::agent_default_models::set_agent_default_model,
+            commands::agent_extensions::list_agent_tool_extensions,
+            commands::agent_extensions::install_agent_tool_extension,
+            commands::agent_extensions::set_agent_tool_extension_enabled,
+            commands::agent_extensions::remove_agent_tool_extension,
             commands::agent_extensions::validate_agent_tool_extension_manifest,
             commands::workflow_agents::list_workflow_agents,
             commands::workflow_agents::get_workflow_agent_detail,

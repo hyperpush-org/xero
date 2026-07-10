@@ -67,6 +67,17 @@ export const toolExtensionTestFixtureSchema = z
   .strict()
 export type ToolExtensionTestFixtureDto = z.infer<typeof toolExtensionTestFixtureSchema>
 
+export const toolExtensionRuntimeManifestSchema = z
+  .object({
+    kind: z.literal('process'),
+    executable: z.string().trim().min(1),
+    args: z.array(z.string().max(4096)).default([]),
+  })
+  .strict()
+export type ToolExtensionRuntimeManifestDto = z.infer<
+  typeof toolExtensionRuntimeManifestSchema
+>
+
 export const toolExtensionManifestSchema = z
   .object({
     contractVersion: z.literal(1),
@@ -81,6 +92,7 @@ export const toolExtensionManifestSchema = z
     approvalRequirement: toolExtensionApprovalRequirementSchema,
     capabilityTags: z.array(z.string().trim().min(1)).default([]),
     testFixtures: z.array(toolExtensionTestFixtureSchema).min(1),
+    runtime: toolExtensionRuntimeManifestSchema,
   })
   .strict()
   .superRefine((manifest, ctx) => {
@@ -164,7 +176,7 @@ const agentToolExtensionManifestValidationBaseSchema = z
     projectId: z.string().trim().min(1),
     fixtureCount: z.number().int().nonnegative(),
     fixtureIds: z.array(z.string().trim().min(1)),
-    uiDeferred: z.literal(true),
+    uiDeferred: z.literal(false),
   })
   .strict()
 
@@ -262,4 +274,54 @@ export const agentToolExtensionManifestValidationSchema = z
   })
 export type AgentToolExtensionManifestValidationDto = z.infer<
   typeof agentToolExtensionManifestValidationSchema
+>
+
+export const agentToolExtensionCatalogEntrySchema = z
+  .object({
+    extensionId: z.string().trim().min(1),
+    label: z.string().trim().min(1),
+    toolName: z.string().trim().min(1),
+    enabled: z.boolean(),
+    eligible: z.boolean(),
+    installationHash: z.string(),
+    permission: agentToolExtensionPermissionSummarySchema,
+    diagnostics: z.array(agentToolExtensionValidationDiagnosticSchema),
+  })
+  .strict()
+export type AgentToolExtensionCatalogEntryDto = z.infer<
+  typeof agentToolExtensionCatalogEntrySchema
+>
+
+export const agentToolExtensionCatalogSchema = z
+  .object({
+    schema: z.literal('xero.agent_tool_extension_catalog.v1'),
+    appDataDirectory: z.string().trim().min(1),
+    extensions: z.array(agentToolExtensionCatalogEntrySchema),
+  })
+  .strict()
+export type AgentToolExtensionCatalogDto = z.infer<typeof agentToolExtensionCatalogSchema>
+
+export const installAgentToolExtensionRequestSchema = z
+  .object({ sourceDirectory: z.string().trim().min(1) })
+  .strict()
+export type InstallAgentToolExtensionRequestDto = z.infer<
+  typeof installAgentToolExtensionRequestSchema
+>
+
+export const setAgentToolExtensionEnabledRequestSchema = z
+  .object({
+    extensionId: z.string().trim().min(1),
+    enabled: z.boolean(),
+    permissionId: z.string().trim().min(1).optional(),
+  })
+  .strict()
+export type SetAgentToolExtensionEnabledRequestDto = z.infer<
+  typeof setAgentToolExtensionEnabledRequestSchema
+>
+
+export const removeAgentToolExtensionRequestSchema = z
+  .object({ extensionId: z.string().trim().min(1) })
+  .strict()
+export type RemoveAgentToolExtensionRequestDto = z.infer<
+  typeof removeAgentToolExtensionRequestSchema
 >

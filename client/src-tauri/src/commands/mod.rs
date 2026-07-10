@@ -97,8 +97,11 @@ pub use agent_definition::{
     update_agent_definition,
 };
 pub use agent_extensions::{
-    validate_agent_tool_extension_manifest, AgentToolExtensionManifestValidationDto,
-    AgentToolExtensionPermissionSummaryDto, AgentToolExtensionValidationDiagnosticDto,
+    install_agent_tool_extension, list_agent_tool_extensions, remove_agent_tool_extension,
+    set_agent_tool_extension_enabled, validate_agent_tool_extension_manifest,
+    AgentToolExtensionManifestValidationDto, AgentToolExtensionPermissionSummaryDto,
+    AgentToolExtensionValidationDiagnosticDto, InstallAgentToolExtensionRequestDto,
+    RemoveAgentToolExtensionRequestDto, SetAgentToolExtensionEnabledRequestDto,
     ValidateAgentToolExtensionManifestRequestDto,
 };
 pub use agent_reports::{

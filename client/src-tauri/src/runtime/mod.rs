@@ -11,6 +11,7 @@ pub mod protocol;
 pub mod provider;
 pub(crate) mod redaction;
 pub mod supervisor;
+pub mod tool_extensions;
 pub mod usage_events;
 pub mod workflow_orchestrator;
 

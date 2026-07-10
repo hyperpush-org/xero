@@ -399,7 +399,7 @@ Agent-system rollout uses explicit gates for custom-agent fidelity, context, han
 
 ## Skills And Plugins
 
-Xero discovers static and dynamic project skills/plugins and stores trusted project artifacts in app data, not inside the imported repository. See `docs/skills-and-plugins.md` for authoring, trust, and runtime notes.
+Xero discovers static and dynamic project skills/plugins and stores trusted project artifacts in app data, not inside the imported repository. See `docs/skills-and-plugins.md` for authoring, trust, and runtime notes. Permissioned executable tool bundles use the separate app-data-only lifecycle documented in `docs/tool-extensions.md`.
 
 ---
 

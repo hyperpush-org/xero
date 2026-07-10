@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
-    io::{self, Read},
+    io::{self, Read, Write},
     path::Path,
     process::{Child, Command, ExitStatus, Stdio},
     thread,
@@ -499,6 +499,24 @@ impl SandboxedProcessRunner {
         request: SandboxedProcessRequest,
         is_cancelled: impl Fn() -> bool,
     ) -> Result<SandboxedProcessOutput, SandboxedProcessError> {
+        self.run_internal(request, None, is_cancelled)
+    }
+
+    pub fn run_with_stdin(
+        &self,
+        request: SandboxedProcessRequest,
+        stdin_bytes: Vec<u8>,
+        is_cancelled: impl Fn() -> bool,
+    ) -> Result<SandboxedProcessOutput, SandboxedProcessError> {
+        self.run_internal(request, Some(stdin_bytes), is_cancelled)
+    }
+
+    fn run_internal(
+        &self,
+        request: SandboxedProcessRequest,
+        stdin_bytes: Option<Vec<u8>>,
+        is_cancelled: impl Fn() -> bool,
+    ) -> Result<SandboxedProcessOutput, SandboxedProcessError> {
         let timeout_ms = request
             .timeout_ms
             .unwrap_or(DEFAULT_SANDBOX_RUNNER_TIMEOUT_MS)
@@ -506,9 +524,27 @@ impl SandboxedProcessRunner {
         let mut process = self.spawn(SandboxedProcessSpawnRequest {
             argv: request.argv,
             cwd: request.cwd,
-            stdin: SandboxedProcessStdin::Null,
+            stdin: if stdin_bytes.is_some() {
+                SandboxedProcessStdin::Piped
+            } else {
+                SandboxedProcessStdin::Null
+            },
             metadata: request.metadata,
         })?;
+        let stdin_handle = if let Some(stdin_bytes) = stdin_bytes {
+            let mut stdin = process.child.stdin.take().ok_or_else(|| {
+                SandboxedProcessError::new(
+                    "sandboxed_process_stdin_missing",
+                    "Sandbox runner could not open process stdin.",
+                    true,
+                    process.metadata.clone(),
+                    SandboxExitClassification::Unknown,
+                )
+            })?;
+            Some(thread::spawn(move || stdin.write_all(&stdin_bytes)))
+        } else {
+            None
+        };
         let stdout = process.child.stdout.take().ok_or_else(|| {
             SandboxedProcessError::new(
                 "sandboxed_process_stdout_missing",
@@ -588,6 +624,30 @@ impl SandboxedProcessRunner {
 
         let stdout = join_sandbox_capture(stdout_handle, process.metadata.clone())?;
         let stderr = join_sandbox_capture(stderr_handle, process.metadata.clone())?;
+        if let Some(handle) = stdin_handle {
+            match handle.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) if timed_out || cancelled => {}
+                Ok(Err(error)) => {
+                    return Err(SandboxedProcessError::new(
+                        "sandboxed_process_stdin_write_failed",
+                        format!("Sandbox runner could not write process stdin: {error}"),
+                        true,
+                        process.metadata,
+                        SandboxExitClassification::Unknown,
+                    ));
+                }
+                Err(_) => {
+                    return Err(SandboxedProcessError::new(
+                        "sandboxed_process_stdin_writer_panicked",
+                        "Sandbox runner's stdin writer panicked.",
+                        true,
+                        process.metadata,
+                        SandboxExitClassification::Unknown,
+                    ));
+                }
+            }
+        }
         let stdout_text = decode_optional_output(&stdout.excerpt);
         let stderr_text = decode_optional_output(&stderr.excerpt);
         process.metadata.exit_classification =
@@ -1864,6 +1924,54 @@ mod tests {
             "timeout cleanup must kill the subprocess group before it can keep running"
         );
         let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sandbox_runner_times_out_when_child_does_not_read_large_stdin() {
+        let started = Instant::now();
+        let error = SandboxedProcessRunner::new()
+            .run_with_stdin(
+                SandboxedProcessRequest {
+                    argv: vec!["/bin/sh".into(), "-c".into(), "sleep 10".into()],
+                    cwd: None,
+                    timeout_ms: Some(30),
+                    stdout_limit_bytes: 1024,
+                    stderr_limit_bytes: 1024,
+                    metadata: SandboxExecutionMetadata::unrestricted(),
+                },
+                vec![b'x'; 2 * 1024 * 1024],
+                || false,
+            )
+            .expect_err("blocked stdin must not bypass the process deadline");
+
+        assert_eq!(error.code, "sandboxed_process_timeout");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sandbox_runner_delivers_piped_stdin_to_child() {
+        let output = SandboxedProcessRunner::new()
+            .run_with_stdin(
+                SandboxedProcessRequest {
+                    argv: vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "read value; printf '%s' \"$value\"".into(),
+                    ],
+                    cwd: None,
+                    timeout_ms: Some(1_000),
+                    stdout_limit_bytes: 1024,
+                    stderr_limit_bytes: 1024,
+                    metadata: SandboxExecutionMetadata::unrestricted(),
+                },
+                b"hello-extension\n".to_vec(),
+                || false,
+            )
+            .expect("sandbox runner should deliver stdin");
+
+        assert_eq!(output.stdout.as_deref(), Some("hello-extension"));
     }
 
     #[cfg(target_os = "macos")]

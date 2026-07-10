@@ -57,6 +57,16 @@ import {
   type GetAgentKnowledgeInspectionRequestDto,
 } from '@/src/lib/xero-model/agent-reports'
 import {
+  agentToolExtensionCatalogSchema,
+  installAgentToolExtensionRequestSchema,
+  removeAgentToolExtensionRequestSchema,
+  setAgentToolExtensionEnabledRequestSchema,
+  type AgentToolExtensionCatalogDto,
+  type InstallAgentToolExtensionRequestDto,
+  type RemoveAgentToolExtensionRequestDto,
+  type SetAgentToolExtensionEnabledRequestDto,
+} from '@/src/lib/xero-model/agent-extensions'
+import {
   agentAuthoringCatalogSchema,
   agentToolPackCatalogSchema,
   getAgentAuthoringCatalogRequestSchema,
@@ -821,6 +831,10 @@ const COMMANDS = {
   soulUpdateSettings: 'soul_update_settings',
   agentToolingSettings: 'agent_tooling_settings',
   agentToolingUpdateSettings: 'agent_tooling_update_settings',
+  listAgentToolExtensions: 'list_agent_tool_extensions',
+  installAgentToolExtension: 'install_agent_tool_extension',
+  setAgentToolExtensionEnabled: 'set_agent_tool_extension_enabled',
+  removeAgentToolExtension: 'remove_agent_tool_extension',
   developerToolErrorLogList: 'developer_tool_error_log_list',
   developerToolErrorLogClear: 'developer_tool_error_log_clear',
   autonomousWebSearchSettings: 'autonomous_web_search_settings',
@@ -1201,6 +1215,7 @@ export interface XeroDesktopAdapter {
   isDesktopRuntime(): boolean
   pickRepositoryFolder(): Promise<string | null>
   pickParentFolder(): Promise<string | null>
+  pickToolExtensionFolder?(): Promise<string | null>
   pickComposerFolders?(): Promise<string[]>
   importRepository(path: string): Promise<ImportRepositoryResponseDto>
   createRepository(parentPath: string, name: string): Promise<ImportRepositoryResponseDto>
@@ -1592,6 +1607,16 @@ export interface XeroDesktopAdapter {
   agentToolingUpdateSettings?(
     request: UpsertAgentToolingSettingsRequestDto,
   ): Promise<AgentToolingSettingsDto>
+  listAgentToolExtensions?(): Promise<AgentToolExtensionCatalogDto>
+  installAgentToolExtension?(
+    request: InstallAgentToolExtensionRequestDto,
+  ): Promise<AgentToolExtensionCatalogDto>
+  setAgentToolExtensionEnabled?(
+    request: SetAgentToolExtensionEnabledRequestDto,
+  ): Promise<AgentToolExtensionCatalogDto>
+  removeAgentToolExtension?(
+    request: RemoveAgentToolExtensionRequestDto,
+  ): Promise<AgentToolExtensionCatalogDto>
   developerToolErrorLogList?(
     request?: DeveloperToolErrorLogListRequestDto,
   ): Promise<DeveloperToolErrorLogListResponseDto>
@@ -2425,6 +2450,23 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
       return typeof path === 'string' && path.trim().length > 0 ? path : null
     } catch (error) {
       throw normalizeError(error, 'Project create')
+    }
+  },
+
+  async pickToolExtensionFolder() {
+    ensureDesktopRuntime('Tool extension install')
+
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: 'Select a Xero tool extension bundle',
+      })
+      if (selected === null) return null
+      const path = Array.isArray(selected) ? selected[0] : selected
+      return typeof path === 'string' && path.trim().length > 0 ? path : null
+    } catch (error) {
+      throw normalizeError(error, 'Tool extension install')
     }
   },
 
@@ -4009,6 +4051,31 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
   agentToolingUpdateSettings(request) {
     const parsedRequest = upsertAgentToolingSettingsRequestSchema.parse(request)
     return invokeTyped(COMMANDS.agentToolingUpdateSettings, agentToolingSettingsSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  listAgentToolExtensions() {
+    return invokeTyped(COMMANDS.listAgentToolExtensions, agentToolExtensionCatalogSchema)
+  },
+
+  installAgentToolExtension(request) {
+    const parsedRequest = installAgentToolExtensionRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.installAgentToolExtension, agentToolExtensionCatalogSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  setAgentToolExtensionEnabled(request) {
+    const parsedRequest = setAgentToolExtensionEnabledRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.setAgentToolExtensionEnabled, agentToolExtensionCatalogSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  removeAgentToolExtension(request) {
+    const parsedRequest = removeAgentToolExtensionRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.removeAgentToolExtension, agentToolExtensionCatalogSchema, {
       request: parsedRequest,
     })
   },

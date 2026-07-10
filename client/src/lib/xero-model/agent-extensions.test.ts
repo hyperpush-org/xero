@@ -7,7 +7,7 @@ import {
 } from './agent-extensions'
 
 describe('agent extension model contracts', () => {
-  it('parses extension manifests and backend validation reports without UI', () => {
+  it('parses executable extension manifests and UI-ready validation reports', () => {
     const manifest = toolExtensionManifestSchema.parse({
       contractVersion: 1,
       extensionId: 'demo_extension',
@@ -39,6 +39,11 @@ describe('agent extension model contracts', () => {
           expectedSummaryContains: 'hello',
         },
       ],
+      runtime: {
+        kind: 'process',
+        executable: 'handler',
+        args: [],
+      },
     })
 
     const request = validateAgentToolExtensionManifestRequestSchema.parse({
@@ -83,11 +88,11 @@ describe('agent extension model contracts', () => {
       fixtureCount: 1,
       fixtureIds: ['basic_read'],
       diagnostics: [],
-      uiDeferred: true,
+      uiDeferred: false,
     })
 
     expect(report.valid).toBe(true)
-    expect(report.uiDeferred).toBe(true)
+    expect(report.uiDeferred).toBe(false)
     expect(report.fixtureIds).toContain('basic_read')
     expect(report.descriptor?.telemetryAttributes['xero.extension.id']).toBe(
       'demo_extension',
@@ -182,7 +187,7 @@ describe('agent extension model contracts', () => {
             'Tool extension `demo_extension` must declare at least one executable test fixture.',
         },
       ],
-      uiDeferred: true,
+      uiDeferred: false,
     })
 
     expect(invalidReport.valid).toBe(false)

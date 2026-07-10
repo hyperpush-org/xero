@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    path::{Component, Path},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc, Condvar, Mutex, OnceLock, Weak,
@@ -386,7 +387,22 @@ pub struct ToolExtensionPermissionManifest {
     pub audit_label: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolExtensionRuntimeKind {
+    Process,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolExtensionRuntimeManifest {
+    pub kind: ToolExtensionRuntimeKind,
+    pub executable: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ToolExtensionTestFixture {
     pub fixture_id: String,
@@ -422,7 +438,7 @@ pub struct ToolExtensionFixtureReport {
     pub fixtures: Vec<ToolExtensionFixtureRun>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ToolExtensionManifest {
     pub contract_version: u32,
@@ -441,6 +457,7 @@ pub struct ToolExtensionManifest {
     pub capability_tags: Vec<String>,
     #[serde(default)]
     pub test_fixtures: Vec<ToolExtensionTestFixture>,
+    pub runtime: ToolExtensionRuntimeManifest,
 }
 
 impl ToolExtensionManifest {
@@ -470,6 +487,7 @@ impl ToolExtensionManifest {
             ));
         }
         self.validate_permission()?;
+        self.validate_runtime()?;
         let descriptor = self.descriptor();
         descriptor.validate()?;
         self.validate_fixtures()?;
@@ -515,6 +533,39 @@ impl ToolExtensionManifest {
         validate_extension_text("permission.label", &self.permission.label)?;
         validate_extension_identifier("permission.riskClass", &self.permission.risk_class)?;
         validate_extension_text("permission.auditLabel", &self.permission.audit_label)?;
+        Ok(())
+    }
+
+    fn validate_runtime(&self) -> ToolRegistryResult<()> {
+        let executable = self.runtime.executable.trim();
+        let mut components = Path::new(executable).components();
+        if executable.is_empty()
+            || executable.len() != self.runtime.executable.len()
+            || !matches!(components.next(), Some(Component::Normal(_)))
+            || components.next().is_some()
+        {
+            return Err(ToolExecutionError::invalid_input(
+                "agent_tool_extension_executable_invalid",
+                format!(
+                    "Tool extension `{}` must declare one bundle-local executable filename without path traversal.",
+                    self.extension_id
+                ),
+            ));
+        }
+        if self
+            .runtime
+            .args
+            .iter()
+            .any(|argument| argument.contains('\0') || argument.len() > 4_096)
+        {
+            return Err(ToolExecutionError::invalid_input(
+                "agent_tool_extension_arguments_invalid",
+                format!(
+                    "Tool extension `{}` declares an invalid runtime argument.",
+                    self.extension_id
+                ),
+            ));
+        }
         Ok(())
     }
 
@@ -2953,6 +3004,11 @@ mod tests {
                 input: json!({ "changeId": "change-1" }),
                 expected_summary_contains: Some("generated".into()),
             }],
+            runtime: ToolExtensionRuntimeManifest {
+                kind: ToolExtensionRuntimeKind::Process,
+                executable: "handler".into(),
+                args: Vec::new(),
+            },
         }
     }
 

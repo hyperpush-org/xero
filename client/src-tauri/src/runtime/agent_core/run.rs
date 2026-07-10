@@ -109,7 +109,7 @@ pub fn create_owned_agent_run(
         controls.active.runtime_agent_id,
         effective_definition_snapshot,
     );
-    let tool_registry = ToolRegistry::for_prompt_with_options(
+    let mut tool_registry = ToolRegistry::for_prompt_with_options(
         &request.repo_root,
         &request.prompt,
         &controls,
@@ -122,6 +122,7 @@ pub fn create_owned_agent_run(
             stage_allowed_tools,
         },
     );
+    tool_registry.refresh_enabled_tool_extensions()?;
     let attached_skill_snapshot = resolve_attached_skill_snapshot_for_run(
         &request.repo_root,
         &request.project_id,
@@ -2923,7 +2924,7 @@ fn create_or_load_handoff_target_run(
         definition_snapshot,
     );
     let handoff_seed = render_handoff_seed_message(bundle)?;
-    let tool_registry = ToolRegistry::for_prompt_with_options(
+    let mut tool_registry = ToolRegistry::for_prompt_with_options(
         &request.repo_root,
         &format!("{handoff_seed}\n\n{}", request.prompt),
         &controls,
@@ -2936,6 +2937,7 @@ fn create_or_load_handoff_target_run(
             stage_allowed_tools,
         },
     );
+    tool_registry.refresh_enabled_tool_extensions()?;
     let attached_skill_snapshot = resolve_attached_skill_snapshot_for_run(
         &request.repo_root,
         &request.project_id,

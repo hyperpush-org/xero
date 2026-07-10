@@ -1437,6 +1437,7 @@ impl AutonomousAgentToolPolicy {
             AutonomousDynamicToolRoute::McpTool { server_id, .. } => {
                 self.allows_mcp_server(server_id)
             }
+            AutonomousDynamicToolRoute::ToolExtension { .. } => self.allows_tool(tool_name),
         }
     }
 
@@ -11229,6 +11230,10 @@ pub enum AutonomousDynamicToolRoute {
     McpTool {
         server_id: String,
         tool_name: String,
+    },
+    ToolExtension {
+        extension_id: String,
+        installation_hash: String,
     },
 }
 

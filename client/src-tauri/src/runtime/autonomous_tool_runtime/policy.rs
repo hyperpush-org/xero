@@ -31,6 +31,9 @@ use crate::{
     db::project_store,
 };
 use serde_json::Value as JsonValue;
+use xero_agent_core::{
+    ToolApprovalRequirement, ToolDescriptorV2, ToolMutability, ToolSandboxRequirement,
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct PreparedCommandRequest {
@@ -53,6 +56,84 @@ pub(super) enum CommandPolicyDecision {
 }
 
 impl AutonomousToolRuntime {
+    pub fn evaluate_extension_safety_policy(
+        &self,
+        descriptor: &ToolDescriptorV2,
+        raw_input: &JsonValue,
+        operator_approved: bool,
+        input_sha256: &str,
+    ) -> CommandResult<AutonomousSafetyPolicyDecision> {
+        let metadata = SafetyPolicyMetadata {
+            risk_class: "permissioned_extension",
+            network_intent: "none",
+            credential_sensitivity: "possible",
+            os_target: Some("sandboxed_process"),
+            prior_observation_required: false,
+            requires_approval: descriptor.approval_requirement == ToolApprovalRequirement::Always,
+            require_approval_code: "policy_requires_approval_tool_extension",
+            require_approval_reason:
+                "This tool extension declares that every call requires operator approval.",
+        };
+        let context = SafetyDecisionContext {
+            tool_name: &descriptor.name,
+            metadata,
+            approval_mode: self
+                .command_controls
+                .as_ref()
+                .map(|controls| controls.active.approval_mode.clone()),
+            operator_approved,
+            input_sha256,
+        };
+        if descriptor.mutability != ToolMutability::ReadOnly
+            || descriptor.sandbox_requirement != ToolSandboxRequirement::ReadOnly
+        {
+            return Ok(safety_decision(
+                AutonomousSafetyPolicyAction::Deny,
+                "policy_denied_mutating_tool_extension",
+                "Xero denied the extension because arbitrary third-party mutations do not have rollback-complete isolation.",
+                &context,
+            ));
+        }
+        if !tool_allowed_for_runtime_agent_with_policy(
+            self.active_runtime_agent_id(),
+            &descriptor.name,
+            self.agent_tool_policy.as_ref(),
+        ) {
+            return Ok(safety_decision(
+                AutonomousSafetyPolicyAction::Deny,
+                "policy_denied_tool_extension_for_agent",
+                format!(
+                    "The {} agent is not allowed to call extension `{}`.",
+                    self.active_runtime_agent_id().label(),
+                    descriptor.name
+                ),
+                &context,
+            ));
+        }
+        if secret_like_tool_input(raw_input) {
+            return Ok(safety_decision(
+                AutonomousSafetyPolicyAction::Deny,
+                "policy_denied_secret_like_tool_input",
+                "Xero denied the extension call because its arguments contain credential-like material.",
+                &context,
+            ));
+        }
+        if context.metadata.requires_approval && !operator_approved {
+            return Ok(safety_decision(
+                AutonomousSafetyPolicyAction::RequireApproval,
+                context.metadata.require_approval_code,
+                context.metadata.require_approval_reason,
+                &context,
+            ));
+        }
+        Ok(safety_decision(
+            AutonomousSafetyPolicyAction::Allow,
+            "policy_allowed_tool_extension",
+            "Xero allowed the explicitly enabled, permissioned extension call.",
+            &context,
+        ))
+    }
+
     pub fn evaluate_safety_policy(
         &self,
         tool_name: &str,

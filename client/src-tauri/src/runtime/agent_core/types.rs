@@ -140,6 +140,7 @@ impl AgentToolDescriptor {
 pub struct ToolRegistry {
     descriptors: Vec<AgentToolDescriptor>,
     dynamic_routes: BTreeMap<String, AutonomousDynamicToolRoute>,
+    extensions: BTreeMap<String, crate::runtime::tool_extensions::LoadedToolExtension>,
     exposure_plan: ToolExposurePlan,
     options: ToolRegistryOptions,
 }
@@ -366,6 +367,7 @@ impl ToolRegistry {
         Self {
             descriptors,
             dynamic_routes: BTreeMap::new(),
+            extensions: BTreeMap::new(),
             exposure_plan,
             options,
         }
@@ -451,6 +453,7 @@ impl ToolRegistry {
         Self {
             descriptors,
             dynamic_routes: BTreeMap::new(),
+            extensions: BTreeMap::new(),
             exposure_plan,
             options,
         }
@@ -498,7 +501,6 @@ impl ToolRegistry {
         let mut descriptors = descriptors_by_name.into_values().collect::<Vec<_>>();
         let allowed_dynamic_names = descriptors
             .iter()
-            .filter(|descriptor| dynamic_tool_name_is_safe(&descriptor.name))
             .map(|descriptor| descriptor.name.clone())
             .collect::<BTreeSet<_>>();
         let dynamic_routes = dynamic_routes
@@ -528,6 +530,7 @@ impl ToolRegistry {
         Self {
             descriptors,
             dynamic_routes,
+            extensions: BTreeMap::new(),
             exposure_plan,
             options,
         }
@@ -540,12 +543,111 @@ impl ToolRegistry {
     pub fn descriptors_v2(&self) -> Vec<xero_agent_core::ToolDescriptorV2> {
         self.descriptors
             .iter()
-            .map(|descriptor| descriptor.to_core_descriptor_v2(self.options.skill_tool_enabled))
+            .map(|descriptor| self.descriptor_v2(descriptor))
             .collect()
+    }
+
+    pub(crate) fn descriptor_v2(
+        &self,
+        descriptor: &AgentToolDescriptor,
+    ) -> xero_agent_core::ToolDescriptorV2 {
+        self.extensions
+            .get(&descriptor.name)
+            .map(|extension| extension.manifest.descriptor())
+            .unwrap_or_else(|| descriptor.to_core_descriptor_v2(self.options.skill_tool_enabled))
     }
 
     pub(crate) fn dynamic_routes(&self) -> &BTreeMap<String, AutonomousDynamicToolRoute> {
         &self.dynamic_routes
+    }
+
+    pub(crate) fn extension(
+        &self,
+        tool_name: &str,
+    ) -> Option<&crate::runtime::tool_extensions::LoadedToolExtension> {
+        self.extensions.get(tool_name)
+    }
+
+    pub(crate) fn refresh_enabled_tool_extensions(&mut self) -> CommandResult<()> {
+        let Some(app_data_dir) = crate::db::configured_app_data_dir() else {
+            self.clear_tool_extensions();
+            return Ok(());
+        };
+        self.refresh_enabled_tool_extensions_from(&app_data_dir)
+    }
+
+    pub(crate) fn refresh_enabled_tool_extensions_from(
+        &mut self,
+        app_data_dir: &Path,
+    ) -> CommandResult<()> {
+        self.clear_tool_extensions();
+        let mut reserved_tool_names = builtin_tool_descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.name)
+            .collect::<BTreeSet<_>>();
+        reserved_tool_names.extend(
+            self.descriptors
+                .iter()
+                .map(|descriptor| descriptor.name.clone()),
+        );
+        let extensions = crate::runtime::tool_extensions::load_enabled_tool_extensions(
+            app_data_dir,
+            &reserved_tool_names,
+        )?;
+        let mut added_names = Vec::new();
+        for extension in extensions {
+            let tool_name = extension.manifest.tool_name.clone();
+            if !tool_allowed_by_registry_options(&self.options, &tool_name) {
+                continue;
+            }
+            self.descriptors.push(AgentToolDescriptor {
+                name: tool_name.clone(),
+                description: extension.manifest.description.clone(),
+                input_schema: extension.manifest.input_schema.clone(),
+            });
+            self.dynamic_routes.insert(
+                tool_name.clone(),
+                AutonomousDynamicToolRoute::ToolExtension {
+                    extension_id: extension.manifest.extension_id.clone(),
+                    installation_hash: extension.installation_hash.clone(),
+                },
+            );
+            self.extensions.insert(tool_name.clone(), extension);
+            added_names.push(tool_name);
+        }
+        self.descriptors
+            .sort_by(|left, right| left.name.cmp(&right.name));
+        sort_descriptors_for_tool_application_style(
+            &mut self.descriptors,
+            self.options.tool_application_policy.style,
+        );
+        self.exposure_plan.add_tools(
+            added_names.iter().map(String::as_str),
+            "app_data_extension",
+            "enabled_extension_verified",
+            "The operator explicitly enabled this verified OS app-data tool extension.",
+        );
+        let allowed = self.descriptor_names();
+        self.exposure_plan.retain_tools(&allowed);
+        Ok(())
+    }
+
+    fn clear_tool_extensions(&mut self) {
+        let previous_extension_names = self
+            .dynamic_routes
+            .iter()
+            .filter_map(|(tool_name, route)| {
+                matches!(route, AutonomousDynamicToolRoute::ToolExtension { .. })
+                    .then_some(tool_name.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        self.descriptors
+            .retain(|descriptor| !previous_extension_names.contains(&descriptor.name));
+        self.dynamic_routes
+            .retain(|_, route| !matches!(route, AutonomousDynamicToolRoute::ToolExtension { .. }));
+        self.extensions.clear();
+        let allowed = self.descriptor_names();
+        self.exposure_plan.retain_tools(&allowed);
     }
 
     pub(crate) fn exposure_plan(&self) -> &ToolExposurePlan {
@@ -644,6 +746,7 @@ impl ToolRegistry {
             next.options.tool_application_policy.style,
         );
         next.dynamic_routes = dynamic_routes;
+        next.extensions = self.extensions.clone();
         next.exposure_plan = self.exposure_plan.clone();
         next.exposure_plan.add_tools(
             requested.iter().map(String::as_str),
@@ -819,6 +922,15 @@ impl ToolRegistry {
                     arguments: Some(tool_call.input.clone()),
                     timeout_ms: None,
                 })),
+                AutonomousDynamicToolRoute::ToolExtension { .. } => {
+                    Err(CommandError::system_fault(
+                        "agent_tool_extension_direct_dispatch_required",
+                        format!(
+                            "Tool extension `{}` must execute through the isolated Tool Registry V2 handler.",
+                            tool_call.tool_name
+                        ),
+                    ))
+                }
             };
         }
 
@@ -916,6 +1028,15 @@ fn dynamic_tool_name_is_safe(tool_name: &str) -> bool {
 fn dynamic_tool_route_name_is_safe(tool_name: &str, route: &AutonomousDynamicToolRoute) -> bool {
     match route {
         AutonomousDynamicToolRoute::McpTool { .. } => dynamic_tool_name_is_safe(tool_name),
+        AutonomousDynamicToolRoute::ToolExtension {
+            extension_id,
+            installation_hash,
+        } => {
+            !tool_name.trim().is_empty()
+                && !extension_id.trim().is_empty()
+                && installation_hash.len() == 64
+                && !tool_access_all_known_tools().contains(tool_name)
+        }
     }
 }
 
