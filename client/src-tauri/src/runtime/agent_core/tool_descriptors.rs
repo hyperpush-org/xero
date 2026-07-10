@@ -601,10 +601,11 @@ fn prompt_candidate_sort_order(
     left: &PromptFragmentCandidate,
     right: &PromptFragmentCandidate,
 ) -> std::cmp::Ordering {
-    right
-        .fragment
-        .priority
-        .cmp(&left.fragment.priority)
+    let left_required = left.fragment.budget_policy == PromptFragmentBudgetPolicy::AlwaysInclude;
+    let right_required = right.fragment.budget_policy == PromptFragmentBudgetPolicy::AlwaysInclude;
+    right_required
+        .cmp(&left_required)
+        .then_with(|| right.fragment.priority.cmp(&left.fragment.priority))
         .then_with(|| left.fragment.id.cmp(&right.fragment.id))
         .then_with(|| left.fragment.provenance.cmp(&right.fragment.provenance))
 }
@@ -644,6 +645,55 @@ fn summarize_prompt_fragment(mut fragment: PromptFragment) -> PromptFragment {
     fragment.sha256 = format!("{:x}", hasher.finalize());
     fragment.inclusion_reason = "summarized_to_fit_prompt_budget".into();
     fragment
+}
+
+#[cfg(test)]
+mod prompt_budget_tests {
+    use super::*;
+
+    #[test]
+    fn required_fragment_is_reserved_before_higher_priority_optional_fragment() {
+        let candidates = vec![
+            prompt_fragment_candidate(
+                "optional",
+                1_000,
+                "Optional",
+                "test",
+                "optional ".repeat(400),
+                PromptFragmentBudgetPolicy::Summarize,
+                true,
+                "test_optional",
+            ),
+            prompt_fragment_candidate(
+                "required",
+                1,
+                "Required",
+                "test",
+                "required ".repeat(400),
+                PromptFragmentBudgetPolicy::AlwaysInclude,
+                true,
+                "test_required",
+            ),
+        ];
+        let required_tokens = candidates[1].fragment.token_estimate;
+
+        let compilation = assemble_prompt_candidates(candidates, Some(required_tokens))
+            .expect("compile required-first prompt");
+
+        assert_eq!(
+            compilation
+                .fragments
+                .iter()
+                .map(|fragment| fragment.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["required"]
+        );
+        assert_eq!(compilation.excluded_fragments[0].id, "optional");
+        assert_eq!(
+            compilation.excluded_fragments[0].reason,
+            "prompt_budget_exceeded"
+        );
+    }
 }
 
 fn presentation_fragment() -> &'static str {

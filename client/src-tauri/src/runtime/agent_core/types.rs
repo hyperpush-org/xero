@@ -1426,6 +1426,9 @@ pub enum ProviderStreamEvent {
 pub trait ProviderAdapter {
     fn provider_id(&self) -> &str;
     fn model_id(&self) -> &str;
+    fn supports_compaction(&self) -> bool {
+        true
+    }
     fn stream_turn(
         &self,
         request: &ProviderTurnRequest,

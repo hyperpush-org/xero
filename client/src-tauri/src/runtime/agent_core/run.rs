@@ -800,6 +800,7 @@ pub fn drive_owned_agent_run(
         &request.run_id,
         &snapshot.run.agent_session_id,
         request.provider_preflight.as_ref(),
+        None,
         &cancellation,
     ) {
         Ok(()) => {
@@ -1325,6 +1326,9 @@ fn maybe_auto_compact_before_continuation(
     if !preference.enabled {
         return Ok(());
     }
+    if !provider.supports_compaction() {
+        return Ok(());
+    }
     let active_compaction = project_store::load_active_agent_compaction(
         &request.repo_root,
         &snapshot.run.project_id,
@@ -1351,7 +1355,7 @@ fn maybe_auto_compact_before_continuation(
     let decision = evaluate_compaction_policy(SessionCompactionPolicyInput {
         manual_requested: false,
         auto_enabled: true,
-        provider_supports_compaction: true,
+        provider_supports_compaction: provider.supports_compaction(),
         // Treat a stale compaction as absent so the threshold check can trigger CompactNow;
         // the insert below supersedes it.
         active_compaction_present: false,
@@ -1423,7 +1427,7 @@ fn maybe_handoff_before_continuation(
             runtime_agent_id: snapshot.run.runtime_agent_id,
             estimated_tokens: estimate.estimate.tokens,
             budget_tokens: estimate.budget_tokens,
-            provider_supports_compaction: true,
+            provider_supports_compaction: provider.supports_compaction(),
             active_compaction_present: active_compaction.is_some(),
             compaction_current,
             settings,
@@ -3393,6 +3397,7 @@ pub fn drive_owned_agent_continuation(
         &request.run_id,
         &snapshot.run.agent_session_id,
         request.provider_preflight.as_ref(),
+        request.auto_compact.as_ref(),
         &cancellation,
     ) {
         Ok(()) => {

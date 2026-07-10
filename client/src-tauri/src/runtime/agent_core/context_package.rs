@@ -12,6 +12,7 @@ const MAX_FIRST_TURN_RETRIEVAL_LIMIT: u32 = 12;
 pub(crate) struct ProviderContextPackage {
     pub system_prompt: String,
     pub manifest: project_store::AgentContextManifestRecord,
+    #[cfg(test)]
     pub compilation: PromptCompilation,
     pub pre_provider_retrieval_performed: bool,
 }
@@ -47,10 +48,25 @@ fn required_attachment_input_modality(attachment: &MessageAttachment) -> Option<
     }
 }
 
+#[cfg(test)]
 pub(crate) fn assemble_provider_context_package(
     input: ProviderContextPackageInput<'_>,
     skill_contexts: Vec<XeroSkillToolContextPayload>,
     attached_skill_contexts: Vec<XeroSkillToolContextPayload>,
+) -> CommandResult<ProviderContextPackage> {
+    assemble_provider_context_package_with_prompt_budget(
+        input,
+        skill_contexts,
+        attached_skill_contexts,
+        None,
+    )
+}
+
+pub(crate) fn assemble_provider_context_package_with_prompt_budget(
+    input: ProviderContextPackageInput<'_>,
+    skill_contexts: Vec<XeroSkillToolContextPayload>,
+    attached_skill_contexts: Vec<XeroSkillToolContextPayload>,
+    prompt_budget_cap_tokens: Option<u64>,
 ) -> CommandResult<ProviderContextPackage> {
     let created_at = now_timestamp();
     let first_turn_context_policy =
@@ -105,6 +121,22 @@ pub(crate) fn assemble_provider_context_package(
         input.provider_preflight,
     );
     let budget_tokens = context_limit.effective_input_budget_tokens;
+    let (message_contributors, messages_json, messages_redacted) =
+        provider_message_manifest_entries(input.messages)?;
+    let (tool_contributors, tool_descriptors_json) = tool_descriptor_manifest_entries(input.tools)?;
+    let history_tokens = contributor_token_total(&message_contributors);
+    let tool_schema_tokens = contributor_token_total(&tool_contributors);
+    let reserved_prompt_budget_tokens = budget_tokens.map(|budget| {
+        budget
+            .saturating_sub(history_tokens)
+            .saturating_sub(tool_schema_tokens)
+    });
+    let prompt_budget_tokens = match (reserved_prompt_budget_tokens, prompt_budget_cap_tokens) {
+        (Some(reserved), Some(cap)) => Some(reserved.min(cap)),
+        (Some(reserved), None) => Some(reserved),
+        (None, Some(cap)) => Some(cap),
+        (None, None) => None,
+    };
     let relevant_paths = prompt_relevant_paths_from_provider_messages(input.messages);
     let runtime_metadata = provider_context_runtime_metadata(&input, &created_at);
     let compilation = PromptCompiler::new(
@@ -128,7 +160,7 @@ pub(crate) fn assemble_provider_context_package(
     .with_attached_skill_contexts(attached_skill_contexts.clone())
     .with_skill_contexts(skill_contexts)
     .with_relevant_paths(relevant_paths.iter().map(String::as_str))
-    .with_prompt_budget_tokens(budget_tokens)
+    .with_prompt_budget_tokens(prompt_budget_tokens)
     .with_runtime_metadata(runtime_metadata)
     .compile()?;
 
@@ -136,9 +168,6 @@ pub(crate) fn assemble_provider_context_package(
         prompt_fragment_manifest_entries(&compilation.fragments);
     let (excluded_prompt_contributors, prompt_fragment_exclusions_json) =
         prompt_fragment_exclusion_manifest_entries(&compilation.excluded_fragments);
-    let (message_contributors, messages_json, messages_redacted) =
-        provider_message_manifest_entries(input.messages)?;
-    let (tool_contributors, tool_descriptors_json) = tool_descriptor_manifest_entries(input.tools)?;
     let consumed_artifact_preflight = consumed_artifact_preflight(
         input.repo_root,
         input.project_id,
@@ -425,9 +454,15 @@ pub(crate) fn assemble_provider_context_package(
         "included": included.iter().map(manifest_contributor_json).collect::<Vec<_>>(),
         "excluded": excluded.iter().map(manifest_contributor_json).collect::<Vec<_>>(),
     });
+    let budget_allocation_json = provider_turn_budget_allocation_json(
+        &context_limit,
+        &compilation,
+        history_tokens,
+        tool_schema_tokens,
+    );
     let prompt_assembly_json = json!({
-        "strategy": "priority_budget_pipeline_v1",
-        "sort": "priority_desc_id_asc_provenance_asc",
+        "strategy": "required_first_budget_pipeline_v2",
+        "sort": "required_first_then_priority_desc_id_asc_provenance_asc",
         "promptBudgetTokens": compilation.prompt_budget_tokens,
         "estimatedPromptTokens": compilation.estimated_prompt_tokens,
         "relevantPaths": relevant_paths.iter().collect::<Vec<_>>(),
@@ -492,6 +527,7 @@ pub(crate) fn assemble_provider_context_package(
     );
     manifest_fields.insert("estimatedTokens".into(), json!(estimated_tokens));
     manifest_fields.insert("policy".into(), policy_json);
+    manifest_fields.insert("budgetAllocation".into(), budget_allocation_json);
     manifest_fields.insert("contributors".into(), contributors_json);
     manifest_fields.insert(
         "promptFragments".into(),
@@ -570,6 +606,7 @@ pub(crate) fn assemble_provider_context_package(
     Ok(ProviderContextPackage {
         system_prompt: compilation.prompt.clone(),
         manifest,
+        #[cfg(test)]
         compilation,
         pre_provider_retrieval_performed: retrieval_decision.should_retrieve(),
     })
@@ -1137,6 +1174,160 @@ fn attached_skill_context_manifest_json(contexts: &[XeroSkillToolContextPayload]
                 })
             })
             .collect::<Vec<_>>(),
+    })
+}
+
+fn contributor_token_total(
+    contributors: &[project_store::AgentContextManifestContributorRecord],
+) -> u64 {
+    contributors.iter().fold(0_u64, |total, contributor| {
+        total.saturating_add(contributor.estimated_tokens)
+    })
+}
+
+fn provider_turn_budget_allocation_json(
+    context_limit: &crate::commands::SessionContextLimitResolutionDto,
+    compilation: &PromptCompilation,
+    history_tokens: u64,
+    tool_schema_tokens: u64,
+) -> JsonValue {
+    let system_prompt_prefix_tokens = estimate_tokens(SYSTEM_PROMPT_VERSION);
+    let required_system_tokens = compilation
+        .fragments
+        .iter()
+        .filter(|fragment| fragment.budget_policy == PromptFragmentBudgetPolicy::AlwaysInclude)
+        .fold(system_prompt_prefix_tokens, |total, fragment| {
+            total.saturating_add(fragment.token_estimate)
+        });
+    let admitted_optional_tokens = compilation
+        .fragments
+        .iter()
+        .filter(|fragment| fragment.budget_policy != PromptFragmentBudgetPolicy::AlwaysInclude)
+        .fold(0_u64, |total, fragment| {
+            total.saturating_add(fragment.token_estimate)
+        });
+    let excluded_optional_tokens = compilation
+        .excluded_fragments
+        .iter()
+        .filter(|fragment| fragment.budget_policy != PromptFragmentBudgetPolicy::AlwaysInclude)
+        .fold(0_u64, |total, fragment| {
+            total.saturating_add(fragment.token_estimate)
+        });
+    let mut optional_exclusion_reasons = BTreeMap::<String, u64>::new();
+    for fragment in compilation
+        .excluded_fragments
+        .iter()
+        .filter(|fragment| fragment.budget_policy != PromptFragmentBudgetPolicy::AlwaysInclude)
+    {
+        optional_exclusion_reasons
+            .entry(fragment.reason.clone())
+            .and_modify(|tokens| *tokens = tokens.saturating_add(fragment.token_estimate))
+            .or_insert(fragment.token_estimate);
+    }
+    let optional_exclusion_reasons = optional_exclusion_reasons
+        .into_iter()
+        .map(|(reason, estimated_tokens)| {
+            json!({
+                "reason": reason,
+                "estimatedTokens": estimated_tokens,
+            })
+        })
+        .collect::<Vec<_>>();
+    let required_input_tokens = required_system_tokens
+        .saturating_add(history_tokens)
+        .saturating_add(tool_schema_tokens);
+    let admitted_input_tokens = required_input_tokens.saturating_add(admitted_optional_tokens);
+    let effective_input_budget = context_limit.effective_input_budget_tokens;
+    let available_optional_prompt_tokens = compilation
+        .prompt_budget_tokens
+        .map(|budget| budget.saturating_sub(required_system_tokens));
+    let input_over_budget_tokens = effective_input_budget
+        .map(|budget| admitted_input_tokens.saturating_sub(budget))
+        .unwrap_or_default();
+    let unallocated_input_tokens =
+        effective_input_budget.map(|budget| budget.saturating_sub(admitted_input_tokens));
+    let optional_status = if excluded_optional_tokens == 0 {
+        "admitted"
+    } else if admitted_optional_tokens == 0 {
+        "excluded"
+    } else {
+        "partially_admitted"
+    };
+
+    json!({
+        "schema": "xero.provider_turn_budget_allocation.v1",
+        "strategy": "required_contributors_before_optional_fragments",
+        "order": [
+            "output_reserve",
+            "safety_reserve",
+            "required_system_context",
+            "history",
+            "tool_schemas",
+            "optional_prompt_fragments"
+        ],
+        "contextWindowTokens": context_limit.context_window_tokens,
+        "effectiveInputBudgetTokens": effective_input_budget,
+        "requiredInputTokens": required_input_tokens,
+        "admittedInputTokens": admitted_input_tokens,
+        "inputOverBudgetTokens": input_over_budget_tokens,
+        "unallocatedInputTokens": unallocated_input_tokens,
+        "availableOptionalPromptTokens": available_optional_prompt_tokens,
+        "classes": [
+            {
+                "class": "output_reserve",
+                "required": true,
+                "estimatedTokens": context_limit.output_reserve_tokens,
+                "allocatedTokens": context_limit.output_reserve_tokens,
+                "excludedTokens": 0,
+                "reason": "reserved_for_provider_output",
+                "exclusionReasons": [],
+            },
+            {
+                "class": "safety_reserve",
+                "required": true,
+                "estimatedTokens": context_limit.safety_reserve_tokens,
+                "allocatedTokens": context_limit.safety_reserve_tokens,
+                "excludedTokens": 0,
+                "reason": "reserved_for_provider_tokenization_and_request_overhead",
+                "exclusionReasons": [],
+            },
+            {
+                "class": "required_system_context",
+                "required": true,
+                "estimatedTokens": required_system_tokens,
+                "allocatedTokens": required_system_tokens,
+                "excludedTokens": 0,
+                "reason": "always_include_system_fragments_reserved_first",
+                "exclusionReasons": [],
+            },
+            {
+                "class": "history",
+                "required": true,
+                "estimatedTokens": history_tokens,
+                "allocatedTokens": history_tokens,
+                "excludedTokens": 0,
+                "reason": "provider_message_history_reserved_before_optional_fragments",
+                "exclusionReasons": [],
+            },
+            {
+                "class": "tool_schemas",
+                "required": true,
+                "estimatedTokens": tool_schema_tokens,
+                "allocatedTokens": tool_schema_tokens,
+                "excludedTokens": 0,
+                "reason": "active_tool_descriptors_reserved_before_optional_fragments",
+                "exclusionReasons": [],
+            },
+            {
+                "class": "optional_prompt_fragments",
+                "required": false,
+                "estimatedTokens": admitted_optional_tokens.saturating_add(excluded_optional_tokens),
+                "allocatedTokens": admitted_optional_tokens,
+                "excludedTokens": excluded_optional_tokens,
+                "reason": optional_status,
+                "exclusionReasons": optional_exclusion_reasons,
+            }
+        ]
     })
 }
 
@@ -2891,6 +3082,91 @@ mod tests {
         assert_eq!(metadata.timestamp_utc, "2026-06-01T09:30:00Z");
         assert_eq!(metadata.date_utc, "2026-06-01");
         assert_ne!(metadata.date_utc, "2026-05-01");
+    }
+
+    #[test]
+    fn provider_context_budget_reserves_large_tool_schemas_before_optional_fragments() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let (project_id, repo_root) = seed_project(&root);
+        seed_run(&repo_root, &project_id);
+        let messages = vec![ProviderMessage::User {
+            content: "Inspect the project with the available tool.".into(),
+            attachments: Vec::new(),
+        }];
+        let tools = vec![AgentToolDescriptor {
+            name: "large_schema".into(),
+            description: "A deliberately large provider tool schema.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "payload": {
+                        "type": "string",
+                        "description": "schema ".repeat(8_000),
+                    }
+                }
+            }),
+        }];
+        let mut provider_preflight = crate::provider_preflight::static_provider_preflight_snapshot(
+            OPENAI_CODEX_PROVIDER_ID,
+            OPENAI_CODEX_PROVIDER_ID,
+            xero_agent_core::ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+        );
+        let limits = &mut provider_preflight.capabilities.capabilities.context_limits;
+        limits.context_window_tokens = Some(50_000);
+        limits.max_output_tokens = Some(1_000);
+        limits.source = "live_probe".into();
+        limits.confidence = "high".into();
+        let input = ProviderContextPackageInput {
+            repo_root: &repo_root,
+            project_id: &project_id,
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID,
+            run_id: "run-context-package",
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: "engineer",
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+            agent_definition_snapshot: None,
+            provider_id: OPENAI_CODEX_PROVIDER_ID,
+            model_id: OPENAI_CODEX_PROVIDER_ID,
+            turn_index: 0,
+            browser_control_preference: BrowserControlPreferenceDto::Default,
+            tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
+            soul_settings: None,
+            tools: &tools,
+            tool_exposure_plan: None,
+            messages: &messages,
+            owned_process_summary: None,
+            provider_preflight: Some(&provider_preflight),
+        };
+
+        let package = assemble_provider_context_package(input, Vec::new(), Vec::new())
+            .expect("assemble required-first context package");
+        let effective_budget = package.manifest.manifest["effectiveInputBudgetTokens"]
+            .as_u64()
+            .expect("effective input budget");
+        let history_tokens = package.manifest.manifest["budgetAllocation"]["classes"]
+            .as_array()
+            .expect("budget classes")
+            .iter()
+            .find(|class| class["class"] == "history")
+            .and_then(|class| class["estimatedTokens"].as_u64())
+            .expect("history allocation");
+        let tool_tokens = package.manifest.manifest["budgetAllocation"]["classes"]
+            .as_array()
+            .expect("budget classes")
+            .iter()
+            .find(|class| class["class"] == "tool_schemas")
+            .and_then(|class| class["estimatedTokens"].as_u64())
+            .expect("tool allocation");
+
+        assert_eq!(
+            package.compilation.prompt_budget_tokens,
+            Some(
+                effective_budget
+                    .saturating_sub(history_tokens)
+                    .saturating_sub(tool_tokens)
+            )
+        );
+        assert!(tool_tokens > history_tokens);
     }
 
     fn seed_retrievable_context(repo_root: &Path, project_id: &str) {
