@@ -84,6 +84,8 @@ jobs:
   server:
     name: Server
     runs-on: ubuntu-latest
+    env:
+      XERO_POSTGRES_PORT: 5432
     services:
       postgres:
         image: postgres:16
