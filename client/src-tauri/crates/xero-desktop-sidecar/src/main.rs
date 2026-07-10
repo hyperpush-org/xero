@@ -3219,9 +3219,11 @@ impl WindowsOpenH264Encoder {
             .usage_type(openh264::encoder::UsageType::ScreenContentRealTime)
             .rate_control_mode(openh264::encoder::RateControlMode::Bitrate)
             .sps_pps_strategy(openh264::encoder::SpsPpsStrategy::ConstantId)
-            .max_frame_rate(fps as f32)
-            .set_bitrate_bps(bitrate.max(300_000) as u32)
-            .enable_skip_frame(true);
+            .max_frame_rate(openh264::encoder::FrameRate::from_hz(fps as f32))
+            .bitrate(openh264::encoder::BitRate::from_bps(
+                bitrate.max(300_000) as u32
+            ))
+            .skip_frames(true);
         let encoder = openh264::encoder::Encoder::with_api_config(
             openh264::OpenH264API::from_source(),
             config,
