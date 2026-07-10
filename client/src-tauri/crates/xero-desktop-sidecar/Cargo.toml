@@ -37,7 +37,7 @@ screencapturekit = "6.0.1"
 videotoolbox = { version = "0.18.0", default-features = false, features = ["compression"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-openh264 = "0.6"
+openh264 = "0.8"
 windows = { version = "0.54", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

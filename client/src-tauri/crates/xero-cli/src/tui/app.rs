@@ -4097,7 +4097,7 @@ pub fn smoke_fake_provider_run(globals: &GlobalOptions) -> Result<JsonValue, Cli
     }))
 }
 
-fn tui_io_error(error: io::Error) -> CliError {
+fn tui_io_error(error: impl std::fmt::Display) -> CliError {
     CliError::system_fault("xero_tui_io_failed", format!("Terminal UI failed: {error}"))
 }
 
