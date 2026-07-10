@@ -32,7 +32,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-          cache-dependency-path: client/pnpm-lock.yaml
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
         working-directory: client
@@ -67,7 +67,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-          cache-dependency-path: landing/pnpm-lock.yaml
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
         working-directory: landing
@@ -84,6 +84,8 @@ jobs:
   server:
     name: Server
     runs-on: ubuntu-latest
+    env:
+      XERO_POSTGRES_PORT: 5432
     services:
       postgres:
         image: postgres:16

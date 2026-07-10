@@ -1031,6 +1031,10 @@ fn exit_status_looks_like_sandbox_abort(_status: ExitStatus) -> bool {
 }
 
 pub(crate) fn configure_sandboxed_process_group(command: &mut Command) {
+    if crate::mutation_boundary_child_active() {
+        return;
+    }
+
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

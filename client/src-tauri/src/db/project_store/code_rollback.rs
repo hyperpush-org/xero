@@ -241,7 +241,8 @@ impl CodeChangeRestoreState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum CodeFileOperation {
     Create,
     Modify,
@@ -640,7 +641,8 @@ pub struct CodeChangeGroupInput {
     pub restore_state: CodeChangeRestoreState,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CodeRollbackCaptureTarget {
     pub path_before: Option<String>,
     pub path_after: Option<String>,
@@ -697,7 +699,8 @@ impl CodeRollbackCaptureTarget {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CodeRollbackCaptureHandle {
     pub project_id: String,
     pub agent_session_id: String,

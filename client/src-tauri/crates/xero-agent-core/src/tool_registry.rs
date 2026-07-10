@@ -9,6 +9,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(unix)]
+use std::{
+    io::{Read, Write},
+    os::unix::net::UnixStream,
+};
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 
@@ -19,8 +25,18 @@ const DEFAULT_TOOL_FAILURE_LIMIT: usize = 16;
 const DEFAULT_REPEATED_EQUIVALENT_CALL_LIMIT: usize = 3;
 const DEFAULT_COMMAND_OUTPUT_BYTES: usize = 64 * 1024;
 const DEFAULT_GROUP_WALL_CLOCK_MS: u64 = 120_000;
+const DEFAULT_MUTATION_CLEANUP_MS: u64 = 2_000;
 const DEFAULT_MAX_SUPERVISED_READ_ONLY_WORKERS: usize = 32;
+const MUTATION_TERMINATION_GRACE: Duration = Duration::from_millis(25);
+const MUTATION_SUPERVISOR_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const MAX_MUTATION_WORKER_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 pub const TOOL_EXTENSION_MANIFEST_CONTRACT_VERSION: u32 = 1;
+
+static MUTATION_BOUNDARY_CHILD_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+pub fn mutation_boundary_child_active() -> bool {
+    MUTATION_BOUNDARY_CHILD_ACTIVE.load(Ordering::SeqCst)
+}
 
 pub type ToolRegistryResult<T> = Result<T, ToolExecutionError>;
 
@@ -1095,6 +1111,7 @@ pub struct ToolDispatchConfig {
     pub sandbox: Arc<dyn ToolSandbox>,
     pub rollback: Option<Arc<dyn ToolRollback>>,
     pub context: ToolExecutionContext,
+    pub cancellation_check: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
 impl Default for ToolDispatchConfig {
@@ -1105,6 +1122,7 @@ impl Default for ToolDispatchConfig {
             sandbox: Arc::new(NoopToolSandbox),
             rollback: None,
             context: ToolExecutionContext::default(),
+            cancellation_check: None,
         }
     }
 }
@@ -1116,6 +1134,7 @@ pub struct ToolBudget {
     pub max_repeated_equivalent_calls: usize,
     pub max_command_output_bytes: usize,
     pub max_wall_clock_time_per_tool_group_ms: u64,
+    pub max_mutation_cleanup_ms: u64,
 }
 
 impl Default for ToolBudget {
@@ -1126,6 +1145,7 @@ impl Default for ToolBudget {
             max_repeated_equivalent_calls: DEFAULT_REPEATED_EQUIVALENT_CALL_LIMIT,
             max_command_output_bytes: DEFAULT_COMMAND_OUTPUT_BYTES,
             max_wall_clock_time_per_tool_group_ms: DEFAULT_GROUP_WALL_CLOCK_MS,
+            max_mutation_cleanup_ms: DEFAULT_MUTATION_CLEANUP_MS,
         }
     }
 }
@@ -1354,6 +1374,25 @@ pub trait ToolRollback: Send + Sync {
         checkpoint: &JsonValue,
         error: &ToolExecutionError,
     ) -> ToolRegistryResult<JsonValue>;
+
+    fn recover_after_termination(
+        &self,
+        call: &ToolCallInput,
+        descriptor: &ToolDescriptorV2,
+        checkpoint: Option<&JsonValue>,
+        error: &ToolExecutionError,
+    ) -> ToolRegistryResult<JsonValue> {
+        let checkpoint = checkpoint.ok_or_else(|| {
+            ToolExecutionError::retryable(
+                "agent_tool_mutation_checkpoint_unavailable",
+                format!(
+                    "Xero cannot automatically recover terminated tool `{}` because its checkpoint phase did not complete.",
+                    call.tool_name
+                ),
+            )
+        })?;
+        self.rollback_after_failure(call, descriptor, checkpoint, error)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1624,9 +1663,34 @@ fn global_read_only_worker_supervisor() -> Arc<ReadOnlyWorkerSupervisor> {
     }))
 }
 
+#[derive(Clone)]
+struct MutationQuarantine {
+    project_id: String,
+    call: ToolCallInput,
+    descriptor: ToolDescriptorV2,
+    checkpoint: Option<JsonValue>,
+    error: ToolExecutionError,
+    rollback_error: ToolExecutionError,
+    phase: MutationWorkerPhase,
+    rollback: Option<Arc<dyn ToolRollback>>,
+}
+
+#[derive(Default)]
+struct MutationExecutionState {
+    quarantine: Option<MutationQuarantine>,
+}
+
+fn global_mutation_execution_state() -> Arc<Mutex<MutationExecutionState>> {
+    static MUTATION_STATE: OnceLock<Arc<Mutex<MutationExecutionState>>> = OnceLock::new();
+    Arc::clone(
+        MUTATION_STATE.get_or_init(|| Arc::new(Mutex::new(MutationExecutionState::default()))),
+    )
+}
+
 pub struct ToolRegistryV2 {
     handlers: BTreeMap<String, Arc<dyn ToolHandler>>,
     read_only_worker_supervisor: Arc<ReadOnlyWorkerSupervisor>,
+    mutation_execution_state: Arc<Mutex<MutationExecutionState>>,
 }
 
 impl Default for ToolRegistryV2 {
@@ -1640,6 +1704,7 @@ impl ToolRegistryV2 {
         Self {
             handlers: BTreeMap::new(),
             read_only_worker_supervisor: global_read_only_worker_supervisor(),
+            mutation_execution_state: global_mutation_execution_state(),
         }
     }
 
@@ -1648,6 +1713,7 @@ impl ToolRegistryV2 {
         Self {
             handlers: BTreeMap::new(),
             read_only_worker_supervisor: Arc::new(ReadOnlyWorkerSupervisor::new(max_workers)),
+            mutation_execution_state: Arc::new(Mutex::new(MutationExecutionState::default())),
         }
     }
 
@@ -1888,8 +1954,15 @@ impl ToolRegistryV2 {
         let cancellation_token = ToolCancellationToken::new();
         match self.prepare_call(&call, tracker, config, deadline, cancellation_token) {
             Ok(prepared) => {
-                let mut outcome =
-                    execute_prepared_call(prepared, &config.context, config.rollback.as_deref());
+                let mut outcome = if prepared.descriptor.mutability == ToolMutability::Mutating {
+                    let mut mutation_state = self
+                        .mutation_execution_state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    execute_mutating_call_in_boundary(prepared, config, &mut mutation_state)
+                } else {
+                    execute_prepared_call(prepared, &config.context, config.rollback.as_deref())
+                };
                 if let ToolDispatchOutcome::Failed(failure) = &mut outcome {
                     match tracker.record_failure(&call, &failure.error) {
                         Ok(signal) => {
@@ -2044,6 +2117,1089 @@ impl PendingReadOnlyToolCall {
             cancellation_token: prepared.cancellation_token.clone(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum MutationWorkerPhase {
+    Starting,
+    Checkpoint,
+    Handler,
+    PostHook,
+    Rollback,
+    Completed,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "payload")]
+enum MutationWorkerMessage {
+    Phase(MutationWorkerPhase),
+    Checkpoint(Option<JsonValue>),
+    Outcome(Box<ToolDispatchOutcome>),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct MutationRecoveryResult {
+    result: ToolRegistryResult<JsonValue>,
+}
+
+struct PendingMutationToolCall {
+    call: ToolCallInput,
+    descriptor: ToolDescriptorV2,
+    pre_hook_payload: JsonValue,
+    started: Instant,
+    sandbox_metadata: Option<SandboxExecutionMetadata>,
+}
+
+impl PendingMutationToolCall {
+    fn from_prepared(prepared: &PreparedToolCall) -> Self {
+        Self {
+            call: prepared.call.clone(),
+            descriptor: prepared.descriptor.clone(),
+            pre_hook_payload: prepared.pre_hook_payload.clone(),
+            started: prepared.started,
+            sandbox_metadata: prepared.sandbox_metadata.clone(),
+        }
+    }
+
+    fn terminated_failure(
+        &self,
+        phase: MutationWorkerPhase,
+        cancelled: bool,
+        crashed: bool,
+    ) -> ToolDispatchFailure {
+        let mut sandbox_metadata = self.sandbox_metadata.clone();
+        if let Some(metadata) = sandbox_metadata.as_mut() {
+            metadata.exit_classification = if crashed {
+                crate::SandboxExitClassification::Unknown
+            } else if cancelled {
+                crate::SandboxExitClassification::Cancelled
+            } else {
+                crate::SandboxExitClassification::Timeout
+            };
+        }
+        let code = if crashed {
+            "agent_tool_mutation_worker_crashed"
+        } else if cancelled {
+            "agent_tool_mutation_cancelled"
+        } else {
+            "agent_tool_mutation_terminated"
+        };
+        let error = if crashed {
+            ToolExecutionError::retryable(
+                code,
+                format!(
+                    "Mutating tool `{}` exited unexpectedly while its isolated {phase:?} phase was running.",
+                    self.call.tool_name
+                ),
+            )
+        } else {
+            ToolExecutionError::timeout(
+                code,
+                format!(
+                    "Xero terminated mutating tool `{}` while its isolated {phase:?} phase was still running.",
+                    self.call.tool_name
+                ),
+            )
+        };
+        failure_from_error_with_sandbox(
+            &self.call,
+            error,
+            self.pre_hook_payload.clone(),
+            json!({
+                "ok": false,
+                "mutationBoundary": "process",
+                "phase": phase,
+                "terminated": true,
+                "cancelled": cancelled,
+                "crashed": crashed,
+            }),
+            self.started.elapsed(),
+            sandbox_metadata,
+        )
+    }
+
+    fn unavailable_failure(self, error: ToolExecutionError) -> ToolDispatchFailure {
+        failure_from_error_with_sandbox(
+            &self.call,
+            error,
+            self.pre_hook_payload,
+            json!({
+                "ok": false,
+                "mutationBoundary": "process",
+                "phase": MutationWorkerPhase::Starting,
+            }),
+            self.started.elapsed(),
+            self.sandbox_metadata,
+        )
+    }
+
+    fn quarantined_failure(&self, quarantine: &MutationQuarantine) -> ToolDispatchFailure {
+        let mut error = ToolExecutionError::retryable(
+            "agent_tool_mutation_quarantined",
+            format!(
+                "Xero quarantined mutating tool `{}` because recovery for prior tool `{}` remains unresolved.",
+                self.call.tool_name, quarantine.call.tool_name
+            ),
+        );
+        error.telemetry_attributes.insert(
+            "xero.mutation.quarantined_call_id".into(),
+            quarantine.call.tool_call_id.clone(),
+        );
+        error.telemetry_attributes.insert(
+            "xero.mutation.quarantined_phase".into(),
+            format!("{:?}", quarantine.phase).to_ascii_lowercase(),
+        );
+        ToolDispatchFailure {
+            tool_call_id: self.call.tool_call_id.clone(),
+            tool_name: self.call.tool_name.clone(),
+            error,
+            doom_loop_signal: None,
+            rollback_payload: None,
+            rollback_error: Some(quarantine.rollback_error.clone()),
+            pre_hook_payload: self.pre_hook_payload.clone(),
+            post_hook_payload: json!({
+                "ok": false,
+                "mutationBoundary": "process",
+                "quarantined": true,
+                "blockedByToolCallId": quarantine.call.tool_call_id,
+                "blockedByToolName": quarantine.call.tool_name,
+                "phase": quarantine.phase,
+            }),
+            elapsed_ms: self.started.elapsed().as_millis(),
+            sandbox_metadata: self.sandbox_metadata.clone(),
+        }
+    }
+}
+
+#[cfg(unix)]
+fn execute_mutating_call_in_boundary(
+    prepared: PreparedToolCall,
+    config: &ToolDispatchConfig,
+    mutation_state: &mut MutationExecutionState,
+) -> ToolDispatchOutcome {
+    let pending = PendingMutationToolCall::from_prepared(&prepared);
+    let deadline = prepared
+        .deadline
+        .unwrap_or_else(|| group_deadline(&config.budget));
+    let mut audit_events = Vec::new();
+    if let Some(quarantine) = mutation_state.quarantine.take() {
+        match recover_mutation_quarantine(&quarantine, config) {
+            Ok(_) => audit_events.push("mutation_quarantine_recovered".to_string()),
+            Err(rollback_error) => {
+                let quarantine = MutationQuarantine {
+                    rollback_error,
+                    ..quarantine
+                };
+                let failure = pending.quarantined_failure(&quarantine);
+                mutation_state.quarantine = Some(quarantine);
+                let mut outcome = ToolDispatchOutcome::Failed(failure);
+                attach_mutation_boundary_metadata(
+                    &mut outcome,
+                    &pending.call,
+                    None,
+                    MutationWorkerPhase::Rollback,
+                    &["mutation_quarantine_blocked".to_string()],
+                    true,
+                );
+                return outcome;
+            }
+        }
+    }
+    let (parent_stream, child_stream) = match UnixStream::pair() {
+        Ok(streams) => streams,
+        Err(error) => {
+            return ToolDispatchOutcome::Failed(pending.unavailable_failure(
+                ToolExecutionError::unavailable(
+                    "agent_tool_mutation_boundary_socket_failed",
+                    format!("Xero could not create the mutation worker channel: {error}"),
+                ),
+            ));
+        }
+    };
+
+    // SAFETY: `fork` establishes the isolated mutation worker. The child does not return into
+    // the parent control flow and always terminates with `_exit` below.
+    let child_pid = unsafe { libc::fork() };
+    if child_pid < 0 {
+        return ToolDispatchOutcome::Failed(pending.unavailable_failure(
+            ToolExecutionError::unavailable(
+                "agent_tool_mutation_boundary_spawn_failed",
+                format!(
+                    "Xero could not create the mutation worker process: {}",
+                    std::io::Error::last_os_error()
+                ),
+            ),
+        ));
+    }
+
+    if child_pid == 0 {
+        drop(parent_stream);
+        // SAFETY: the worker becomes the process-group leader for its own PID, so all
+        // subprocesses it launches can be terminated as one mutation tree by the parent.
+        let _ = unsafe { libc::setpgid(0, 0) };
+        MUTATION_BOUNDARY_CHILD_ACTIVE.store(true, Ordering::SeqCst);
+        let mut child_stream = child_stream;
+        execute_mutation_worker(
+            prepared,
+            &config.context,
+            config.rollback.as_deref(),
+            &mut child_stream,
+        );
+        // SAFETY: this is the fork child. `_exit` avoids unwinding parent-owned Rust state.
+        unsafe { libc::_exit(0) };
+    }
+
+    drop(child_stream);
+    // SAFETY: the positive child PID was returned by `fork`; racing the child's identical
+    // `setpgid` is harmless and closes the window before supervision begins.
+    let _ = unsafe { libc::setpgid(child_pid, child_pid) };
+    audit_events.push("mutation_worker_spawned".to_string());
+    let (message_tx, message_rx) = mpsc::channel();
+    let reader = thread::spawn(move || read_mutation_worker_messages(parent_stream, message_tx));
+    let mut phase = MutationWorkerPhase::Starting;
+    let mut checkpoint = None;
+    let mut outcome = None;
+    let mut cancelled = false;
+    let mut worker_disconnected = false;
+    let supervisor_deadline = deadline + MUTATION_TERMINATION_GRACE;
+
+    while outcome.is_none() {
+        if config
+            .cancellation_check
+            .as_ref()
+            .is_some_and(|is_cancelled| is_cancelled())
+        {
+            cancelled = true;
+            break;
+        }
+        // Give a cooperative worker one short, bounded drain window after the control deadline
+        // so it can report its typed timeout and rollback result before forcible termination.
+        let remaining = supervisor_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let wait = remaining.min(MUTATION_SUPERVISOR_POLL_INTERVAL);
+        match message_rx.recv_timeout(wait) {
+            Ok(MutationWorkerMessage::Phase(next_phase)) => {
+                phase = next_phase;
+                audit_events.push(format!(
+                    "mutation_phase_{}",
+                    mutation_worker_phase_name(next_phase)
+                ));
+            }
+            Ok(MutationWorkerMessage::Checkpoint(worker_checkpoint)) => {
+                checkpoint = worker_checkpoint;
+                audit_events.push("mutation_checkpoint_recorded".to_string());
+            }
+            Ok(MutationWorkerMessage::Outcome(worker_outcome)) => outcome = Some(*worker_outcome),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                worker_disconnected = true;
+                break;
+            }
+        }
+    }
+
+    if let Some(mut outcome) = outcome {
+        let _ = wait_for_mutation_worker(child_pid, None);
+        cleanup_mutation_process_group(child_pid);
+        let _ = reader.join();
+        let affected_paths = mutation_affected_paths(&pending.call.input, checkpoint.as_ref());
+        if let ToolDispatchOutcome::Failed(failure) = &mut outcome {
+            if failure.rollback_error.is_some() {
+                let quarantine = MutationQuarantine {
+                    project_id: config.context.project_id.clone(),
+                    call: pending.call.clone(),
+                    descriptor: pending.descriptor.clone(),
+                    checkpoint,
+                    error: failure.error.clone(),
+                    rollback_error: failure.rollback_error.clone().unwrap_or_else(|| {
+                        ToolExecutionError::retryable(
+                            "agent_tool_rollback_unresolved",
+                            "Mutation rollback did not reach a resolved state.",
+                        )
+                    }),
+                    phase: MutationWorkerPhase::Rollback,
+                    rollback: config.rollback.clone(),
+                };
+                match recover_mutation_quarantine(&quarantine, config) {
+                    Ok(payload) => {
+                        failure.rollback_payload = Some(payload);
+                        failure.rollback_error = None;
+                        audit_events.push("mutation_rollback_recovered".to_string());
+                    }
+                    Err(rollback_error) => {
+                        failure.rollback_error = Some(rollback_error.clone());
+                        mutation_state.quarantine = Some(MutationQuarantine {
+                            rollback_error,
+                            ..quarantine
+                        });
+                        audit_events.push("mutation_quarantined".to_string());
+                    }
+                }
+            }
+        }
+        attach_mutation_boundary_metadata(
+            &mut outcome,
+            &pending.call,
+            Some(&affected_paths),
+            phase,
+            &audit_events,
+            mutation_state.quarantine.is_some(),
+        );
+        return outcome;
+    }
+
+    terminate_mutation_process_tree(child_pid);
+    let _ = reader.join();
+    let crashed = worker_disconnected && Instant::now() < deadline;
+    let mut failure = pending.terminated_failure(phase, cancelled, crashed);
+    let affected_paths = mutation_affected_paths(&pending.call.input, checkpoint.as_ref());
+    let quarantine = MutationQuarantine {
+        project_id: config.context.project_id.clone(),
+        call: pending.call.clone(),
+        descriptor: pending.descriptor.clone(),
+        checkpoint,
+        error: failure.error.clone(),
+        rollback_error: ToolExecutionError::retryable(
+            "agent_tool_mutation_recovery_pending",
+            "Mutation recovery has not completed yet.",
+        ),
+        phase,
+        rollback: config.rollback.clone(),
+    };
+    match recover_mutation_quarantine(&quarantine, config) {
+        Ok(payload) => {
+            failure.rollback_payload = Some(payload);
+            audit_events.push("mutation_rollback_recovered".to_string());
+        }
+        Err(rollback_error) => {
+            failure.rollback_error = Some(rollback_error.clone());
+            mutation_state.quarantine = Some(MutationQuarantine {
+                rollback_error,
+                ..quarantine
+            });
+            audit_events.push("mutation_quarantined".to_string());
+        }
+    }
+    audit_events.push(if crashed {
+        "mutation_worker_crashed".to_string()
+    } else {
+        "mutation_worker_terminated".to_string()
+    });
+    let mut outcome = ToolDispatchOutcome::Failed(failure);
+    attach_mutation_boundary_metadata(
+        &mut outcome,
+        &pending.call,
+        Some(&affected_paths),
+        phase,
+        &audit_events,
+        mutation_state.quarantine.is_some(),
+    );
+    outcome
+}
+
+#[cfg(not(unix))]
+fn execute_mutating_call_in_boundary(
+    prepared: PreparedToolCall,
+    _config: &ToolDispatchConfig,
+    _mutation_state: &mut MutationExecutionState,
+) -> ToolDispatchOutcome {
+    let pending = PendingMutationToolCall::from_prepared(&prepared);
+    ToolDispatchOutcome::Failed(pending.unavailable_failure(ToolExecutionError::unavailable(
+        "agent_tool_mutation_boundary_unsupported",
+        "Xero refuses to run a mutating handler on a platform without a terminable mutation worker boundary.",
+    )))
+}
+
+#[cfg(unix)]
+fn execute_mutation_worker(
+    prepared: PreparedToolCall,
+    context: &ToolExecutionContext,
+    rollback: Option<&dyn ToolRollback>,
+    stream: &mut UnixStream,
+) {
+    let _ = send_mutation_worker_message(
+        stream,
+        &MutationWorkerMessage::Phase(MutationWorkerPhase::Checkpoint),
+    );
+    let control = ToolExecutionControl::new(prepared.deadline, prepared.cancellation_token.clone());
+    if control.is_cancelled() {
+        let outcome = ToolDispatchOutcome::Failed(timeout_failure_from_prepared(prepared));
+        let _ = send_mutation_worker_message(
+            stream,
+            &MutationWorkerMessage::Outcome(Box::new(outcome)),
+        );
+        return;
+    }
+
+    let checkpoint = match rollback {
+        Some(recorder) => {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                recorder.checkpoint_before(&prepared.call, &prepared.descriptor)
+            })) {
+                Ok(Ok(checkpoint)) => checkpoint,
+                Ok(Err(error)) => {
+                    let outcome = checkpoint_failure_outcome(prepared, error);
+                    let _ = send_mutation_worker_message(
+                        stream,
+                        &MutationWorkerMessage::Outcome(Box::new(outcome)),
+                    );
+                    return;
+                }
+                Err(_) => {
+                    let error = ToolExecutionError::retryable(
+                        "agent_tool_checkpoint_panicked",
+                        format!(
+                            "Mutation checkpoint for tool `{}` panicked inside its isolated worker.",
+                            prepared.call.tool_name
+                        ),
+                    );
+                    let outcome = checkpoint_failure_outcome(prepared, error);
+                    let _ = send_mutation_worker_message(
+                        stream,
+                        &MutationWorkerMessage::Outcome(Box::new(outcome)),
+                    );
+                    return;
+                }
+            }
+        }
+        None => None,
+    };
+    if let Err(error) = send_mutation_worker_message(
+        stream,
+        &MutationWorkerMessage::Checkpoint(checkpoint.clone()),
+    ) {
+        let publish_error = ToolExecutionError::retryable(
+            "agent_tool_mutation_checkpoint_publish_failed",
+            format!("Xero could not publish mutation recovery state before execution: {error}"),
+        );
+        let outcome = mutation_outcome_after_post_hook(
+            prepared,
+            rollback,
+            checkpoint.as_ref(),
+            Err(publish_error),
+            json!({
+                "ok": false,
+                "preflight": "rollback_checkpoint_publish_failed",
+            }),
+            stream,
+        );
+        let _ = send_mutation_worker_message(
+            stream,
+            &MutationWorkerMessage::Outcome(Box::new(outcome)),
+        );
+        return;
+    }
+
+    let _ = send_mutation_worker_message(
+        stream,
+        &MutationWorkerMessage::Phase(MutationWorkerPhase::Handler),
+    );
+    let mut raw_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        prepared
+            .handler
+            .execute_with_control(context, &prepared.call, &control)
+    }))
+    .unwrap_or_else(|_| Err(handler_panic_error(&prepared.call)));
+    if raw_result.is_ok() && control.is_cancelled() {
+        raw_result = Err(ToolExecutionError::timeout(
+            "agent_tool_group_timeout",
+            format!(
+                "Tool `{}` completed after the tool-group wall-clock budget expired.",
+                prepared.call.tool_name
+            ),
+        ));
+    }
+
+    let _ = send_mutation_worker_message(
+        stream,
+        &MutationWorkerMessage::Phase(MutationWorkerPhase::PostHook),
+    );
+    let post_hook_payload = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        prepared
+            .handler
+            .post_hook_payload(&prepared.call, &raw_result)
+    })) {
+        Ok(payload) => payload,
+        Err(_) => {
+            raw_result = Err(ToolExecutionError::retryable(
+                "agent_tool_post_hook_panicked",
+                format!(
+                    "Post-hook for mutating tool `{}` panicked inside its isolated worker.",
+                    prepared.call.tool_name
+                ),
+            ));
+            json!({
+                "toolCallId": &prepared.call.tool_call_id,
+                "toolName": &prepared.call.tool_name,
+                "ok": false,
+                "postHookPanicked": true,
+            })
+        }
+    };
+
+    let outcome = mutation_outcome_after_post_hook(
+        prepared,
+        rollback,
+        checkpoint.as_ref(),
+        raw_result,
+        post_hook_payload,
+        stream,
+    );
+    let _ = send_mutation_worker_message(
+        stream,
+        &MutationWorkerMessage::Phase(MutationWorkerPhase::Completed),
+    );
+    let _ =
+        send_mutation_worker_message(stream, &MutationWorkerMessage::Outcome(Box::new(outcome)));
+}
+
+#[cfg(unix)]
+fn checkpoint_failure_outcome(
+    prepared: PreparedToolCall,
+    error: ToolExecutionError,
+) -> ToolDispatchOutcome {
+    let mut sandbox_metadata = prepared.sandbox_metadata;
+    if let Some(metadata) = sandbox_metadata.as_mut() {
+        metadata.exit_classification = exit_classification_from_error(&error);
+    }
+    ToolDispatchOutcome::Failed(ToolDispatchFailure {
+        tool_call_id: prepared.call.tool_call_id,
+        tool_name: prepared.call.tool_name,
+        error,
+        doom_loop_signal: None,
+        rollback_payload: None,
+        rollback_error: None,
+        pre_hook_payload: prepared.pre_hook_payload,
+        post_hook_payload: json!({
+            "ok": false,
+            "preflight": "rollback_checkpoint_failed",
+        }),
+        elapsed_ms: prepared.started.elapsed().as_millis(),
+        sandbox_metadata,
+    })
+}
+
+#[cfg(unix)]
+fn mutation_outcome_after_post_hook(
+    prepared: PreparedToolCall,
+    rollback: Option<&dyn ToolRollback>,
+    checkpoint: Option<&JsonValue>,
+    raw_result: ToolRegistryResult<ToolHandlerOutput>,
+    post_hook_payload: JsonValue,
+    stream: &mut UnixStream,
+) -> ToolDispatchOutcome {
+    match raw_result {
+        Ok(handler_output) => {
+            let mut sandbox_metadata = prepared.sandbox_metadata;
+            if let Some(metadata) = sandbox_metadata.as_mut() {
+                metadata.exit_classification =
+                    exit_classification_from_output(&handler_output.output);
+            }
+            let (output, truncation) = truncate_tool_output(
+                handler_output.output,
+                &prepared.descriptor,
+                &prepared.budget,
+            );
+            let mut telemetry_attributes = prepared.descriptor.telemetry_attributes.clone();
+            telemetry_attributes.extend(handler_output.telemetry_attributes);
+            telemetry_attributes.extend(output_telemetry(&truncation));
+            ToolDispatchOutcome::Succeeded(ToolDispatchSuccess {
+                tool_call_id: prepared.call.tool_call_id,
+                tool_name: prepared.call.tool_name,
+                summary: handler_output.summary,
+                output,
+                truncation,
+                pre_hook_payload: prepared.pre_hook_payload,
+                post_hook_payload,
+                telemetry_attributes,
+                elapsed_ms: prepared.started.elapsed().as_millis(),
+                sandbox_metadata,
+            })
+        }
+        Err(error) => {
+            let mut sandbox_metadata = prepared.sandbox_metadata;
+            if let Some(metadata) = sandbox_metadata.as_mut() {
+                metadata.exit_classification = exit_classification_from_error(&error);
+            }
+            let mut rollback_payload = None;
+            let mut rollback_error = None;
+            if let (Some(recorder), Some(checkpoint)) = (rollback, checkpoint) {
+                let _ = send_mutation_worker_message(
+                    stream,
+                    &MutationWorkerMessage::Phase(MutationWorkerPhase::Rollback),
+                );
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    recorder.rollback_after_failure(
+                        &prepared.call,
+                        &prepared.descriptor,
+                        checkpoint,
+                        &error,
+                    )
+                })) {
+                    Ok(Ok(payload)) => rollback_payload = Some(payload),
+                    Ok(Err(error)) => rollback_error = Some(error),
+                    Err(_) => {
+                        rollback_error = Some(ToolExecutionError::retryable(
+                            "agent_tool_rollback_panicked",
+                            format!(
+                                "Rollback for mutating tool `{}` panicked inside its isolated worker.",
+                                prepared.call.tool_name
+                            ),
+                        ));
+                    }
+                }
+            }
+            ToolDispatchOutcome::Failed(ToolDispatchFailure {
+                tool_call_id: prepared.call.tool_call_id,
+                tool_name: prepared.call.tool_name,
+                error,
+                doom_loop_signal: None,
+                rollback_payload,
+                rollback_error,
+                pre_hook_payload: prepared.pre_hook_payload,
+                post_hook_payload,
+                elapsed_ms: prepared.started.elapsed().as_millis(),
+                sandbox_metadata,
+            })
+        }
+    }
+}
+
+#[cfg(unix)]
+fn recover_mutation_quarantine(
+    quarantine: &MutationQuarantine,
+    config: &ToolDispatchConfig,
+) -> ToolRegistryResult<JsonValue> {
+    let rollback = quarantine
+        .rollback
+        .as_deref()
+        .or_else(|| {
+            (config.context.project_id == quarantine.project_id)
+                .then_some(config.rollback.as_deref())
+                .flatten()
+        })
+        .ok_or_else(|| {
+            ToolExecutionError::retryable(
+                "agent_tool_mutation_recovery_unavailable",
+                format!(
+                    "Xero cannot recover terminated tool `{}` because no rollback provider is configured.",
+                    quarantine.call.tool_name
+                ),
+            )
+        })?;
+    let (parent_stream, child_stream) = UnixStream::pair().map_err(|error| {
+        ToolExecutionError::retryable(
+            "agent_tool_recovery_boundary_socket_failed",
+            format!("Xero could not create the recovery worker channel: {error}"),
+        )
+    })?;
+    // SAFETY: recovery uses the same one-way fork-worker contract as mutation execution; the
+    // child sends one bounded result and exits without returning through parent-owned state.
+    let child_pid = unsafe { libc::fork() };
+    if child_pid < 0 {
+        return Err(ToolExecutionError::retryable(
+            "agent_tool_recovery_boundary_spawn_failed",
+            format!(
+                "Xero could not create the recovery worker process: {}",
+                std::io::Error::last_os_error()
+            ),
+        ));
+    }
+    if child_pid == 0 {
+        drop(parent_stream);
+        // SAFETY: make the recovery worker its own process-group leader so a hung recovery tree
+        // can be terminated without signaling the desktop process group.
+        let _ = unsafe { libc::setpgid(0, 0) };
+        MUTATION_BOUNDARY_CHILD_ACTIVE.store(true, Ordering::SeqCst);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rollback.recover_after_termination(
+                &quarantine.call,
+                &quarantine.descriptor,
+                quarantine.checkpoint.as_ref(),
+                &quarantine.error,
+            )
+        }))
+        .unwrap_or_else(|_| {
+            Err(ToolExecutionError::retryable(
+                "agent_tool_rollback_panicked",
+                format!(
+                    "Recovery rollback for tool `{}` panicked inside its isolated worker.",
+                    quarantine.call.tool_name
+                ),
+            ))
+        });
+        let mut child_stream = child_stream;
+        let _ = write_framed_json(&mut child_stream, &MutationRecoveryResult { result });
+        // SAFETY: this is the fork child. `_exit` avoids unwinding parent-owned Rust state.
+        unsafe { libc::_exit(0) };
+    }
+
+    drop(child_stream);
+    // SAFETY: the PID is the direct child returned by `fork`; this duplicates the child's
+    // process-group setup to eliminate a parent-side race before timeout supervision.
+    let _ = unsafe { libc::setpgid(child_pid, child_pid) };
+    let (result_tx, result_rx) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        let _ = result_tx.send(read_mutation_recovery_result(parent_stream));
+    });
+    let timeout = Duration::from_millis(config.budget.max_mutation_cleanup_ms.max(1));
+    let result = result_rx.recv_timeout(timeout);
+    match result {
+        Ok(Some(result)) => {
+            let _ = wait_for_mutation_worker(child_pid, None);
+            let _ = reader.join();
+            result.result
+        }
+        Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+            terminate_mutation_process_tree(child_pid);
+            let _ = reader.join();
+            Err(ToolExecutionError::timeout(
+                "agent_tool_rollback_terminated",
+                format!(
+                    "Recovery rollback for tool `{}` terminated without a result.",
+                    quarantine.call.tool_name
+                ),
+            ))
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            terminate_mutation_process_tree(child_pid);
+            let _ = reader.join();
+            Err(ToolExecutionError::timeout(
+                "agent_tool_rollback_terminated",
+                format!(
+                    "Xero terminated recovery rollback for tool `{}` after {}ms.",
+                    quarantine.call.tool_name, config.budget.max_mutation_cleanup_ms
+                ),
+            ))
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn recover_mutation_quarantine(
+    quarantine: &MutationQuarantine,
+    _config: &ToolDispatchConfig,
+) -> ToolRegistryResult<JsonValue> {
+    Err(ToolExecutionError::unavailable(
+        "agent_tool_mutation_recovery_unsupported",
+        format!(
+            "Xero cannot recover mutating tool `{}` on a platform without a terminable recovery worker boundary.",
+            quarantine.call.tool_name
+        ),
+    ))
+}
+
+#[cfg(unix)]
+fn read_mutation_recovery_result(mut stream: UnixStream) -> Option<MutationRecoveryResult> {
+    let mut length_bytes = [0_u8; 4];
+    stream.read_exact(&mut length_bytes).ok()?;
+    let payload_len = u32::from_be_bytes(length_bytes) as usize;
+    if payload_len > MAX_MUTATION_WORKER_MESSAGE_BYTES {
+        return None;
+    }
+    let mut payload = vec![0_u8; payload_len];
+    stream.read_exact(&mut payload).ok()?;
+    serde_json::from_slice(&payload).ok()
+}
+
+#[cfg(unix)]
+fn send_mutation_worker_message(
+    stream: &mut UnixStream,
+    message: &MutationWorkerMessage,
+) -> std::io::Result<()> {
+    write_framed_json(stream, message)
+}
+
+#[cfg(unix)]
+fn write_framed_json(stream: &mut UnixStream, message: &impl Serialize) -> std::io::Result<()> {
+    let payload = serde_json::to_vec(message).map_err(std::io::Error::other)?;
+    if payload.len() > MAX_MUTATION_WORKER_MESSAGE_BYTES {
+        return Err(std::io::Error::other(
+            "mutation worker message exceeded the bounded IPC payload",
+        ));
+    }
+    let payload_len = u32::try_from(payload.len())
+        .map_err(|_| std::io::Error::other("mutation worker message exceeded u32 length"))?;
+    stream.write_all(&payload_len.to_be_bytes())?;
+    stream.write_all(&payload)?;
+    stream.flush()
+}
+
+#[cfg(unix)]
+fn read_mutation_worker_messages(
+    mut stream: UnixStream,
+    sender: mpsc::Sender<MutationWorkerMessage>,
+) {
+    loop {
+        let mut length_bytes = [0_u8; 4];
+        if stream.read_exact(&mut length_bytes).is_err() {
+            return;
+        }
+        let payload_len = u32::from_be_bytes(length_bytes) as usize;
+        if payload_len > MAX_MUTATION_WORKER_MESSAGE_BYTES {
+            return;
+        }
+        let mut payload = vec![0_u8; payload_len];
+        if stream.read_exact(&mut payload).is_err() {
+            return;
+        }
+        let Ok(message) = serde_json::from_slice(&payload) else {
+            return;
+        };
+        if sender.send(message).is_err() {
+            return;
+        }
+    }
+}
+
+#[cfg(unix)]
+fn terminate_mutation_process_tree(child_pid: libc::pid_t) {
+    let process_group = -child_pid;
+    // SAFETY: the negative PID addresses only the isolated worker group created above.
+    let _ = unsafe { libc::kill(process_group, libc::SIGTERM) };
+    let reaped = wait_for_mutation_worker(child_pid, Some(MUTATION_TERMINATION_GRACE));
+    if mutation_process_group_exists(child_pid) {
+        // SAFETY: the worker group survived its grace period and must be forcibly terminated.
+        let _ = unsafe { libc::kill(process_group, libc::SIGKILL) };
+    }
+    if !reaped {
+        let _ = wait_for_mutation_worker(child_pid, None);
+    }
+    cleanup_mutation_process_group(child_pid);
+}
+
+#[cfg(unix)]
+fn cleanup_mutation_process_group(child_pid: libc::pid_t) {
+    if !mutation_process_group_exists(child_pid) {
+        return;
+    }
+    let process_group = -child_pid;
+    // SAFETY: the negative PID addresses only the isolated worker group created above.
+    let _ = unsafe { libc::kill(process_group, libc::SIGTERM) };
+    let deadline = Instant::now() + MUTATION_TERMINATION_GRACE;
+    while mutation_process_group_exists(child_pid) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+    if mutation_process_group_exists(child_pid) {
+        // SAFETY: only descendants remaining in the isolated worker group are targeted.
+        let _ = unsafe { libc::kill(process_group, libc::SIGKILL) };
+    }
+}
+
+#[cfg(unix)]
+fn mutation_process_group_exists(child_pid: libc::pid_t) -> bool {
+    // SAFETY: signal 0 performs an existence/permission probe and does not alter the process.
+    let result = unsafe { libc::kill(-child_pid, 0) };
+    if result == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+#[cfg(unix)]
+fn wait_for_mutation_worker(child_pid: libc::pid_t, timeout: Option<Duration>) -> bool {
+    let deadline = timeout.map(|timeout| Instant::now() + timeout);
+    loop {
+        let mut status = 0;
+        let flags = if timeout.is_some() { libc::WNOHANG } else { 0 };
+        // SAFETY: `child_pid` is the direct child returned by `fork`, and `status` points to
+        // writable storage for `waitpid`'s status word.
+        let result = unsafe { libc::waitpid(child_pid, &mut status, flags) };
+        if result == child_pid {
+            return true;
+        }
+        if result < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return true;
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn mutation_worker_phase_name(phase: MutationWorkerPhase) -> &'static str {
+    match phase {
+        MutationWorkerPhase::Starting => "starting",
+        MutationWorkerPhase::Checkpoint => "checkpoint",
+        MutationWorkerPhase::Handler => "handler",
+        MutationWorkerPhase::PostHook => "post_hook",
+        MutationWorkerPhase::Rollback => "rollback",
+        MutationWorkerPhase::Completed => "completed",
+    }
+}
+
+fn attach_mutation_boundary_metadata(
+    outcome: &mut ToolDispatchOutcome,
+    call: &ToolCallInput,
+    affected_paths: Option<&[String]>,
+    phase: MutationWorkerPhase,
+    audit_events: &[String],
+    quarantined: bool,
+) {
+    let affected_paths = affected_paths
+        .map(<[String]>::to_vec)
+        .unwrap_or_else(|| mutation_affected_paths(&call.input, None));
+    let (exit_classification, rollback_state) = match outcome {
+        ToolDispatchOutcome::Succeeded(_) => ("success", "not_required"),
+        ToolDispatchOutcome::Failed(failure) => {
+            let exit_classification = if failure.error.code == "agent_tool_mutation_cancelled" {
+                "cancelled"
+            } else if failure.error.code == "agent_tool_mutation_worker_crashed" {
+                "crashed"
+            } else if failure.error.category == ToolErrorCategory::Timeout {
+                "timeout"
+            } else if failure.error.code.ends_with("_panicked") {
+                "panic"
+            } else {
+                "failed"
+            };
+            let rollback_state = if failure.rollback_payload.is_some() {
+                "succeeded"
+            } else if failure.rollback_error.is_some() {
+                if quarantined {
+                    "unresolved"
+                } else {
+                    "failed"
+                }
+            } else {
+                "not_required"
+            };
+            (exit_classification, rollback_state)
+        }
+    };
+    let report = json!({
+        "isolationKind": "process",
+        "phase": phase,
+        "exitClassification": exit_classification,
+        "rollbackState": rollback_state,
+        "affectedPaths": &affected_paths,
+        "auditEvents": audit_events,
+        "quarantined": quarantined,
+    });
+    let affected_paths_json =
+        serde_json::to_string(&affected_paths).unwrap_or_else(|_| "[]".into());
+    let audit_events_json = serde_json::to_string(audit_events).unwrap_or_else(|_| "[]".into());
+
+    match outcome {
+        ToolDispatchOutcome::Succeeded(success) => {
+            success.post_hook_payload = post_hook_with_mutation_report(
+                std::mem::take(&mut success.post_hook_payload),
+                report,
+            );
+            success.telemetry_attributes.insert(
+                "xero.mutation.exit_classification".into(),
+                exit_classification.into(),
+            );
+            success
+                .telemetry_attributes
+                .insert("xero.mutation.rollback_state".into(), rollback_state.into());
+            success
+                .telemetry_attributes
+                .insert("xero.mutation.affected_paths".into(), affected_paths_json);
+            success
+                .telemetry_attributes
+                .insert("xero.mutation.audit_events".into(), audit_events_json);
+        }
+        ToolDispatchOutcome::Failed(failure) => {
+            failure.post_hook_payload = post_hook_with_mutation_report(
+                std::mem::take(&mut failure.post_hook_payload),
+                report,
+            );
+            failure.error.telemetry_attributes.insert(
+                "xero.mutation.exit_classification".into(),
+                exit_classification.into(),
+            );
+            failure
+                .error
+                .telemetry_attributes
+                .insert("xero.mutation.rollback_state".into(), rollback_state.into());
+            failure
+                .error
+                .telemetry_attributes
+                .insert("xero.mutation.affected_paths".into(), affected_paths_json);
+            failure
+                .error
+                .telemetry_attributes
+                .insert("xero.mutation.audit_events".into(), audit_events_json);
+        }
+    }
+}
+
+fn post_hook_with_mutation_report(mut post_hook: JsonValue, report: JsonValue) -> JsonValue {
+    if let Some(object) = post_hook.as_object_mut() {
+        object.insert("mutationBoundary".into(), report);
+        return post_hook;
+    }
+    json!({
+        "handlerPostHook": post_hook,
+        "mutationBoundary": report,
+    })
+}
+
+fn mutation_affected_paths(input: &JsonValue, checkpoint: Option<&JsonValue>) -> Vec<String> {
+    fn collect(value: &JsonValue, parent_key: Option<&str>, paths: &mut BTreeSet<String>) {
+        const PATH_KEYS: &[&str] = &[
+            "path",
+            "paths",
+            "from",
+            "to",
+            "cwd",
+            "file",
+            "files",
+            "sourcePath",
+            "destinationPath",
+            "pathBefore",
+            "pathAfter",
+            "writeSet",
+        ];
+        if parent_key.is_some_and(|key| PATH_KEYS.contains(&key)) {
+            match value {
+                JsonValue::String(path) if !path.trim().is_empty() => {
+                    paths.insert(path.trim().to_string());
+                }
+                JsonValue::Array(values) => {
+                    for value in values {
+                        if let Some(path) = value
+                            .as_str()
+                            .map(str::trim)
+                            .filter(|path| !path.is_empty())
+                        {
+                            paths.insert(path.to_string());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        match value {
+            JsonValue::Object(object) => {
+                for (key, value) in object {
+                    collect(value, Some(key), paths);
+                }
+            }
+            JsonValue::Array(values) => {
+                for value in values {
+                    collect(value, parent_key, paths);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut paths = BTreeSet::new();
+    collect(input, None, &mut paths);
+    if let Some(checkpoint) = checkpoint {
+        collect(checkpoint, None, &mut paths);
+    }
+    paths.into_iter().collect()
 }
 
 fn execute_prepared_call(
@@ -2916,6 +4072,10 @@ mod tests {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
     }
+
+    fn isolated_tool_registry() -> ToolRegistryV2 {
+        ToolRegistryV2::with_read_only_worker_limit(DEFAULT_MAX_SUPERVISED_READ_ONLY_WORKERS)
+    }
     use crate::{
         PermissionProfileSandbox, ProjectTrustState, SandboxApprovalSource,
         SandboxExecutionContext, SandboxExitClassification, SandboxNetworkMode,
@@ -3587,10 +4747,7 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
-    struct RecordingRollback {
-        checkpoints: Mutex<usize>,
-        rollbacks: Mutex<usize>,
-    }
+    struct RecordingRollback;
 
     impl ToolRollback for RecordingRollback {
         fn checkpoint_before(
@@ -3598,7 +4755,6 @@ mod tests {
             call: &ToolCallInput,
             _descriptor: &ToolDescriptorV2,
         ) -> ToolRegistryResult<Option<JsonValue>> {
-            *self.checkpoints.lock().unwrap() += 1;
             Ok(Some(json!({ "checkpointFor": call.tool_call_id })))
         }
 
@@ -3609,15 +4765,14 @@ mod tests {
             checkpoint: &JsonValue,
             _error: &ToolExecutionError,
         ) -> ToolRegistryResult<JsonValue> {
-            *self.rollbacks.lock().unwrap() += 1;
             Ok(json!({ "rolledBack": call.tool_call_id, "checkpoint": checkpoint }))
         }
     }
 
     #[test]
     fn mutating_tool_failure_invokes_rollback_checkpoint() {
-        let rollback = Arc::new(RecordingRollback::default());
-        let mut registry = ToolRegistryV2::new();
+        let rollback = Arc::new(RecordingRollback);
+        let mut registry = isolated_tool_registry();
         registry
             .register(StaticToolHandler::new(
                 descriptor("patch", ToolMutability::Mutating),
@@ -3638,15 +4793,19 @@ mod tests {
         let outcome =
             registry.dispatch_call(call("call-1", "patch", "src/lib.rs"), &mut tracker, &config);
 
-        assert!(outcome.failure().unwrap().rollback_payload.is_some());
-        assert_eq!(*rollback.checkpoints.lock().unwrap(), 1);
-        assert_eq!(*rollback.rollbacks.lock().unwrap(), 1);
+        assert_eq!(
+            outcome.failure().unwrap().rollback_payload,
+            Some(json!({
+                "rolledBack": "call-1",
+                "checkpoint": { "checkpointFor": "call-1" }
+            }))
+        );
     }
 
     #[test]
     fn mutating_tool_success_after_deadline_is_rejected_and_rolled_back() {
-        let rollback = Arc::new(RecordingRollback::default());
-        let mut registry = ToolRegistryV2::new();
+        let rollback = Arc::new(RecordingRollback);
+        let mut registry = isolated_tool_registry();
         registry
             .register(StaticToolHandler::new_cancellable(
                 descriptor("patch", ToolMutability::Mutating),
@@ -3674,15 +4833,19 @@ mod tests {
         let failure = outcome.failure().expect("late success must fail");
         assert_eq!(failure.error.category, ToolErrorCategory::Timeout);
         assert_eq!(failure.error.code, "agent_tool_group_timeout");
-        assert!(failure.rollback_payload.is_some());
-        assert_eq!(*rollback.checkpoints.lock().unwrap(), 1);
-        assert_eq!(*rollback.rollbacks.lock().unwrap(), 1);
+        assert_eq!(
+            failure.rollback_payload,
+            Some(json!({
+                "rolledBack": "call-1",
+                "checkpoint": { "checkpointFor": "call-1" }
+            }))
+        );
     }
 
     #[test]
     fn mutating_tool_handler_panic_is_contained_and_rolled_back() {
-        let rollback = Arc::new(RecordingRollback::default());
-        let mut registry = ToolRegistryV2::new();
+        let rollback = Arc::new(RecordingRollback);
+        let mut registry = isolated_tool_registry();
         registry
             .register(StaticToolHandler::new(
                 descriptor("patch", ToolMutability::Mutating),
@@ -3702,9 +4865,816 @@ mod tests {
 
         let failure = outcome.failure().expect("panicking handler must fail");
         assert_eq!(failure.error.code, "agent_tool_handler_panicked");
+        assert_eq!(
+            failure.rollback_payload,
+            Some(json!({
+                "rolledBack": "call-1",
+                "checkpoint": { "checkpointFor": "call-1" }
+            }))
+        );
+    }
+
+    #[test]
+    fn non_cooperative_mutating_handler_is_terminated_within_group_budget() {
+        let release = Arc::new(AtomicBool::new(false));
+        let release_for_handler = Arc::clone(&release);
+        let mut registry = isolated_tool_registry();
+        registry
+            .register(StaticToolHandler::new(
+                descriptor("hung_patch", ToolMutability::Mutating),
+                move |_context, _call| {
+                    while !release_for_handler.load(Ordering::SeqCst) {
+                        thread::park_timeout(Duration::from_millis(1));
+                    }
+                    Ok(ToolHandlerOutput::new("released", json!({ "ok": true })))
+                },
+            ))
+            .expect("register hung patch");
+        let config = ToolDispatchConfig {
+            budget: ToolBudget {
+                max_wall_clock_time_per_tool_group_ms: 20,
+                ..ToolBudget::default()
+            },
+            ..ToolDispatchConfig::default()
+        };
+        let (result_tx, result_rx) = mpsc::channel();
+
+        let dispatch = thread::spawn(move || {
+            let outcome = registry.dispatch_call(
+                call("call-hung", "hung_patch", "src/lib.rs"),
+                &mut ToolBudgetTracker::new(config.budget.clone()),
+                &config,
+            );
+            let _ = result_tx.send(outcome);
+        });
+        let outcome = result_rx.recv_timeout(Duration::from_millis(100));
+        release.store(true, Ordering::SeqCst);
+        dispatch.join().expect("join dispatch");
+
+        let failure = outcome
+            .expect("mutation boundary must terminate a non-cooperative handler")
+            .failure()
+            .cloned()
+            .expect("terminated mutation must fail");
+        assert_eq!(failure.error.code, "agent_tool_mutation_terminated");
+        assert_eq!(failure.error.category, ToolErrorCategory::Timeout);
+    }
+
+    #[derive(Debug)]
+    struct SlowAllowPolicy {
+        delay: Duration,
+    }
+
+    impl ToolPolicy for SlowAllowPolicy {
+        fn evaluate(
+            &self,
+            _descriptor: &ToolDescriptorV2,
+            _call: &ToolCallInput,
+        ) -> ToolPolicyDecision {
+            thread::sleep(self.delay);
+            ToolPolicyDecision::Allow
+        }
+    }
+
+    #[test]
+    fn mutation_boundary_preserves_deadline_spent_during_preparation() {
+        let mut registry = isolated_tool_registry();
+        registry
+            .register(StaticToolHandler::new(
+                descriptor("hung_after_preparation", ToolMutability::Mutating),
+                |_context, _call| loop {
+                    thread::park_timeout(Duration::from_millis(1));
+                },
+            ))
+            .expect("register mutation");
+        let config = ToolDispatchConfig {
+            budget: ToolBudget {
+                max_wall_clock_time_per_tool_group_ms: 200,
+                ..ToolBudget::default()
+            },
+            policy: Arc::new(SlowAllowPolicy {
+                delay: Duration::from_millis(170),
+            }),
+            ..ToolDispatchConfig::default()
+        };
+        let started = Instant::now();
+
+        let outcome = registry.dispatch_call(
+            call(
+                "call-slow-preparation",
+                "hung_after_preparation",
+                "src/lib.rs",
+            ),
+            &mut ToolBudgetTracker::new(config.budget.clone()),
+            &config,
+        );
+
+        let failure = outcome.failure().expect("hung mutation must time out");
+        assert_eq!(failure.error.code, "agent_tool_mutation_terminated");
+        assert!(
+            started.elapsed() < Duration::from_millis(300),
+            "mutation supervision restarted the group deadline after preparation"
+        );
+    }
+
+    #[derive(Debug)]
+    struct PanickingCheckpoint;
+
+    impl ToolRollback for PanickingCheckpoint {
+        fn checkpoint_before(
+            &self,
+            _call: &ToolCallInput,
+            _descriptor: &ToolDescriptorV2,
+        ) -> ToolRegistryResult<Option<JsonValue>> {
+            panic!("checkpoint panic must not escape dispatch")
+        }
+
+        fn rollback_after_failure(
+            &self,
+            _call: &ToolCallInput,
+            _descriptor: &ToolDescriptorV2,
+            _checkpoint: &JsonValue,
+            _error: &ToolExecutionError,
+        ) -> ToolRegistryResult<JsonValue> {
+            Ok(json!({ "unexpected": true }))
+        }
+    }
+
+    #[test]
+    fn mutating_checkpoint_panic_is_a_typed_failure() {
+        let mut registry = isolated_tool_registry();
+        registry
+            .register(StaticToolHandler::new(
+                descriptor("patch", ToolMutability::Mutating),
+                |_context, _call| Ok(ToolHandlerOutput::new("patched", json!({}))),
+            ))
+            .expect("register patch");
+        let config = ToolDispatchConfig {
+            rollback: Some(Arc::new(PanickingCheckpoint)),
+            ..ToolDispatchConfig::default()
+        };
+
+        let outcome = registry.dispatch_call(
+            call("call-checkpoint-panic", "patch", "src/lib.rs"),
+            &mut ToolBudgetTracker::new(config.budget.clone()),
+            &config,
+        );
+
+        let failure = outcome.failure().expect("checkpoint panic must fail");
+        assert_eq!(failure.error.code, "agent_tool_checkpoint_panicked");
+    }
+
+    struct PanickingPostHook {
+        descriptor: ToolDescriptorV2,
+    }
+
+    impl ToolHandler for PanickingPostHook {
+        fn descriptor(&self) -> ToolDescriptorV2 {
+            self.descriptor.clone()
+        }
+
+        fn execute(
+            &self,
+            _context: &ToolExecutionContext,
+            _call: &ToolCallInput,
+        ) -> ToolRegistryResult<ToolHandlerOutput> {
+            Ok(ToolHandlerOutput::new("patched", json!({ "ok": true })))
+        }
+
+        fn post_hook_payload(
+            &self,
+            _call: &ToolCallInput,
+            _result: &Result<ToolHandlerOutput, ToolExecutionError>,
+        ) -> JsonValue {
+            panic!("post-hook panic must not be treated as success")
+        }
+    }
+
+    #[test]
+    fn mutating_post_hook_panic_is_a_typed_failure_and_rolls_back() {
+        let rollback = Arc::new(RecordingRollback);
+        let mut registry = isolated_tool_registry();
+        registry
+            .register(PanickingPostHook {
+                descriptor: descriptor("patch", ToolMutability::Mutating),
+            })
+            .expect("register patch");
+        let config = ToolDispatchConfig {
+            rollback: Some(rollback.clone()),
+            ..ToolDispatchConfig::default()
+        };
+
+        let outcome = registry.dispatch_call(
+            call("call-post-hook-panic", "patch", "src/lib.rs"),
+            &mut ToolBudgetTracker::new(config.budget.clone()),
+            &config,
+        );
+
+        let failure = outcome.failure().expect("post-hook panic must fail");
+        assert_eq!(failure.error.code, "agent_tool_post_hook_panicked");
         assert!(failure.rollback_payload.is_some());
-        assert_eq!(*rollback.checkpoints.lock().unwrap(), 1);
-        assert_eq!(*rollback.rollbacks.lock().unwrap(), 1);
+    }
+
+    #[derive(Debug)]
+    struct PanickingRollback;
+
+    impl ToolRollback for PanickingRollback {
+        fn checkpoint_before(
+            &self,
+            _call: &ToolCallInput,
+            _descriptor: &ToolDescriptorV2,
+        ) -> ToolRegistryResult<Option<JsonValue>> {
+            Ok(Some(json!({ "checkpoint": true })))
+        }
+
+        fn rollback_after_failure(
+            &self,
+            _call: &ToolCallInput,
+            _descriptor: &ToolDescriptorV2,
+            _checkpoint: &JsonValue,
+            _error: &ToolExecutionError,
+        ) -> ToolRegistryResult<JsonValue> {
+            panic!("rollback panic must not escape dispatch")
+        }
+    }
+
+    #[test]
+    fn mutating_rollback_panic_is_a_typed_failure() {
+        let mut registry = isolated_tool_registry();
+        registry
+            .register(StaticToolHandler::new(
+                descriptor("patch", ToolMutability::Mutating),
+                |_context, _call| {
+                    Err(ToolExecutionError::retryable(
+                        "patch_failed",
+                        "patch failed after checkpoint",
+                    ))
+                },
+            ))
+            .expect("register patch");
+        let config = ToolDispatchConfig {
+            rollback: Some(Arc::new(PanickingRollback)),
+            ..ToolDispatchConfig::default()
+        };
+
+        let outcome = registry.dispatch_call(
+            call("call-rollback-panic", "patch", "src/lib.rs"),
+            &mut ToolBudgetTracker::new(config.budget.clone()),
+            &config,
+        );
+
+        let failure = outcome.failure().expect("rollback panic must fail");
+        assert_eq!(
+            failure
+                .rollback_error
+                .as_ref()
+                .expect("typed rollback failure")
+                .code,
+            "agent_tool_rollback_panicked"
+        );
+    }
+
+    #[derive(Debug)]
+    struct HangingCheckpoint {
+        recovery_marker: std::path::PathBuf,
+    }
+
+    impl ToolRollback for HangingCheckpoint {
+        fn checkpoint_before(
+            &self,
+            _call: &ToolCallInput,
+            _descriptor: &ToolDescriptorV2,
+        ) -> ToolRegistryResult<Option<JsonValue>> {
+            loop {
+                thread::park_timeout(Duration::from_millis(1));
+            }
+        }
+
+        fn rollback_after_failure(
+            &self,
+            _call: &ToolCallInput,
+            _descriptor: &ToolDescriptorV2,
+            _checkpoint: &JsonValue,
+            _error: &ToolExecutionError,
+        ) -> ToolRegistryResult<JsonValue> {
+            Ok(json!({ "unexpected": true }))
+        }
+
+        fn recover_after_termination(
+            &self,
+            call: &ToolCallInput,
+            _descriptor: &ToolDescriptorV2,
+            _checkpoint: Option<&JsonValue>,
+            _error: &ToolExecutionError,
+        ) -> ToolRegistryResult<JsonValue> {
+            if self.recovery_marker.exists() {
+                Ok(json!({ "recovered": call.tool_call_id }))
+            } else {
+                Err(ToolExecutionError::retryable(
+                    "checkpoint_recovery_not_ready",
+                    "Checkpoint recovery is not ready yet.",
+                ))
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct RecoverWithoutCheckpointRollback;
+
+    impl ToolRollback for RecoverWithoutCheckpointRollback {
+        fn checkpoint_before(
+            &self,
+            call: &ToolCallInput,
+            _descriptor: &ToolDescriptorV2,
+        ) -> ToolRegistryResult<Option<JsonValue>> {
+            Ok(Some(json!({ "checkpointFor": call.tool_call_id })))
+        }
+
+        fn rollback_after_failure(
+            &self,
+            call: &ToolCallInput,
+            _descriptor: &ToolDescriptorV2,
+            checkpoint: &JsonValue,
+            _error: &ToolExecutionError,
+        ) -> ToolRegistryResult<JsonValue> {
+            Ok(json!({ "rolledBack": call.tool_call_id, "checkpoint": checkpoint }))
+        }
+
+        fn recover_after_termination(
+            &self,
+            call: &ToolCallInput,
+            _descriptor: &ToolDescriptorV2,
+            _checkpoint: Option<&JsonValue>,
+            _error: &ToolExecutionError,
+        ) -> ToolRegistryResult<JsonValue> {
+            Ok(json!({ "recovered": call.tool_call_id }))
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn checkpoint_hang_quarantines_mutations_until_recovery_succeeds() {
+        let recovery_marker = std::env::temp_dir().join(format!(
+            "xero-checkpoint-recovery-ready-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&recovery_marker);
+        let hanging_checkpoint = Arc::new(HangingCheckpoint {
+            recovery_marker: recovery_marker.clone(),
+        });
+        let mut registry = ToolRegistryV2::with_read_only_worker_limit(1);
+        registry
+            .register(StaticToolHandler::new(
+                descriptor("first_mutation", ToolMutability::Mutating),
+                |_context, _call| Ok(ToolHandlerOutput::new("first", json!({}))),
+            ))
+            .expect("register first mutation");
+        registry
+            .register(StaticToolHandler::new(
+                descriptor("later_mutation", ToolMutability::Mutating),
+                |_context, _call| Ok(ToolHandlerOutput::new("later", json!({}))),
+            ))
+            .expect("register later mutation");
+        let budget = ToolBudget {
+            max_wall_clock_time_per_tool_group_ms: 20,
+            max_mutation_cleanup_ms: 20,
+            ..ToolBudget::default()
+        };
+        let first_config = ToolDispatchConfig {
+            budget: budget.clone(),
+            rollback: Some(hanging_checkpoint.clone()),
+            ..ToolDispatchConfig::default()
+        };
+
+        let first = registry.dispatch_call(
+            call("call-checkpoint-hang", "first_mutation", "src/first.rs"),
+            &mut ToolBudgetTracker::new(budget.clone()),
+            &first_config,
+        );
+        let blocked = registry.dispatch_call(
+            call("call-blocked", "later_mutation", "src/later.rs"),
+            &mut ToolBudgetTracker::new(budget.clone()),
+            &ToolDispatchConfig {
+                budget: budget.clone(),
+                rollback: Some(Arc::new(RecordingRollback)),
+                ..ToolDispatchConfig::default()
+            },
+        );
+        std::fs::write(&recovery_marker, "ready").expect("mark checkpoint recovery ready");
+        let recovered = registry.dispatch_call(
+            call("call-recovered", "later_mutation", "src/later.rs"),
+            &mut ToolBudgetTracker::new(budget.clone()),
+            &ToolDispatchConfig {
+                budget,
+                rollback: Some(Arc::new(RecoverWithoutCheckpointRollback)),
+                ..ToolDispatchConfig::default()
+            },
+        );
+        let _ = std::fs::remove_file(recovery_marker);
+
+        assert_eq!(
+            first.failure().expect("checkpoint hang failure").error.code,
+            "agent_tool_mutation_terminated"
+        );
+        assert_eq!(
+            blocked.failure().expect("quarantine failure").error.code,
+            "agent_tool_mutation_quarantined"
+        );
+        assert!(recovered.is_success());
+    }
+
+    #[derive(Debug)]
+    struct HangingRollbackUntilMarker {
+        recovery_marker: std::path::PathBuf,
+    }
+
+    impl ToolRollback for HangingRollbackUntilMarker {
+        fn checkpoint_before(
+            &self,
+            call: &ToolCallInput,
+            _descriptor: &ToolDescriptorV2,
+        ) -> ToolRegistryResult<Option<JsonValue>> {
+            Ok(Some(json!({ "checkpointFor": call.tool_call_id })))
+        }
+
+        fn rollback_after_failure(
+            &self,
+            _call: &ToolCallInput,
+            _descriptor: &ToolDescriptorV2,
+            _checkpoint: &JsonValue,
+            _error: &ToolExecutionError,
+        ) -> ToolRegistryResult<JsonValue> {
+            if self.recovery_marker.exists() {
+                return Ok(json!({ "recovered": true }));
+            }
+            loop {
+                thread::park_timeout(Duration::from_millis(1));
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollback_hang_is_terminated_and_quarantines_later_mutations() {
+        let recovery_marker = std::env::temp_dir().join(format!(
+            "xero-rollback-recovery-ready-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&recovery_marker);
+        let hanging_rollback = Arc::new(HangingRollbackUntilMarker {
+            recovery_marker: recovery_marker.clone(),
+        });
+        let mut registry = ToolRegistryV2::with_read_only_worker_limit(1);
+        for tool_name in ["failing_mutation", "later_mutation"] {
+            registry
+                .register(StaticToolHandler::new(
+                    descriptor(tool_name, ToolMutability::Mutating),
+                    move |_context, _call| {
+                        if tool_name == "failing_mutation" {
+                            Err(ToolExecutionError::retryable(
+                                "mutation_failed",
+                                "mutation failed after checkpoint",
+                            ))
+                        } else {
+                            Ok(ToolHandlerOutput::new("later", json!({})))
+                        }
+                    },
+                ))
+                .expect("register mutation");
+        }
+        let budget = ToolBudget {
+            max_wall_clock_time_per_tool_group_ms: 20,
+            max_mutation_cleanup_ms: 20,
+            ..ToolBudget::default()
+        };
+        let hanging_config = ToolDispatchConfig {
+            budget: budget.clone(),
+            rollback: Some(hanging_rollback),
+            ..ToolDispatchConfig::default()
+        };
+
+        let failed = registry.dispatch_call(
+            call("call-rollback-hang", "failing_mutation", "src/first.rs"),
+            &mut ToolBudgetTracker::new(budget.clone()),
+            &hanging_config,
+        );
+        let blocked = registry.dispatch_call(
+            call("call-blocked", "later_mutation", "src/later.rs"),
+            &mut ToolBudgetTracker::new(budget.clone()),
+            &hanging_config,
+        );
+        std::fs::write(&recovery_marker, "ready").expect("mark rollback recovery ready");
+        let recovered = registry.dispatch_call(
+            call("call-recovered", "later_mutation", "src/later.rs"),
+            &mut ToolBudgetTracker::new(budget.clone()),
+            &ToolDispatchConfig {
+                budget,
+                rollback: Some(Arc::new(RecoverWithoutCheckpointRollback)),
+                ..ToolDispatchConfig::default()
+            },
+        );
+        let _ = std::fs::remove_file(recovery_marker);
+
+        assert_eq!(
+            failed
+                .failure()
+                .and_then(|failure| failure.rollback_error.as_ref())
+                .expect("terminated rollback error")
+                .code,
+            "agent_tool_rollback_terminated"
+        );
+        assert_eq!(
+            blocked.failure().expect("quarantine failure").error.code,
+            "agent_tool_mutation_quarantined"
+        );
+        assert!(recovered.is_success());
+    }
+
+    struct HangingPostHook {
+        descriptor: ToolDescriptorV2,
+    }
+
+    impl ToolHandler for HangingPostHook {
+        fn descriptor(&self) -> ToolDescriptorV2 {
+            self.descriptor.clone()
+        }
+
+        fn execute(
+            &self,
+            _context: &ToolExecutionContext,
+            _call: &ToolCallInput,
+        ) -> ToolRegistryResult<ToolHandlerOutput> {
+            Ok(ToolHandlerOutput::new("mutated", json!({ "ok": true })))
+        }
+
+        fn post_hook_payload(
+            &self,
+            _call: &ToolCallInput,
+            _result: &Result<ToolHandlerOutput, ToolExecutionError>,
+        ) -> JsonValue {
+            loop {
+                thread::park_timeout(Duration::from_millis(1));
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn post_hook_hang_is_terminated_and_recovered() {
+        let mut registry = ToolRegistryV2::with_read_only_worker_limit(1);
+        registry
+            .register(HangingPostHook {
+                descriptor: descriptor("post_hook_hang", ToolMutability::Mutating),
+            })
+            .expect("register post-hook hang");
+        let config = ToolDispatchConfig {
+            budget: ToolBudget {
+                max_wall_clock_time_per_tool_group_ms: 20,
+                max_mutation_cleanup_ms: 50,
+                ..ToolBudget::default()
+            },
+            rollback: Some(Arc::new(RecordingRollback)),
+            ..ToolDispatchConfig::default()
+        };
+
+        let outcome = registry.dispatch_call(
+            call("call-post-hook-hang", "post_hook_hang", "src/lib.rs"),
+            &mut ToolBudgetTracker::new(config.budget.clone()),
+            &config,
+        );
+
+        let failure = outcome.failure().expect("post-hook hang failure");
+        assert_eq!(failure.error.code, "agent_tool_mutation_terminated");
+        assert_eq!(
+            failure.rollback_payload,
+            Some(json!({
+                "rolledBack": "call-post-hook-hang",
+                "checkpoint": { "checkpointFor": "call-post-hook-hang" }
+            }))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminated_mutation_cannot_perform_a_late_thread_write() {
+        let path = std::env::temp_dir().join(format!(
+            "xero-mutation-late-thread-write-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let path_for_handler = path.clone();
+        let mut registry = ToolRegistryV2::with_read_only_worker_limit(1);
+        registry
+            .register(StaticToolHandler::new(
+                descriptor("late_write", ToolMutability::Mutating),
+                move |_context, _call| {
+                    let path = path_for_handler.clone();
+                    thread::spawn(move || {
+                        thread::sleep(Duration::from_millis(120));
+                        let _ = std::fs::write(path, "late");
+                    });
+                    loop {
+                        thread::park_timeout(Duration::from_millis(1));
+                    }
+                },
+            ))
+            .expect("register late write");
+        let config = ToolDispatchConfig {
+            budget: ToolBudget {
+                max_wall_clock_time_per_tool_group_ms: 20,
+                max_mutation_cleanup_ms: 50,
+                ..ToolBudget::default()
+            },
+            rollback: Some(Arc::new(RecoverWithoutCheckpointRollback)),
+            ..ToolDispatchConfig::default()
+        };
+
+        let outcome = registry.dispatch_call(
+            call("call-late-write", "late_write", "src/lib.rs"),
+            &mut ToolBudgetTracker::new(config.budget.clone()),
+            &config,
+        );
+        thread::sleep(Duration::from_millis(180));
+
+        let failure = outcome.failure().expect("terminated late write");
+        assert_eq!(failure.error.code, "agent_tool_mutation_terminated");
+        assert_eq!(
+            failure.post_hook_payload["mutationBoundary"]["exitClassification"],
+            json!("timeout")
+        );
+        assert_eq!(
+            failure.post_hook_payload["mutationBoundary"]["rollbackState"],
+            json!("succeeded")
+        );
+        assert_eq!(
+            failure.post_hook_payload["mutationBoundary"]["affectedPaths"],
+            json!(["src/lib.rs"])
+        );
+        assert!(failure.post_hook_payload["mutationBoundary"]["auditEvents"]
+            .as_array()
+            .is_some_and(|events| events.contains(&json!("mutation_worker_terminated"))));
+        assert!(!path.exists(), "terminated worker must not write later");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminated_mutation_kills_spawned_process_descendants() {
+        let path = std::env::temp_dir().join(format!(
+            "xero-mutation-descendant-write-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let path_for_handler = path.clone();
+        let mut registry = ToolRegistryV2::with_read_only_worker_limit(1);
+        registry
+            .register(StaticToolHandler::new(
+                descriptor("descendant_write", ToolMutability::Mutating),
+                move |_context, _call| {
+                    let status = std::process::Command::new("sh")
+                        .arg("-c")
+                        .arg("(sleep 0.12; printf late > \"$1\") & wait")
+                        .arg("xero-mutation-test")
+                        .arg(&path_for_handler)
+                        .status()
+                        .map_err(|error| {
+                            ToolExecutionError::retryable(
+                                "descendant_spawn_failed",
+                                error.to_string(),
+                            )
+                        })?;
+                    Ok(ToolHandlerOutput::new(
+                        "descendant exited",
+                        json!({ "success": status.success() }),
+                    ))
+                },
+            ))
+            .expect("register descendant write");
+        let config = ToolDispatchConfig {
+            budget: ToolBudget {
+                max_wall_clock_time_per_tool_group_ms: 20,
+                max_mutation_cleanup_ms: 50,
+                ..ToolBudget::default()
+            },
+            rollback: Some(Arc::new(RecoverWithoutCheckpointRollback)),
+            ..ToolDispatchConfig::default()
+        };
+
+        let outcome = registry.dispatch_call(
+            call("call-descendant-write", "descendant_write", "src/lib.rs"),
+            &mut ToolBudgetTracker::new(config.budget.clone()),
+            &config,
+        );
+        thread::sleep(Duration::from_millis(180));
+
+        assert_eq!(
+            outcome
+                .failure()
+                .expect("terminated descendant write")
+                .error
+                .code,
+            "agent_tool_mutation_terminated"
+        );
+        assert!(
+            !path.exists(),
+            "terminated process descendant must not write later"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_cancellation_terminates_non_cooperative_mutation_promptly() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled_for_config = Arc::clone(&cancelled);
+        let mut registry = ToolRegistryV2::with_read_only_worker_limit(1);
+        registry
+            .register(StaticToolHandler::new(
+                descriptor("cancelled_mutation", ToolMutability::Mutating),
+                |_context, _call| loop {
+                    thread::park_timeout(Duration::from_millis(1));
+                },
+            ))
+            .expect("register cancelled mutation");
+        let config = ToolDispatchConfig {
+            budget: ToolBudget {
+                max_wall_clock_time_per_tool_group_ms: 5_000,
+                max_mutation_cleanup_ms: 50,
+                ..ToolBudget::default()
+            },
+            rollback: Some(Arc::new(RecoverWithoutCheckpointRollback)),
+            cancellation_check: Some(Arc::new(move || {
+                cancelled_for_config.load(Ordering::SeqCst)
+            })),
+            ..ToolDispatchConfig::default()
+        };
+        let (result_tx, result_rx) = mpsc::channel();
+        let started = Instant::now();
+        let dispatch = thread::spawn(move || {
+            let outcome = registry.dispatch_call(
+                call(
+                    "call-cancelled-mutation",
+                    "cancelled_mutation",
+                    "src/lib.rs",
+                ),
+                &mut ToolBudgetTracker::new(config.budget.clone()),
+                &config,
+            );
+            let _ = result_tx.send(outcome);
+        });
+        thread::sleep(Duration::from_millis(20));
+        cancelled.store(true, Ordering::SeqCst);
+        let outcome = result_rx
+            .recv_timeout(Duration::from_millis(200))
+            .expect("cancellation must terminate mutation promptly");
+        dispatch.join().expect("join cancelled mutation");
+
+        assert!(started.elapsed() < Duration::from_millis(200));
+        assert_eq!(
+            outcome
+                .failure()
+                .expect("cancelled mutation failure")
+                .error
+                .code,
+            "agent_tool_mutation_cancelled"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mutation_worker_crash_is_typed_and_recovered() {
+        let mut registry = ToolRegistryV2::with_read_only_worker_limit(1);
+        registry
+            .register(StaticToolHandler::new(
+                descriptor("crashing_mutation", ToolMutability::Mutating),
+                |_context, _call| {
+                    // SAFETY: this handler runs only in the isolated mutation test worker and
+                    // intentionally exits it to exercise crash classification and recovery.
+                    unsafe { libc::_exit(42) }
+                },
+            ))
+            .expect("register crashing mutation");
+        let config = ToolDispatchConfig {
+            budget: ToolBudget {
+                max_wall_clock_time_per_tool_group_ms: 1_000,
+                max_mutation_cleanup_ms: 50,
+                ..ToolBudget::default()
+            },
+            rollback: Some(Arc::new(RecoverWithoutCheckpointRollback)),
+            ..ToolDispatchConfig::default()
+        };
+
+        let outcome = registry.dispatch_call(
+            call("call-crashing-mutation", "crashing_mutation", "src/lib.rs"),
+            &mut ToolBudgetTracker::new(config.budget.clone()),
+            &config,
+        );
+
+        let failure = outcome.failure().expect("worker crash failure");
+        assert_eq!(failure.error.code, "agent_tool_mutation_worker_crashed");
+        assert_eq!(
+            failure.post_hook_payload["mutationBoundary"]["exitClassification"],
+            json!("crashed")
+        );
+        assert!(failure.rollback_payload.is_some());
     }
 
     #[derive(Debug)]

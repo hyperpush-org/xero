@@ -5561,7 +5561,7 @@ impl AutonomousToolRuntime {
         Ok(())
     }
 
-    fn is_cancelled(&self) -> bool {
+    pub(crate) fn is_cancelled(&self) -> bool {
         self.cancellation_token
             .as_ref()
             .is_some_and(AgentRunCancellationToken::is_cancelled)

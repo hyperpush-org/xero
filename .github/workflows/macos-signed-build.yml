@@ -42,7 +42,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-          cache-dependency-path: client/pnpm-lock.yaml
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Set up protoc
         run: brew install protobuf
