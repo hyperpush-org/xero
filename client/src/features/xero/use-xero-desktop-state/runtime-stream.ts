@@ -50,6 +50,7 @@ export const ACTIVE_RUNTIME_STREAM_ITEM_KINDS: RuntimeStreamItemKindDto[] = [
   'skill',
   'activity',
   'action_required',
+  'route_request',
   'complete',
   'failure',
 ]

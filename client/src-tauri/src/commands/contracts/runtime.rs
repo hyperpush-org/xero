@@ -1489,6 +1489,7 @@ pub enum RuntimeStreamItemKind {
     Skill,
     Activity,
     ActionRequired,
+    RouteRequest,
     Plan,
     Complete,
     Failure,
@@ -1503,6 +1504,7 @@ impl RuntimeStreamItemKind {
             Self::Skill => "skill",
             Self::Activity => "activity",
             Self::ActionRequired => "action_required",
+            Self::RouteRequest => "route_request",
             Self::Plan => "plan",
             Self::Complete => "complete",
             Self::Failure => "failure",
@@ -1571,6 +1573,31 @@ pub struct RuntimeSensitiveInputFieldDto {
     pub required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeRouteTargetKindDto {
+    BuiltIn,
+    Custom,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeRouteRequestDto {
+    pub schema: String,
+    pub request_id: String,
+    pub target_kind: RuntimeRouteTargetKindDto,
+    pub target_agent_id: RuntimeAgentIdDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_agent_definition_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_agent_definition_version: Option<u32>,
+    pub target_label: String,
+    pub reason: String,
+    pub summary: String,
+    pub policy_decision: String,
+    pub auto_routable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1694,6 +1721,8 @@ pub struct RuntimeStreamItemDto {
     pub sensitive_fields: Option<Vec<RuntimeSensitiveInputFieldDto>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intended_use: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_request: Option<RuntimeRouteRequestDto>,
     pub title: Option<String>,
     pub detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1735,12 +1764,13 @@ pub struct RuntimeStreamItemDto {
 }
 
 impl RuntimeStreamItemDto {
-    pub const ALLOWED_KIND_NAMES: [&'static str; 9] = [
+    pub const ALLOWED_KIND_NAMES: [&'static str; 10] = [
         "transcript",
         "tool",
         "skill",
         "activity",
         "action_required",
+        "route_request",
         "plan",
         "complete",
         "failure",

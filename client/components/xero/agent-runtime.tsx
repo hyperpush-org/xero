@@ -54,6 +54,7 @@ import type {
   RuntimeStreamActionRequiredItemView,
   RuntimeStreamActivityItemView,
   RuntimeStreamFailureItemView,
+  RuntimeStreamRouteRequestItemView,
   RuntimeStreamToolItemView,
   RuntimeStreamViewItem,
   ReturnSessionToHereResponseDto,
@@ -149,10 +150,6 @@ import {
   type ActionPromptError,
 } from './agent-runtime/use-agent-runtime-controller'
 import type { SpeechDictationAdapter } from './agent-runtime/use-speech-dictation'
-import {
-  parseRoutingMarker,
-  stripRoutingMarkers,
-} from './agent-runtime/routing-suggestion-marker'
 import {
   applyPersistedRoutingContinuationResolutions,
   applyRoutingContinuationDecision,
@@ -1058,11 +1055,9 @@ function createTurnRoutingContext(): TurnRoutingContext {
 
 function upsertRoutingSuggestionTurn(
   context: TurnRoutingContext,
-  sourceTurnId: string,
-  sourceSequence: number,
-  parsed: NonNullable<ReturnType<typeof parseRoutingMarker>>,
+  item: RuntimeStreamRouteRequestItemView,
 ): void {
-  const routingTurnId = `routing_suggestion:${sourceTurnId}`
+  const routingTurnId = `routing_suggestion:${item.id}`
   const existingIndex = context.turns.findIndex(
     (turn) => turn.kind === 'routing_suggestion' && turn.id === routingTurnId,
   )
@@ -1070,14 +1065,15 @@ function upsertRoutingSuggestionTurn(
   const next: Extract<ConversationTurn, { kind: 'routing_suggestion' }> = {
     id: routingTurnId,
     kind: 'routing_suggestion',
-    sequence: sourceSequence + 0.5,
-    targetKind: parsed.targetKind,
-    targetAgentId: parsed.targetAgentId,
-    targetAgentDefinitionId: parsed.targetAgentDefinitionId,
-    targetAgentDefinitionVersion: parsed.targetAgentDefinitionVersion,
-    targetLabel: parsed.targetLabel,
-    reason: parsed.reason,
-    summary: parsed.summary,
+    sequence: item.sequence,
+    targetKind: item.targetKind,
+    targetAgentId: item.targetAgentId,
+    targetAgentDefinitionId: item.targetAgentDefinitionId,
+    targetAgentDefinitionVersion: item.targetAgentDefinitionVersion,
+    targetLabel: item.targetLabel,
+    reason: item.reason,
+    summary: item.summary,
+    autoRoutable: item.autoRoutable,
     isResolved: false,
     acceptedTarget: null,
     acceptedTargetAgentDefinitionId: null,
@@ -1087,7 +1083,7 @@ function upsertRoutingSuggestionTurn(
 
   const replaceIndex = existingIndex >= 0
     ? existingIndex
-    : findEquivalentRoutingSuggestionTurnIndex(context, parsed)
+    : findEquivalentRoutingSuggestionTurnIndex(context, item)
 
   if (replaceIndex >= 0) {
     const existing = context.turns[replaceIndex]
@@ -1108,14 +1104,14 @@ function upsertRoutingSuggestionTurn(
 
 function findEquivalentRoutingSuggestionTurnIndex(
   context: TurnRoutingContext,
-  parsed: NonNullable<ReturnType<typeof parseRoutingMarker>>,
+  item: RuntimeStreamRouteRequestItemView,
 ): number {
   for (let index = context.turns.length - 1; index >= 0; index -= 1) {
     const turn = context.turns[index]
     if (turn.kind === 'message' && turn.role === 'user') {
       return -1
     }
-    if (turn.kind === 'routing_suggestion' && routingSuggestionMatchesParsedMarker(turn, parsed)) {
+    if (turn.kind === 'routing_suggestion' && routingSuggestionMatchesRouteEvent(turn, item)) {
       return index
     }
   }
@@ -1123,31 +1119,16 @@ function findEquivalentRoutingSuggestionTurnIndex(
   return -1
 }
 
-function routingSuggestionMatchesParsedMarker(
+function routingSuggestionMatchesRouteEvent(
   turn: Extract<ConversationTurn, { kind: 'routing_suggestion' }>,
-  parsed: NonNullable<ReturnType<typeof parseRoutingMarker>>,
+  item: RuntimeStreamRouteRequestItemView,
 ): boolean {
   return (
-    turn.targetKind === parsed.targetKind &&
-    turn.targetAgentId === parsed.targetAgentId &&
-    turn.targetAgentDefinitionId === parsed.targetAgentDefinitionId &&
-    turn.targetAgentDefinitionVersion === parsed.targetAgentDefinitionVersion
+    turn.targetKind === item.targetKind &&
+    turn.targetAgentId === item.targetAgentId &&
+    turn.targetAgentDefinitionId === item.targetAgentDefinitionId &&
+    turn.targetAgentDefinitionVersion === item.targetAgentDefinitionVersion
   )
-}
-
-function maybeAttachRoutingSuggestion(
-  context: TurnRoutingContext,
-  messageTurn: Extract<ConversationTurn, { kind: 'message' }>,
-): void {
-  if (messageTurn.role !== 'assistant') return
-  const parsed = parseRoutingMarker(messageTurn.text)
-  const cleanText = stripRoutingMarkers(messageTurn.text)
-  if (cleanText !== messageTurn.text) {
-    messageTurn.text = cleanText
-  }
-  if (!parsed) return
-
-  upsertRoutingSuggestionTurn(context, messageTurn.id, messageTurn.sequence, parsed)
 }
 
 function buildRoutingDeclineContinuationPrompt(
@@ -1222,7 +1203,6 @@ function routeItemIntoTurns(item: RuntimeStreamViewItem, context: TurnRoutingCon
         previous.attachments,
         runtimeMediaAttachmentsToConversation(item.mediaAttachments),
       )
-      maybeAttachRoutingSuggestion(context, previous)
       return false
     }
 
@@ -1235,34 +1215,22 @@ function routeItemIntoTurns(item: RuntimeStreamViewItem, context: TurnRoutingCon
       createdAt: item.createdAt,
       attachments: runtimeMediaAttachmentsToConversation(item.mediaAttachments),
     })
-    if (item.role === 'assistant') {
-      const justPushed = context.turns.at(-1)
-      if (justPushed?.kind === 'message') {
-        maybeAttachRoutingSuggestion(context, justPushed)
-      }
-    }
     return item.role === 'user'
   }
 
   if (isReasoningActivityItem(item)) {
     const text = getReasoningActivityText(item)
-    const parsed = parseRoutingMarker(text)
-    const cleanText = stripRoutingMarkers(text)
-    if (cleanText.trim().length === 0) {
-      if (parsed) {
-        upsertRoutingSuggestionTurn(context, item.id, item.sequence, parsed)
-      }
-      return false
-    }
     context.turns.push({
       id: item.id,
       kind: 'thinking',
       sequence: item.sequence,
-      text: cleanText,
+      text,
     })
-    if (parsed) {
-      upsertRoutingSuggestionTurn(context, item.id, item.sequence, parsed)
-    }
+    return false
+  }
+
+  if (item.kind === 'route_request') {
+    upsertRoutingSuggestionTurn(context, item)
     return false
   }
 
@@ -1862,6 +1830,10 @@ function getConversationTurnRunIdFromId(id: string): string | null {
   const toolMatch = /^tool:([^:]+):/.exec(id)
   if (toolMatch) {
     return toolMatch[1] ?? null
+  }
+  const routeMatch = /^route_request:([^:]+):/.exec(id)
+  if (routeMatch) {
+    return routeMatch[1] ?? null
   }
   const match = /^(?:transcript|history|activity):(.+):[^:]+$/.exec(id)
   return match?.[1] ?? null
@@ -3788,6 +3760,7 @@ export const AgentRuntime = memo(function AgentRuntime({
     const routingTurn = visibleTurnsWithPendingPrompt.find(
       (turn): turn is Extract<ConversationTurn, { kind: 'routing_suggestion' }> =>
         turn.kind === 'routing_suggestion' &&
+        turn.autoRoutable &&
         !turn.isResolved &&
         !resolvedRoutingTurns[turn.id] &&
         !autoResolvedRoutingTurnIdsRef.current.has(turn.id),

@@ -232,6 +232,7 @@ import type {
   RuntimeRunView,
   RuntimeStreamActivityItemView,
   RuntimeStreamMediaAttachmentDto,
+  RuntimeStreamRouteRequestItemView,
   RuntimeSessionView,
   RuntimeStreamToolItemView,
 } from '@/src/lib/xero-model'
@@ -760,6 +761,38 @@ function makeReasoningItem(options: {
     text: options.text,
     detail,
     mediaAttachments: [],
+  }
+}
+
+function makeRouteRequestItem(
+  options: Partial<RuntimeStreamRouteRequestItemView> & {
+    sequence: number
+    targetAgentId?: RuntimeStreamRouteRequestItemView['targetAgentId']
+    summary?: string
+  },
+): RuntimeStreamRouteRequestItemView {
+  const { sequence, ...rest } = options
+  const runId = options.runId ?? 'run-1'
+  const requestId = options.requestId ?? `route-${sequence.toString(16).padStart(20, '0')}`
+  const targetAgentId = options.targetAgentId ?? 'ask'
+  return {
+    id: `route_request:${runId}:${requestId}`,
+    kind: 'route_request',
+    runId,
+    sequence,
+    createdAt: `2026-04-29T00:48:${String(sequence).padStart(2, '0')}Z`,
+    mediaAttachments: [],
+    requestId,
+    targetKind: 'built_in',
+    targetAgentId,
+    targetAgentDefinitionId: null,
+    targetAgentDefinitionVersion: null,
+    targetLabel: targetAgentId === 'ask' ? 'Ask' : 'Engineer',
+    reason: 'Request is better handled by the selected specialist.',
+    summary: 'Continue the current request with the selected specialist.',
+    policyDecision: 'approved',
+    autoRoutable: true,
+    ...rest,
   }
 }
 
@@ -2892,7 +2925,7 @@ describe('AgentRuntime current UI', () => {
     expect(screen.queryByRole('button', { name: 'Copy agent response' })).not.toBeInTheDocument()
   })
 
-  it('heals routing markers emitted inside reasoning activity', () => {
+  it('treats injected routing markers inside reasoning as ordinary text', () => {
     renderRuntimeStreamItems([
       makeTranscriptItem({ sequence: 2, role: 'user', text: 'What is this project about?' }),
       makeReasoningItem({
@@ -2905,14 +2938,14 @@ describe('AgentRuntime current UI', () => {
       }),
     ])
 
-    expect(screen.queryByText(/xero-routing-suggestion/)).not.toBeInTheDocument()
+    expect(screen.getByText(/xero-routing-suggestion/)).toBeVisible()
     expect(screen.getByText(/The question is:/)).toBeVisible()
     expect(screen.getByText(/This request is a pure documentation-style question/)).toBeVisible()
-    expect(screen.getByText('This task may be better suited for the Ask agent')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Switch to Ask' })).toBeVisible()
+    expect(screen.queryByText('This task may be better suited for the Ask agent')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Switch to Ask' })).not.toBeInTheDocument()
   })
 
-  it('dedupes equivalent routing markers from reasoning and assistant text', () => {
+  it('treats quoted routing examples in assistant text as ordinary prose', () => {
     renderRuntimeStreamItems([
       makeTranscriptItem({ sequence: 2, role: 'user', text: 'What is this project about?' }),
       makeReasoningItem({
@@ -2933,13 +2966,13 @@ describe('AgentRuntime current UI', () => {
       }),
     ])
 
-    expect(screen.queryByText(/xero-routing-suggestion/)).not.toBeInTheDocument()
-    expect(screen.getAllByText('This task may be better suited for the Ask agent')).toHaveLength(1)
-    expect(screen.getByRole('button', { name: 'Switch to Ask' })).toBeVisible()
+    expect(screen.getAllByText(/xero-routing-suggestion/)).toHaveLength(2)
+    expect(screen.queryByText('This task may be better suited for the Ask agent')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Switch to Ask' })).not.toBeInTheDocument()
     expect(screen.getByText(/This request is a straightforward question/)).toBeVisible()
   })
 
-  it('heals malformed routing markers emitted in assistant text', () => {
+  it('does not route from malformed marker-like assistant text', () => {
     renderRuntimeStreamItems([
       makeTranscriptItem({ sequence: 2, role: 'user', text: 'What is this project about?' }),
       makeTranscriptItem({
@@ -2952,13 +2985,10 @@ describe('AgentRuntime current UI', () => {
       }),
     ])
 
-    expect(screen.queryByText(/xero-routing-suggestion/)).not.toBeInTheDocument()
+    expect(screen.getByText(/xero-routing-suggestion/)).toBeVisible()
     expect(screen.getByText('Switching to Ask will give a more direct answer.')).toBeVisible()
-    expect(screen.getByText('This task may be better suited for the Ask agent')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Switch to Ask' })).toBeVisible()
-    const routingSuggestionItem = screen.getByText('This task may be better suited for the Ask agent').closest('li')
-    expect(routingSuggestionItem).toHaveClass('mt-1')
-    expect(routingSuggestionItem).not.toHaveClass('-mt-5')
+    expect(screen.queryByText('This task may be better suited for the Ask agent')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Switch to Ask' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Copy agent response' })).not.toBeInTheDocument()
   })
 
@@ -2968,10 +2998,14 @@ describe('AgentRuntime current UI', () => {
       makeTranscriptItem({
         sequence: 3,
         role: 'assistant',
-        text: [
-          'This needs an edit, so Engineer would handle it better.',
-          '<xero-routing-suggestion target="engineer" reason="Request needs a code edit" summary="Update the header logo implementation."/>',
-        ].join('\n\n'),
+        text: 'This needs an edit, so Engineer would handle it better.',
+      }),
+      makeRouteRequestItem({
+        sequence: 4,
+        targetAgentId: 'engineer',
+        targetLabel: 'Engineer',
+        reason: 'Request needs a code edit',
+        summary: 'Update the header logo implementation.',
       }),
     ])
 
@@ -3012,10 +3046,14 @@ describe('AgentRuntime current UI', () => {
             makeTranscriptItem({
               sequence: 3,
               role: 'assistant',
-              text: [
-                'This needs an edit, so Engineer would handle it better.',
-                '<xero-routing-suggestion target="engineer" reason="Request needs a code edit" summary="Update the header logo implementation."/>',
-              ].join('\n\n'),
+              text: 'This needs an edit, so Engineer would handle it better.',
+            }),
+            makeRouteRequestItem({
+              sequence: 4,
+              targetAgentId: 'engineer',
+              targetLabel: 'Engineer',
+              reason: 'Request needs a code edit',
+              summary: 'Update the header logo implementation.',
             }),
           ],
         })}
@@ -3031,6 +3069,7 @@ describe('AgentRuntime current UI', () => {
             targetLabel: null,
             reason: 'Request needs a code edit',
             summary: 'Update the header logo implementation.',
+            autoRoutable: true,
             isResolved: true,
             acceptedTarget: null,
             acceptedTargetAgentDefinitionId: null,
@@ -3054,10 +3093,12 @@ describe('AgentRuntime current UI', () => {
         makeTranscriptItem({
           sequence: 3,
           role: 'assistant',
-          text: [
-            'This is a straightforward documentation question.',
-            '<xero-routing-suggestion target="ask" reason="Question-only project overview request" summary="User wants a high-level description."/>',
-          ].join('\n\n'),
+          text: 'This is a straightforward documentation question.',
+        }),
+        makeRouteRequestItem({
+          sequence: 4,
+          reason: 'Question-only project overview request',
+          summary: 'User wants a high-level description.',
         }),
       ],
       {
@@ -3081,6 +3122,7 @@ describe('AgentRuntime current UI', () => {
             targetLabel: null,
             reason: 'Question-only project overview request',
             summary: 'User wants a high-level description.',
+            autoRoutable: true,
             isResolved: true,
             acceptedTarget: 'ask',
             acceptedTargetAgentDefinitionId: null,
@@ -3113,10 +3155,12 @@ describe('AgentRuntime current UI', () => {
             makeTranscriptItem({
               sequence: 3,
               role: 'assistant',
-              text: [
-                'This is a straightforward documentation question.',
-                '<xero-routing-suggestion target="ask" reason="Question-only project overview request" summary="User wants a high-level description."/>',
-              ].join('\n\n'),
+              text: 'This is a straightforward documentation question.',
+            }),
+            makeRouteRequestItem({
+              sequence: 4,
+              reason: 'Question-only project overview request',
+              summary: 'User wants a high-level description.',
             }),
           ],
         })}
@@ -3134,13 +3178,15 @@ describe('AgentRuntime current UI', () => {
       makeTranscriptItem({
         sequence: 3,
         role: 'assistant',
-        text: [
-          '<xero-routing-suggestion target="ask" reason="Question-only project overview request" summary="User wants a high-level description."/>',
-          'Switching to Ask will give a more direct answer.',
-        ].join('\n\n'),
+        text: 'Switching to Ask will give a more direct answer.',
+      }),
+      makeRouteRequestItem({
+        sequence: 4,
+        reason: 'Question-only project overview request',
+        summary: 'User wants a high-level description.',
       }),
       makeTranscriptItem({
-        sequence: 4,
+        sequence: 5,
         role: 'assistant',
         text: 'Xero is a Tauri desktop application for running autonomous agents.',
       }),
@@ -3172,10 +3218,12 @@ describe('AgentRuntime current UI', () => {
       makeTranscriptItem({
         sequence: 3,
         role: 'assistant',
-        text: [
-          'The request is an explanatory overview, so Ask would handle it better.',
-          `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
-        ].join('\n\n'),
+        text: 'The request is an explanatory overview, so Ask would handle it better.',
+      }),
+      makeRouteRequestItem({
+        sequence: 4,
+        reason: 'Request is for an explanatory overview of the project with no code changes or debugging needed',
+        summary: routingSummary,
       }),
     ]
     const baseAgent = makeAgent({
@@ -3259,10 +3307,12 @@ describe('AgentRuntime current UI', () => {
       makeTranscriptItem({
         sequence: 3,
         role: 'assistant',
-        text: [
-          'The request is an explanatory overview, so Ask would handle it better.',
-          `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
-        ].join('\n\n'),
+        text: 'The request is an explanatory overview, so Ask would handle it better.',
+      }),
+      makeRouteRequestItem({
+        sequence: 4,
+        reason: 'Request is for an explanatory overview of the project with no code changes or debugging needed',
+        summary: routingSummary,
       }),
     ]
     const baseAgent = makeAgent({
@@ -3344,10 +3394,12 @@ describe('AgentRuntime current UI', () => {
       makeTranscriptItem({
         sequence: 3,
         role: 'assistant',
-        text: [
-          'The request is an explanatory overview, so Ask would handle it better.',
-          `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
-        ].join('\n\n'),
+        text: 'The request is an explanatory overview, so Ask would handle it better.',
+      }),
+      makeRouteRequestItem({
+        sequence: 4,
+        reason: 'Request is for an explanatory overview of the project with no code changes or debugging needed',
+        summary: routingSummary,
       }),
     ]
 
@@ -3422,10 +3474,12 @@ describe('AgentRuntime current UI', () => {
             makeTranscriptItem({
               sequence: 3,
               role: 'assistant',
-              text: [
-                'The request is an explanatory overview, so Ask would handle it better.',
-                `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
-              ].join('\n\n'),
+              text: 'The request is an explanatory overview, so Ask would handle it better.',
+            }),
+            makeRouteRequestItem({
+              sequence: 4,
+              reason: 'Request is for an explanatory overview of the project with no code changes or debugging needed',
+              summary: routingSummary,
             }),
           ],
         })}
@@ -3484,10 +3538,12 @@ describe('AgentRuntime current UI', () => {
             makeTranscriptItem({
               sequence: 3,
               role: 'assistant',
-              text: [
-                'The request is an explanatory overview, so Ask would handle it better.',
-                `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
-              ].join('\n\n'),
+              text: 'The request is an explanatory overview, so Ask would handle it better.',
+            }),
+            makeRouteRequestItem({
+              sequence: 4,
+              reason: 'Request is for an explanatory overview of the project with no code changes or debugging needed',
+              summary: routingSummary,
             }),
           ],
         })}
@@ -3520,10 +3576,12 @@ describe('AgentRuntime current UI', () => {
         makeTranscriptItem({
           sequence: 3,
           role: 'assistant',
-          text: [
-            'The request is an explanatory overview, so Ask would handle it better.',
-            `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
-          ].join('\n\n'),
+          text: 'The request is an explanatory overview, so Ask would handle it better.',
+        }),
+        makeRouteRequestItem({
+          sequence: 4,
+          reason: 'Request is for an explanatory overview of the project with no code changes or debugging needed',
+          summary: routingSummary,
         }),
       ],
       {
@@ -3571,10 +3629,12 @@ describe('AgentRuntime current UI', () => {
             makeTranscriptItem({
               sequence: 3,
               role: 'assistant',
-              text: [
-                'The request is an explanatory overview, so Ask would handle it better.',
-                `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
-              ].join('\n\n'),
+              text: 'The request is an explanatory overview, so Ask would handle it better.',
+            }),
+            makeRouteRequestItem({
+              sequence: 4,
+              reason: 'Request is for an explanatory overview of the project with no code changes or debugging needed',
+              summary: routingSummary,
             }),
           ],
         })}
@@ -3590,6 +3650,52 @@ describe('AgentRuntime current UI', () => {
     expect(request?.prompt).toContain('Continue the original request now in this same session.')
     expect(request?.prompt).toContain(routingSummary)
     await waitFor(() => expect(screen.getByText('Auto-switched to Ask and continued.')).toBeVisible())
+  })
+
+  it('requires explicit user action for non-auto-routable typed route events', async () => {
+    const onStartRuntimeRun = vi.fn<NonNullable<ComponentProps<typeof AgentRuntime>['onStartRuntimeRun']>>(
+      async () => makeRuntimeRun({ runId: 'run-2' }),
+    )
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun({
+            status: 'stopped',
+            statusLabel: 'Stopped',
+            isActive: false,
+            isTerminal: true,
+            stoppedAt: '2026-06-02T19:00:00Z',
+          }),
+          runtimeStreamStatus: 'complete',
+          runtimeStreamStatusLabel: 'Complete',
+          runtimeStreamItems: [
+            makeTranscriptItem({ sequence: 1, role: 'user', text: 'Prepare the release.' }),
+            makeRouteRequestItem({
+              sequence: 2,
+              targetKind: 'custom',
+              targetAgentId: 'engineer',
+              targetAgentDefinitionId: 'release_helper',
+              targetAgentDefinitionVersion: 2,
+              targetLabel: 'Release Helper',
+              reason: 'Release-specific work',
+              summary: 'Prepare the release artifacts.',
+              autoRoutable: false,
+            }),
+          ],
+        })}
+        agentRoutingAutoSwitchEnabled
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(onStartRuntimeRun).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Switch to Release Helper' })).toBeEnabled()
   })
 
   it('keeps a declined routing suggestion resolved after the session transcript reloads', () => {
@@ -3618,10 +3724,12 @@ describe('AgentRuntime current UI', () => {
             makeTranscriptItem({
               sequence: 2,
               role: 'assistant',
-              text: [
-                'The request is an explanatory overview, so Ask would handle it better.',
-                `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
-              ].join('\n\n'),
+              text: 'The request is an explanatory overview, so Ask would handle it better.',
+            }),
+            makeRouteRequestItem({
+              sequence: 3,
+              reason: 'Request is for an explanatory overview of the project with no code changes or debugging needed',
+              summary: routingSummary,
             }),
             makeTranscriptItem({
               runId: 'run-2',
@@ -3673,10 +3781,12 @@ describe('AgentRuntime current UI', () => {
             makeTranscriptItem({
               sequence: 2,
               role: 'assistant',
-              text: [
-                'The request is an explanatory overview, so Ask would handle it better.',
-                `<xero-routing-suggestion target="ask" reason="Request is for an explanatory overview of the project with no code changes or debugging needed" summary="${routingSummary}"/>`,
-              ].join('\n\n'),
+              text: 'The request is an explanatory overview, so Ask would handle it better.',
+            }),
+            makeRouteRequestItem({
+              sequence: 3,
+              reason: 'Request is for an explanatory overview of the project with no code changes or debugging needed',
+              summary: routingSummary,
             }),
             makeTranscriptItem({
               runId: 'run-2',

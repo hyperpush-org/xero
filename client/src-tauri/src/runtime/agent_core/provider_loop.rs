@@ -744,7 +744,9 @@ pub(crate) fn drive_provider_loop(
                     && tool_calls.iter().any(|tool_call| {
                         matches!(
                             tool_call.tool_name.as_str(),
-                            AUTONOMOUS_TOOL_RUNTIME_WAIT | AUTONOMOUS_TOOL_ACTION_REQUIRED
+                            AUTONOMOUS_TOOL_RUNTIME_WAIT
+                                | AUTONOMOUS_TOOL_ACTION_REQUIRED
+                                | AUTONOMOUS_TOOL_SUGGEST_ROUTING
                         )
                     })
                 {
@@ -779,6 +781,7 @@ pub(crate) fn drive_provider_loop(
                 let parent_assistant_message_id = provider_assistant_message_id(run_id, turn_index);
                 let mut scheduled_wait: Option<AutonomousRuntimeWaitOutput> = None;
                 let mut user_input_request: Option<AutonomousActionRequiredOutput> = None;
+                let mut route_requested = false;
                 for mut result in batch.results {
                     cancellation.check_cancelled()?;
                     if result.tool_name == AUTONOMOUS_TOOL_RUNTIME_WAIT {
@@ -787,6 +790,9 @@ pub(crate) fn drive_provider_loop(
                     if result.tool_name == AUTONOMOUS_TOOL_ACTION_REQUIRED {
                         user_input_request =
                             action_required_output_from_tool_result(&result.output);
+                    }
+                    if result.tool_name == AUTONOMOUS_TOOL_SUGGEST_ROUTING {
+                        route_requested = true;
                     }
                     result.parent_assistant_message_id = Some(parent_assistant_message_id.clone());
                     let provider_content = serialize_model_visible_tool_result(&result)?;
@@ -848,6 +854,9 @@ pub(crate) fn drive_provider_loop(
                             request.action_id, request.title
                         ),
                     ));
+                }
+                if route_requested {
+                    return Ok(());
                 }
             }
         }

@@ -61,6 +61,44 @@ function makeMessageItem(
   }
 }
 
+function makeRouteRequestItem(
+  runId: string,
+  sequence: number,
+  overrides: Partial<NonNullable<SessionTranscriptItemDto['routeRequest']>> = {},
+): SessionTranscriptItemDto {
+  const requestId = overrides.requestId ?? `route-${sequence.toString(16).padStart(20, '0')}`
+  return {
+    contractVersion: 1,
+    itemId: `${runId}:route:${requestId}`,
+    projectId: PROJECT_ID,
+    agentSessionId: SESSION_ID,
+    runId,
+    providerId: PROVIDER_ID,
+    modelId: MODEL_ID,
+    sourceKind: 'owned_agent',
+    sourceTable: 'agent_events',
+    sourceId: `${sequence}`,
+    sequence,
+    createdAt: '2026-05-08T10:00:00Z',
+    kind: 'route_request',
+    actor: 'runtime',
+    title: 'Agent routing suggestion',
+    routeRequest: {
+      schema: 'xero.route_request.v1',
+      requestId,
+      targetKind: 'built_in',
+      targetAgentId: 'ask',
+      targetLabel: 'Ask',
+      reason: 'Question-only request',
+      summary: 'Continue the request with Ask.',
+      policyDecision: 'approved',
+      autoRoutable: true,
+      ...overrides,
+    },
+    redaction: publicRedaction(),
+  }
+}
+
 function makeRunPromptItem(
   runId: string,
   sequence: number,
@@ -538,14 +576,18 @@ describe('buildHistoricalConversationTurns', () => {
     })
   })
 
-  it('extracts routing-suggestion markers from assistant messages into routing_suggestion turns', () => {
-    const markerText =
-      '<xero-routing-suggestion target="plan" reason="multi-file refactor" summary="rewrite routing layer"/>\n\nI think Plan would handle this better.'
+  it('projects persisted typed route requests into routing_suggestion turns', () => {
     const transcript = makeTranscript(
-      [makeRun('run-A', 'completed', '2026-05-08T09:00:00Z', 2)],
+      [makeRun('run-A', 'completed', '2026-05-08T09:00:00Z', 3)],
       [
         makeMessageItem('run-A', 1, 'user', 'refactor everything'),
-        makeMessageItem('run-A', 2, 'assistant', markerText),
+        makeMessageItem('run-A', 2, 'assistant', 'I think Plan would handle this better.'),
+        makeRouteRequestItem('run-A', 3, {
+          targetAgentId: 'plan',
+          targetLabel: 'Plan',
+          reason: 'multi-file refactor',
+          summary: 'rewrite routing layer',
+        }),
       ],
     )
 
@@ -573,10 +615,6 @@ describe('buildHistoricalConversationTurns', () => {
 
   it('resolves accepted routing handoffs and hides the internal continuation prompt', () => {
     const routingSummary = 'Explain the repository purpose.'
-    const markerText = [
-      'This is a straightforward documentation question.',
-      `<xero-routing-suggestion target="ask" reason="Question-only project overview request" summary="${routingSummary}"/>`,
-    ].join('\n\n')
     const continuationPrompt = [
       'The user accepted the routing suggestion to switch to Ask.',
       'Continue the original request now in this same session.',
@@ -591,11 +629,15 @@ describe('buildHistoricalConversationTurns', () => {
       ],
       [
         makeMessageItem('run-source', 1, 'user', 'What is this project about?'),
-        makeMessageItem('run-source', 2, 'assistant', markerText),
-        makeMessageItem('run-target-ask-1', 3, 'user', continuationPrompt),
+        makeMessageItem('run-source', 2, 'assistant', 'This is a straightforward documentation question.'),
+        makeRouteRequestItem('run-source', 3, {
+          reason: 'Question-only project overview request',
+          summary: routingSummary,
+        }),
+        makeMessageItem('run-target-ask-1', 4, 'user', continuationPrompt),
         makeMessageItem(
           'run-target-ask-1',
-          4,
+          5,
           'assistant',
           'This project is Xero, a Tauri desktop application for agent workflows.',
         ),
@@ -630,14 +672,21 @@ describe('buildHistoricalConversationTurns', () => {
     })
   })
 
-  it('extracts custom routing-suggestion targets with carry-over labels', () => {
-    const markerText =
-      '<xero-routing-suggestion targetKind="custom" definitionId="release_helper" runtimeAgentId="ask" targetLabel="Release Helper" reason="release docs" summary="draft notes from context"/>\n\nRelease Helper can take it from here.'
+  it('projects custom typed route-request targets with carry-over labels', () => {
     const transcript = makeTranscript(
-      [makeRun('run-A', 'completed', '2026-05-08T09:00:00Z', 2)],
+      [makeRun('run-A', 'completed', '2026-05-08T09:00:00Z', 3)],
       [
         makeMessageItem('run-A', 1, 'user', 'write release notes'),
-        makeMessageItem('run-A', 2, 'assistant', markerText),
+        makeMessageItem('run-A', 2, 'assistant', 'Release Helper can take it from here.'),
+        makeRouteRequestItem('run-A', 3, {
+          targetKind: 'custom',
+          targetAgentDefinitionId: 'release_helper',
+          targetAgentDefinitionVersion: 2,
+          targetLabel: 'Release Helper',
+          reason: 'release docs',
+          summary: 'draft notes from context',
+          autoRoutable: false,
+        }),
       ],
     )
 
@@ -660,18 +709,20 @@ describe('buildHistoricalConversationTurns', () => {
     })
   })
 
-  it('leaves messages without the marker untouched', () => {
+  it('leaves marker-like assistant prose untouched and does not create routing turns', () => {
+    const markerLikeText =
+      'Quoted example: <xero-routing-suggestion target="ask" reason="example only" summary="do not route"/>'
     const transcript = makeTranscript(
       [makeRun('run-A', 'completed', '2026-05-08T09:00:00Z', 2)],
       [
         makeMessageItem('run-A', 1, 'user', 'simple question'),
-        makeMessageItem('run-A', 2, 'assistant', 'a plain answer'),
+        makeMessageItem('run-A', 2, 'assistant', markerLikeText),
       ],
     )
 
     const turns = buildHistoricalConversationTurns(transcript, { activeRunId: null })
 
     expect(turns.map((turn) => turn.kind)).toEqual(['message', 'message'])
-    expect(turns[1]).toMatchObject({ text: 'a plain answer' })
+    expect(turns[1]).toMatchObject({ text: markerLikeText })
   })
 })

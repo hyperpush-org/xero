@@ -183,6 +183,7 @@ pub const AUTONOMOUS_TOOL_HOST_COMMAND: &str = "host_command";
 pub const AUTONOMOUS_TOOL_PROCESS_MANAGER: &str = "process_manager";
 pub const AUTONOMOUS_TOOL_RUNTIME_WAIT: &str = "runtime_wait";
 pub const AUTONOMOUS_TOOL_ACTION_REQUIRED: &str = "action_required";
+pub const AUTONOMOUS_TOOL_SUGGEST_ROUTING: &str = "suggest_routing";
 pub const AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS: &str = "system_diagnostics";
 pub const AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE: &str = "system_diagnostics_observe";
 pub const AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED: &str = "system_diagnostics_privileged";
@@ -328,6 +329,8 @@ const MAX_RUNTIME_WAIT_REASON_BYTES: usize = 400;
 const MAX_RUNTIME_WAIT_RESUME_CONTEXT_BYTES: usize = 8 * 1024;
 const MAX_ACTION_REQUIRED_DETAIL_BYTES: usize = 1_200;
 const MAX_ACTION_REQUIRED_OPTIONS: usize = 20;
+const MAX_ROUTE_REQUEST_REASON_BYTES: usize = 500;
+const MAX_ROUTE_REQUEST_SUMMARY_BYTES: usize = 1_000;
 
 const TOOL_ACCESS_CORE_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_READ,
@@ -341,6 +344,7 @@ const TOOL_ACCESS_CORE_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_TOOL_ACCESS,
     AUTONOMOUS_TOOL_TOOL_SEARCH,
     AUTONOMOUS_TOOL_ACTION_REQUIRED,
+    AUTONOMOUS_TOOL_SUGGEST_ROUTING,
     AUTONOMOUS_TOOL_REQUEST_SENSITIVE_INPUT,
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
@@ -375,6 +379,7 @@ const TOOL_ACCESS_PROCESS_MANAGER_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_PROCESS_MAN
 const TOOL_ACCESS_RUNTIME_WAIT_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_RUNTIME_WAIT,
     AUTONOMOUS_TOOL_ACTION_REQUIRED,
+    AUTONOMOUS_TOOL_SUGGEST_ROUTING,
 ];
 const TOOL_ACCESS_SYSTEM_DIAGNOSTICS_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
@@ -411,6 +416,7 @@ const TOOL_ACCESS_REPOSITORY_RECON_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_TOOL_ACCESS,
     AUTONOMOUS_TOOL_TOOL_SEARCH,
     AUTONOMOUS_TOOL_ACTION_REQUIRED,
+    AUTONOMOUS_TOOL_SUGGEST_ROUTING,
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
     AUTONOMOUS_TOOL_WORKSPACE_INDEX,
@@ -436,6 +442,7 @@ const TOOL_ACCESS_PLANNING_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_TOOL_ACCESS,
     AUTONOMOUS_TOOL_TOOL_SEARCH,
     AUTONOMOUS_TOOL_ACTION_REQUIRED,
+    AUTONOMOUS_TOOL_SUGGEST_ROUTING,
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
@@ -1743,6 +1750,7 @@ impl AutonomousAgentWorkflowPhase {
             || matches!(
                 tool_name,
                 AUTONOMOUS_TOOL_ACTION_REQUIRED
+                    | AUTONOMOUS_TOOL_SUGGEST_ROUTING
                     | AUTONOMOUS_TOOL_TODO
                     | AUTONOMOUS_TOOL_TOOL_SEARCH
                     | AUTONOMOUS_TOOL_TOOL_ACCESS
@@ -1755,6 +1763,7 @@ impl AutonomousAgentWorkflowPhase {
         }
         let mut allowed_tools = self.allowed_tools.clone();
         allowed_tools.insert(AUTONOMOUS_TOOL_ACTION_REQUIRED.to_owned());
+        allowed_tools.insert(AUTONOMOUS_TOOL_SUGGEST_ROUTING.to_owned());
         allowed_tools.insert(AUTONOMOUS_TOOL_TODO.to_owned());
         allowed_tools.insert(AUTONOMOUS_TOOL_TOOL_SEARCH.to_owned());
         allowed_tools.insert(AUTONOMOUS_TOOL_TOOL_ACCESS.to_owned());
@@ -2087,6 +2096,7 @@ pub fn tool_effect_class(tool_name: &str) -> AutonomousToolEffectClass {
         | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE => AutonomousToolEffectClass::Observe,
         AUTONOMOUS_TOOL_TOOL_ACCESS
         | AUTONOMOUS_TOOL_ACTION_REQUIRED
+        | AUTONOMOUS_TOOL_SUGGEST_ROUTING
         | AUTONOMOUS_TOOL_TODO
         | AUTONOMOUS_TOOL_REQUEST_SENSITIVE_INPUT
         | AUTONOMOUS_TOOL_RUNTIME_WAIT
@@ -2186,6 +2196,16 @@ pub fn tool_allowed_for_runtime_agent(agent_id: RuntimeAgentIdDto, tool_name: &s
     ) {
         return agent_id == RuntimeAgentIdDto::AgentCreate;
     }
+    if tool_name == AUTONOMOUS_TOOL_SUGGEST_ROUTING {
+        return matches!(
+            agent_id,
+            RuntimeAgentIdDto::Ask
+                | RuntimeAgentIdDto::Plan
+                | RuntimeAgentIdDto::Engineer
+                | RuntimeAgentIdDto::Debug
+                | RuntimeAgentIdDto::Generalist
+        );
+    }
     match agent_id {
         RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug | RuntimeAgentIdDto::Generalist => {
             true
@@ -2205,6 +2225,9 @@ pub fn tool_allowed_for_runtime_agent_with_policy(
     tool_name: &str,
     agent_tool_policy: Option<&AutonomousAgentToolPolicy>,
 ) -> bool {
+    if tool_name == AUTONOMOUS_TOOL_SUGGEST_ROUTING {
+        return tool_allowed_for_runtime_agent(agent_id, tool_name);
+    }
     tool_allowed_for_runtime_agent(agent_id, tool_name)
         && agent_tool_policy
             .map(|policy| policy.allows_tool(tool_name))
@@ -2737,6 +2760,32 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             &[
                 "Ask the user to choose one technology stack before implementation.",
                 "Ask for multiple independent preferences when a design choice is material.",
+            ],
+            "runtime_state",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_SUGGEST_ROUTING,
+            "core",
+            "Request a policy-validated agent switch and emit a durable typed route event.",
+            &[
+                "route",
+                "routing",
+                "agent switch",
+                "handoff",
+                "specialist",
+                "runtime event",
+            ],
+            &[
+                "targetKind",
+                "targetAgentId",
+                "targetAgentDefinitionId",
+                "targetAgentDefinitionVersion",
+                "reason",
+                "summary",
+            ],
+            &[
+                "Suggest built-in Engineer when the current agent cannot perform requested edits.",
+                "Suggest an allowlisted custom agent and require explicit user confirmation.",
             ],
             "runtime_state",
         ),
@@ -5600,6 +5649,7 @@ impl AutonomousToolRuntime {
             AutonomousToolRequest::ProcessManager(request) => self.process_manager(request),
             AutonomousToolRequest::RuntimeWait(request) => self.runtime_wait(request),
             AutonomousToolRequest::ActionRequired(request) => self.action_required(request),
+            AutonomousToolRequest::SuggestRouting(request) => self.suggest_routing(request),
             AutonomousToolRequest::SystemDiagnostics(request) => self.system_diagnostics(request),
             AutonomousToolRequest::MacosAutomation(request) => self.macos_automation(request),
             AutonomousToolRequest::DesktopObserve(request) => self.desktop_observe(request),
@@ -5832,6 +5882,88 @@ impl AutonomousToolRuntime {
                 allow_multiple,
                 intended_use,
                 summary,
+            }),
+        })
+    }
+
+    fn suggest_routing(
+        &self,
+        request: AutonomousRouteRequest,
+    ) -> CommandResult<AutonomousToolResult> {
+        self.check_cancelled()?;
+        if self.subagent_child_identity.is_some() {
+            return Err(CommandError::policy_denied(
+                "Subagents cannot request a route change for the parent conversation.",
+            ));
+        }
+        validate_route_request(&request)?;
+        let context = self.agent_run_context.as_ref().ok_or_else(|| {
+            CommandError::system_fault(
+                "route_request_missing_run_context",
+                "Xero cannot validate a routing request without an active owned-agent run context.",
+            )
+        })?;
+        let fallback_runtime_agent_id = request
+            .target_agent_id
+            .unwrap_or(RuntimeAgentIdDto::Generalist);
+        let target = crate::runtime::agent_core::resolve_agent_route_target(
+            &self.repo_root,
+            &context.project_id,
+            &context.run_id,
+            fallback_runtime_agent_id,
+            request.target_agent_definition_id.as_deref(),
+            request.target_agent_definition_version,
+        )?;
+
+        if target.target_kind != request.target_kind.as_str() {
+            return Err(CommandError::user_fixable(
+                "agent_route_target_kind_mismatch",
+                format!(
+                    "Routing target `{}` resolves as `{}`, not `{}`.",
+                    target.display_name,
+                    target.target_kind,
+                    request.target_kind.as_str(),
+                ),
+            ));
+        }
+        if request
+            .target_agent_id
+            .is_some_and(|agent_id| agent_id != target.runtime_agent_id)
+        {
+            return Err(CommandError::user_fixable(
+                "agent_route_target_identity_mismatch",
+                format!(
+                    "Routing target `{}` resolves to runtime agent `{}`, not `{}`.",
+                    target.display_name,
+                    target.runtime_agent_id.as_str(),
+                    fallback_runtime_agent_id.as_str(),
+                ),
+            ));
+        }
+
+        let reason = request.reason.trim().to_owned();
+        let summary = request.summary.trim().to_owned();
+        let request_id = route_request_id(context, &target, &reason, &summary);
+        let message = format!("Requested routing to {}.", target.display_name);
+        Ok(AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_SUGGEST_ROUTING.into(),
+            summary: message.clone(),
+            command_result: None,
+            output: AutonomousToolOutput::RouteRequest(AutonomousRouteRequestOutput {
+                schema: "xero.route_request.v1".into(),
+                request_id,
+                target_kind: request.target_kind,
+                target_agent_id: target.runtime_agent_id,
+                target_agent_definition_id: (target.target_kind == "custom")
+                    .then_some(target.agent_definition_id),
+                target_agent_definition_version: (target.target_kind == "custom")
+                    .then_some(target.agent_definition_version),
+                target_label: target.display_name,
+                reason,
+                summary,
+                policy_decision: "approved".into(),
+                auto_routable: target.auto_routable,
+                message,
             }),
         })
     }
@@ -6679,6 +6811,7 @@ pub enum AutonomousToolRequest {
     ProcessManager(AutonomousProcessManagerRequest),
     RuntimeWait(AutonomousRuntimeWaitRequest),
     ActionRequired(AutonomousActionRequiredRequest),
+    SuggestRouting(AutonomousRouteRequest),
     SystemDiagnostics(AutonomousSystemDiagnosticsRequest),
     MacosAutomation(AutonomousMacosAutomationRequest),
     DesktopObserve(AutonomousDesktopObserveRequest),
@@ -6850,6 +6983,140 @@ pub struct AutonomousActionRequiredOutput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intended_use: Option<String>,
     pub summary: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousRouteTargetKind {
+    BuiltIn,
+    Custom,
+}
+
+impl AutonomousRouteTargetKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BuiltIn => "built_in",
+            Self::Custom => "custom",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousRouteRequest {
+    pub target_kind: AutonomousRouteTargetKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_agent_id: Option<RuntimeAgentIdDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_agent_definition_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_agent_definition_version: Option<u32>,
+    pub reason: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousRouteRequestOutput {
+    pub schema: String,
+    pub request_id: String,
+    pub target_kind: AutonomousRouteTargetKind,
+    pub target_agent_id: RuntimeAgentIdDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_agent_definition_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_agent_definition_version: Option<u32>,
+    pub target_label: String,
+    pub reason: String,
+    pub summary: String,
+    pub policy_decision: String,
+    pub auto_routable: bool,
+    pub message: String,
+}
+
+fn validate_route_request(request: &AutonomousRouteRequest) -> CommandResult<()> {
+    let reason = request.reason.trim();
+    if reason.len() < 4 || reason.len() > MAX_ROUTE_REQUEST_REASON_BYTES {
+        return Err(CommandError::user_fixable(
+            "agent_route_reason_invalid",
+            format!(
+                "`reason` must be between 4 and {MAX_ROUTE_REQUEST_REASON_BYTES} UTF-8 bytes after trimming."
+            ),
+        ));
+    }
+    let summary = request.summary.trim();
+    if summary.len() < 4 || summary.len() > MAX_ROUTE_REQUEST_SUMMARY_BYTES {
+        return Err(CommandError::user_fixable(
+            "agent_route_summary_invalid",
+            format!(
+                "`summary` must be between 4 and {MAX_ROUTE_REQUEST_SUMMARY_BYTES} UTF-8 bytes after trimming."
+            ),
+        ));
+    }
+    if find_prohibited_persistence_content(reason).is_some()
+        || find_prohibited_persistence_content(summary).is_some()
+    {
+        return Err(CommandError::user_fixable(
+            "agent_route_content_secret_like",
+            "Routing reasons and summaries must not contain secret-like content because route events are durably persisted.",
+        ));
+    }
+
+    match request.target_kind {
+        AutonomousRouteTargetKind::BuiltIn => {
+            if request.target_agent_id.is_none() {
+                return Err(CommandError::user_fixable(
+                    "agent_route_target_id_required",
+                    "Built-in routing requests require `targetAgentId`.",
+                ));
+            }
+            if request.target_agent_definition_id.is_some()
+                || request.target_agent_definition_version.is_some()
+            {
+                return Err(CommandError::user_fixable(
+                    "agent_route_builtin_definition_forbidden",
+                    "Built-in routing requests must not include custom definition identity fields.",
+                ));
+            }
+        }
+        AutonomousRouteTargetKind::Custom => {
+            let definition_id = request
+                .target_agent_definition_id
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default();
+            if definition_id.is_empty() {
+                return Err(CommandError::user_fixable(
+                    "agent_route_definition_id_required",
+                    "Custom routing requests require `targetAgentDefinitionId`.",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn route_request_id(
+    context: &AutonomousAgentRunContext,
+    target: &crate::runtime::agent_core::ResolvedAgentRouteTarget,
+    reason: &str,
+    summary: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(context.project_id.as_bytes());
+    hasher.update(context.agent_session_id.as_bytes());
+    hasher.update(context.run_id.as_bytes());
+    hasher.update(target.agent_definition_id.as_bytes());
+    hasher.update(target.agent_definition_version.to_le_bytes());
+    hasher.update(reason.as_bytes());
+    hasher.update(summary.as_bytes());
+    hasher.update(
+        OffsetDateTime::now_utc()
+            .unix_timestamp_nanos()
+            .to_le_bytes(),
+    );
+    let digest = format!("{:x}", hasher.finalize());
+    format!("route-{}", &digest[..20])
 }
 
 const fn default_sensitive_input_field_required() -> bool {
@@ -7309,6 +7576,7 @@ impl AutonomousToolRequest {
             Self::ProcessManager(_) => AUTONOMOUS_TOOL_PROCESS_MANAGER,
             Self::RuntimeWait(_) => AUTONOMOUS_TOOL_RUNTIME_WAIT,
             Self::ActionRequired(_) => AUTONOMOUS_TOOL_ACTION_REQUIRED,
+            Self::SuggestRouting(_) => AUTONOMOUS_TOOL_SUGGEST_ROUTING,
             Self::SystemDiagnostics(_) => AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS,
             Self::MacosAutomation(_) => AUTONOMOUS_TOOL_MACOS_AUTOMATION,
             Self::DesktopObserve(_) => AUTONOMOUS_TOOL_DESKTOP_OBSERVE,
@@ -9278,6 +9546,7 @@ pub enum AutonomousToolOutput {
     ProcessManager(AutonomousProcessManagerOutput),
     RuntimeWait(AutonomousRuntimeWaitOutput),
     ActionRequired(AutonomousActionRequiredOutput),
+    RouteRequest(AutonomousRouteRequestOutput),
     SystemDiagnostics(AutonomousSystemDiagnosticsOutput),
     MacosAutomation(AutonomousMacosAutomationOutput),
     DesktopObserve(AutonomousDesktopToolOutput),
@@ -11312,6 +11581,69 @@ mod tests {
         })
         .expect_err("prompt metadata must not contain secrets");
         assert_eq!(secret_detail.code, "action_required_metadata_secret_like");
+    }
+
+    #[test]
+    fn route_request_validation_rejects_malformed_and_secret_like_routes() {
+        validate_route_request(&AutonomousRouteRequest {
+            target_kind: AutonomousRouteTargetKind::BuiltIn,
+            target_agent_id: Some(RuntimeAgentIdDto::Engineer),
+            target_agent_definition_id: None,
+            target_agent_definition_version: None,
+            reason: "Implementation is the next useful step.".into(),
+            summary: "Carry the approved plan into implementation.".into(),
+        })
+        .expect("valid built-in route request");
+
+        let missing_runtime_id = validate_route_request(&AutonomousRouteRequest {
+            target_kind: AutonomousRouteTargetKind::BuiltIn,
+            target_agent_id: None,
+            target_agent_definition_id: None,
+            target_agent_definition_version: None,
+            reason: "Implementation is the next useful step.".into(),
+            summary: "Carry the approved plan into implementation.".into(),
+        })
+        .expect_err("built-in routes require a runtime id");
+        assert_eq!(missing_runtime_id.code, "agent_route_target_id_required");
+
+        let mixed_identity = validate_route_request(&AutonomousRouteRequest {
+            target_kind: AutonomousRouteTargetKind::BuiltIn,
+            target_agent_id: Some(RuntimeAgentIdDto::Engineer),
+            target_agent_definition_id: Some("custom-engineer".into()),
+            target_agent_definition_version: Some(3),
+            reason: "Implementation is the next useful step.".into(),
+            summary: "Carry the approved plan into implementation.".into(),
+        })
+        .expect_err("built-in routes cannot smuggle custom identity");
+        assert_eq!(
+            mixed_identity.code,
+            "agent_route_builtin_definition_forbidden"
+        );
+
+        let missing_definition_id = validate_route_request(&AutonomousRouteRequest {
+            target_kind: AutonomousRouteTargetKind::Custom,
+            target_agent_id: None,
+            target_agent_definition_id: Some("  ".into()),
+            target_agent_definition_version: None,
+            reason: "A custom specialist is the next useful step.".into(),
+            summary: "Carry the relevant context to the specialist.".into(),
+        })
+        .expect_err("custom routes require a definition id");
+        assert_eq!(
+            missing_definition_id.code,
+            "agent_route_definition_id_required"
+        );
+
+        let secret_summary = validate_route_request(&AutonomousRouteRequest {
+            target_kind: AutonomousRouteTargetKind::BuiltIn,
+            target_agent_id: Some(RuntimeAgentIdDto::Engineer),
+            target_agent_definition_id: None,
+            target_agent_definition_version: None,
+            reason: "Implementation is the next useful step.".into(),
+            summary: "Use api_key=sk-test-secret during implementation.".into(),
+        })
+        .expect_err("persisted routes must reject secret-like content");
+        assert_eq!(secret_summary.code, "agent_route_content_secret_like");
     }
 
     #[test]

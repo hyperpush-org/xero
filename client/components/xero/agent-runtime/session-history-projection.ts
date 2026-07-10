@@ -9,10 +9,6 @@ import {
   promoteActionMediaIntoFollowingAssistantMessages,
   runtimeMediaAttachmentsToConversation,
 } from '@xero/ui/components/transcript/runtime-media'
-import {
-  parseRoutingMarker,
-  stripRoutingMarkers,
-} from './routing-suggestion-marker'
 import { cleanPersistedRoutingContinuationTurns } from './routing-continuation'
 
 const HANDED_OFF_RUN_STATUS = 'handed_off'
@@ -66,7 +62,8 @@ export function buildHistoricalConversationTurns(
     .filter((item) => item.runId !== activeRunId)
     .filter((item) =>
       isDisplayableUserOrAssistantMessage(item, displayPolicy) ||
-      isDisplayableMediaToolResult(item),
+      isDisplayableMediaToolResult(item) ||
+      isDisplayableRouteRequest(item),
     )
 
   const turns: ConversationTurn[] = []
@@ -91,13 +88,11 @@ export function buildHistoricalConversationTurns(
 
     if (isDisplayableMediaToolResult(item)) {
       turns.push(toMediaToolTurn(item))
+    } else if (isDisplayableRouteRequest(item)) {
+      turns.push(toRoutingSuggestionTurn(item))
     } else {
       const messageTurn = toMessageTurn(item)
-      const routingTurn = extractRoutingSuggestion(messageTurn)
       turns.push(messageTurn)
-      if (routingTurn) {
-        turns.push(routingTurn)
-      }
     }
   }
 
@@ -191,6 +186,10 @@ function isDisplayableMediaToolResult(item: SessionTranscriptItemDto): boolean {
   return item.kind === 'tool_result' && item.actor === 'tool' && hasMediaAttachments(item)
 }
 
+function isDisplayableRouteRequest(item: SessionTranscriptItemDto): boolean {
+  return item.kind === 'route_request' && item.routeRequest?.policyDecision === 'approved'
+}
+
 function toMessageTurn(item: SessionTranscriptItemDto): Extract<ConversationTurn, { kind: 'message' }> {
   return {
     // Match the live runtime-stream transcript id so a row can move from the
@@ -223,27 +222,25 @@ function toMediaToolTurn(item: SessionTranscriptItemDto): Extract<ConversationTu
   }
 }
 
-function extractRoutingSuggestion(
-  messageTurn: Extract<ConversationTurn, { kind: 'message' }>,
-): Extract<ConversationTurn, { kind: 'routing_suggestion' }> | null {
-  if (messageTurn.role !== 'assistant') return null
-  const parsed = parseRoutingMarker(messageTurn.text)
-  const cleanText = stripRoutingMarkers(messageTurn.text)
-  if (cleanText !== messageTurn.text) {
-    messageTurn.text = cleanText
+function toRoutingSuggestionTurn(
+  item: SessionTranscriptItemDto,
+): Extract<ConversationTurn, { kind: 'routing_suggestion' }> {
+  const request = item.routeRequest
+  if (!request) {
+    throw new Error('Route-request transcript item is missing typed route metadata.')
   }
-  if (!parsed) return null
   return {
-    id: `routing_suggestion:${messageTurn.id}`,
+    id: `routing_suggestion:route_request:${item.runId}:${request.requestId}`,
     kind: 'routing_suggestion',
-    sequence: messageTurn.sequence + 0.5,
-    targetKind: parsed.targetKind,
-    targetAgentId: parsed.targetAgentId,
-    targetAgentDefinitionId: parsed.targetAgentDefinitionId,
-    targetAgentDefinitionVersion: parsed.targetAgentDefinitionVersion,
-    targetLabel: parsed.targetLabel,
-    reason: parsed.reason,
-    summary: parsed.summary,
+    sequence: item.sequence,
+    targetKind: request.targetKind,
+    targetAgentId: request.targetAgentId,
+    targetAgentDefinitionId: request.targetAgentDefinitionId ?? null,
+    targetAgentDefinitionVersion: request.targetAgentDefinitionVersion ?? null,
+    targetLabel: request.targetLabel,
+    reason: request.reason,
+    summary: request.summary,
+    autoRoutable: request.autoRoutable,
     isResolved: true,
     acceptedTarget: null,
     acceptedTargetAgentDefinitionId: null,

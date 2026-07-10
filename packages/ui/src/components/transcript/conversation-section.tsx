@@ -213,6 +213,7 @@ export type ConversationTurn =
       targetLabel: string | null
       reason: string
       summary: string
+      autoRoutable: boolean
       isResolved: boolean
       acceptedTarget: RuntimeAgentIdDto | null
       acceptedTargetAgentDefinitionId: string | null

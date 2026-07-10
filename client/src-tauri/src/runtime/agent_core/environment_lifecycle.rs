@@ -1162,6 +1162,7 @@ fn core_event_kind_from_desktop(kind: &AgentRunEventKind) -> CoreRuntimeEventKin
         }
         AgentRunEventKind::SandboxLifecycleUpdate => CoreRuntimeEventKind::SandboxLifecycleUpdate,
         AgentRunEventKind::ActionRequired => CoreRuntimeEventKind::ActionRequired,
+        AgentRunEventKind::RouteRequested => CoreRuntimeEventKind::RouteRequested,
         AgentRunEventKind::ApprovalRequired => CoreRuntimeEventKind::ApprovalRequired,
         AgentRunEventKind::ToolPermissionGrant => CoreRuntimeEventKind::ToolPermissionGrant,
         AgentRunEventKind::ProviderModelChanged => CoreRuntimeEventKind::ProviderModelChanged,
@@ -1194,6 +1195,7 @@ fn desktop_event_kind_from_core(kind: &CoreRuntimeEventKind) -> AgentRunEventKin
             AgentRunEventKind::EnvironmentLifecycleUpdate
         }
         CoreRuntimeEventKind::ActionRequired => AgentRunEventKind::ActionRequired,
+        CoreRuntimeEventKind::RouteRequested => AgentRunEventKind::RouteRequested,
         CoreRuntimeEventKind::ApprovalRequired => AgentRunEventKind::ApprovalRequired,
         CoreRuntimeEventKind::RunPaused => AgentRunEventKind::RunPaused,
         CoreRuntimeEventKind::RunCompleted => AgentRunEventKind::RunCompleted,

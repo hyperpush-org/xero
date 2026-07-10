@@ -20,8 +20,8 @@ use crate::{
         CommandResult, CommandToolResultSummaryDto, FileToolResultSummaryDto,
         GitToolResultScopeDto, GitToolResultSummaryDto, McpCapabilityKindDto,
         McpCapabilityToolResultSummaryDto, ProjectAssetState, RuntimeActionAnswerShape,
-        RuntimeActionRequiredOptionDto, RuntimeSensitiveInputFieldDto, RuntimeStreamIssueDto,
-        RuntimeStreamItemDto, RuntimeStreamItemKind, RuntimeStreamPatchDto,
+        RuntimeActionRequiredOptionDto, RuntimeRouteRequestDto, RuntimeSensitiveInputFieldDto,
+        RuntimeStreamIssueDto, RuntimeStreamItemDto, RuntimeStreamItemKind, RuntimeStreamPatchDto,
         RuntimeStreamPlanItemDto, RuntimeStreamPlanItemStatus, RuntimeStreamTranscriptRole,
         RuntimeStreamViewSnapshotDto, RuntimeStreamViewStatusDto, RuntimeToolCallState,
         SubscribeRuntimeStreamRequestDto, SubscribeRuntimeStreamResponseDto, ToolResultSummaryDto,
@@ -186,6 +186,7 @@ impl RuntimeStreamProjection {
                 );
                 Some(item)
             }
+            RuntimeStreamItemKind::RouteRequest => Some(item),
             RuntimeStreamItemKind::Plan => {
                 self.plan = Some(item.clone());
                 Some(item)
@@ -254,6 +255,7 @@ fn runtime_item_reopens_terminal_stream(item: &RuntimeStreamItemDto) -> bool {
         | RuntimeStreamItemKind::Tool
         | RuntimeStreamItemKind::Skill
         | RuntimeStreamItemKind::ActionRequired
+        | RuntimeStreamItemKind::RouteRequest
         | RuntimeStreamItemKind::Plan
         | RuntimeStreamItemKind::SubagentLifecycle => true,
         RuntimeStreamItemKind::Activity => false,
@@ -288,13 +290,14 @@ fn runtime_item_kind_sort_key(kind: &RuntimeStreamItemKind) -> u8 {
     match kind {
         RuntimeStreamItemKind::Activity => 0,
         RuntimeStreamItemKind::ActionRequired => 1,
-        RuntimeStreamItemKind::Complete => 2,
-        RuntimeStreamItemKind::Failure => 3,
-        RuntimeStreamItemKind::Plan => 4,
-        RuntimeStreamItemKind::Skill => 5,
-        RuntimeStreamItemKind::SubagentLifecycle => 6,
-        RuntimeStreamItemKind::Tool => 7,
-        RuntimeStreamItemKind::Transcript => 8,
+        RuntimeStreamItemKind::RouteRequest => 2,
+        RuntimeStreamItemKind::Complete => 3,
+        RuntimeStreamItemKind::Failure => 4,
+        RuntimeStreamItemKind::Plan => 5,
+        RuntimeStreamItemKind::Skill => 6,
+        RuntimeStreamItemKind::SubagentLifecycle => 7,
+        RuntimeStreamItemKind::Tool => 8,
+        RuntimeStreamItemKind::Transcript => 9,
     }
 }
 
@@ -412,6 +415,33 @@ fn replace_action_required_item(
         .iter()
         .filter(|item| {
             !(item.run_id == next_item.run_id && item.action_id.as_deref() == Some(action_id))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    items.push(next_item);
+    items
+}
+
+fn replace_route_request_item(
+    current_items: &[RuntimeStreamItemDto],
+    next_item: RuntimeStreamItemDto,
+) -> Vec<RuntimeStreamItemDto> {
+    let Some(request_id) = next_item
+        .route_request
+        .as_ref()
+        .map(|request| request.request_id.as_str())
+    else {
+        return push_item(current_items, next_item);
+    };
+
+    let mut items = current_items
+        .iter()
+        .filter(|item| {
+            !(item.run_id == next_item.run_id
+                && item
+                    .route_request
+                    .as_ref()
+                    .is_some_and(|request| request.request_id == request_id))
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -594,6 +624,9 @@ fn project_timeline_items(
             RuntimeStreamItemKind::ActionRequired => {
                 replace_action_required_item(&non_transcript_items, next_item)
             }
+            RuntimeStreamItemKind::RouteRequest => {
+                replace_route_request_item(&non_transcript_items, next_item)
+            }
             RuntimeStreamItemKind::Plan => {
                 replace_plan_timeline_item(&non_transcript_items, next_item)
             }
@@ -688,6 +721,7 @@ fn parse_runtime_stream_item_kind(value: &str) -> CommandResult<RuntimeStreamIte
         "skill" => Ok(RuntimeStreamItemKind::Skill),
         "activity" => Ok(RuntimeStreamItemKind::Activity),
         "action_required" => Ok(RuntimeStreamItemKind::ActionRequired),
+        "route_request" => Ok(RuntimeStreamItemKind::RouteRequest),
         "plan" => Ok(RuntimeStreamItemKind::Plan),
         "complete" => Ok(RuntimeStreamItemKind::Complete),
         "failure" => Ok(RuntimeStreamItemKind::Failure),
@@ -1432,6 +1466,7 @@ fn owned_agent_event_runtime_item(
         allow_multiple: None,
         sensitive_fields: None,
         intended_use: None,
+        route_request: None,
         title: None,
         detail: None,
         plan_id: None,
@@ -1755,6 +1790,23 @@ fn owned_agent_event_runtime_item(
                 .and_then(|changed| changed.get("id"))
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string);
+        }
+        AgentRunEventKind::RouteRequested => {
+            let route_request =
+                serde_json::from_value::<RuntimeRouteRequestDto>(payload.clone()).ok()?;
+            if route_request.schema != "xero.route_request.v1"
+                || route_request.policy_decision != "approved"
+            {
+                return None;
+            }
+            item.kind = RuntimeStreamItemKind::RouteRequest;
+            item.title = Some("Agent routing suggestion".into());
+            item.detail = Some(format!(
+                "Suggested routing to {}: {}",
+                route_request.target_label, route_request.reason
+            ));
+            item.text = item.detail.clone();
+            item.route_request = Some(route_request);
         }
         AgentRunEventKind::VerificationGate => {
             item.kind = RuntimeStreamItemKind::Activity;
@@ -3616,7 +3668,7 @@ mod tests {
     }
 
     #[test]
-    fn owned_agent_event_projection_maps_tool_and_action_items() {
+    fn owned_agent_event_projection_maps_tool_action_and_route_request_items() {
         let tool = owned_agent_event_runtime_item(
             event(
                 AgentRunEventKind::ToolCompleted,
@@ -3687,6 +3739,34 @@ mod tests {
             fallback_action.detail.as_deref(),
             Some("Xero received an owned-agent action event without a durable action id.")
         );
+
+        let route = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::RouteRequested,
+                r#"{"schema":"xero.route_request.v1","requestId":"route-0123456789abcdefabcd","targetKind":"built_in","targetAgentId":"engineer","targetLabel":"Engineer","reason":"Implementation is the next useful step.","summary":"Carry the approved plan into implementation.","policyDecision":"approved","autoRoutable":true}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("route-request item");
+        assert_eq!(route.kind, RuntimeStreamItemKind::RouteRequest);
+        let route_request = route.route_request.expect("typed route metadata");
+        assert_eq!(route_request.request_id, "route-0123456789abcdefabcd");
+        assert_eq!(
+            route_request.target_agent_id,
+            crate::commands::RuntimeAgentIdDto::Engineer
+        );
+        assert!(route_request.auto_routable);
+
+        assert!(owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::RouteRequested,
+                r#"{"schema":"xero.route_request.v1","requestId":"route-0123456789abcdefabcd","targetKind":"built_in","targetLabel":"Engineer","reason":"missing target id","summary":"Malformed route must not project.","policyDecision":"approved","autoRoutable":true}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .is_none());
     }
 
     #[test]

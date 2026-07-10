@@ -36,6 +36,16 @@ struct HandoffTargetSelection {
     definition_snapshot: JsonValue,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedAgentRouteTarget {
+    pub runtime_agent_id: RuntimeAgentIdDto,
+    pub agent_definition_id: String,
+    pub agent_definition_version: u32,
+    pub display_name: String,
+    pub target_kind: &'static str,
+    pub auto_routable: bool,
+}
+
 pub fn run_owned_agent_task(
     request: OwnedAgentRunRequest,
 ) -> CommandResult<AgentRunSnapshotRecord> {
@@ -1555,9 +1565,10 @@ fn resolve_handoff_target_selection(
     let target = if requested_points_to_source {
         source_target
     } else {
-        let selection = project_store::resolve_agent_definition_for_run(
+        let selection = project_store::resolve_agent_definition_version_for_run(
             &request.repo_root,
             requested_definition_id,
+            requested.agent_definition_version,
             requested.runtime_agent_id,
         )?;
         project_store::ensure_runtime_agent_allowed_for_project(
@@ -1577,6 +1588,79 @@ fn resolve_handoff_target_selection(
     };
     validate_handoff_target_allowed(source_snapshot, &source_definition_snapshot, &target)?;
     Ok(target)
+}
+
+pub(crate) fn resolve_agent_route_target(
+    repo_root: &Path,
+    project_id: &str,
+    source_run_id: &str,
+    requested_runtime_agent_id: RuntimeAgentIdDto,
+    requested_definition_id: Option<&str>,
+    requested_definition_version: Option<u32>,
+) -> CommandResult<ResolvedAgentRouteTarget> {
+    let source_snapshot = project_store::load_agent_run(repo_root, project_id, source_run_id)?;
+    let source_definition_snapshot =
+        load_agent_definition_snapshot_for_run(repo_root, &source_snapshot.run)?;
+    let source_target =
+        handoff_target_from_source(&source_snapshot, source_definition_snapshot.clone());
+    let requested_definition_id = requested_definition_id
+        .map(str::trim)
+        .filter(|definition_id| !definition_id.is_empty());
+    let source_is_built_in =
+        handoff_definition_scope(&source_target.definition_snapshot) == "built_in";
+    let requested_points_to_source = requested_runtime_agent_id
+        == source_snapshot.run.runtime_agent_id
+        && match requested_definition_id {
+            Some(definition_id) => definition_id == source_snapshot.run.agent_definition_id,
+            None => source_is_built_in,
+        }
+        && requested_definition_version
+            .map(|version| version == source_snapshot.run.agent_definition_version)
+            .unwrap_or(true);
+    if requested_points_to_source {
+        return Err(CommandError::user_fixable(
+            "agent_route_target_is_active",
+            "The requested routing target is already the active agent.",
+        ));
+    }
+
+    let selection = project_store::resolve_agent_definition_version_for_run(
+        repo_root,
+        requested_definition_id,
+        requested_definition_version,
+        requested_runtime_agent_id,
+    )?;
+    project_store::ensure_runtime_agent_allowed_for_project(
+        repo_root,
+        project_id,
+        selection.runtime_agent_id,
+    )?;
+    let target = HandoffTargetSelection {
+        runtime_agent_id: selection.runtime_agent_id,
+        agent_definition_id: selection.definition_id,
+        agent_definition_version: selection.version,
+        display_name: selection.display_name,
+        default_approval_mode: selection.default_approval_mode,
+        allowed_approval_modes: selection.allowed_approval_modes,
+        definition_snapshot: selection.snapshot,
+    };
+    validate_handoff_target_allowed(&source_snapshot, &source_definition_snapshot, &target)?;
+
+    let target_kind = handoff_definition_scope(&target.definition_snapshot);
+    Ok(ResolvedAgentRouteTarget {
+        runtime_agent_id: target.runtime_agent_id,
+        agent_definition_id: target.agent_definition_id,
+        agent_definition_version: target.agent_definition_version,
+        display_name: target.display_name,
+        target_kind: if target_kind == "built_in" {
+            "built_in"
+        } else {
+            "custom"
+        },
+        // Automatic switching is intentionally limited to built-in identities.
+        // Custom definitions remain policy-approved but require an explicit click.
+        auto_routable: target_kind == "built_in",
+    })
 }
 
 fn handoff_target_from_source(
@@ -6244,7 +6328,7 @@ mod tests {
     }
 
     #[test]
-    fn handoff_target_policy_enforces_plan_to_engineer_only() {
+    fn route_and_handoff_target_policy_enforces_plan_to_engineer_only() {
         let source = snapshot_for_handoff_source(RuntimeAgentIdDto::Plan, "plan");
         let source_definition = json!({ "scope": "built_in" });
 
@@ -6273,7 +6357,7 @@ mod tests {
     }
 
     #[test]
-    fn handoff_target_policy_requires_custom_allowlist() {
+    fn route_and_handoff_target_policy_requires_custom_allowlist() {
         let source = snapshot_for_handoff_source(RuntimeAgentIdDto::Engineer, "custom_source");
         let source_definition = json!({
             "scope": "project_custom",

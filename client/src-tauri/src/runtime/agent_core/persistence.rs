@@ -4164,6 +4164,28 @@ pub(crate) fn record_command_output_event(
                 }),
             )?;
         }
+        AutonomousToolOutput::RouteRequest(output) => {
+            append_event(
+                repo_root,
+                project_id,
+                run_id,
+                AgentRunEventKind::RouteRequested,
+                json!({
+                    "schema": output.schema,
+                    "requestId": output.request_id,
+                    "targetKind": output.target_kind,
+                    "targetAgentId": output.target_agent_id,
+                    "targetAgentDefinitionId": output.target_agent_definition_id,
+                    "targetAgentDefinitionVersion": output.target_agent_definition_version,
+                    "targetLabel": output.target_label,
+                    "reason": output.reason,
+                    "summary": output.summary,
+                    "policyDecision": output.policy_decision,
+                    "autoRoutable": output.auto_routable,
+                    "message": output.message,
+                }),
+            )?;
+        }
         AutonomousToolOutput::AgentDefinition(output) => {
             if !output.applied && output.approval_required {
                 record_agent_definition_action_required(repo_root, project_id, run_id, output)?;

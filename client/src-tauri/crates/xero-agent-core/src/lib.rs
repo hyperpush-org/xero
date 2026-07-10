@@ -287,6 +287,7 @@ pub enum RuntimeEventKind {
     EnvironmentLifecycleUpdate,
     SandboxLifecycleUpdate,
     ActionRequired,
+    RouteRequested,
     ApprovalRequired,
     ToolPermissionGrant,
     ProviderModelChanged,

@@ -13,6 +13,7 @@ import {
   toolResultSummarySchema,
   type ToolResultSummaryDto,
 } from './shared'
+import { runtimeAgentIdSchema, type RuntimeAgentIdDto } from './runtime'
 
 export const MAX_RUNTIME_STREAM_ACTION_REQUIRED = 10
 export const MAX_RUNTIME_STREAM_PLAN_ITEMS = 50
@@ -48,6 +49,7 @@ export const runtimeStreamItemKindSchema = z.enum([
   'skill',
   'activity',
   'action_required',
+  'route_request',
   'plan',
   'complete',
   'failure',
@@ -93,6 +95,48 @@ export const runtimeSensitiveInputFieldSchema = z
     validationHint: nonEmptyOptionalTextSchema,
   })
   .strict()
+export const runtimeRouteTargetKindSchema = z.enum(['built_in', 'custom'])
+export const runtimeRouteRequestSchema = z
+  .object({
+    schema: z.literal('xero.route_request.v1'),
+    requestId: z.string().regex(/^route-[0-9a-f]{20}$/),
+    targetKind: runtimeRouteTargetKindSchema,
+    targetAgentId: runtimeAgentIdSchema,
+    targetAgentDefinitionId: nonEmptyOptionalTextSchema,
+    targetAgentDefinitionVersion: z.number().int().positive().nullable().optional(),
+    targetLabel: z.string().trim().min(1),
+    reason: z.string().trim().min(4).max(500),
+    summary: z.string().trim().min(4).max(1000),
+    policyDecision: z.literal('approved'),
+    autoRoutable: z.boolean(),
+  })
+  .strict()
+  .superRefine((request, ctx) => {
+    if (request.targetKind === 'built_in') {
+      if (request.targetAgentDefinitionId || request.targetAgentDefinitionVersion) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['targetAgentDefinitionId'],
+          message: 'Built-in route requests must not include custom definition identity.',
+        })
+      }
+      return
+    }
+    if (!request.targetAgentDefinitionId || !request.targetAgentDefinitionVersion) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['targetAgentDefinitionId'],
+        message: 'Custom route requests require an exact definition id and version.',
+      })
+    }
+    if (request.autoRoutable) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['autoRoutable'],
+        message: 'Custom route requests require explicit user confirmation.',
+      })
+    }
+  })
 export const runtimeStreamPlanItemStatusSchema = z.enum(['pending', 'in_progress', 'completed'])
 export const runtimeStreamPlanItemSchema = z
   .object({
@@ -217,6 +261,7 @@ export const runtimeStreamItemSchema = z
       .nullable()
       .optional(),
     intendedUse: nonEmptyOptionalTextSchema,
+    routeRequest: runtimeRouteRequestSchema.nullable().optional(),
     title: nonEmptyOptionalTextSchema,
     detail: nonEmptyOptionalTextSchema,
     planId: nonEmptyOptionalTextSchema,
@@ -259,6 +304,14 @@ export const runtimeStreamItemSchema = z
         code: z.ZodIssueCode.custom,
         path: ['skillId'],
         message: `Xero received non-skill runtime item kind \`${item.kind}\` with skill lifecycle metadata.`,
+      })
+    }
+
+    if (item.kind !== 'route_request' && item.routeRequest) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['routeRequest'],
+        message: `Xero received non-route runtime item kind \`${item.kind}\` with route request metadata.`,
       })
     }
 
@@ -453,6 +506,15 @@ export const runtimeStreamItemSchema = z
             code: z.ZodIssueCode.custom,
             path: ['sensitiveFields'],
             message: 'Only sensitive_fields action-required items may include sensitiveFields.',
+          })
+        }
+        return
+      case 'route_request':
+        if (!item.routeRequest) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['routeRequest'],
+            message: 'Xero received a route-request item without typed routeRequest metadata.',
           })
         }
         return
@@ -679,6 +741,8 @@ export interface RuntimeStreamActivityItemView extends RuntimeStreamBaseItemView
 export type RuntimeActionAnswerShapeDto = z.infer<typeof runtimeActionAnswerShapeSchema>
 export type RuntimeActionRequiredOptionDto = z.infer<typeof runtimeActionRequiredOptionSchema>
 export type RuntimeSensitiveInputFieldDto = z.infer<typeof runtimeSensitiveInputFieldSchema>
+export type RuntimeRouteTargetKindDto = z.infer<typeof runtimeRouteTargetKindSchema>
+export type RuntimeRouteRequestDto = z.infer<typeof runtimeRouteRequestSchema>
 export type RuntimeStreamPlanItemStatusDto = z.infer<typeof runtimeStreamPlanItemStatusSchema>
 export type RuntimeStreamPlanItemDto = z.infer<typeof runtimeStreamPlanItemSchema>
 
@@ -694,6 +758,20 @@ export interface RuntimeStreamActionRequiredItemView extends RuntimeStreamBaseIt
   allowMultiple: boolean | null
   sensitiveFields: RuntimeSensitiveInputFieldDto[] | null
   intendedUse: string | null
+}
+
+export interface RuntimeStreamRouteRequestItemView extends RuntimeStreamBaseItemView {
+  kind: 'route_request'
+  requestId: string
+  targetKind: RuntimeRouteTargetKindDto
+  targetAgentId: RuntimeAgentIdDto
+  targetAgentDefinitionId: string | null
+  targetAgentDefinitionVersion: number | null
+  targetLabel: string
+  reason: string
+  summary: string
+  policyDecision: 'approved'
+  autoRoutable: boolean
 }
 
 export interface RuntimeStreamPlanItemView extends RuntimeStreamBaseItemView {
@@ -742,6 +820,7 @@ export type RuntimeStreamViewItem =
   | RuntimeStreamSkillItemView
   | RuntimeStreamActivityItemView
   | RuntimeStreamActionRequiredItemView
+  | RuntimeStreamRouteRequestItemView
   | RuntimeStreamPlanItemView
   | RuntimeStreamCompleteItemView
   | RuntimeStreamFailureItemView
@@ -1045,6 +1124,18 @@ function capRuntimeTimelineItems(
       ),
       nextItem,
     ]
+  } else if (nextItem.kind === 'route_request') {
+    nonTranscriptItems = [
+      ...nonTranscriptItems.filter(
+        (item) =>
+          !(
+            item.kind === 'route_request' &&
+            item.runId === nextItem.runId &&
+            item.requestId === nextItem.requestId
+          ),
+      ),
+      nextItem,
+    ]
   } else if (nextItem.kind === 'plan') {
     nonTranscriptItems = [
       ...nonTranscriptItems.filter(
@@ -1275,6 +1366,7 @@ function shouldRuntimeStreamItemReopenTerminalStatus(item: RuntimeStreamViewItem
     case 'tool':
     case 'skill':
     case 'action_required':
+    case 'route_request':
     case 'plan':
     case 'subagent_lifecycle':
       return true
@@ -1484,6 +1576,34 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
             ? event.item.sensitiveFields
             : null,
         intendedUse: normalizeOptionalText(event.item.intendedUse),
+      }
+    }
+    case 'route_request': {
+      const request = event.item.routeRequest
+      if (!request) {
+        throw new Error('Xero received a route-request item without typed routeRequest metadata.')
+      }
+      const codeHistory = normalizeRuntimeCodeHistoryMetadata(event.item)
+      return {
+        id: `route_request:${itemRunId}:${request.requestId}`,
+        kind: 'route_request',
+        runId: itemRunId,
+        sequence: event.item.sequence,
+        createdAt: event.item.createdAt,
+        ...codeHistory,
+        requestId: request.requestId,
+        targetKind: request.targetKind,
+        targetAgentId: request.targetAgentId,
+        targetAgentDefinitionId: normalizeOptionalText(request.targetAgentDefinitionId),
+        targetAgentDefinitionVersion:
+          typeof request.targetAgentDefinitionVersion === 'number'
+            ? request.targetAgentDefinitionVersion
+            : null,
+        targetLabel: request.targetLabel,
+        reason: request.reason,
+        summary: request.summary,
+        policyDecision: request.policyDecision,
+        autoRoutable: request.autoRoutable,
       }
     }
     case 'plan': {
@@ -2110,6 +2230,19 @@ function estimateRuntimeStreamItemBytes(item: RuntimeStreamViewItem): number {
           bytes += estimateOptionalTextBytes(option.description)
         }
       }
+      return bytes
+    case 'route_request':
+      bytes += estimateUtf16Bytes(item.requestId)
+      bytes += estimateUtf16Bytes(item.targetKind)
+      bytes += estimateUtf16Bytes(item.targetAgentId)
+      bytes += estimateOptionalTextBytes(item.targetAgentDefinitionId)
+      if (item.targetAgentDefinitionVersion != null) {
+        bytes += 8
+      }
+      bytes += estimateUtf16Bytes(item.targetLabel)
+      bytes += estimateUtf16Bytes(item.reason)
+      bytes += estimateUtf16Bytes(item.summary)
+      bytes += estimateUtf16Bytes(item.policyDecision)
       return bytes
     case 'plan':
       bytes += estimateUtf16Bytes(item.planId)

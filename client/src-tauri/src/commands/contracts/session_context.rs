@@ -14,8 +14,8 @@ use crate::db::project_store::{
 use super::code_history::CodePatchAvailabilityDto;
 use super::runtime::{
     AgentSessionDto, AgentSessionLineageBoundaryKindDto, AgentSessionLineageDto,
-    RuntimeStreamItemDto, RuntimeStreamItemKind, RuntimeStreamMediaAttachmentDto,
-    RuntimeToolCallState,
+    RuntimeRouteRequestDto, RuntimeStreamItemDto, RuntimeStreamItemKind,
+    RuntimeStreamMediaAttachmentDto, RuntimeToolCallState,
 };
 
 pub const XERO_SESSION_CONTEXT_CONTRACT_VERSION: u32 = 1;
@@ -57,6 +57,7 @@ pub enum SessionTranscriptItemKindDto {
     CodeHistoryOperation,
     Checkpoint,
     ActionRequest,
+    RouteRequest,
     Activity,
     Complete,
     Failure,
@@ -193,6 +194,8 @@ pub struct SessionTranscriptItemDto {
     pub checkpoint_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_request: Option<RuntimeRouteRequestDto>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub media_attachments: Vec<RuntimeStreamMediaAttachmentDto>,
     pub redaction: SessionContextRedactionDto,
@@ -1234,6 +1237,7 @@ pub fn run_transcript_from_agent_snapshot(
             code_patch_availability: None,
             checkpoint_kind: None,
             action_id: None,
+            route_request: None,
             media_attachments: Vec::new(),
             redaction: prompt_redaction,
         },
@@ -1273,6 +1277,7 @@ pub fn run_transcript_from_agent_snapshot(
                 code_patch_availability: None,
                 checkpoint_kind: None,
                 action_id: None,
+                route_request: None,
                 media_attachments: Vec::new(),
                 redaction,
             },
@@ -1342,6 +1347,7 @@ pub fn run_transcript_from_agent_snapshot(
                 code_patch_availability: code_patch_availability_from_payload(&payload),
                 checkpoint_kind: None,
                 action_id: payload_string(&payload, "actionId"),
+                route_request: route_request_from_event(event, &payload),
                 media_attachments: Vec::new(),
                 redaction,
             },
@@ -1382,6 +1388,7 @@ pub fn run_transcript_from_agent_snapshot(
                 code_patch_availability: None,
                 checkpoint_kind: None,
                 action_id: None,
+                route_request: None,
                 media_attachments: Vec::new(),
                 redaction,
             },
@@ -1422,6 +1429,7 @@ pub fn run_transcript_from_agent_snapshot(
                 code_patch_availability: None,
                 checkpoint_kind: None,
                 action_id: None,
+                route_request: None,
                 media_attachments: Vec::new(),
                 redaction: path_redaction,
             },
@@ -1462,6 +1470,7 @@ pub fn run_transcript_from_agent_snapshot(
                 code_patch_availability: None,
                 checkpoint_kind: Some(checkpoint.checkpoint_kind.clone()),
                 action_id: None,
+                route_request: None,
                 media_attachments: Vec::new(),
                 redaction,
             },
@@ -1502,6 +1511,7 @@ pub fn run_transcript_from_agent_snapshot(
                 code_patch_availability: None,
                 checkpoint_kind: None,
                 action_id: Some(action.action_id.clone()),
+                route_request: None,
                 media_attachments: Vec::new(),
                 redaction,
             },
@@ -1578,6 +1588,7 @@ pub fn run_transcript_from_runtime_run_snapshot(
         code_patch_availability: None,
         checkpoint_kind: None,
         action_id: None,
+        route_request: None,
         media_attachments: Vec::new(),
         redaction: prompt_redaction,
     };
@@ -2574,6 +2585,7 @@ fn transcript_kind_from_event(kind: &AgentRunEventKind) -> SessionTranscriptItem
         AgentRunEventKind::ActionRequired | AgentRunEventKind::ApprovalRequired => {
             SessionTranscriptItemKindDto::ActionRequest
         }
+        AgentRunEventKind::RouteRequested => SessionTranscriptItemKindDto::RouteRequest,
         AgentRunEventKind::RunPaused => SessionTranscriptItemKindDto::Activity,
         AgentRunEventKind::RunCompleted => SessionTranscriptItemKindDto::Complete,
         AgentRunEventKind::RunFailed => SessionTranscriptItemKindDto::Failure,
@@ -2609,6 +2621,7 @@ fn actor_from_event(kind: &AgentRunEventKind) -> SessionTranscriptActorDto {
         AgentRunEventKind::ActionRequired | AgentRunEventKind::ApprovalRequired => {
             SessionTranscriptActorDto::Operator
         }
+        AgentRunEventKind::RouteRequested => SessionTranscriptActorDto::Runtime,
         _ => SessionTranscriptActorDto::Xero,
     }
 }
@@ -2638,6 +2651,7 @@ fn transcript_parts_from_event(
         AgentRunEventKind::PolicyDecision => Some("Policy decision".into()),
         AgentRunEventKind::StateTransition => Some("Agent state".into()),
         AgentRunEventKind::PlanUpdated => Some("Plan updated".into()),
+        AgentRunEventKind::RouteRequested => Some("Agent routing suggestion".into()),
         AgentRunEventKind::ContextManifestRecorded => Some("Context manifest".into()),
         AgentRunEventKind::RetrievalPerformed => Some("Context retrieval".into()),
         AgentRunEventKind::MemoryCandidateCaptured => Some("Memory captured".into()),
@@ -2668,6 +2682,18 @@ fn transcript_parts_from_event(
     let (summary, summary_redaction) = summarize_json_payload(payload);
     let redaction = strongest_redaction(&text_redaction, &summary_redaction);
     (title, text, summary, redaction)
+}
+
+fn route_request_from_event(
+    event: &crate::db::project_store::AgentEventRecord,
+    payload: &JsonValue,
+) -> Option<RuntimeRouteRequestDto> {
+    if event.event_kind != AgentRunEventKind::RouteRequested {
+        return None;
+    }
+    let request = serde_json::from_value::<RuntimeRouteRequestDto>(payload.clone()).ok()?;
+    (request.schema == "xero.route_request.v1" && request.policy_decision == "approved")
+        .then_some(request)
 }
 
 fn transcript_tool_state_from_event(
@@ -2753,6 +2779,7 @@ fn runtime_stream_transcript_item(
         code_patch_availability: item.code_patch_availability.clone(),
         checkpoint_kind: None,
         action_id: item.action_id.clone(),
+        route_request: item.route_request.clone(),
         media_attachments: item.media_attachments.clone(),
         redaction,
     }
@@ -2768,6 +2795,7 @@ fn transcript_kind_from_runtime_stream(
             SessionTranscriptItemKindDto::Activity
         }
         RuntimeStreamItemKind::ActionRequired => SessionTranscriptItemKindDto::ActionRequest,
+        RuntimeStreamItemKind::RouteRequest => SessionTranscriptItemKindDto::RouteRequest,
         RuntimeStreamItemKind::Plan => SessionTranscriptItemKindDto::Activity,
         RuntimeStreamItemKind::Complete => SessionTranscriptItemKindDto::Complete,
         RuntimeStreamItemKind::Failure => SessionTranscriptItemKindDto::Failure,
@@ -2782,6 +2810,7 @@ fn actor_from_runtime_stream(kind: &RuntimeStreamItemKind) -> SessionTranscriptA
             SessionTranscriptActorDto::Tool
         }
         RuntimeStreamItemKind::ActionRequired => SessionTranscriptActorDto::Operator,
+        RuntimeStreamItemKind::RouteRequest => SessionTranscriptActorDto::Runtime,
         _ => SessionTranscriptActorDto::Runtime,
     }
 }

@@ -749,6 +749,7 @@ fn core_event_kind_from_desktop(kind: &AgentRunEventKind) -> CoreRuntimeEventKin
         }
         AgentRunEventKind::SandboxLifecycleUpdate => CoreRuntimeEventKind::SandboxLifecycleUpdate,
         AgentRunEventKind::ActionRequired => CoreRuntimeEventKind::ActionRequired,
+        AgentRunEventKind::RouteRequested => CoreRuntimeEventKind::RouteRequested,
         AgentRunEventKind::ApprovalRequired => CoreRuntimeEventKind::ApprovalRequired,
         AgentRunEventKind::ToolPermissionGrant => CoreRuntimeEventKind::ToolPermissionGrant,
         AgentRunEventKind::ProviderModelChanged => CoreRuntimeEventKind::ProviderModelChanged,

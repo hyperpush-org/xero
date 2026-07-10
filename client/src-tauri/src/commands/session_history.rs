@@ -1104,6 +1104,7 @@ fn rollback_transcript_item(
         code_patch_availability: None,
         checkpoint_kind: None,
         action_id: None,
+        route_request: None,
         media_attachments: Vec::new(),
         redaction: text_redaction,
     }
@@ -1232,6 +1233,7 @@ fn code_history_operation_transcript_item(
         code_patch_availability: None,
         checkpoint_kind: None,
         action_id: None,
+        route_request: None,
         media_attachments: Vec::new(),
         redaction: text_redaction,
     }
@@ -4077,6 +4079,7 @@ fn item_kind_label(item: &SessionTranscriptItemDto) -> &'static str {
         }
         crate::commands::SessionTranscriptItemKindDto::Checkpoint => "Checkpoint",
         crate::commands::SessionTranscriptItemKindDto::ActionRequest => "Action request",
+        crate::commands::SessionTranscriptItemKindDto::RouteRequest => "Route request",
         crate::commands::SessionTranscriptItemKindDto::Activity => "Activity",
         crate::commands::SessionTranscriptItemKindDto::Complete => "Run completed",
         crate::commands::SessionTranscriptItemKindDto::Failure => "Run failed",
@@ -4794,6 +4797,7 @@ mod tests {
             code_patch_availability: None,
             checkpoint_kind: None,
             action_id: None,
+            route_request: None,
             media_attachments: Vec::new(),
             redaction: SessionContextRedactionDto::public(),
         }

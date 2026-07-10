@@ -4,6 +4,7 @@ import {
   createRuntimeStreamView,
   createRuntimeStreamViewFromSnapshot,
   mergeRuntimeStreamEvent,
+  type RuntimeStreamEventDto,
   type RuntimeStreamMediaAttachmentDto,
   runtimeStreamItemSchema,
   runtimeStreamPatchSchema,
@@ -171,6 +172,137 @@ describe('runtime stream contracts', () => {
 
     expect(actionItem.answerShape).toBe('short_text')
     expect(planItem.planItems?.[0]?.phaseTitle).toBe('Foundation')
+  })
+
+  it('validates typed route requests and rejects malformed custom targets', () => {
+    const parsed = runtimeStreamItemSchema.safeParse({
+      kind: 'route_request',
+      runId: 'run-route-1',
+      sequence: 1,
+      routeRequest: {
+        schema: 'xero.route_request.v1',
+        requestId: 'route-00000000000000000001',
+        targetKind: 'custom',
+        targetAgentId: 'engineer',
+        targetLabel: 'Release Engineer',
+        reason: 'Release-specific work',
+        summary: 'Prepare the release artifacts.',
+        policyDecision: 'approved',
+        autoRoutable: false,
+      },
+      createdAt: '2026-05-06T12:00:00Z',
+    })
+
+    expect(parsed.success).toBe(false)
+  })
+
+  it('deduplicates duplicate typed route-event delivery', () => {
+    const item = runtimeStreamItemSchema.parse({
+      kind: 'route_request',
+      runId: 'run-route-2',
+      sequence: 3,
+      sessionId: 'owned-agent:run-route-2',
+      routeRequest: {
+        schema: 'xero.route_request.v1',
+        requestId: 'route-00000000000000000002',
+        targetKind: 'built_in',
+        targetAgentId: 'ask',
+        targetLabel: 'Ask',
+        reason: 'Question-only request',
+        summary: 'Explain the repository without changing it.',
+        policyDecision: 'approved',
+        autoRoutable: true,
+      },
+      createdAt: '2026-05-06T12:00:00Z',
+    })
+    const event: RuntimeStreamEventDto = {
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-1',
+      runtimeKind: 'openai_codex',
+      runId: 'run-route-2',
+      sessionId: 'owned-agent:run-route-2',
+      flowId: null,
+      subscribedItemKinds: ['route_request'],
+      item,
+    }
+
+    const once = mergeRuntimeStreamEvent(null, event)
+    const twice = mergeRuntimeStreamEvent(once, event)
+
+    expect(twice.items.filter((candidate) => candidate.kind === 'route_request')).toHaveLength(1)
+  })
+
+  it('replays typed route requests from persisted runtime snapshots', () => {
+    const snapshot = runtimeStreamPatchSchema.parse({
+      schema: 'xero.runtime_stream_patch.v1',
+      item: {
+        kind: 'route_request',
+        runId: 'run-route-3',
+        sequence: 4,
+        routeRequest: {
+          schema: 'xero.route_request.v1',
+          requestId: 'route-00000000000000000003',
+          targetKind: 'built_in',
+          targetAgentId: 'engineer',
+          targetLabel: 'Engineer',
+          reason: 'Implementation requested',
+          summary: 'Implement and verify the requested feature.',
+          policyDecision: 'approved',
+          autoRoutable: true,
+        },
+        createdAt: '2026-05-06T12:00:00Z',
+      },
+      snapshot: {
+        schema: 'xero.runtime_stream_view_snapshot.v1',
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-1',
+        runtimeKind: 'openai_codex',
+        runId: 'run-route-3',
+        sessionId: 'owned-agent:run-route-3',
+        flowId: null,
+        subscribedItemKinds: ['route_request'],
+        status: 'complete',
+        items: [
+          {
+            kind: 'route_request',
+            runId: 'run-route-3',
+            sequence: 4,
+            routeRequest: {
+              schema: 'xero.route_request.v1',
+              requestId: 'route-00000000000000000003',
+              targetKind: 'built_in',
+              targetAgentId: 'engineer',
+              targetLabel: 'Engineer',
+              reason: 'Implementation requested',
+              summary: 'Implement and verify the requested feature.',
+              policyDecision: 'approved',
+              autoRoutable: true,
+            },
+            createdAt: '2026-05-06T12:00:00Z',
+          },
+        ],
+        transcriptItems: [],
+        toolCalls: [],
+        skillItems: [],
+        activityItems: [],
+        actionRequired: [],
+        plan: null,
+        completion: null,
+        failure: null,
+        lastIssue: null,
+        lastItemAt: '2026-05-06T12:00:00Z',
+        lastSequence: 4,
+      },
+    }).snapshot
+
+    const stream = createRuntimeStreamViewFromSnapshot(snapshot)
+
+    expect(stream.items[0]).toMatchObject({
+      kind: 'route_request',
+      requestId: 'route-00000000000000000003',
+      targetAgentId: 'engineer',
+      autoRoutable: true,
+    })
   })
 
   it('preserves sensitive action-required metadata without values', () => {
