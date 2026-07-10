@@ -289,6 +289,10 @@ fn mark_existing_agent_run_accepted(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the async handoff owns the complete prompt drive context"
+)]
 fn spawn_owned_runtime_prompt_drive<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: DesktopState,
@@ -360,6 +364,10 @@ fn spawn_owned_runtime_prompt_drive<R: Runtime + 'static>(
     });
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "runtime prompt dispatch requires the complete persisted prompt context"
+)]
 fn drive_owned_runtime_prompt<R: Runtime + 'static>(
     app: &AppHandle<R>,
     state: &DesktopState,

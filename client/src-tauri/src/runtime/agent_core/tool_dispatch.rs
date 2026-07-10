@@ -1535,6 +1535,7 @@ impl ToolRollback for AgentToolRollback {
 /// 4. `record_command_output_event` (or the `PolicyDenied` failure path)
 ///    creates the action request whose id `answered_tool_replay_kind`
 ///    recomputes.
+///
 /// Browser and MCP tools fail all of these today and must stay off this
 /// list until they grow approved variants and replay wiring.
 fn policy_approval_is_reported_by_handler(call: &ToolCallInput) -> bool {
@@ -2183,7 +2184,7 @@ fn model_can_recover_from_tool_execution_error(error: &ToolExecutionError) -> bo
 }
 
 fn model_recovery_message_for_tool_error(error: &ToolExecutionError) -> Option<&'static str> {
-    model_recovery_message_for_tool_error_code(&error.code).or_else(|| match error.category {
+    model_recovery_message_for_tool_error_code(&error.code).or(match error.category {
         ToolErrorCategory::InvalidInput => Some(
             "Read the tool error, correct the input or choose the better observation tool, then retry. For directory or repository-root inspection use path `.` with read/list/list_tree/stat; for missing files, list or search before reading.",
         ),

@@ -729,67 +729,67 @@ mod tests {
         let expected = vec![
             (
                 "generalist:base".to_string(),
-                "767fbb0df0b5abe3384f89c5dd2488bb0ac8e81bd580fa3bcb846b304a7eb5b7",
+                "cdd7b1916e007bf1e1ca41f4db52aa617d4e4139abc6d251938900ab07c78150",
             ),
             (
                 "generalist:custom_policy_skill_process_coordination".to_string(),
-                "ca4bc4601d35bed7cea6e342b64e4e014a80ef5c907162901aabecbd940e1a36",
+                "5b23dbacaf99d1c6a5cafd6908fd7273420a72a5e51c85461c26264f71e9ee7d",
             ),
             (
                 "ask:base".to_string(),
-                "4b7b8f3895653a1ed29671995ace3883052457934b7fdc28ea39930db1447015",
+                "59cb50995b2411b1cdf794f5e22345e6d4b9bd506b37b1f87de3d36b1431a870",
             ),
             (
                 "ask:custom_policy_skill_process_coordination".to_string(),
-                "80c658943066feea21cde0f56dac03f099186c575b77c1d2328ddc2fd1ef1dc5",
+                "d0ff675140aee4a6f3a1a3048c42b2394ffd4ec37fba2360379d830b24c274bb",
             ),
             (
                 "computer_use:base".to_string(),
-                "98e3f7262180d8db89a578ac646c0bca2d8f00590dc814de9cb60f5261fd9f5b",
+                "0715ebb627a539105e13803577c3a4aecc4c9c22b24d6926d2c200b5468d022a",
             ),
             (
                 "computer_use:custom_policy_skill_process_coordination".to_string(),
-                "7860beaf12b391180ac25e6fe696c6f0a9a52195642294c15d44328b073e728f",
+                "7ab9e920215ef8a3417fe2177ce3fc61f87d0d7d1793a84b6421ddcacd2b2284",
             ),
             (
                 "plan:base".to_string(),
-                "51e1f4cce601cb285da39c26b0e9fd29320fc3a2f7d565bcad6b15e3ef731288",
+                "1c7f6f0b37eca359abb945b604d87d755e729a98a7b37496d5f1afb4c329e006",
             ),
             (
                 "plan:custom_policy_skill_process_coordination".to_string(),
-                "d8aae7817eed9e66519ed0ec1df2c2451a50134d22475ac91a963e2574afb1a4",
+                "8a534329d99eea507d6d7fd660d17ed264ecab104c0467ceb141d8c48f80d9fa",
             ),
             (
                 "engineer:base".to_string(),
-                "18dc276757e9d10f32e073d7504301d2efa00a49f56462ffc73916198e6c946f",
+                "07cb18ef973daa36f50df5f9fa4b6789dd83ebb351d9934503dcc9c18ba3ab0a",
             ),
             (
                 "engineer:custom_policy_skill_process_coordination".to_string(),
-                "82c982eaa91b4a6dcc3f0a6d6ff07429ceb41b411c0c052260a5f4daf2c0926d",
+                "99f170dddee5857b63731a2d7723d6d2b1513ca7913b9c55cd6aa13b2e04263d",
             ),
             (
                 "debug:base".to_string(),
-                "3eb23544edca811caec5da38f79ffc83f7eb4c1a03fc1aece7a4c162c63de761",
+                "39171b55875d39ba35e315bb0b9b40f21f8ef3a35003664cbbead1bc5fb5bdb0",
             ),
             (
                 "debug:custom_policy_skill_process_coordination".to_string(),
-                "830d131cbaf5cd5ed1054e680815b0657fad112b0f0f6065aaa85e9be751a53a",
+                "a7a431263852e644627fe17bfb4e3406a8ceabbfc47a13f001c08ba45ce997b9",
             ),
             (
                 "crawl:base".to_string(),
-                "c07fb649ab3a2b0d538070bd1d5f89e808c01d680b62b15703ac2add29e56a91",
+                "5d2a02726975823dc9b995c9e731032b5db247b805b84fae7c50ffe615d489c1",
             ),
             (
                 "crawl:custom_policy_skill_process_coordination".to_string(),
-                "74fc56b12742680fad867299cb41c7d7aa6a571f973ba402a5a43ff93663f72c",
+                "d6dd01e993e0b26918a7171d3e3e36ff64d7119524a8d4ec439ddbf6bd1ef7f2",
             ),
             (
                 "agent_create:base".to_string(),
-                "52d8a196ad50df447671eb898bb74492f5554e0dc54c416446bcebad68564e4e",
+                "fb1c54bfc57663c6af2012fb177dc9b6795b343a9a344c2bf2ba955d111813e8",
             ),
             (
                 "agent_create:custom_policy_skill_process_coordination".to_string(),
-                "0f1cfcd521c15226be990f975bf85993ee5fdd209ed6e9c3b9e0edd08e62e415",
+                "f8f708e512a60923ac2eb3d1b944e0b7ff04a0f7944e6a791cf8d3a77e58def8",
             ),
         ];
 

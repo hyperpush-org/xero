@@ -2149,7 +2149,7 @@ fn suggest_terminal_ai_fallback<R: Runtime + 'static>(
         resolve_requested_provider_profile_id(&app, &state, request.provider_id.as_deref())?
     };
     let controls = RuntimeRunControlInputDto {
-        runtime_agent_id: runtime_agent_id.clone(),
+        runtime_agent_id,
         agent_definition_id: None,
         agent_definition_version: None,
         provider_profile_id,
@@ -2688,6 +2688,7 @@ mod tests {
     #[test]
     fn terminal_history_round_trips_under_project_app_data_and_redacts_secrets() {
         let repo = tempfile::tempdir().expect("repo");
+        crate::db::configure_project_database_paths(&repo.path().join("app-data/global.db"));
         append_terminal_history(
             repo.path(),
             TerminalHistoryEntry {
@@ -2708,6 +2709,7 @@ mod tests {
     #[test]
     fn terminal_suggestions_use_history_ranges_and_ignored_entries() {
         let repo = tempfile::tempdir().expect("repo");
+        crate::db::configure_project_database_paths(&repo.path().join("app-data/global.db"));
         append_terminal_history(
             repo.path(),
             TerminalHistoryEntry {

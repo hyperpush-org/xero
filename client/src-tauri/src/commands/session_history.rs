@@ -4646,7 +4646,7 @@ mod tests {
 
     #[test]
     fn compaction_keeps_entire_history_raw_when_tail_limit_covers_it() {
-        let messages = vec![
+        let messages = [
             compaction_message(1, "2026-05-06T12:00:01Z"),
             compaction_message(2, "2026-05-06T12:00:02Z"),
         ];

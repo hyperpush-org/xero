@@ -11046,8 +11046,7 @@ mod tests {
                 .expect("context manifests");
         let rebuilt = manifests
             .iter()
-            .filter(|manifest| manifest.manifest["turnIndex"] == json!(1))
-            .last()
+            .rfind(|manifest| manifest.manifest["turnIndex"] == json!(1))
             .expect("exact-rebudgeted manifest");
         let optional = rebuilt.manifest["budgetAllocation"]["classes"]
             .as_array()

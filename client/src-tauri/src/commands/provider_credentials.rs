@@ -43,7 +43,7 @@ pub fn list_provider_credentials<R: Runtime>(
     Ok(ProviderCredentialsSnapshotDto {
         credentials: records
             .iter()
-            .filter(|record| is_public_provider_credential(*record))
+            .filter(|record| is_public_provider_credential(record))
             .map(provider_credential_dto)
             .collect(),
     })
@@ -152,7 +152,7 @@ pub fn upsert_provider_credential<R: Runtime>(
     Ok(ProviderCredentialsSnapshotDto {
         credentials: records
             .iter()
-            .filter(|record| is_public_provider_credential(*record))
+            .filter(|record| is_public_provider_credential(record))
             .map(provider_credential_dto)
             .collect(),
     })
@@ -175,7 +175,7 @@ pub fn delete_provider_credential<R: Runtime>(
     Ok(ProviderCredentialsSnapshotDto {
         credentials: records
             .iter()
-            .filter(|record| is_public_provider_credential(*record))
+            .filter(|record| is_public_provider_credential(record))
             .map(provider_credential_dto)
             .collect(),
     })

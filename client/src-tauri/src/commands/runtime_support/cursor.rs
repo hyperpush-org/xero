@@ -57,7 +57,7 @@ pub(crate) fn bootstrap_and_drive_cursor_runtime_prompt<R: Runtime>(
     state: &DesktopState,
     task: OwnedRuntimePromptStart,
     runtime_snapshot: RuntimeRunSnapshotRecord,
-) -> Result<(), CursorRuntimeDriveError> {
+) -> Result<(), Box<CursorRuntimeDriveError>> {
     let repo_root = task.repo_root.clone();
     let snapshot = runtime_snapshot.clone();
     match bootstrap_and_drive_cursor_runtime_prompt_inner(
@@ -67,11 +67,11 @@ pub(crate) fn bootstrap_and_drive_cursor_runtime_prompt<R: Runtime>(
         runtime_snapshot.clone(),
     ) {
         Ok(()) => Ok(()),
-        Err(error) => Err(CursorRuntimeDriveError {
+        Err(error) => Err(Box::new(CursorRuntimeDriveError {
             repo_root,
             snapshot,
             error,
-        }),
+        })),
     }
 }
 

@@ -249,6 +249,10 @@ impl BrowserAutomationState {
         Ok(selector_candidates_for_node(&node))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "timeline events are persisted atomically from their complete event payload"
+    )]
     pub fn push_timeline(
         &self,
         action: impl Into<String>,

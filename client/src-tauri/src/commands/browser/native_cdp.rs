@@ -554,6 +554,10 @@ impl NativeCdpBrowserService {
         })
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "native CDP commands mirror the external browser protocol payload"
+    )]
     pub fn launch(
         &self,
         repo_root: &Path,
@@ -1374,6 +1378,10 @@ impl NativeCdpBrowserService {
         ))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "native CDP commands mirror the external browser protocol payload"
+    )]
     pub fn drag(
         &self,
         session_id: Option<String>,
@@ -1645,6 +1653,10 @@ impl NativeCdpBrowserService {
         ))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "native CDP commands mirror the external browser protocol payload"
+    )]
     pub fn zoom_region(
         &self,
         session_id: Option<String>,
@@ -1723,6 +1735,10 @@ impl NativeCdpBrowserService {
         .with_evidence(evidence))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "native CDP commands mirror the external browser protocol payload"
+    )]
     pub fn wait_for(
         &self,
         session_id: Option<String>,
@@ -2010,7 +2026,7 @@ impl NativeCdpBrowserService {
         let mut entries = session
             .console_events
             .iter()
-            .filter(|event| level.map_or(true, |level| event.level == level))
+            .filter(|event| level.is_none_or(|level| event.level == level))
             .rev()
             .take(limit)
             .cloned()
@@ -3707,6 +3723,10 @@ impl NativeCdpBrowserService {
 }
 
 impl NativeCdpSession {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "session construction binds the complete browser launch state atomically"
+    )]
     fn new(
         session_id: String,
         label: String,
@@ -5531,9 +5551,10 @@ impl IfEmpty for String {
 
 fn normalize_endpoint(endpoint: &str, allow_remote_endpoint: bool) -> CommandResult<String> {
     let endpoint = endpoint.trim();
-    let endpoint = if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
-        endpoint.to_owned()
-    } else if endpoint.starts_with("ws://") || endpoint.starts_with("wss://") {
+    let endpoint = if ["http://", "https://", "ws://", "wss://"]
+        .iter()
+        .any(|scheme| endpoint.starts_with(scheme))
+    {
         endpoint.to_owned()
     } else {
         format!("http://{endpoint}")
@@ -5612,7 +5633,7 @@ fn page_from_ws_url(ws_url: &str) -> NativeCdpPage {
             .ok()
             .and_then(|url| {
                 url.path_segments()
-                    .and_then(|segments| segments.last().map(str::to_owned))
+                    .and_then(|mut segments| segments.next_back().map(str::to_owned))
             })
             .unwrap_or_else(|| "attached".into()),
         title: "Attached CDP page".into(),

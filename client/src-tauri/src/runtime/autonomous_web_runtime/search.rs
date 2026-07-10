@@ -728,7 +728,7 @@ fn missing_api_key_error(provider_label: &str) -> CommandError {
     )
 }
 
-fn candidate_result_arrays<'a>(value: &'a JsonValue) -> Vec<&'a Vec<JsonValue>> {
+fn candidate_result_arrays(value: &JsonValue) -> Vec<&Vec<JsonValue>> {
     const POINTERS: &[&str] = &[
         "/results",
         "/web/results",

@@ -255,6 +255,10 @@ pub fn focus<R: Runtime>(
     run_script(app, tabs, waiters, &body, resolve_timeout(timeout_ms))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "browser command boundaries carry shared transport state plus the action payload"
+)]
 pub fn select_option<R: Runtime>(
     app: &AppHandle<R>,
     tabs: &Arc<BrowserTabs>,
@@ -457,6 +461,10 @@ pub fn wait_for_selector<R: Runtime>(
     run_script(app, tabs, waiters, &body, total.saturating_add(2_000))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "browser command boundaries carry shared transport state plus the action payload"
+)]
 pub fn wait_for_condition<R: Runtime>(
     app: &AppHandle<R>,
     tabs: &Arc<BrowserTabs>,
@@ -867,6 +875,10 @@ pub fn frame_inventory<R: Runtime>(
     run_script(app, tabs, waiters, &body, resolve_timeout(timeout_ms))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "browser command boundaries carry shared transport state plus the action payload"
+)]
 pub fn find_best<R: Runtime>(
     app: &AppHandle<R>,
     tabs: &Arc<BrowserTabs>,

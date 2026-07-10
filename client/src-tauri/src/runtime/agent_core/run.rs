@@ -4212,8 +4212,10 @@ fn mark_owned_agent_run_cancelled(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "subagent execution binds the full durable parent-run context"
+)]
 fn tool_runtime_with_subagent_executor(
     tool_runtime: AutonomousToolRuntime,
     repo_root: &Path,

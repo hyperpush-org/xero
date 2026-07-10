@@ -1278,6 +1278,10 @@ fn openai_codex_supports_x_high_thinking(model_id: &str) -> bool {
         .any(|marker| model_id.contains(marker))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "provider catalog records are normalized from the complete upstream model payload"
+)]
 fn provider_model_record(
     provider_id: &str,
     model_id: String,

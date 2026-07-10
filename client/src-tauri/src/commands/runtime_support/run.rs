@@ -219,6 +219,10 @@ pub(crate) fn emit_runtime_run_updated_if_changed<R: Runtime>(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "runtime launch carries the complete persisted request envelope"
+)]
 pub(crate) fn launch_or_reconnect_runtime_run<R: Runtime + 'static>(
     app: &AppHandle<R>,
     state: &DesktopState,
@@ -241,6 +245,10 @@ pub(crate) fn launch_or_reconnect_runtime_run<R: Runtime + 'static>(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "runtime launch carries the complete persisted request envelope"
+)]
 fn launch_owned_runtime_run<R: Runtime + 'static>(
     app: &AppHandle<R>,
     state: &DesktopState,
@@ -2666,12 +2674,13 @@ mod tests {
     }
 
     fn preflight_snapshot(source: ProviderPreflightSource) -> ProviderPreflightSnapshot {
+        let checked_at = now_timestamp();
         provider_preflight_snapshot(ProviderPreflightInput {
             profile_id: "openai_codex-default".into(),
             provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
             model_id: "gpt-5.4".into(),
             source,
-            checked_at: "2026-05-05T15:57:13Z".into(),
+            checked_at: checked_at.clone(),
             age_seconds: Some(0),
             ttl_seconds: Some(120),
             required_features: ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
@@ -2679,8 +2688,8 @@ mod tests {
                 provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
                 model_id: "gpt-5.4".into(),
                 catalog_source: "live".into(),
-                fetched_at: Some("2026-05-05T15:57:13Z".into()),
-                last_success_at: Some("2026-05-05T15:57:13Z".into()),
+                fetched_at: Some(checked_at.clone()),
+                last_success_at: Some(checked_at),
                 cache_age_seconds: Some(0),
                 cache_ttl_seconds: Some(DEFAULT_PROVIDER_CATALOG_TTL_SECONDS),
                 credential_proof: Some("app_data_openai_codex_session".into()),

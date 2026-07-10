@@ -1323,6 +1323,10 @@ struct MailboxEvidenceForScope {
     matching_checks: Vec<AgentMailboxInboxCheckRecord>,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mailbox evidence is evaluated from one complete database and scope context"
+)]
 fn mailbox_evidence_for_scope(
     connection: &Connection,
     database_path: &Path,

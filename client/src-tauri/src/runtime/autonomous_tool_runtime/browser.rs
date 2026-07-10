@@ -765,7 +765,7 @@ pub trait BrowserExecutor: Send + Sync + std::fmt::Debug {
 
 pub fn execute_action_with_app<R: Runtime + 'static>(
     app: &AppHandle<R>,
-    state: &DesktopState,
+    _state: &DesktopState,
     action: AutonomousBrowserAction,
     context: BrowserExecutionContext,
 ) -> CommandResult<AutonomousBrowserOutput> {
@@ -1371,7 +1371,7 @@ pub fn execute_action_with_app<R: Runtime + 'static>(
                         }
                         continue;
                     }
-                    match execute_action_with_app(app, state, step.action, context.clone()) {
+                    match execute_action_with_app(app, _state, step.action, context.clone()) {
                         Ok(output) => {
                             let value = serde_json::from_str::<JsonValue>(&output.value_json)
                                 .unwrap_or(JsonValue::Null);
@@ -3143,6 +3143,10 @@ fn execute_native_assertion_checks(
     ))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the browser cache command mirrors its complete tool payload"
+)]
 fn browser_action_cache_action(
     automation: &BrowserAutomationState,
     command: &str,
@@ -3557,6 +3561,10 @@ fn sanitize_snapshot_mode(value: Option<&str>) -> &'static str {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "browser tool boundaries carry shared transport state plus the assertion payload"
+)]
 fn browser_assertion<R: Runtime>(
     app: &AppHandle<R>,
     tabs: &Arc<crate::commands::browser::tabs::BrowserTabs>,
@@ -3787,6 +3795,10 @@ fn browser_assertion_checks<R: Runtime>(
     }))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "browser tool boundaries carry shared transport state plus the semantic action payload"
+)]
 fn execute_semantic_act<R: Runtime>(
     app: &AppHandle<R>,
     tabs: &Arc<crate::commands::browser::tabs::BrowserTabs>,
@@ -3976,6 +3988,10 @@ fn native_required_verified_selector_from_selector_or_ref(
         .ok_or_else(|| CommandError::invalid_request("selector"))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the in-app CDP facade mirrors the complete browser tool payload"
+)]
 fn in_app_cdp_facade_value<R: Runtime>(
     app: &AppHandle<R>,
     tabs: &Arc<crate::commands::browser::tabs::BrowserTabs>,

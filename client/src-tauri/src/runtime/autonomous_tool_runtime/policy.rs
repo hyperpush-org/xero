@@ -3446,7 +3446,11 @@ mod tests {
         assert!(output
             .suggested_next_actions
             .iter()
-            .any(|action| action.contains("web_search/web_fetch")));
+            .any(|action| action.contains("web_search")));
+        assert!(output
+            .suggested_next_actions
+            .iter()
+            .any(|action| action.contains("web_fetch")));
         assert!(output
             .suggested_next_actions
             .iter()

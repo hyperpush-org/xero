@@ -665,13 +665,14 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
         ])
 }
 
+#[cfg(any(test, feature = "tauri-test-support"))]
+fn updater_plugin<R: tauri::Runtime + 'static>() -> tauri::plugin::TauriPlugin<R, ()> {
+    tauri::plugin::Builder::<R, ()>::new("updater").build()
+}
+
+#[cfg(not(any(test, feature = "tauri-test-support")))]
 fn updater_plugin<R: tauri::Runtime + 'static>(
 ) -> tauri::plugin::TauriPlugin<R, tauri_plugin_updater::Config> {
-    #[cfg(feature = "tauri-test-support")]
-    if std::any::TypeId::of::<R>() == std::any::TypeId::of::<tauri::test::MockRuntime>() {
-        return tauri::plugin::Builder::<R, tauri_plugin_updater::Config>::new("updater").build();
-    }
-
     tauri_plugin_updater::Builder::new().build()
 }
 

@@ -37,7 +37,10 @@ import {
 import { type ProviderProfilesDto } from '@/src/test/legacy-provider-profiles'
 import { XeroDesktopError, type XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 import { useXeroDesktopState } from '@/src/features/xero/use-xero-desktop-state'
-import { REPOSITORY_STATUS_BATCH_WINDOW_MS } from './use-xero-desktop-state/runtime-stream'
+import {
+  ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
+  REPOSITORY_STATUS_BATCH_WINDOW_MS,
+} from './use-xero-desktop-state/runtime-stream'
 
 type SetSkillEnabledRequest = Parameters<XeroDesktopAdapter['setSkillEnabled']>[0]
 type RemoveSkillRequest = Parameters<XeroDesktopAdapter['removeSkill']>[0]
@@ -4863,11 +4866,15 @@ describe('useXeroDesktopState', () => {
         'project-2': makeRuntimeRun('project-2', { runId: 'run-project-2' }),
       },
     })
+    const activeStreamSubscriptionCalls = () =>
+      setup.subscribeRuntimeStream.mock.calls.filter(
+        (call) => call[2] === ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
+      )
 
     render(<Harness adapter={setup.adapter} />)
 
     await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
-    await waitFor(() => expect(setup.subscribeRuntimeStream).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(activeStreamSubscriptionCalls()).toHaveLength(1))
 
     act(() => {
       setup.emitRuntimeStream(
@@ -4896,7 +4903,7 @@ describe('useXeroDesktopState', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Select project 2' }))
 
     await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2'))
-    await waitFor(() => expect(setup.subscribeRuntimeStream).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(activeStreamSubscriptionCalls()).toHaveLength(2))
     expect(setup.streamSubscriptions[0]?.unsubscribe).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('stream-item-count')).toHaveTextContent('0')
 
@@ -4928,9 +4935,9 @@ describe('useXeroDesktopState', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Select project 1' }))
 
     await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
-    await waitFor(() => expect(setup.subscribeRuntimeStream).toHaveBeenCalledTimes(3))
+    await waitFor(() => expect(activeStreamSubscriptionCalls()).toHaveLength(3))
     expect(screen.getByTestId('stream-item-count')).toHaveTextContent('0')
-    expect((setup.subscribeRuntimeStream.mock.calls[2] as unknown[])[5]).toEqual({
+    expect((activeStreamSubscriptionCalls()[2] as unknown[])[5]).toEqual({
       afterSequence: null,
       replayLimit: null,
     })

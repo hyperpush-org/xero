@@ -2823,6 +2823,10 @@ fn command_intent_label(policy: &AutonomousCommandPolicyTrace) -> &'static str {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "suggestions are derived from the complete command outcome and policy trace"
+)]
 fn command_suggested_next_actions(
     spawned: bool,
     exit_code: Option<i32>,

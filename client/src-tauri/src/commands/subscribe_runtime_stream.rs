@@ -3196,7 +3196,7 @@ mod tests {
             "project-1",
             "run-1",
             &AgentRunStatus::Paused,
-            &[scheduled_wait.clone()],
+            std::slice::from_ref(&scheduled_wait),
         )
         .expect("scheduled wait status terminal check"));
         assert!(owned_agent_run_status_ends_runtime_stream(

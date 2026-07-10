@@ -2243,8 +2243,8 @@ fn close_browser_tab<R: Runtime>(
             let _ = webview.close();
         }
     }
-    hide_inactive_webviews(&app, &tabs);
-    emit_tab_list(&app, &tabs);
+    hide_inactive_webviews(app, tabs);
+    emit_tab_list(app, tabs);
     tabs.list()
 }
 
