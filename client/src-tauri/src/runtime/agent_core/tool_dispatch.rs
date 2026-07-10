@@ -421,6 +421,7 @@ fn dispatch_tool_batch_with_options(
     let dispatch_result = (|| {
         let registry_v2 = build_tool_registry_v2(tool_registry, Arc::clone(&shared))?;
         let budget = tool_dispatch_budget(tool_runtime);
+        let cancellation_runtime = tool_runtime.clone();
         let config = ToolDispatchConfig {
             budget: budget.clone(),
             policy: Arc::new(AutonomousPolicyAdapter::new(Arc::clone(&shared))),
@@ -436,6 +437,7 @@ fn dispatch_tool_batch_with_options(
                     ("xero.dispatch.registry".into(), "tool_registry_v2".into()),
                 ]),
             },
+            cancellation_check: Some(Arc::new(move || cancellation_runtime.is_cancelled())),
         };
         let calls = tool_calls
             .iter()
@@ -564,7 +566,8 @@ struct AutonomousToolHandlerShared {
     repository_instruction_hashes: Option<BTreeMap<String, String>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AgentToolWritePreflight {
     request: AutonomousToolRequest,
     write_observations: Vec<AgentWorkspaceWriteObservation>,
@@ -573,13 +576,15 @@ struct AgentToolWritePreflight {
     auto_file_reservations: Vec<project_store::AgentFileReservationRecord>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AgentCodeCapturePreflight {
     mode: AgentCodeCaptureMode,
     handle: project_store::CodeRollbackCaptureHandle,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 enum AgentCodeCaptureMode {
     ExactPath,
     BroadAction,
@@ -881,12 +886,15 @@ impl AutonomousToolHandlerShared {
             .approved_existing_write_call_ids
             .contains(&call.tool_call_id);
         let write_observations = {
-            let guard = self.workspace_guard.lock().map_err(|_| {
+            let snapshot =
+                project_store::load_agent_run(&self.repo_root, &self.project_id, &self.run_id)?;
+            let mut guard = self.workspace_guard.lock().map_err(|_| {
                 CommandError::system_fault(
                     "agent_workspace_guard_lock_failed",
                     "Xero could not lock owned-agent workspace observation state.",
                 )
             })?;
+            guard.record_persisted_observations(&snapshot)?;
             guard.validate_code_workspace_epoch_intent(
                 &self.repo_root,
                 &self.project_id,
@@ -1585,6 +1593,14 @@ struct AgentToolRollback {
     shared: Arc<AutonomousToolHandlerShared>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AgentToolRollbackCheckpointEnvelope {
+    kind: String,
+    checkpoint: JsonValue,
+    preflight: AgentToolWritePreflight,
+}
+
 impl AgentToolRollback {
     fn new(shared: Arc<AutonomousToolHandlerShared>) -> Self {
         Self { shared }
@@ -1610,9 +1626,38 @@ impl ToolRollback for AgentToolRollback {
             .legacy_registry
             .decode_call(&tool_call)
             .map_err(command_error_to_tool_execution_error)?;
-        self.shared
+        let checkpoint = self
+            .shared
             .prepare_write_preflight(call, request)
-            .map_err(command_error_to_tool_execution_error)
+            .map_err(command_error_to_tool_execution_error)?;
+        let Some(checkpoint) = checkpoint else {
+            return Ok(None);
+        };
+        let preflight = self
+            .shared
+            .get_write_preflight(&call.tool_call_id)
+            .map_err(command_error_to_tool_execution_error)?
+            .ok_or_else(|| {
+                ToolExecutionError::retryable(
+                    "agent_tool_write_preflight_missing",
+                    format!(
+                        "Xero prepared mutation checkpoint `{}` without recoverable preflight state.",
+                        call.tool_call_id
+                    ),
+                )
+            })?;
+        serde_json::to_value(AgentToolRollbackCheckpointEnvelope {
+            kind: "agent_tool_mutation_checkpoint".into(),
+            checkpoint,
+            preflight,
+        })
+        .map(Some)
+        .map_err(|error| {
+            ToolExecutionError::retryable(
+                "agent_tool_mutation_checkpoint_serialize_failed",
+                format!("Xero could not serialize mutation recovery state: {error}"),
+            )
+        })
     }
 
     fn rollback_after_failure(
@@ -1622,10 +1667,17 @@ impl ToolRollback for AgentToolRollback {
         checkpoint: &JsonValue,
         error: &ToolExecutionError,
     ) -> ToolRegistryResult<JsonValue> {
+        let envelope =
+            serde_json::from_value::<AgentToolRollbackCheckpointEnvelope>(checkpoint.clone()).ok();
         let preflight = self
             .shared
             .take_write_preflight(&call.tool_call_id)
-            .map_err(command_error_to_tool_execution_error)?;
+            .map_err(command_error_to_tool_execution_error)?
+            .or_else(|| envelope.as_ref().map(|envelope| envelope.preflight.clone()));
+        let checkpoint = envelope
+            .as_ref()
+            .map(|envelope| &envelope.checkpoint)
+            .unwrap_or(checkpoint);
         let Some(preflight) = preflight else {
             return Ok(json!({
                 "kind": "agent_tool_dispatch_failure_checkpoint",

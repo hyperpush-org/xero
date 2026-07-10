@@ -1825,6 +1825,7 @@ impl HeadlessProductionToolRuntime {
                     ("xero.dispatch.registry".into(), "tool_registry_v2".into()),
                 ]),
             },
+            cancellation_check: None,
         };
         Ok(registry.dispatch_batch(inputs, &config))
     }

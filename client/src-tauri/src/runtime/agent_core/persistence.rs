@@ -3546,13 +3546,15 @@ fn record_single_file_change_event(
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct AgentWorkspaceWriteObservation {
     path: String,
     old_hash: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct AgentRollbackCheckpoint {
     pub(crate) path: String,
     pub(crate) operation: String,

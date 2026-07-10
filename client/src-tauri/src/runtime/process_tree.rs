@@ -8,6 +8,10 @@ use std::{
 const GRACEFUL_TERMINATION_TIMEOUT: Duration = Duration::from_millis(500);
 
 pub(crate) fn configure_process_tree_root(command: &mut Command) {
+    if xero_agent_core::mutation_boundary_child_active() {
+        return;
+    }
+
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
