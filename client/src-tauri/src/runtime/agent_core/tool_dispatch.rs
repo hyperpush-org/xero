@@ -12,6 +12,7 @@ use xero_agent_core::{
     ToolErrorCategory, ToolExecutionContext, ToolExecutionControl, ToolExecutionError,
     ToolGroupExecutionMode, ToolHandler, ToolHandlerOutput, ToolPolicy, ToolPolicyDecision,
     ToolRegistryResult, ToolRegistryV2, ToolRollback, ToolSandbox, ToolSandboxResult,
+    MUTATION_EXECUTION_SCOPE_ATTRIBUTE,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -435,6 +436,10 @@ fn dispatch_tool_batch_with_options(
                 telemetry_attributes: BTreeMap::from([
                     ("xero.dispatch.path".into(), "desktop_provider_loop".into()),
                     ("xero.dispatch.registry".into(), "tool_registry_v2".into()),
+                    (
+                        MUTATION_EXECUTION_SCOPE_ATTRIBUTE.into(),
+                        repo_root.to_string_lossy().into_owned(),
+                    ),
                 ]),
             },
             cancellation_check: Some(Arc::new(move || cancellation_runtime.is_cancelled())),
@@ -452,7 +457,7 @@ fn dispatch_tool_batch_with_options(
             .map(|tool_call| (tool_call.tool_call_id.clone(), tool_call.clone()))
             .collect::<BTreeMap<_, _>>();
         let report = registry_v2.dispatch_batch(&calls, &config);
-        persist_tool_batch_report(
+        let batch = persist_tool_batch_report(
             repo_root,
             project_id,
             run_id,
@@ -460,7 +465,13 @@ fn dispatch_tool_batch_with_options(
             &budget,
             &original_calls,
             &failure_log_context,
-        )
+        )?;
+        for result in &batch.results {
+            if result.ok {
+                tool_runtime.reconcile_isolated_tool_result(&result.tool_name, &result.output)?;
+            }
+        }
+        Ok(batch)
     })();
 
     restore_workspace_guard(&shared, workspace_guard)?;
@@ -471,7 +482,10 @@ fn build_tool_registry_v2(
     tool_registry: &ToolRegistry,
     shared: Arc<AutonomousToolHandlerShared>,
 ) -> CommandResult<ToolRegistryV2> {
-    let mut registry_v2 = ToolRegistryV2::new();
+    let registry_v2 = ToolRegistryV2::new();
+    #[cfg(test)]
+    let registry_v2 = registry_v2.with_cooperative_mutation_boundary_for_tests();
+    let mut registry_v2 = registry_v2;
     for descriptor in tool_registry.descriptors_v2() {
         if let Some(extension) = tool_registry.extension(&descriptor.name).cloned() {
             registry_v2

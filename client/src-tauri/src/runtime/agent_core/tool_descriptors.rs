@@ -143,6 +143,7 @@ pub(crate) struct PromptCompiler<'a> {
     relevant_paths: BTreeSet<String>,
     prompt_budget_tokens: Option<u64>,
     runtime_metadata: Option<RuntimeHostMetadata>,
+    user_facing_progress_updates: bool,
 }
 
 impl<'a> PromptCompiler<'a> {
@@ -172,6 +173,7 @@ impl<'a> PromptCompiler<'a> {
             relevant_paths: BTreeSet::new(),
             prompt_budget_tokens: None,
             runtime_metadata: None,
+            user_facing_progress_updates: false,
         }
     }
 
@@ -235,6 +237,11 @@ impl<'a> PromptCompiler<'a> {
         self
     }
 
+    pub(crate) fn with_user_facing_progress_updates(mut self, enabled: bool) -> Self {
+        self.user_facing_progress_updates = enabled;
+        self
+    }
+
     pub(crate) fn with_tool_application_policy(
         mut self,
         policy: ResolvedAgentToolApplicationStyleDto,
@@ -281,6 +288,18 @@ impl<'a> PromptCompiler<'a> {
             true,
             "authoritative_runtime_host_metadata",
         ));
+        if self.user_facing_progress_updates {
+            candidates.push(prompt_fragment_candidate(
+                "xero.user_facing_progress",
+                950,
+                "User-facing progress updates",
+                "xero-runtime:effective-reasoning-capabilities",
+                user_facing_progress_fragment(),
+                PromptFragmentBudgetPolicy::AlwaysInclude,
+                true,
+                "visible_reasoning_summaries_unavailable",
+            ));
+        }
         candidates.push(prompt_fragment_candidate(
             "xero.tool_policy",
             900,
@@ -487,6 +506,10 @@ fn render_prompt(fragments: &[PromptFragment]) -> String {
         prompt.push_str(&fragment.body);
     }
     prompt
+}
+
+fn user_facing_progress_fragment() -> String {
+    "## User-facing progress updates\nVisible reasoning summaries are unavailable for this turn. During long or multi-step work, emit brief progress updates as normal assistant text before tool calls at meaningful transitions: when a useful task-start orientation is needed, after a material finding or state change, before a longer verification phase, or when the plan meaningfully changes. State conclusions, changes, and the next action without revealing hidden chain-of-thought, private scratch work, tool-selection logic, secrets, or sensitive tool arguments. Do not label these updates as Reasoning or Thoughts. Do not emit an update for every tool call, and do not delay or block tool execution merely to manufacture an update. Short or simple work may finish without an intermediate update. Keep every progress update separate from the single final assistant response.".into()
 }
 
 fn prompt_fragment_with_policy(
@@ -11273,6 +11296,51 @@ mod tests {
             .expect("detect stale context");
 
         assert_eq!(stale, vec!["project:client/AGENTS.md"]);
+    }
+
+    #[test]
+    fn prompt_compiler_conditionally_adds_the_user_facing_progress_contract() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let compile = |enabled| {
+            PromptCompiler::new(
+                root.path(),
+                None,
+                None,
+                RuntimeAgentIdDto::Ask,
+                BrowserControlPreferenceDto::Default,
+                &[],
+            )
+            .with_user_facing_progress_updates(enabled)
+            .compile()
+            .expect("compile prompt")
+        };
+
+        let enabled = compile(true);
+        let fragment = enabled
+            .fragments
+            .iter()
+            .find(|fragment| fragment.id == "xero.user_facing_progress")
+            .expect("progress contract fragment");
+        assert_eq!(
+            fragment.provenance,
+            "xero-runtime:effective-reasoning-capabilities"
+        );
+        assert_eq!(
+            fragment.budget_policy,
+            PromptFragmentBudgetPolicy::AlwaysInclude
+        );
+        assert!(fragment.body.contains("normal assistant text"));
+        assert!(fragment.body.contains("hidden chain-of-thought"));
+        assert!(fragment
+            .body
+            .contains("Do not emit an update for every tool call"));
+        assert!(fragment.body.contains("single final assistant response"));
+
+        let disabled = compile(false);
+        assert!(disabled
+            .fragments
+            .iter()
+            .all(|fragment| fragment.id != "xero.user_facing_progress"));
     }
 
     #[test]

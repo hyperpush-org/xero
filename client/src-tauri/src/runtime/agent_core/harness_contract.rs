@@ -587,6 +587,14 @@ fn sample_skill_context() -> XeroSkillToolContextPayload {
 mod tests {
     use super::*;
 
+    fn platform_snapshot_hash(macos: &'static str, default: &'static str) -> &'static str {
+        if cfg!(target_os = "macos") {
+            macos
+        } else {
+            default
+        }
+    }
+
     #[test]
     fn contract_export_covers_every_enabled_tool_surface() {
         let root = tempfile::tempdir().expect("temp dir");
@@ -729,19 +737,31 @@ mod tests {
         let expected = vec![
             (
                 "generalist:base".to_string(),
-                "cdd7b1916e007bf1e1ca41f4db52aa617d4e4139abc6d251938900ab07c78150",
+                platform_snapshot_hash(
+                    "d8c4fa08bf440ed234b707b2f6e2fa48128e4902f4e5618f7606938dda61404a",
+                    "cdd7b1916e007bf1e1ca41f4db52aa617d4e4139abc6d251938900ab07c78150",
+                ),
             ),
             (
                 "generalist:custom_policy_skill_process_coordination".to_string(),
-                "5b23dbacaf99d1c6a5cafd6908fd7273420a72a5e51c85461c26264f71e9ee7d",
+                platform_snapshot_hash(
+                    "402cc105c8a1828ed5d231c7af8cf09486cb2ced1ebd43cef27d4695f777844e",
+                    "5b23dbacaf99d1c6a5cafd6908fd7273420a72a5e51c85461c26264f71e9ee7d",
+                ),
             ),
             (
                 "ask:base".to_string(),
-                "59cb50995b2411b1cdf794f5e22345e6d4b9bd506b37b1f87de3d36b1431a870",
+                platform_snapshot_hash(
+                    "f85fb0cf9d17f77702b22debedef7fc39965e056f94edabb8e615325f6048725",
+                    "59cb50995b2411b1cdf794f5e22345e6d4b9bd506b37b1f87de3d36b1431a870",
+                ),
             ),
             (
                 "ask:custom_policy_skill_process_coordination".to_string(),
-                "d0ff675140aee4a6f3a1a3048c42b2394ffd4ec37fba2360379d830b24c274bb",
+                platform_snapshot_hash(
+                    "aa84a3099439260172f4bc1596c796b4a75b6e1b65761f31b7fcd48888ec55f9",
+                    "d0ff675140aee4a6f3a1a3048c42b2394ffd4ec37fba2360379d830b24c274bb",
+                ),
             ),
             (
                 "computer_use:base".to_string(),
@@ -749,31 +769,52 @@ mod tests {
             ),
             (
                 "computer_use:custom_policy_skill_process_coordination".to_string(),
-                "7ab9e920215ef8a3417fe2177ce3fc61f87d0d7d1793a84b6421ddcacd2b2284",
+                platform_snapshot_hash(
+                    "c97733c2f579d6615dacee24cebbbbe35d51ae4530c2ba7e30cef8e78455fdf9",
+                    "7ab9e920215ef8a3417fe2177ce3fc61f87d0d7d1793a84b6421ddcacd2b2284",
+                ),
             ),
             (
                 "plan:base".to_string(),
-                "1c7f6f0b37eca359abb945b604d87d755e729a98a7b37496d5f1afb4c329e006",
+                platform_snapshot_hash(
+                    "d8f2f8b939cefe13620caa235db3e95a34adf4945f548ba957b422c138424b4b",
+                    "1c7f6f0b37eca359abb945b604d87d755e729a98a7b37496d5f1afb4c329e006",
+                ),
             ),
             (
                 "plan:custom_policy_skill_process_coordination".to_string(),
-                "8a534329d99eea507d6d7fd660d17ed264ecab104c0467ceb141d8c48f80d9fa",
+                platform_snapshot_hash(
+                    "2847fdfab16d1afc01fc546a277acf74e58fc2e2a3fec54d1997d9cc1dbc0870",
+                    "8a534329d99eea507d6d7fd660d17ed264ecab104c0467ceb141d8c48f80d9fa",
+                ),
             ),
             (
                 "engineer:base".to_string(),
-                "07cb18ef973daa36f50df5f9fa4b6789dd83ebb351d9934503dcc9c18ba3ab0a",
+                platform_snapshot_hash(
+                    "1c7af471a2dc72793839185e3288c5f09239764408ca34fe9956730c2b0d734c",
+                    "07cb18ef973daa36f50df5f9fa4b6789dd83ebb351d9934503dcc9c18ba3ab0a",
+                ),
             ),
             (
                 "engineer:custom_policy_skill_process_coordination".to_string(),
-                "99f170dddee5857b63731a2d7723d6d2b1513ca7913b9c55cd6aa13b2e04263d",
+                platform_snapshot_hash(
+                    "26d1ab9b16ce85e1039f58b4900405e69f127000127c8f30d2153886bbb44090",
+                    "99f170dddee5857b63731a2d7723d6d2b1513ca7913b9c55cd6aa13b2e04263d",
+                ),
             ),
             (
                 "debug:base".to_string(),
-                "39171b55875d39ba35e315bb0b9b40f21f8ef3a35003664cbbead1bc5fb5bdb0",
+                platform_snapshot_hash(
+                    "9ee4751b20bfdc8baa302a66013786241bbd2e8e63b66c3ebc6695f863d8754d",
+                    "39171b55875d39ba35e315bb0b9b40f21f8ef3a35003664cbbead1bc5fb5bdb0",
+                ),
             ),
             (
                 "debug:custom_policy_skill_process_coordination".to_string(),
-                "a7a431263852e644627fe17bfb4e3406a8ceabbfc47a13f001c08ba45ce997b9",
+                platform_snapshot_hash(
+                    "ceb2ec95891f2b03679e0ec14038570ccec398e2c4333d689dc3ad90e4abcc35",
+                    "a7a431263852e644627fe17bfb4e3406a8ceabbfc47a13f001c08ba45ce997b9",
+                ),
             ),
             (
                 "crawl:base".to_string(),
@@ -781,7 +822,10 @@ mod tests {
             ),
             (
                 "crawl:custom_policy_skill_process_coordination".to_string(),
-                "d6dd01e993e0b26918a7171d3e3e36ff64d7119524a8d4ec439ddbf6bd1ef7f2",
+                platform_snapshot_hash(
+                    "dfbf028cbef8d3be1eb161bfa833ad2589cc682fe63a6443e2aeb20abf4f57fb",
+                    "d6dd01e993e0b26918a7171d3e3e36ff64d7119524a8d4ec439ddbf6bd1ef7f2",
+                ),
             ),
             (
                 "agent_create:base".to_string(),
@@ -789,7 +833,10 @@ mod tests {
             ),
             (
                 "agent_create:custom_policy_skill_process_coordination".to_string(),
-                "f8f708e512a60923ac2eb3d1b944e0b7ff04a0f7944e6a791cf8d3a77e58def8",
+                platform_snapshot_hash(
+                    "4f6a4a72f53cc36301ac11fc11846ffcb71231cbbc13a95604a389da1a3404f7",
+                    "f8f708e512a60923ac2eb3d1b944e0b7ff04a0f7944e6a791cf8d3a77e58def8",
+                ),
             ),
         ];
 
@@ -819,27 +866,45 @@ mod tests {
         let expected = vec![
             (
                 "generalist:builtin_full".to_string(),
-                "253ce7ad14915d6c6cb8a04ac81cce88e60bc5f2289529c7f9cc5a5c4250bd59",
+                platform_snapshot_hash(
+                    "9db7d7b2b96c144832ebe5ebb8ecb420f069f94ac8a550425df57c844a203695",
+                    "253ce7ad14915d6c6cb8a04ac81cce88e60bc5f2289529c7f9cc5a5c4250bd59",
+                ),
             ),
             (
                 "ask:builtin_full".to_string(),
-                "46a8937b85ee3a883a539384a4aa001359c1d6dab438886e4bb34063b9b767a3",
+                platform_snapshot_hash(
+                    "c93e6515140b2a0a0cac4d91da635a6fe9714e883d732c184fdd2b0f6b4bed68",
+                    "46a8937b85ee3a883a539384a4aa001359c1d6dab438886e4bb34063b9b767a3",
+                ),
             ),
             (
                 "computer_use:builtin_full".to_string(),
-                "8eb3b8f6748834ddb092165df03b2690ea8dc1706640e294a98078e80eb84c04",
+                platform_snapshot_hash(
+                    "5bc2879a7220bb82b63fb28c0d56152314d5c290308eefd6a638d526f37ffc6d",
+                    "8eb3b8f6748834ddb092165df03b2690ea8dc1706640e294a98078e80eb84c04",
+                ),
             ),
             (
                 "plan:builtin_full".to_string(),
-                "b3f7efe37a074e473c9d927a29aa016d852f6cb91cba78eb049cd1147a47114c",
+                platform_snapshot_hash(
+                    "c4ac952a8338531eae99a4287fc270449a7d0d95c871b27860563712a622bd73",
+                    "b3f7efe37a074e473c9d927a29aa016d852f6cb91cba78eb049cd1147a47114c",
+                ),
             ),
             (
                 "engineer:builtin_full".to_string(),
-                "253ce7ad14915d6c6cb8a04ac81cce88e60bc5f2289529c7f9cc5a5c4250bd59",
+                platform_snapshot_hash(
+                    "9db7d7b2b96c144832ebe5ebb8ecb420f069f94ac8a550425df57c844a203695",
+                    "253ce7ad14915d6c6cb8a04ac81cce88e60bc5f2289529c7f9cc5a5c4250bd59",
+                ),
             ),
             (
                 "debug:builtin_full".to_string(),
-                "253ce7ad14915d6c6cb8a04ac81cce88e60bc5f2289529c7f9cc5a5c4250bd59",
+                platform_snapshot_hash(
+                    "9db7d7b2b96c144832ebe5ebb8ecb420f069f94ac8a550425df57c844a203695",
+                    "253ce7ad14915d6c6cb8a04ac81cce88e60bc5f2289529c7f9cc5a5c4250bd59",
+                ),
             ),
             (
                 "crawl:builtin_full".to_string(),
@@ -851,11 +916,17 @@ mod tests {
             ),
             (
                 "engineer:custom_observe_only".to_string(),
-                "b62751c4bc98dc23e404b9fd8bce7401ba5f8ed10136f7bfc8668011a00f31b8",
+                platform_snapshot_hash(
+                    "ae2296be0564032232dc2e4f3cb60955f8022ba078f410a3e15cc1aba6ac3c68",
+                    "b62751c4bc98dc23e404b9fd8bce7401ba5f8ed10136f7bfc8668011a00f31b8",
+                ),
             ),
             (
                 "engineer:custom_engineering".to_string(),
-                "253ce7ad14915d6c6cb8a04ac81cce88e60bc5f2289529c7f9cc5a5c4250bd59",
+                platform_snapshot_hash(
+                    "9db7d7b2b96c144832ebe5ebb8ecb420f069f94ac8a550425df57c844a203695",
+                    "253ce7ad14915d6c6cb8a04ac81cce88e60bc5f2289529c7f9cc5a5c4250bd59",
+                ),
             ),
             (
                 "agent_create:custom_agent_builder".to_string(),

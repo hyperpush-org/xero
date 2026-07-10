@@ -5530,6 +5530,8 @@ struct ProviderStreamEventRecorder<'a> {
     candidate_id: String,
     turn_index: usize,
     accumulator: ProviderStreamDeltaAccumulator,
+    streamed_text: String,
+    committed_tool_turn_text_bytes: usize,
     terminal: bool,
 }
 
@@ -5548,6 +5550,8 @@ impl<'a> ProviderStreamEventRecorder<'a> {
             candidate_id,
             turn_index,
             accumulator: ProviderStreamDeltaAccumulator::default(),
+            streamed_text: String::new(),
+            committed_tool_turn_text_bytes: 0,
             terminal: false,
         };
         recorder.record_candidate_event(AssistantCandidateEventPayload::pending(
@@ -5567,18 +5571,28 @@ impl<'a> ProviderStreamEventRecorder<'a> {
         self.record_ready_events(ready)
     }
 
-    fn record_ready_events(&self, events: Vec<ProviderStreamEvent>) -> CommandResult<()> {
+    fn record_ready_events(&mut self, events: Vec<ProviderStreamEvent>) -> CommandResult<()> {
         for event in events {
             match event {
                 ProviderStreamEvent::MessageDelta(text) => {
                     if text.is_empty() {
                         continue;
                     }
+                    self.streamed_text.push_str(&text);
                     self.record_candidate_event(AssistantCandidateEventPayload::delta(
                         self.candidate_id.clone(),
                         self.turn_index,
                         text,
                     ))?;
+                }
+                event @ ProviderStreamEvent::ToolDelta { .. } => {
+                    self.commit_pending_tool_turn_text()?;
+                    record_provider_stream_event(
+                        self.repo_root,
+                        self.project_id,
+                        self.run_id,
+                        event,
+                    )?;
                 }
                 event => {
                     record_provider_stream_event(
@@ -5675,15 +5689,41 @@ impl<'a> ProviderStreamEventRecorder<'a> {
             reasoning_details.cloned(),
         ))?;
         self.terminal = true;
-        if commit_transcript && !text.is_empty() {
-            append_event(
-                self.repo_root,
-                self.project_id,
-                self.run_id,
-                AgentRunEventKind::MessageDelta,
-                json!({ "role": "assistant", "text": text }),
-            )?;
+        if commit_transcript {
+            self.commit_final_tool_turn_text(text)?;
         }
+        Ok(())
+    }
+
+    fn commit_pending_tool_turn_text(&mut self) -> CommandResult<()> {
+        if self.committed_tool_turn_text_bytes >= self.streamed_text.len() {
+            return Ok(());
+        }
+        let text = self.streamed_text[self.committed_tool_turn_text_bytes..].to_owned();
+        self.committed_tool_turn_text_bytes = self.streamed_text.len();
+        self.append_tool_turn_transcript_delta(&text)
+    }
+
+    fn commit_final_tool_turn_text(&self, text: &str) -> CommandResult<()> {
+        let committed_prefix = self
+            .streamed_text
+            .get(..self.committed_tool_turn_text_bytes)
+            .unwrap_or_default();
+        let remaining = text.strip_prefix(committed_prefix).unwrap_or(text);
+        self.append_tool_turn_transcript_delta(remaining)
+    }
+
+    fn append_tool_turn_transcript_delta(&self, text: &str) -> CommandResult<()> {
+        if text.trim().is_empty() {
+            return Ok(());
+        }
+        append_event(
+            self.repo_root,
+            self.project_id,
+            self.run_id,
+            AgentRunEventKind::MessageDelta,
+            json!({ "role": "assistant", "text": text }),
+        )?;
         Ok(())
     }
 
@@ -7657,13 +7697,137 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(kinds.contains(&AgentRunEventKind::ReasoningSummary));
         assert!(kinds.contains(&AgentRunEventKind::ToolDelta));
-        assert_eq!(assistant_transcript_delta_payloads(&snapshot).len(), 1);
+        let transcript_deltas = assistant_transcript_delta_payloads(&snapshot);
+        assert_eq!(
+            transcript_deltas,
+            vec![json!({
+                "role": "assistant",
+                "text": "I will inspect."
+            })]
+        );
+        let progress_index = snapshot
+            .events
+            .iter()
+            .position(|event| {
+                event.event_kind == AgentRunEventKind::MessageDelta
+                    && serde_json::from_str::<JsonValue>(&event.payload_json)
+                        .ok()
+                        .and_then(|payload| payload["role"].as_str().map(str::to_owned))
+                        .as_deref()
+                        == Some("assistant")
+            })
+            .expect("assistant progress event");
+        let tool_index = snapshot
+            .events
+            .iter()
+            .position(|event| event.event_kind == AgentRunEventKind::ToolDelta)
+            .expect("tool delta event");
+        assert!(progress_index < tool_index);
         let candidates =
             reconstruct_assistant_candidates(&snapshot.events).expect("reconstruct candidate");
         assert_eq!(
             candidates[0].disposition,
             Some(AssistantCandidateDisposition::ToolCallTurn)
         );
+    }
+
+    #[test]
+    fn interleaved_tool_turn_progress_reloads_in_chronological_order() {
+        let _guard = project_state_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let run_id = "candidate-tool-turn-interleaved-progress";
+        let (_tempdir, repo_root, project_id, _controls, _tool_runtime, _messages) =
+            setup_test_agent_provider_loop(run_id);
+        let mut recorder = ProviderStreamEventRecorder::new(&repo_root, &project_id, run_id, 0)
+            .expect("start assistant candidate");
+        recorder
+            .record(ProviderStreamEvent::MessageDelta(
+                "I found the relevant module. ".into(),
+            ))
+            .expect("record first progress update");
+        recorder
+            .record(ProviderStreamEvent::ToolDelta {
+                tool_call_id: Some("call-1".into()),
+                tool_name: Some("read".into()),
+                arguments_delta: "{\"path\":\"src/lib.rs\"}".into(),
+            })
+            .expect("record first tool delta");
+        recorder
+            .record(ProviderStreamEvent::MessageDelta(
+                "The wiring is in place; I am verifying it now.".into(),
+            ))
+            .expect("record second progress update");
+        recorder
+            .record(ProviderStreamEvent::ToolDelta {
+                tool_call_id: Some("call-2".into()),
+                tool_name: Some("command".into()),
+                arguments_delta: "{\"command\":\"cargo test\"}".into(),
+            })
+            .expect("record second tool delta");
+        recorder
+            .finish_tool_turn(
+                "I found the relevant module. The wiring is in place; I am verifying it now.",
+                None,
+                None,
+            )
+            .expect("finish tool turn");
+
+        let snapshot = candidate_test_snapshot(&repo_root, &project_id, run_id);
+        assert_eq!(
+            assistant_transcript_delta_payloads(&snapshot),
+            vec![
+                json!({
+                    "role": "assistant",
+                    "text": "I found the relevant module. "
+                }),
+                json!({
+                    "role": "assistant",
+                    "text": "The wiring is in place; I am verifying it now."
+                }),
+            ]
+        );
+        let ordered = snapshot
+            .events
+            .iter()
+            .filter_map(|event| match event.event_kind {
+                AgentRunEventKind::MessageDelta => {
+                    let payload = serde_json::from_str::<JsonValue>(&event.payload_json).ok()?;
+                    (payload["role"] == "assistant").then_some("progress")
+                }
+                AgentRunEventKind::ToolDelta => Some("tool"),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ordered, vec!["progress", "tool", "progress", "tool"]);
+    }
+
+    #[test]
+    fn empty_tool_turn_progress_is_not_persisted() {
+        let _guard = project_state_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let run_id = "candidate-tool-turn-empty-progress";
+        let (_tempdir, repo_root, project_id, _controls, _tool_runtime, _messages) =
+            setup_test_agent_provider_loop(run_id);
+        let mut recorder = ProviderStreamEventRecorder::new(&repo_root, &project_id, run_id, 0)
+            .expect("start assistant candidate");
+        recorder
+            .record(ProviderStreamEvent::MessageDelta(" \n\t".into()))
+            .expect("record empty progress");
+        recorder
+            .record(ProviderStreamEvent::ToolDelta {
+                tool_call_id: Some("call-empty".into()),
+                tool_name: Some("read".into()),
+                arguments_delta: "{}".into(),
+            })
+            .expect("record tool delta");
+        recorder
+            .finish_tool_turn(" \n\t", None, None)
+            .expect("finish tool turn");
+
+        let snapshot = candidate_test_snapshot(&repo_root, &project_id, run_id);
+        assert!(assistant_transcript_delta_payloads(&snapshot).is_empty());
     }
 
     #[test]

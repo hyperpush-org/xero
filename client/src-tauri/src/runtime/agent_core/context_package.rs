@@ -50,6 +50,28 @@ fn required_attachment_input_modality(attachment: &MessageAttachment) -> Option<
     }
 }
 
+fn should_request_user_facing_progress_updates(
+    provider_preflight: &xero_agent_core::ProviderPreflightSnapshot,
+    thinking_effort: Option<&ProviderModelThinkingEffortDto>,
+) -> bool {
+    let thinking_enabled = thinking_effort
+        .is_some_and(|effort| !matches!(effort, ProviderModelThinkingEffortDto::None));
+    let reasoning = &provider_preflight.capabilities.capabilities.reasoning;
+    let model_supports_thinking = matches!(reasoning.status.as_str(), "supported" | "probed");
+    let route_exposes_reasoning_summary = matches!(
+        reasoning.summary_support.as_str(),
+        "auto_summary_supported"
+            | "reasoning_summary_delta_supported"
+            | "reasoning_content_replay_required"
+            | "provider_default"
+    );
+
+    !(thinking_enabled
+        && model_supports_thinking
+        && route_exposes_reasoning_summary
+        && !provider_preflight.stale)
+}
+
 #[cfg(test)]
 pub(crate) fn assemble_provider_context_package(
     input: ProviderContextPackageInput<'_>,
@@ -121,10 +143,35 @@ pub(crate) fn assemble_provider_context_package_with_prompt_budget(
     )?;
     let active_coordination_summary =
         active_coordination_prompt_summary(&active_coordination_context);
+    let mut required_provider_features =
+        xero_agent_core::ProviderPreflightRequiredFeatures::owned_agent_text_turn();
+    required_provider_features.set_attachment_input_modalities(input.messages.iter().flat_map(
+        |message| {
+            match message {
+                ProviderMessage::User { attachments, .. } => attachments
+                    .iter()
+                    .filter_map(required_attachment_input_modality)
+                    .collect::<Vec<_>>(),
+                ProviderMessage::Developer { .. }
+                | ProviderMessage::Assistant { .. }
+                | ProviderMessage::AssistantContext { .. }
+                | ProviderMessage::Tool { .. } => Vec::new(),
+            }
+        },
+    ));
+    let provider_preflight = input.provider_preflight.cloned().unwrap_or_else(|| {
+        crate::provider_preflight::static_provider_preflight_snapshot(
+            input.provider_id,
+            input.model_id,
+            required_provider_features,
+        )
+    });
+    let user_facing_progress_updates =
+        should_request_user_facing_progress_updates(&provider_preflight, thinking_effort);
     let turn_budget = resolve_provider_turn_budget(
         input.provider_id,
         input.model_id,
-        input.provider_preflight,
+        Some(&provider_preflight),
         thinking_effort,
     )?;
     let context_limit = turn_budget.context_limit;
@@ -172,6 +219,7 @@ pub(crate) fn assemble_provider_context_package_with_prompt_budget(
     .with_relevant_paths(relevant_paths.iter().map(String::as_str))
     .with_prompt_budget_tokens(prompt_budget_tokens)
     .with_runtime_metadata(runtime_metadata)
+    .with_user_facing_progress_updates(user_facing_progress_updates)
     .compile()?;
 
     let (included_contributors, prompt_fragments_json, prompt_redacted) =
@@ -430,29 +478,6 @@ pub(crate) fn assemble_provider_context_package_with_prompt_budget(
     } else {
         project_store::AgentContextRedactionState::Clean
     };
-    let mut required_provider_features =
-        xero_agent_core::ProviderPreflightRequiredFeatures::owned_agent_text_turn();
-    required_provider_features.set_attachment_input_modalities(input.messages.iter().flat_map(
-        |message| {
-            match message {
-                ProviderMessage::User { attachments, .. } => attachments
-                    .iter()
-                    .filter_map(required_attachment_input_modality)
-                    .collect::<Vec<_>>(),
-                ProviderMessage::Developer { .. }
-                | ProviderMessage::Assistant { .. }
-                | ProviderMessage::AssistantContext { .. }
-                | ProviderMessage::Tool { .. } => Vec::new(),
-            }
-        },
-    ));
-    let provider_preflight = input.provider_preflight.cloned().unwrap_or_else(|| {
-        crate::provider_preflight::static_provider_preflight_snapshot(
-            input.provider_id,
-            input.model_id,
-            required_provider_features,
-        )
-    });
     let admitted_provider_preflight_hash = stable_provider_preflight_hash(&provider_preflight);
     let prompt_diff = prompt_diff_since_previous_manifest(
         input.repo_root,
@@ -3037,6 +3062,47 @@ mod tests {
     };
 
     #[test]
+    fn progress_contract_uses_effective_thinking_and_route_capabilities() {
+        let mut preflight = crate::provider_preflight::static_provider_preflight_snapshot(
+            OPENAI_CODEX_PROVIDER_ID,
+            OPENAI_CODEX_PROVIDER_ID,
+            xero_agent_core::ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+        );
+        preflight.provider_id = "provider-without-name-rules".into();
+        preflight.model_id = "model-without-name-rules".into();
+        preflight.stale = false;
+        let reasoning = &mut preflight.capabilities.capabilities.reasoning;
+        reasoning.status = "supported".into();
+        reasoning.summary_support = "auto_summary_supported".into();
+
+        assert!(should_request_user_facing_progress_updates(
+            &preflight, None
+        ));
+        assert!(should_request_user_facing_progress_updates(
+            &preflight,
+            Some(&ProviderModelThinkingEffortDto::None)
+        ));
+        assert!(!should_request_user_facing_progress_updates(
+            &preflight,
+            Some(&ProviderModelThinkingEffortDto::High)
+        ));
+
+        preflight.capabilities.capabilities.reasoning.status = "unavailable".into();
+        assert!(should_request_user_facing_progress_updates(
+            &preflight,
+            Some(&ProviderModelThinkingEffortDto::High)
+        ));
+
+        let reasoning = &mut preflight.capabilities.capabilities.reasoning;
+        reasoning.status = "supported".into();
+        reasoning.summary_support = "unavailable".into();
+        assert!(should_request_user_facing_progress_updates(
+            &preflight,
+            Some(&ProviderModelThinkingEffortDto::High)
+        ));
+    }
+
+    #[test]
     fn child_context_manifest_metadata_traces_parent_inheritance_reasons() {
         let snapshot = json!({
             "scope": "runtime_child",
@@ -3198,6 +3264,79 @@ mod tests {
         assert_eq!(metadata.timestamp_utc, "2026-06-01T09:30:00Z");
         assert_eq!(metadata.date_utc, "2026-06-01");
         assert_ne!(metadata.date_utc, "2026-05-01");
+    }
+
+    #[test]
+    fn provider_context_recomputes_progress_contract_for_each_turn_capability_snapshot() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let (project_id, repo_root) = seed_project(&root);
+        seed_run(&repo_root, &project_id);
+        let messages = vec![ProviderMessage::User {
+            content: "Inspect and verify the runtime.".into(),
+            attachments: Vec::new(),
+        }];
+        let mut preflight = crate::provider_preflight::static_provider_preflight_snapshot(
+            OPENAI_CODEX_PROVIDER_ID,
+            OPENAI_CODEX_PROVIDER_ID,
+            xero_agent_core::ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+        );
+        preflight.stale = false;
+        let reasoning = &mut preflight.capabilities.capabilities.reasoning;
+        reasoning.status = "supported".into();
+        reasoning.summary_support = "auto_summary_supported".into();
+        let compile =
+            |preflight: &xero_agent_core::ProviderPreflightSnapshot,
+             thinking_effort: Option<&ProviderModelThinkingEffortDto>| {
+                assemble_provider_context_package_with_prompt_budget(
+                    ProviderContextPackageInput {
+                        repo_root: &repo_root,
+                        project_id: &project_id,
+                        agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID,
+                        run_id: "run-context-package",
+                        runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                        agent_definition_id: "engineer",
+                        agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+                        agent_definition_snapshot: None,
+                        provider_id: OPENAI_CODEX_PROVIDER_ID,
+                        model_id: OPENAI_CODEX_PROVIDER_ID,
+                        turn_index: 0,
+                        browser_control_preference: BrowserControlPreferenceDto::Default,
+                        tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
+                        soul_settings: None,
+                        tools: &[],
+                        tool_exposure_plan: None,
+                        messages: &messages,
+                        owned_process_summary: None,
+                        provider_preflight: Some(preflight),
+                    },
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                    thinking_effort,
+                )
+                .expect("compile provider context")
+            };
+        let has_progress_contract = |package: &ProviderContextPackage| {
+            package
+                .compilation
+                .fragments
+                .iter()
+                .any(|fragment| fragment.id == "xero.user_facing_progress")
+        };
+
+        let visible_reasoning = compile(&preflight, Some(&ProviderModelThinkingEffortDto::High));
+        assert!(!has_progress_contract(&visible_reasoning));
+
+        let disabled_reasoning = compile(&preflight, Some(&ProviderModelThinkingEffortDto::None));
+        assert!(has_progress_contract(&disabled_reasoning));
+
+        preflight
+            .capabilities
+            .capabilities
+            .reasoning
+            .summary_support = "unavailable".into();
+        let unavailable_route = compile(&preflight, Some(&ProviderModelThinkingEffortDto::High));
+        assert!(has_progress_contract(&unavailable_route));
     }
 
     #[test]
