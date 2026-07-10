@@ -2,14 +2,22 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io::{BufRead, BufReader, Read, Write},
     process::{Command, Stdio},
-    sync::{Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, SyncSender, TrySendError},
+        Arc, Mutex, OnceLock,
+    },
+    thread::JoinHandle,
     time::Duration,
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use reqwest::blocking::{Client, Response};
 use reqwest::header::{
     HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER, USER_AGENT,
+};
+use reqwest::{
+    blocking::{Client as BlockingClient, Response as BlockingResponse},
+    Client as AsyncClient, RequestBuilder as AsyncRequestBuilder, Response as AsyncResponse,
 };
 use serde::Deserialize;
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
@@ -18,10 +26,11 @@ use tempfile::NamedTempFile;
 use url::Url;
 
 use super::{
-    AgentToolCall, AgentToolDescriptor, FakeProviderAdapter, MessageAttachment,
-    MessageAttachmentKind, ProviderAdapter, ProviderMessage, ProviderStreamEvent,
-    ProviderTurnOutcome, ProviderTurnOutputAllowance, ProviderTurnRequest, ProviderUsage,
-    SessionContextLimitResolutionDto, SessionContextLimitSourceDto,
+    cancelled_error, AgentRunCancellationToken, AgentToolCall, AgentToolDescriptor,
+    FakeProviderAdapter, MessageAttachment, MessageAttachmentKind, ProviderAdapter,
+    ProviderMessage, ProviderStreamEvent, ProviderTurnOutcome, ProviderTurnOutputAllowance,
+    ProviderTurnRequest, ProviderUsage, SessionContextLimitResolutionDto,
+    SessionContextLimitSourceDto,
 };
 #[cfg(test)]
 use super::{ProviderContextProvenance, ProviderContextSourceKind};
@@ -74,6 +83,10 @@ const MAX_PROVIDER_REASONING_ID_BYTES: usize = 1_024;
 const MAX_PROVIDER_NON_STREAM_BODY_BYTES: usize = MAX_PROVIDER_STREAM_TOTAL_BYTES;
 const MAX_PROVIDER_TOKEN_COUNT_BODY_BYTES: usize = 256 * 1_024;
 const MAX_PROVIDER_ERROR_BODY_BYTES: usize = 64 * 1_024;
+const PROVIDER_STREAM_CHANNEL_CAPACITY: usize = 8;
+const PROVIDER_STREAM_CHANNEL_CHUNK_BYTES: usize = 16 * 1_024;
+const PROVIDER_STREAM_ABORT_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const PROVIDER_STREAM_BACKPRESSURE_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 #[derive(Debug, Clone, Copy)]
 struct ProviderStreamLimits {
@@ -89,6 +102,107 @@ const PROVIDER_STREAM_LIMITS: ProviderStreamLimits = ProviderStreamLimits {
     max_lines: MAX_PROVIDER_STREAM_LINES,
     max_events: MAX_PROVIDER_STREAM_EVENTS,
 };
+
+#[derive(Debug)]
+enum ProviderStreamTransportMessage {
+    Chunk(Vec<u8>),
+    Complete,
+    Error(CommandError),
+}
+
+struct ProviderStreamReader {
+    receiver: Receiver<ProviderStreamTransportMessage>,
+    current_chunk: Vec<u8>,
+    current_offset: usize,
+    stop: Arc<AtomicBool>,
+    transport: Option<JoinHandle<()>>,
+}
+
+impl ProviderStreamReader {
+    fn join_transport(&mut self) -> std::io::Result<()> {
+        let Some(transport) = self.transport.take() else {
+            return Ok(());
+        };
+        transport.join().map_err(|_| {
+            command_error_as_io_error(CommandError::system_fault(
+                "agent_provider_stream_transport_panicked",
+                "Xero's provider stream transport stopped unexpectedly.",
+            ))
+        })
+    }
+
+    #[cfg(test)]
+    fn transport_is_joined(&self) -> bool {
+        self.transport.is_none()
+    }
+}
+
+impl Read for ProviderStreamReader {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        if output.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if self.current_offset < self.current_chunk.len() {
+                let available = &self.current_chunk[self.current_offset..];
+                let count = available.len().min(output.len());
+                output[..count].copy_from_slice(&available[..count]);
+                self.current_offset = self.current_offset.saturating_add(count);
+                return Ok(count);
+            }
+
+            self.current_chunk.clear();
+            self.current_offset = 0;
+            match self.receiver.recv() {
+                Ok(ProviderStreamTransportMessage::Chunk(chunk)) if chunk.is_empty() => continue,
+                Ok(ProviderStreamTransportMessage::Chunk(chunk)) => self.current_chunk = chunk,
+                Ok(ProviderStreamTransportMessage::Complete) => {
+                    self.join_transport()?;
+                    return Ok(0);
+                }
+                Ok(ProviderStreamTransportMessage::Error(error)) => {
+                    self.join_transport()?;
+                    return Err(command_error_as_io_error(error));
+                }
+                Err(_) => {
+                    self.join_transport()?;
+                    return Err(command_error_as_io_error(CommandError::system_fault(
+                        "agent_provider_stream_transport_closed",
+                        "Xero's provider stream transport closed without a terminal result.",
+                    )));
+                }
+            }
+        }
+    }
+}
+
+impl Drop for ProviderStreamReader {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = self.join_transport();
+    }
+}
+
+fn command_error_as_io_error(error: CommandError) -> std::io::Error {
+    std::io::Error::other(error)
+}
+
+fn provider_stream_read_error(
+    provider_id: &str,
+    stream_name: &str,
+    error: std::io::Error,
+) -> CommandError {
+    if let Some(command_error) = error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<CommandError>())
+    {
+        return command_error.clone();
+    }
+    CommandError::retryable(
+        "agent_provider_stream_read_failed",
+        format!("Xero lost the {provider_id} {stream_name}: {error}"),
+    )
+}
 
 struct BoundedSseReader<R> {
     reader: R,
@@ -149,12 +263,10 @@ impl<R: BufRead> BoundedSseReader<R> {
     ) -> CommandResult<Option<Vec<u8>>> {
         let mut line = Vec::with_capacity(self.limits.max_line_bytes.min(8 * 1_024));
         loop {
-            let available = self.reader.fill_buf().map_err(|error| {
-                CommandError::retryable(
-                    "agent_provider_stream_read_failed",
-                    format!("Xero lost the {provider_id} {stream_name}: {error}"),
-                )
-            })?;
+            let available = self
+                .reader
+                .fill_buf()
+                .map_err(|error| provider_stream_read_error(provider_id, stream_name, error))?;
             if available.is_empty() {
                 if line.is_empty() {
                     return Ok(None);
@@ -686,7 +798,7 @@ pub fn create_provider_adapter(
 #[derive(Debug)]
 struct OpenAiCodexResponsesAdapter {
     config: OpenAiCodexResponsesProviderConfig,
-    client: Client,
+    client: AsyncClient,
 }
 
 impl OpenAiCodexResponsesAdapter {
@@ -717,23 +829,31 @@ impl ProviderAdapter for OpenAiCodexResponsesAdapter {
     fn stream_turn(
         &self,
         request: &ProviderTurnRequest,
+        cancellation: &AgentRunCancellationToken,
         emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
     ) -> CommandResult<ProviderTurnOutcome> {
+        let provider_id = self.provider_id().to_owned();
         let url = openai_codex_responses_url(&self.config.base_url)?;
         let headers = openai_codex_request_headers(&self.config)?;
         let body = openai_codex_responses_request_body(
-            self.provider_id(),
+            &provider_id,
             &self.config.model_id,
             request,
             self.config.session_id.as_deref(),
         )?;
-        let response = send_provider_json_request(self.provider_id(), || {
-            self.client
-                .post(url.clone())
-                .headers(headers.clone())
-                .json(&body)
-        })?;
-        parse_openai_responses_sse(self.provider_id(), response, emit)
+        let client = self.client.clone();
+        let response = start_provider_json_stream(
+            &provider_id,
+            Duration::from_millis(normalize_timeout(self.config.timeout_ms)),
+            cancellation.clone(),
+            move || {
+                client
+                    .post(url.clone())
+                    .headers(headers.clone())
+                    .json(&body)
+            },
+        )?;
+        parse_openai_responses_sse(&provider_id, response, emit)
     }
 
     fn estimate_context_tokens(
@@ -758,7 +878,7 @@ impl ProviderAdapter for OpenAiCodexResponsesAdapter {
 #[derive(Debug)]
 struct OpenAiResponsesAdapter {
     config: OpenAiResponsesProviderConfig,
-    client: Client,
+    client: AsyncClient,
 }
 
 impl OpenAiResponsesAdapter {
@@ -784,18 +904,21 @@ impl ProviderAdapter for OpenAiResponsesAdapter {
     fn stream_turn(
         &self,
         request: &ProviderTurnRequest,
+        cancellation: &AgentRunCancellationToken,
         emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
     ) -> CommandResult<ProviderTurnOutcome> {
+        let provider_id = self.provider_id().to_owned();
         let url = responses_url(&self.config.base_url)?;
-        let body =
-            openai_responses_request_body(self.provider_id(), &self.config.model_id, request)?;
-        let response = send_provider_json_request(self.provider_id(), || {
-            self.client
-                .post(url.clone())
-                .bearer_auth(&self.config.api_key)
-                .json(&body)
-        })?;
-        parse_openai_responses_sse(self.provider_id(), response, emit)
+        let body = openai_responses_request_body(&provider_id, &self.config.model_id, request)?;
+        let client = self.client.clone();
+        let api_key = self.config.api_key.clone();
+        let response = start_provider_json_stream(
+            &provider_id,
+            Duration::from_millis(normalize_timeout(self.config.timeout_ms)),
+            cancellation.clone(),
+            move || client.post(url.clone()).bearer_auth(&api_key).json(&body),
+        )?;
+        parse_openai_responses_sse(&provider_id, response, emit)
     }
 
     fn estimate_context_tokens(
@@ -816,7 +939,7 @@ impl ProviderAdapter for OpenAiResponsesAdapter {
 #[derive(Debug)]
 struct XaiResponsesAdapter {
     config: XaiResponsesProviderConfig,
-    client: Client,
+    client: AsyncClient,
 }
 
 impl XaiResponsesAdapter {
@@ -851,17 +974,26 @@ impl ProviderAdapter for XaiResponsesAdapter {
     fn stream_turn(
         &self,
         request: &ProviderTurnRequest,
+        cancellation: &AgentRunCancellationToken,
         emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
     ) -> CommandResult<ProviderTurnOutcome> {
+        let provider_id = self.provider_id().to_owned();
         let url = responses_url(&self.config.base_url)?;
-        let body = xai_responses_request_body(self.provider_id(), &self.config.model_id, request)?;
-        let response = send_provider_json_request(self.provider_id(), || {
-            self.client
-                .post(url.clone())
-                .bearer_auth(&self.config.bearer_token)
-                .json(&body)
-        })?;
-        parse_openai_responses_sse(self.provider_id(), response, emit)
+        let body = xai_responses_request_body(&provider_id, &self.config.model_id, request)?;
+        let client = self.client.clone();
+        let bearer_token = self.config.bearer_token.clone();
+        let response = start_provider_json_stream(
+            &provider_id,
+            Duration::from_millis(normalize_timeout(self.config.timeout_ms)),
+            cancellation.clone(),
+            move || {
+                client
+                    .post(url.clone())
+                    .bearer_auth(&bearer_token)
+                    .json(&body)
+            },
+        )?;
+        parse_openai_responses_sse(&provider_id, response, emit)
     }
 
     fn estimate_context_tokens(
@@ -881,7 +1013,7 @@ impl ProviderAdapter for XaiResponsesAdapter {
 #[derive(Debug)]
 struct OpenAiCompatibleAdapter {
     config: OpenAiCompatibleProviderConfig,
-    client: Client,
+    client: AsyncClient,
 }
 
 impl OpenAiCompatibleAdapter {
@@ -909,26 +1041,38 @@ impl ProviderAdapter for OpenAiCompatibleAdapter {
     fn stream_turn(
         &self,
         request: &ProviderTurnRequest,
+        cancellation: &AgentRunCancellationToken,
         emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
     ) -> CommandResult<ProviderTurnOutcome> {
+        let provider_id = self.provider_id().to_owned();
         let url =
             openai_compatible_chat_url(&self.config.base_url, self.config.api_version.as_deref())?;
-        let body = openai_chat_request_body(self.provider_id(), &self.config.model_id, request)?;
-        let response = send_provider_json_request(self.provider_id(), || {
-            let mut http_request = self
-                .client
-                .post(url.clone())
-                .header("Content-Type", "application/json")
-                .header("X-Title", "Xero");
-            http_request =
-                apply_openai_compatible_provider_headers(self.provider_id(), http_request);
-            if let Some(api_key) = self.config.api_key.as_deref() {
+        let body = openai_chat_request_body(&provider_id, &self.config.model_id, request)?;
+        let client = self.client.clone();
+        let api_key = self.config.api_key.clone();
+        let closure_provider_id = provider_id.clone();
+        let response = start_provider_json_stream(
+            &provider_id,
+            Duration::from_millis(normalize_timeout(self.config.timeout_ms)),
+            cancellation.clone(),
+            move || {
+                let mut http_request = client
+                    .post(url.clone())
+                    .header("Content-Type", "application/json")
+                    .header("X-Title", "Xero");
                 http_request =
-                    apply_openai_compatible_auth_header(self.provider_id(), http_request, api_key);
-            }
-            http_request.json(&body)
-        })?;
-        parse_openai_chat_sse(self.provider_id(), response, emit)
+                    apply_openai_compatible_provider_headers(&closure_provider_id, http_request);
+                if let Some(api_key) = api_key.as_deref() {
+                    http_request = apply_openai_compatible_auth_header(
+                        &closure_provider_id,
+                        http_request,
+                        api_key,
+                    );
+                }
+                http_request.json(&body)
+            },
+        )?;
+        parse_openai_chat_sse(&provider_id, response, emit)
     }
 
     fn estimate_context_tokens(
@@ -948,7 +1092,8 @@ impl ProviderAdapter for OpenAiCompatibleAdapter {
 #[derive(Debug)]
 struct AnthropicAdapter {
     config: AnthropicProviderConfig,
-    client: Client,
+    client: AsyncClient,
+    context_client: BlockingClient,
 }
 
 impl AnthropicAdapter {
@@ -959,7 +1104,12 @@ impl AnthropicAdapter {
         normalize_required(&mut config.base_url, "baseUrl")?;
         normalize_required(&mut config.anthropic_version, "anthropicVersion")?;
         let client = provider_http_client(config.timeout_ms)?;
-        Ok(Self { config, client })
+        let context_client = provider_blocking_http_client(config.timeout_ms)?;
+        Ok(Self {
+            config,
+            client,
+            context_client,
+        })
     }
 }
 
@@ -975,8 +1125,10 @@ impl ProviderAdapter for AnthropicAdapter {
     fn stream_turn(
         &self,
         request: &ProviderTurnRequest,
+        cancellation: &AgentRunCancellationToken,
         emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
     ) -> CommandResult<ProviderTurnOutcome> {
+        let provider_id = self.provider_id().to_owned();
         let url = anthropic_messages_url(&self.config.base_url)?;
         let body = anthropic_request_body(
             Some(&self.config.model_id),
@@ -984,21 +1136,29 @@ impl ProviderAdapter for AnthropicAdapter {
             request,
             true,
         )?;
-        let response = send_provider_json_request(self.provider_id(), || {
-            self.client
-                .post(url.clone())
-                .header("x-api-key", &self.config.api_key)
-                .header("anthropic-version", &self.config.anthropic_version)
-                .json(&body)
-        })?;
-        parse_anthropic_sse(self.provider_id(), response, emit)
+        let client = self.client.clone();
+        let api_key = self.config.api_key.clone();
+        let anthropic_version = self.config.anthropic_version.clone();
+        let response = start_provider_json_stream(
+            &provider_id,
+            Duration::from_millis(normalize_timeout(self.config.timeout_ms)),
+            cancellation.clone(),
+            move || {
+                client
+                    .post(url.clone())
+                    .header("x-api-key", &api_key)
+                    .header("anthropic-version", &anthropic_version)
+                    .json(&body)
+            },
+        )?;
+        parse_anthropic_sse(&provider_id, response, emit)
     }
 
     fn estimate_context_tokens(
         &self,
         request: &ProviderTurnRequest,
     ) -> CommandResult<SessionContextEstimateDto> {
-        estimate_anthropic_context_tokens(&self.config, &self.client, request)
+        estimate_anthropic_context_tokens(&self.config, &self.context_client, request)
     }
 }
 
@@ -1027,6 +1187,7 @@ impl ProviderAdapter for BedrockCliAdapter {
     fn stream_turn(
         &self,
         request: &ProviderTurnRequest,
+        cancellation: &AgentRunCancellationToken,
         emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
     ) -> CommandResult<ProviderTurnOutcome> {
         let body = anthropic_request_body(None, BEDROCK_ANTHROPIC_VERSION, request, false)?;
@@ -1103,6 +1264,7 @@ impl ProviderAdapter for BedrockCliAdapter {
             &mut child,
             Duration::from_millis(normalize_timeout(self.config.timeout_ms)),
             BEDROCK_PROVIDER_ID,
+            cancellation,
         )?;
         if !status.success() {
             drop(child);
@@ -1157,7 +1319,7 @@ impl ProviderAdapter for BedrockCliAdapter {
 #[derive(Debug)]
 struct VertexAnthropicAdapter {
     config: VertexProviderConfig,
-    client: Client,
+    client: AsyncClient,
 }
 
 impl VertexAnthropicAdapter {
@@ -1182,17 +1344,25 @@ impl ProviderAdapter for VertexAnthropicAdapter {
     fn stream_turn(
         &self,
         request: &ProviderTurnRequest,
+        cancellation: &AgentRunCancellationToken,
         emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
     ) -> CommandResult<ProviderTurnOutcome> {
         let token = vertex_access_token()?;
         let body = anthropic_request_body(None, VERTEX_ANTHROPIC_VERSION, request, false)?;
         let url = vertex_anthropic_raw_predict_url(&self.config)?;
-        let mut response = send_provider_json_request(VERTEX_PROVIDER_ID, || {
-            self.client
-                .post(url.clone())
-                .bearer_auth(token.clone())
-                .json(&body)
-        })?;
+        let client = self.client.clone();
+        let response = start_provider_json_stream(
+            VERTEX_PROVIDER_ID,
+            Duration::from_millis(normalize_timeout(self.config.timeout_ms)),
+            cancellation.clone(),
+            move || {
+                client
+                    .post(url.clone())
+                    .bearer_auth(token.clone())
+                    .json(&body)
+            },
+        )?;
+        let mut response = response;
         let text = read_provider_text_bounded(
             &mut response,
             MAX_PROVIDER_NON_STREAM_BODY_BYTES,
@@ -1216,15 +1386,10 @@ impl ProviderAdapter for VertexAnthropicAdapter {
     }
 }
 
-fn provider_http_client(timeout_ms: u64) -> CommandResult<Client> {
+fn provider_http_client(timeout_ms: u64) -> CommandResult<AsyncClient> {
     let timeout = Duration::from_millis(normalize_timeout(timeout_ms));
-    Client::builder()
+    AsyncClient::builder()
         .connect_timeout(timeout)
-        // In reqwest's blocking client this timeout applies to header wait and separately to
-        // each `Response::read`; every successful read starts a fresh wait. It therefore acts
-        // as an idle-read bound without aborting a healthy SSE stream based on total age.
-        // Immediate run cancellation still requires an async/cancellable transport boundary.
-        .timeout(timeout)
         .tcp_keepalive(Duration::from_secs(30))
         .build()
         .map_err(|error| {
@@ -1233,6 +1398,327 @@ fn provider_http_client(timeout_ms: u64) -> CommandResult<Client> {
                 format!("Xero could not build an HTTP client for the provider adapter: {error}"),
             )
         })
+}
+
+fn provider_blocking_http_client(timeout_ms: u64) -> CommandResult<BlockingClient> {
+    let timeout = Duration::from_millis(normalize_timeout(timeout_ms));
+    BlockingClient::builder()
+        .connect_timeout(timeout)
+        .timeout(timeout)
+        .tcp_keepalive(Duration::from_secs(30))
+        .build()
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_provider_http_client_unavailable",
+                format!(
+                    "Xero could not build a blocking HTTP client for provider metadata: {error}"
+                ),
+            )
+        })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderStreamAbort {
+    Stopped,
+    Cancelled,
+}
+
+fn start_provider_json_stream<F>(
+    provider_id: &str,
+    idle_timeout: Duration,
+    cancellation: AgentRunCancellationToken,
+    build: F,
+) -> CommandResult<ProviderStreamReader>
+where
+    F: FnMut() -> AsyncRequestBuilder + Send + 'static,
+{
+    cancellation.check_cancelled()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_provider_stream_runtime_unavailable",
+                format!("Xero could not start the provider stream runtime: {error}"),
+            )
+        })?;
+    let (sender, receiver) = mpsc::sync_channel(PROVIDER_STREAM_CHANNEL_CAPACITY);
+    let stop = Arc::new(AtomicBool::new(false));
+    let transport_stop = stop.clone();
+    let provider_id = provider_id.to_owned();
+    let transport = std::thread::Builder::new()
+        .name(format!("provider-stream-{provider_id}"))
+        .spawn(move || {
+            let outcome = runtime.block_on(run_provider_stream_transport(
+                &provider_id,
+                idle_timeout,
+                &cancellation,
+                transport_stop.as_ref(),
+                build,
+                &sender,
+            ));
+            if transport_stop.load(Ordering::SeqCst) {
+                return;
+            }
+            let terminal = match outcome {
+                Ok(()) => ProviderStreamTransportMessage::Complete,
+                Err(error) => ProviderStreamTransportMessage::Error(error),
+            };
+            send_provider_stream_terminal(&sender, terminal, transport_stop.as_ref());
+        })
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_provider_stream_thread_unavailable",
+                format!("Xero could not start the provider stream transport: {error}"),
+            )
+        })?;
+
+    Ok(ProviderStreamReader {
+        receiver,
+        current_chunk: Vec::new(),
+        current_offset: 0,
+        stop,
+        transport: Some(transport),
+    })
+}
+
+async fn run_provider_stream_transport<F>(
+    provider_id: &str,
+    idle_timeout: Duration,
+    cancellation: &AgentRunCancellationToken,
+    stop: &AtomicBool,
+    build: F,
+    sender: &SyncSender<ProviderStreamTransportMessage>,
+) -> CommandResult<()>
+where
+    F: FnMut() -> AsyncRequestBuilder,
+{
+    let Some(mut response) =
+        send_provider_json_request_async(provider_id, idle_timeout, cancellation, stop, build)
+            .await?
+    else {
+        return Ok(());
+    };
+
+    loop {
+        let chunk = tokio::select! {
+            abort = wait_for_provider_stream_abort(stop, cancellation) => {
+                return match abort {
+                    ProviderStreamAbort::Stopped => Ok(()),
+                    ProviderStreamAbort::Cancelled => Err(cancelled_error()),
+                };
+            }
+            _ = tokio::time::sleep(idle_timeout) => {
+                return Err(provider_stream_idle_timeout_error(provider_id, idle_timeout));
+            }
+            chunk = response.chunk() => chunk.map_err(|error| {
+                map_provider_transport_error(provider_id, error)
+            })?,
+        };
+        let Some(chunk) = chunk else {
+            return Ok(());
+        };
+        for bounded_chunk in chunk.chunks(PROVIDER_STREAM_CHANNEL_CHUNK_BYTES) {
+            if !send_provider_stream_chunk(sender, bounded_chunk.to_vec(), stop, cancellation)
+                .await?
+            {
+                return Ok(());
+            }
+        }
+    }
+}
+
+async fn send_provider_json_request_async<F>(
+    provider_id: &str,
+    idle_timeout: Duration,
+    cancellation: &AgentRunCancellationToken,
+    stop: &AtomicBool,
+    mut build: F,
+) -> CommandResult<Option<AsyncResponse>>
+where
+    F: FnMut() -> AsyncRequestBuilder,
+{
+    let mut last_transport_error = None;
+    for attempt in 0..MAX_PROVIDER_ATTEMPTS {
+        let response = tokio::select! {
+            abort = wait_for_provider_stream_abort(stop, cancellation) => {
+                return match abort {
+                    ProviderStreamAbort::Stopped => Ok(None),
+                    ProviderStreamAbort::Cancelled => Err(cancelled_error()),
+                };
+            }
+            _ = tokio::time::sleep(idle_timeout) => {
+                return Err(provider_stream_idle_timeout_error(provider_id, idle_timeout));
+            }
+            response = build().send() => response,
+        };
+        match response {
+            Ok(mut response) => {
+                let status = response.status().as_u16();
+                if response.status().is_success() {
+                    return Ok(Some(response));
+                }
+                if is_retryable_provider_status(status) && attempt + 1 < MAX_PROVIDER_ATTEMPTS {
+                    let delay = retry_after_delay(response.headers())
+                        .unwrap_or_else(|| retry_backoff(attempt));
+                    drop(response);
+                    if !wait_provider_stream_delay(delay, stop, cancellation).await? {
+                        return Ok(None);
+                    }
+                    continue;
+                }
+                let body = read_provider_error_body_async(
+                    provider_id,
+                    &mut response,
+                    idle_timeout,
+                    cancellation,
+                    stop,
+                )
+                .await?;
+                return Err(provider_http_status_error(provider_id, status, &body));
+            }
+            Err(error) => {
+                if attempt + 1 < MAX_PROVIDER_ATTEMPTS {
+                    last_transport_error = Some(error.to_string());
+                    if !wait_provider_stream_delay(retry_backoff(attempt), stop, cancellation)
+                        .await?
+                    {
+                        return Ok(None);
+                    }
+                    continue;
+                }
+                return Err(map_provider_transport_error(provider_id, error));
+            }
+        }
+    }
+
+    Err(CommandError::retryable(
+        format!("{provider_id}_provider_unavailable"),
+        format!(
+            "Xero exhausted provider `{provider_id}` retry attempts{}.",
+            last_transport_error
+                .map(|error| format!(" Last transport error: {error}"))
+                .unwrap_or_default()
+        ),
+    ))
+}
+
+async fn read_provider_error_body_async(
+    provider_id: &str,
+    response: &mut AsyncResponse,
+    idle_timeout: Duration,
+    cancellation: &AgentRunCancellationToken,
+    stop: &AtomicBool,
+) -> CommandResult<String> {
+    let mut body = Vec::new();
+    loop {
+        let chunk = tokio::select! {
+            abort = wait_for_provider_stream_abort(stop, cancellation) => {
+                return match abort {
+                    ProviderStreamAbort::Stopped => Ok(String::new()),
+                    ProviderStreamAbort::Cancelled => Err(cancelled_error()),
+                };
+            }
+            _ = tokio::time::sleep(idle_timeout) => {
+                return Err(provider_stream_idle_timeout_error(provider_id, idle_timeout));
+            }
+            chunk = response.chunk() => chunk.map_err(|error| {
+                map_provider_transport_error(provider_id, error)
+            })?,
+        };
+        let Some(chunk) = chunk else {
+            break;
+        };
+        if body.len().saturating_add(chunk.len()) > MAX_PROVIDER_ERROR_BODY_BYTES {
+            return Ok("provider error body exceeded the safe read limit and was omitted.".into());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+async fn wait_for_provider_stream_abort(
+    stop: &AtomicBool,
+    cancellation: &AgentRunCancellationToken,
+) -> ProviderStreamAbort {
+    loop {
+        if stop.load(Ordering::SeqCst) {
+            return ProviderStreamAbort::Stopped;
+        }
+        if cancellation.is_cancelled() {
+            return ProviderStreamAbort::Cancelled;
+        }
+        tokio::time::sleep(PROVIDER_STREAM_ABORT_POLL_INTERVAL).await;
+    }
+}
+
+async fn wait_provider_stream_delay(
+    delay: Duration,
+    stop: &AtomicBool,
+    cancellation: &AgentRunCancellationToken,
+) -> CommandResult<bool> {
+    tokio::select! {
+        abort = wait_for_provider_stream_abort(stop, cancellation) => match abort {
+            ProviderStreamAbort::Stopped => Ok(false),
+            ProviderStreamAbort::Cancelled => Err(cancelled_error()),
+        },
+        _ = tokio::time::sleep(delay) => Ok(true),
+    }
+}
+
+async fn send_provider_stream_chunk(
+    sender: &SyncSender<ProviderStreamTransportMessage>,
+    mut chunk: Vec<u8>,
+    stop: &AtomicBool,
+    cancellation: &AgentRunCancellationToken,
+) -> CommandResult<bool> {
+    loop {
+        match sender.try_send(ProviderStreamTransportMessage::Chunk(chunk)) {
+            Ok(()) => return Ok(true),
+            Err(TrySendError::Disconnected(_)) => return Ok(false),
+            Err(TrySendError::Full(ProviderStreamTransportMessage::Chunk(pending))) => {
+                chunk = pending;
+            }
+            Err(TrySendError::Full(_)) => {
+                return Err(CommandError::system_fault(
+                    "agent_provider_stream_channel_invalid",
+                    "Xero's provider stream channel received an invalid message while applying backpressure.",
+                ));
+            }
+        }
+        if stop.load(Ordering::SeqCst) {
+            return Ok(false);
+        }
+        cancellation.check_cancelled()?;
+        tokio::time::sleep(PROVIDER_STREAM_BACKPRESSURE_POLL_INTERVAL).await;
+    }
+}
+
+fn send_provider_stream_terminal(
+    sender: &SyncSender<ProviderStreamTransportMessage>,
+    mut terminal: ProviderStreamTransportMessage,
+    stop: &AtomicBool,
+) {
+    loop {
+        match sender.try_send(terminal) {
+            Ok(()) | Err(TrySendError::Disconnected(_)) => return,
+            Err(TrySendError::Full(pending)) => terminal = pending,
+        }
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
+        std::thread::sleep(PROVIDER_STREAM_BACKPRESSURE_POLL_INTERVAL);
+    }
+}
+
+fn provider_stream_idle_timeout_error(provider_id: &str, idle_timeout: Duration) -> CommandError {
+    CommandError::retryable(
+        "agent_provider_stream_idle_timeout",
+        format!(
+            "Xero stopped provider `{provider_id}` because its response stream was idle for {} milliseconds.",
+            idle_timeout.as_millis()
+        ),
+    )
 }
 
 fn normalize_timeout(timeout_ms: u64) -> u64 {
@@ -2482,9 +2968,9 @@ fn openai_codex_user_agent() -> String {
 
 fn apply_openai_compatible_auth_header(
     provider_id: &str,
-    request: reqwest::blocking::RequestBuilder,
+    request: AsyncRequestBuilder,
     api_key: &str,
-) -> reqwest::blocking::RequestBuilder {
+) -> AsyncRequestBuilder {
     match provider_id {
         AZURE_OPENAI_PROVIDER_ID => request.header("api-key", api_key),
         _ => request.bearer_auth(api_key),
@@ -2493,8 +2979,8 @@ fn apply_openai_compatible_auth_header(
 
 fn apply_openai_compatible_provider_headers(
     provider_id: &str,
-    request: reqwest::blocking::RequestBuilder,
-) -> reqwest::blocking::RequestBuilder {
+    request: AsyncRequestBuilder,
+) -> AsyncRequestBuilder {
     match provider_id {
         GITHUB_MODELS_PROVIDER_ID => request
             .header("Accept", "application/vnd.github+json")
@@ -2724,7 +3210,7 @@ fn anthropic_count_tokens_body(
 
 fn estimate_anthropic_context_tokens(
     config: &AnthropicProviderConfig,
-    client: &Client,
+    client: &BlockingClient,
     request: &ProviderTurnRequest,
 ) -> CommandResult<SessionContextEstimateDto> {
     let counted_shape = "anthropic_messages_count_tokens";
@@ -3139,9 +3625,9 @@ struct OpenAiUsagePromptDetails {
     cache_write_tokens: u64,
 }
 
-fn parse_openai_chat_sse(
+fn parse_openai_chat_sse<R: Read>(
     provider_id: &str,
-    response: Response,
+    response: R,
     emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
 ) -> CommandResult<ProviderTurnOutcome> {
     let mut message = String::new();
@@ -3299,9 +3785,9 @@ fn parse_openai_chat_sse(
     )
 }
 
-fn parse_openai_responses_sse(
+fn parse_openai_responses_sse<R: Read>(
     provider_id: &str,
-    response: Response,
+    response: R,
     emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
 ) -> CommandResult<ProviderTurnOutcome> {
     let mut message = String::new();
@@ -4068,9 +4554,9 @@ fn usd_cost_to_micros(cost: f64) -> Option<u64> {
     }
 }
 
-fn parse_anthropic_sse(
+fn parse_anthropic_sse<R: Read>(
     provider_id: &str,
-    response: Response,
+    response: R,
     emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
 ) -> CommandResult<ProviderTurnOutcome> {
     let mut message = String::new();
@@ -4814,7 +5300,7 @@ fn decode_basic_html_entities(value: &str) -> String {
     decoded
 }
 
-fn send_provider_json_request<F>(provider_id: &str, mut build: F) -> CommandResult<Response>
+fn send_provider_json_request<F>(provider_id: &str, mut build: F) -> CommandResult<BlockingResponse>
 where
     F: FnMut() -> reqwest::blocking::RequestBuilder,
 {
@@ -4872,7 +5358,10 @@ fn retry_after_delay(headers: &HeaderMap) -> Option<Duration> {
         .map(|seconds| Duration::from_secs(seconds.min(30)))
 }
 
-fn ensure_success(provider_id: &str, mut response: Response) -> CommandResult<Response> {
+fn ensure_success(
+    provider_id: &str,
+    mut response: BlockingResponse,
+) -> CommandResult<BlockingResponse> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);
@@ -5002,9 +5491,14 @@ fn wait_provider_cli(
     child: &mut std::process::Child,
     timeout: Duration,
     provider_id: &str,
+    cancellation: &AgentRunCancellationToken,
 ) -> CommandResult<std::process::ExitStatus> {
     let started = std::time::Instant::now();
     loop {
+        if let Err(error) = cancellation.check_cancelled() {
+            let _ = terminate_process_tree(child);
+            return Err(error);
+        }
         match child.try_wait() {
             Ok(Some(status)) => {
                 cleanup_process_group_after_root_exit(child.id());
@@ -5146,6 +5640,12 @@ mod tests {
         RuntimeRunControlStateDto,
     };
     use crate::runtime::{agent_core::builtin_tool_descriptors, AUTONOMOUS_TOOL_PATCH};
+    use std::{
+        net::{TcpListener, TcpStream},
+        sync::mpsc,
+        thread,
+        time::Instant,
+    };
 
     fn test_request() -> ProviderTurnRequest {
         ProviderTurnRequest {
@@ -7312,5 +7812,267 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0]["type"], "text");
         assert_eq!(blocks[0]["text"], "");
+    }
+
+    fn spawn_provider_stream_server(
+        handle: impl FnOnce(TcpStream) + Send + 'static,
+    ) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind provider test server");
+        let address = listener.local_addr().expect("provider test server address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept provider request");
+            let mut request = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream
+                    .read_exact(&mut byte)
+                    .expect("read provider request headers");
+                request.push(byte[0]);
+            }
+            let request_headers = String::from_utf8_lossy(&request);
+            let content_length = request_headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or_default();
+            let mut request_body = vec![0_u8; content_length];
+            stream
+                .read_exact(&mut request_body)
+                .expect("read provider request body");
+            handle(stream);
+        });
+        (format!("http://{address}/stream"), server)
+    }
+
+    fn write_provider_stream_headers(stream: &mut TcpStream) {
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            )
+            .expect("write provider stream headers");
+        stream.flush().expect("flush provider stream headers");
+    }
+
+    fn write_http_chunk(stream: &mut TcpStream, payload: &str) {
+        write!(stream, "{:X}\r\n", payload.len()).expect("write HTTP chunk length");
+        stream
+            .write_all(payload.as_bytes())
+            .expect("write HTTP chunk body");
+        stream
+            .write_all(b"\r\n")
+            .expect("write HTTP chunk terminator");
+        stream.flush().expect("flush HTTP chunk");
+    }
+
+    fn finish_http_chunks(stream: &mut TcpStream) {
+        stream.write_all(b"0\r\n\r\n").expect("finish HTTP chunks");
+        stream.flush().expect("flush HTTP completion");
+    }
+
+    fn test_provider_stream_reader(
+        url: String,
+        idle_timeout: Duration,
+        cancellation: AgentRunCancellationToken,
+    ) -> ProviderStreamReader {
+        let client = provider_http_client(idle_timeout.as_millis() as u64)
+            .expect("build provider test client");
+        start_provider_json_stream("test-provider", idle_timeout, cancellation, move || {
+            client.post(url.clone()).json(&json!({ "stream": true }))
+        })
+        .expect("start provider test stream")
+    }
+
+    #[test]
+    fn provider_stream_idle_timeout_resets_after_each_chunk() {
+        let idle_timeout = Duration::from_millis(80);
+        let (url, server) = spawn_provider_stream_server(move |mut stream| {
+            write_provider_stream_headers(&mut stream);
+            for delta in ["a", "b", "c", "d"] {
+                write_http_chunk(
+                    &mut stream,
+                    &format!(
+                        "data: {{\"type\":\"response.output_text.delta\",\"delta\":\"{delta}\"}}\n\n"
+                    ),
+                );
+                thread::sleep(Duration::from_millis(45));
+            }
+            write_http_chunk(&mut stream, "data: [DONE]\n\n");
+            finish_http_chunks(&mut stream);
+        });
+        let reader =
+            test_provider_stream_reader(url, idle_timeout, AgentRunCancellationToken::default());
+        let started = Instant::now();
+        let mut emitted = String::new();
+
+        let outcome = parse_openai_responses_sse("test-provider", reader, &mut |event| {
+            if let ProviderStreamEvent::MessageDelta(delta) = event {
+                emitted.push_str(&delta);
+            }
+            Ok(())
+        })
+        .expect("periodic provider chunks should stay healthy");
+        server.join().expect("join provider test server");
+
+        assert!(
+            matches!(outcome, ProviderTurnOutcome::Complete { message, .. } if message == "abcd")
+                && emitted == "abcd"
+                && started.elapsed() > idle_timeout,
+            "periodic progress should outlive one idle window"
+        );
+    }
+
+    #[test]
+    fn provider_stream_reports_typed_idle_timeout_after_headers_then_silence() {
+        let (url, server) = spawn_provider_stream_server(|mut stream| {
+            write_provider_stream_headers(&mut stream);
+            thread::sleep(Duration::from_millis(180));
+        });
+        let mut reader = test_provider_stream_reader(
+            url,
+            Duration::from_millis(50),
+            AgentRunCancellationToken::default(),
+        );
+        let mut bytes = Vec::new();
+
+        let error = reader
+            .read_to_end(&mut bytes)
+            .expect_err("silent provider stream must time out");
+        server.join().expect("join provider test server");
+        let command_error = error
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<CommandError>())
+            .expect("typed provider stream error");
+
+        assert_eq!(command_error.code, "agent_provider_stream_idle_timeout");
+        assert!(
+            reader.transport_is_joined(),
+            "transport thread must be joined"
+        );
+    }
+
+    #[test]
+    fn provider_stream_cancellation_is_prompt_and_disconnects_server() {
+        let (disconnect_tx, disconnect_rx) = mpsc::channel();
+        let (url, server) = spawn_provider_stream_server(move |mut stream| {
+            write_provider_stream_headers(&mut stream);
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .expect("set disconnect observation timeout");
+            let mut byte = [0_u8; 1];
+            disconnect_tx
+                .send(matches!(stream.read(&mut byte), Ok(0)))
+                .expect("report provider disconnect");
+        });
+        let cancellation = AgentRunCancellationToken::default();
+        let mut reader =
+            test_provider_stream_reader(url, Duration::from_secs(5), cancellation.clone());
+        let canceller = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(40));
+            cancellation.cancel();
+        });
+        let started = Instant::now();
+        let mut bytes = Vec::new();
+
+        let error = reader
+            .read_to_end(&mut bytes)
+            .expect_err("cancelled provider stream must stop");
+        canceller.join().expect("join provider canceller");
+        server.join().expect("join provider test server");
+        let command_error = error
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<CommandError>())
+            .expect("typed provider cancellation error");
+
+        assert_eq!(command_error.code, "agent_run_cancelled");
+        assert!(
+            started.elapsed() < Duration::from_millis(300),
+            "cancellation should not wait for the idle timeout"
+        );
+        assert!(
+            disconnect_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("server disconnect observation"),
+            "dropping the response must close the provider connection"
+        );
+        assert!(
+            reader.transport_is_joined(),
+            "transport thread must be joined"
+        );
+    }
+
+    #[test]
+    fn provider_stream_parser_completion_closes_an_open_response() {
+        let (disconnect_tx, disconnect_rx) = mpsc::channel();
+        let (url, server) = spawn_provider_stream_server(move |mut stream| {
+            write_provider_stream_headers(&mut stream);
+            write_http_chunk(
+                &mut stream,
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"done\"}\n\n",
+            );
+            write_http_chunk(&mut stream, "data: [DONE]\n\n");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .expect("set completion disconnect timeout");
+            let mut byte = [0_u8; 1];
+            disconnect_tx
+                .send(matches!(stream.read(&mut byte), Ok(0)))
+                .expect("report completion disconnect");
+        });
+        let reader = test_provider_stream_reader(
+            url,
+            Duration::from_secs(5),
+            AgentRunCancellationToken::default(),
+        );
+        let started = Instant::now();
+
+        let outcome = parse_openai_responses_sse("test-provider", reader, &mut |_| Ok(()))
+            .expect("parser should complete at the done event");
+        server.join().expect("join provider test server");
+
+        assert!(
+            matches!(outcome, ProviderTurnOutcome::Complete { message, .. } if message == "done")
+                && started.elapsed() < Duration::from_millis(300)
+                && disconnect_rx
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("completion disconnect observation"),
+            "parser completion must drop the response and join its transport"
+        );
+    }
+
+    #[test]
+    fn provider_stream_channel_applies_bounded_backpressure() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let stop = Arc::new(AtomicBool::new(false));
+        let cancellation = AgentRunCancellationToken::default();
+        sender
+            .try_send(ProviderStreamTransportMessage::Chunk(vec![1]))
+            .expect("fill bounded provider stream channel");
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let producer = thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build provider backpressure test runtime");
+            runtime.block_on(async {
+                send_provider_stream_chunk(&sender, vec![2], stop.as_ref(), &cancellation)
+                    .await
+                    .expect("send provider stream chunk");
+            });
+            finished_tx.send(()).expect("report producer completion");
+        });
+
+        assert!(
+            finished_rx.recv_timeout(Duration::from_millis(40)).is_err(),
+            "producer must wait while the bounded parser channel is full"
+        );
+        let _ = receiver.recv().expect("drain first provider chunk");
+        finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("producer should resume after parser drains capacity");
+        producer.join().expect("join provider stream producer");
     }
 }

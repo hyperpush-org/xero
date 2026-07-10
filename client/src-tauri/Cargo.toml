@@ -119,7 +119,7 @@ tempfile = "3"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 toml = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time"] }
 tokio-stream = { version = "0.1", optional = true }
 tonic = { version = "0.12", optional = true }
 tungstenite = "0.24"

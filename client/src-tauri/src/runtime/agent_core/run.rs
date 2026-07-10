@@ -5303,6 +5303,7 @@ mod tests {
         fn stream_turn(
             &self,
             _request: &ProviderTurnRequest,
+            _cancellation: &AgentRunCancellationToken,
             _emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
         ) -> CommandResult<ProviderTurnOutcome> {
             Ok(ProviderTurnOutcome::Complete {

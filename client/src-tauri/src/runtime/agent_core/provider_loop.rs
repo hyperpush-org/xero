@@ -266,7 +266,7 @@ pub(crate) fn drive_provider_loop(
                 .field("runId", run_id.to_owned())
                 .field("provider", provider.provider_id().to_owned())
                 .field("model", provider.model_id().to_owned());
-            provider.stream_turn(&turn, &mut |event| {
+            provider.stream_turn(&turn, cancellation, &mut |event| {
                 cancellation.check_cancelled()?;
                 stream_recorder.record(event)
             })
@@ -7829,6 +7829,7 @@ mod tests {
         fn stream_turn(
             &self,
             request: &ProviderTurnRequest,
+            _cancellation: &AgentRunCancellationToken,
             emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
         ) -> CommandResult<ProviderTurnOutcome> {
             self.system_prompts

@@ -1567,6 +1567,7 @@ pub trait ProviderAdapter {
     fn stream_turn(
         &self,
         request: &ProviderTurnRequest,
+        cancellation: &AgentRunCancellationToken,
         emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
     ) -> CommandResult<ProviderTurnOutcome>;
 
@@ -1631,7 +1632,8 @@ pub trait ProviderAdapter {
             },
         };
 
-        match self.stream_turn(&turn, emit)? {
+        let cancellation = AgentRunCancellationToken::default();
+        match self.stream_turn(&turn, &cancellation, emit)? {
             ProviderTurnOutcome::Complete { message, usage, .. } => Ok(ProviderCompactionOutcome {
                 summary: message,
                 usage,
@@ -1690,7 +1692,8 @@ pub trait ProviderAdapter {
             },
         };
 
-        match self.stream_turn(&turn, emit)? {
+        let cancellation = AgentRunCancellationToken::default();
+        match self.stream_turn(&turn, &cancellation, emit)? {
             ProviderTurnOutcome::Complete { message, usage, .. } => {
                 let candidates = parse_provider_memory_candidates(&message)?;
                 Ok(ProviderMemoryExtractionOutcome { candidates, usage })
@@ -1980,6 +1983,7 @@ impl ProviderAdapter for FakeProviderAdapter {
     fn stream_turn(
         &self,
         request: &ProviderTurnRequest,
+        _cancellation: &AgentRunCancellationToken,
         emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
     ) -> CommandResult<ProviderTurnOutcome> {
         emit(ProviderStreamEvent::ReasoningSummary(format!(

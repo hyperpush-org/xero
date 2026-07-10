@@ -977,7 +977,8 @@ fn suggest_project_start_targets_blocking<R: Runtime + 'static>(
     };
 
     let mut emit = |_event: ProviderStreamEvent| Ok(());
-    let message = match provider.stream_turn(&turn, &mut emit)? {
+    let cancellation = crate::runtime::AgentRunCancellationToken::default();
+    let message = match provider.stream_turn(&turn, &cancellation, &mut emit)? {
         ProviderTurnOutcome::Complete { message, .. } => message,
         ProviderTurnOutcome::ToolCalls { .. } => {
             return Err(CommandError::user_fixable(
@@ -2203,7 +2204,8 @@ fn suggest_terminal_ai_fallback<R: Runtime + 'static>(
         controls: turn_controls,
     };
     let mut emit = |_event: ProviderStreamEvent| Ok(());
-    let message = match provider.stream_turn(&turn, &mut emit)? {
+    let cancellation = crate::runtime::AgentRunCancellationToken::default();
+    let message = match provider.stream_turn(&turn, &cancellation, &mut emit)? {
         ProviderTurnOutcome::Complete { message, .. } => message,
         ProviderTurnOutcome::ToolCalls { .. } => return Ok(None),
     };

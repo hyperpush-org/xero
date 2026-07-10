@@ -155,7 +155,8 @@ fn generate_session_title<R: Runtime>(
     };
 
     let mut emit = |_event: ProviderStreamEvent| Ok(());
-    let message = match provider.stream_turn(&turn, &mut emit)? {
+    let cancellation = crate::runtime::AgentRunCancellationToken::default();
+    let message = match provider.stream_turn(&turn, &cancellation, &mut emit)? {
         ProviderTurnOutcome::Complete { message, .. } => message,
         ProviderTurnOutcome::ToolCalls { .. } => {
             return Err(CommandError::retryable(

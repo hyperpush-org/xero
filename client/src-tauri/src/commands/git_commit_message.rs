@@ -150,7 +150,8 @@ fn generate_commit_message_from_staged_diff(
         controls,
     };
     let mut emit = |_event: ProviderStreamEvent| Ok(());
-    match provider.stream_turn(&turn, &mut emit)? {
+    let provider_cancellation = crate::runtime::AgentRunCancellationToken::default();
+    match provider.stream_turn(&turn, &provider_cancellation, &mut emit)? {
         ProviderTurnOutcome::Complete { message, .. } => Ok(CommitMessageGenerationOutcome {
             message: sanitize_provider_commit_message(&message)?,
             diff_truncated,
@@ -383,6 +384,7 @@ mod tests {
         fn stream_turn(
             &self,
             request: &ProviderTurnRequest,
+            _cancellation: &crate::runtime::AgentRunCancellationToken,
             _emit: &mut dyn FnMut(ProviderStreamEvent) -> crate::commands::CommandResult<()>,
         ) -> crate::commands::CommandResult<ProviderTurnOutcome> {
             self.requests
