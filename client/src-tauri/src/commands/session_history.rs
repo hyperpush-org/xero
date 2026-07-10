@@ -38,29 +38,30 @@ use crate::{
         SessionContextContributorDto, SessionContextContributorKindDto,
         SessionContextDependencyManifestDto, SessionContextDispositionDto,
         SessionContextRedactionClassDto, SessionContextRedactionDto, SessionContextSnapshotDiffDto,
-        SessionContextSnapshotDto, SessionContextTaskPhaseDto, SessionMemoryDiagnosticDto,
-        SessionMemoryKindDto, SessionMemoryRecordDto, SessionMemoryScopeDto,
-        SessionTranscriptActorDto, SessionTranscriptDto, SessionTranscriptExportFormatDto,
-        SessionTranscriptExportPayloadDto, SessionTranscriptExportResponseDto,
-        SessionTranscriptItemDto, SessionTranscriptItemKindDto, SessionTranscriptScopeDto,
-        SessionTranscriptSearchResultSnippetDto, SessionUsageSourceDto, SessionUsageTotalsDto,
-        UpdateSessionMemoryRequestDto, XERO_SESSION_CONTEXT_CONTRACT_VERSION,
+        SessionContextSnapshotDto, SessionContextTaskPhaseDto, SessionMemoryKindDto,
+        SessionMemoryRecordDto, SessionMemoryScopeDto, SessionTranscriptActorDto,
+        SessionTranscriptDto, SessionTranscriptExportFormatDto, SessionTranscriptExportPayloadDto,
+        SessionTranscriptExportResponseDto, SessionTranscriptItemDto, SessionTranscriptItemKindDto,
+        SessionTranscriptScopeDto, SessionTranscriptSearchResultSnippetDto, SessionUsageSourceDto,
+        SessionUsageTotalsDto, UpdateSessionMemoryRequestDto,
+        XERO_SESSION_CONTEXT_CONTRACT_VERSION,
     },
     db::project_store::{
         self, AgentCompactionTrigger, AgentMemoryKind, AgentMemoryListFilter, AgentMemoryScope,
         AgentMessageRecord, AgentMessageRole, AgentRunSnapshotRecord, AgentSessionBranchBoundary,
         AgentSessionBranchCreateRecord, AgentSessionRecord, NewAgentCompactionRecord,
-        NewAgentMemoryRecord,
     },
     runtime::{
         agent_core::{
             canonical_compaction_source_hash, compaction_run_coverage_for_snapshot,
             compile_system_prompt_for_session_with_attached, create_provider_adapter,
-            load_persisted_attached_skill_contexts_for_run, provider_messages_from_snapshot,
+            load_persisted_attached_skill_contexts_for_run, persist_memory_candidate,
+            provider_messages_from_snapshot, record_memory_extraction_diagnostics,
             runtime_controls_from_request, skill_contexts_from_provider_messages,
-            tool_registry_for_snapshot, CodeHistoryMemoryGuard, CodeHistoryMemoryGuardOutcome,
-            CompactionRunCoverage, PromptCompilation, PromptFragment, ProviderAdapter,
-            ProviderCompactionRequest, ProviderMemoryCandidate, ProviderMemoryExtractionRequest,
+            tool_registry_for_snapshot, CodeHistoryMemoryGuard, CompactionRunCoverage,
+            MemoryCandidatePersistenceOutcome, PromptCompilation, PromptFragment, ProviderAdapter,
+            ProviderCompactionRequest, ProviderMemoryExtractionRequest,
+            RuntimeMemoryExtractionPolicy, RuntimeMemoryExtractionSource, RuntimeMemorySourceItem,
             ToolRegistry, ToolRegistryOptions,
         },
         AgentToolDescriptor,
@@ -83,7 +84,6 @@ const DEFAULT_RAW_TAIL_MESSAGE_COUNT: u32 = 8;
 const MAX_RAW_TAIL_MESSAGE_COUNT: u32 = 24;
 const MAX_COMPACTION_SUMMARY_TOKENS: u64 = 1_500;
 const MAX_MEMORY_CANDIDATES: u8 = 8;
-const MIN_MEMORY_CONFIDENCE: u8 = 50;
 const MAX_CODE_MAP_FILES: usize = 240;
 const MAX_CODE_SYMBOLS: usize = 160;
 const LARGE_CONTEXT_NODE_TOKENS: u64 = 700;
@@ -1980,6 +1980,11 @@ fn extract_session_memories_with_provider(
         run_id,
         &completed_snapshots,
     )?;
+    let policy_snapshot = &completed_snapshots
+        .last()
+        .expect("completed snapshots were checked as non-empty")
+        .0;
+    let policy = RuntimeMemoryExtractionPolicy::manual(repo_root, policy_snapshot, provider)?;
     let existing_memories = project_store::list_agent_memories(
         repo_root,
         project_id,
@@ -2016,43 +2021,36 @@ fn extract_session_memories_with_provider(
         .into_iter()
         .take(MAX_MEMORY_CANDIDATES as usize)
     {
-        match prepare_new_memory_candidate(
+        match persist_memory_candidate(
+            repo_root,
             project_id,
             agent_session_id,
             &source,
+            &policy,
             candidate,
             now.as_str(),
-        ) {
-            Ok(record) => {
-                let text_hash = project_store::agent_memory_text_hash(&record.text);
-                if let Some(existing) = project_store::find_active_agent_memory_by_hash(
-                    repo_root,
-                    project_id,
-                    &record.scope,
-                    record.agent_session_id.as_deref(),
-                    &record.kind,
-                    &text_hash,
-                )? {
-                    project_store::reinforce_agent_memory(
-                        repo_root,
-                        project_id,
-                        &existing.memory_id,
-                        record.source_run_id.as_deref(),
-                        &record.source_item_ids,
-                        now.as_str(),
-                    )?;
-                    reinforced_duplicate_count = reinforced_duplicate_count.saturating_add(1);
-                    continue;
-                }
-                let persisted = project_store::insert_agent_memory(repo_root, &record)?;
-                created.push(session_memory_record_dto(&persisted));
+        )? {
+            MemoryCandidatePersistenceOutcome::Created(record) => {
+                created.push(session_memory_record_dto(&record));
             }
-            Err(diagnostic) => {
+            MemoryCandidatePersistenceOutcome::Reinforced => {
+                reinforced_duplicate_count = reinforced_duplicate_count.saturating_add(1);
+            }
+            MemoryCandidatePersistenceOutcome::Skipped(diagnostic) => {
                 skipped_count = skipped_count.saturating_add(1);
                 diagnostics.push(diagnostic);
             }
         }
     }
+
+    record_memory_extraction_diagnostics(
+        repo_root,
+        policy_snapshot,
+        "manual",
+        created.len(),
+        reinforced_duplicate_count,
+        &diagnostics,
+    )?;
 
     for memory in &created {
         validate_session_memory_record_contract(memory).map_err(|details| {
@@ -2081,15 +2079,11 @@ fn extract_session_memories_with_provider(
         created_count: created.len(),
         reinforced_duplicate_count,
         skipped_count,
-        diagnostics,
+        diagnostics: diagnostics
+            .iter()
+            .map(|diagnostic| session_memory_diagnostic_dto(&diagnostic.code, &diagnostic.message))
+            .collect(),
     })
-}
-
-struct MemoryExtractionSource {
-    transcript: String,
-    source_run_id: Option<String>,
-    source_item_ids: Vec<String>,
-    code_history_guard: CodeHistoryMemoryGuard,
 }
 
 fn build_memory_extraction_source(
@@ -2101,7 +2095,7 @@ fn build_memory_extraction_source(
         AgentRunSnapshotRecord,
         Option<project_store::AgentUsageRecord>,
     )],
-) -> CommandResult<MemoryExtractionSource> {
+) -> CommandResult<RuntimeMemoryExtractionSource> {
     let run_transcripts = run_transcripts_with_rollback_events(
         repo_root,
         project_id,
@@ -2112,8 +2106,17 @@ fn build_memory_extraction_source(
     )?;
     let code_history_guard =
         CodeHistoryMemoryGuard::for_session(repo_root, project_id, agent_session_id, run_id)?;
-    let source_run_id = run_transcripts.last().map(|run| run.run_id.clone());
+    let source_run_id = run_transcripts
+        .last()
+        .map(|run| run.run_id.clone())
+        .ok_or_else(|| {
+            CommandError::system_fault(
+                "session_memory_source_run_missing",
+                "Xero could not resolve a completed source run for memory extraction.",
+            )
+        })?;
     let mut source_item_ids = Vec::new();
+    let mut source_items = HashMap::new();
     let mut transcript =
         String::from("Review this completed Xero session transcript for durable memories.\n");
     transcript.push_str(
@@ -2125,7 +2128,6 @@ fn build_memory_extraction_source(
             run.run_id, run.provider_id, run.model_id, run.status
         ));
         for item in &run.items {
-            source_item_ids.push(item.item_id.clone());
             let text = item
                 .text
                 .as_deref()
@@ -2135,6 +2137,20 @@ fn build_memory_extraction_source(
                 continue;
             }
             let (text, _redaction) = redact_session_context_text(text);
+            if text.trim().is_empty() {
+                continue;
+            }
+            source_item_ids.push(item.item_id.clone());
+            source_items.insert(
+                item.item_id.clone(),
+                RuntimeMemorySourceItem {
+                    item_id: item.item_id.clone(),
+                    run_id: item.run_id.clone(),
+                    actor: item.actor_label().into(),
+                    text: text.clone(),
+                    user_authored: matches!(item.actor, SessionTranscriptActorDto::User),
+                },
+            );
             transcript.push_str(&format!(
                 "- [{}] {} {}: {}\n",
                 item.item_id,
@@ -2144,10 +2160,34 @@ fn build_memory_extraction_source(
             ));
         }
     }
-    Ok(MemoryExtractionSource {
+    for (operation_source_id, operation_run_id, operation_line) in
+        code_history_guard.operation_lines()
+    {
+        if source_items.contains_key(&operation_source_id) {
+            continue;
+        }
+        source_item_ids.push(operation_source_id.clone());
+        source_items.insert(
+            operation_source_id.clone(),
+            RuntimeMemorySourceItem {
+                item_id: operation_source_id.clone(),
+                run_id: operation_run_id,
+                actor: "xero".into(),
+                text: operation_line.clone(),
+                user_authored: false,
+            },
+        );
+        transcript.push_str(&format!(
+            "- [{}] code history operation: {}\n",
+            operation_source_id,
+            preview_context_text(&operation_line)
+        ));
+    }
+    Ok(RuntimeMemoryExtractionSource {
         transcript,
         source_run_id,
         source_item_ids,
+        source_items,
         code_history_guard,
     })
 }
@@ -2171,90 +2211,6 @@ impl SessionTranscriptItemActorLabel for SessionTranscriptItemDto {
     }
 }
 
-fn prepare_new_memory_candidate(
-    project_id: &str,
-    agent_session_id: &str,
-    source: &MemoryExtractionSource,
-    candidate: ProviderMemoryCandidate,
-    created_at: &str,
-) -> Result<NewAgentMemoryRecord, SessionMemoryDiagnosticDto> {
-    let scope = agent_memory_scope_from_provider(&candidate.scope).ok_or_else(|| {
-        session_memory_diagnostic_dto(
-            "session_memory_candidate_scope_invalid",
-            "A provider extracted memory used an unsupported scope.",
-        )
-    })?;
-    let kind = agent_memory_kind_from_provider(&candidate.kind).ok_or_else(|| {
-        session_memory_diagnostic_dto(
-            "session_memory_candidate_kind_invalid",
-            "A provider extracted memory used an unsupported kind.",
-        )
-    })?;
-    let text = candidate.text.trim().to_string();
-    if text.is_empty() {
-        return Err(session_memory_diagnostic_dto(
-            "session_memory_candidate_empty",
-            "A provider extracted memory did not include text.",
-        ));
-    }
-    let confidence = candidate.confidence.unwrap_or(0).min(100);
-    if confidence < MIN_MEMORY_CONFIDENCE {
-        return Err(session_memory_diagnostic_dto(
-            "session_memory_candidate_low_confidence",
-            "Xero skipped a low-confidence extracted memory.",
-        ));
-    }
-    let (_redacted_text, redaction) = redact_session_context_text(&text);
-    if redaction.redacted {
-        let (code, message) = memory_candidate_blocked_diagnostic(&redaction);
-        return Err(session_memory_diagnostic_dto(code, message));
-    }
-    let source_item_ids = candidate
-        .source_item_ids
-        .into_iter()
-        .map(|item_id| item_id.trim().to_string())
-        .filter(|item_id| !item_id.is_empty())
-        .collect::<Vec<_>>();
-    let (scope, kind, text, mut source_item_ids) =
-        match source
-            .code_history_guard
-            .apply(scope, kind, text, source_item_ids)
-        {
-            CodeHistoryMemoryGuardOutcome::Accepted {
-                scope,
-                kind,
-                text,
-                source_item_ids,
-            } => (scope, kind, text, source_item_ids),
-            CodeHistoryMemoryGuardOutcome::Rejected(diagnostic) => {
-                return Err(session_memory_diagnostic_dto(
-                    diagnostic.code,
-                    diagnostic.message,
-                ));
-            }
-        };
-    if source_item_ids.is_empty() {
-        source_item_ids = source.source_item_ids.iter().take(8).cloned().collect();
-    }
-    Ok(NewAgentMemoryRecord {
-        memory_id: project_store::generate_agent_memory_id(),
-        project_id: project_id.into(),
-        agent_session_id: match scope {
-            AgentMemoryScope::Project => None,
-            AgentMemoryScope::Session => Some(agent_session_id.into()),
-        },
-        scope,
-        kind,
-        text,
-        enabled: true,
-        confidence: Some(confidence),
-        source_run_id: source.source_run_id.clone(),
-        source_item_ids,
-        diagnostic: None,
-        created_at: created_at.into(),
-    })
-}
-
 fn memory_context_blocked_error(
     redaction: &SessionContextRedactionDto,
 ) -> (&'static str, &'static str) {
@@ -2272,49 +2228,6 @@ fn memory_context_blocked_error(
             "session_memory_secret_blocked",
             "Xero will not approve memory text that looks secret-bearing.",
         )
-    }
-}
-
-fn memory_candidate_blocked_diagnostic(
-    redaction: &SessionContextRedactionDto,
-) -> (&'static str, &'static str) {
-    if redaction
-        .reason
-        .as_deref()
-        .is_some_and(|reason| reason.contains("prompt-injection"))
-    {
-        (
-            "session_memory_candidate_integrity",
-            "Xero skipped an extracted memory because it looked like an instruction-override attempt.",
-        )
-    } else {
-        (
-            "session_memory_candidate_secret",
-            "Xero skipped an extracted memory because its text looked secret-bearing.",
-        )
-    }
-}
-
-fn agent_memory_scope_from_provider(value: &str) -> Option<AgentMemoryScope> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "project" => Some(AgentMemoryScope::Project),
-        "session" => Some(AgentMemoryScope::Session),
-        _ => None,
-    }
-}
-
-fn agent_memory_kind_from_provider(value: &str) -> Option<AgentMemoryKind> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "project_fact" | "project fact" | "fact" => Some(AgentMemoryKind::ProjectFact),
-        "user_preference" | "user preference" | "preference" => {
-            Some(AgentMemoryKind::UserPreference)
-        }
-        "decision" => Some(AgentMemoryKind::Decision),
-        "session_summary" | "session summary" | "summary" => Some(AgentMemoryKind::SessionSummary),
-        "troubleshooting" | "troubleshooting_fact" | "troubleshooting fact" => {
-            Some(AgentMemoryKind::Troubleshooting)
-        }
-        _ => None,
     }
 }
 

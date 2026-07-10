@@ -21,6 +21,7 @@ pub(crate) struct CodeHistoryMemoryDiagnostic {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CodeHistoryMemoryOperation {
     source_item_id: String,
+    source_run_id: String,
     operation_id: String,
     operation_kind: CodeHistoryMemoryOperationKind,
     mode: String,
@@ -101,10 +102,16 @@ impl CodeHistoryMemoryGuard {
         self.operations.is_empty()
     }
 
-    pub(crate) fn operation_lines(&self) -> Vec<(String, String)> {
+    pub(crate) fn operation_lines(&self) -> Vec<(String, String, String)> {
         self.operations
             .iter()
-            .map(|operation| (operation.source_item_id.clone(), operation.memory_line()))
+            .map(|operation| {
+                (
+                    operation.source_item_id.clone(),
+                    operation.source_run_id.clone(),
+                    operation.memory_line(),
+                )
+            })
             .collect()
     }
 
@@ -209,6 +216,7 @@ impl CodeHistoryMemoryOperation {
     fn from_code_history(operation: project_store::CodeHistoryOperationRecord) -> Self {
         Self {
             source_item_id: format!("code_history_operation:{}", operation.operation_id),
+            source_run_id: operation.run_id,
             operation_id: operation.operation_id,
             operation_kind: CodeHistoryMemoryOperationKind::CodeHistory,
             mode: operation.mode,
@@ -232,6 +240,7 @@ impl CodeHistoryMemoryOperation {
             .collect::<Vec<_>>();
         Self {
             source_item_id: format!("code_rollback:{}", operation.operation_id),
+            source_run_id: operation.run_id,
             operation_id: operation.operation_id,
             operation_kind: CodeHistoryMemoryOperationKind::LegacyRollback,
             mode: "legacy_rollback".into(),
@@ -431,6 +440,7 @@ mod tests {
     fn rejects_project_fact_about_affected_path_without_history_provenance() {
         let guard = CodeHistoryMemoryGuard::new(vec![CodeHistoryMemoryOperation {
             source_item_id: "code_history_operation:history-op-1".into(),
+            source_run_id: "run-history-op-1".into(),
             operation_id: "history-op-1".into(),
             operation_kind: CodeHistoryMemoryOperationKind::CodeHistory,
             mode: "selective_undo".into(),
@@ -461,6 +471,7 @@ mod tests {
     fn allows_project_fact_when_history_operation_provenance_is_explicit() {
         let guard = CodeHistoryMemoryGuard::new(vec![CodeHistoryMemoryOperation {
             source_item_id: "code_history_operation:history-op-1".into(),
+            source_run_id: "run-history-op-1".into(),
             operation_id: "history-op-1".into(),
             operation_kind: CodeHistoryMemoryOperationKind::CodeHistory,
             mode: "selective_undo".into(),
@@ -493,6 +504,7 @@ mod tests {
     fn scopes_code_implementation_fact_as_historical_when_path_is_not_named() {
         let guard = CodeHistoryMemoryGuard::new(vec![CodeHistoryMemoryOperation {
             source_item_id: "code_history_operation:history-op-1".into(),
+            source_run_id: "run-history-op-1".into(),
             operation_id: "history-op-1".into(),
             operation_kind: CodeHistoryMemoryOperationKind::CodeHistory,
             mode: "session_rollback".into(),

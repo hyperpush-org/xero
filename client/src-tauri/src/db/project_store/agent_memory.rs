@@ -703,6 +703,28 @@ pub fn reinforce_agent_memory(
     store.reinforce(memory_id, source_run_id, source_item_ids, now)
 }
 
+pub fn reinforce_and_promote_agent_memory(
+    repo_root: &Path,
+    project_id: &str,
+    memory_id: &str,
+    source_run_id: Option<&str>,
+    source_item_ids: &[String],
+    diagnostic: AgentRunDiagnosticRecord,
+    now: &str,
+) -> Result<AgentMemoryRecord, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(memory_id, "memoryId")?;
+    validate_non_empty_text(now, "reinforcedAt")?;
+    if let Some(source_run_id) = source_run_id {
+        validate_non_empty_text(source_run_id, "sourceRunId")?;
+    }
+    for source_item_id in source_item_ids {
+        validate_non_empty_text(source_item_id, "sourceItemIds")?;
+    }
+    let store = open_store_with_project_check(repo_root, project_id)?;
+    store.reinforce_and_promote(memory_id, source_run_id, source_item_ids, diagnostic, now)
+}
+
 pub fn update_agent_memory(
     repo_root: &Path,
     update: &AgentMemoryUpdateRecord,

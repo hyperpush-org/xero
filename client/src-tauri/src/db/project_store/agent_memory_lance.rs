@@ -1099,6 +1099,33 @@ impl ProjectMemoryStore {
         })
     }
 
+    pub fn reinforce_and_promote(
+        &self,
+        memory_id: &str,
+        source_run_id: Option<&str>,
+        source_item_ids: &[String],
+        diagnostic: AgentRunDiagnosticRecord,
+        now: &str,
+    ) -> Result<AgentMemoryRecord, CommandError> {
+        let dataset = self.dataset_dir.clone();
+        let project_id = self.project_id.clone();
+        let memory_id = memory_id.to_string();
+        let source_run_id = source_run_id.map(str::to_owned);
+        let source_item_ids = source_item_ids.to_vec();
+        let now = now.to_string();
+        runtime().block_on(async move {
+            let previous = fetch_row(&dataset, &memory_id)
+                .await?
+                .ok_or_else(|| missing_memory_error(&project_id, &memory_id))?;
+            let mut row = previous.clone();
+            reinforce_row(&mut row, source_run_id.as_deref(), &source_item_ids, &now);
+            row.enabled = true;
+            row.diagnostic = Some(diagnostic);
+            replace_row(&dataset, &previous, row.clone()).await?;
+            Ok(stamp_project(row, &project_id).into_record())
+        })
+    }
+
     pub fn get_by_memory_id(
         &self,
         memory_id: &str,
