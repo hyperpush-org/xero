@@ -131,6 +131,8 @@ fn generate_commit_message_from_staged_diff(
     cancellation: &BackendCancellationToken,
 ) -> CommandResult<CommitMessageGenerationOutcome> {
     cancellation.check_cancelled("commit message generation")?;
+    let output_allowance =
+        provider.resolve_turn_output_allowance(None, controls.active.thinking_effort.as_ref())?;
     let turn = ProviderTurnRequest {
         system_prompt: COMMIT_MESSAGE_SYSTEM_PROMPT.into(),
         messages: vec![ProviderMessage::User {
@@ -144,6 +146,7 @@ fn generate_commit_message_from_staged_diff(
         }],
         tools: Vec::new(),
         turn_index: 0,
+        output_allowance,
         controls,
     };
     let mut emit = |_event: ProviderStreamEvent| Ok(());
@@ -326,6 +329,7 @@ mod tests {
         build_commit_message_prompt, generate_commit_message_from_staged_diff,
         sanitize_provider_commit_message,
     };
+    use crate::runtime::agent_core::ProviderTurnOutputAllowance;
     use crate::{
         commands::{
             backend_jobs::BackendCancellationToken, ChangeKind, RepositoryDiffFileDto,
@@ -366,6 +370,14 @@ mod tests {
 
         fn model_id(&self) -> &str {
             "test-model"
+        }
+
+        fn resolve_turn_output_allowance(
+            &self,
+            _provider_preflight: Option<&xero_agent_core::ProviderPreflightSnapshot>,
+            _thinking_effort: Option<&crate::commands::ProviderModelThinkingEffortDto>,
+        ) -> crate::commands::CommandResult<ProviderTurnOutputAllowance> {
+            ProviderTurnOutputAllowance::unified(1_024)
         }
 
         fn stream_turn(

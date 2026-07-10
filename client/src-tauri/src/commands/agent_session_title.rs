@@ -138,6 +138,10 @@ fn generate_session_title<R: Runtime>(
     let provider_config = resolve_owned_agent_provider_config(app, state, title_controls.as_ref())?;
     let provider = create_provider_adapter(provider_config)?;
     let provider_model_id = provider.model_id().to_owned();
+    let turn_controls =
+        title_generation_control_state(title_controls.as_ref(), provider_model_id.clone());
+    let output_allowance = provider
+        .resolve_turn_output_allowance(None, turn_controls.active.thinking_effort.as_ref())?;
     let turn = ProviderTurnRequest {
         system_prompt: SESSION_TITLE_SYSTEM_PROMPT.into(),
         messages: vec![ProviderMessage::User {
@@ -146,10 +150,8 @@ fn generate_session_title<R: Runtime>(
         }],
         tools: Vec::new(),
         turn_index: 0,
-        controls: title_generation_control_state(
-            title_controls.as_ref(),
-            provider_model_id.clone(),
-        ),
+        output_allowance,
+        controls: turn_controls,
     };
 
     let mut emit = |_event: ProviderStreamEvent| Ok(());

@@ -30,9 +30,10 @@ pub use agent_core::{
     MessageAttachment, MessageAttachmentKind, OpenAiCodexResponsesProviderConfig,
     OpenAiCompatibleProviderConfig, OpenAiResponsesProviderConfig, OwnedAgentRunRequest,
     PreparedOwnedAgentContinuation, ProviderAdapter, ProviderMessage, ProviderStreamEvent,
-    ProviderTurnOutcome, ProviderTurnRequest, ProviderUsage, ToolRegistry, ToolRegistryOptions,
-    VertexProviderConfig, XaiResponsesProviderConfig, AGENT_RUN_CANCELLED_CODE, FAKE_PROVIDER_ID,
-    OWNED_AGENT_RUNTIME_KIND, OWNED_AGENT_SUPERVISOR_KIND,
+    ProviderTurnOutcome, ProviderTurnOutputAllowance, ProviderTurnRequest, ProviderUsage,
+    ToolRegistry, ToolRegistryOptions, VertexProviderConfig, XaiResponsesProviderConfig,
+    AGENT_RUN_CANCELLED_CODE, FAKE_PROVIDER_ID, OWNED_AGENT_RUNTIME_KIND,
+    OWNED_AGENT_SUPERVISOR_KIND,
 };
 pub use autonomous_skill_runtime::{
     compute_skill_directory_version_hash, decide_skill_tool_access,

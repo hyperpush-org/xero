@@ -70,6 +70,7 @@ pub(crate) use environment_lifecycle::*;
 pub(crate) use harness_order::*;
 pub(crate) use memory_guardrails::*;
 pub(crate) use persistence::*;
+pub(crate) use provider_adapters::resolve_provider_turn_budget;
 pub(crate) use provider_loop::*;
 pub(crate) use state_machine::*;
 pub(crate) use synthetic_dispatch::{dispatch_synthetic_tool_calls, SyntheticDispatchOptions};
@@ -90,12 +91,14 @@ use crate::{
         resolve_context_limit_with_provider_preflight, runtime_agent_allows_approval_mode,
         soul_prompt_fragment, AgentToolApplicationStyleDto,
         AgentToolApplicationStyleResolutionSourceDto, BrowserControlPreferenceDto, CommandError,
-        CommandErrorClass, CommandResult, ResolvedAgentToolApplicationStyleDto, RuntimeAgentIdDto,
-        RuntimeLinkedPathDto, RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto,
-        RuntimeRunControlInputDto, RuntimeRunControlStateDto, SessionCompactionPolicyInput,
-        SessionContextBudgetPressureDto, SessionContextEstimateConfidenceDto,
-        SessionContextEstimateDto, SessionContextEstimateSourceDto, SessionContextPolicyActionDto,
-        SessionUsageSourceDto, SoulSettingsDto,
+        CommandErrorClass, CommandResult, ProviderModelThinkingEffortDto,
+        ResolvedAgentToolApplicationStyleDto, RuntimeAgentIdDto, RuntimeLinkedPathDto,
+        RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto, RuntimeRunControlInputDto,
+        RuntimeRunControlStateDto, SessionCompactionPolicyInput, SessionContextBudgetPressureDto,
+        SessionContextEstimateConfidenceDto, SessionContextEstimateDto,
+        SessionContextEstimateSourceDto, SessionContextLimitResolutionDto,
+        SessionContextLimitSourceDto, SessionContextPolicyActionDto, SessionUsageSourceDto,
+        SoulSettingsDto,
     },
     db::project_store::{
         self, AgentEventRecord, AgentMessageRecord, AgentMessageRole, AgentRunEventKind,

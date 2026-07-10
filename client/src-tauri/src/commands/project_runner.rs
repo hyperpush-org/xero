@@ -946,6 +946,24 @@ fn suggest_project_start_targets_blocking<R: Runtime + 'static>(
     let provider_model_id = provider.model_id().to_owned();
 
     let user_prompt = build_suggest_prompt(&repo_root);
+    let turn_controls = RuntimeRunControlStateDto {
+        active: RuntimeRunActiveControlSnapshotDto {
+            runtime_agent_id,
+            agent_definition_id: None,
+            agent_definition_version: None,
+            provider_profile_id: controls.provider_profile_id.clone(),
+            model_id: provider_model_id.clone(),
+            thinking_effort: controls.thinking_effort.clone(),
+            approval_mode: RuntimeRunApprovalModeDto::Yolo,
+            plan_mode_required: false,
+            auto_compact_enabled: false,
+            revision: 1,
+            applied_at: now_timestamp(),
+        },
+        pending: None,
+    };
+    let output_allowance = provider
+        .resolve_turn_output_allowance(None, turn_controls.active.thinking_effort.as_ref())?;
     let turn = ProviderTurnRequest {
         system_prompt: SUGGEST_SYSTEM_PROMPT.into(),
         messages: vec![ProviderMessage::User {
@@ -954,22 +972,8 @@ fn suggest_project_start_targets_blocking<R: Runtime + 'static>(
         }],
         tools: Vec::new(),
         turn_index: 0,
-        controls: RuntimeRunControlStateDto {
-            active: RuntimeRunActiveControlSnapshotDto {
-                runtime_agent_id,
-                agent_definition_id: None,
-                agent_definition_version: None,
-                provider_profile_id: controls.provider_profile_id.clone(),
-                model_id: provider_model_id.clone(),
-                thinking_effort: controls.thinking_effort.clone(),
-                approval_mode: RuntimeRunApprovalModeDto::Yolo,
-                plan_mode_required: false,
-                auto_compact_enabled: false,
-                revision: 1,
-                applied_at: now_timestamp(),
-            },
-            pending: None,
-        },
+        output_allowance,
+        controls: turn_controls,
     };
 
     let mut emit = |_event: ProviderStreamEvent| Ok(());
@@ -2169,6 +2173,24 @@ fn suggest_terminal_ai_fallback<R: Runtime + 'static>(
         buffer,
         request.recent_block_context.unwrap_or_default().chars().take(600).collect::<String>(),
     );
+    let turn_controls = RuntimeRunControlStateDto {
+        active: RuntimeRunActiveControlSnapshotDto {
+            runtime_agent_id,
+            agent_definition_id: None,
+            agent_definition_version: None,
+            provider_profile_id: controls.provider_profile_id.clone(),
+            model_id: provider_model_id,
+            thinking_effort: controls.thinking_effort.clone(),
+            approval_mode: RuntimeRunApprovalModeDto::Yolo,
+            plan_mode_required: false,
+            auto_compact_enabled: false,
+            revision: 1,
+            applied_at: now_timestamp(),
+        },
+        pending: None,
+    };
+    let output_allowance = provider
+        .resolve_turn_output_allowance(None, turn_controls.active.thinking_effort.as_ref())?;
     let turn = ProviderTurnRequest {
         system_prompt: "You suggest one safe next shell command for a developer terminal. Return only compact JSON and never include secrets, markdown, or prose.".into(),
         messages: vec![ProviderMessage::User {
@@ -2177,22 +2199,8 @@ fn suggest_terminal_ai_fallback<R: Runtime + 'static>(
         }],
         tools: Vec::new(),
         turn_index: 0,
-        controls: RuntimeRunControlStateDto {
-            active: RuntimeRunActiveControlSnapshotDto {
-                runtime_agent_id,
-                agent_definition_id: None,
-                agent_definition_version: None,
-                provider_profile_id: controls.provider_profile_id.clone(),
-                model_id: provider_model_id,
-                thinking_effort: controls.thinking_effort.clone(),
-                approval_mode: RuntimeRunApprovalModeDto::Yolo,
-                plan_mode_required: false,
-                auto_compact_enabled: false,
-                revision: 1,
-                applied_at: now_timestamp(),
-            },
-            pending: None,
-        },
+        output_allowance,
+        controls: turn_controls,
     };
     let mut emit = |_event: ProviderStreamEvent| Ok(());
     let message = match provider.stream_turn(&turn, &mut emit)? {

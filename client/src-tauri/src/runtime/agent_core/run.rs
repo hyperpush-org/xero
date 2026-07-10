@@ -2062,11 +2062,16 @@ fn estimate_continuation_context_tokens(
         content: request.prompt.clone(),
         attachments: request.attachments.clone(),
     });
+    let output_allowance = provider.resolve_turn_output_allowance(
+        request.provider_preflight.as_ref(),
+        controls.active.thinking_effort.as_ref(),
+    )?;
     let turn = ProviderTurnRequest {
         system_prompt,
         messages: provider_messages,
         tools: tool_registry.descriptors().to_vec(),
         turn_index: snapshot.messages.len(),
+        output_allowance,
         controls,
     };
     let estimate = provider.estimate_context_tokens(&turn)?;

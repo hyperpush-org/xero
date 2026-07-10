@@ -1429,6 +1429,19 @@ pub trait ProviderAdapter {
     fn supports_compaction(&self) -> bool {
         true
     }
+    fn resolve_turn_output_allowance(
+        &self,
+        provider_preflight: Option<&xero_agent_core::ProviderPreflightSnapshot>,
+        thinking_effort: Option<&ProviderModelThinkingEffortDto>,
+    ) -> CommandResult<ProviderTurnOutputAllowance> {
+        resolve_provider_turn_budget(
+            self.provider_id(),
+            self.model_id(),
+            provider_preflight,
+            thinking_effort,
+        )
+        .map(|resolution| resolution.output_allowance)
+    }
     fn stream_turn(
         &self,
         request: &ProviderTurnRequest,
@@ -1468,6 +1481,7 @@ pub trait ProviderAdapter {
         request: &ProviderCompactionRequest,
         emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
     ) -> CommandResult<ProviderCompactionOutcome> {
+        let output_allowance = self.resolve_turn_output_allowance(None, None)?;
         let turn = ProviderTurnRequest {
             system_prompt: "You compact long coding-agent transcripts for future replay. Return a concise, factual summary that preserves user intent, decisions, unresolved work, pending approvals, tool outcomes, and important file or command evidence. Do not invent completed work. Do not include secrets.".into(),
             messages: vec![ProviderMessage::User {
@@ -1476,13 +1490,14 @@ pub trait ProviderAdapter {
             }],
             tools: Vec::new(),
             turn_index: 0,
-                controls: RuntimeRunControlStateDto {
-                    active: RuntimeRunActiveControlSnapshotDto {
-                        runtime_agent_id: RuntimeAgentIdDto::Engineer,
-                        agent_definition_id: None,
-                        agent_definition_version: None,
-                        provider_profile_id: None,
-                        model_id: request.model_id.clone(),
+            output_allowance,
+            controls: RuntimeRunControlStateDto {
+                active: RuntimeRunActiveControlSnapshotDto {
+                    runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                    agent_definition_id: None,
+                    agent_definition_version: None,
+                    provider_profile_id: None,
+                    model_id: request.model_id.clone(),
                     thinking_effort: None,
                     approval_mode: RuntimeRunApprovalModeDto::Yolo,
                     plan_mode_required: false,
@@ -1525,6 +1540,7 @@ pub trait ProviderAdapter {
             "Extract durable memory candidates from this Xero coding-agent transcript. Return only a JSON array. Each item must contain scope, kind, text, confidence, and sourceItemIds. confidence must be an integer from 0 to 100. scope must be project or session. kind must be project_fact, user_preference, decision, session_summary, or troubleshooting. Do not include secrets. Do not include duplicates of existing approved or candidate memories. If the transcript includes code rollback events, do not promote implementation details from reverted turns as durable facts unless the candidate explicitly includes rollback provenance.\n\nExisting memories:\n{existing}\n\nTranscript:\n{}",
             request.transcript
         );
+        let output_allowance = self.resolve_turn_output_allowance(None, None)?;
         let turn = ProviderTurnRequest {
             system_prompt: "You propose durable context candidates for a coding-agent desktop app. Return strict JSON only, never markdown. Capture stable project facts, user preferences, decisions, session summaries, and troubleshooting facts. Treat code rollback events as provenance; reverted implementation details are not durable project facts unless the memory explicitly mentions the rollback. Prefer no item over a weak item. Never include secrets.".into(),
             messages: vec![ProviderMessage::User {
@@ -1533,13 +1549,14 @@ pub trait ProviderAdapter {
             }],
             tools: Vec::new(),
             turn_index: 0,
-                controls: RuntimeRunControlStateDto {
-                    active: RuntimeRunActiveControlSnapshotDto {
-                        runtime_agent_id: RuntimeAgentIdDto::Engineer,
-                        agent_definition_id: None,
-                        agent_definition_version: None,
-                        provider_profile_id: None,
-                        model_id: request.model_id.clone(),
+            output_allowance,
+            controls: RuntimeRunControlStateDto {
+                active: RuntimeRunActiveControlSnapshotDto {
+                    runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                    agent_definition_id: None,
+                    agent_definition_version: None,
+                    provider_profile_id: None,
+                    model_id: request.model_id.clone(),
                     thinking_effort: None,
                     approval_mode: RuntimeRunApprovalModeDto::Yolo,
                     plan_mode_required: false,
@@ -1570,7 +1587,83 @@ pub struct ProviderTurnRequest {
     pub messages: Vec<ProviderMessage>,
     pub tools: Vec<AgentToolDescriptor>,
     pub turn_index: usize,
+    pub output_allowance: ProviderTurnOutputAllowance,
     pub controls: RuntimeRunControlStateDto,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderTurnOutputAllowance {
+    pub max_output_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_output_tokens: Option<u64>,
+}
+
+impl ProviderTurnOutputAllowance {
+    pub(crate) fn unified(max_output_tokens: u64) -> CommandResult<Self> {
+        let allowance = Self {
+            max_output_tokens,
+            reasoning_tokens: None,
+            visible_output_tokens: None,
+        };
+        allowance.validated()?;
+        Ok(allowance)
+    }
+
+    pub(crate) fn split(
+        max_output_tokens: u64,
+        reasoning_tokens: u64,
+        visible_output_tokens: u64,
+    ) -> CommandResult<Self> {
+        let allowance = Self {
+            max_output_tokens,
+            reasoning_tokens: Some(reasoning_tokens),
+            visible_output_tokens: Some(visible_output_tokens),
+        };
+        allowance.validated()?;
+        Ok(allowance)
+    }
+
+    pub(crate) fn validated(self) -> CommandResult<Self> {
+        if self.max_output_tokens == 0 {
+            return Err(CommandError::user_fixable(
+                "agent_provider_output_allowance_invalid",
+                "Xero refused to submit a provider turn because the resolved maximum output allowance was zero. Refresh the provider model catalog or choose a model with a known positive output limit.",
+            ));
+        }
+        match (self.reasoning_tokens, self.visible_output_tokens) {
+            (None, None) => Ok(self),
+            (Some(reasoning_tokens), Some(visible_output_tokens)) => {
+                let split_total = reasoning_tokens.checked_add(visible_output_tokens).ok_or_else(|| {
+                    CommandError::user_fixable(
+                        "agent_provider_output_allowance_invalid",
+                        "Xero refused to submit a provider turn because its reasoning/output token split overflowed. Refresh the provider model catalog or choose a different model.",
+                    )
+                })?;
+                if split_total != self.max_output_tokens {
+                    return Err(CommandError::user_fixable(
+                        "agent_provider_output_allowance_invalid",
+                        format!(
+                            "Xero refused to submit a provider turn because its reasoning allowance ({reasoning_tokens}) plus visible output allowance ({visible_output_tokens}) does not equal the resolved maximum output allowance ({}). Refresh the provider model catalog or choose a different model.",
+                            self.max_output_tokens
+                        ),
+                    ));
+                }
+                Ok(self)
+            }
+            _ => Err(CommandError::user_fixable(
+                "agent_provider_output_allowance_invalid",
+                "Xero refused to submit a provider turn because its reasoning/output token split was incomplete. Refresh the provider model catalog or choose a different model.",
+            )),
+        }
+    }
+
+    pub(crate) fn wire_max_output_tokens(self) -> CommandResult<u64> {
+        self.validated()
+            .map(|allowance| allowance.max_output_tokens)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

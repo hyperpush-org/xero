@@ -128,6 +128,7 @@ pub(crate) fn drive_provider_loop(
                 skill_contexts,
                 attached_skill_contexts,
                 exact_prompt_budget_cap_tokens,
+                controls.active.thinking_effort.as_ref(),
             )?;
             append_event(
                 repo_root,
@@ -165,6 +166,7 @@ pub(crate) fn drive_provider_loop(
                 messages: messages.clone(),
                 tools: tool_registry.descriptors().to_vec(),
                 turn_index,
+                output_allowance: turn_context_package.output_allowance,
                 controls: controls.clone(),
             };
             let provider_context_estimate = provider.estimate_context_tokens(&turn)?;
@@ -7526,6 +7528,7 @@ mod tests {
         system_prompts: Mutex<Vec<String>>,
         tools: Mutex<Vec<Vec<AgentToolDescriptor>>>,
         turn_indices: Mutex<Vec<usize>>,
+        output_allowances: Mutex<Vec<ProviderTurnOutputAllowance>>,
     }
 
     impl ScriptedProvider {
@@ -7541,6 +7544,7 @@ mod tests {
                 system_prompts: Mutex::new(Vec::new()),
                 tools: Mutex::new(Vec::new()),
                 turn_indices: Mutex::new(Vec::new()),
+                output_allowances: Mutex::new(Vec::new()),
             }
         }
 
@@ -7567,6 +7571,13 @@ mod tests {
             self.turn_indices
                 .lock()
                 .expect("scripted provider turn index lock")
+                .clone()
+        }
+
+        fn captured_output_allowances(&self) -> Vec<ProviderTurnOutputAllowance> {
+            self.output_allowances
+                .lock()
+                .expect("scripted provider output allowance lock")
                 .clone()
         }
 
@@ -7657,6 +7668,10 @@ mod tests {
                 .lock()
                 .expect("scripted provider turn index lock")
                 .push(request.turn_index);
+            self.output_allowances
+                .lock()
+                .expect("scripted provider output allowance lock")
+                .push(request.output_allowance);
             emit(ProviderStreamEvent::ReasoningSummary(format!(
                 "scripted harness turn {}",
                 request.turn_index
@@ -10974,6 +10989,58 @@ mod tests {
         preflight
     }
 
+    #[test]
+    fn provider_loop_budget_reserve_matches_submitted_turn_allowance() {
+        let _guard = project_state_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let run_id = "provider-output-budget-agreement";
+        let (_tempdir, repo_root, project_id, controls, tool_runtime, messages) =
+            setup_test_agent_provider_loop(run_id);
+        let provider = ScriptedProvider::new(vec![ProviderTurnOutcome::Complete {
+            message: harness_report(),
+            reasoning_content: None,
+            reasoning_details: None,
+            usage: Some(ProviderUsage::default()),
+        }]);
+        let preflight = provider_loop_budget_preflight();
+
+        drive_provider_loop(
+            &provider,
+            messages,
+            controls,
+            registry_for_test_tools(&[]),
+            &tool_runtime,
+            &repo_root,
+            &project_id,
+            run_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+            Some(&preflight),
+            None,
+            &AgentRunCancellationToken::default(),
+        )
+        .expect("provider turn should complete");
+
+        let allowance = provider
+            .captured_output_allowances()
+            .into_iter()
+            .next()
+            .expect("submitted output allowance");
+        let manifest =
+            project_store::list_agent_context_manifests_for_run(&repo_root, &project_id, run_id)
+                .expect("context manifests")
+                .into_iter()
+                .next()
+                .expect("provider context manifest");
+
+        assert_eq!(allowance.max_output_tokens, 1_000);
+        assert_eq!(manifest.manifest["outputReserveTokens"], 1_000);
+        assert_eq!(
+            manifest.manifest["outputAllowance"]["maxOutputTokens"],
+            1_000
+        );
+    }
+
     fn in_loop_compaction_preference(enabled: bool) -> AgentAutoCompactPreference {
         AgentAutoCompactPreference {
             enabled,
@@ -11591,6 +11658,16 @@ mod tests {
             },
         ])
         .with_provider_id(DEEPSEEK_PROVIDER_ID);
+        let mut preflight = crate::provider_preflight::static_provider_preflight_snapshot(
+            DEEPSEEK_PROVIDER_ID,
+            OPENAI_CODEX_PROVIDER_ID,
+            xero_agent_core::ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+        );
+        let limits = &mut preflight.capabilities.capabilities.context_limits;
+        limits.context_window_tokens = Some(128_000);
+        limits.max_output_tokens = Some(16_384);
+        limits.source = "live_probe".into();
+        limits.confidence = "high".into();
 
         drive_provider_loop(
             &provider,
@@ -11602,7 +11679,7 @@ mod tests {
             &project_id,
             run_id,
             project_store::DEFAULT_AGENT_SESSION_ID,
-            None,
+            Some(&preflight),
             None,
             &AgentRunCancellationToken::default(),
         )

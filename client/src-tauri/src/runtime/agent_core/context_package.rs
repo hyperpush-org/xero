@@ -12,6 +12,7 @@ const MAX_FIRST_TURN_RETRIEVAL_LIMIT: u32 = 12;
 pub(crate) struct ProviderContextPackage {
     pub system_prompt: String,
     pub manifest: project_store::AgentContextManifestRecord,
+    pub output_allowance: ProviderTurnOutputAllowance,
     #[cfg(test)]
     pub compilation: PromptCompilation,
     pub pre_provider_retrieval_performed: bool,
@@ -59,6 +60,7 @@ pub(crate) fn assemble_provider_context_package(
         skill_contexts,
         attached_skill_contexts,
         None,
+        None,
     )
 }
 
@@ -67,6 +69,7 @@ pub(crate) fn assemble_provider_context_package_with_prompt_budget(
     skill_contexts: Vec<XeroSkillToolContextPayload>,
     attached_skill_contexts: Vec<XeroSkillToolContextPayload>,
     prompt_budget_cap_tokens: Option<u64>,
+    thinking_effort: Option<&ProviderModelThinkingEffortDto>,
 ) -> CommandResult<ProviderContextPackage> {
     let created_at = now_timestamp();
     let first_turn_context_policy =
@@ -115,11 +118,14 @@ pub(crate) fn assemble_provider_context_package_with_prompt_budget(
     )?;
     let active_coordination_summary =
         active_coordination_prompt_summary(&active_coordination_context);
-    let context_limit = resolve_context_limit_with_provider_preflight(
+    let turn_budget = resolve_provider_turn_budget(
         input.provider_id,
         input.model_id,
         input.provider_preflight,
-    );
+        thinking_effort,
+    )?;
+    let context_limit = turn_budget.context_limit;
+    let output_allowance = turn_budget.output_allowance;
     let budget_tokens = context_limit.effective_input_budget_tokens;
     let (message_contributors, messages_json, messages_redacted) =
         provider_message_manifest_entries(input.messages)?;
@@ -507,6 +513,7 @@ pub(crate) fn assemble_provider_context_package_with_prompt_budget(
         "maxOutputTokens".into(),
         json!(context_limit.max_output_tokens),
     );
+    manifest_fields.insert("outputAllowance".into(), json!(output_allowance));
     manifest_fields.insert(
         "outputReserveTokens".into(),
         json!(context_limit.output_reserve_tokens),
@@ -606,6 +613,7 @@ pub(crate) fn assemble_provider_context_package_with_prompt_budget(
     Ok(ProviderContextPackage {
         system_prompt: compilation.prompt.clone(),
         manifest,
+        output_allowance,
         #[cfg(test)]
         compilation,
         pre_provider_retrieval_performed: retrieval_decision.should_retrieve(),

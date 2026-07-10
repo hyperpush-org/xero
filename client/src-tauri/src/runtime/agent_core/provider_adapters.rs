@@ -20,15 +20,16 @@ use url::Url;
 use super::{
     AgentToolCall, AgentToolDescriptor, FakeProviderAdapter, MessageAttachment,
     MessageAttachmentKind, ProviderAdapter, ProviderMessage, ProviderStreamEvent,
-    ProviderTurnOutcome, ProviderTurnRequest, ProviderUsage,
+    ProviderTurnOutcome, ProviderTurnOutputAllowance, ProviderTurnRequest, ProviderUsage,
+    SessionContextLimitResolutionDto, SessionContextLimitSourceDto,
 };
 #[cfg(test)]
 use super::{ProviderContextProvenance, ProviderContextSourceKind};
 use crate::{
     commands::{
-        heuristic_token_estimate, CommandError, CommandResult, ProviderModelThinkingEffortDto,
-        SessionContextEstimateConfidenceDto, SessionContextEstimateDto,
-        SessionContextEstimateSourceDto,
+        heuristic_token_estimate, resolve_context_limit_with_provider_preflight, CommandError,
+        CommandResult, ProviderModelThinkingEffortDto, SessionContextEstimateConfidenceDto,
+        SessionContextEstimateDto, SessionContextEstimateSourceDto,
     },
     runtime::{
         is_supported_xai_reasoning_effort_model_id, is_supported_xai_text_model_id,
@@ -45,7 +46,6 @@ use crate::{
 };
 
 const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 120_000;
-const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 4096;
 const MAX_PROVIDER_ATTEMPTS: usize = 3;
 const ANTHROPIC_API_BASE_URL: &str = "https://api.anthropic.com";
 const ANTHROPIC_API_VERSION: &str = "2023-06-01";
@@ -467,6 +467,180 @@ pub struct VertexProviderConfig {
     pub region: String,
     pub project_id: String,
     pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ProviderTurnBudgetResolution {
+    pub context_limit: SessionContextLimitResolutionDto,
+    pub output_allowance: ProviderTurnOutputAllowance,
+}
+
+pub(crate) fn resolve_provider_turn_budget(
+    provider_id: &str,
+    model_id: &str,
+    provider_preflight: Option<&xero_agent_core::ProviderPreflightSnapshot>,
+    thinking_effort: Option<&ProviderModelThinkingEffortDto>,
+) -> CommandResult<ProviderTurnBudgetResolution> {
+    // The fake adapter intentionally uses its provider id as a synthetic model id in tests and
+    // local development. It has no wire request or external capability catalog.
+    let synthetic_fake_model =
+        provider_id == OPENAI_CODEX_PROVIDER_ID && model_id == OPENAI_CODEX_PROVIDER_ID;
+    if let Some(snapshot) = provider_preflight {
+        if !provider_id
+            .trim()
+            .eq_ignore_ascii_case(snapshot.provider_id.trim())
+            || !model_id
+                .trim()
+                .eq_ignore_ascii_case(snapshot.model_id.trim())
+        {
+            return Err(CommandError::user_fixable(
+                "agent_provider_output_limit_capability_mismatch",
+                format!(
+                    "Xero refused to submit `{provider_id}/{model_id}` because the admitted provider capabilities belong to `{}/{}`. Refresh provider diagnostics and retry the run.",
+                    snapshot.provider_id, snapshot.model_id
+                ),
+            ));
+        }
+        if !synthetic_fake_model {
+            let advertised = &snapshot.capabilities.capabilities.context_limits;
+            let context_window_tokens = advertised.context_window_tokens.ok_or_else(|| {
+                CommandError::user_fixable(
+                    "agent_provider_context_limit_missing",
+                    format!(
+                        "Xero refused to submit `{provider_id}/{model_id}` because its admitted capabilities do not advertise a context-window limit. Refresh the provider model catalog or choose a model with known limits."
+                    ),
+                )
+            })?;
+            let max_output_tokens = advertised.max_output_tokens.ok_or_else(|| {
+                CommandError::user_fixable(
+                    "agent_provider_output_limit_missing",
+                    format!(
+                        "Xero refused to submit `{provider_id}/{model_id}` because its admitted capabilities do not advertise a maximum output limit. Refresh the provider model catalog or choose a model with known limits."
+                    ),
+                )
+            })?;
+            validate_advertised_provider_limits(
+                provider_id,
+                model_id,
+                context_window_tokens,
+                max_output_tokens,
+            )?;
+        }
+    }
+
+    let context_limit =
+        resolve_context_limit_with_provider_preflight(provider_id, model_id, provider_preflight);
+    let context_window_tokens = context_limit
+        .context_window_tokens
+        .filter(|tokens| *tokens > 0)
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "agent_provider_context_limit_missing",
+                format!(
+                    "Xero refused to submit `{provider_id}/{model_id}` because no positive context-window limit could be resolved. Refresh provider diagnostics or choose a model with known limits."
+                ),
+            )
+        });
+    let max_output_tokens = context_limit
+        .max_output_tokens
+        .filter(|tokens| *tokens > 0)
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "agent_provider_output_limit_missing",
+                format!(
+                    "Xero refused to submit `{provider_id}/{model_id}` because no positive maximum output limit could be resolved. Refresh provider diagnostics or choose a model with known limits."
+                ),
+            )
+        });
+
+    let (context_window_tokens, max_output_tokens) = if synthetic_fake_model {
+        (
+            context_limit.context_window_tokens.unwrap_or(128_000),
+            context_limit.max_output_tokens.unwrap_or(4_096),
+        )
+    } else {
+        if matches!(
+            context_limit.source,
+            SessionContextLimitSourceDto::Unknown | SessionContextLimitSourceDto::Heuristic
+        ) {
+            return Err(CommandError::user_fixable(
+                "agent_provider_output_limit_unverified",
+                format!(
+                    "Xero refused to submit `{provider_id}/{model_id}` because its output limit is not backed by provider capabilities or the built-in model registry. Refresh provider diagnostics or choose a model with verified limits."
+                ),
+            ));
+        }
+        (context_window_tokens?, max_output_tokens?)
+    };
+    validate_advertised_provider_limits(
+        provider_id,
+        model_id,
+        context_window_tokens,
+        max_output_tokens,
+    )?;
+    if !synthetic_fake_model && context_limit.output_reserve_tokens != max_output_tokens {
+        return Err(CommandError::user_fixable(
+            "agent_provider_output_limit_inconsistent",
+            format!(
+                "Xero refused to submit `{provider_id}/{model_id}` because context budgeting reserved {} output tokens while the resolved wire allowance is {max_output_tokens}. Refresh provider diagnostics and retry the run.",
+                context_limit.output_reserve_tokens
+            ),
+        ));
+    }
+
+    let output_allowance = if matches!(
+        provider_id,
+        ANTHROPIC_PROVIDER_ID | BEDROCK_PROVIDER_ID | VERTEX_PROVIDER_ID
+    ) {
+        let reasoning_tokens = thinking_effort
+            .and_then(anthropic_thinking_budget_tokens)
+            .unwrap_or_default();
+        if reasoning_tokens >= max_output_tokens {
+            return Err(CommandError::user_fixable(
+                "agent_provider_reasoning_output_limit_exceeded",
+                format!(
+                    "Xero refused to submit `{provider_id}/{model_id}` because the selected thinking effort requires {reasoning_tokens} tokens, leaving no visible output within the advertised {max_output_tokens}-token maximum. Choose a lower thinking effort or a model with a larger output limit."
+                ),
+            ));
+        }
+        ProviderTurnOutputAllowance::split(
+            max_output_tokens,
+            reasoning_tokens,
+            max_output_tokens - reasoning_tokens,
+        )?
+    } else {
+        ProviderTurnOutputAllowance::unified(max_output_tokens)?
+    };
+
+    Ok(ProviderTurnBudgetResolution {
+        context_limit,
+        output_allowance,
+    })
+}
+
+fn validate_advertised_provider_limits(
+    provider_id: &str,
+    model_id: &str,
+    context_window_tokens: u64,
+    max_output_tokens: u64,
+) -> CommandResult<()> {
+    if context_window_tokens == 0 || max_output_tokens == 0 {
+        return Err(CommandError::user_fixable(
+            "agent_provider_output_limit_invalid",
+            format!(
+                "Xero refused to submit `{provider_id}/{model_id}` because its advertised context/output limits must both be greater than zero (context: {context_window_tokens}, output: {max_output_tokens}). Refresh the provider model catalog or choose a different model."
+            ),
+        ));
+    }
+    if max_output_tokens > context_window_tokens {
+        return Err(CommandError::user_fixable(
+            "agent_provider_output_limit_inconsistent",
+            format!(
+                "Xero refused to submit `{provider_id}/{model_id}` because its advertised output limit ({max_output_tokens}) exceeds its context window ({context_window_tokens}). Refresh the provider model catalog or choose a different model."
+            ),
+        ));
+    }
+    Ok(())
 }
 
 pub fn create_provider_adapter(
@@ -1200,6 +1374,7 @@ fn openai_chat_request_body(
     model_id: &str,
     request: &ProviderTurnRequest,
 ) -> CommandResult<JsonValue> {
+    let max_output_tokens = request.output_allowance.wire_max_output_tokens()?;
     let mut body = JsonMap::new();
     body.insert("model".into(), json!(model_id));
     body.insert(
@@ -1215,6 +1390,12 @@ fn openai_chat_request_body(
     if provider_supports_openai_stream_options(provider_id) {
         body.insert("stream_options".into(), json!({ "include_usage": true }));
     }
+    let output_limit_field = if openai_chat_uses_max_completion_tokens(provider_id, model_id) {
+        "max_completion_tokens"
+    } else {
+        "max_tokens"
+    };
+    body.insert(output_limit_field.into(), json!(max_output_tokens));
     if provider_id == DEEPSEEK_PROVIDER_ID {
         body.insert("thinking".into(), json!({ "type": "enabled" }));
         if let Some(effort) = request.controls.active.thinking_effort.as_ref() {
@@ -1244,6 +1425,20 @@ fn openai_chat_request_body(
         }
     }
     Ok(JsonValue::Object(body))
+}
+
+fn openai_chat_uses_max_completion_tokens(provider_id: &str, model_id: &str) -> bool {
+    if provider_id == OPENAI_API_PROVIDER_ID {
+        return true;
+    }
+    if provider_id != AZURE_OPENAI_PROVIDER_ID {
+        return false;
+    }
+
+    let model_id = model_id.trim().to_ascii_lowercase();
+    ["gpt-5", "o1", "o3", "o4"]
+        .iter()
+        .any(|reasoning_model| model_id.contains(reasoning_model))
 }
 
 /// Chat-completions `reasoning_effort` for OpenAI-compatible hosts. Clamped to
@@ -1654,6 +1849,7 @@ fn openai_responses_request_body(
     model_id: &str,
     request: &ProviderTurnRequest,
 ) -> CommandResult<JsonValue> {
+    let max_output_tokens = request.output_allowance.wire_max_output_tokens()?;
     let mut body = JsonMap::new();
     body.insert("model".into(), json!(model_id));
     body.insert("instructions".into(), json!(request.system_prompt));
@@ -1667,7 +1863,7 @@ fn openai_responses_request_body(
     );
     body.insert("include".into(), json!(["reasoning.encrypted_content"]));
     body.insert("stream".into(), json!(true));
-    body.insert("max_output_tokens".into(), json!(DEFAULT_MAX_OUTPUT_TOKENS));
+    body.insert("max_output_tokens".into(), json!(max_output_tokens));
     if let Some(effort) = request.controls.active.thinking_effort.as_ref() {
         body.insert(
             "reasoning".into(),
@@ -1685,6 +1881,7 @@ fn xai_responses_request_body(
     model_id: &str,
     request: &ProviderTurnRequest,
 ) -> CommandResult<JsonValue> {
+    let max_output_tokens = request.output_allowance.wire_max_output_tokens()?;
     let mut body = JsonMap::new();
     body.insert("model".into(), json!(model_id));
     body.insert("instructions".into(), json!(trusted_system_text(request)));
@@ -1700,7 +1897,7 @@ fn xai_responses_request_body(
         body.insert("tool_choice".into(), json!("auto"));
     }
     body.insert("stream".into(), json!(true));
-    body.insert("max_output_tokens".into(), json!(DEFAULT_MAX_OUTPUT_TOKENS));
+    body.insert("max_output_tokens".into(), json!(max_output_tokens));
     if let Some(effort) = request
         .controls
         .active
@@ -1720,6 +1917,7 @@ fn openai_codex_responses_request_body(
     request: &ProviderTurnRequest,
     prompt_cache_key: Option<&str>,
 ) -> CommandResult<JsonValue> {
+    let max_output_tokens = request.output_allowance.wire_max_output_tokens()?;
     let mut body = JsonMap::new();
     body.insert("model".into(), json!(model_id));
     body.insert("store".into(), json!(false));
@@ -1734,6 +1932,7 @@ fn openai_codex_responses_request_body(
         json!({ "verbosity": OPENAI_CODEX_TEXT_VERBOSITY }),
     );
     body.insert("include".into(), json!(["reasoning.encrypted_content"]));
+    body.insert("max_output_tokens".into(), json!(max_output_tokens));
     if let Some(prompt_cache_key) = prompt_cache_key
         .map(str::trim)
         .filter(|prompt_cache_key| !prompt_cache_key.is_empty())
@@ -2398,6 +2597,37 @@ fn anthropic_request_body(
     request: &ProviderTurnRequest,
     stream: bool,
 ) -> CommandResult<JsonValue> {
+    let output_allowance = request.output_allowance.validated()?;
+    let (Some(reasoning_tokens), Some(visible_output_tokens)) = (
+        output_allowance.reasoning_tokens,
+        output_allowance.visible_output_tokens,
+    ) else {
+        return Err(CommandError::user_fixable(
+            "agent_provider_output_allowance_invalid",
+            "Xero refused to submit an Anthropic-family turn because its resolved allowance did not include the required reasoning/visible-output split. Refresh provider diagnostics and retry the run.",
+        ));
+    };
+    let expected_reasoning_tokens = request
+        .controls
+        .active
+        .thinking_effort
+        .as_ref()
+        .and_then(anthropic_thinking_budget_tokens)
+        .unwrap_or_default();
+    if reasoning_tokens != expected_reasoning_tokens {
+        return Err(CommandError::user_fixable(
+            "agent_provider_output_allowance_invalid",
+            format!(
+                "Xero refused to submit an Anthropic-family turn because its resolved reasoning allowance ({reasoning_tokens}) does not match the active thinking policy ({expected_reasoning_tokens}). Rebuild the turn with current provider controls and retry."
+            ),
+        ));
+    }
+    if visible_output_tokens == 0 {
+        return Err(CommandError::user_fixable(
+            "agent_provider_reasoning_output_limit_exceeded",
+            "Xero refused to submit an Anthropic-family turn because its thinking budget leaves no visible output allowance. Choose a lower thinking effort or a model with a larger output limit.",
+        ));
+    }
     let mut body = JsonMap::new();
     if let Some(model_id) = model_id {
         body.insert("model".into(), json!(model_id));
@@ -2423,18 +2653,11 @@ fn anthropic_request_body(
     } else {
         body.insert("system".into(), json!(trusted_system));
     }
-    let thinking_budget = request
-        .controls
-        .active
-        .thinking_effort
-        .as_ref()
-        .and_then(anthropic_thinking_budget_tokens);
-    // Anthropic requires max_tokens to exceed the thinking budget; the budget is
-    // spent on thinking, so reserve the normal output allowance on top of it.
-    let max_tokens = thinking_budget
-        .map(|budget| budget.saturating_add(u64::from(DEFAULT_MAX_OUTPUT_TOKENS)))
-        .unwrap_or(u64::from(DEFAULT_MAX_OUTPUT_TOKENS));
-    body.insert("max_tokens".into(), json!(max_tokens));
+    body.insert(
+        "max_tokens".into(),
+        json!(output_allowance.max_output_tokens),
+    );
+    let thinking_budget = (reasoning_tokens > 0).then_some(reasoning_tokens);
     if let Some(budget) = thinking_budget {
         body.insert(
             "thinking".into(),
@@ -4942,6 +5165,8 @@ mod tests {
                 }),
             }],
             turn_index: 0,
+            output_allowance: ProviderTurnOutputAllowance::unified(4_096)
+                .expect("test output allowance"),
             controls: RuntimeRunControlStateDto {
                 active: RuntimeRunActiveControlSnapshotDto {
                     runtime_agent_id: RuntimeAgentIdDto::Engineer,
@@ -4959,6 +5184,166 @@ mod tests {
                 pending: None,
             },
         }
+    }
+
+    fn test_provider_preflight(
+        provider_id: &str,
+        model_id: &str,
+        context_window_tokens: u64,
+        max_output_tokens: Option<u64>,
+    ) -> xero_agent_core::ProviderPreflightSnapshot {
+        let mut preflight = crate::provider_preflight::static_provider_preflight_snapshot(
+            provider_id,
+            model_id,
+            xero_agent_core::ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+        );
+        let limits = &mut preflight.capabilities.capabilities.context_limits;
+        limits.context_window_tokens = Some(context_window_tokens);
+        limits.max_output_tokens = max_output_tokens;
+        limits.source = "live_probe".into();
+        limits.confidence = "high".into();
+        preflight
+    }
+
+    #[test]
+    fn resolved_small_and_large_output_limits_reach_every_wire_family() {
+        let small_preflight =
+            test_provider_preflight(OPENAI_API_PROVIDER_ID, "gpt-5.4", 128_000, Some(1_024));
+        let small = resolve_provider_turn_budget(
+            OPENAI_API_PROVIDER_ID,
+            "gpt-5.4",
+            Some(&small_preflight),
+            None,
+        )
+        .expect("small output budget");
+        let mut request = test_request();
+        request.output_allowance = small.output_allowance;
+
+        let responses = openai_responses_request_body(OPENAI_API_PROVIDER_ID, "gpt-5.4", &request)
+            .expect("OpenAI Responses body");
+        let openai_chat = openai_chat_request_body(OPENAI_API_PROVIDER_ID, "gpt-5.4", &request)
+            .expect("OpenAI chat body");
+        let compatible_chat =
+            openai_chat_request_body(OPENROUTER_PROVIDER_ID, "openai/gpt-5.4", &request)
+                .expect("compatible chat body");
+
+        assert_eq!(responses["max_output_tokens"], 1_024);
+        assert_eq!(openai_chat["max_completion_tokens"], 1_024);
+        assert_eq!(compatible_chat["max_tokens"], 1_024);
+
+        let large_preflight =
+            test_provider_preflight(XAI_PROVIDER_ID, XAI_DEFAULT_MODEL_ID, 256_000, Some(65_536));
+        let large = resolve_provider_turn_budget(
+            XAI_PROVIDER_ID,
+            XAI_DEFAULT_MODEL_ID,
+            Some(&large_preflight),
+            None,
+        )
+        .expect("large output budget");
+        request.output_allowance = large.output_allowance;
+
+        let codex = openai_codex_responses_request_body(
+            OPENAI_CODEX_PROVIDER_ID,
+            OPENAI_CODEX_DEFAULT_MODEL_ID,
+            &request,
+            None,
+        )
+        .expect("Codex Responses body");
+        let xai = xai_responses_request_body(XAI_PROVIDER_ID, XAI_DEFAULT_MODEL_ID, &request)
+            .expect("xAI Responses body");
+
+        assert_eq!(codex["max_output_tokens"], 65_536);
+        assert_eq!(xai["max_output_tokens"], 65_536);
+    }
+
+    #[test]
+    fn anthropic_reasoning_and_visible_output_share_the_advertised_maximum() {
+        let preflight = test_provider_preflight(
+            ANTHROPIC_PROVIDER_ID,
+            "claude-sonnet-4-5",
+            200_000,
+            Some(16_384),
+        );
+        let effort = ProviderModelThinkingEffortDto::High;
+        let resolved = resolve_provider_turn_budget(
+            ANTHROPIC_PROVIDER_ID,
+            "claude-sonnet-4-5",
+            Some(&preflight),
+            Some(&effort),
+        )
+        .expect("Anthropic reasoning budget");
+
+        assert_eq!(resolved.output_allowance.max_output_tokens, 16_384);
+        assert_eq!(resolved.output_allowance.reasoning_tokens, Some(8_192));
+        assert_eq!(resolved.output_allowance.visible_output_tokens, Some(8_192));
+
+        let mut request = test_request();
+        request.controls.active.thinking_effort = Some(effort);
+        request.output_allowance = resolved.output_allowance;
+        let body = anthropic_request_body(
+            Some("claude-sonnet-4-5"),
+            ANTHROPIC_API_VERSION,
+            &request,
+            true,
+        )
+        .expect("Anthropic body");
+
+        assert_eq!(body["thinking"]["budget_tokens"], 8_192);
+        assert_eq!(body["max_tokens"], 16_384);
+    }
+
+    #[test]
+    fn fake_provider_accepts_static_preflight_without_external_limits() {
+        let synthetic = crate::provider_preflight::static_provider_preflight_snapshot(
+            OPENAI_CODEX_PROVIDER_ID,
+            OPENAI_CODEX_PROVIDER_ID,
+            xero_agent_core::ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+        );
+        let synthetic_budget = resolve_provider_turn_budget(
+            OPENAI_CODEX_PROVIDER_ID,
+            OPENAI_CODEX_PROVIDER_ID,
+            Some(&synthetic),
+            None,
+        )
+        .expect("fake provider has no external wire capability requirement");
+        assert_eq!(synthetic_budget.output_allowance.max_output_tokens, 4_096);
+    }
+
+    #[test]
+    fn provider_turn_budget_fails_closed_for_missing_or_inconsistent_limits() {
+        let missing = test_provider_preflight(OPENAI_API_PROVIDER_ID, "gpt-5.4", 128_000, None);
+        let missing_error =
+            resolve_provider_turn_budget(OPENAI_API_PROVIDER_ID, "gpt-5.4", Some(&missing), None)
+                .expect_err("missing output limit must fail closed");
+        assert_eq!(missing_error.code, "agent_provider_output_limit_missing");
+
+        let inconsistent =
+            test_provider_preflight(OPENAI_API_PROVIDER_ID, "gpt-5.4", 4_096, Some(8_192));
+        let inconsistent_error = resolve_provider_turn_budget(
+            OPENAI_API_PROVIDER_ID,
+            "gpt-5.4",
+            Some(&inconsistent),
+            None,
+        )
+        .expect_err("output limit above context window must fail closed");
+        assert_eq!(
+            inconsistent_error.code,
+            "agent_provider_output_limit_inconsistent"
+        );
+
+        let constrained =
+            test_provider_preflight(ANTHROPIC_PROVIDER_ID, "claude-small", 32_000, Some(8_192));
+        let reasoning_error = resolve_provider_turn_budget(
+            ANTHROPIC_PROVIDER_ID,
+            "claude-small",
+            Some(&constrained),
+            Some(&ProviderModelThinkingEffortDto::High),
+        )
+        .expect_err("thinking budget that consumes output maximum must fail closed");
+        assert_eq!(
+            reasoning_error.code,
+            "agent_provider_reasoning_output_limit_exceeded"
+        );
     }
 
     fn test_compaction_provenance() -> ProviderContextProvenance {
@@ -5540,6 +5925,8 @@ mod tests {
     #[test]
     fn anthropic_folds_developer_text_and_prepends_user_before_leading_assistant_context() {
         let mut request = test_request();
+        request.output_allowance =
+            ProviderTurnOutputAllowance::split(4_096, 0, 4_096).expect("Anthropic test allowance");
         request.messages = vec![
             ProviderMessage::Developer {
                 content: "trusted runtime gate".into(),
@@ -6067,7 +6454,9 @@ mod tests {
 
     #[test]
     fn anthropic_family_body_uses_provider_specific_model_placement() {
-        let request = test_request();
+        let mut request = test_request();
+        request.output_allowance =
+            ProviderTurnOutputAllowance::split(4_096, 0, 4_096).expect("Anthropic test allowance");
 
         let native =
             anthropic_request_body(Some("claude-sonnet-4-5"), "2023-06-01", &request, true)
@@ -6093,7 +6482,9 @@ mod tests {
 
     #[test]
     fn anthropic_body_sets_prompt_cache_breakpoints_on_native_api_only() {
-        let request = test_request();
+        let mut request = test_request();
+        request.output_allowance =
+            ProviderTurnOutputAllowance::split(4_096, 0, 4_096).expect("Anthropic test allowance");
 
         let native =
             anthropic_request_body(Some("claude-sonnet-4-5"), "2023-06-01", &request, true)
@@ -6169,15 +6560,14 @@ mod tests {
             },
         ];
         request.controls.active.thinking_effort = Some(ProviderModelThinkingEffortDto::High);
+        request.output_allowance = ProviderTurnOutputAllowance::split(16_384, 8_192, 8_192)
+            .expect("Anthropic thinking allowance");
 
         let body = anthropic_request_body(Some("claude-sonnet-4-5"), "2023-06-01", &request, true)
             .expect("anthropic thinking body");
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["thinking"]["budget_tokens"], 8_192);
-        assert_eq!(
-            body["max_tokens"],
-            8_192 + u64::from(DEFAULT_MAX_OUTPUT_TOKENS)
-        );
+        assert_eq!(body["max_tokens"], 16_384);
         let assistant_blocks = body["messages"][1]["content"]
             .as_array()
             .expect("assistant blocks");
@@ -6190,11 +6580,13 @@ mod tests {
         // Thinking off (unset or explicit none): no thinking param, no replayed blocks.
         for effort in [None, Some(ProviderModelThinkingEffortDto::None)] {
             request.controls.active.thinking_effort = effort;
+            request.output_allowance = ProviderTurnOutputAllowance::split(16_384, 0, 16_384)
+                .expect("Anthropic no-thinking allowance");
             let body =
                 anthropic_request_body(Some("claude-sonnet-4-5"), "2023-06-01", &request, true)
                     .expect("anthropic body without thinking");
             assert!(body.get("thinking").is_none());
-            assert_eq!(body["max_tokens"], u64::from(DEFAULT_MAX_OUTPUT_TOKENS));
+            assert_eq!(body["max_tokens"], 16_384);
             let assistant_blocks = body["messages"][1]["content"]
                 .as_array()
                 .expect("assistant blocks");
@@ -6212,21 +6604,26 @@ mod tests {
         let azure = openai_chat_request_body(AZURE_OPENAI_PROVIDER_ID, "gpt-5.2", &request)
             .expect("azure body");
         assert_eq!(azure["reasoning_effort"], "high");
+        assert_eq!(azure["max_completion_tokens"], 4_096);
 
         let github = openai_chat_request_body(GITHUB_MODELS_PROVIDER_ID, "openai/o4", &request)
             .expect("github body");
         assert_eq!(github["reasoning_effort"], "high");
+        assert_eq!(github["max_tokens"], 4_096);
+        assert!(github.get("max_completion_tokens").is_none());
 
         request.controls.active.thinking_effort = Some(ProviderModelThinkingEffortDto::Minimal);
         let gemini =
             openai_chat_request_body(GEMINI_AI_STUDIO_PROVIDER_ID, "gemini-3-pro", &request)
                 .expect("gemini body");
         assert_eq!(gemini["reasoning_effort"], "low");
+        assert_eq!(gemini["max_tokens"], 4_096);
 
         // Ollama has no reasoning_effort support; explicit `none` omits it everywhere.
         let ollama = openai_chat_request_body(OLLAMA_PROVIDER_ID, "llama3.1", &request)
             .expect("ollama body");
         assert!(ollama.get("reasoning_effort").is_none());
+        assert_eq!(ollama["max_tokens"], 4_096);
         request.controls.active.thinking_effort = Some(ProviderModelThinkingEffortDto::None);
         let azure_none = openai_chat_request_body(AZURE_OPENAI_PROVIDER_ID, "gpt-5.2", &request)
             .expect("azure body without effort");
