@@ -31,6 +31,7 @@ const MUTATION_TERMINATION_GRACE: Duration = Duration::from_millis(25);
 const MUTATION_SUPERVISOR_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const MAX_MUTATION_WORKER_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 pub const TOOL_EXTENSION_MANIFEST_CONTRACT_VERSION: u32 = 1;
+pub const MUTATION_EXECUTION_SCOPE_ATTRIBUTE: &str = "xero.mutation.scope";
 
 static MUTATION_BOUNDARY_CHILD_ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -1677,7 +1678,16 @@ struct MutationQuarantine {
 
 #[derive(Default)]
 struct MutationExecutionState {
-    quarantine: Option<MutationQuarantine>,
+    quarantines: BTreeMap<String, MutationQuarantine>,
+}
+
+fn mutation_execution_scope(context: &ToolExecutionContext) -> String {
+    context
+        .telemetry_attributes
+        .get(MUTATION_EXECUTION_SCOPE_ATTRIBUTE)
+        .filter(|scope| !scope.trim().is_empty())
+        .map(|scope| format!("{}\u{1f}{scope}", context.project_id))
+        .unwrap_or_else(|| context.project_id.clone())
 }
 
 fn global_mutation_execution_state() -> Arc<Mutex<MutationExecutionState>> {
@@ -1691,6 +1701,14 @@ pub struct ToolRegistryV2 {
     handlers: BTreeMap<String, Arc<dyn ToolHandler>>,
     read_only_worker_supervisor: Arc<ReadOnlyWorkerSupervisor>,
     mutation_execution_state: Arc<Mutex<MutationExecutionState>>,
+    mutation_boundary: MutationBoundary,
+}
+
+#[derive(Clone, Copy)]
+enum MutationBoundary {
+    TerminableProcess,
+    #[cfg(any(test, feature = "test-support"))]
+    CooperativeTestHarness,
 }
 
 impl Default for ToolRegistryV2 {
@@ -1705,7 +1723,15 @@ impl ToolRegistryV2 {
             handlers: BTreeMap::new(),
             read_only_worker_supervisor: global_read_only_worker_supervisor(),
             mutation_execution_state: global_mutation_execution_state(),
+            mutation_boundary: MutationBoundary::TerminableProcess,
         }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn with_cooperative_mutation_boundary_for_tests(mut self) -> Self {
+        self.mutation_boundary = MutationBoundary::CooperativeTestHarness;
+        self
     }
 
     #[cfg(test)]
@@ -1714,6 +1740,7 @@ impl ToolRegistryV2 {
             handlers: BTreeMap::new(),
             read_only_worker_supervisor: Arc::new(ReadOnlyWorkerSupervisor::new(max_workers)),
             mutation_execution_state: Arc::new(Mutex::new(MutationExecutionState::default())),
+            mutation_boundary: MutationBoundary::TerminableProcess,
         }
     }
 
@@ -1955,11 +1982,21 @@ impl ToolRegistryV2 {
         match self.prepare_call(&call, tracker, config, deadline, cancellation_token) {
             Ok(prepared) => {
                 let mut outcome = if prepared.descriptor.mutability == ToolMutability::Mutating {
-                    let mut mutation_state = self
-                        .mutation_execution_state
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    execute_mutating_call_in_boundary(prepared, config, &mut mutation_state)
+                    match self.mutation_boundary {
+                        MutationBoundary::TerminableProcess => {
+                            let mut mutation_state = self
+                                .mutation_execution_state
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            execute_mutating_call_in_boundary(prepared, config, &mut mutation_state)
+                        }
+                        #[cfg(any(test, feature = "test-support"))]
+                        MutationBoundary::CooperativeTestHarness => execute_prepared_call(
+                            prepared,
+                            &config.context,
+                            config.rollback.as_deref(),
+                        ),
+                    }
                 } else {
                     execute_prepared_call(prepared, &config.context, config.rollback.as_deref())
                 };
@@ -2278,12 +2315,13 @@ fn execute_mutating_call_in_boundary(
     config: &ToolDispatchConfig,
     mutation_state: &mut MutationExecutionState,
 ) -> ToolDispatchOutcome {
+    let mutation_scope = mutation_execution_scope(&config.context);
     let pending = PendingMutationToolCall::from_prepared(&prepared);
     let deadline = prepared
         .deadline
         .unwrap_or_else(|| group_deadline(&config.budget));
     let mut audit_events = Vec::new();
-    if let Some(quarantine) = mutation_state.quarantine.take() {
+    if let Some(quarantine) = mutation_state.quarantines.remove(&mutation_scope) {
         match recover_mutation_quarantine(&quarantine, config) {
             Ok(_) => audit_events.push("mutation_quarantine_recovered".to_string()),
             Err(rollback_error) => {
@@ -2292,7 +2330,9 @@ fn execute_mutating_call_in_boundary(
                     ..quarantine
                 };
                 let failure = pending.quarantined_failure(&quarantine);
-                mutation_state.quarantine = Some(quarantine);
+                mutation_state
+                    .quarantines
+                    .insert(mutation_scope.clone(), quarantine);
                 let mut outcome = ToolDispatchOutcome::Failed(failure);
                 attach_mutation_boundary_metadata(
                     &mut outcome,
@@ -2431,10 +2471,13 @@ fn execute_mutating_call_in_boundary(
                     }
                     Err(rollback_error) => {
                         failure.rollback_error = Some(rollback_error.clone());
-                        mutation_state.quarantine = Some(MutationQuarantine {
-                            rollback_error,
-                            ..quarantine
-                        });
+                        mutation_state.quarantines.insert(
+                            mutation_scope.clone(),
+                            MutationQuarantine {
+                                rollback_error,
+                                ..quarantine
+                            },
+                        );
                         audit_events.push("mutation_quarantined".to_string());
                     }
                 }
@@ -2446,7 +2489,7 @@ fn execute_mutating_call_in_boundary(
             Some(&affected_paths),
             phase,
             &audit_events,
-            mutation_state.quarantine.is_some(),
+            mutation_state.quarantines.contains_key(&mutation_scope),
         );
         return outcome;
     }
@@ -2476,10 +2519,13 @@ fn execute_mutating_call_in_boundary(
         }
         Err(rollback_error) => {
             failure.rollback_error = Some(rollback_error.clone());
-            mutation_state.quarantine = Some(MutationQuarantine {
-                rollback_error,
-                ..quarantine
-            });
+            mutation_state.quarantines.insert(
+                mutation_scope.clone(),
+                MutationQuarantine {
+                    rollback_error,
+                    ..quarantine
+                },
+            );
             audit_events.push("mutation_quarantined".to_string());
         }
     }
@@ -2495,7 +2541,7 @@ fn execute_mutating_call_in_boundary(
         Some(&affected_paths),
         phase,
         &audit_events,
-        mutation_state.quarantine.is_some(),
+        mutation_state.quarantines.contains_key(&mutation_scope),
     );
     outcome
 }
@@ -5315,7 +5361,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn rollback_hang_is_terminated_and_quarantines_later_mutations() {
+    fn rollback_hang_quarantines_only_later_mutations_in_the_same_scope() {
         let recovery_marker = std::env::temp_dir().join(format!(
             "xero-rollback-recovery-ready-{}",
             std::process::id()
@@ -5347,9 +5393,18 @@ mod tests {
             max_mutation_cleanup_ms: 20,
             ..ToolBudget::default()
         };
+        let mutation_context = |scope: &str| ToolExecutionContext {
+            project_id: "shared-project".into(),
+            telemetry_attributes: BTreeMap::from([(
+                MUTATION_EXECUTION_SCOPE_ATTRIBUTE.into(),
+                scope.into(),
+            )]),
+            ..ToolExecutionContext::default()
+        };
         let hanging_config = ToolDispatchConfig {
             budget: budget.clone(),
             rollback: Some(hanging_rollback),
+            context: mutation_context("workspace-a"),
             ..ToolDispatchConfig::default()
         };
 
@@ -5363,6 +5418,14 @@ mod tests {
             &mut ToolBudgetTracker::new(budget.clone()),
             &hanging_config,
         );
+        let other_scope = registry.dispatch_call(
+            call("call-other-scope", "later_mutation", "src/later.rs"),
+            &mut ToolBudgetTracker::new(budget.clone()),
+            &ToolDispatchConfig {
+                context: mutation_context("workspace-b"),
+                ..hanging_config.clone()
+            },
+        );
         std::fs::write(&recovery_marker, "ready").expect("mark rollback recovery ready");
         let recovered = registry.dispatch_call(
             call("call-recovered", "later_mutation", "src/later.rs"),
@@ -5370,6 +5433,7 @@ mod tests {
             &ToolDispatchConfig {
                 budget,
                 rollback: Some(Arc::new(RecoverWithoutCheckpointRollback)),
+                context: mutation_context("workspace-a"),
                 ..ToolDispatchConfig::default()
             },
         );
@@ -5387,6 +5451,7 @@ mod tests {
             blocked.failure().expect("quarantine failure").error.code,
             "agent_tool_mutation_quarantined"
         );
+        assert!(other_scope.is_success());
         assert!(recovered.is_success());
     }
 

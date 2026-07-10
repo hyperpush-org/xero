@@ -416,7 +416,6 @@ const TOOL_ACCESS_REPOSITORY_RECON_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_TOOL_ACCESS,
     AUTONOMOUS_TOOL_TOOL_SEARCH,
     AUTONOMOUS_TOOL_ACTION_REQUIRED,
-    AUTONOMOUS_TOOL_SUGGEST_ROUTING,
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
     AUTONOMOUS_TOOL_WORKSPACE_INDEX,
@@ -6702,6 +6701,60 @@ impl AutonomousToolRuntime {
         Ok(policy
             .phase(&state.current_phase_id)
             .and_then(AutonomousAgentWorkflowPhase::registry_allowed_tools))
+    }
+
+    pub(crate) fn reconcile_isolated_tool_result(
+        &self,
+        tool_name: &str,
+        output: &JsonValue,
+    ) -> CommandResult<()> {
+        if !matches!(tool_name, AUTONOMOUS_TOOL_TODO | AUTONOMOUS_TOOL_SUBAGENT) {
+            return Ok(());
+        }
+        let result = serde_json::from_value::<AutonomousToolResult>(output.clone()).map_err(|error| {
+            CommandError::system_fault(
+                "agent_isolated_tool_state_decode_failed",
+                format!(
+                    "Xero could not decode isolated `{tool_name}` state for parent reconciliation: {error}"
+                ),
+            )
+        })?;
+        match result.output {
+            AutonomousToolOutput::Todo(output) => {
+                let mut todos = self.todo_items.lock().map_err(|_| {
+                    CommandError::system_fault(
+                        "autonomous_tool_todo_lock_failed",
+                        "Xero could not reconcile the owned-agent todo store after isolated execution.",
+                    )
+                })?;
+                *todos = output
+                    .items
+                    .into_iter()
+                    .map(|item| (item.id.clone(), item))
+                    .collect();
+            }
+            AutonomousToolOutput::Subagent(output) => {
+                let mut tasks = self.subagent_tasks.lock().map_err(|_| {
+                    CommandError::system_fault(
+                        "autonomous_tool_subagent_lock_failed",
+                        "Xero could not reconcile subagent state after isolated execution.",
+                    )
+                })?;
+                for task in output.active_tasks {
+                    tasks.insert(task.subagent_id.clone(), task);
+                }
+                tasks.insert(output.task.subagent_id.clone(), output.task);
+            }
+            _ => {
+                return Err(CommandError::system_fault(
+                    "agent_isolated_tool_state_kind_mismatch",
+                    format!(
+                        "Isolated `{tool_name}` execution returned a mismatched state payload."
+                    ),
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn tool_available_by_runtime(&self, tool: &str) -> bool {

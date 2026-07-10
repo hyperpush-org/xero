@@ -30,7 +30,7 @@ use crate::{
     ToolDispatchFailure, ToolDispatchOutcome, ToolDispatchSuccess, ToolEffectClass,
     ToolExecutionContext, ToolExecutionError, ToolGroupExecutionMode, ToolHandlerOutput,
     ToolMutability, ToolPolicy, ToolPolicyDecision, ToolRegistryV2, ToolResultTruncationContract,
-    ToolRollback, ToolSandboxRequirement, UserInputRequest,
+    ToolRollback, ToolSandboxRequirement, UserInputRequest, MUTATION_EXECUTION_SCOPE_ATTRIBUTE,
 };
 
 const DEFAULT_HEADLESS_PROVIDER_TIMEOUT_MS: u64 = 120_000;
@@ -1823,6 +1823,10 @@ impl HeadlessProductionToolRuntime {
                         "headless_production_provider_loop".into(),
                     ),
                     ("xero.dispatch.registry".into(), "tool_registry_v2".into()),
+                    (
+                        MUTATION_EXECUTION_SCOPE_ATTRIBUTE.into(),
+                        self.workspace_root.to_string_lossy().into_owned(),
+                    ),
                 ]),
             },
             cancellation_check: None,
