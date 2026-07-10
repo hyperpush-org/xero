@@ -13,6 +13,7 @@ pub(crate) struct ProviderContextPackage {
     pub system_prompt: String,
     pub manifest: project_store::AgentContextManifestRecord,
     pub output_allowance: ProviderTurnOutputAllowance,
+    pub repository_instruction_hashes: BTreeMap<String, String>,
     #[cfg(test)]
     pub compilation: PromptCompilation,
     pub pre_provider_retrieval_performed: bool,
@@ -143,7 +144,8 @@ pub(crate) fn assemble_provider_context_package_with_prompt_budget(
         (None, Some(cap)) => Some(cap),
         (None, None) => None,
     };
-    let relevant_paths = prompt_relevant_paths_from_provider_messages(input.messages);
+    let relevant_paths =
+        prompt_relevant_paths_from_provider_messages(input.repo_root, input.messages);
     let runtime_metadata = provider_context_runtime_metadata(&input, &created_at);
     let compilation = PromptCompiler::new(
         input.repo_root,
@@ -610,10 +612,12 @@ pub(crate) fn assemble_provider_context_package_with_prompt_budget(
         },
     )?;
 
+    let repository_instruction_hashes = repository_instruction_hashes(&compilation.fragments);
     Ok(ProviderContextPackage {
         system_prompt: compilation.prompt.clone(),
         manifest,
         output_allowance,
+        repository_instruction_hashes,
         #[cfg(test)]
         compilation,
         pre_provider_retrieval_performed: retrieval_decision.should_retrieve(),
@@ -4238,6 +4242,13 @@ mod tests {
             .expect("prompt diff causes")
             .iter()
             .any(|cause| cause == "repository_instruction_scope"));
+        assert!(second
+            .repository_instruction_hashes
+            .contains_key("project:client/AGENTS.md"));
+        assert_eq!(
+            repository_instruction_hashes_from_manifest(&second.manifest.manifest),
+            second.repository_instruction_hashes
+        );
     }
 
     #[test]

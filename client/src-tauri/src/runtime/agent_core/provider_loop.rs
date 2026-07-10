@@ -88,7 +88,7 @@ pub(crate) fn drive_provider_loop(
         let mut rebuilt_after_in_loop_compaction = false;
         let mut rebuilt_after_exact_rebudget = false;
         let mut exact_prompt_budget_cap_tokens = None;
-        let (turn, agent_definition_snapshot) = loop {
+        let (turn, agent_definition_snapshot, active_repository_instruction_hashes) = loop {
             let owned_process_summary = tool_runtime.owned_process_lifecycle_summary()?;
             let skill_contexts = skill_contexts_from_provider_messages(&messages)?;
             let run_snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
@@ -222,7 +222,11 @@ pub(crate) fn drive_provider_loop(
                 &turn_context_package.manifest,
                 &provider_context_estimate,
             )?;
-            break (turn, agent_definition_snapshot);
+            break (
+                turn,
+                agent_definition_snapshot,
+                turn_context_package.repository_instruction_hashes,
+            );
         };
         record_tool_registry_snapshot(repo_root, project_id, run_id, turn_index, &tool_registry)?;
         if let Some(gate) = harness_order_gate.as_mut() {
@@ -586,6 +590,45 @@ pub(crate) fn drive_provider_loop(
                         "Xero received a provider tool-turn outcome without tool calls.",
                     ));
                 }
+                if let Some(reprompt) = scoped_repository_instruction_gate_prompt(
+                    repo_root,
+                    &tool_registry,
+                    &tool_calls,
+                    &active_repository_instruction_hashes,
+                )? {
+                    stream_recorder.supersede(
+                        &message,
+                        reasoning_content.as_deref(),
+                        reasoning_details.as_ref(),
+                        AssistantCandidateDisposition::ScopedRepositoryInstructionGate,
+                    )?;
+                    append_event(
+                        repo_root,
+                        project_id,
+                        run_id,
+                        AgentRunEventKind::PolicyDecision,
+                        json!({
+                            "kind": "scoped_repository_instruction_gate",
+                            "turnIndex": turn_index,
+                            "action": "reprompt_before_mutation",
+                            "reasonCode": "target_instruction_chain_not_in_context_epoch",
+                        }),
+                    )?;
+                    append_message(
+                        repo_root,
+                        project_id,
+                        run_id,
+                        AgentMessageRole::Developer,
+                        reprompt.clone(),
+                    )?;
+                    messages.push(provider_candidate_revision_message(
+                        &message,
+                        reasoning_content.as_deref(),
+                        reasoning_details.as_ref(),
+                    ));
+                    messages.push(ProviderMessage::Developer { content: reprompt });
+                    continue;
+                }
                 stream_recorder.finish_tool_turn(
                     &message,
                     reasoning_content.as_deref(),
@@ -703,7 +746,7 @@ pub(crate) fn drive_provider_loop(
                 }
 
                 cancellation.check_cancelled()?;
-                let batch = dispatch_tool_batch(
+                let batch = dispatch_tool_batch_with_instruction_context(
                     &tool_registry,
                     tool_runtime,
                     repo_root,
@@ -712,6 +755,7 @@ pub(crate) fn drive_provider_loop(
                     turn_index,
                     &mut workspace_guard,
                     tool_calls,
+                    active_repository_instruction_hashes,
                 )?;
                 if let Some(gate) = harness_order_gate.as_mut() {
                     let snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
@@ -814,6 +858,49 @@ fn refresh_tool_registry_stage_allowlist(
 ) -> CommandResult<()> {
     tool_registry.refresh_stage_allowed_tools(tool_runtime.current_workflow_allowed_tools()?);
     Ok(())
+}
+
+fn scoped_repository_instruction_gate_prompt(
+    repo_root: &Path,
+    tool_registry: &ToolRegistry,
+    tool_calls: &[AgentToolCall],
+    active_instruction_hashes: &BTreeMap<String, String>,
+) -> CommandResult<Option<String>> {
+    let Some(target_paths) =
+        repository_instruction_target_paths_for_tool_calls(repo_root, tool_registry, tool_calls)?
+    else {
+        return Ok(None);
+    };
+    let stale_scopes =
+        stale_repository_instruction_scopes(repo_root, &target_paths, active_instruction_hashes)?
+            .into_iter()
+            .map(|provenance| {
+                provenance
+                    .strip_prefix("project:")
+                    .unwrap_or(&provenance)
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+    if stale_scopes.is_empty() {
+        return Ok(None);
+    }
+    let targets = if target_paths.is_empty() {
+        "the repository root".to_string()
+    } else {
+        target_paths
+            .iter()
+            .map(|path| format!("`{path}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let scopes = stale_scopes
+        .iter()
+        .map(|path| format!("`{path}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Ok(Some(format!(
+        "Xero paused the mutating tool call before any side effect because the complete repository-instruction chain for {targets} was not present in the provider context used for this turn. The next context epoch now includes these required scoped instruction files: {scopes}. Read and follow them, then issue a fresh tool call for the intended targets. Do not assume the paused call executed."
+    )))
 }
 
 fn runtime_wait_output_from_tool_result(output: &JsonValue) -> Option<AutonomousRuntimeWaitOutput> {
@@ -5584,6 +5671,7 @@ enum AssistantCandidateDisposition {
     CustomOutputContractGate,
     UnresolvedSubagentGate,
     VerificationGate,
+    ScopedRepositoryInstructionGate,
     ToolCallTurn,
 }
 
@@ -7335,6 +7423,48 @@ mod tests {
         assert_completion_gate_supersedes_candidate(
             "candidate-verification-gate",
             AssistantCandidateDisposition::VerificationGate,
+        );
+    }
+
+    #[test]
+    fn scoped_instruction_gate_reprompts_before_first_target_mutation() {
+        let root = tempfile::tempdir().expect("temp dir");
+        fs::create_dir_all(root.path().join("client/src")).expect("create target scope");
+        fs::write(
+            root.path().join("client/AGENTS.md"),
+            "Read client rules before writing.",
+        )
+        .expect("write scoped instructions");
+        let registry = registry_for_test_tools(&[AUTONOMOUS_TOOL_WRITE]);
+        let calls = vec![tool_call(
+            "call-first-write",
+            AUTONOMOUS_TOOL_WRITE,
+            json!({
+                "path": "client/src/main.rs",
+                "content": "fn main() {}\n",
+                "createOnly": true
+            }),
+        )];
+        let root_only = required_repository_instruction_context(root.path(), &BTreeSet::new())
+            .expect("resolve root instructions");
+
+        let reprompt =
+            scoped_repository_instruction_gate_prompt(root.path(), &registry, &calls, &root_only)
+                .expect("evaluate scoped instruction gate")
+                .expect("first target mutation must reprompt");
+
+        assert!(reprompt.contains("client/src/main.rs"));
+        assert!(reprompt.contains("client/AGENTS.md"));
+
+        let scoped = required_repository_instruction_context(
+            root.path(),
+            &BTreeSet::from(["client/src/main.rs".to_string()]),
+        )
+        .expect("resolve scoped instructions");
+        assert!(
+            scoped_repository_instruction_gate_prompt(root.path(), &registry, &calls, &scoped,)
+                .expect("re-evaluate scoped instruction gate")
+                .is_none()
         );
     }
 
@@ -11038,6 +11168,87 @@ mod tests {
         assert_eq!(
             manifest.manifest["outputAllowance"]["maxOutputTokens"],
             1_000
+        );
+    }
+
+    #[test]
+    fn provider_loop_reprompts_with_scoped_instructions_before_dispatching_first_write() {
+        let _guard = project_state_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let run_id = "scoped-instruction-first-write";
+        let (_tempdir, repo_root, project_id, controls, tool_runtime, messages) =
+            setup_test_agent_provider_loop(run_id);
+        fs::create_dir_all(repo_root.join("client/src")).expect("create target scope");
+        fs::write(
+            repo_root.join("client/AGENTS.md"),
+            "Use the client-specific rules before writing.",
+        )
+        .expect("write scoped instructions");
+        let write_call = || {
+            tool_call(
+                "call-scoped-write",
+                AUTONOMOUS_TOOL_WRITE,
+                json!({
+                    "path": "client/src/main.rs",
+                    "content": "fn main() {}\n",
+                    "createOnly": true
+                }),
+            )
+        };
+        let provider = ScriptedProvider::new(vec![
+            ProviderTurnOutcome::ToolCalls {
+                message: "Create the target file.".into(),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: vec![write_call()],
+                usage: Some(ProviderUsage::default()),
+            },
+            ProviderTurnOutcome::ToolCalls {
+                message: "Retry after reading the scoped instructions.".into(),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: vec![write_call()],
+                usage: Some(ProviderUsage::default()),
+            },
+        ]);
+
+        let result = drive_provider_loop(
+            &provider,
+            messages,
+            controls,
+            registry_for_test_tools(&[AUTONOMOUS_TOOL_WRITE]),
+            &tool_runtime,
+            &repo_root,
+            &project_id,
+            run_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+            None,
+            None,
+            &AgentRunCancellationToken::default(),
+        );
+
+        assert!(
+            result.is_err(),
+            "completion should still require verification"
+        );
+        assert_eq!(
+            fs::read_to_string(repo_root.join("client/src/main.rs")).expect("written target"),
+            "fn main() {}\n"
+        );
+        let prompts = provider.captured_system_prompts();
+        assert!(!prompts[0].contains("--- BEGIN PROJECT INSTRUCTIONS: client/AGENTS.md ---"));
+        assert!(prompts[1].contains("--- BEGIN PROJECT INSTRUCTIONS: client/AGENTS.md ---"));
+        let snapshot = project_store::load_agent_run(&repo_root, &project_id, run_id)
+            .expect("load run after scoped write");
+        assert_eq!(
+            snapshot
+                .tool_calls
+                .iter()
+                .filter(|call| call.tool_name == AUTONOMOUS_TOOL_WRITE)
+                .count(),
+            1,
+            "the paused first write must not be persisted or dispatched"
         );
     }
 

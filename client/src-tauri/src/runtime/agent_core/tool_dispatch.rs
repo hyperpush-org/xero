@@ -84,6 +84,10 @@ pub(crate) fn dispatch_tool_call_with_write_approval(
     if operator_approved {
         options = options.operator_approved(tool_call.tool_call_id.clone());
     }
+    let repository_instruction_hashes =
+        project_store::list_agent_context_manifests_for_run(repo_root, project_id, run_id)?
+            .pop()
+            .map(|manifest| repository_instruction_hashes_from_manifest(&manifest.manifest));
     let mut batch = dispatch_tool_batch_with_options(
         tool_registry,
         tool_runtime,
@@ -94,6 +98,7 @@ pub(crate) fn dispatch_tool_call_with_write_approval(
         workspace_guard,
         vec![tool_call],
         options,
+        repository_instruction_hashes,
     )?;
     if let Some(error) = batch.failure {
         return Err(error);
@@ -221,9 +226,9 @@ pub(crate) fn dry_run_tool_call(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "Tool dispatch is the handoff between provider-turn identity, persistence, and the runtime adapter."
+    reason = "Tool dispatch binds the active provider context epoch to the mutation preflight."
 )]
-pub(crate) fn dispatch_tool_batch(
+pub(crate) fn dispatch_tool_batch_with_instruction_context(
     tool_registry: &ToolRegistry,
     tool_runtime: &AutonomousToolRuntime,
     repo_root: &Path,
@@ -232,6 +237,7 @@ pub(crate) fn dispatch_tool_batch(
     turn_index: usize,
     workspace_guard: &mut AgentWorkspaceGuard,
     tool_calls: Vec<AgentToolCall>,
+    repository_instruction_hashes: BTreeMap<String, String>,
 ) -> CommandResult<AgentToolBatchDispatchResult> {
     dispatch_tool_batch_with_options(
         tool_registry,
@@ -243,6 +249,7 @@ pub(crate) fn dispatch_tool_batch(
         workspace_guard,
         tool_calls,
         AgentToolBatchDispatchOptions::default(),
+        Some(repository_instruction_hashes),
     )
 }
 
@@ -260,6 +267,7 @@ fn dispatch_tool_batch_with_options(
     workspace_guard: &mut AgentWorkspaceGuard,
     tool_calls: Vec<AgentToolCall>,
     options: AgentToolBatchDispatchOptions,
+    repository_instruction_hashes: Option<BTreeMap<String, String>>,
 ) -> CommandResult<AgentToolBatchDispatchResult> {
     if tool_calls.is_empty() {
         return Ok(AgentToolBatchDispatchResult {
@@ -345,6 +353,7 @@ fn dispatch_tool_batch_with_options(
         write_preflight: Arc::new(Mutex::new(BTreeMap::new())),
         approved_existing_write_call_ids: options.approved_existing_write_call_ids,
         operator_approved_call_ids: options.operator_approved_call_ids,
+        repository_instruction_hashes,
     });
 
     let dispatch_result = (|| {
@@ -480,6 +489,7 @@ struct AutonomousToolHandlerShared {
     write_preflight: Arc<Mutex<BTreeMap<String, AgentToolWritePreflight>>>,
     approved_existing_write_call_ids: BTreeSet<String>,
     operator_approved_call_ids: BTreeSet<String>,
+    repository_instruction_hashes: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -789,6 +799,7 @@ impl AutonomousToolHandlerShared {
         call: &ToolCallInput,
         request: AutonomousToolRequest,
     ) -> CommandResult<Option<JsonValue>> {
+        self.validate_repository_instruction_preflight(call)?;
         let planned = planned_file_reservation_operations(&request)?;
         let code_capture_plan = code_capture_plan_for_request(&call.tool_name, &request);
         if planned.is_empty() && code_capture_plan.is_none() {
@@ -882,6 +893,38 @@ impl AutonomousToolHandlerShared {
             "reservationIds": reservation_ids,
             "checkpointedAt": now_timestamp(),
         })))
+    }
+
+    fn validate_repository_instruction_preflight(&self, call: &ToolCallInput) -> CommandResult<()> {
+        let Some(active_hashes) = self.repository_instruction_hashes.as_ref() else {
+            return Ok(());
+        };
+        let tool_call = AgentToolCall {
+            tool_call_id: call.tool_call_id.clone(),
+            tool_name: call.tool_name.clone(),
+            input: call.input.clone(),
+        };
+        let Some(target_paths) = repository_instruction_target_paths_for_tool_calls(
+            &self.repo_root,
+            &self.legacy_registry,
+            std::slice::from_ref(&tool_call),
+        )?
+        else {
+            return Ok(());
+        };
+        let stale_scopes =
+            stale_repository_instruction_scopes(&self.repo_root, &target_paths, active_hashes)?;
+        if stale_scopes.is_empty() {
+            return Ok(());
+        }
+        Err(CommandError::retryable(
+            "repository_instruction_context_epoch_stale",
+            format!(
+                "Xero refused mutating tool `{}` before any side effect because scoped repository instructions changed after the provider context was assembled: {}. Re-prompt the model with a new context epoch before retrying.",
+                call.tool_name,
+                stale_scopes.join(", ")
+            ),
+        ))
     }
 
     fn begin_code_capture(

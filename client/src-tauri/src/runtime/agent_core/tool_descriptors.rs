@@ -15,6 +15,11 @@ const PROMPT_CONTEXT_CACHE_TTL: Duration = Duration::from_secs(30);
 const MAX_PROMPT_CONTEXT_CACHE_ENTRIES: usize = 32;
 const MAX_PROMPT_CONTEXT_WALK_FILES: usize = 5_000;
 const MAX_REPOSITORY_INSTRUCTION_FILES: usize = 32;
+const MAX_TARGETED_REPOSITORY_INSTRUCTION_FILES: usize = 64;
+const MAX_REPOSITORY_INSTRUCTION_FILE_BYTES: u64 = 64 * 1024;
+const MAX_REPOSITORY_INSTRUCTION_FILE_TOKENS: u64 = 12 * 1024;
+const MAX_REPOSITORY_INSTRUCTION_TOTAL_BYTES: u64 = 256 * 1024;
+const MAX_REPOSITORY_INSTRUCTION_TOTAL_TOKENS: u64 = 32 * 1024;
 const DESCRIPTOR_MAX_PATH_CHARS: u64 = 4_096;
 const DESCRIPTOR_MAX_GLOB_ITEMS: u64 = 64;
 const DESCRIPTOR_MAX_GLOB_CHARS: u64 = 512;
@@ -216,7 +221,7 @@ impl<'a> PromptCompiler<'a> {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        self.relevant_paths = normalize_relevant_prompt_paths(paths);
+        self.relevant_paths = normalize_relevant_prompt_paths(self.repo_root, paths);
         self
     }
 
@@ -312,7 +317,7 @@ impl<'a> PromptCompiler<'a> {
         candidates.extend(repository_instruction_fragment_candidates(
             self.repo_root,
             &self.relevant_paths,
-        ));
+        )?);
         candidates.push(prompt_fragment_candidate(
             "project.workspace_manifest",
             260,
@@ -1648,11 +1653,33 @@ struct RepositoryInstructionFile {
 fn repository_instruction_fragment_candidates(
     repo_root: &Path,
     relevant_paths: &BTreeSet<String>,
-) -> Vec<PromptFragmentCandidate> {
-    let fragments = cached_prompt_context(&REPOSITORY_INSTRUCTION_CACHE, repo_root, || {
+) -> CommandResult<Vec<PromptFragmentCandidate>> {
+    let broad_fragments = cached_prompt_context(&REPOSITORY_INSTRUCTION_CACHE, repo_root, || {
         build_repository_instruction_fragments(repo_root)
     });
-    fragments
+    let mut fragments_by_provenance = broad_fragments
+        .into_iter()
+        .map(|fragment| (fragment.provenance.clone(), fragment))
+        .collect::<BTreeMap<_, _>>();
+    for fragment in targeted_repository_instruction_fragments(repo_root, relevant_paths)? {
+        fragments_by_provenance.insert(fragment.provenance.clone(), fragment);
+    }
+    let mut fragments = fragments_by_provenance.into_values().collect::<Vec<_>>();
+    fragments.sort_by(|left, right| {
+        instruction_path_rank(
+            left.provenance
+                .strip_prefix("project:")
+                .unwrap_or(&left.provenance),
+        )
+        .cmp(&instruction_path_rank(
+            right
+                .provenance
+                .strip_prefix("project:")
+                .unwrap_or(&right.provenance),
+        ))
+        .then_with(|| left.provenance.cmp(&right.provenance))
+    });
+    Ok(fragments
         .into_iter()
         .map(|fragment| {
             let is_root = fragment.provenance == "project:AGENTS.md";
@@ -1674,7 +1701,7 @@ fn repository_instruction_fragment_candidates(
                 decision_reason,
             }
         })
-        .collect()
+        .collect())
 }
 
 fn build_repository_instruction_fragments(repo_root: &Path) -> Vec<PromptFragment> {
@@ -1720,6 +1747,193 @@ fn build_repository_instruction_fragments(repo_root: &Path) -> Vec<PromptFragmen
         .collect()
 }
 
+fn targeted_repository_instruction_fragments(
+    repo_root: &Path,
+    relevant_paths: &BTreeSet<String>,
+) -> CommandResult<Vec<PromptFragment>> {
+    let mut instruction_paths = BTreeSet::from(["AGENTS.md".to_string()]);
+    for relevant_path in relevant_paths {
+        validate_repository_target_path(repo_root, relevant_path)?;
+        let target = repo_root.join(relevant_path);
+        let target_is_directory = fs::symlink_metadata(&target)
+            .map(|metadata| metadata.file_type().is_dir())
+            .unwrap_or(false);
+        let scope = if target_is_directory {
+            Path::new(relevant_path)
+        } else {
+            Path::new(relevant_path)
+                .parent()
+                .unwrap_or_else(|| Path::new(""))
+        };
+        let mut directory = PathBuf::new();
+        for component in scope.components() {
+            let Component::Normal(segment) = component else {
+                continue;
+            };
+            directory.push(segment);
+            instruction_paths.insert(
+                directory
+                    .join("AGENTS.md")
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            );
+        }
+    }
+    if instruction_paths.len() > MAX_TARGETED_REPOSITORY_INSTRUCTION_FILES {
+        return Err(CommandError::user_fixable(
+            "repository_instruction_chain_file_limit_exceeded",
+            format!(
+                "The selected targets require {} scoped AGENTS.md files, exceeding the supported limit of {MAX_TARGETED_REPOSITORY_INSTRUCTION_FILES}. Narrow the mutation to fewer target scopes and retry.",
+                instruction_paths.len()
+            ),
+        ));
+    }
+
+    let mut files = Vec::new();
+    let mut total_bytes = 0_u64;
+    let mut total_tokens = 0_u64;
+    for relative_path in instruction_paths {
+        let Some(file) = read_bounded_repository_instruction(repo_root, &relative_path)? else {
+            continue;
+        };
+        let bytes = file.body.len() as u64;
+        total_bytes = total_bytes.saturating_add(bytes);
+        total_tokens = total_tokens.saturating_add(estimate_tokens(&file.body));
+        if total_bytes > MAX_REPOSITORY_INSTRUCTION_TOTAL_BYTES
+            || total_tokens > MAX_REPOSITORY_INSTRUCTION_TOTAL_TOKENS
+        {
+            return Err(CommandError::user_fixable(
+                "repository_instruction_chain_budget_exceeded",
+                format!(
+                    "The root-to-target AGENTS.md chain requires {total_bytes} bytes and approximately {total_tokens} tokens, exceeding the supported totals of {MAX_REPOSITORY_INSTRUCTION_TOTAL_BYTES} bytes or {MAX_REPOSITORY_INSTRUCTION_TOTAL_TOKENS} tokens. Reduce or split the scoped instruction files before retrying the mutation."
+                ),
+            ));
+        }
+        files.push(file);
+    }
+    if !files
+        .iter()
+        .any(|instruction| instruction.relative_path == "AGENTS.md")
+    {
+        files.push(RepositoryInstructionFile {
+            relative_path: "AGENTS.md".into(),
+            body: "(none)".into(),
+        });
+    }
+    files.sort_by(|left, right| {
+        instruction_path_rank(&left.relative_path)
+            .cmp(&instruction_path_rank(&right.relative_path))
+            .then_with(|| left.relative_path.cmp(&right.relative_path))
+    });
+    Ok(files
+        .into_iter()
+        .map(repository_instruction_prompt_fragment)
+        .collect())
+}
+
+fn read_bounded_repository_instruction(
+    repo_root: &Path,
+    relative_path: &str,
+) -> CommandResult<Option<RepositoryInstructionFile>> {
+    let path = repo_root.join(relative_path);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(CommandError::user_fixable(
+                "repository_instruction_metadata_failed",
+                format!(
+                    "Xero could not inspect scoped instruction file `{relative_path}`: {error}. Fix its permissions or remove the unreadable file before retrying the mutation."
+                ),
+            ));
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(CommandError::user_fixable(
+            "repository_instruction_symlink_rejected",
+            format!(
+                "Scoped instruction file `{relative_path}` is a symlink. Replace it with a regular AGENTS.md file inside the repository before retrying the mutation."
+            ),
+        ));
+    }
+    if !metadata.file_type().is_file() {
+        return Ok(None);
+    }
+    if metadata.len() > MAX_REPOSITORY_INSTRUCTION_FILE_BYTES {
+        return Err(CommandError::user_fixable(
+            "repository_instruction_file_too_large",
+            format!(
+                "Scoped instruction file `{relative_path}` is {} bytes, exceeding the {MAX_REPOSITORY_INSTRUCTION_FILE_BYTES}-byte limit. Reduce or split the instructions before retrying the mutation.",
+                metadata.len()
+            ),
+        ));
+    }
+    let bytes = fs::read(&path).map_err(|error| {
+        CommandError::user_fixable(
+            "repository_instruction_read_failed",
+            format!(
+                "Xero could not read scoped instruction file `{relative_path}`: {error}. Fix the file and retry the mutation."
+            ),
+        )
+    })?;
+    if bytes.len() as u64 > MAX_REPOSITORY_INSTRUCTION_FILE_BYTES {
+        return Err(CommandError::user_fixable(
+            "repository_instruction_file_too_large",
+            format!(
+                "Scoped instruction file `{relative_path}` is {} bytes, exceeding the {MAX_REPOSITORY_INSTRUCTION_FILE_BYTES}-byte limit. Reduce or split the instructions before retrying the mutation.",
+                bytes.len()
+            ),
+        ));
+    }
+    let body = String::from_utf8(bytes).map_err(|error| {
+        CommandError::user_fixable(
+            "repository_instruction_encoding_invalid",
+            format!(
+                "Scoped instruction file `{relative_path}` is not valid UTF-8: {error}. Save it as UTF-8 and retry the mutation."
+            ),
+        )
+    })?;
+    let body = body.trim().to_string();
+    if body.is_empty() {
+        return Ok(None);
+    }
+    let token_estimate = estimate_tokens(&body);
+    if token_estimate > MAX_REPOSITORY_INSTRUCTION_FILE_TOKENS {
+        return Err(CommandError::user_fixable(
+            "repository_instruction_file_token_limit_exceeded",
+            format!(
+                "Scoped instruction file `{relative_path}` is approximately {token_estimate} tokens, exceeding the {MAX_REPOSITORY_INSTRUCTION_FILE_TOKENS}-token limit. Reduce or split the instructions before retrying the mutation."
+            ),
+        ));
+    }
+    Ok(Some(RepositoryInstructionFile {
+        relative_path: relative_path.into(),
+        body,
+    }))
+}
+
+fn repository_instruction_prompt_fragment(
+    instruction: RepositoryInstructionFile,
+) -> PromptFragment {
+    let is_root = instruction.relative_path == "AGENTS.md";
+    prompt_fragment_with_policy(
+        &format!(
+            "project.instructions.{}",
+            instruction.relative_path.replace('/', ".")
+        ),
+        300,
+        "Repository instructions",
+        &format!("project:{}", instruction.relative_path),
+        repository_instructions_fragment(&instruction.relative_path, &instruction.body),
+        PromptFragmentBudgetPolicy::AlwaysInclude,
+        if is_root {
+            "root_repository_instruction_scope"
+        } else {
+            "nested_repository_instruction_matches_relevant_path_scope"
+        },
+    )
+}
+
 fn collect_repository_instruction_files(repo_root: &Path) -> Vec<RepositoryInstructionFile> {
     let walker = WalkBuilder::new(repo_root)
         .git_ignore(true)
@@ -1748,16 +1962,11 @@ fn collect_repository_instruction_files(repo_root: &Path) -> Vec<RepositoryInstr
         let Some(relative_path) = repo_relative_prompt_path(repo_root, entry.path()) else {
             continue;
         };
-        let Ok(body) = fs::read_to_string(entry.path()).map(|body| body.trim().to_string()) else {
+        let Ok(Some(instruction)) = read_bounded_repository_instruction(repo_root, &relative_path)
+        else {
             continue;
         };
-        if body.is_empty() {
-            continue;
-        }
-        instruction_files.push(RepositoryInstructionFile {
-            relative_path,
-            body,
-        });
+        instruction_files.push(instruction);
     }
     instruction_files.sort_by(|left, right| {
         instruction_path_rank(&left.relative_path)
@@ -1829,37 +2038,279 @@ fn repository_instruction_applies_to_paths(
         .any(|path| path == scope || path.starts_with(&format!("{scope}/")))
 }
 
-fn normalize_relevant_prompt_paths<I, S>(paths: I) -> BTreeSet<String>
+fn normalize_relevant_prompt_paths<I, S>(repo_root: &Path, paths: I) -> BTreeSet<String>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
     paths
         .into_iter()
-        .filter_map(|path| normalize_relevant_prompt_path(path.as_ref()))
+        .filter_map(|path| {
+            normalize_relevant_prompt_path(repo_root, path.as_ref())
+                .ok()
+                .flatten()
+        })
         .collect()
 }
 
-fn normalize_relevant_prompt_path(path: &str) -> Option<String> {
+fn normalize_relevant_prompt_path(repo_root: &Path, path: &str) -> CommandResult<Option<String>> {
     let trimmed = path.trim();
-    if trimmed.is_empty()
-        || trimmed.contains('\0')
-        || trimmed.starts_with('/')
-        || trimmed.contains("://")
-    {
-        return None;
+    if trimmed.is_empty() || trimmed.contains('\0') || trimmed.contains("://") {
+        return Ok(None);
     }
-    let parts = Path::new(trimmed)
-        .components()
-        .filter_map(|component| match component {
-            Component::Normal(segment) => segment.to_str(),
-            _ => None,
+    let standardized = trimmed.replace('\\', "/");
+    if standardized.split('/').any(|component| component == "..") {
+        return Err(CommandError::user_fixable(
+            "repository_instruction_target_traversal_rejected",
+            format!(
+                "Target path `{trimmed}` contains parent traversal. Use a normalized path inside the repository before retrying the mutation."
+            ),
+        ));
+    }
+    let candidate = Path::new(&standardized);
+    let relative = if candidate.is_absolute() {
+        candidate.strip_prefix(repo_root).map_err(|_| {
+            CommandError::user_fixable(
+                "repository_instruction_target_outside_repo",
+                format!(
+                    "Target path `{trimmed}` is outside the repository. Use a repository-contained target before retrying the mutation."
+                ),
+            )
+        })?
+    } else {
+        candidate
+    };
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        match component {
+            Component::Normal(segment) => {
+                let Some(segment) = segment.to_str() else {
+                    return Err(CommandError::user_fixable(
+                        "repository_instruction_target_encoding_invalid",
+                        format!(
+                            "Target path `{trimmed}` contains non-UTF-8 components. Rename the target and retry the mutation."
+                        ),
+                    ));
+                };
+                parts.push(segment);
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(CommandError::user_fixable(
+                    "repository_instruction_target_traversal_rejected",
+                    format!(
+                        "Target path `{trimmed}` is not a normalized repository-relative path. Normalize it before retrying the mutation."
+                    ),
+                ));
+            }
+        }
+    }
+    Ok((!parts.is_empty()).then(|| parts.join("/")))
+}
+
+fn validate_repository_target_path(repo_root: &Path, relevant_path: &str) -> CommandResult<()> {
+    let mut current = repo_root.to_path_buf();
+    for component in Path::new(relevant_path).components() {
+        let Component::Normal(segment) = component else {
+            return Err(CommandError::user_fixable(
+                "repository_instruction_target_traversal_rejected",
+                format!(
+                    "Target path `{relevant_path}` is not a normalized repository-relative path. Normalize it before retrying the mutation."
+                ),
+            ));
+        };
+        current.push(segment);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(CommandError::user_fixable(
+                    "repository_instruction_target_symlink_rejected",
+                    format!(
+                        "Target path `{relevant_path}` traverses symlink `{}`. Use the canonical repository path so Xero can enforce the correct AGENTS.md scope before mutation.",
+                        current.display()
+                    ),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(CommandError::user_fixable(
+                    "repository_instruction_target_metadata_failed",
+                    format!(
+                        "Xero could not inspect target path `{relevant_path}` while resolving AGENTS.md scope: {error}. Fix the path permissions and retry the mutation."
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn repository_instruction_hashes(
+    fragments: &[PromptFragment],
+) -> BTreeMap<String, String> {
+    fragments
+        .iter()
+        .filter(|fragment| {
+            fragment.provenance.starts_with("project:")
+                && fragment.provenance.ends_with("AGENTS.md")
         })
-        .collect::<Vec<_>>();
-    (!parts.is_empty()).then(|| parts.join("/"))
+        .map(|fragment| (fragment.provenance.clone(), fragment.sha256.clone()))
+        .collect()
+}
+
+pub(crate) fn repository_instruction_hashes_from_manifest(
+    manifest: &JsonValue,
+) -> BTreeMap<String, String> {
+    manifest
+        .get("promptFragments")
+        .and_then(JsonValue::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|fragment| {
+            let provenance = fragment.get("provenance")?.as_str()?;
+            let sha256 = fragment.get("sha256")?.as_str()?;
+            (provenance.starts_with("project:") && provenance.ends_with("AGENTS.md"))
+                .then(|| (provenance.to_string(), sha256.to_string()))
+        })
+        .collect()
+}
+
+pub(crate) fn required_repository_instruction_context(
+    repo_root: &Path,
+    relevant_paths: &BTreeSet<String>,
+) -> CommandResult<BTreeMap<String, String>> {
+    targeted_repository_instruction_fragments(repo_root, relevant_paths)
+        .map(|fragments| repository_instruction_hashes(&fragments))
+}
+
+pub(crate) fn stale_repository_instruction_scopes(
+    repo_root: &Path,
+    relevant_paths: &BTreeSet<String>,
+    active_hashes: &BTreeMap<String, String>,
+) -> CommandResult<Vec<String>> {
+    Ok(
+        required_repository_instruction_context(repo_root, relevant_paths)?
+            .into_iter()
+            .filter(|(provenance, sha256)| active_hashes.get(provenance) != Some(sha256))
+            .map(|(provenance, _)| provenance)
+            .collect(),
+    )
+}
+
+pub(crate) fn repository_instruction_target_paths_for_tool_calls(
+    repo_root: &Path,
+    tool_registry: &ToolRegistry,
+    tool_calls: &[AgentToolCall],
+) -> CommandResult<Option<BTreeSet<String>>> {
+    let mut saw_mutation = false;
+    let mut paths = BTreeSet::new();
+    for tool_call in tool_calls {
+        let Some(descriptor) = tool_registry.descriptor(&tool_call.tool_name) else {
+            continue;
+        };
+        if descriptor
+            .to_core_descriptor_v2(true)
+            .mutability
+            .is_read_only()
+        {
+            continue;
+        }
+        saw_mutation = true;
+        if tool_call.tool_name == AUTONOMOUS_TOOL_HOST_COMMAND {
+            continue;
+        }
+        if !matches!(
+            tool_effect_class(&tool_call.tool_name),
+            AutonomousToolEffectClass::Write
+                | AutonomousToolEffectClass::DestructiveWrite
+                | AutonomousToolEffectClass::Command
+                | AutonomousToolEffectClass::ProcessControl
+        ) {
+            continue;
+        }
+        let mut raw_paths = Vec::new();
+        collect_raw_relevant_paths_from_json(&tool_call.input, &mut raw_paths);
+        collect_command_argument_paths(repo_root, &tool_call.input, &mut raw_paths);
+        for raw_path in raw_paths {
+            if let Some(path) = normalize_relevant_prompt_path(repo_root, &raw_path)? {
+                validate_repository_target_path(repo_root, &path)?;
+                paths.insert(path);
+            }
+        }
+    }
+    Ok(saw_mutation.then_some(paths))
+}
+
+fn collect_command_argument_paths(repo_root: &Path, value: &JsonValue, paths: &mut Vec<String>) {
+    let Some(fields) = value.as_object() else {
+        return;
+    };
+    for key in ["argv", "args"] {
+        let Some(arguments) = fields.get(key).and_then(JsonValue::as_array) else {
+            continue;
+        };
+        for (index, argument) in arguments.iter().filter_map(JsonValue::as_str).enumerate() {
+            if key == "argv" && index == 0 {
+                continue;
+            }
+            let argument = if argument.starts_with('-') {
+                let Some((_, value)) = argument.split_once('=') else {
+                    continue;
+                };
+                value
+            } else {
+                argument
+            };
+            if explicit_prompt_path_candidate(repo_root, argument)
+                && !argument.chars().any(char::is_whitespace)
+                && !argument
+                    .chars()
+                    .any(|character| matches!(character, '|' | '>' | '<' | ';' | '&'))
+            {
+                paths.push(argument.to_string());
+            }
+        }
+    }
+}
+
+fn collect_raw_relevant_paths_from_json(value: &JsonValue, paths: &mut Vec<String>) {
+    match value {
+        JsonValue::Array(items) => {
+            for item in items {
+                collect_raw_relevant_paths_from_json(item, paths);
+            }
+        }
+        JsonValue::Object(fields) => {
+            for (key, value) in fields {
+                if prompt_path_json_key(key) {
+                    collect_raw_relevant_path_value(value, paths);
+                }
+                collect_raw_relevant_paths_from_json(value, paths);
+            }
+        }
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::String(_) => {}
+    }
+}
+
+fn collect_raw_relevant_path_value(value: &JsonValue, paths: &mut Vec<String>) {
+    match value {
+        JsonValue::String(path) => paths.push(path.clone()),
+        JsonValue::Array(items) => {
+            for item in items {
+                collect_raw_relevant_path_value(item, paths);
+            }
+        }
+        JsonValue::Object(fields) => {
+            for value in fields.values() {
+                collect_raw_relevant_path_value(value, paths);
+            }
+        }
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) => {}
+    }
 }
 
 pub(crate) fn prompt_relevant_paths_from_provider_messages(
+    repo_root: &Path,
     messages: &[ProviderMessage],
 ) -> BTreeSet<String> {
     let mut paths = BTreeSet::new();
@@ -1867,56 +2318,120 @@ pub(crate) fn prompt_relevant_paths_from_provider_messages(
         match message {
             ProviderMessage::Assistant { tool_calls, .. } => {
                 for tool_call in tool_calls {
-                    collect_relevant_paths_from_json(&tool_call.input, &mut paths);
+                    collect_relevant_paths_from_json(repo_root, &tool_call.input, &mut paths);
                 }
             }
             ProviderMessage::Tool { content, .. } => {
                 if let Ok(value) = serde_json::from_str::<JsonValue>(content) {
-                    collect_relevant_paths_from_json(&value, &mut paths);
+                    collect_relevant_paths_from_json(repo_root, &value, &mut paths);
                 }
             }
-            ProviderMessage::Developer { .. }
-            | ProviderMessage::User { .. }
-            | ProviderMessage::AssistantContext { .. } => {}
+            ProviderMessage::User {
+                content,
+                attachments,
+            } => {
+                collect_explicit_prompt_paths(repo_root, content, &mut paths);
+                for attachment in attachments {
+                    if let Some(path) = normalize_relevant_prompt_path(
+                        repo_root,
+                        &attachment.absolute_path.to_string_lossy(),
+                    )
+                    .ok()
+                    .flatten()
+                    {
+                        paths.insert(path);
+                    }
+                }
+            }
+            ProviderMessage::Developer { content } => {
+                collect_explicit_prompt_paths(repo_root, content, &mut paths);
+            }
+            ProviderMessage::AssistantContext { .. } => {}
         }
     }
     paths
 }
 
-fn collect_relevant_paths_from_json(value: &JsonValue, paths: &mut BTreeSet<String>) {
+fn collect_explicit_prompt_paths(repo_root: &Path, content: &str, paths: &mut BTreeSet<String>) {
+    for candidate in content.split('`').skip(1).step_by(2) {
+        if let Some(path) = normalize_relevant_prompt_path(repo_root, candidate)
+            .ok()
+            .flatten()
+        {
+            paths.insert(path);
+        }
+    }
+    for candidate in content.split(|character: char| {
+        character.is_whitespace()
+            || matches!(
+                character,
+                '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | ',' | ';'
+            )
+    }) {
+        let candidate = candidate.trim_end_matches(['.', ':', '!', '?']);
+        if !explicit_prompt_path_candidate(repo_root, candidate) {
+            continue;
+        }
+        if let Some(path) = normalize_relevant_prompt_path(repo_root, candidate)
+            .ok()
+            .flatten()
+        {
+            paths.insert(path);
+        }
+    }
+}
+
+fn explicit_prompt_path_candidate(repo_root: &Path, candidate: &str) -> bool {
+    !candidate.is_empty()
+        && !candidate.contains("://")
+        && (candidate.contains('/')
+            || candidate.contains('\\')
+            || Path::new(candidate).extension().is_some()
+            || (candidate.starts_with('.') && candidate.len() > 1)
+            || repo_root.join(candidate).exists())
+}
+
+fn collect_relevant_paths_from_json(
+    repo_root: &Path,
+    value: &JsonValue,
+    paths: &mut BTreeSet<String>,
+) {
     match value {
         JsonValue::Array(items) => {
             for item in items {
-                collect_relevant_paths_from_json(item, paths);
+                collect_relevant_paths_from_json(repo_root, item, paths);
             }
         }
         JsonValue::Object(fields) => {
             for (key, value) in fields {
                 if prompt_path_json_key(key) {
-                    collect_relevant_path_value(value, paths);
+                    collect_relevant_path_value(repo_root, value, paths);
                 }
-                collect_relevant_paths_from_json(value, paths);
+                collect_relevant_paths_from_json(repo_root, value, paths);
             }
         }
         JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::String(_) => {}
     }
 }
 
-fn collect_relevant_path_value(value: &JsonValue, paths: &mut BTreeSet<String>) {
+fn collect_relevant_path_value(repo_root: &Path, value: &JsonValue, paths: &mut BTreeSet<String>) {
     match value {
         JsonValue::String(path) => {
-            if let Some(path) = normalize_relevant_prompt_path(path) {
+            if let Some(path) = normalize_relevant_prompt_path(repo_root, path)
+                .ok()
+                .flatten()
+            {
                 paths.insert(path);
             }
         }
         JsonValue::Array(items) => {
             for item in items {
-                collect_relevant_path_value(item, paths);
+                collect_relevant_path_value(repo_root, item, paths);
             }
         }
         JsonValue::Object(fields) => {
             for value in fields.values() {
-                collect_relevant_path_value(value, paths);
+                collect_relevant_path_value(repo_root, value, paths);
             }
         }
         JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) => {}
@@ -1928,6 +2443,8 @@ fn prompt_path_json_key(key: &str) -> bool {
         key,
         "path"
             | "filePath"
+            | "from"
+            | "to"
             | "fromPath"
             | "toPath"
             | "targetPath"
@@ -1936,6 +2453,7 @@ fn prompt_path_json_key(key: &str) -> bool {
             | "relatedPaths"
             | "paths"
             | "writeSet"
+            | "cwd"
     )
 }
 
@@ -10370,6 +10888,222 @@ mod tests {
         assert!(compilation
             .prompt
             .contains("--- BEGIN PROJECT INSTRUCTIONS: client/src/AGENTS.md ---"));
+        assert!(compilation.fragments.iter().any(|fragment| {
+            fragment.id == "project.instructions.client.src.AGENTS.md"
+                && fragment.budget_policy == PromptFragmentBudgetPolicy::AlwaysInclude
+        }));
+    }
+
+    #[test]
+    fn provider_user_paths_seed_repository_instruction_scope() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let messages = vec![ProviderMessage::User {
+            content: "Update `client/src/main.rs` and server/routes/api.rs.".into(),
+            attachments: Vec::new(),
+        }];
+
+        let relevant_paths = prompt_relevant_paths_from_provider_messages(root.path(), &messages);
+
+        assert_eq!(
+            relevant_paths,
+            BTreeSet::from([
+                "client/src/main.rs".to_string(),
+                "server/routes/api.rs".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn provider_user_directory_path_seeds_repository_instruction_scope() {
+        let root = tempfile::tempdir().expect("temp dir");
+        fs::create_dir(root.path().join("client")).expect("create explicit directory");
+        let messages = vec![ProviderMessage::User {
+            content: "Update `client`.".into(),
+            attachments: Vec::new(),
+        }];
+
+        let relevant_paths = prompt_relevant_paths_from_provider_messages(root.path(), &messages);
+
+        assert_eq!(relevant_paths, BTreeSet::from(["client".to_string()]));
+    }
+
+    #[test]
+    fn targeted_instruction_lookup_bypasses_broad_walk_entry_limit() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let bulk = root.path().join("bulk");
+        fs::create_dir_all(&bulk).expect("create bulk dir");
+        for index in 0..=MAX_PROMPT_CONTEXT_WALK_FILES {
+            fs::write(bulk.join(format!("file-{index}.txt")), "x").expect("write bulk file");
+        }
+        fs::create_dir_all(root.path().join("z_scope/src")).expect("create target scope");
+        fs::write(
+            root.path().join("z_scope/AGENTS.md"),
+            "Apply the late scoped instructions.",
+        )
+        .expect("write target instructions");
+
+        let compilation = PromptCompiler::new(
+            root.path(),
+            None,
+            None,
+            RuntimeAgentIdDto::Ask,
+            BrowserControlPreferenceDto::Default,
+            &[],
+        )
+        .with_relevant_paths(["z_scope/src/main.rs"])
+        .compile()
+        .expect("compile targeted prompt");
+
+        assert!(compilation
+            .prompt
+            .contains("--- BEGIN PROJECT INSTRUCTIONS: z_scope/AGENTS.md ---"));
+    }
+
+    #[test]
+    fn targeted_instruction_lookup_bypasses_broad_instruction_file_limit() {
+        let root = tempfile::tempdir().expect("temp dir");
+        for index in 0..=MAX_REPOSITORY_INSTRUCTION_FILES {
+            let scope = root.path().join(format!("scope-{index:02}"));
+            fs::create_dir_all(&scope).expect("create broad scope");
+            fs::write(scope.join("AGENTS.md"), format!("Rules for scope {index}."))
+                .expect("write broad scoped instructions");
+        }
+        fs::create_dir_all(root.path().join("z_target/src")).expect("create target scope");
+        fs::write(
+            root.path().join("z_target/AGENTS.md"),
+            "Apply the targeted instructions.",
+        )
+        .expect("write target instructions");
+
+        let hashes = required_repository_instruction_context(
+            root.path(),
+            &BTreeSet::from(["z_target/src/main.rs".to_string()]),
+        )
+        .expect("resolve target beyond broad instruction limit");
+
+        assert!(hashes.contains_key("project:z_target/AGENTS.md"));
+    }
+
+    #[test]
+    fn targeted_instruction_lookup_combines_multiple_target_chains() {
+        let root = tempfile::tempdir().expect("temp dir");
+        for scope in ["client", "server"] {
+            fs::create_dir_all(root.path().join(scope).join("src")).expect("create scope");
+            fs::write(
+                root.path().join(scope).join("AGENTS.md"),
+                format!("Use {scope} rules."),
+            )
+            .expect("write scoped instructions");
+        }
+
+        let hashes = required_repository_instruction_context(
+            root.path(),
+            &BTreeSet::from([
+                "client/src/main.rs".to_string(),
+                "server/src/lib.rs".to_string(),
+            ]),
+        )
+        .expect("resolve multiple target chains");
+
+        assert_eq!(
+            hashes.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec![
+                "project:AGENTS.md",
+                "project:client/AGENTS.md",
+                "project:server/AGENTS.md",
+            ]
+        );
+    }
+
+    #[test]
+    fn targeted_instruction_lookup_rejects_parent_traversal() {
+        let root = tempfile::tempdir().expect("temp dir");
+
+        let error = normalize_relevant_prompt_path(root.path(), "client/../server/main.rs")
+            .expect_err("parent traversal must fail closed");
+
+        assert_eq!(
+            error.code,
+            "repository_instruction_target_traversal_rejected"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn targeted_instruction_lookup_rejects_symlink_traversal() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("temp dir");
+        let outside = tempfile::tempdir().expect("outside dir");
+        symlink(outside.path(), root.path().join("linked")).expect("create symlink");
+
+        let error = required_repository_instruction_context(
+            root.path(),
+            &BTreeSet::from(["linked/src/main.rs".to_string()]),
+        )
+        .expect_err("symlink traversal must fail closed");
+
+        assert_eq!(error.code, "repository_instruction_target_symlink_rejected");
+    }
+
+    #[test]
+    fn targeted_instruction_lookup_reports_actionable_file_overflow() {
+        let root = tempfile::tempdir().expect("temp dir");
+        fs::create_dir_all(root.path().join("client/src")).expect("create target scope");
+        fs::write(
+            root.path().join("client/AGENTS.md"),
+            vec![b'x'; MAX_REPOSITORY_INSTRUCTION_FILE_BYTES as usize + 1],
+        )
+        .expect("write oversized instructions");
+
+        let error = required_repository_instruction_context(
+            root.path(),
+            &BTreeSet::from(["client/src/main.rs".to_string()]),
+        )
+        .expect_err("oversized instructions must fail closed");
+
+        assert_eq!(error.code, "repository_instruction_file_too_large");
+        assert!(error.message.contains("Reduce or split"));
+    }
+
+    #[test]
+    fn targeted_instruction_lookup_reports_actionable_token_overflow() {
+        let root = tempfile::tempdir().expect("temp dir");
+        fs::create_dir_all(root.path().join("client/src")).expect("create target scope");
+        fs::write(
+            root.path().join("client/AGENTS.md"),
+            "instruction ".repeat(5_000),
+        )
+        .expect("write token-heavy instructions");
+
+        let error = required_repository_instruction_context(
+            root.path(),
+            &BTreeSet::from(["client/src/main.rs".to_string()]),
+        )
+        .expect_err("token-heavy instructions must fail closed");
+
+        assert_eq!(
+            error.code,
+            "repository_instruction_file_token_limit_exceeded"
+        );
+        assert!(error.message.contains("Reduce or split"));
+    }
+
+    #[test]
+    fn targeted_instruction_lookup_detects_context_epoch_staleness() {
+        let root = tempfile::tempdir().expect("temp dir");
+        fs::create_dir_all(root.path().join("client/src")).expect("create target scope");
+        let instruction_path = root.path().join("client/AGENTS.md");
+        fs::write(&instruction_path, "Use the original rules.").expect("write instructions");
+        let targets = BTreeSet::from(["client/src/main.rs".to_string()]);
+        let active = required_repository_instruction_context(root.path(), &targets)
+            .expect("resolve active context");
+        fs::write(&instruction_path, "Use the changed rules.").expect("change instructions");
+
+        let stale = stale_repository_instruction_scopes(root.path(), &targets, &active)
+            .expect("detect stale context");
+
+        assert_eq!(stale, vec!["project:client/AGENTS.md"]);
     }
 
     #[test]
