@@ -101,43 +101,27 @@ pub trait EnvironmentCommandExecutor: Send + Sync {
 
 #[derive(Debug, Clone)]
 pub struct SystemEnvironmentBinaryResolver {
-    bundled_dirs: Vec<PathBuf>,
-    managed_dirs: Vec<PathBuf>,
     path_dirs: Vec<PathBuf>,
     common_dirs: Vec<PathBuf>,
 }
 
 impl SystemEnvironmentBinaryResolver {
     pub fn from_process() -> Self {
-        let bundled_dirs = bundled_tool_dirs();
-        let managed_dirs = managed_tool_dirs();
         let path_dirs = env::var_os("PATH")
             .map(|value| env::split_paths(&value).collect())
             .unwrap_or_default();
         let common_dirs = common_dev_dirs();
 
         Self {
-            bundled_dirs,
-            managed_dirs,
             path_dirs,
             common_dirs,
         }
     }
 
     fn ordered_dirs(&self) -> Vec<(&Path, EnvironmentToolSource)> {
-        self.bundled_dirs
+        self.path_dirs
             .iter()
-            .map(|path| (path.as_path(), EnvironmentToolSource::BundledToolchain))
-            .chain(
-                self.managed_dirs
-                    .iter()
-                    .map(|path| (path.as_path(), EnvironmentToolSource::ManagedToolchain)),
-            )
-            .chain(
-                self.path_dirs
-                    .iter()
-                    .map(|path| (path.as_path(), EnvironmentToolSource::Path)),
-            )
+            .map(|path| (path.as_path(), EnvironmentToolSource::Path))
             .chain(
                 self.common_dirs
                     .iter()
@@ -174,12 +158,6 @@ impl EnvironmentBinaryResolver for SystemEnvironmentBinaryResolver {
         let dirs = self.ordered_dirs();
         let normalized = normalized_path_entries(dirs.iter().map(|(path, _)| *path));
         let mut sources = Vec::new();
-        if !self.bundled_dirs.is_empty() {
-            sources.push("bundled-toolchain".to_string());
-        }
-        if !self.managed_dirs.is_empty() {
-            sources.push("managed-toolchain".to_string());
-        }
         if !self.path_dirs.is_empty() {
             sources.push("tauri-process-path".to_string());
         }
@@ -195,16 +173,7 @@ impl EnvironmentBinaryResolver for SystemEnvironmentBinaryResolver {
     }
 
     fn child_envs(&self) -> Vec<(OsString, OsString)> {
-        let mut paths = self
-            .bundled_dirs
-            .iter()
-            .chain(self.managed_dirs.iter())
-            .filter(|path| path.is_dir())
-            .cloned()
-            .collect::<Vec<_>>();
-
-        paths.extend(self.path_dirs.iter().cloned());
-        env::join_paths(paths)
+        env::join_paths(self.path_dirs.iter())
             .ok()
             .map(|path| vec![(OsString::from("PATH"), path)])
             .unwrap_or_default()
@@ -545,25 +514,6 @@ pub fn built_in_environment_probe_catalog() -> Vec<EnvironmentProbeCatalogEntry>
             &["--version"],
         ),
         entry("duckdb", DatabaseCli, "duckdb", &["--version"]),
-        // Solana tooling
-        entry("solana", SolanaTooling, "solana", &["--version"]),
-        entry("anchor", SolanaTooling, "anchor", &["--version"]),
-        entry(
-            "cargo_build_sbf",
-            SolanaTooling,
-            "cargo-build-sbf",
-            &["--version"],
-        ),
-        entry("spl_token", SolanaTooling, "spl-token", &["--version"]),
-        entry("surfpool", SolanaTooling, "surfpool", &["--version"]),
-        entry("trident", SolanaTooling, "trident", &["--version"]),
-        entry("codama", SolanaTooling, "codama", &["--version"]),
-        entry(
-            "solana_verify",
-            SolanaTooling,
-            "solana-verify",
-            &["--version"],
-        ),
         // AI / agent CLIs
         entry("codex", AgentAiCli, "codex", &["--version"]),
         entry("claude", AgentAiCli, "claude", &["--version"]),
@@ -839,20 +789,12 @@ fn derive_capabilities(tools: &[EnvironmentToolRecord]) -> Vec<EnvironmentCapabi
         ));
     }
 
-    capabilities.extend([
-        capability_all(
-            "solana_localnet_ready",
-            &present,
-            &["solana", "cargo_build_sbf", "spl_token"],
-            "Solana localnet workflows require solana, cargo-build-sbf, and spl-token.",
-        ),
-        capability_all(
-            "protobuf_build_ready",
-            &present,
-            &["protoc"],
-            "Protocol Buffer builds require protoc.",
-        ),
-    ]);
+    capabilities.extend([capability_all(
+        "protobuf_build_ready",
+        &present,
+        &["protoc"],
+        "Protocol Buffer builds require protoc.",
+    )]);
 
     capabilities
 }
@@ -1027,39 +969,6 @@ fn wait_with_timeout(
     child.wait_with_output().ok()
 }
 
-fn bundled_tool_dirs() -> Vec<PathBuf> {
-    env::var_os("XERO_SOLANA_RESOURCE_ROOT")
-        .map(PathBuf::from)
-        .filter(|path| path.exists())
-        .map(|root| tool_dirs_from_root(&root))
-        .unwrap_or_default()
-}
-
-fn managed_tool_dirs() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    if let Some(root) = env::var_os("XERO_SOLANA_TOOLCHAIN_ROOT") {
-        roots.push(PathBuf::from(root));
-    }
-
-    roots
-        .into_iter()
-        .flat_map(|root| tool_dirs_from_root(&root))
-        .collect()
-}
-
-fn tool_dirs_from_root(root: &Path) -> Vec<PathBuf> {
-    vec![
-        root.join("bin"),
-        root.join("agave")
-            .join("install")
-            .join("active_release")
-            .join("bin"),
-        root.join("anchor").join("bin"),
-        root.join("node").join("bin"),
-        root.join("pnpm").join("bin"),
-    ]
-}
-
 fn common_dev_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
@@ -1067,17 +976,7 @@ fn common_dev_dirs() -> Vec<PathBuf> {
     {
         if let Some(profile) = env::var_os("USERPROFILE") {
             let profile = PathBuf::from(profile);
-            dirs.push(
-                profile
-                    .join(".local")
-                    .join("share")
-                    .join("solana")
-                    .join("install")
-                    .join("active_release")
-                    .join("bin"),
-            );
             dirs.push(profile.join(".cargo").join("bin"));
-            dirs.push(profile.join(".avm").join("bin"));
         }
         if let Some(app_data) = env::var_os("APPDATA") {
             dirs.push(PathBuf::from(app_data).join("npm"));
@@ -1087,9 +986,7 @@ fn common_dev_dirs() -> Vec<PathBuf> {
     #[cfg(not(windows))]
     if let Some(home) = env::var_os("HOME") {
         let home = PathBuf::from(home);
-        dirs.push(home.join(".local/share/solana/install/active_release/bin"));
         dirs.push(home.join(".cargo/bin"));
-        dirs.push(home.join(".avm/bin"));
     }
 
     #[cfg(target_os = "macos")]

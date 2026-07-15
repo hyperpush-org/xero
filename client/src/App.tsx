@@ -198,7 +198,6 @@ const loadAgentRuntime = () => import('@/components/xero/agent-runtime')
 const loadExecutionView = () => import('@/components/xero/execution-view')
 const loadBrowserSidebar = () => import('@/components/xero/browser-sidebar')
 const loadIosEmulatorSidebar = () => import('@/components/xero/ios-emulator-sidebar')
-const loadSolanaWorkbenchSidebar = () => import('@/components/xero/solana-workbench-sidebar')
 const loadSettingsDialog = () => import('@/components/xero/settings-dialog')
 const loadUsageStatsSidebar = () => import('@/components/xero/usage-stats-sidebar')
 const loadVcsSidebar = () => import('@/components/xero/vcs-sidebar')
@@ -206,13 +205,6 @@ const loadWorkflowsSidebar = () => import('@/components/xero/workflows-sidebar')
 const loadAgentDockSidebar = () => import('@/components/xero/agent-dock-sidebar')
 const loadTerminalSidebar = () => import('@/components/xero/terminal-sidebar')
 const loadStartTargetsDialog = () => import('@/components/xero/start-targets-dialog')
-
-function preloadSolanaWorkbenchSurface() {
-  return loadSolanaWorkbenchSidebar().then((module) => {
-    void module.preloadSolanaWorkbenchPanels().catch(() => undefined)
-    return module
-  })
-}
 
 const ACTIVE_VIEW_APP_STATE_KEY = 'app.activeView.v1'
 const ONBOARDING_COMPLETED_APP_STATE_KEY = 'app.onboarding.completed.v1'
@@ -226,7 +218,6 @@ type AppSidebarSurface =
   | 'computerUse'
   | 'ios'
   | 'notifications'
-  | 'solana'
   | 'terminal'
   | 'usage'
   | 'vcs'
@@ -337,7 +328,6 @@ const warmedSurfaceChunks = new Set<SurfacePreloadTarget>()
 const BASE_IDLE_SURFACE_PRELOAD_SEQUENCE: SurfacePreloadTarget[] = [
   'agent-dock',
   'terminal',
-  'solana',
   'workflows',
   'vcs',
   'browser',
@@ -345,10 +335,6 @@ const BASE_IDLE_SURFACE_PRELOAD_SEQUENCE: SurfacePreloadTarget[] = [
   'usage',
 ]
 
-const SOLANA_WORKBENCH_WIDTH_STORAGE_KEY = 'xero.solana.workbench.width'
-const SOLANA_WORKBENCH_MIN_WIDTH = 360
-const SOLANA_WORKBENCH_DEFAULT_WIDTH = 440
-const SOLANA_WORKBENCH_MAX_WIDTH = 900
 const AGENT_DOCK_WIDTH_STORAGE_KEY = 'xero.agentDock.width'
 const AGENT_DOCK_MIN_WIDTH = 320
 const AGENT_DOCK_DEFAULT_WIDTH = 560
@@ -380,29 +366,6 @@ function withPlatformSurfacePreloads(
   targets: readonly SurfacePreloadTarget[],
 ): SurfacePreloadTarget[] {
   return shouldIncludeIosSurface() ? [...targets, 'ios'] : [...targets]
-}
-
-function readPersistedSolanaWorkbenchWidth(): number {
-  if (typeof window === 'undefined') {
-    return SOLANA_WORKBENCH_DEFAULT_WIDTH
-  }
-
-  try {
-    const raw = window.localStorage?.getItem?.(SOLANA_WORKBENCH_WIDTH_STORAGE_KEY)
-    if (!raw) {
-      return SOLANA_WORKBENCH_DEFAULT_WIDTH
-    }
-    const parsed = Number.parseInt(raw, 10)
-    if (!Number.isFinite(parsed)) {
-      return SOLANA_WORKBENCH_DEFAULT_WIDTH
-    }
-    return Math.max(
-      SOLANA_WORKBENCH_MIN_WIDTH,
-      Math.min(SOLANA_WORKBENCH_MAX_WIDTH, parsed),
-    )
-  } catch {
-    return SOLANA_WORKBENCH_DEFAULT_WIDTH
-  }
 }
 
 function readPersistedAgentDockWidth(): number {
@@ -453,10 +416,6 @@ function preloadSurfaceChunk(target: SurfacePreloadTarget): void {
   }
   if (target === 'ios') {
     void loadIosEmulatorSidebar()
-    return
-  }
-  if (target === 'solana') {
-    void preloadSolanaWorkbenchSurface()
     return
   }
   if (target === 'terminal') {
@@ -670,9 +629,6 @@ const LazyBrowserSidebar = lazy(() =>
 )
 const LazyIosEmulatorSidebar = lazy(() =>
   loadIosEmulatorSidebar().then((module) => ({ default: module.IosEmulatorSidebar })),
-)
-const LazySolanaWorkbenchSidebar = lazy(() =>
-  preloadSolanaWorkbenchSurface().then((module) => ({ default: module.SolanaWorkbenchSidebar })),
 )
 const LazySettingsDialog = lazy(() =>
   loadSettingsDialog().then((module) => ({ default: module.SettingsDialog })),
@@ -1209,62 +1165,6 @@ function LazyPrerenderedSurface({
   return <>{renderedChildren}</>
 }
 
-function SolanaWorkbenchOpeningShell({
-  instantOpen = false,
-  open,
-}: {
-  instantOpen?: boolean
-  open: boolean
-}) {
-  const [width] = useState(readPersistedSolanaWorkbenchWidth)
-  const motionOpen = useSidebarOpenMotion(open, { instantOpen })
-  const targetWidth = motionOpen ? width : 0
-  const widthMotion = useSidebarWidthMotion(targetWidth)
-
-  return (
-    <aside
-      aria-busy={open}
-      aria-hidden={!open}
-      aria-label="Loading Solana Workbench"
-      className={cn(
-        widthMotion.islandClassName,
-        'relative flex shrink-0 flex-col overflow-hidden bg-sidebar',
-        open ? 'border-l border-border/80' : 'border-l-0',
-      )}
-      inert={!open ? true : undefined}
-      style={widthMotion.style}
-    >
-      <div className="flex h-full min-w-0 shrink-0 flex-col" style={{ width }}>
-        <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border/70 pl-3 pr-2">
-          <div className="min-w-0 truncate text-[11px] font-semibold text-foreground">
-            Solana Workbench
-          </div>
-          <div className="h-3 w-3 shrink-0 rounded-full border border-primary/30 border-t-primary animate-spin" />
-        </div>
-        <div className="flex min-h-0 flex-1">
-          <div className="flex w-10 shrink-0 flex-col gap-1 border-r border-border/70 bg-sidebar px-2 py-3">
-            {Array.from({ length: 8 }, (_, index) => (
-              <div
-                aria-hidden="true"
-                className="h-5 w-5 rounded-md bg-secondary/45"
-                key={index}
-              />
-            ))}
-          </div>
-          <div className="flex min-w-0 flex-1 flex-col gap-3 px-3 py-3">
-            <div className="h-7 w-40 rounded-md bg-secondary/50" />
-            <div className="h-20 rounded-md border border-border/60 bg-background/35" />
-            <div className="space-y-2">
-              <div className="h-3 w-3/4 rounded bg-secondary/45" />
-              <div className="h-3 w-1/2 rounded bg-secondary/35" />
-            </div>
-          </div>
-        </div>
-      </div>
-    </aside>
-  )
-}
-
 function isForegroundProjectLoad(source: RefreshSource): boolean {
   return source === 'startup' || source === 'selection' || source === 'import' || source === 'remove'
 }
@@ -1427,30 +1327,6 @@ function IosEmulatorSurface({ open, prewarm = false }: { open: boolean; prewarm?
       }
     >
       <LazyIosEmulatorSidebar open={open} openImmediately={open} />
-    </Suspense>
-  )
-}
-
-function SolanaWorkbenchSurface({ open, prewarm = false }: { open: boolean; prewarm?: boolean }) {
-  const shouldMount = useStickyPrewarmedSurface(open, prewarm)
-  const active = useDeferredSurfaceActivation(open, prewarm)
-
-  if (!shouldMount) {
-    return null
-  }
-
-  if (!active) {
-    return <SolanaWorkbenchOpeningShell open={open} />
-  }
-
-  return (
-    <Suspense fallback={<SolanaWorkbenchOpeningShell instantOpen={open} open={open} />}>
-      <LazySolanaWorkbenchSidebar
-        active={active}
-        open={open}
-        openImmediately={open}
-        prewarm={prewarm}
-      />
     </Suspense>
   )
 }
@@ -1886,7 +1762,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
   )
   const [pendingBrowserOpenUrl, setPendingBrowserOpenUrl] = useState<PendingBrowserOpenUrl | null>(null)
   const [iosOpen, setIosOpen] = useState(false)
-  const [solanaOpen, setSolanaOpen] = useState(false)
   const [vcsOpen, setVcsOpen] = useState(false)
   const [workflowsOpen, setWorkflowsOpen] = useState(false)
   const [workflowDefinitions, setWorkflowDefinitions] = useState<WorkflowDefinitionSummaryDto[]>([])
@@ -2307,7 +2182,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const closeSidebarsExcept = useCallback((except: AppSidebarSurface | null = null) => {
     if (except !== 'browser') setBrowserOpen(false)
     if (except !== 'ios') setIosOpen(false)
-    if (except !== 'solana') setSolanaOpen(false)
     if (except !== 'vcs') setVcsOpen(false)
     if (except !== 'workflows') setWorkflowsOpen(false)
     if (except !== 'usage') setUsageOpen(false)
@@ -2394,16 +2268,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
     closeSidebarsExcept('ios')
     setIosOpen(true)
   }, [clearPendingAgentDockOpen, closeSidebarsExcept, iosOpen])
-
-  const toggleSolana = useCallback(() => {
-    clearPendingAgentDockOpen()
-    if (solanaOpen) {
-      setSolanaOpen(false)
-      return
-    }
-    closeSidebarsExcept('solana')
-    setSolanaOpen(true)
-  }, [clearPendingAgentDockOpen, closeSidebarsExcept, solanaOpen])
 
   const toggleVcs = useCallback(() => {
     clearPendingAgentDockOpen()
@@ -3031,7 +2895,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
     computerUseOpen,
     iosOpen,
     notificationsOpen,
-    solanaOpen,
     terminalOpen,
     vcsOpen,
     workflowsOpen,
@@ -3044,7 +2907,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
       computerUseOpen,
       iosOpen,
       notificationsOpen,
-      solanaOpen,
       terminalOpen,
       vcsOpen,
       workflowsOpen,
@@ -3057,7 +2919,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
     computerUseOpen,
     iosOpen,
     notificationsOpen,
-    solanaOpen,
     terminalOpen,
     usageOpen,
     vcsOpen,
@@ -3080,9 +2941,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
       } else if (snapshot.notificationsOpen) {
         phaseSidebarRestoreKeyRef.current = 'notifications'
         setNotificationsOpen(false)
-      } else if (snapshot.solanaOpen) {
-        phaseSidebarRestoreKeyRef.current = 'solana'
-        setSolanaOpen(false)
       } else if (snapshot.terminalOpen) {
         phaseSidebarRestoreKeyRef.current = 'terminal'
         setTerminalOpen(false)
@@ -3110,7 +2968,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
       snapshot.computerUseOpen ||
       snapshot.iosOpen ||
       snapshot.notificationsOpen ||
-      snapshot.solanaOpen ||
       snapshot.terminalOpen ||
       snapshot.vcsOpen ||
       snapshot.workflowsOpen ||
@@ -3124,7 +2981,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
     else if (key === 'computerUse') setComputerUseOpen(true)
     else if (key === 'ios') setIosOpen(true)
     else if (key === 'notifications') setNotificationsOpen(true)
-    else if (key === 'solana') setSolanaOpen(true)
     else if (key === 'terminal') setTerminalOpen(true)
     else if (key === 'vcs') setVcsOpen(true)
     else if (key === 'workflows') setWorkflowsOpen(true)
@@ -5422,8 +5278,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
           browserOpen={browserOpen}
           onToggleIos={toggleIos}
           iosOpen={iosOpen}
-          onToggleSolana={toggleSolana}
-          solanaOpen={solanaOpen}
           onToggleVcs={toggleVcs}
           vcsOpen={vcsOpen}
           onToggleWorkflows={toggleWorkflows}
@@ -5489,8 +5343,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
           browserOpen={browserOpen}
           onToggleIos={toggleIos}
           iosOpen={iosOpen}
-          onToggleSolana={toggleSolana}
-          solanaOpen={solanaOpen}
           onToggleVcs={toggleVcs}
           vcsOpen={vcsOpen}
           onToggleWorkflows={toggleWorkflows}
@@ -5620,10 +5472,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
               prewarm={startupSurfacePrewarm.shouldMount && shouldIncludeIosSurface()}
             />
           ) : null}
-          <SolanaWorkbenchSurface
-            open={solanaOpen}
-            prewarm={startupSurfacePrewarm.shouldMount}
-          />
           <LazyPrerenderedSurface
             open={workflowsOpen}
             prewarm={startupSurfacePrewarm.shouldMount}

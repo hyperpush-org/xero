@@ -1344,30 +1344,6 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         "emulator",
         "environment_context",
         "system_diagnostics_observe",
-        "solana_cluster",
-        "solana_logs",
-        "solana_tx",
-        "solana_simulate",
-        "solana_explain",
-        "solana_alt",
-        "solana_idl",
-        "solana_codama",
-        "solana_pda",
-        "solana_program",
-        "solana_deploy",
-        "solana_upgrade_check",
-        "solana_squads",
-        "solana_verified_build",
-        "solana_audit_static",
-        "solana_audit_external",
-        "solana_audit_fuzz",
-        "solana_audit_coverage",
-        "solana_replay",
-        "solana_indexer",
-        "solana_secrets",
-        "solana_cluster_drift",
-        "solana_cost",
-        "solana_docs",
     ]);
     if cfg!(target_os = "macos") {
         expected_names.insert("macos_automation");
@@ -1541,7 +1517,6 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         .as_array()
         .expect("emulator action enum")
         .contains(&json!("screenshot")));
-    assert!(registry.descriptor("solana_cluster").is_some());
     assert!(registry.descriptor("patch").is_some());
     assert!(registry.descriptor("copy").is_some());
     assert!(registry.descriptor("fs_transaction").is_some());
@@ -1857,7 +1832,6 @@ fn owned_agent_tool_registry_selects_contextual_toolsets() {
     assert!(!read_only_names.contains("json_edit"));
     assert!(!read_only_names.contains("command_run"));
     assert!(!read_only_names.contains("emulator"));
-    assert!(!read_only_names.contains("solana_cluster"));
 
     let implementation = ToolRegistry::for_prompt(
         temp.path(),
@@ -1911,17 +1885,6 @@ fn owned_agent_tool_registry_selects_contextual_toolsets() {
     assert!(audit_names.contains("git_diff"));
     assert!(audit_names.contains("command_verify"));
 
-    fs::write(temp.path().join("Anchor.toml"), "[programs.localnet]\n")
-        .expect("seed solana-looking workspace");
-    let broad_solana_workspace = ToolRegistry::for_prompt(
-        temp.path(),
-        "What is left to do in this harness?",
-        &controls,
-    );
-    assert!(!broad_solana_workspace
-        .descriptor_names()
-        .contains("solana_cluster"));
-
     let priority_tools = ToolRegistry::for_prompt(
         temp.path(),
         "Use MCP, subagents, todos, code intelligence, notebooks, and PowerShell.",
@@ -1947,13 +1910,6 @@ fn owned_agent_tool_registry_selects_contextual_toolsets() {
         &controls,
     );
     assert!(app_use.descriptor_names().contains("emulator"));
-
-    let solana = ToolRegistry::for_prompt(
-        temp.path(),
-        "Audit the Solana Anchor program and PDA handling.",
-        &controls,
-    );
-    assert!(solana.descriptor_names().contains("solana_cluster"));
 
     let default_browser = ToolRegistry::for_prompt_with_options(
         temp.path(),

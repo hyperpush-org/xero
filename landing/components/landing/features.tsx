@@ -1,7 +1,6 @@
 import {
   Bot,
   Check,
-  ChevronRight,
   Loader2,
   Pause,
   Workflow as WorkflowIcon,
@@ -42,19 +41,6 @@ const rows: Row[] = [
       "Human checkpoints, only when one matters",
     ],
     visual: <WorkflowFlowVisual />,
-  },
-  {
-    tag: "Solana workbench",
-    icon: <SolanaGlyph className="h-3.5 w-3.5" />,
-    title: "A Solana workbench your agents can drive.",
-    description:
-      "Localnet to mainnet on one switch. Funded personas, deploys, and transaction inspection, all native to Xero and available to your agents.",
-    bullets: [
-      "Localnet · devnet · mainnet, one switch",
-      "Funded personas with scenario replays",
-      "Tx inspector, deploy, audit, IDL, SPL",
-    ],
-    visual: <SolanaWorkbenchVisual />,
   },
 ]
 
@@ -136,17 +122,17 @@ function AgentCoreVisual() {
     { label: "fs", on: true },
     { label: "git", on: true },
     { label: "web", on: true },
-    { label: "solana", on: true },
-    { label: "rpc", on: true },
-    { label: "db", on: false },
+    { label: "tests", on: true },
+    { label: "database", on: true },
+    { label: "lint", on: false },
     { label: "docker", on: false },
     { label: "k8s", on: false },
   ]
 
   const approvals: { action: string; verdict: "ASK" | "AUTO" }[] = [
     { action: "git push", verdict: "ASK" },
-    { action: "tx send", verdict: "ASK" },
-    { action: "mainnet deploy", verdict: "ASK" },
+    { action: "package publish", verdict: "ASK" },
+    { action: "production deploy", verdict: "ASK" },
     { action: "repo edit", verdict: "AUTO" },
   ]
 
@@ -185,7 +171,7 @@ function AgentCoreVisual() {
           </div>
           <div className="min-w-0">
             <div className="font-mono text-[17px] font-semibold leading-tight tracking-tight text-foreground">
-              solana-ops
+              release-engineer
             </div>
             <div className="mt-1.5 font-mono text-[10.5px] leading-none text-muted-foreground">
               Custom agent · claude-opus-4-7
@@ -638,233 +624,5 @@ function StepIcon({
     >
       <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/45" />
     </span>
-  )
-}
-
-/* 3) Solana workbench: an HTML "command center" panel showing the
-   workbench bits: cluster status, funded test personas with balances, and
-   a live transaction feed with status. */
-function SolanaWorkbenchVisual() {
-  type Trend = "up" | "down" | "flat"
-  const personas: { name: string; role: string; balance: string; trend: Trend }[] = [
-    { name: "alice", role: "payer", balance: "12.4", trend: "up" },
-    { name: "bob", role: "buyer", balance: "8.10", trend: "flat" },
-    { name: "mallory", role: "attacker", balance: "0.52", trend: "down" },
-  ]
-
-  const txs: { sig: string; program: string; status: "ok" | "err"; time: string }[] = [
-    { sig: "5KqRz…7Pq2", program: "initialize_pool", status: "ok", time: "+0.03s" },
-    { sig: "8aJpX…cFm4", program: "swap", status: "ok", time: "+0.05s" },
-    { sig: "9aRtY…dE5h", program: "route_hop", status: "ok", time: "+0.12s" },
-    { sig: "2mLnK…aB1d", program: "withdraw", status: "err", time: "+0.18s" },
-  ]
-
-  return (
-    <div className="relative aspect-[6/5] w-full overflow-hidden">
-      <div
-        aria-hidden
-        className="absolute inset-0 opacity-25"
-        style={{
-          backgroundImage:
-            "radial-gradient(color-mix(in oklab, var(--muted-foreground) 22%, transparent) 1px, transparent 1px)",
-          backgroundSize: "20px 20px",
-        }}
-      />
-      <div
-        aria-hidden
-        className="absolute -left-16 -top-12 h-56 w-56 rounded-full opacity-50 blur-3xl"
-        style={{
-          background:
-            "radial-gradient(circle, color-mix(in oklab, var(--primary) 20%, transparent), transparent 70%)",
-        }}
-      />
-
-      <div className="relative flex h-full flex-col p-7 sm:p-8">
-        {/* Header */}
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3.5">
-            <div
-              className="grid h-12 w-12 shrink-0 place-items-center rounded-xl border"
-              style={{
-                borderColor: "color-mix(in oklab, var(--primary) 50%, transparent)",
-                backgroundColor:
-                  "color-mix(in oklab, var(--primary) 10%, var(--card))",
-              }}
-            >
-              <SolanaGlyph className="h-[18px] w-[18px] text-primary" />
-            </div>
-            <div className="min-w-0">
-              <div className="truncate font-mono text-[16px] font-semibold leading-tight tracking-tight text-foreground">
-                Solana workbench
-              </div>
-              <div className="mt-1.5 font-mono text-[10.5px] uppercase leading-none tracking-[0.22em] text-muted-foreground">
-                Cluster · personas · deploys
-              </div>
-            </div>
-          </div>
-          <span
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1 font-mono text-[11px] tracking-wide text-foreground"
-            style={{
-              borderColor: "color-mix(in oklab, var(--primary) 45%, transparent)",
-              backgroundColor:
-                "color-mix(in oklab, var(--primary) 10%, transparent)",
-            }}
-          >
-            <span className="relative inline-flex h-1.5 w-1.5">
-              <span className="absolute inset-0 animate-ping rounded-full bg-primary opacity-60" />
-              <span className="relative h-1.5 w-1.5 rounded-full bg-primary" />
-            </span>
-            localnet · 47ms
-          </span>
-        </div>
-
-        <div className="mt-5 h-px w-full bg-border/80" />
-
-        {/* Personas */}
-        <SectionHead
-          label="Personas"
-          right={<span className="text-primary">3 of 6 funded</span>}
-        />
-        <div className="mt-3 space-y-2">
-          {personas.map((p) => (
-            <PersonaRow key={p.name} {...p} />
-          ))}
-        </div>
-
-        <Divider className="mt-5" />
-
-        {/* Live tx */}
-        <SectionHead label="Live tx" right={<span>slot 273M · +200/s</span>} />
-        <div className="mt-3 space-y-2.5">
-          {txs.map((t) => (
-            <TxRow key={t.sig} {...t} />
-          ))}
-        </div>
-
-        {/* Toolchain footer */}
-        <div className="mt-auto flex items-center justify-between gap-3 pt-5 font-mono text-[11px] text-muted-foreground">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="text-foreground/80">$</span>
-            <span className="truncate">anchor 0.31</span>
-            <span className="text-muted-foreground/50">·</span>
-            <span className="truncate">solana-cli 1.18</span>
-            <span className="text-muted-foreground/50">·</span>
-            <span className="truncate">spl 6.0</span>
-          </div>
-          <span className="inline-flex shrink-0 items-center gap-1.5 text-primary">
-            <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-            toolchain ready
-          </span>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function PersonaRow({
-  name,
-  role,
-  balance,
-  trend,
-}: {
-  name: string
-  role: string
-  balance: string
-  trend: "up" | "down" | "flat"
-}) {
-  const trendArrow = trend === "up" ? "▲" : trend === "down" ? "▼" : "·"
-  const trendClass =
-    trend === "up"
-      ? "text-primary"
-      : trend === "down"
-        ? "text-destructive/85"
-        : "text-muted-foreground/60"
-
-  return (
-    <div className="flex items-center gap-3 rounded-md border border-border/50 px-3 py-2">
-      <span
-        className="grid h-6 w-6 shrink-0 place-items-center rounded-full border font-mono text-[11px] font-semibold text-primary"
-        style={{
-          borderColor: "color-mix(in oklab, var(--primary) 50%, transparent)",
-          backgroundColor:
-            "color-mix(in oklab, var(--primary) 12%, transparent)",
-        }}
-      >
-        {name[0].toUpperCase()}
-      </span>
-      <span className="font-mono text-[13px] font-medium text-foreground/90">
-        {name}
-      </span>
-      <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
-        {role}
-      </span>
-      <span className="ml-auto font-mono text-[12.5px] tabular-nums text-foreground">
-        {balance}{" "}
-        <span className="text-[11px] text-muted-foreground/80">SOL</span>
-      </span>
-      <span className={`w-4 text-center font-mono text-[12px] ${trendClass}`}>
-        {trendArrow}
-      </span>
-    </div>
-  )
-}
-
-function TxRow({
-  sig,
-  program,
-  status,
-  time,
-}: {
-  sig: string
-  program: string
-  status: "ok" | "err"
-  time: string
-}) {
-  const ok = status === "ok"
-  return (
-    <div className="flex items-center gap-3">
-      <ChevronRight
-        className={`h-3.5 w-3.5 shrink-0 ${ok ? "text-primary/75" : "text-destructive/80"}`}
-        strokeWidth={2.5}
-      />
-      <span className="font-mono text-[12px] tabular-nums text-muted-foreground">
-        {sig}
-      </span>
-      <span className="truncate font-mono text-[12.5px] font-medium text-foreground/90">
-        {program}
-      </span>
-      <span
-        className={`ml-auto inline-flex h-5 shrink-0 items-center justify-center rounded-full border px-2.5 font-mono text-[9.5px] font-bold tracking-[0.18em] ${
-          ok ? "text-primary" : "text-destructive/90"
-        }`}
-        style={{
-          borderColor: ok
-            ? "color-mix(in oklab, var(--primary) 55%, transparent)"
-            : "color-mix(in oklab, var(--destructive) 60%, transparent)",
-          backgroundColor: ok
-            ? "color-mix(in oklab, var(--primary) 14%, transparent)"
-            : "color-mix(in oklab, var(--destructive) 14%, transparent)",
-        }}
-      >
-        {ok ? "OK" : "ERR"}
-      </span>
-      <span className="w-14 shrink-0 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
-        {time}
-      </span>
-    </div>
-  )
-}
-
-function SolanaGlyph({ className = "" }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      xmlns="http://www.w3.org/2000/svg"
-      fill="currentColor"
-      className={className}
-      aria-hidden
-    >
-      <path d="M23.876 18.362l-4.017 4.326a.93.93 0 01-.723.31H.452a.452.452 0 01-.33-.764l4.021-4.325a.93.93 0 01.72-.311h18.686a.452.452 0 01.328.764zM19.859 9.648a.93.93 0 00-.723-.31H.452a.452.452 0 00-.33.763l4.021 4.325a.93.93 0 00.72.31h18.686a.452.452 0 00.328-.764L19.859 9.65zM.452 6.574h18.684a.93.93 0 00.723-.31l4.017-4.326A.452.452 0 0023.6 1.175H4.915a.93.93 0 00-.72.31L.178 5.811a.452.452 0 00.274.763z" />
-    </svg>
   )
 }

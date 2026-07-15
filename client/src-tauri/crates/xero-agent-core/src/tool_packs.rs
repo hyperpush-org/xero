@@ -140,7 +140,6 @@ pub fn domain_tool_pack_manifests() -> Vec<DomainToolPackManifest> {
     vec![
         browser_pack_manifest(),
         emulator_pack_manifest(),
-        solana_pack_manifest(),
         desktop_control_pack_manifest(),
         os_automation_pack_manifest(),
         project_context_pack_manifest(),
@@ -456,112 +455,6 @@ fn emulator_pack_manifest() -> DomainToolPackManifest {
         &[
             "Device input and app lifecycle actions can change simulator state.",
             "Installing apps and sending notifications require operator-visible intent.",
-        ],
-    )
-}
-
-fn solana_pack_manifest() -> DomainToolPackManifest {
-    manifest(
-        "solana",
-        "Solana",
-        "Inspect and operate Solana project workflows with wallet boundaries, network selection, simulation, program build or deploy checks, audit tooling, and guarded signing.",
-        "chain_safe_external_service",
-        &["solana"],
-        &[
-            "solana_cluster",
-            "solana_logs",
-            "solana_tx",
-            "solana_simulate",
-            "solana_explain",
-            "solana_alt",
-            "solana_idl",
-            "solana_codama",
-            "solana_pda",
-            "solana_program",
-            "solana_deploy",
-            "solana_upgrade_check",
-            "solana_squads",
-            "solana_verified_build",
-            "solana_audit_static",
-            "solana_audit_external",
-            "solana_audit_fuzz",
-            "solana_audit_coverage",
-            "solana_replay",
-            "solana_indexer",
-            "solana_secrets",
-            "solana_cluster_drift",
-            "solana_cost",
-            "solana_docs",
-        ],
-        &[
-            "wallet_safety_boundaries",
-            "network_selection",
-            "transaction_simulation",
-            "program_test_workflow",
-            "explicit_signing_approval",
-        ],
-        &["observe", "external_service", "command"],
-        &["browser_control", "device_control", "agent_delegation"],
-        &[review(
-            "chain_mutation_explicit_approval",
-            "Chain mutation approval",
-            "Signing, deploy, transfer, upgrade, or value-moving paths require explicit user approval after simulation.",
-            true,
-        )],
-        &[
-            prereq(
-                "solana_state_executor",
-                "Solana desktop state executor",
-                "service",
-                true,
-                "Start Xero's desktop runtime with the Solana workbench state initialized.",
-            ),
-            prereq(
-                "solana",
-                "Solana CLI",
-                "binary",
-                false,
-                "Install the Solana CLI for local validator, keypair, and program workflows.",
-            ),
-            prereq(
-                "anchor",
-                "Anchor CLI",
-                "binary",
-                false,
-                "Install Anchor when working on Anchor programs.",
-            ),
-        ],
-        &[
-            scenario(
-                "solana_simulate_before_send",
-                "Simulate before send",
-                "Resolve network and wallet scope, simulate a transaction, and explain logs before any send path.",
-                &["solana_simulate", "solana_explain", "solana_tx"],
-                false,
-                false,
-            ),
-            scenario(
-                "solana_guarded_program_workflow",
-                "Guarded program workflow",
-                "Build or inspect a program, check upgrade safety, run audit evidence, and require approval for deploy or signing.",
-                &[
-                    "solana_program",
-                    "solana_upgrade_check",
-                    "solana_audit_static",
-                    "solana_deploy",
-                ],
-                true,
-                true,
-            ),
-        ],
-        &[
-            ui("solana_workbench", "Solana workbench"),
-            ui("wallet_safety_panel", "Wallet safety panel"),
-        ],
-        &["xero tool-pack doctor solana"],
-        &[
-            "Signing, deploy, transfer, and value-moving paths require explicit user approval.",
-            "Simulation and read-only inspection should precede chain-affecting actions.",
         ],
     )
 }
@@ -1027,7 +920,6 @@ mod tests {
 
         assert!(ids.contains("browser"));
         assert!(ids.contains("emulator"));
-        assert!(ids.contains("solana"));
         assert!(ids.contains("desktop_control"));
         assert!(ids.contains("os_automation"));
         assert!(ids.contains("project_context"));
@@ -1211,11 +1103,11 @@ mod tests {
 
     #[test]
     fn domain_tool_pack_health_respects_policy_disabled_state() {
-        let manifest = domain_tool_pack_manifest("solana").expect("solana pack");
+        let manifest = domain_tool_pack_manifest("browser").expect("browser pack");
         let report = domain_tool_pack_health_report(
             &manifest,
             &DomainToolPackHealthInput {
-                pack_id: "solana".into(),
+                pack_id: "browser".into(),
                 enabled_by_policy: false,
                 available_prerequisites: Vec::new(),
                 checked_at: "2026-05-04T00:00:00Z".into(),
@@ -1250,10 +1142,6 @@ mod tests {
         assert_eq!(
             domain_tool_pack_ids_for_tool("desktop_stream"),
             vec!["desktop_control"]
-        );
-        assert_eq!(
-            domain_tool_pack_ids_for_tool("solana_simulate"),
-            vec!["solana"]
         );
         assert!(domain_tool_pack_ids_for_tool("read").is_empty());
     }

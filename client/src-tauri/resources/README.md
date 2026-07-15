@@ -102,13 +102,3 @@ install discoverable via Homebrew or `PATH`. They also need Xcode itself:
 `CoreSimulator.framework`, which only ships inside the Xcode.app
 install. The titlebar discovery UI surfaces an "Install Xcode" CTA when
 `xcrun` is missing.
-
-## solana-toolchain/
-
-Optional Solana workbench resource root. Xero checks this directory before
-the first-run managed install location and before host PATH, so release builds
-can ship pre-hydrated Solana tools without relying on a user's shell setup.
-
-The bundled/managed layout is documented in `solana-toolchain/README.md`.
-Development builds can leave it empty; the sidebar exposes a managed download
-for Agave `v3.1.13` and Anchor CLI `v1.0.0`.

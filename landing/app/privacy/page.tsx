@@ -101,19 +101,6 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
     ),
   },
   {
-    id: "cloud",
-    title: "Solana bundle (when it ships)",
-    body: (
-      <>
-        <p>
-          The Solana bundle is an opt-in subscription for managed RPC, indexer, and webhook
-          infrastructure. When it ships we&apos;ll publish a dedicated processing addendum covering
-          the third-party providers involved. Until then, there is no Xero cloud holding your data.
-        </p>
-      </>
-    ),
-  },
-  {
     id: "rights",
     title: "Your rights",
     body: (

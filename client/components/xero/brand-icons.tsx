@@ -431,35 +431,3 @@ export function AndroidLogoIcon({ className }: BrandIconProps) {
     </svg>
   )
 }
-
-/**
- * Solana brand mark — three angled bars. Uses the official Solana gradient
- * (#00FFA3 → #DC1FFF) by default so the mark matches brand guidelines even
- * when surrounding text color is muted. Pass a className with a `text-*`
- * color to override with a monochrome tint when the gradient would clash.
- */
-export function SolanaLogoIcon({ className, mono }: BrandIconProps & { mono?: boolean }) {
-  // Unique id so multiple instances on the page don't collide on gradient IDs.
-  const gradientId = `solana-grad-${Math.random().toString(36).slice(2, 9)}`
-  return (
-    <svg
-      role="img"
-      viewBox="0 0 24 24"
-      xmlns="http://www.w3.org/2000/svg"
-      fill={mono ? "currentColor" : `url(#${gradientId})`}
-      className={cn("h-4 w-4", className)}
-      aria-label="Solana"
-    >
-      {!mono ? (
-        <defs>
-          <linearGradient id={gradientId} x1="3" y1="21" x2="21" y2="3" gradientUnits="userSpaceOnUse">
-            <stop offset="0" stopColor="#9945FF" />
-            <stop offset="0.5" stopColor="#14F195" />
-            <stop offset="1" stopColor="#00C2FF" />
-          </linearGradient>
-        </defs>
-      ) : null}
-      <path d="M23.876 18.362l-4.017 4.326a.93.93 0 01-.723.31H.452a.452.452 0 01-.33-.764l4.021-4.325a.93.93 0 01.72-.311h18.686a.452.452 0 01.328.764zM19.859 9.648a.93.93 0 00-.723-.31H.452a.452.452 0 00-.33.763l4.021 4.325a.93.93 0 00.72.31h18.686a.452.452 0 00.328-.764L19.859 9.65zM.452 6.574h18.684a.93.93 0 00.723-.31l4.017-4.326A.452.452 0 0023.6 1.175H4.915a.93.93 0 00-.72.31L.178 5.811a.452.452 0 00.274.763z" />
-    </svg>
-  )
-}

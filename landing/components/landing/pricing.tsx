@@ -1,6 +1,6 @@
 import Link from "next/link"
 import type { ElementType } from "react"
-import { Check, Cloud, Github, Rocket } from "lucide-react"
+import { Check, Cloud, Github } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -25,20 +25,6 @@ type AddOn = {
 }
 
 const addOns: AddOn[] = [
-  {
-    name: "Solana Bundle",
-    price: "$50",
-    period: "/ month",
-    statusBadge: "Soon",
-    icon: Rocket,
-    description: "Premium RPC and indexer, hosted forks, deploy guardrails, and program monitoring, bundled into one subscription.",
-    features: [
-      "Premium RPC + indexer credentials",
-      "Hosted forks and snapshots",
-      "Squads proposals and deploy guardrails",
-      "Replaces $200+/mo of stitched-together services",
-    ],
-  },
   {
     name: "Remote sessions",
     price: "Free",
@@ -66,7 +52,7 @@ export function Pricing() {
             Pricing
           </p>
           <h2 className="mt-3 font-sans text-3xl font-medium tracking-tight text-balance sm:text-5xl">
-            The app is free. Two optional add-ons.
+            The app is free. One optional add-on.
           </h2>
           <p className="mt-4 text-pretty text-muted-foreground">
             Every feature, every model provider, no trial timer. Two

@@ -63,7 +63,7 @@ import type {
   GitHubAuthStatus,
   GitHubSessionView,
 } from "@/src/lib/github-auth"
-import { Activity, ArrowLeft, Bot, Brain, Cloud, Code2, Database, GitBranch, Globe, HardDrive, Heart, Keyboard, KeyRound, Mic, Monitor, Palette, PlaySquare, Plug, PlugZap, Power, RadioTower, Search, Terminal, UserRound, WandSparkles, Wrench } from "lucide-react"
+import { Activity, ArrowLeft, Bot, Brain, Cloud, Code2, Database, GitBranch, Globe, HardDrive, Heart, Keyboard, KeyRound, Mic, Monitor, Palette, PlaySquare, Plug, PlugZap, Power, Search, Terminal, UserRound, WandSparkles, Wrench } from "lucide-react"
 import { BaseDialog } from "@xero/ui/components/base-dialog"
 import {
   DialogDescription,
@@ -75,7 +75,6 @@ export type SettingsSection =
   | "account"
   | "cloudAccount"
   | "providers"
-  | "solanaRpc"
   | "diagnostics"
   | "soul"
   | "dictation"
@@ -102,7 +101,6 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   "account",
   "cloudAccount",
   "providers",
-  "solanaRpc",
   "diagnostics",
   "soul",
   "dictation",
@@ -182,10 +180,6 @@ const loadProvidersSection = () =>
   import("@/components/xero/settings-dialog/providers-section").then((module) => ({
     default: module.ProvidersSection,
   }))
-const loadSolanaRpcSection = () =>
-  import("@/components/xero/settings-dialog/solana-rpc-section").then((module) => ({
-    default: module.SolanaRpcSection,
-  }))
 const loadPluginsSection = () =>
   import("@/components/xero/settings-dialog/plugins-section").then((module) => ({
     default: module.PluginsSection,
@@ -241,7 +235,6 @@ const LazyDiagnosticsSection = lazy(loadDiagnosticsSection)
 const LazyMcpSection = lazy(loadMcpSection)
 const LazyMemorySection = lazy(loadMemorySection)
 const LazyProvidersSection = lazy(loadProvidersSection)
-const LazySolanaRpcSection = lazy(loadSolanaRpcSection)
 const LazyPluginsSection = lazy(loadPluginsSection)
 const LazyShortcutsSection = lazy(loadShortcutsSection)
 const LazySkillsSection = lazy(loadSkillsSection)
@@ -257,7 +250,6 @@ const SETTINGS_SECTION_LOADERS: Record<SettingsSection, () => Promise<unknown>> 
   account: loadAccountSection,
   cloudAccount: loadCloudAccountSection,
   providers: loadProvidersSection,
-  solanaRpc: loadSolanaRpcSection,
   diagnostics: loadDiagnosticsSection,
   soul: loadSoulSection,
   dictation: loadDictationSection,
@@ -325,7 +317,6 @@ const WORKSPACE_GROUP: NavGroup = {
   label: "Workspace",
   items: [
     { id: "providers", label: "Providers", icon: KeyRound },
-    { id: "solanaRpc", label: "Solana RPC", icon: RadioTower },
     { id: "diagnostics", label: "Diagnostics", icon: Activity },
     { id: "soul", label: "Soul", icon: Heart },
     { id: "dictation", label: "Dictation", icon: Mic },
@@ -730,10 +721,6 @@ export function SettingsDialog({
           onStartOAuthLogin={onStartOAuthLogin}
         />
       )
-    }
-
-    if (renderedSection === "solanaRpc") {
-      return <LazySolanaRpcSection />
     }
 
     if (renderedSection === "diagnostics") {

@@ -1134,6 +1134,7 @@ fn humanize_tool_group(group: &str) -> String {
 const WORKFLOW_AGENT_GRAPH_PROJECTION_SCHEMA: &str = "xero.workflow_agent_graph_projection.v1";
 const GRAPH_HEADER_NODE_ID: &str = "agent-header";
 const GRAPH_OUTPUT_NODE_ID: &str = "agent-output";
+const DB_GROUP_FRAME_NODE_ID: &str = "db-group-frame:database";
 const GRAPH_HEADER_HANDLE_PROMPT: &str = "prompts";
 const GRAPH_HEADER_HANDLE_TOOL: &str = "tools";
 const GRAPH_HEADER_HANDLE_DB: &str = "db";
@@ -1304,10 +1305,34 @@ fn workflow_agent_graph_projection_for_detail(
     }
 
     let mut db_entry_by_id = HashMap::new();
+    if !db_entries.is_empty() {
+        // Wrap DB touchpoints in a group frame (mirrors build-agent-graph.ts).
+        // The layout pass positions db-table children RELATIVE to this frame,
+        // so the frame node must exist — otherwise the relative coordinates
+        // are treated as absolute and the whole DB block lands on the header.
+        let mut frame = graph_node(
+            DB_GROUP_FRAME_NODE_ID,
+            "db-group-frame",
+            json!({ "count": db_entries.len() }),
+        );
+        frame.style = Some(json!({ "pointerEvents": "none" }));
+        nodes.push(frame);
+        edges.push(graph_edge(
+            format!("e:header->{DB_GROUP_FRAME_NODE_ID}"),
+            GRAPH_HEADER_NODE_ID,
+            DB_GROUP_FRAME_NODE_ID,
+            "smoothstep",
+            Some(GRAPH_HEADER_HANDLE_DB),
+            None,
+            json!({ "category": "db-table" }),
+            "agent-edge agent-edge-db",
+            Some(WorkflowAgentGraphMarkerDto::ArrowClosed),
+        ));
+    }
     for entry in db_entries {
         let id = db_node_id(&entry.detail.table, entry.kind);
         db_entry_by_id.insert(id.clone(), entry.clone());
-        nodes.push(graph_node(
+        let mut node = graph_node(
             &id,
             "db-table",
             json!({
@@ -1317,18 +1342,12 @@ fn workflow_agent_graph_projection_for_detail(
                 "triggers": entry.detail.triggers,
                 "columns": entry.detail.columns,
             }),
-        ));
-        edges.push(graph_edge(
-            format!("e:header->{id}"),
-            GRAPH_HEADER_NODE_ID,
-            &id,
-            "smoothstep",
-            Some(GRAPH_HEADER_HANDLE_DB),
-            None,
-            json!({ "category": "db-table" }),
-            "agent-edge agent-edge-db",
-            Some(WorkflowAgentGraphMarkerDto::ArrowClosed),
-        ));
+        );
+        node.parent_id = Some(DB_GROUP_FRAME_NODE_ID.into());
+        node.extent = Some("parent".into());
+        node.draggable = Some(false);
+        node.style = Some(json!({ "pointerEvents": "all" }));
+        nodes.push(node);
     }
 
     nodes.push(graph_node(
@@ -2172,11 +2191,6 @@ fn tool_category_presentation_for_group(group: &str) -> ToolCategoryPresentation
             key: "test_harness".into(),
             label: "Test Harness".into(),
             order: 190,
-        },
-        "solana" => ToolCategoryPresentation {
-            key: "solana".into(),
-            label: "Solana".into(),
-            order: 200,
         },
         _ => ToolCategoryPresentation {
             key: trimmed.to_owned(),
@@ -4105,6 +4119,45 @@ mod tests {
                 && edge.target == GRAPH_OUTPUT_NODE_ID
                 && edge.marker == Some(WorkflowAgentGraphMarkerDto::ArrowClosed)
         }));
+    }
+
+    #[test]
+    fn graph_projection_wraps_db_touchpoints_in_group_frame() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let detail = builtin_detail(tempdir.path(), RuntimeAgentIdDto::Engineer, 2);
+        let projection = workflow_agent_graph_projection_for_detail(&detail);
+
+        let db_nodes: Vec<_> = projection
+            .nodes
+            .iter()
+            .filter(|node| node.node_type == "db-table")
+            .collect();
+        assert!(
+            !db_nodes.is_empty(),
+            "fixture should declare db touchpoints"
+        );
+
+        // The layout pass places db-table cards RELATIVE to the frame node;
+        // without it the relative coordinates read as absolute and the DB
+        // block overlaps the agent header.
+        let frame = projection
+            .nodes
+            .iter()
+            .find(|node| node.id == DB_GROUP_FRAME_NODE_ID)
+            .expect("projection should emit the db group frame");
+        assert_eq!(frame.node_type, "db-group-frame");
+        assert!(db_nodes.iter().all(|node| node.parent_id.as_deref()
+            == Some(DB_GROUP_FRAME_NODE_ID)
+            && node.extent.as_deref() == Some("parent")));
+
+        // Header connects once to the frame, never to individual tables.
+        assert!(projection.edges.iter().any(|edge| {
+            edge.source == GRAPH_HEADER_NODE_ID && edge.target == DB_GROUP_FRAME_NODE_ID
+        }));
+        assert!(!projection
+            .edges
+            .iter()
+            .any(|edge| { edge.source == GRAPH_HEADER_NODE_ID && edge.target.starts_with("db:") }));
     }
 
     #[test]

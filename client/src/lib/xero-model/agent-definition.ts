@@ -100,7 +100,6 @@ export const customAgentSubagentRoleSchema = z.enum([
   'agent_builder',
   'browser',
   'emulator',
-  'solana',
   'database',
 ])
 

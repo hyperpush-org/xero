@@ -40,12 +40,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::project_assets::URI_SCHEME,
             commands::project_assets::handle,
         )
-        .register_asynchronous_uri_scheme_protocol(
-            commands::solana::URI_SCHEME,
-            commands::solana::handle_uri_scheme,
-        )
         .setup(|app| {
-            commands::solana::toolchain::configure_tauri_roots(app.handle());
             window_state::configure_main_window(app.handle().clone());
 
             {
@@ -57,25 +52,6 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
                     app_handle,
                     browser_state.inner(),
                 );
-            }
-
-            // Solana workbench state is rooted under Tauri's app-data dir.
-            // This app is new, so we deliberately do not migrate any older
-            // dirs::data_dir()/xero-solana-* locations.
-            {
-                use tauri::Manager;
-                let app_handle = app.handle().clone();
-                let desktop_state = app_handle.state::<state::DesktopState>();
-                let solana_state = match desktop_state.app_data_dir(&app_handle) {
-                    Ok(app_data_dir) => commands::SolanaState::with_app_data_dir(app_data_dir),
-                    Err(error) => {
-                        eprintln!(
-                            "[solana] app-data root unavailable, using temporary fallback: {error}"
-                        );
-                        commands::SolanaState::default()
-                    }
-                };
-                let _ = app.manage(solana_state);
             }
 
             // Configure the current global database path and tighten file-mode permissions on
@@ -611,89 +587,6 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::emulator::emulator_inspector_disconnect,
             commands::emulator::emulator_inspector_element_at,
             commands::emulator::emulator_inspector_component_tree,
-            commands::solana::solana_toolchain_install,
-            commands::solana::solana_toolchain_install_status,
-            commands::solana::solana_toolchain_status,
-            commands::solana::solana_cluster_list,
-            commands::solana::solana_cluster_start,
-            commands::solana::solana_cluster_stop,
-            commands::solana::solana_cluster_status,
-            commands::solana::solana_snapshot_create,
-            commands::solana::solana_snapshot_list,
-            commands::solana::solana_snapshot_restore,
-            commands::solana::solana_snapshot_delete,
-            commands::solana::solana_rpc_health,
-            commands::solana::solana_rpc_endpoints_set,
-            commands::solana::solana_provider_profiles_list,
-            commands::solana::solana_provider_profile_upsert,
-            commands::solana::solana_provider_profile_select,
-            commands::solana::solana_provider_profile_delete,
-            commands::solana::solana_persona_list,
-            commands::solana::solana_persona_roles,
-            commands::solana::solana_persona_create,
-            commands::solana::solana_persona_fund,
-            commands::solana::solana_persona_delete,
-            commands::solana::solana_persona_import_keypair,
-            commands::solana::solana_persona_export_keypair,
-            commands::solana::solana_scenario_list,
-            commands::solana::solana_scenario_run,
-            commands::solana::solana_tx_build,
-            commands::solana::solana_tx_simulate,
-            commands::solana::solana_tx_send,
-            commands::solana::solana_tx_explain,
-            commands::solana::solana_priority_fee_estimate,
-            commands::solana::solana_cpi_resolve,
-            commands::solana::solana_alt_create,
-            commands::solana::solana_alt_extend,
-            commands::solana::solana_alt_resolve,
-            commands::solana::solana_idl_load,
-            commands::solana::solana_idl_fetch,
-            commands::solana::solana_idl_get,
-            commands::solana::solana_idl_watch,
-            commands::solana::solana_idl_unwatch,
-            commands::solana::solana_idl_drift,
-            commands::solana::solana_idl_publish,
-            commands::solana::solana_codama_generate,
-            commands::solana::solana_pda_derive,
-            commands::solana::solana_pda_scan,
-            commands::solana::solana_pda_predict,
-            commands::solana::solana_pda_analyse_bump,
-            commands::solana::solana_program_build,
-            commands::solana::solana_program_upgrade_check,
-            commands::solana::solana_program_deploy,
-            commands::solana::solana_program_rollback,
-            commands::solana::solana_squads_proposal_create,
-            commands::solana::solana_verified_build_submit,
-            commands::solana::solana_audit_static,
-            commands::solana::solana_audit_external,
-            commands::solana::solana_audit_fuzz,
-            commands::solana::solana_audit_fuzz_scaffold,
-            commands::solana::solana_audit_coverage,
-            commands::solana::solana_replay_exploit,
-            commands::solana::solana_replay_list,
-            commands::solana::solana_logs_subscribe,
-            commands::solana::solana_logs_unsubscribe,
-            commands::solana::solana_logs_recent,
-            commands::solana::solana_logs_view,
-            commands::solana::solana_logs_active,
-            commands::solana::solana_indexer_scaffold,
-            commands::solana::solana_indexer_run,
-            commands::solana::solana_token_extension_matrix,
-            commands::solana::solana_token_create,
-            commands::solana::solana_metaplex_mint,
-            commands::solana::solana_wallet_scaffold_list,
-            commands::solana::solana_wallet_scaffold_generate,
-            commands::solana::solana_secrets_scan,
-            commands::solana::solana_secrets_patterns,
-            commands::solana::solana_secrets_scope_check,
-            commands::solana::solana_cluster_drift_check,
-            commands::solana::solana_cluster_drift_tracked_programs,
-            commands::solana::solana_cost_snapshot,
-            commands::solana::solana_cost_record,
-            commands::solana::solana_cost_reset,
-            commands::solana::solana_doc_catalog,
-            commands::solana::solana_doc_snippets,
-            commands::solana::solana_subscribe_ready,
         ])
 }
 

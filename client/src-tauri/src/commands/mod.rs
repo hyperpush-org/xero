@@ -62,7 +62,6 @@ pub(crate) mod runtime_media;
 pub mod search_project;
 pub mod session_history;
 pub mod skills;
-pub mod solana;
 pub mod soul_settings;
 pub mod stage_agent_attachment;
 pub mod start_autonomous_run;
@@ -285,28 +284,6 @@ pub use skills::{
     list_skill_registry, reload_skill_registry, remove_plugin, remove_plugin_root, remove_skill,
     remove_skill_local_root, set_plugin_enabled, set_skill_enabled, update_github_skill_source,
     update_project_skill_source, upsert_plugin_root, upsert_skill_local_root,
-};
-pub use solana::{
-    solana_alt_create, solana_alt_extend, solana_alt_resolve, solana_cluster_drift_check,
-    solana_cluster_drift_tracked_programs, solana_cluster_list, solana_cluster_start,
-    solana_cluster_status, solana_cluster_stop, solana_codama_generate, solana_cost_record,
-    solana_cost_reset, solana_cost_snapshot, solana_cpi_resolve, solana_doc_catalog,
-    solana_doc_snippets, solana_idl_drift, solana_idl_fetch, solana_idl_get, solana_idl_load,
-    solana_idl_publish, solana_idl_unwatch, solana_idl_watch, solana_indexer_run,
-    solana_indexer_scaffold, solana_logs_active, solana_logs_recent, solana_logs_subscribe,
-    solana_logs_unsubscribe, solana_logs_view, solana_pda_analyse_bump, solana_pda_derive,
-    solana_pda_predict, solana_pda_scan, solana_persona_create, solana_persona_delete,
-    solana_persona_export_keypair, solana_persona_fund, solana_persona_import_keypair,
-    solana_persona_list, solana_persona_roles, solana_priority_fee_estimate, solana_program_build,
-    solana_program_deploy, solana_program_rollback, solana_program_upgrade_check,
-    solana_provider_profile_delete, solana_provider_profile_select, solana_provider_profile_upsert,
-    solana_provider_profiles_list, solana_rpc_endpoints_set, solana_rpc_health,
-    solana_scenario_list, solana_scenario_run, solana_secrets_patterns, solana_secrets_scan,
-    solana_secrets_scope_check, solana_snapshot_create, solana_snapshot_delete,
-    solana_snapshot_list, solana_snapshot_restore, solana_squads_proposal_create,
-    solana_subscribe_ready, solana_toolchain_install, solana_toolchain_install_status,
-    solana_toolchain_status, solana_tx_build, solana_tx_explain, solana_tx_send,
-    solana_tx_simulate, solana_verified_build_submit, SolanaState,
 };
 pub use soul_settings::{
     soul_settings, soul_update_settings, SoulIdDto, SoulPresetDto, SoulSettingsDto,

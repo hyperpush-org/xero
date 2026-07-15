@@ -618,7 +618,6 @@ describe('buildAgentGraph', () => {
       label: 'OS Automation',
     })
     expect(humanizeIdentifier('mcp_list')).toBe('MCP List')
-    expect(humanizeIdentifier('solana_idl')).toBe('Solana IDL')
   })
 
   it('marks lane labels as draggable section handles', () => {

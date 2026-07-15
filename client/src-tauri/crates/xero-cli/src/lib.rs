@@ -2168,7 +2168,7 @@ fn cli_tool_pack_prerequisite_available(
     prerequisite_id: &str,
 ) -> bool {
     match prerequisite_id {
-        "adb" | "anchor" | "solana" | "xcrun" => command_available(prerequisite_id),
+        "adb" | "xcrun" => command_available(prerequisite_id),
         "app_data_store" => directory_available_or_creatable(&globals.state_dir),
         "repo_root" => env::current_dir()
             .map(|path| path.is_dir())
@@ -2184,8 +2184,7 @@ fn cli_tool_pack_prerequisite_available(
         | "desktop_browser_executor"
         | "desktop_emulator_executor"
         | "desktop_runtime"
-        | "screen_recording_permission"
-        | "solana_state_executor" => false,
+        | "screen_recording_permission" => false,
         _ => false,
     }
 }
@@ -14177,7 +14176,6 @@ mod tests {
         assert_eq!(output.json["kind"], json!("toolPackList"));
         let packs = output.json["packs"].as_array().expect("tool packs");
         assert!(packs.iter().any(|pack| pack["packId"] == json!("browser")));
-        assert!(packs.iter().any(|pack| pack["packId"] == json!("solana")));
         let browser = packs
             .iter()
             .find(|pack| pack["packId"] == json!("browser"))

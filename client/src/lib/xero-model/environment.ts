@@ -33,7 +33,6 @@ export const environmentToolCategorySchema = z.enum([
   'mobile_tooling',
   'cloud_deployment',
   'database_cli',
-  'solana_tooling',
   'agent_ai_cli',
   'editor',
   'build_tool',

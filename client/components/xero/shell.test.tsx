@@ -190,7 +190,6 @@ describe('XeroShell', () => {
     expect(screen.queryByRole('button', { name: /signed in as/i })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Sign in with GitHub' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Open browser' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Open Solana workbench' })).toBeVisible()
     expect(screen.queryByRole('button', { name: /iOS simulator/i })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Install Xcode' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Settings' })).toBeNull()

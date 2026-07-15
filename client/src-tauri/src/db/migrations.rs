@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use rusqlite_migration::{Migrations, M};
 
-pub const PROJECT_DATABASE_SCHEMA_VERSION: i64 = 43;
+pub const PROJECT_DATABASE_SCHEMA_VERSION: i64 = 44;
 
 pub fn migrations() -> &'static Migrations<'static> {
     static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
@@ -50,6 +50,9 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(MIGRATION_034_ENGINEER_MUTATION_STAGE_TOOLS_SQL),
             M::up(MIGRATION_035_ENGINEER_CORE_STAGE_TOOLS_SQL),
             M::up(MIGRATION_036_ENGINEER_WEB_STAGE_TOOLS_SQL),
+            // Migration 18 gained a column after v43 databases had already applied it.
+            // Bump the schema epoch so stale app-data is rebuilt from the current schema.
+            M::up(NOOP_SCHEMA_VERSION_MARKER_SQL),
         ])
     });
 
@@ -1477,7 +1480,7 @@ const MIGRATION_018_AGENT_SUBAGENT_TASKS_SQL: &str = r#"
         PRIMARY KEY (project_id, parent_run_id, subagent_id),
         CHECK (parent_run_id <> ''),
         CHECK (subagent_id <> ''),
-        CHECK (role IN ('engineer', 'debugger', 'planner', 'researcher', 'reviewer', 'agent_builder', 'browser', 'emulator', 'solana', 'database')),
+        CHECK (role IN ('engineer', 'debugger', 'planner', 'researcher', 'reviewer', 'agent_builder', 'browser', 'emulator', 'database')),
         CHECK (role_label <> ''),
         CHECK (length(prompt_hash) = 64 AND prompt_hash NOT GLOB '*[^0-9a-f]*'),
         CHECK (model_id IS NULL OR model_id <> ''),
@@ -2730,7 +2733,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         CHECK (parent_run_id IS NULL OR parent_run_id <> ''),
         CHECK (parent_trace_id IS NULL OR (length(parent_trace_id) = 32 AND parent_trace_id NOT GLOB '*[^0-9a-f]*')),
         CHECK (parent_subagent_id IS NULL OR parent_subagent_id <> ''),
-        CHECK (subagent_role IS NULL OR subagent_role IN ('engineer', 'debugger', 'planner', 'researcher', 'reviewer', 'agent_builder', 'browser', 'emulator', 'solana', 'database')),
+        CHECK (subagent_role IS NULL OR subagent_role IN ('engineer', 'debugger', 'planner', 'researcher', 'reviewer', 'agent_builder', 'browser', 'emulator', 'database')),
         CHECK (provider_id <> ''),
         CHECK (model_id <> ''),
         CHECK (status IN ('starting', 'running', 'paused', 'cancelling', 'cancelled', 'handed_off', 'completed', 'failed')),
@@ -2932,7 +2935,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         CHECK (length(trace_id) = 32 AND trace_id NOT GLOB '*[^0-9a-f]*'),
         CHECK (top_level_run_id <> ''),
         CHECK (subagent_id IS NULL OR subagent_id <> ''),
-        CHECK (subagent_role IS NULL OR subagent_role IN ('engineer', 'debugger', 'planner', 'researcher', 'reviewer', 'agent_builder', 'browser', 'emulator', 'solana', 'database')),
+        CHECK (subagent_role IS NULL OR subagent_role IN ('engineer', 'debugger', 'planner', 'researcher', 'reviewer', 'agent_builder', 'browser', 'emulator', 'database')),
         CHECK (change_group_id IS NULL OR change_group_id <> ''),
         CHECK (path <> ''),
         CHECK (operation IN ('create', 'write', 'edit', 'patch', 'delete', 'rename', 'mkdir', 'unknown')),

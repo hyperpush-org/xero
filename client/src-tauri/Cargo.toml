@@ -80,12 +80,10 @@ tauri-test-support = ["tauri/test"]
 [dependencies]
 arc-swap = "1"
 base64 = "0.22"
-bs58 = "0.5"
 byteorder = "1"
 crossterm = "0.28"
 csv = "1"
 dirs = "5"
-ed25519-dalek = { version = "2", default-features = false, features = ["fast", "std", "rand_core"] }
 flate2 = "1"
 git2 = { version = "0.20", features = ["vendored-openssl"] }
 globset = "0.4"

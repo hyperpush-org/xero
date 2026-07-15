@@ -2403,7 +2403,7 @@ fn openai_codex_responses_request_body(
     request: &ProviderTurnRequest,
     prompt_cache_key: Option<&str>,
 ) -> CommandResult<JsonValue> {
-    let max_output_tokens = request.output_allowance.wire_max_output_tokens()?;
+    request.output_allowance.validated()?;
     let mut body = JsonMap::new();
     body.insert("model".into(), json!(model_id));
     body.insert("store".into(), json!(false));
@@ -2418,7 +2418,6 @@ fn openai_codex_responses_request_body(
         json!({ "verbosity": OPENAI_CODEX_TEXT_VERBOSITY }),
     );
     body.insert("include".into(), json!(["reasoning.encrypted_content"]));
-    body.insert("max_output_tokens".into(), json!(max_output_tokens));
     if let Some(prompt_cache_key) = prompt_cache_key
         .map(str::trim)
         .filter(|prompt_cache_key| !prompt_cache_key.is_empty())
@@ -3056,7 +3055,7 @@ fn clamp_openai_codex_reasoning_effort(model_id: &str, effort: &'static str) -> 
     let model_id = model_id.rsplit('/').next().unwrap_or(model_id);
     let model_id = model_id.trim().to_ascii_lowercase();
 
-    if ["gpt-5.2", "gpt-5.3", "gpt-5.4", "gpt-5.5"]
+    if ["gpt-5.2", "gpt-5.3", "gpt-5.4", "gpt-5.5", "gpt-5.6"]
         .iter()
         .any(|prefix| model_id.starts_with(prefix))
         && effort == "minimal"
@@ -5647,6 +5646,14 @@ mod tests {
         time::Instant,
     };
 
+    #[test]
+    fn openai_codex_gpt_5_6_clamps_minimal_reasoning_to_low() {
+        assert_eq!(
+            clamp_openai_codex_reasoning_effort("gpt-5.6-sol", "minimal"),
+            "low"
+        );
+    }
+
     fn test_request() -> ProviderTurnRequest {
         ProviderTurnRequest {
             system_prompt: "system".into(),
@@ -5706,7 +5713,7 @@ mod tests {
     }
 
     #[test]
-    fn resolved_small_and_large_output_limits_reach_every_wire_family() {
+    fn resolved_output_limits_reach_supported_wire_families() {
         let small_preflight =
             test_provider_preflight(OPENAI_API_PROVIDER_ID, "gpt-5.4", 128_000, Some(1_024));
         let small = resolve_provider_turn_budget(
@@ -5742,18 +5749,27 @@ mod tests {
         .expect("large output budget");
         request.output_allowance = large.output_allowance;
 
-        let codex = openai_codex_responses_request_body(
+        let xai = xai_responses_request_body(XAI_PROVIDER_ID, XAI_DEFAULT_MODEL_ID, &request)
+            .expect("xAI Responses body");
+
+        assert_eq!(xai["max_output_tokens"], 65_536);
+    }
+
+    #[test]
+    fn openai_codex_body_omits_unsupported_max_output_tokens() {
+        let mut request = test_request();
+        request.output_allowance =
+            ProviderTurnOutputAllowance::unified(65_536).expect("output allowance");
+
+        let body = openai_codex_responses_request_body(
             OPENAI_CODEX_PROVIDER_ID,
-            OPENAI_CODEX_DEFAULT_MODEL_ID,
+            "gpt-5.6-luna",
             &request,
             None,
         )
         .expect("Codex Responses body");
-        let xai = xai_responses_request_body(XAI_PROVIDER_ID, XAI_DEFAULT_MODEL_ID, &request)
-            .expect("xAI Responses body");
 
-        assert_eq!(codex["max_output_tokens"], 65_536);
-        assert_eq!(xai["max_output_tokens"], 65_536);
+        assert!(body.get("max_output_tokens").is_none());
     }
 
     #[test]

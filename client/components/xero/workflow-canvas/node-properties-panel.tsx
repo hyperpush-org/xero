@@ -160,7 +160,6 @@ const SUBAGENT_ROLE_OPTIONS = [
   'agent_builder',
   'browser',
   'emulator',
-  'solana',
   'database',
 ] as const
 type SubagentRoleOption = (typeof SUBAGENT_ROLE_OPTIONS)[number]

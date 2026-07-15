@@ -31,7 +31,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { createSafeTauriUnlisten } from "@/src/lib/tauri-events"
 import { useProjectSelectionPreview } from "@/src/features/xero/project-selection-preview"
-import { AppleLogoIcon, SolanaLogoIcon } from "./brand-icons"
+import { AppleLogoIcon } from "./brand-icons"
 import { AppLogo } from "@xero/ui/components/app-logo"
 import type { View } from "./data"
 import { ProjectContextMenu } from "./project-context-menu"
@@ -48,7 +48,6 @@ export type SurfacePreloadTarget =
   | "browser"
   | "ios"
   | "settings"
-  | "solana"
   | "terminal"
   | "usage"
   | "vcs"
@@ -108,8 +107,6 @@ interface XeroShellProps {
   browserOpen?: boolean
   onToggleIos?: () => void
   iosOpen?: boolean
-  onToggleSolana?: () => void
-  solanaOpen?: boolean
   onToggleVcs?: () => void
   vcsOpen?: boolean
   onToggleWorkflows?: () => void
@@ -252,8 +249,6 @@ export function XeroShell({
   browserOpen = false,
   onToggleIos,
   iosOpen = false,
-  onToggleSolana,
-  solanaOpen = false,
   onToggleVcs,
   vcsOpen = false,
   onToggleWorkflows,
@@ -606,26 +601,6 @@ export function XeroShell({
     </Tooltip>
   )
 
-  const SolanaToolBtn = (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          aria-label={solanaOpen ? "Close Solana workbench" : "Open Solana workbench"}
-          aria-pressed={solanaOpen}
-          className={titlebarToolButtonClassName(solanaOpen)}
-          onClick={onToggleSolana}
-          size="icon-sm"
-          title="Solana Workbench"
-          type="button"
-          variant="ghost"
-        >
-          <SolanaLogoIcon className="size-[15px]" mono />
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent side="bottom" sideOffset={8}>Solana Workbench</TooltipContent>
-    </Tooltip>
-  )
-
   const TerminalToolBtn = (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -869,7 +844,7 @@ export function XeroShell({
   let titlebar: React.ReactNode
 
   if (platform === "macos") {
-    // macOS: [traffic-lights] [logo] [nav] ... (centered project) ... [vcs] [workflows] [agent] [ios] [browser] [solana]
+    // macOS: [traffic-lights] [logo] [nav] ... (centered project) ... [vcs] [workflows] [agent] [ios] [browser]
     titlebar = (
       <header className="relative flex h-10 items-center border-b border-border bg-sidebar shrink-0 pl-3 pr-3">
         {TrafficLights}
@@ -897,14 +872,13 @@ export function XeroShell({
             {!chromeOnly ? AgentDockBtn : null}
             {!chromeOnly ? IosToolBtn : null}
             {!chromeOnly ? BrowserToolBtn : null}
-            {!chromeOnly ? SolanaToolBtn : null}
             {!chromeOnly ? TerminalToolBtn : null}
           </div>
         ) : null}
       </header>
     )
   } else {
-    // Windows / Linux: [logo] [|] [nav] <- centered project over drag zone -> [vcs] [workflows] [agent] [browser] [solana] [|] [min][max][close]
+    // Windows / Linux: [logo] [|] [nav] <- centered project over drag zone -> [vcs] [workflows] [agent] [browser] [|] [min][max][close]
     titlebar = (
       <header className="relative flex h-10 items-center border-b border-border bg-sidebar shrink-0 pl-3">
         <div
@@ -937,7 +911,6 @@ export function XeroShell({
                 {ComputerUseBtn}
                 {!chromeOnly ? AgentDockBtn : null}
                 {!chromeOnly ? BrowserToolBtn : null}
-                {!chromeOnly ? SolanaToolBtn : null}
                 {!chromeOnly ? TerminalToolBtn : null}
               </div>
               <div className="mx-2 h-4 w-px bg-border" />

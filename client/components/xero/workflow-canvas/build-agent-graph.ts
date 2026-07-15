@@ -318,7 +318,7 @@ export function stageNodeId(phaseId: string): string {
 
 // There is exactly one stage frame per agent (stages always live as a single
 // column), so a constant id is enough; no per-bucket variant needed like
-// tool-group-frame:CORE / tool-group-frame:SOLANA.
+// tool-group-frame:CORE / tool-group-frame:DATABASE.
 export const STAGE_GROUP_FRAME_NODE_ID = 'stage-group-frame:stages'
 export const DB_GROUP_FRAME_NODE_ID = 'db-group-frame:database'
 
@@ -344,9 +344,6 @@ const HUMANIZE_OVERRIDES: Record<string, string> = {
   macos_automation: 'macOS Automation',
   mcp: 'MCP',
   mcp_invoke: 'MCP',
-  external_chain_observe: 'Chain Observe',
-  external_chain_simulation: 'Chain Simulation',
-  external_chain_control: 'Chain Control',
   external_capability_observe: 'External Capability',
   system_diagnostics: 'System Diagnostics',
   system_diagnostics_observe: 'System Diagnostics',
@@ -366,25 +363,21 @@ const HUMANIZE_OVERRIDES: Record<string, string> = {
 
 const HUMANIZE_WORD_OVERRIDES: Record<string, string> = {
   ai: 'AI',
-  alt: 'ALT',
   api: 'API',
   cli: 'CLI',
   cpu: 'CPU',
   db: 'DB',
   http: 'HTTP',
   https: 'HTTPS',
-  idl: 'IDL',
   ios: 'iOS',
   json: 'JSON',
   lsp: 'LSP',
   macos: 'macOS',
   mcp: 'MCP',
   os: 'OS',
-  pda: 'PDA',
   rpc: 'RPC',
   sdk: 'SDK',
   sha: 'SHA',
-  tx: 'TX',
   ui: 'UI',
   url: 'URL',
   vcs: 'VCS',
@@ -475,7 +468,6 @@ const TOOL_CATEGORY_OVERRIDES: Record<string, ToolCategoryPresentation> = {
   environment: { key: 'environment', label: 'Environment', order: 170 },
   emulator: { key: 'emulator', label: 'Emulator', order: 180 },
   harness_runner: { key: 'test_harness', label: 'Test Harness', order: 190 },
-  solana: { key: 'solana', label: 'Solana', order: 200 },
 }
 
 export function toolCategoryPresentationForGroup(group: string): ToolCategoryPresentation {

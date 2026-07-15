@@ -3963,7 +3963,7 @@ fn clamp_openai_codex_headless_effort(model_id: &str, effort: &str) -> &'static 
     };
     let model_id = model_id.rsplit('/').next().unwrap_or(model_id);
     let model_id = model_id.trim().to_ascii_lowercase();
-    if ["gpt-5.2", "gpt-5.3", "gpt-5.4", "gpt-5.5"]
+    if ["gpt-5.2", "gpt-5.3", "gpt-5.4", "gpt-5.5", "gpt-5.6"]
         .iter()
         .any(|prefix| model_id.starts_with(prefix))
         && effort == "minimal"
@@ -4293,6 +4293,14 @@ fn truncate_text(value: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn openai_codex_gpt_5_6_clamps_minimal_headless_reasoning_to_low() {
+        assert_eq!(
+            clamp_openai_codex_headless_effort("gpt-5.6-terra", "minimal"),
+            "low"
+        );
+    }
 
     #[test]
     fn headless_workspace_path_accepts_absolute_paths_inside_root() {

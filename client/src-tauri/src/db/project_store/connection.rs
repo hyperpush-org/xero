@@ -272,4 +272,32 @@ mod tests {
             .expect_err("missing state should fail before runtime use");
         assert_eq!(missing_state_error.code, "project_state_unavailable");
     }
+
+    #[test]
+    fn open_runtime_database_rebuilds_v43_state_missing_current_subagent_columns() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let repo_root = tempdir.path().join("repo");
+        std::fs::create_dir_all(&repo_root).expect("repo root");
+        let database_path = tempdir.path().join("state.db");
+        let legacy_connection = Connection::open(&database_path).expect("open legacy database");
+        legacy_connection
+            .execute_batch(
+                "CREATE TABLE agent_subagent_tasks (project_id TEXT NOT NULL);\n\
+                 PRAGMA user_version = 43;",
+            )
+            .expect("create v43 database with stale subagent schema");
+        drop(legacy_connection);
+
+        let connection = open_runtime_database(&repo_root, &database_path)
+            .expect("rebuild stale v43 project state");
+        let workflow_structure_column_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('agent_subagent_tasks') WHERE name = 'workflow_structure_json'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("inspect rebuilt subagent schema");
+
+        assert_eq!(workflow_structure_column_count, 1);
+    }
 }

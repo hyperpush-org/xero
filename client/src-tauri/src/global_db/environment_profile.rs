@@ -73,7 +73,6 @@ pub enum EnvironmentToolCategory {
     MobileTooling,
     CloudDeployment,
     DatabaseCli,
-    SolanaTooling,
     AgentAiCli,
     Editor,
     BuildTool,
@@ -94,7 +93,6 @@ impl EnvironmentToolCategory {
             Self::MobileTooling => "mobile_tooling",
             Self::CloudDeployment => "cloud_deployment",
             Self::DatabaseCli => "database_cli",
-            Self::SolanaTooling => "solana_tooling",
             Self::AgentAiCli => "agent_ai_cli",
             Self::Editor => "editor",
             Self::BuildTool => "build_tool",
@@ -118,7 +116,6 @@ pub fn parse_environment_tool_category(
         "mobile_tooling" => Ok(EnvironmentToolCategory::MobileTooling),
         "cloud_deployment" => Ok(EnvironmentToolCategory::CloudDeployment),
         "database_cli" => Ok(EnvironmentToolCategory::DatabaseCli),
-        "solana_tooling" => Ok(EnvironmentToolCategory::SolanaTooling),
         "agent_ai_cli" => Ok(EnvironmentToolCategory::AgentAiCli),
         "editor" => Ok(EnvironmentToolCategory::Editor),
         "build_tool" => Ok(EnvironmentToolCategory::BuildTool),
@@ -136,8 +133,6 @@ pub fn parse_environment_tool_category(
 #[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvironmentToolSource {
-    BundledToolchain,
-    ManagedToolchain,
     Path,
     CommonDevDir,
     PlatformDefault,

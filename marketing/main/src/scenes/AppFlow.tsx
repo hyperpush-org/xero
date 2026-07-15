@@ -29,42 +29,11 @@ export const APPFLOW_FRAMES = 1060;
 const HEAD_TURN_START = 589;
 const HEAD_TURN_END = 613;
 
-// Solana workbench: as the zoom finishes it flows straight into a downward pan
-// that first opens the Solana Workbench from agent chat, then keeps moving
-// through two sidebar clicks. It starts brisk, clicks Personas (2nd tab), holds
-// that pace briefly, then accelerates down to the Wallet button near the bottom.
-const SOL_OPEN_CLICK = 650; // click Solana Workbench toolbar icon
-const SOL_CURSOR_START = 628; // combined frame 832 (after LogoReveal)
-const SOL_WORKBENCH_SHOW = SOL_OPEN_CLICK + 4;
-const SOL_CAPTION_START = SOL_WORKBENCH_SHOW + 4;
-const SOL_CLICK = 688; // click Personas (2nd tab) -> swap to bench_2
-const SOL_CLICK2 = 734; // click Wallet button (lower) -> swap to bench_3
-const SOL_FINAL_PULLBACK_START = SOL_CLICK2 + 21;
-const SOL_FINAL_PULLBACK_END = SOL_FINAL_PULLBACK_START + 30;
-const SOL_OPEN_ICON = { fx: 0.946, fy: 0.044 }; // Solana Workbench toolbar icon
-const SOL_TAB2 = { fx: 0.739, fy: 0.192 }; // Personas tab, image fraction
-const SOL_TAB3 = { fx: 0.743, fy: 0.592 }; // Wallet button, image fraction
-const SOL_TAB_NAMES = [
-  "Cluster",
-  "Personas",
-  "Scenarios",
-  "Tx",
-  "Logs",
-  "Indexer",
-  "IDL",
-  "Deploy",
-  "Audit",
-  "Token",
-  "Wallet",
-  "Safety",
-  "RPC",
-];
-const SOL_TAB_NAME_START = SOL_WORKBENCH_SHOW;
-const SOL_TAB_NAME_STRIDE = 18;
-const SOL_TAB_NAME_TRANSITION = 7;
-const CLOSEOUT_START = SOL_FINAL_PULLBACK_START - 8;
+const CLOSEOUT_PULLBACK_START = 755;
+const CLOSEOUT_PULLBACK_END = 785;
+const CLOSEOUT_START = 747;
 const CLOSEOUT_LAYER_TOP = -400;
-const FINAL_ZOOM_START = SOL_FINAL_PULLBACK_END + 10;
+const FINAL_ZOOM_START = CLOSEOUT_PULLBACK_END + 10;
 const FINAL_ZOOM_END = FINAL_ZOOM_START + 36;
 const FINAL_SHOVE_START = FINAL_ZOOM_END + 10;
 const FINAL_DOMAIN_REVEAL_START = FINAL_SHOVE_START + 28;
@@ -148,8 +117,6 @@ const MODAL = { left: 34.85, top: 31.6, right: 65.95, bottom: 67.5 };
 // punch and depth rather than a flat glide.
 const CAM_EASE = Easing.bezier(0.78, 0, 0.2, 1);
 const CURSOR_SIZE = 96;
-const CURSOR_TIP_X = (3 / 24) * CURSOR_SIZE;
-const CURSOR_TIP_Y = (2 / 24) * CURSOR_SIZE;
 const CLICK_RIPPLE_SIZE = 64;
 const CLICK_RIPPLE_FRAMES = 16;
 const CURSOR_GLITCH_DELAY = 6;
@@ -493,139 +460,6 @@ const ChatCaption: React.FC = () => {
       >
         Chat with agents in the app
       </span>
-    </div>
-  );
-};
-
-const SolanaTabName: React.FC = () => {
-  const frame = useCurrentFrame();
-  const elapsed = Math.max(0, frame - SOL_TAB_NAME_START);
-  const index =
-    Math.floor(elapsed / SOL_TAB_NAME_STRIDE) % SOL_TAB_NAMES.length;
-  const previousIndex =
-    (index + SOL_TAB_NAMES.length - 1) % SOL_TAB_NAMES.length;
-  const label = SOL_TAB_NAMES[index];
-  const firstCycle = elapsed < SOL_TAB_NAME_STRIDE;
-  const previousLabel = firstCycle ? label : SOL_TAB_NAMES[previousIndex];
-  const local = elapsed % SOL_TAB_NAME_STRIDE;
-  const swap = interpolate(local, [0, SOL_TAB_NAME_TRANSITION], [0, 1], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-    easing: Easing.out(Easing.cubic),
-  });
-  const nameSwap = firstCycle ? 1 : swap;
-  const textStyle: React.CSSProperties = {
-    position: "absolute",
-    inset: 0,
-    fontFamily,
-    fontStyle: "italic",
-    fontWeight: 400,
-    fontSize: 32,
-    lineHeight: "36px",
-    letterSpacing: 0,
-    whiteSpace: "nowrap",
-  };
-
-  return (
-    <span
-      style={{
-        position: "relative",
-        display: "block",
-        width: 360,
-        height: 36,
-        overflow: "hidden",
-      }}
-    >
-      <span
-        style={{
-          ...textStyle,
-          color: "rgba(255,255,255,0.42)",
-          opacity: 1 - nameSwap,
-          transform: `translateY(${-10 * nameSwap}px)`,
-        }}
-      >
-        {previousLabel}
-      </span>
-      <span
-        style={{
-          ...textStyle,
-          color: "rgba(255,255,255,0.74)",
-          opacity: nameSwap,
-          transform: `translateY(${10 * (1 - nameSwap)}px)`,
-        }}
-      >
-        {label}
-      </span>
-    </span>
-  );
-};
-
-// Bottom-left caption that animates in as the solana zoom settles.
-const SolanaCaption: React.FC = () => {
-  const frame = useCurrentFrame();
-  const capIn = interpolate(
-    frame,
-    [SOL_CAPTION_START, SOL_CAPTION_START + 14],
-    [0, 1],
-    {
-      extrapolateLeft: "clamp",
-      extrapolateRight: "clamp",
-      easing: Easing.out(Easing.cubic),
-    },
-  );
-  const capOut = interpolate(
-    frame,
-    [SOL_FINAL_PULLBACK_START - 5, SOL_FINAL_PULLBACK_START + 2],
-    [0, 1],
-    {
-      extrapolateLeft: "clamp",
-      extrapolateRight: "clamp",
-      easing: Easing.in(Easing.cubic),
-    },
-  );
-
-  return (
-    <div
-      style={{
-        position: "absolute",
-        left: 88,
-        bottom: 84,
-        display: "flex",
-        alignItems: "flex-start",
-        gap: 20,
-        opacity: capIn * (1 - capOut),
-        transform: `translateY(${(1 - capIn) * 28 - capOut * 16}px)`,
-      }}
-    >
-      <div
-        style={{
-          width: 5,
-          height: 92,
-          borderRadius: 3,
-          backgroundColor: "#D4A574",
-        }}
-      />
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: 9,
-        }}
-      >
-        <span
-          style={{
-            fontFamily,
-            fontWeight: 600,
-            fontSize: 54,
-            lineHeight: 1,
-            color: "#ffffff",
-            whiteSpace: "nowrap",
-          }}
-        >
-          Solana workbench
-        </span>
-        <SolanaTabName />
-      </div>
     </div>
   );
 };
@@ -2346,22 +2180,16 @@ export const AppFlow: React.FC = () => {
   const turnTx = turn * -2300;
   const turnRy = turn * 58;
 
-  // The solana view is locked to the head turn (mirror of the exiting scene)
-  // so they move as one, then ~halfway through it starts a camera push into
-  // the Solana Workbench sidebar (top-right). It begins zoomed out.
-  const solZoom = interpolate(frame, [607, 641], [0, 1], {
+  // The final product view follows the head-turn transition, pulls back to
+  // reveal the closeout layer, and then pushes into the closing title.
+  const closeoutZoom = interpolate(frame, [607, 641], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
     easing: CAM_EASE,
   });
-  const solPullback = interpolate(frame, [702, SOL_CLICK2], [0, 1], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-    easing: Easing.inOut(Easing.cubic),
-  });
-  const solFinalPullback = interpolate(
+  const closeoutPullback = interpolate(
     frame,
-    [SOL_FINAL_PULLBACK_START, SOL_FINAL_PULLBACK_END],
+    [CLOSEOUT_PULLBACK_START, CLOSEOUT_PULLBACK_END],
     [0, 1],
     {
       extrapolateLeft: "clamp",
@@ -2369,18 +2197,6 @@ export const AppFlow: React.FC = () => {
       easing: CAM_EASE,
     },
   );
-  const activeSolS = 0.6 + solZoom * 1.55 - solPullback * 0.5;
-  const activeSolFx = 0.5 + solZoom * 0.258;
-  // Downward pan: brisk to the Personas tab, a brief hold at that pace, then a
-  // clear acceleration down to the Wallet button. Piecewise-linear so velocity
-  // only ever increases (no stall) until it settles at the end.
-  const solPanDown = interpolate(
-    frame,
-    [656, 686, 702, 734, 746],
-    [0, 0.072, 0.103, 0.345, 0.37],
-    { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
-  );
-  const activeSolFy = 0.5 - solZoom * 0.32 + solPanDown; // center -> top, then pan down
   const finalZoom = interpolate(
     frame,
     [FINAL_ZOOM_START, FINAL_ZOOM_END],
@@ -2391,94 +2207,33 @@ export const AppFlow: React.FC = () => {
       easing: CAM_EASE,
     },
   );
-  const settledSolS = interpolate(solFinalPullback, [0, 1], [activeSolS, 0.88]);
-  const settledSolFx = interpolate(
-    solFinalPullback,
+  const activeCloseoutScale = 0.6 + closeoutZoom * 1.55;
+  const activeCloseoutFx = 0.5 + closeoutZoom * 0.258;
+  const activeCloseoutFy = 0.5 - closeoutZoom * 0.32;
+  const settledCloseoutScale = interpolate(
+    closeoutPullback,
     [0, 1],
-    [activeSolFx, 0.5],
+    [activeCloseoutScale, 0.88],
   );
-  const settledSolFy = interpolate(
-    solFinalPullback,
+  const settledCloseoutFx = interpolate(
+    closeoutPullback,
     [0, 1],
-    [activeSolFy, 0.04],
+    [activeCloseoutFx, 0.5],
   );
-  const solS = interpolate(finalZoom, [0, 1], [settledSolS, 1.72]);
-  const solFx = interpolate(finalZoom, [0, 1], [settledSolFx, 0.5]);
-  const solFy = interpolate(finalZoom, [0, 1], [settledSolFy, -0.32]);
-  const solTx = width / 2 - solFx * width * solS;
-  const solTy = height / 2 - solFy * height * solS;
-
-  // The solana view renders objectFit:contain in a 1920x1080 box, so the image
-  // is letterboxed. Map image fractions -> on-screen pixels. By the time we
-  // interact, the head-turn wrapper is identity, so the only transform is
-  // translate(solTx,solTy) scale(solS).
-  const solImgScale = Math.min(width / 3032, height / 1812);
-  const solImgW = 3032 * solImgScale;
-  const solImgH = 1812 * solImgScale;
-  const solImgOffX = (width - solImgW) / 2;
-  const solImgOffY = (height - solImgH) / 2;
-  const solTabPos = (fx: number, fy: number) => ({
-    x: solTx + (solImgOffX + fx * solImgW) * solS,
-    y: solTy + (solImgOffY + fy * solImgH) * solS,
-  });
-  const openIcon = solTabPos(SOL_OPEN_ICON.fx, SOL_OPEN_ICON.fy);
-  const tab2 = solTabPos(SOL_TAB2.fx, SOL_TAB2.fy);
-  const tab3 = solTabPos(SOL_TAB3.fx, SOL_TAB3.fy);
-  // Cursor: one continuous pointer opens the Workbench, continues through the
-  // sidebar tab sequence, then glitches away only after the final click. All
-  // targets track the live camera pan.
-  const solCurIn = interpolate(
-    frame,
-    [SOL_CURSOR_START, SOL_CURSOR_START + 4],
+  const settledCloseoutFy = interpolate(
+    closeoutPullback,
     [0, 1],
-    {
-      extrapolateLeft: "clamp",
-      extrapolateRight: "clamp",
-    },
+    [activeCloseoutFy, 0.04],
   );
-  const approachOpen = interpolate(
-    frame,
-    [SOL_CURSOR_START, SOL_OPEN_CLICK],
+  const closeoutScale = interpolate(
+    finalZoom,
     [0, 1],
-    {
-      extrapolateLeft: "clamp",
-      extrapolateRight: "clamp",
-      easing: Easing.inOut(Easing.cubic),
-    },
+    [settledCloseoutScale, 1.72],
   );
-  const toTab2 = interpolate(frame, [SOL_OPEN_CLICK + 14, SOL_CLICK], [0, 1], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-    easing: Easing.inOut(Easing.cubic),
-  });
-  const toTab3 = interpolate(frame, [SOL_CLICK + 6, SOL_CLICK2], [0, 1], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-    easing: Easing.inOut(Easing.cubic),
-  });
-  const solCurX =
-    openIcon.x +
-    (tab2.x - openIcon.x) * toTab2 +
-    (tab3.x - tab2.x) * toTab3 +
-    (1 - approachOpen) * 240;
-  const solCurY =
-    openIcon.y +
-    (tab2.y - openIcon.y) * toTab2 +
-    (tab3.y - tab2.y) * toTab3 +
-    (1 - approachOpen) * 200;
-  const solPress =
-    1 -
-    0.16 *
-      Math.max(
-        pressDip(frame, SOL_OPEN_CLICK),
-        pressDip(frame, SOL_CLICK),
-        pressDip(frame, SOL_CLICK2),
-      );
-  const solCursorExit = cursorExitAt(frame, [SOL_CLICK2]);
-  const solCursorVisible =
-    frame >= SOL_CURSOR_START &&
-    frame <= SOL_CLICK2 + CURSOR_GLITCH_DELAY + CURSOR_GLITCH_FRAMES;
-
+  const closeoutFx = interpolate(finalZoom, [0, 1], [settledCloseoutFx, 0.5]);
+  const closeoutFy = interpolate(finalZoom, [0, 1], [settledCloseoutFy, -0.32]);
+  const closeoutTx = width / 2 - closeoutFx * width * closeoutScale;
+  const closeoutTy = height / 2 - closeoutFy * height * closeoutScale;
   // Camera: zoom into "Create agent", pan to the modal, then zoom out to reveal
   // the whole canvas.
   // Ends by zooming out past 1.0 and panning right (small focal x) so the agent
@@ -2839,8 +2594,7 @@ export const AppFlow: React.FC = () => {
         </AbsoluteFill>
       </AbsoluteFill>
 
-      {/* As the head turn swings the scene off-left, the next view (solana
-          reference) pans in from the right and settles face-on — same motion. */}
+      {/* The final product view follows the head turn and reveals the closeout. */}
       {turn > 0.001 && (
         <AbsoluteFill style={{ perspective: 1700 }}>
           <AbsoluteFill
@@ -2854,7 +2608,7 @@ export const AppFlow: React.FC = () => {
                 position: "absolute",
                 inset: 0,
                 transformOrigin: "0 0",
-                transform: `translate(${solTx}px, ${solTy}px) scale(${solS})`,
+                transform: `translate(${closeoutTx}px, ${closeoutTy}px) scale(${closeoutScale})`,
               }}
             >
               <Closeout />
@@ -2866,94 +2620,17 @@ export const AppFlow: React.FC = () => {
                   width: "100%",
                   height: "100%",
                   objectFit: "contain",
-                  opacity: frame < SOL_WORKBENCH_SHOW ? 1 : 0,
-                }}
-              />
-              <Img
-                src={staticFile("solana_bench_1.png")}
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  width: "100%",
-                  height: "100%",
-                  objectFit: "contain",
-                  opacity:
-                    frame >= SOL_WORKBENCH_SHOW && frame < SOL_CLICK ? 1 : 0,
-                }}
-              />
-              <Img
-                src={staticFile("solana_bench_2.png")}
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  width: "100%",
-                  height: "100%",
-                  objectFit: "contain",
-                  opacity: frame >= SOL_CLICK && frame < SOL_CLICK2 ? 1 : 0,
-                }}
-              />
-              <Img
-                src={staticFile("solana_bench_3.png")}
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  width: "100%",
-                  height: "100%",
-                  objectFit: "contain",
-                  opacity: frame >= SOL_CLICK2 ? 1 : 0,
                 }}
               />
             </div>
           </AbsoluteFill>
         </AbsoluteFill>
       )}
-
-      {/* Cursor opens Solana Workbench, continues through the sidebar, then exits. */}
-      {solCursorVisible && (
-        <>
-          <div
-            style={{
-              position: "absolute",
-              left: solCurX - CURSOR_TIP_X,
-              top: solCurY - CURSOR_TIP_Y,
-              transform: `scale(${solPress})`,
-              transformOrigin: "top left",
-              opacity: solCurIn * solCursorExit.opacity,
-              filter: "drop-shadow(0 2px 3px rgba(0,0,0,0.55))",
-            }}
-          >
-            <CursorGlyph glitch={solCursorExit.glitch} seed={frame} />
-          </div>
-          <ClickRipple
-            x={(openIcon.x / width) * 100}
-            y={(openIcon.y / height) * 100}
-            at={SOL_OPEN_CLICK}
-            cam={1}
-          />
-          <ClickRipple
-            x={(tab2.x / width) * 100}
-            y={(tab2.y / height) * 100}
-            at={SOL_CLICK}
-            cam={1}
-          />
-          <ClickRipple
-            x={(tab3.x / width) * 100}
-            y={(tab3.y / height) * 100}
-            at={SOL_CLICK2}
-            cam={1}
-          />
-        </>
-      )}
-
-      {frame >= SOL_CAPTION_START && <SolanaCaption />}
-
-      {[CLICK1, CLICK2, CLICK3, SOL_OPEN_CLICK, SOL_CLICK, SOL_CLICK2].map(
-        (at) => (
-          <Sequence key={at} from={at} durationInFrames={12} layout="none">
-            <Audio src={staticFile("click.mp3")} trimBefore={1} volume={0.4} />
-          </Sequence>
-        ),
-      )}
+      {[CLICK1, CLICK2, CLICK3].map((at) => (
+        <Sequence key={at} from={at} durationInFrames={12} layout="none">
+          <Audio src={staticFile("click.mp3")} trimBefore={1} volume={0.4} />
+        </Sequence>
+      ))}
 
       {/* keyboard sound while the prompt is typed in the composer */}
       <Sequence

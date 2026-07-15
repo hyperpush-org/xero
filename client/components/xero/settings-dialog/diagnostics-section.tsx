@@ -155,7 +155,6 @@ const TOOL_CATEGORY_LABEL: Record<EnvironmentToolCategoryDto, string> = {
   mobile_tooling: "Mobile",
   cloud_deployment: "Cloud & deployment",
   database_cli: "Databases",
-  solana_tooling: "Solana",
   agent_ai_cli: "AI & agent CLIs",
   editor: "Editors",
   build_tool: "Build tools",
@@ -180,7 +179,6 @@ const TOOL_CATEGORY_ORDER: EnvironmentToolCategoryDto[] = [
   "cloud_deployment",
   "database_cli",
   "mobile_tooling",
-  "solana_tooling",
   "agent_ai_cli",
 ]
 

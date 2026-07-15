@@ -1925,6 +1925,7 @@ pub fn approved_memory_context_contributors(
 const DEFAULT_CONTEXT_LIMIT_MAX_OUTPUT_TOKENS: u64 = 4_096;
 const DEFAULT_CONTEXT_LIMIT_SAFETY_RESERVE_PERCENT: u64 = 15;
 const OPENAI_CODEX_CONTEXT_WINDOW_TOKENS: u64 = 272_000;
+const OPENAI_CODEX_GPT_5_6_CONTEXT_WINDOW_TOKENS: u64 = 372_000;
 const DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS: u64 = 1_000_000;
 const DEEPSEEK_V4_MAX_OUTPUT_TOKENS: u64 = 384_000;
 
@@ -2250,6 +2251,12 @@ fn built_in_context_limits(provider: &str, model: &str) -> Option<(u64, u64)> {
     }
     if model.contains("claude") {
         return Some((200_000, DEFAULT_CONTEXT_LIMIT_MAX_OUTPUT_TOKENS));
+    }
+    if model.contains("gpt-5.6") {
+        return Some((
+            OPENAI_CODEX_GPT_5_6_CONTEXT_WINDOW_TOKENS,
+            DEFAULT_CONTEXT_LIMIT_MAX_OUTPUT_TOKENS,
+        ));
     }
     if [
         "gpt-5.2",
@@ -3476,6 +3483,14 @@ mod tests {
         assert_eq!(build.context_window_tokens, Some(256_000));
         assert_eq!(build.source, SessionContextLimitSourceDto::BuiltInRegistry);
         assert_eq!(build.confidence, SessionContextLimitConfidenceDto::Medium);
+    }
+
+    #[test]
+    fn gpt_5_6_codex_context_limit_uses_codex_window() {
+        assert_eq!(
+            provider_context_budget_tokens("openai_codex", "gpt-5.6-sol"),
+            Some(OPENAI_CODEX_GPT_5_6_CONTEXT_WINDOW_TOKENS)
+        );
     }
 
     #[test]

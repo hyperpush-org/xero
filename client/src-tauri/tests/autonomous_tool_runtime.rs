@@ -482,11 +482,7 @@ fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
                     "web_search_only".into(),
                     "command_session".into(),
                 ],
-                tools: vec![
-                    "command_run".into(),
-                    "solana_alt".into(),
-                    "missing_tool".into(),
-                ],
+                tools: vec!["command_run".into(), "missing_tool".into()],
                 reason: Some("Need to drive app use and run setup.".into()),
             },
         ))
@@ -511,7 +507,6 @@ fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
             assert_eq!(command_run.risk_class, "command");
             assert!(command_run.runtime_available);
             assert!(output.denied_tools.contains(&"emulator".into()));
-            assert!(output.denied_tools.contains(&"solana_alt".into()));
             assert!(output.denied_tools.contains(&"missing_tool".into()));
         }
         other => panic!("unexpected output: {other:?}"),
@@ -989,40 +984,6 @@ fn tool_runtime_executes_priority_one_agent_surface_tools() {
         }
         other => panic!("unexpected command tool search output: {other:?}"),
     }
-    let obscure_solana_search = runtime
-        .tool_search(AutonomousToolSearchRequest {
-            query: "address lookup table".into(),
-            limit: Some(1),
-        })
-        .expect("tool search for obscure solana capability");
-    match obscure_solana_search.output {
-        AutonomousToolOutput::ToolSearch(output) => {
-            let first = output.matches.first().expect("solana alt match");
-            assert_eq!(first.tool_name, "solana_alt");
-            assert!(first.tags.contains(&"address_lookup_table".into()));
-            assert!(first.activation_groups.contains(&"solana".into()));
-            assert!(first.tool_pack_ids.contains(&"solana".into()));
-        }
-        other => panic!("unexpected obscure solana tool search output: {other:?}"),
-    }
-    let solana_search = runtime
-        .tool_search(AutonomousToolSearchRequest {
-            query: "solana".into(),
-            limit: Some(3),
-        })
-        .expect("tool search for deferred solana tools");
-    match solana_search.output {
-        AutonomousToolOutput::ToolSearch(output) => {
-            assert_eq!(output.matches.len(), 3);
-            assert!(output.truncated);
-            assert!(output
-                .matches
-                .iter()
-                .all(|item| item.group == "solana" && item.tool_name.starts_with("solana_")));
-        }
-        other => panic!("unexpected solana tool search output: {other:?}"),
-    }
-
     let todo = runtime
         .todo(AutonomousTodoRequest {
             action: AutonomousTodoAction::Upsert,
@@ -1640,7 +1601,6 @@ fn custom_agent_policy_can_enable_and_disable_domain_tool_packs() {
     assert!(browser_policy.allows_tool("browser_observe"));
     assert!(browser_policy.allows_tool("browser_control"));
     assert!(!browser_policy.allows_tool("emulator"));
-    assert!(!browser_policy.allows_tool("solana_simulate"));
 
     let browser_without_opt_in =
         AutonomousAgentToolPolicy::from_definition_snapshot(&serde_json::json!({
@@ -1652,18 +1612,6 @@ fn custom_agent_policy_can_enable_and_disable_domain_tool_packs() {
         .expect("browser policy without opt in");
     assert!(browser_without_opt_in.allows_tool("browser_observe"));
     assert!(!browser_without_opt_in.allows_tool("browser_control"));
-
-    let solana_policy = AutonomousAgentToolPolicy::from_definition_snapshot(&serde_json::json!({
-        "toolPolicy": {
-            "allowedToolPacks": ["solana"],
-            "externalServiceAllowed": true,
-            "commandAllowed": true,
-            "destructiveWriteAllowed": true
-        }
-    }))
-    .expect("solana policy");
-    assert!(solana_policy.allows_tool("solana_simulate"));
-    assert!(solana_policy.allows_tool("solana_deploy"));
 }
 
 #[test]
@@ -4358,45 +4306,6 @@ fn tool_runtime_executes_web_search_and_fetch_with_backend_owned_config() {
         invalid_fetch_error.code,
         "autonomous_web_fetch_scheme_unsupported"
     );
-}
-
-#[test]
-fn tool_runtime_dispatches_solana_tools_through_project_runtime() {
-    let root = tempfile::tempdir().expect("temp dir");
-    let app = build_mock_app(create_state(&root));
-    let (project_id, _repo_root) = seed_project(&root, &app);
-
-    let runtime = AutonomousToolRuntime::for_project(
-        &app.handle().clone(),
-        app.state::<DesktopState>().inner(),
-        &project_id,
-    )
-    .expect("build autonomous tool runtime")
-    .with_solana_executor(std::sync::Arc::new(
-        xero_desktop_lib::runtime::autonomous_tool_runtime::UnavailableSolanaExecutor,
-    ));
-
-    let request: AutonomousToolRequest = serde_json::from_value(serde_json::json!({
-        "tool": "solana_docs",
-        "input": {
-            "action": "catalog"
-        }
-    }))
-    .expect("solana docs request should deserialize");
-
-    let result = runtime
-        .execute(request)
-        .expect("solana docs should dispatch");
-    assert_eq!(result.tool_name, "solana_docs");
-    match result.output {
-        AutonomousToolOutput::Solana(output) => {
-            assert_eq!(output.action, "catalog");
-            let value: serde_json::Value =
-                serde_json::from_str(&output.value_json).expect("catalog json");
-            assert!(value.as_array().is_some_and(|entries| !entries.is_empty()));
-        }
-        other => panic!("unexpected solana output: {other:?}"),
-    }
 }
 
 #[test]

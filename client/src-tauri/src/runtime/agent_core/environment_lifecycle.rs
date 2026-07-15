@@ -444,8 +444,6 @@ fn required_binaries_for_tool_packs(
         .filter_map(|prerequisite| match prerequisite.as_str() {
             "adb" => Some("adb".into()),
             "xcrun" => Some("xcrun".into()),
-            "solana" => Some("solana".into()),
-            "anchor" => Some("anchor".into()),
             _ => None,
         })
         .collect::<Vec<String>>();

@@ -88,7 +88,6 @@ impl Default for DeveloperToolCatalogServiceOptions {
 pub struct DeveloperToolRuntimeCapabilitiesDto {
     pub browser_executor: bool,
     pub emulator_executor: bool,
-    pub solana_executor: bool,
     pub skill_tool: bool,
     pub subagent_executor: bool,
     pub model_runner: bool,
@@ -99,7 +98,6 @@ impl DeveloperToolRuntimeCapabilitiesDto {
         Self {
             browser_executor: false,
             emulator_executor: false,
-            solana_executor: false,
             skill_tool: false,
             subagent_executor: false,
             model_runner: true,
@@ -214,13 +212,6 @@ pub fn terminal_runtime_unavailable_reason(tool_name: &str) -> Option<String> {
                 .into(),
         );
     }
-    if pack_ids.iter().any(|pack_id| pack_id == "solana") {
-        return Some(
-            "Solana tools require the desktop Solana workbench state executor, which is not attached in terminal harness mode."
-                .into(),
-        );
-    }
-
     match tool_effect_class(tool_name).as_str() {
         "skill_runtime" => Some(
             "The skill tool requires the desktop skill runtime cache/settings bridge, which is not attached in terminal harness mode."

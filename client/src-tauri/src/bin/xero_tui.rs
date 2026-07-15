@@ -14,7 +14,7 @@ use xero_cli::{CliError, TuiCommandAdapter};
 use xero_desktop_lib::{
     auth::now_timestamp,
     commands::{
-        project_runner, session_history, solana,
+        project_runner, session_history,
         stage_agent_attachment::{
             stage_agent_attachment_for_repo, stage_agent_attachment_path_for_repo,
             StageAgentAttachmentInput,
@@ -106,7 +106,6 @@ impl TuiCommandAdapter for DesktopProjectStoreTuiAdapter {
             Some("plugin-sources") | Some("plugin-source") => {
                 Some(handle_plugin_sources_command(state_dir, &args[1..]).map_err(cli_error))
             }
-            Some("solana") => Some(handle_solana_command(state_dir, &args[1..]).map_err(cli_error)),
             Some("environment")
                 if matches!(
                     args.get(1).map(String::as_str),
@@ -1620,167 +1619,6 @@ fn agent_run_status_label(value: &project_store::AgentRunStatus) -> &'static str
         project_store::AgentRunStatus::Completed => "completed",
         project_store::AgentRunStatus::Failed => "failed",
     }
-}
-
-fn handle_solana_command(state_dir: &Path, args: &[String]) -> Result<JsonValue, CommandError> {
-    let command = args.first().map(String::as_str).unwrap_or("catalog");
-    match command {
-        "catalog" | "surface" => Ok(json!({
-            "kind": "solanaCatalog",
-            "schema": "xero.solana_tui_catalog_command.v1",
-            "commands": [
-                "cluster-list",
-                "scenario-list",
-                "persona-roles",
-                "token-extension-matrix",
-                "wallet-scaffold-list",
-                "doc-catalog",
-                "doc-snippets --tool TOOL",
-                "secrets-patterns",
-                "secrets-scan --project-id ID|--project-root PATH",
-                "pda-scan --project-id ID|--project-root PATH",
-                "pda-derive --request-json JSON"
-            ],
-            "backend": "desktop_solana_module",
-            "uiDeferred": false
-        })),
-        "cluster-list" | "clusters" => solana_command_json(
-            "solanaClusterList",
-            "xero.solana_cluster_list_command.v1",
-            solana::solana_cluster_list()?,
-        ),
-        "scenario-list" | "scenarios" => solana_command_json(
-            "solanaScenarioList",
-            "xero.solana_scenario_list_command.v1",
-            solana::solana_scenario_list()?,
-        ),
-        "persona-roles" | "roles" => solana_command_json(
-            "solanaPersonaRoles",
-            "xero.solana_persona_roles_command.v1",
-            solana::solana_persona_roles()?,
-        ),
-        "token-extension-matrix" | "token-matrix" => solana_command_json(
-            "solanaTokenExtensionMatrix",
-            "xero.solana_token_extension_matrix_command.v1",
-            solana::solana_token_extension_matrix()?,
-        ),
-        "wallet-scaffold-list" | "wallets" => solana_command_json(
-            "solanaWalletScaffoldList",
-            "xero.solana_wallet_scaffold_list_command.v1",
-            solana::solana_wallet_scaffold_list()?,
-        ),
-        "doc-catalog" | "docs" => solana_command_json(
-            "solanaDocCatalog",
-            "xero.solana_doc_catalog_command.v1",
-            solana::solana_doc_catalog()?,
-        ),
-        "doc-snippets" | "doc" => {
-            let tool = required_option(&args[1..], "--tool", "tool")?;
-            solana_command_json(
-                "solanaDocSnippets",
-                "xero.solana_doc_snippets_command.v1",
-                solana::solana_doc_snippets(solana::DocSnippetsArgs { tool })?,
-            )
-        }
-        "secrets-patterns" => solana_command_json(
-            "solanaSecretsPatterns",
-            "xero.solana_secrets_patterns_command.v1",
-            solana::solana_secrets_patterns()?,
-        ),
-        "secrets-scan" => {
-            let request = if let Some(value) = request_json_arg(&args[1..])? {
-                value
-            } else {
-                solana::SecretsScanArgs {
-                    request: solana::SecretsScanRequest {
-                        project_root: solana_project_root(state_dir, &args[1..])?,
-                        skip_paths: option_values(&args[1..], "--skip-path"),
-                        min_severity: None,
-                        file_budget: option_u64(&args[1..], "--file-budget")?
-                            .map(|value| value as usize),
-                    },
-                }
-            };
-            solana_command_json(
-                "solanaSecretsScan",
-                "xero.solana_secrets_scan_command.v1",
-                solana::solana_secrets_scan(request)?,
-            )
-        }
-        "pda-scan" => {
-            let request = solana::PdaScanRequest {
-                project_root: solana_project_root(state_dir, &args[1..])?,
-            };
-            solana_command_json(
-                "solanaPdaScan",
-                "xero.solana_pda_scan_command.v1",
-                solana::solana_pda_scan(request)?,
-            )
-        }
-        "pda-derive" => {
-            let request = request_json_arg::<solana::PdaDeriveRequest>(&args[1..])?
-                .ok_or_else(|| CommandError::invalid_request("requestJson"))?;
-            solana_command_json(
-                "solanaPdaDerive",
-                "xero.solana_pda_derive_command.v1",
-                solana::solana_pda_derive(request)?,
-            )
-        }
-        _ => Err(CommandError::user_fixable(
-            "xero_tui_solana_command_unknown",
-            format!(
-                "Unknown desktop-backed solana command `{command}`. Use catalog, cluster-list, scenario-list, persona-roles, token-extension-matrix, wallet-scaffold-list, doc-catalog, doc-snippets, secrets-patterns, secrets-scan, pda-scan, or pda-derive."
-            ),
-        )),
-    }
-}
-
-fn solana_project_root(state_dir: &Path, args: &[String]) -> Result<String, CommandError> {
-    if let Some(root) = option_value(args, "--project-root") {
-        return Ok(root);
-    }
-    let project_id = required_option(args, "--project-id", "projectId")?;
-    Ok(project_root(state_dir, &project_id)?
-        .to_string_lossy()
-        .into_owned())
-}
-
-fn request_json_arg<T>(args: &[String]) -> Result<Option<T>, CommandError>
-where
-    T: DeserializeOwned,
-{
-    option_value(args, "--request-json")
-        .map(|raw| {
-            serde_json::from_str(&raw).map_err(|error| {
-                CommandError::user_fixable(
-                    "xero_tui_request_json_invalid",
-                    format!("Could not parse --request-json: {error}"),
-                )
-            })
-        })
-        .transpose()
-}
-
-fn solana_command_json<T>(
-    kind: &'static str,
-    schema: &'static str,
-    value: T,
-) -> Result<JsonValue, CommandError>
-where
-    T: Serialize,
-{
-    Ok(json!({
-        "kind": kind,
-        "schema": schema,
-        "result": serde_json::to_value(value).map_err(|error| {
-            CommandError::system_fault(
-                "xero_tui_solana_encode_failed",
-                format!("Could not encode Solana command result: {error}"),
-            )
-        })?,
-        "backend": "desktop_solana_module",
-        "uiDeferred": false
-    }))
 }
 
 fn handle_environment_service_command(

@@ -814,20 +814,6 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
                 require_approval_reason: "Saving or updating Workflow definitions requires explicit operator approval.",
             }
         }
-        AutonomousToolRequest::SolanaDeploy(_)
-        | AutonomousToolRequest::SolanaCodama(_)
-        | AutonomousToolRequest::SolanaReplay(_)
-        | AutonomousToolRequest::SolanaSimulate(_)
-        | AutonomousToolRequest::SolanaAuditExternal(_) => SafetyPolicyMetadata {
-            risk_class: "external_chain_mutation",
-            network_intent: "external_chain",
-            credential_sensitivity: "possible",
-            os_target: None,
-            prior_observation_required: false,
-            requires_approval: false,
-            require_approval_code: "policy_requires_approval_external_chain",
-            require_approval_reason: "External-chain mutation, replay, simulation, or audit actions require operator approval.",
-        },
         AutonomousToolRequest::Emulator(_) => SafetyPolicyMetadata {
             risk_class: "device_control",
             network_intent: "none",

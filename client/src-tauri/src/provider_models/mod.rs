@@ -691,6 +691,9 @@ fn openai_codex_projection() -> Vec<ProviderModelRecord> {
                 "gpt-5.3-codex-spark" => "GPT-5.3 Codex Spark",
                 "gpt-5.4" => "GPT-5.4",
                 "gpt-5.5" => "GPT-5.5",
+                "gpt-5.6-sol" => "GPT-5.6 Sol",
+                "gpt-5.6-terra" => "GPT-5.6 Terra",
+                "gpt-5.6-luna" => "GPT-5.6 Luna",
                 other => other,
             }
             .into();
@@ -1273,7 +1276,7 @@ fn openai_codex_input_modalities_source(model_id: &str) -> &'static str {
 
 fn openai_codex_supports_x_high_thinking(model_id: &str) -> bool {
     let model_id = model_id.trim().to_ascii_lowercase();
-    ["gpt-5.2", "gpt-5.3", "gpt-5.4", "gpt-5.5"]
+    ["gpt-5.2", "gpt-5.3", "gpt-5.4", "gpt-5.5", "gpt-5.6"]
         .iter()
         .any(|marker| model_id.contains(marker))
 }
@@ -2380,6 +2383,9 @@ mod tests {
                 "gpt-5.3-codex-spark",
                 "gpt-5.4",
                 "gpt-5.5",
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna",
             ]
         );
 
@@ -2402,9 +2408,14 @@ mod tests {
                 "{} should expose GSD-style OpenAI Codex thinking levels",
                 model.model_id
             );
+            let expected_context_window = if model.model_id.starts_with("gpt-5.6-") {
+                372_000
+            } else {
+                272_000
+            };
             assert_eq!(
                 model.context_window_tokens,
-                Some(272_000),
+                Some(expected_context_window),
                 "{} should use Codex model-manager context-window metadata",
                 model.model_id
             );
@@ -2456,6 +2467,25 @@ mod tests {
                 ProviderModelThinkingEffort::Medium,
                 ProviderModelThinkingEffort::High,
                 ProviderModelThinkingEffort::XHigh,
+            ]
+        );
+    }
+
+    #[test]
+    fn openai_codex_projection_exposes_gpt_5_6_variant_display_names() {
+        let models = openai_codex_projection();
+        let variants = models
+            .iter()
+            .filter(|model| model.model_id.starts_with("gpt-5.6-"))
+            .map(|model| (model.model_id.as_str(), model.display_name.as_str()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            variants,
+            vec![
+                ("gpt-5.6-sol", "GPT-5.6 Sol"),
+                ("gpt-5.6-terra", "GPT-5.6 Terra"),
+                ("gpt-5.6-luna", "GPT-5.6 Luna"),
             ]
         );
     }

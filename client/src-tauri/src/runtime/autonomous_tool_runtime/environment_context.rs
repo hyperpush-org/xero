@@ -320,7 +320,6 @@ fn environment_tool_category_id(category: EnvironmentToolCategory) -> &'static s
         EnvironmentToolCategory::MobileTooling => "mobile_tooling",
         EnvironmentToolCategory::CloudDeployment => "cloud_deployment",
         EnvironmentToolCategory::DatabaseCli => "database_cli",
-        EnvironmentToolCategory::SolanaTooling => "solana_tooling",
         EnvironmentToolCategory::AgentAiCli => "agent_ai_cli",
         EnvironmentToolCategory::Editor => "editor",
         EnvironmentToolCategory::BuildTool => "build_tool",

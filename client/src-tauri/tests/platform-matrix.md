@@ -23,7 +23,6 @@ For fast platform triage before the full gate, run:
 cargo test --manifest-path client/src-tauri/Cargo.toml --test platform_adapters
 cargo test --manifest-path client/src-tauri/Cargo.toml --test autonomous_tool_runtime
 cargo test --manifest-path client/src-tauri/Cargo.toml --test provider_diagnostics_contract
-cargo test --manifest-path client/src-tauri/Cargo.toml --test solana_workbench
 pnpm --dir client test components/xero/shell.test.tsx src/lib/xero-model/diagnostics.test.ts src/lib/xero-model/session-context.test.ts
 ```
 

@@ -2974,7 +2974,6 @@ mod tests {
             AUTONOMOUS_TOOL_MCP_CALL_TOOL,
             AUTONOMOUS_TOOL_SKILL,
             AUTONOMOUS_TOOL_EMULATOR,
-            AUTONOMOUS_TOOL_SOLANA_CLUSTER,
         ] {
             assert!(
                 names.contains(expected),

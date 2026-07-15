@@ -22,7 +22,6 @@ const ports = [
   { port: 26101, label: 'landing Next dev server' },
   { port: 26102, label: 'cloud Vite dev server' },
   { port: 26103, label: 'main video Remotion Studio' },
-  { port: 26104, label: 'Solana video Remotion Studio' },
   { port: 26140, label: 'Phoenix relay server' },
 ]
 

@@ -3144,7 +3144,6 @@ fn subagent_role_known(role: &str) -> bool {
             | "agent_builder"
             | "browser"
             | "emulator"
-            | "solana"
             | "database"
     )
 }
@@ -4420,7 +4419,6 @@ fn default_tool_policy(profile: &str) -> JsonValue {
                 "reviewer",
                 "browser",
                 "emulator",
-                "solana",
                 "database"
             ],
             "commandAllowed": true,

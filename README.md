@@ -9,7 +9,6 @@ It combines:
 - Autonomous run + operator approval loop support
 - In-app browser automation
 - iOS/Android emulator sidebars + automation hooks
-- Solana workbench tooling (clusters, personas, tx pipeline, deploy helpers)
 - Skill/plugin discovery and execution support
 - Session memory, transcript search, compaction, branch, and rewind workflows
 - MCP server registry management
@@ -83,7 +82,6 @@ Sidebar tools:
 - In-app browser
 - iOS emulator sidebar (macOS only)
 - Android emulator sidebar
-- Solana workbench sidebar
 
 Onboarding flow covers:
 
@@ -117,25 +115,7 @@ Onboarding flow covers:
 - Xcode + iOS Simulator tooling (`xcrun`, `simctl`)
 - Accessibility permission (required for some simulator input paths)
 
-### 3) Solana workbench features
-
-Detected/used CLIs include:
-
-- `solana` (minimum required for localnet workflows)
-- `anchor`
-- `cargo-build-sbf`
-- `surfpool`
-- `trident`
-- `codama`
-- `solana-verify`
-- plus `node` and `pnpm`
-
-If tools are missing, workbench surfaces degraded/missing-toolchain states rather than crashing.
-
-For the current Solana workbench and autonomous tool coverage map, see
-`docs/solana-workbench-tool-coverage-audit.md`.
-
-### 4) Server features
+### 3) Server features
 
 - Postgres is provided by `server/docker-compose.yml` in local development.
 - Server env defaults are documented in `server/.env.example`; local secrets belong in `server/.env`.
@@ -232,7 +212,6 @@ Target a specific integration suite:
 
 ```bash
 cargo test --manifest-path client/src-tauri/Cargo.toml --features tauri-test-support --test runtime_supervisor
-cargo test --manifest-path client/src-tauri/Cargo.toml --features tauri-test-support --test solana_workbench
 ```
 
 Prefer scoped Cargo checks/tests while iterating, and run only one Cargo command at a time so the target directory lock does not become the bottleneck.
@@ -316,8 +295,6 @@ Project process surfaces use the same app-data `start_targets` contract as the d
 Provider and settings surfaces use the same app-data contracts as the desktop/backend paths: `xero provider list|login|remove|doctor|preflight`, `xero mcp list|add|login|remove|status|serve`, `xero environment status|profile|user-tools|save-tool|remove-tool`, `xero skills list|enable|disable|remove|plugins`, `xero plugins list|enable|disable|remove`, and `xero settings agent-tooling|browser-control|soul`. The `dev:tui` palette routes `skill-sources list|upsert-local-root|remove-local-root|github|project|reload`, `plugin-sources list|upsert-root|remove-root|reload`, and `environment start|refresh|resolve-permissions|verify-tool|save-tool-verified|remove-tool-verified` through the shared desktop settings/discovery/environment services.
 
 Agent definitions are exposed through the shared app-data contract with `xero agent-definition list|show|versions|diff|archive`. Inside `dev:tui`, the `:` command palette also routes `agent-definition draft|validate|preview|save|update|clone|attachable-skills --project-id ID --definition-file FILE` through the shared autonomous definition service, including validation, effective runtime preview, write approval review, skill attachment catalog, and JSON-file Stage snapshots.
-
-Terminal-compatible Solana workbench operations are exposed in `dev:tui` through the existing desktop Solana module: `solana catalog|cluster-list|scenario-list|persona-roles|pda-scan|pda-derive|secrets-scan|doc-catalog|doc-snippets|wallet-scaffold-list|token-extension-matrix`.
 
 Maintenance usage totals are exposed with `xero usage summary`, reading the existing project `agent_usage` table.
 
@@ -414,7 +391,6 @@ Major groups:
 - **MCP:** list/upsert/remove/import MCP servers, refresh connection status
 - **Browser:** tabbed in-app browser automation (navigate/click/type/query/cookies/storage/screenshot/diagnostics/state), plus configurable native browser fallback for owned agents
 - **Emulator:** SDK status, device lifecycle/input, screenshots, UI tree/find/tap/swipe/type, app lifecycle helpers
-- **Solana:** cluster lifecycle, snapshots, personas, scenario runs, tx build/sim/send/explain, ALT/IDL/PDA/program deploy flows
 
 ---
 
@@ -453,16 +429,6 @@ XERO_SKIP_DICTATION_SHIM=1
 - `XERO_SKIP_COOKIE_IMPORTER=1` skips helper staging.
 - `XERO_SKIP_DICTATION_SHIM=1` skips the macOS native dictation shim.
 
-### Optional runtime env vars
-
-These are optional and only needed for specific runtime integrations:
-
-```bash
-# Solana workbench resource overrides
-XERO_SOLANA_RESOURCE_ROOT=/path/to/resources
-XERO_SOLANA_TOOLCHAIN_ROOT=/path/to/toolchain
-```
-
 Autonomous web search is configured in the desktop app under Settings -> Web Search. Xero stores non-secret provider settings in OS app-data and stores API keys through the same provider credential table used for LLM providers. The custom endpoint contract is `GET <endpoint>?q=<query>&limit=<count>` with a JSON response shaped as `{ "results": [{ "title": string, "url": string, "snippet"?: string }] }`.
 
 ---
@@ -488,8 +454,6 @@ Agent memory also uses the OS app-data project store. The LanceDB-backed record/
 Xero also stores UI/runtime-adjacent JSON files like:
 
 - `window-state.json`
-
-Solana stores also use OS data dirs under `xero/solana/...` for personas/snapshots.
 
 ### Server state
 
@@ -537,11 +501,6 @@ Cookie import helper supports detection/import from common browsers, including:
 - Use `XERO_SKIP_SIDECAR_FETCH=1` with pre-populated resources
 - Or allow network access during first build so `build.rs` can fetch pinned artifacts
 
-### Solana local cluster start failures
-
-- Verify `solana` (and `surfpool` for fork mode) are on PATH
-- Check toolchain status from Solana sidebar; missing tools are surfaced explicitly
-
 ---
 
 ## Where to Start in Code
@@ -561,4 +520,4 @@ If you’re new to this repo, start here:
 
 ## Current Status Summary
 
-This repository is actively structured around a Tauri desktop runtime with broad command surfaces for runtime orchestration, browser automation, mobile emulator control, Solana workflows, skills/plugins, and session memory. The `server/` Phoenix app and local Postgres service support web callback/shared backend features. The `landing/` app is a separate Next.js site used alongside (not instead of) the desktop host.
+This repository is actively structured around a Tauri desktop runtime with broad command surfaces for runtime orchestration, browser automation, mobile emulator control, skills/plugins, and session memory. The `server/` Phoenix app and local Postgres service support web callback/shared backend features. The `landing/` app is a separate Next.js site used alongside (not instead of) the desktop host.

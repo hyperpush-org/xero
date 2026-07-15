@@ -80,7 +80,6 @@ const subagentRoleSchema = z.enum([
   'agent_builder',
   'browser',
   'emulator',
-  'solana',
   'database',
 ])
 

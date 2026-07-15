@@ -27,7 +27,6 @@ body:
         - Browser automation
         - iOS simulator
         - Android emulator
-        - Solana workbench
         - Settings/auth
         - Other
     validations:
